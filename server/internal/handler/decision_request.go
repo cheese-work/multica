@@ -33,8 +33,10 @@ type decisionRequestInput struct {
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
 	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
-	Kind             string  `json:"-"`
-	ExpiresInSeconds float64 `json:"-"`
+	// Covers are the open cards this batch card answers for (CHE-4453).
+	Covers           []pgtype.UUID `json:"-"`
+	Kind             string        `json:"-"`
+	ExpiresInSeconds float64       `json:"-"`
 	// Parsed is the decoded caller ask. When set, the request is fingerprinted
 	// from it and enriched once, for a new request. Nil means finished text.
 	Parsed *decisiontx.Ask `json:"-"`
@@ -66,10 +68,10 @@ type decisionRequestResult struct {
 	// no item for a departed recipient" from "not yet recorded".
 	PingItem     *db.InboxItem
 	PingRecorded bool
-	// Parked is set when this request moved the issue to its waiting status;
-	// ParkedIssue is the issue as written.
-	Parked      bool
-	ParkedIssue db.Issue
+	// ParkedActivity is the status row of the move to the waiting status, nil
+	// when this request made none; ParkedIssue is the issue as written.
+	ParkedIssue    db.Issue
+	ParkedActivity *db.ActivityLog
 }
 
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -438,7 +440,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
-	if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+	if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -496,6 +498,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, errProposalRaced
 	}
 	if err != nil {
+		return empty, err
+	}
+	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
@@ -581,7 +586,16 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	var session db.ChatSession
 	reuse := input.SessionID.Valid
-	if reuse {
+	inDM := input.Proposal.inDM()
+	if inDM {
+		reuse = true
+		if session, err = lockProposalDM(ctx, queries, issue, input.Proposal.ChatSessionID, agentID); err != nil {
+			return empty, input.Proposal.laneError(err)
+		}
+		if session.CreatorID != input.HumanUserID {
+			return empty, deny
+		}
+	} else if reuse {
 		if session, err = lockDecisionLane(ctx, queries, issue, topic, input.SessionID, agentID); err != nil {
 			return empty, err
 		}
@@ -601,7 +615,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTask(request, queries, issue, "agent", agentID)
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, input.Proposal.chatSession())
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as
@@ -689,8 +703,10 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	result.PingRecorded = true
-	if result.ParkedIssue, result.Parked, err = parkIssueForDecision(ctx, queries, issue); err != nil {
-		return empty, err
+	if !inDM { // the DM's task is not the issue's: the anchor stays as it is
+		if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+			return empty, err
+		}
 	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err

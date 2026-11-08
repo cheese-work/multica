@@ -259,7 +259,7 @@ func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) 
 		return false, nil
 	}
 	switch step.Handler.Type {
-	case issueworkflow.HandlerMember, issueworkflow.HandlerProjectLead, issueworkflow.HandlerCreator, issueworkflow.HandlerHumanByRole:
+	case issueworkflow.HandlerMember, issueworkflow.HandlerProjectLead, issueworkflow.HandlerCreator, issueworkflow.HandlerHumanByRole, issueworkflow.HandlerHumanInCharge:
 		return true, nil
 	}
 	return false, nil

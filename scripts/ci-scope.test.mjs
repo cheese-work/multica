@@ -21,7 +21,6 @@ for (const [name, files, selected] of [
   ["readme only", ["README.md"], []],
   ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality"]],
   ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality"]],
-  ["UI Lab", ["apps/ui-lab/src/app.tsx"], ["frontend", "quality"]],
   ["mobile UI", ["apps/mobile/app/index.tsx"], ["quality"]],
   ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc"]],
   ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
@@ -104,7 +103,7 @@ test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive 
   assert.equal(tampered.scripts, "true");
   assert.equal(tampered.quality_only, "true");
   for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: ubuntu-24\.04$/m);
+    assert.match(jobs[job], /^    runs-on: (ubuntu-24\.04|\$\{\{ vars\.RUNNER_[A-Z_]+ \|\| 'ubuntu-24\.04' \}\})$/m);
     assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
     const needs = productionNeeds(gate, tampered, syncHead);
     assert.equal(needs[job].result, "skipped");
@@ -322,7 +321,7 @@ test("merge-group reuse is wired to authenticated Actions reads and separate hos
   }
   assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
   for (const prefix of ["go-mod-", "go-build-race-"]) {
-    assert.ok(jobs["backend-tests"].includes(prefix));
+    assert.ok(jobs["backend-test-shards"].includes(prefix));
     assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
   }
   assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);
@@ -426,7 +425,7 @@ for (const gate of ["frontend", "backend"]) {
 // assertion together with the matrix entry when a macOS runner exists.
 test("the backend gate owns the Linux-only installer matrix", () => {
   assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /- ubuntu-24\.04/);
+  assert.match(jobs.installer, /- \$\{\{ vars\.RUNNER_INSTALLER \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(jobs.installer, /- macos-/);
   assert.doesNotMatch(jobs.installer, /continue-on-error:/);
 });

@@ -205,9 +205,9 @@ class WrapperTest(unittest.TestCase):
             return ""
 
         def fake_run(cmd, **kw):
-            if sibling_head in cmd[-1] and sibling_diff_error:
+            if sibling_head in os.fsdecode(cmd[-1]) and sibling_diff_error:
                 raise subprocess.CalledProcessError(128, cmd)  # fork head objects were never fetched
-            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
                 "--default-branch", "main", "--post"]
@@ -387,12 +387,45 @@ class QueueRevocationTest(unittest.TestCase):
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
                 "--default-branch", "main", "--post"]
-        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
         with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
                 mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
             code = sg.main()
         self.lookups = lookups
         return code, posted
+
+    REVOKE_ARGV = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                   "--default-branch", "main", "--run-url", "u", "--revoke-only"]
+
+    @staticmethod
+    def live_status(state):
+        """A `_gh` fake for the live reads of --revoke-only: the PR head, then the head's security-gate status."""
+        def fake_gh(*args):
+            if args[0].endswith("/pulls/405"):
+                return json.dumps({"head": {"sha": HEAD}})
+            if args[0].endswith(f"/commits/{HEAD}/status"):
+                return state
+            raise AssertionError(args)
+        return fake_gh
+
+    def test_revoke_only_retries_the_queue_flip_without_reading_the_verdict(self):
+        # CHE-4385 sweep: a PR already non-success whose queue flip failed gets only the flip again, no scan.
+        with mock.patch.object(sg, "revoke_queue") as revoke, mock.patch.object(sg, "gate_pr") as gate, \
+                mock.patch.object(sg, "_gh", self.live_status("pending")), mock.patch("sys.argv", self.REVOKE_ARGV):
+            code = sg.main()
+        self.assertEqual(code, 0)
+        revoke.assert_called_once_with("cheese-work/multica", 405, "main", "u")
+        gate.assert_not_called()
+
+    def test_revoke_only_skips_a_pr_whose_live_status_recovered_to_success(self):
+        # P2 (CHE-4385): the sweep listed the PR as non-success, then a gate run turned it green. Revoking its queue
+        # heads now would drop a good entry; the live status is re-read right before the flip.
+        with mock.patch.object(sg, "revoke_queue") as revoke, mock.patch.object(sg, "gate_pr") as gate, \
+                mock.patch.object(sg, "_gh", self.live_status("success")), mock.patch("sys.argv", self.REVOKE_ARGV):
+            code = sg.main()
+        self.assertEqual(code, 0)
+        revoke.assert_not_called()
+        gate.assert_not_called()
 
     def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
         code, posted = self.run_pr([comment("no verdict any more")])
@@ -498,8 +531,9 @@ class WorkflowTest(unittest.TestCase):
         self.doc = yaml.safe_load(self.text)
 
     def test_runs_from_base_and_never_checks_out_head(self):
-        self.assertIn("pull_request_target", self.doc[True])
-        self.assertIn("issue_comment", self.doc[True])
+        # CHE-4385: the file runs only when pr-guards calls it (pull_request_target, base definition), on a dispatch
+        # of the default branch, or on the merge queue. It has no event of its own for a PR or a comment.
+        self.assertEqual(set(self.doc[True]), {"workflow_call", "workflow_dispatch", "issue_comment", "merge_group"})
         self.assertIn("ref: ${{ github.event.repository.default_branch }}", self.text)
         self.assertNotIn("pull_request.head.ref", self.text)
 
@@ -509,104 +543,102 @@ class WorkflowTest(unittest.TestCase):
         self.assertNotIn(".base.sha", self.text)
         self.assertIn("--default-branch", self.text)
 
-    def test_retarget_and_comment_deletion_retrigger_the_gate(self):
-        # findings 3 and 4
-        self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
-        self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+    def test_pr_guards_calls_the_gate_on_a_push_and_a_retarget_needs_a_dispatch(self):
+        # findings 3 and 4, moved twice by CHE-4385: `edited` (retarget) is no longer a pr-guards trigger (Cheese chose the
+        # run cut), so a retarget re-runs the gate only through a push or `workflow_dispatch`. A stale status fails closed:
+        # a PR retargeted onto the default branch stays "not gated yet" (pending), and `merge_group` re-reads the verdicts.
+        guards = yaml.safe_load((ROOT / ".github/workflows/pr-guards.yml").read_text())
+        self.assertNotIn("edited", guards[True]["pull_request_target"]["types"])
+        self.assertIn("synchronize", guards[True]["pull_request_target"]["types"])
+        self.assertEqual(guards["jobs"]["security-gate"]["uses"], "./.github/workflows/security-gate.yml")
+        self.assertIn("workflow_dispatch", self.doc[True])
+        self.assertIn("merge_group", self.doc[True])
 
-    # Mirrors the X99 runner hook /home/congvc/cheese-work-runners/hooks/job-started.sh: a comment runs only for
-    # OWNER, MEMBER or COLLABORATOR, or for the trusted bot's `Security-Gate-Verdict:` comment (which is NONE).
-    ALLOWED = ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "'Bot'", "'Security-Gate-Verdict:'")
-    HOOK = Path("/home/congvc/cheese-work-runners/hooks/job-started.sh")
+    def test_dispatch_takes_one_digits_only_pull_request_number(self):
+        self.assertEqual(list(self.doc[True]["workflow_dispatch"]["inputs"]), ["pr"])
+        self.assertIn("github.event.inputs.pr", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
+        self.assertIn("pr must be digits only", self.text)
 
-    def test_refused_comment_authors_schedule_no_job(self):
-        # CHE-3035: skip at the job `if:` what the runner hook refuses, so no job is scheduled and no red check appears
+    def test_a_created_edited_or_deleted_verdict_comment_evaluates_without_a_dispatch(self):
+        # CHE-4385: `created` is restored so a new FAIL flips the status at once; edit/delete revoke a PASS.
+        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["created", "deleted", "edited"])
         cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertIn("github.event_name == 'pull_request_target'", cond)  # PR events are never filtered by author
-        for part in self.ALLOWED:
-            self.assertIn(part, cond)
+        self.assertIn("github.event_name != 'issue_comment'", cond)
+        self.assertIn("Security-Gate-Verdict:", cond)
+        self.assertIn("github.event.changes.body.from", cond)
+        self.assertIn("OWNER", cond)
+        self.assertIn("282619718", cond)
+        self.assertIn("github.event.issue.number", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
 
-    def test_trusted_bot_verdict_comment_still_runs(self):
-        # The verdict bot's association is NONE (observed on PR #184). Filtering NONE alone would drop every
-        # verdict create/edit/delete and leave a revoked PASS in place.
-        cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertNotRegex(cond, r"author_association\s*!=\s*'NONE'")
-        self.assertIn("startsWith(github.event.comment.body, 'Security-Gate-Verdict:')", cond)
-
-    VERDICT = "'Security-Gate-Verdict:'"
-
-    def test_plain_comment_schedules_no_job(self):
-        # CHE-3354: a comment without the verdict header queues nothing on the single gate runner, even from a trusted author
-        cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", cond)
-
-    def test_removing_the_header_by_edit_still_runs_the_gate(self):
-        # CHE-3354: revocation by edit. On an edit the new body lacks the header; the old body is `changes.body.from`.
-        cond = self.doc["jobs"]["security-gate"]["if"]
-        self.assertIn(f"github.event.action == 'edited' && contains(github.event.changes.body.from, {self.VERDICT})", cond)
-
-    def test_plain_comment_gets_its_own_concurrency_group(self):
-        # CHE-3354: keep the ignored-group test in step with the `if:` so a plain comment cannot cancel a real run
-        group = self.doc["concurrency"]["group"]
-        self.assertIn(f"contains(github.event.comment.body, {self.VERDICT})", group)
-        self.assertIn("github.event.changes.body.from", group)
-
-    def test_trusted_bot_edit_that_drops_the_header_still_runs(self):
-        # CHE-3354 review P1: the bot revokes a PASS by editing it. The new body may lack the header; the old body had it.
-        old = f"startsWith(github.event.changes.body.from, {self.VERDICT})"
-        self.assertIn(old, self.doc["jobs"]["security-gate"]["if"])
-        self.assertIn(old, self.doc["concurrency"]["group"])
-
-    def _hook_rc(self, **ev):
-        event = {"action": ev.get("action", "created"), "comment": {"author_association": "NONE", "body": ev["body"],
-                 "user": {"id": ev.get("uid", BOT), "type": "Bot"}}}
-        if "old" in ev:
-            event["changes"] = {"body": {"from": ev["old"]}}
-        with tempfile.TemporaryDirectory() as d:
-            f = Path(d) / "event.json"
-            f.write_text(json.dumps(event))
-            env = {"PATH": os.environ["PATH"], "GITHUB_EVENT_PATH": str(f), "GITHUB_EVENT_NAME": "issue_comment",
-                   "GITHUB_REPOSITORY": "cheese-work/multica"}
-            return subprocess.run(["sh", str(self.HOOK)], env=env, capture_output=True).returncode
-
-    def test_hook_admits_the_bot_edit_that_drops_the_header_and_nothing_wider(self):
-        if not self.HOOK.exists():
-            self.skipTest("runner hook not on this host")
-        v = "Security-Gate-Verdict: PASS"
-        self.assertEqual(self._hook_rc(body=v), 0)
-        self.assertEqual(self._hook_rc(body="FAIL now", action="edited", old=v), 0)
-        self.assertNotEqual(self._hook_rc(body="hello"), 0)
-        self.assertNotEqual(self._hook_rc(body="hello", action="edited", old="hello"), 0)
-        self.assertNotEqual(self._hook_rc(body="x", action="edited", old=v, uid=1), 0)
-        self.assertNotEqual(self._hook_rc(body="x", action="created", old=v), 0)
-
-    def test_job_filter_matches_the_runner_hook_allow_list(self):
-        if not self.HOOK.exists():
-            self.skipTest("runner hook not on this host")
-        hook = self.HOOK.read_text()
-        cond = self.doc["jobs"]["security-gate"]["if"]
-        for part in ("OWNER", "MEMBER", "COLLABORATOR", "282619718", "Security-Gate-Verdict:"):
-            self.assertIn(part, hook)
-            self.assertIn(part, cond)
-
-    def test_skipped_comment_cannot_cancel_a_real_evaluation(self):
-        # CHE-3035: a run cancels the in-flight run of its concurrency group before its `if:` is read. An ignored
-        # comment must land in its own group, or it cancels the real run and leaves no completed run behind it.
-        group = self.doc["concurrency"]["group"]
-        self.assertIn("github.run_id", group)
-        for part in self.ALLOWED:
-            self.assertIn(part, group)
+    def test_job_group_differs_from_the_caller_group(self):
+        # A called workflow cannot share its caller's concurrency group (pr-guards-<n>); a dispatch and a push for the
+        # same PR share this one, so the newest read of the verdict wins.
+        job = self.doc["jobs"]["security-gate"]
+        self.assertTrue(job["concurrency"]["group"].startswith("security-gate-"))
+        self.assertIn("github.event.merge_group.head_sha", job["concurrency"]["group"])
 
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
 
-    def test_comment_filter_and_group_keep_the_merge_queue_path(self):
-        # CHE-3035 x CHE-3317: the author filter and the ignored-comment group must not drop or collide merge_group runs
-        self.assertIn("github.event_name == 'merge_group'", self.doc["jobs"]["security-gate"]["if"])
-        self.assertIn("github.event.merge_group.head_sha", self.doc["concurrency"]["group"])
-
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
+
+class FreshnessRaceTest(unittest.TestCase):
+    """CHE-4385: a success must not be posted over a verdict that changed while the evaluation was running."""
+
+    def run_main(self, fail_after_read=None, churn=False):
+        """`fail_after_read`: a FAIL verdict comment appears right after this (1-based) fingerprint read.
+        `churn`: the comment list differs on every fingerprint read."""
+        fail = comment(verdict("FAIL", findings="\n- app.py:7 shell=True on user input"), cid=2, updated="2026-10-30T17:00:00Z")
+        store, posted, reads = [comment(verdict())], [], []
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if args[0] == "--paginate" and "issues/405/comments" in path:
+                if "author_id" in path:  # the evaluation's own read
+                    return "\n".join(json.dumps(c) for c in store)
+                reads.append(1)  # a fingerprint read
+                if len(reads) == fail_after_read:
+                    store.append(fail)
+                extra = f"\nn{len(reads)}" if churn else ""
+                return "\n".join(f"{c['id']} {c['updated_at']}" for c in store) + extra
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(path)
+            if "commits/" in path and "/pulls" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            return "success" if "commits/" in path else ""
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            try:
+                code = sg.main()
+            except SystemExit as e:
+                code = e.code
+        return code, posted
+
+    def test_a_verdict_that_lands_during_the_evaluation_is_read_before_any_success_is_posted(self):
+        # read 1 is before the first evaluation, read 2 after it: the FAIL arrives between them.
+        code, posted = self.run_main(fail_after_read=2)
+        self.assertEqual(code, 0)
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
+        self.assertTrue(any("state=failure" in p for p in posted), posted)
+
+    def test_an_unchanged_verdict_set_still_posts_the_success(self):
+        code, posted = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertEqual([("state=success" in p) for p in posted], [True])
+
+    def test_a_verdict_set_that_never_settles_posts_no_success_and_fails_the_job(self):
+        code, posted = self.run_main(churn=True)
+        self.assertNotIn(code, (0, None))
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
 
 
 if __name__ == "__main__":

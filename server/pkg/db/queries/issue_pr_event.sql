@@ -2,7 +2,7 @@
 
 -- name: LockGitHubPRForEvent :one
 -- Serializes event capture per PR row and returns the current head and state.
-SELECT id, workspace_id, head_sha, state
+SELECT id, workspace_id, head_sha, state, head_repo_same
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;
