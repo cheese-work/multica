@@ -1,0 +1,77 @@
+# ci-policy: class=gate
+# ci-policy queue verdict on a trusted workflow definition. Runs from the DEFAULT branch via `workflow_run`; same content in
+# every enrolled repo (scripts/ci-policy/sync.py). See standards/general/ci.md.
+#
+# SECURITY: a `merge_group` definition comes from the queue commit, which carries the queued PRs' own changes, and a check
+# name is not authenticated, so neither can be trusted to say `ci-policy` passed. This workflow runs the default branch's
+# gate.py on every queued head and posts the `ci-policy` commit status on the queue commit itself. The only inputs read
+# from the trigger are the queue commit SHA and ref name, which GitHub sets. The queue ref is fetched as data and never
+# checked out or executed. It holds no secret and no environment. If ci-policy.yml loses its `merge_group` run, this
+# workflow never fires and the required `ci-policy` context stays missing: the queue blocks (fail closed).
+
+name: ci-policy-queue
+
+on:
+  workflow_run:
+    workflows: [ci-policy]
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ci-policy-queue-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  ci-policy-queue:
+    name: ci-policy-queue-eval
+    # Only a merge-queue run of this repository: a `push` or `pull_request` run that happens to be named ci-policy is ignored.
+    if: >-
+      github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GROUP_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
+      GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
+      PRIVATE: ${{ github.event.repository.private && '--private' || '' }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      # A plain git checkout of the default branch: the trusted gate.py and check.py. The queue ref is fetched as data;
+      # a queue commit has each queued PR head as a parent, so the head objects arrive with it.
+      - name: Check out the default branch and fetch the queue ref
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init --quiet .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --no-tags origin "+refs/heads/*:refs/remotes/origin/*" "+${GROUP_REF}:refs/remotes/queue/head"
+          git checkout --quiet --detach "refs/remotes/origin/${DEFAULT_BRANCH}"
+      # Some X99 runners ship no PyYAML (CHE-2397); --target avoids PEP 668.
+      - name: Install PyYAML
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/pydeps" pyyaml
+          echo "PYTHONPATH=$RUNNER_TEMP/pydeps" >> "$GITHUB_ENV"
+      # A crash is a failure on the queue commit, never a stalled entry.
+      - name: Check every queued PR and post the status
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          set +e
+          out="$(python3 .github/ci-policy/gate.py merge-group --repo "$GITHUB_REPOSITORY" --group-ref "$GROUP_REF" \
+            --default-branch "$DEFAULT_BRANCH" $PRIVATE 2>&1)"
+          rc=$?
+          set -e
+          state=success
+          [ "$rc" -eq 0 ] || state=failure
+          desc="$(printf '%s' "${out:-every queued PR passes ci-policy}" | head -n1)"
+          gh api "repos/$GITHUB_REPOSITORY/statuses/$GROUP_SHA" -f "state=$state" -f context=ci-policy \
+            -f "description=${desc:0:140}" -f "target_url=$run_url"
+          printf '%s\n' "$out"
+          [ "$state" = success ]

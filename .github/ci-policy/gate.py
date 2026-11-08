@@ -8,8 +8,8 @@ data (`git archive`), nothing from it is executed. Needs `git` and, for the API 
 `pr` runs check.py on the head's workflow files and policy file. A PR that edits `.github/ci-policy*` or the caller
 workflow also fails `policy-changed` until a GitHub review APPROVED by a human who is not the author or a bot, with
 write access, on the current head SHA. A new push moves the head, so it resets the approval. `merge-group` lists the PRs queued
-in the group (the merge commits on the group head's first-parent chain), finds each by its recorded head and copies its latest
-`ci-policy` check-run result; a commit whose PR the queue data does not identify fails closed."""
+in the group (the merge commits on the group head's first-parent chain), finds each by its recorded head and runs the PR
+check again on that head; a commit whose PR the queue data does not identify fails closed."""
 import argparse
 import json
 import re
@@ -21,15 +21,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check as ci_check  # noqa: E402
 
-CHECK_NAME = "ci-policy"
-WRITERS = {"OWNER", "MEMBER", "COLLABORATOR"}
+WRITE_PERMISSIONS = {"write", "admin"}  # effective repository permission; author_association says nothing about it (CWE-863)
 VERDICTS = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}  # a COMMENTED review changes nothing
 COMPARE_CAP = 250  # the compare API lists at most this many commits
 GROUP_REF = re.compile(r"^refs/heads/(gh-readonly-queue/(.+)/pr-(\d+)-[0-9a-f]{40})$")
 
 
 def is_protected(path: str) -> bool:
-    return path.startswith(".github/ci-policy") or path == ".github/workflows/ci-policy.yml"
+    return path.startswith((".github/ci-policy", ".github/workflows/ci-policy"))
 
 
 def gh_api(path: str):
@@ -41,14 +40,22 @@ def gh_api(path: str):
     return items if jq != "." else items[0]
 
 
-def approver(reviews: list, head: str, author: str) -> str | None:
+def can_write(repo: str, login: str, api) -> bool:
+    """Effective permission from the collaborators API; an unreadable answer is no permission (fail closed)."""
+    try:
+        return api(f"repos/{repo}/collaborators/{login}/permission").get("permission") in WRITE_PERMISSIONS
+    except (subprocess.CalledProcessError, AttributeError, KeyError, ValueError):
+        return False
+
+
+def approver(reviews: list, head: str, author: str, repo: str, api=gh_api) -> str | None:
     latest = {}
     for r in reviews:  # chronological: the last verdict of each reviewer stands
         if r["state"] in VERDICTS:
             latest[r["user"]["login"]] = r
     return next((login for login, r in latest.items()
                  if r["state"] == "APPROVED" and r["commit_id"] == head and login != author
-                 and r["user"]["type"] == "User" and r.get("author_association") in WRITERS), None)
+                 and r["user"]["type"] == "User" and can_write(repo, login, api)), None)
 
 
 def changed_paths(root: Path, base: str, head: str) -> list[str]:
@@ -57,11 +64,23 @@ def changed_paths(root: Path, base: str, head: str) -> list[str]:
     return out.splitlines()
 
 
-def extract_head(root: Path, head: str, dest: Path) -> None:
-    """The head's `.github` tree as plain files; a repo without one yields an empty dir (the checker then reports D-2)."""
-    archive = subprocess.run(["git", "-C", str(root), "archive", head, ".github"], capture_output=True)
-    if archive.returncode == 0:
-        subprocess.run(["tar", "-x", "-C", str(dest)], input=archive.stdout, check=True)
+def extract_head(root: Path, head: str, dest: Path) -> list[str]:
+    """Write the head's `.github` regular files under `dest` and return the paths it could not (symlinks, submodules).
+    Reads the tree object by object: `git archive` would honour an `export-ignore` the PR itself put in `.gitattributes`
+    and so let the PR hide a workflow from the checker (CWE-807)."""
+    listing = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", head, "--", ".github"],
+                             capture_output=True, check=True).stdout.decode().split("\0")
+    skipped = []
+    for entry in filter(None, listing):
+        meta, path = entry.split("\t", 1)
+        mode, _, sha = meta.split()
+        if mode not in ("100644", "100755"):
+            skipped.append(path)
+            continue
+        target = dest / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(subprocess.run(["git", "-C", str(root), "cat-file", "blob", sha], capture_output=True, check=True).stdout)
+    return skipped
 
 
 def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool, default_branch: str, api=gh_api) -> list:
@@ -70,22 +89,25 @@ def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool
         return [ci_check.Violation("-", "head-moved", f"PR head is {live['head']['sha'][:12]}, not {head[:12]}: a newer run reports")]
     found = []
     touched = [p for p in changed_paths(root, base, head) if is_protected(p)]
-    if touched and not approver(api(f"repos/{repo}/pulls/{pr}/reviews"), head, live["user"]["login"]):
+    if touched and not approver(api(f"repos/{repo}/pulls/{pr}/reviews"), head, live["user"]["login"], repo, api):
         found.append(ci_check.Violation(touched[0], "policy-changed",
                                         f"PR edits {', '.join(touched)}: needs a non-author human APPROVED review on head {head[:12]}"))
     with tempfile.TemporaryDirectory() as tmp:
-        extract_head(root, head, Path(tmp))
+        skipped = extract_head(root, head, Path(tmp))
         violations, _ = ci_check.check(Path(tmp), repo, private, default_branch)
+    found += [ci_check.Violation(p, "head-unreadable", "not a regular file: the checker cannot read it") for p in skipped]
     return found + violations
 
 
-def check_merge_group(repo: str, group_ref: str, api=gh_api) -> list:
-    """Every PR queued in the group (the ref names only the last one) must have a successful `ci-policy` result.
+def check_merge_group(repo: str, group_ref: str, api=gh_api, evaluate=None) -> list:
+    """Every PR queued in the group must pass `evaluate(pr, head)` (the PR check run again, here, on the queued head).
 
-    Only queue data GitHub itself records identifies a PR. Walk the first-parent chain from the group head down to the
-    base branch (the compare response also lists each PR's own commits, which are not queue commits). Each chain commit
-    must be a merge commit: its second parent is the PR head the queue merged, and `commits/{head}/pulls` names the one open PR that has that head. Titles and tree
-    contents prove nothing about identity and are not read. A squashed commit records no head, so it fails closed."""
+    Nothing is copied from a check-run: a check name is not authenticated, so any workflow could post a green
+    `ci-policy` (CWE-345). Only queue data GitHub itself records identifies a PR. Walk the first-parent chain from the
+    group head down to the base branch (the compare response also lists each PR's own commits, which are not queue
+    commits). Each chain commit must be a merge commit: its second parent is the PR head the queue merged, and
+    `commits/{head}/pulls` names the one open PR that has that head. Titles and tree contents prove nothing about
+    identity and are not read. A squashed commit records no head, so it fails closed."""
     def bad(reason):
         return [ci_check.Violation("-", "merge-group", reason)]
 
@@ -117,12 +139,19 @@ def check_merge_group(repo: str, group_ref: str, api=gh_api) -> list:
         return bad(f"binding unavailable: PR #{last} from the ref is not among the group's merged heads")
     found = []
     for pr, head in sorted(queued.items()):
-        runs = api(f"repos/{repo}/commits/{head}/check-runs?check_name={CHECK_NAME}&per_page=100")
-        latest = max(runs, key=lambda r: r["id"], default=None)
-        if latest is None or latest["status"] != "completed" or latest["conclusion"] != "success":
-            state = latest and (latest["conclusion"] or latest["status"])
-            found += bad(f"PR #{pr} head {head[:12]}: latest {CHECK_NAME} result is {state or 'missing'}, not success")
+        for v in evaluate(pr, head):
+            found += bad(f"PR #{pr} head {head[:12]}: {v.rule} {v.workflow}: {v.reason}")
     return found
+
+
+def queue_check(args) -> list:
+    """Run in the trusted queue workflow: the group ref is fetched as data; each queued head is checked like a PR."""
+    base_branch = m[2] if (m := GROUP_REF.match(args.group_ref)) else args.default_branch
+
+    def evaluate(pr, head):
+        return check_pr(args.root, args.repo, pr, f"refs/remotes/origin/{base_branch}", head, args.private, args.default_branch)
+
+    return check_merge_group(args.repo, args.group_ref, evaluate=evaluate)
 
 
 def main(argv=None) -> int:
@@ -139,11 +168,14 @@ def main(argv=None) -> int:
     mg = sub.add_parser("merge-group")
     mg.add_argument("--repo", required=True)
     mg.add_argument("--group-ref", required=True)
+    mg.add_argument("--root", type=Path, default=Path("."))
+    mg.add_argument("--private", action="store_true")
+    mg.add_argument("--default-branch", default="main")
     args = ap.parse_args(argv)
     if args.cmd == "pr":
         found = check_pr(args.root, args.repo, args.pr, args.base, args.head, args.private, args.default_branch)
     else:
-        found = check_merge_group(args.repo, args.group_ref)
+        found = queue_check(args)
     for v in found:
         print(f"{args.repo} {v.workflow} {v.rule} {v.reason}")
     return 1 if found else 0
