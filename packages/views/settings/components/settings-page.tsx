@@ -68,6 +68,7 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
+import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { CollapsedNavTrigger } from "../../layout/page-header";
 import { useT } from "../../i18n";
 
@@ -235,6 +236,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               wide: true,
               adminOnly: true,
             }),
+            entry(
+              "provider-breakers",
+              t(($) => $.page.tabs.provider_breakers),
+              Zap,
+              <ProviderBreakersTab />,
+              { wide: true },
+            ),
             entry("labels", t(($) => $.page.tabs.labels), Tags, <LabelsTab />, {
               wide: true,
             }),

@@ -17,7 +17,7 @@ test("the shard matrix covers handler shards, service and the rest, one runner e
   const partitions = shards.match(/^        partition: \[(.*)\]$/m)?.[1].split(/,\s*/);
   assert.deepEqual(partitions, ["handler-0", "handler-1", "handler-2", "handler-3", "service", "rest"]);
   assert.match(shards, /^      fail-fast: false$/m);
-  assert.match(shards, /^    runs-on: ubuntu-24\.04$/m);
+  assert.match(shards, /^    runs-on: \$\{\{ vars\.RUNNER_BACKEND_TESTS \|\| 'ubuntu-24\.04' \}\}$/m);
   const handlerShards = partitions.filter((name) => name.startsWith("handler-")).length;
   assert.match(shards, new RegExp(`^      MULTICA_HANDLER_SHARDS: "${handlerShards}"$`, "m"));
   assert.match(shards, /bash scripts\/test-go\.sh --race --only regular --partition \$\{\{ matrix\.partition \}\}/);

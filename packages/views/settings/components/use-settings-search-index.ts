@@ -203,6 +203,11 @@ export function useSettingsSearchIndex(
         description: t(($) => $.wakeups.child_done_description),
       },
       {
+        tab: "provider-breakers",
+        title: t(($) => $.page.tabs.provider_breakers),
+        description: t(($) => $.provider_breakers.description),
+      },
+      {
         tab: "labels",
         title: t(($) => $.page.tabs.labels),
         description: t(($) => $.labels.description),
