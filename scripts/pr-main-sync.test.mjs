@@ -127,7 +127,7 @@ test("taskOwner: the branch's agent, else the issue assignee, else a loud failur
   assert.throws(() => taskOwner("ghost", agents, {}), /no owner/);
 });
 
-test("workflow: every live path (push or dispatch with dry_run=false) is behind PR_MAIN_SYNC_ENABLED", () => {
+test("workflow: every live path (Main Build call or dispatch with dry_run=false) is behind PR_MAIN_SYNC_ENABLED", () => {
   const yml = readFileSync(new URL("../.github/workflows/pr-main-sync.yml", import.meta.url), "utf8");
   const jobIf = yml.match(/^ {4}if: (.*)$/m)[1];
   const dryRun = yml.match(/^ {10}DRY_RUN: (.*)$/m)[1];
