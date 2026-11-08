@@ -38,6 +38,18 @@ FOR UPDATE;
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 
+-- name: LockAgentForSkillWrite :one
+-- Serializes every writer of agent_skill rows on an existing agent with an
+-- approved decision action. The action transaction holds FOR UPDATE on this
+-- agent row (LockDecisionAgentsNowait), which conflicts with FOR NO KEY UPDATE:
+-- the ordinary writer waits under the transaction lock timeout and commits after
+-- the action; if the writer holds the lock first, the action's NOWAIT lock
+-- answers busy_retry. The agent row is the only lock taken. Returns the locked
+-- row so the caller checks manager state against it.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
+
 -- name: LockAgentForAutopilotAssignment :one
 -- Serializes creating, retargeting, or resuming an active Autopilot with
 -- Runtime teardown. Teardown takes FOR UPDATE on this same Agent row before it
