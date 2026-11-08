@@ -99,8 +99,16 @@ type runBroker struct {
 // go first on the run's PATH and MULTICA_BROKER_SOCKET names the socket. Off,
 // audit and an unconfigured daemon keep today's behaviour; the run then has no
 // GitHub credential at all (the env allowlist drops them).
-func applyRunBroker(mode sandbox.Mode, cfg *BrokerConfig, agentEnv map[string]string, log *slog.Logger) (*runBroker, error) {
+//
+// isolated says the run sits behind enforced filesystem isolation that exposes
+// only its own broker socket. Without it every run shares the daemon UID, so
+// any run could connect to another run's socket: refuse to start a broker.
+func applyRunBroker(mode sandbox.Mode, isolated bool, cfg *BrokerConfig, agentEnv map[string]string, log *slog.Logger) (*runBroker, error) {
 	if mode != sandbox.ModeOn {
+		return nil, nil
+	}
+	if !isolated {
+		log.Warn("sandbox: runs are not filesystem-isolated; broker not started, run has no GitHub push or read path")
 		return nil, nil
 	}
 	if cfg == nil {
@@ -209,6 +217,12 @@ func (d *Daemon) startRunBroker(t activeRepoCheckoutTask, req repoCheckoutReques
 	if t.Broker == nil || res == nil || res.BranchName == "" {
 		return
 	}
+	// A kept checkout with local work may sit on a branch the agent picked, not
+	// this task's own (or the server-pinned) branch. Keep the work, grant nothing.
+	if res.Kept == repocache.KeptLocalWork {
+		d.logger.Warn("run broker not started", "task_id", t.TaskID, "reason", "checkout kept on a branch not owned by this task")
+		return
+	}
 	bare := d.repoCache.BarePath(req.WorkspaceID, req.URL)
 	def := gitOut(bare, "symbolic-ref", "--short", "HEAD")
 	head := gitOut(res.Path, "rev-parse", "HEAD")
@@ -241,3 +255,7 @@ func gitOut(dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
+
+// runIsolated is false until agent runs start through sandbox.Launcher with
+// Spec.BrokerSocket (no production path does today). Flip it with that wiring.
+const runIsolated = false

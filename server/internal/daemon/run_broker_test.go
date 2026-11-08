@@ -70,11 +70,26 @@ func TestRunBrokerUnchangedWhenOffOrUnconfigured(t *testing.T) {
 		"off": {sandbox.ModeOff, cfg}, "audit": {sandbox.ModeAudit, cfg}, "on without config": {sandbox.ModeOn, nil},
 	} {
 		env := map[string]string{}
-		rb, err := applyRunBroker(c.mode, c.cfg, env, quietLog())
+		rb, err := applyRunBroker(c.mode, true, c.cfg, env, quietLog())
 		if err != nil || rb != nil || len(env) != 0 {
 			t.Errorf("%s: rb=%v err=%v env=%v, want no broker and an untouched env", name, rb, err, env)
 		}
 		rb.Close() // nil-safe
+	}
+}
+
+// Without enforced run isolation every run shares the daemon UID, so a broker
+// socket is reachable by other runs: no broker, no shims, env untouched. The
+// daemon passes runIsolated until the sandbox launcher is on the run path.
+func TestRunBrokerRefusedWithoutIsolation(t *testing.T) {
+	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
+	env := map[string]string{}
+	rb, err := applyRunBroker(sandbox.ModeOn, false, brokerTestConfig(t, gh), env, quietLog())
+	if err != nil || rb != nil || len(env) != 0 {
+		t.Fatalf("rb=%v err=%v env=%v, want no broker and an untouched env", rb, err, env)
+	}
+	if runIsolated {
+		t.Fatal("runIsolated must stay false until runs go through sandbox.Launcher with the broker socket")
 	}
 }
 
@@ -90,7 +105,7 @@ func TestRunBrokerFakeAgentGHRefreshAndRevoke(t *testing.T) {
 	t.Cleanup(func() { multicaExe = os.Executable })
 
 	env := map[string]string{}
-	rb, err := applyRunBroker(sandbox.ModeOn, cfg, env, quietLog())
+	rb, err := applyRunBroker(sandbox.ModeOn, true, cfg, env, quietLog())
 	if err != nil || rb == nil {
 		t.Fatalf("applyRunBroker: rb=%v err=%v", rb, err)
 	}
@@ -138,7 +153,7 @@ func TestRunBrokerFakeAgentGHRefreshAndRevoke(t *testing.T) {
 func TestRunBrokerStartRefusals(t *testing.T) {
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	fakeTools(t)
-	rb, err := applyRunBroker(sandbox.ModeOn, brokerTestConfig(t, gh), map[string]string{}, quietLog())
+	rb, err := applyRunBroker(sandbox.ModeOn, true, brokerTestConfig(t, gh), map[string]string{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +205,7 @@ func TestStartRunBrokerFromCheckout(t *testing.T) {
 	run(work, "push", "origin", "main")
 	run(work, "checkout", "-b", "agent/x/t1")
 
-	rb, err := applyRunBroker(sandbox.ModeOn, brokerTestConfig(t, gh), map[string]string{}, quietLog())
+	rb, err := applyRunBroker(sandbox.ModeOn, true, brokerTestConfig(t, gh), map[string]string{}, quietLog())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +219,13 @@ func TestStartRunBrokerFromCheckout(t *testing.T) {
 	if _, err := os.Stat(rb.Socket); err == nil {
 		t.Fatal("a checkout with no branch must not start the broker")
 	}
-	d.startRunBroker(task, req, &repocache.WorktreeResult{Path: work, BranchName: "agent/x/t1"})
+	// A checkout kept for local work on a branch this task does not own must
+	// grant no authority over that branch.
+	d.startRunBroker(task, req, &repocache.WorktreeResult{Path: work, BranchName: "someone/elses", Kept: repocache.KeptLocalWork})
+	if _, err := os.Stat(rb.Socket); err == nil {
+		t.Fatal("a kept foreign branch must not start the broker")
+	}
+	d.startRunBroker(task, req, &repocache.WorktreeResult{Path: work, BranchName: "agent/x/t1", Kept: repocache.KeptTaskBranch})
 	if _, err := os.Stat(rb.Socket); err != nil {
 		t.Fatalf("broker must listen after the checkout: %v", err)
 	}

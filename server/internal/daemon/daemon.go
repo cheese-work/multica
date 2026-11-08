@@ -8820,7 +8820,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
-	runBrk, err := applyRunBroker(d.cfg.SandboxMode, d.cfg.Broker, agentEnv, taskLog)
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
 	}
