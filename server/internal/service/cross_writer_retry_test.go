@@ -214,9 +214,7 @@ func TestCrossWriterRecoveryReservation(t *testing.T) {
 		name string
 		make func(failed string) db.RecordProviderFailureRecoveryParams
 	}{
-		{"task_retry", func(failed string) db.RecordProviderFailureRecoveryParams {
-			return o.taskRetryEffect(failed)
-		}},
+		{"task_retry", o.taskRetryEffect},
 		{"wakeup_rearm", func(failed string) db.RecordProviderFailureRecoveryParams {
 			return o.wakeupRearmEffect(failed, o.wakeup(t, "at", "once", nil), 2)
 		}},
