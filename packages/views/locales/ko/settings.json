@@ -395,7 +395,8 @@
   },
   "chat": {
     "floating_label": "플로팅 채팅 창",
-    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다."
+    "floating_hint": "모든 페이지에 플로팅 채팅 버튼을 표시합니다.",
+    "recent_agents_label": "새 채팅의 최근 에이전트"
   },
   "issue": {
     "opening": {
@@ -456,6 +457,7 @@
       "issue": "태스크",
       "notifications": "알림",
       "tokens": "API 토큰",
+      "passkeys": "패스키",
       "general": "일반",
       "github": "GitHub",
       "labs": "실험실",
@@ -472,7 +474,8 @@
       "code": "코드",
       "channels": "메신저",
       "apps": "연결된 앱",
-      "workflows": "워크플로"
+      "workflows": "워크플로",
+      "provider_breakers": "공급자 차단기"
     },
     "groups": {
       "personal": "개인",
@@ -751,6 +754,38 @@
       "enabled_badge": "사용 중"
     }
   },
+  "passkeys": {
+    "title": "패스키",
+    "purpose": "패스키는 이 기기 또는 보안 키로 민감한 승인에 서명합니다.",
+    "description": "보호된 결정을 승인할 때 패스키가 본인임을 증명합니다. 서로 다른 기기에 최소 두 개를 보관하세요.",
+    "desktop_note": "패스키는 웹 앱에 연결되므로 브라우저에서 관리하세요.",
+    "open_in_browser": "브라우저에서 열기",
+    "add": "패스키 추가",
+    "code_hint": "이메일로 코드를 보냈습니다. 코드를 입력한 뒤 브라우저 안내에 따라 패스키를 만드세요.",
+    "code_label": "이메일 코드",
+    "confirm": "확인",
+    "cancel": "취소",
+    "empty": "아직 패스키가 없습니다.",
+    "load_failed": "패스키를 불러오지 못했습니다. 페이지를 새로고침한 뒤 다시 시도하세요.",
+    "item_title": "패스키 {{number}}",
+    "item_meta": "추가일 {{created}} · {{lastUsed}}",
+    "last_used_with_date": "마지막 사용 {{date}}",
+    "last_used_never": "사용 안 함",
+    "suspect": "의심됨",
+    "revoke_code_hint": "이 패스키를 삭제할 코드를 이메일로 보냈습니다. 코드를 입력해 확인하세요.",
+    "revoke_aria": "패스키 {{number}} 폐기",
+    "toast_enrolled": "패스키를 추가했습니다",
+    "toast_enroll_failed": "패스키를 추가하지 못했습니다",
+    "toast_revoked": "패스키를 폐기했습니다",
+    "toast_revoke_failed": "패스키를 폐기하지 못했습니다",
+    "revoke_dialog": {
+      "title": "패스키 폐기",
+      "description": "이 패스키는 제거되며 더 이상 결정을 승인할 수 없습니다. 다른 패스키로 서명해 확인합니다.",
+      "cancel": "취소",
+      "confirm": "폐기",
+      "use_code": "대신 이메일 코드 사용"
+    }
+  },
   "tokens": {
     "title": "API 토큰",
     "description": "개인 액세스 토큰을 사용하면 CLI와 외부 연동이 내 계정으로 인증할 수 있습니다. multica login --token 으로 사용하거나 API 호출 시 Bearer 토큰으로 보낼 수 있습니다.",
@@ -840,8 +875,23 @@
     "auto_compact_hint": "웹 DM은 컨텍스트가 임계값에 도달하면 답변 후 새 DM으로 이어집니다.",
     "auto_compact_threshold_label": "임계값 (%)",
     "auto_compact_threshold_invalid": "50에서 90 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_200k_label": "임계값, 200k 모델 (토큰)",
+    "auto_compact_tokens_1m_label": "임계값, 1M 모델 (토큰)",
+    "auto_compact_tokens_200k_invalid": "100000에서 200000 사이의 정수를 입력하세요.",
+    "auto_compact_tokens_1m_invalid": "100000에서 400000 사이의 정수를 입력하세요.",
     "auto_compact_readonly_on": "켜짐, {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "켜짐, {{small}} / {{large}} 토큰",
     "auto_compact_readonly_off": "꺼짐",
+    "agent_decisions_label": "에이전트 결정",
+    "agent_decisions_hint": "에이전트가 허용 목록에 있는 게이트를 대신 결정할 수 있습니다. 각 결정은 일일 브리프에 표시되며 24시간 동안 거부할 수 있습니다.",
+    "agent_decisions_stopped_title": "결정이 자동으로 중지되었습니다",
+    "agent_decisions_stopped_description": "사유: {{reason}}. 결정을 켜면 이 기록이 지워집니다.",
+    "agent_decisions_stopped_confirm": "켜기",
+    "runtime_profile_label": "런타임 프로필",
+    "runtime_profile_hint": "에이전트 CLI 설정 방식의 워크스페이스 기본값입니다. Managed는 작업마다 최소 구성 홈을 만듭니다. 관리형 어댑터가 없는 도구는 Managed에서 실패하므로, 해당 에이전트에는 개인을 명시적으로 지정하세요.",
+    "runtime_profile_personal": "개인",
+    "runtime_profile_managed": "관리형",
+    "runtime_profile_inherit": "워크스페이스 기본값",
     "idle_guard_label": "유휴 이슈 가드",
     "idle_guard_hint": "실행도 웨이크업도 없는 시작된 이슈를 N시간 후에 이동합니다. Shadow는 기록만 합니다.",
     "idle_guard_off": "꺼짐",
@@ -850,6 +900,12 @@
     "idle_guard_hours_label": "경과 시간(시간)",
     "idle_guard_hours_invalid": "1에서 72 사이의 정수를 입력하세요.",
     "idle_guard_readonly": "{{mode}}, {{hours}}시간 후",
+    "routing_agent_label": "라우팅 에이전트",
+    "routing_agent_hint": "라우팅만 하는 워크플로 단계(할 일, 차단됨, 병합됨, 결정 필요)를 처리합니다. 설정하지 않으면 각 단계의 에이전트를 그대로 씁니다.",
+    "routing_fallback_label": "대체 에이전트",
+    "routing_fallback_hint": "라우팅 에이전트가 제공자 오류로 실패하면 해당 라우팅 단계를 이어받습니다.",
+    "routing_agent_none": "없음",
+    "routing_agent_unknown": "알 수 없는 에이전트",
     "slug_hint": "모든 워크스페이스 URL에 쓰이며 생성 후에는 변경할 수 없습니다.",
     "copy_slug": "slug 복사",
     "copy_failed": "복사하지 못했습니다",
@@ -1025,6 +1081,7 @@
     "github_not_configured": "이 배포에는 GitHub 연결이 설정되어 있지 않습니다.",
     "github_browse_not_configured": "저장소를 탐색하려면 GITHUB_APP_ID와 GITHUB_APP_PRIVATE_KEY가 필요합니다.",
     "github_connect_failed": "GitHub에 연결하지 못했습니다. 다시 시도해 주세요.",
+    "github_installation_not_allowed": "이 GitHub 계정은 이 배포 환경에서 허용되지 않습니다.",
     "github_picker_title": "GitHub 저장소 선택",
     "github_picker_description": "기존 수동 설정은 변경되지 않습니다.",
     "github_account": "GitHub 계정",
@@ -1103,6 +1160,7 @@
       "auto_stop_description": "데스크톱 앱을 닫으면 데몬을 중지합니다.",
       "cli_status": "CLI 상태",
       "cli_checking": "확인 중...",
+      "cli_download_progress": "런타임 다운로드 중... {{done}} / {{total}} MB",
       "cli_installed": "multica CLI가 설치되어 PATH에서 사용할 수 있습니다.",
       "cli_missing": "multica CLI를 찾을 수 없습니다. 데몬을 관리하려면 설치하세요.",
       "installation_guide": "설치 안내",
@@ -1252,7 +1310,7 @@
     "not_enabled_self_host_hint": "셀프 호스트 운영자: 자세한 내용은 프로젝트 README를 참고하세요.",
     "preview_title": "Lark 봇 설치 곧 출시 예정",
     "preview_description": "이 배포 환경에서는 Lark 연결이 활성화되지 않았습니다. 관리자에게 문의하세요.",
-    "connected_bots": "연결된 봇",
+    "connected_bots": "봇",
     "loading": "불러오는 중…",
     "empty_title": "아직 연결된 봇이 없어요",
     "empty_description_prefix": "이 워크스페이스의 에이전트를 열고",
@@ -1299,7 +1357,7 @@
     "install_starting": "QR 코드를 준비하는 중…",
     "install_scan_hint": "Lark → 스캔 → 새 PersonalAgent를 승인하세요.",
     "install_open_link_fallback": "또는 여기를 눌러 Lark에서 열기",
-    "install_success": "설치 완료 — 봇이 온라인 상태입니다.",
+    "install_success": "봇이 등록되었습니다. Feishu/Lark에서 메시지를 보내 수신을 확인하세요.",
     "install_success_toast": "Lark 봇이 설치되었어요",
     "install_open_link_fallback_feishu": "또는 여기를 눌러 Feishu에서 열기",
     "install_open_link_fallback_lark": "또는 여기를 눌러 Lark에서 열기",
@@ -1316,7 +1374,12 @@
     "install_error_installer_bind": "봇은 설치되었지만 Lark 신원을 연결하지 못했어요. 다시 시도하거나 지원팀에 문의하세요.",
     "install_error_session_lost": "설치 세션이 만료되었거나 유실되었어요. 다시 스캔해 처음부터 진행하세요.",
     "install_error_forbidden": "이 워크스페이스에 Lark 봇을 설치할 권한이 더 이상 없어요. 워크스페이스 관리자에게 문의하세요.",
-    "install_error_generic": "설치에 실패했어요. 다시 시도하세요."
+    "install_error_generic": "설치에 실패했어요. 다시 시도하세요.",
+    "bound_label": "연결 등록됨",
+    "inbound_pending": "등록됨 · 메시지 확인 대기",
+    "inbound_verified": "메시지 수신 확인됨",
+    "inbound_pending_hint": "Feishu/Lark에서 이 봇에 메시지를 보내 수신을 확인하세요. 도착하지 않으면 지속 연결 모드, im.message.receive_v1 구독, 앱 게시 및 승인 상태를 확인하세요. 기존 연결에는 확인 기록이 없을 수 있습니다.",
+    "inbound_verified_hint": "이번 연결에서 유효한 메시지를 받았습니다. 지속적인 연결, 에이전트 실행 또는 답장 성공을 의미하지는 않습니다."
   },
   "composio": {
     "page_description": "에이전트가 사용할 앱을 연결하세요.",
@@ -1561,5 +1624,36 @@
     "mcp": "관리자가 추가해 워크스페이스에서 공유하고, 에이전트별로 할당합니다.",
     "apps": "내 계정으로 Composio를 통해 승인하고, 내가 소유한 에이전트에서 사용합니다.",
     "plugins": "설치하면 도구, 예약 훅, 저장소를 추가할 수 있으며 플러그인마다 권한을 부여합니다."
+  },
+  "provider_breakers": {
+    "description": "차단기는 서버 오류가 반복된 공급자로 가는 새 작업을 막고, 스스로 다시 확인합니다.",
+    "empty": "이 워크스페이스에서 작동한 차단기가 없습니다.",
+    "load_error": "차단기를 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "columns": {
+      "provider": "공급자",
+      "state": "상태",
+      "reason": "사유",
+      "failures": "실패 횟수",
+      "opened": "열린 시각",
+      "next_probe": "다음 확인",
+      "last_success": "마지막 성공",
+      "actions": "작업"
+    },
+    "states": {
+      "closed": "닫힘",
+      "open": "열림",
+      "half_open": "반열림"
+    },
+    "none": "—",
+    "reset": "초기화",
+    "reset_label": "{{provider}} 차단기 초기화",
+    "reset_title": "{{provider}} 차단기를 초기화할까요?",
+    "reset_description": "차단기가 바로 닫히고 새 작업이 다시 {{provider}}에 전달됩니다. 공급자가 계속 실패하면 차단기가 다시 작동합니다. 초기화는 감사 로그에 기록됩니다.",
+    "reset_cancel": "취소",
+    "reset_confirm": "차단기 초기화",
+    "resetting": "초기화 중…",
+    "reset_success": "차단기를 초기화했습니다.",
+    "reset_error": "차단기를 초기화하지 못했습니다."
   }
 }

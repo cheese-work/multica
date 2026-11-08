@@ -1,5 +1,5 @@
 name: CD deploy to C00
-run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.candidate_sha || inputs.ref || github.sha }}
 
 # D2 (CHE-530 / CHE-1923): deploys an already-admitted release-candidate tuple
 # to the live C00 self-host stack on the target-host local runner
@@ -8,12 +8,16 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.r
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
-# It runs automatically after a SUCCESSFUL cd-qualification run for a `main`
-# commit (acceptance item 1: a merge to main reaches C00 with no human step),
-# and can still be dispatched by hand for a re-deploy or a manual admission.
+# CHE-4495: a push to `main` builds and stops. After a SUCCESSFUL
+# cd-qualification run, this workflow only runs candidate-preflight and sends
+# the one-click notice; it never touches C00. A deploy needs a
+# `workflow_dispatch` by the owner (authorize-c00 checks the triggering actor
+# before any C00 step). GitHub's required-reviewer environments do not gate on
+# a private Team repo, so the gate is the actor check plus the main-only
+# deployment-branch policy of c00-runtime (secrets exist only on `main`).
 #
-# The automatic path needs one job the manual path does not:
-# prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
+# A dispatch with `candidate_sha` needs one job a manual-evidence dispatch does
+# not: prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
 # admission.mjs REFUSES build-evidence for deployment — a deployable
 # `release-candidate` manifest additionally binds the baseline tuple of the
 # host being deployed to, which only a stage running on C00 can read. That
@@ -30,21 +34,24 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      candidate_sha:
+        description: "Full SHA of a qualified main commit to deploy; leave empty to supply the evidence paths below instead"
+        required: false
       manifest_path:
         description: "Path (relative to repo root, at the checked-out ref) to the release-candidate manifest JSON"
-        required: true
+        required: false
       baseline_tuple_path:
         description: "Path to the C00 tuple snapshot the manifest was qualified against"
-        required: true
+        required: false
       event_path:
         description: "Path to the recorded {event_name, ref, repository, sha} JSON for the qualifying push"
-        required: true
+        required: false
       checks_path:
         description: "Path to the recorded {sha, contexts} required-checks JSON"
-        required: true
+        required: false
       provenance_path:
         description: "Path to the recorded image provenance JSON (backend/web digest + architecture + repository + source_sha)"
-        required: true
+        required: false
       ref:
         description: "Git ref to check out (must match the manifest's source_sha)"
         required: true
@@ -57,9 +64,8 @@ permissions:
   contents: read
   actions: read
 
-# No workflow-level concurrency (CHE-2027): a run waiting for approval would
-# hold it and block every newer version behind it. Instead the approval gate
-# below is replaced by a newer version, and the two jobs that touch C00
+# No workflow-level concurrency (CHE-2027): a queued run would hold it and block
+# every newer version behind it. The two jobs that touch C00
 # (prepare-release-candidate, deploy) share one never-cancelled lock group.
 #
 # The lock uses `queue: max`. The default (`single`) keeps ONE pending job and
@@ -70,37 +76,31 @@ permissions:
 # cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
   # ---------------------------------------------------------------------------
-  # The ONE approval per version. It uses c00-production, the protected
-  # environment (required reviewer, wait timer) the C00 jobs always used, and
-  # holds no secrets. The jobs that use the C00 secrets run in c00-runtime,
-  # which has no reviewers, so they do not ask again. c00-production keeps its
-  # protection on purpose: runs started by the previous workflow, and reruns of
-  # their jobs, still use it. A newer version entering this group cancels an
-  # older one that is still waiting for approval. Nothing in this group touches
-  # C00, so cancelling it can never interrupt a deploy.
+  # The deploy gate (CHE-4495). Only a workflow_dispatch reaches it, and it
+  # fails unless the triggering actor is the owner. It has no environment and no
+  # secrets, and every job that touches C00 needs it, so another actor's
+  # dispatch fails here, before any C00 step. A push-triggered (workflow_run)
+  # run skips it, and so skips every job behind it.
   # ---------------------------------------------------------------------------
-  approve-c00:
-    needs: candidate-preflight
-    # The manual path skips candidate-preflight, so this must not be skipped
-    # just because that job did not run.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+  authorize-c00:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    environment: c00-production
-    concurrency:
-      group: cd-deploy-c00-approval
-      cancel-in-progress: true
+    timeout-minutes: 2
     steps:
-      - name: Approval granted
-        run: echo "C00 deployment approved."
+      - name: Only the owner may deploy to C00
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          if [ "$ACTOR" != "congvc-dev" ]; then
+            echo "::error::dispatch by '$ACTOR' refused; only congvc-dev may deploy to C00"
+            exit 1
+          fi
 
-  # CHE-2418 B5: pings the approver when approve-c00 starts waiting. Runs beside
-  # the gate, not before it: nothing needs this job, so a dead webhook can
-  # never hold an approval or a deploy. Holds only the webhook secret.
+  # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
+  # dispatch page. Nothing needs this job, so a dead webhook never holds a deploy.
   notify-approval:
     needs: candidate-preflight
-    # Same condition as the gate: the manual path skips candidate-preflight but
-    # still waits for approval.
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    if: always() && github.event_name == 'workflow_run' && needs.candidate-preflight.outputs.eligible == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
@@ -108,13 +108,10 @@ jobs:
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/notify-approval.sh
-      - name: Notify approver
+      - name: Notify owner
         env:
-          # workflow_run: the qualified commit. workflow_dispatch: the commit
-          # inputs.ref resolves to, which the manifest's source_sha must match.
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          INPUT_REF: ${{ inputs.ref }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
@@ -123,6 +120,8 @@ jobs:
     if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
+    # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
+    environment: ci-app-token
     outputs:
       eligible: ${{ steps.candidate.outputs.eligible }}
     steps:
@@ -131,6 +130,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -142,30 +145,56 @@ jobs:
         shell: bash
         run: bash deploy/cd/ensure-pyyaml.sh
 
+      - name: Mint the c00-multicado read token (CHE-4251)
+        id: app
+        # A missing key or environment must not stop a deploy: the pick step below falls back to GITHUB_TOKEN.
+        continue-on-error: true
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-metadata: read
+          permission-contents: read
+          permission-actions: read
+          permission-checks: read
+          permission-statuses: read
+          permission-pull-requests: read
+      - name: Pick the API token (App token while its budget stays above 1,500)
+        id: api
+        shell: bash
+        env:
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/pick-api-token.sh
+
       - name: Select a forward candidate before C00 approval
         id: candidate
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.api.outputs.token }}
+          # The scripts re-read the App budget before every API phase and drop to FALLBACK_TOKEN below the reserve.
+          APP_TOKEN: ${{ steps.app.outputs.token }}
+          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
           C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
         run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
 
   # ---------------------------------------------------------------------------
-  # Automatic path only. Turns D1's build-evidence into a deployable
+  # Dispatch with candidate_sha only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
   #
   # This job runs directly on the C00 self-hosted runner
   # ([self-hosted, linux, x64, cheese-c00-deploy]) under the
-  # c00-runtime environment to read that baseline locally. Approval
-  # was already given at approve-c00. It reads and writes nothing on C00
+  # c00-runtime environment to read that baseline locally. The dispatch
+  # was authorized at authorize-c00. It reads and writes nothing on C00
   # beyond a temp file it removes: capture-tuple.sh inspects containers
   # and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    needs: [candidate-preflight, approve-c00]
-    if: needs.candidate-preflight.outputs.eligible == 'true'
+    needs: authorize-c00
+    if: github.event_name == 'workflow_dispatch' && inputs.candidate_sha != ''
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
@@ -177,10 +206,27 @@ jobs:
     outputs:
       source_sha: ${{ steps.evidence.outputs.source_sha }}
     steps:
+      # The dispatcher names the commit; the qualification run for it is looked
+      # up, never taken from input. Only a successful `main` push run counts.
+      - name: Resolve the qualification run for the candidate
+        id: q
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::candidate_sha must be a full 40-hex commit SHA" >&2; exit 1; }
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "CD qualification build" \
+            --commit "$CANDIDATE_SHA" --branch main --event push --status success \
+            --json databaseId --jq '.[0].databaseId // empty')"
+          [ -n "$run_id" ] || { echo "::error::no successful main qualification run for $CANDIDATE_SHA" >&2; exit 1; }
+          { echo "sha=$CANDIDATE_SHA"; echo "run_id=$run_id"; echo "event=push"; echo "branch=main"; } >> "$GITHUB_OUTPUT"
+
       - name: Checkout the qualified commit
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ steps.q.outputs.sha }}
           # Full history, not a shallow clone: the baseline step resolves the
           # short image tag C00 is currently running into a full commit SHA
           # with `git rev-parse`, and a depth-1 checkout contains only the
@@ -205,7 +251,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ steps.q.outputs.sha }}
           CHECKS_WAIT_SECONDS: "3600"
         # Waits for pending required checks, then snapshots them; see the
         # script header. Admission still decides; this only records.
@@ -214,9 +260,9 @@ jobs:
       - name: Download D1 build evidence
         uses: actions/download-artifact@v8
         with:
-          name: cd-build-evidence-${{ github.event.workflow_run.head_sha }}
+          name: cd-build-evidence-${{ steps.q.outputs.sha }}
           path: d1-evidence
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ steps.q.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Read C00's current baseline tuple
@@ -232,7 +278,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_sha="${{ github.event.workflow_run.head_sha }}"
+          source_sha="${{ steps.q.outputs.sha }}"
 
           # The release-candidate carries D1's own digests unchanged — this
           # stage re-binds evidence, it never re-qualifies an image. Reading
@@ -263,8 +309,7 @@ jobs:
 
           # admission.mjs checks the qualifying event and the required check
           # contexts. Record both from the API rather than asserting them:
-          # the event comes from the workflow_run payload this job was
-          # triggered by, the checks from the commit's own check runs.
+          # the event comes from the qualification run looked up above, the checks from the commit's own check runs.
           node -e '
             const fs = require("node:fs");
             fs.writeFileSync("cd-event.json", `${JSON.stringify({
@@ -277,14 +322,14 @@ jobs:
           cp d1-evidence/cd-image-provenance.json cd-provenance.json
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
         env:
-          RUN_EVENT: ${{ github.event.workflow_run.event }}
-          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_EVENT: ${{ steps.q.outputs.event }}
+          RUN_BRANCH: ${{ steps.q.outputs.branch }}
+          SOURCE_SHA: ${{ steps.q.outputs.sha }}
 
       - name: Upload the release-candidate evidence set
         uses: actions/upload-artifact@v7
         with:
-          name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
+          name: cd-release-candidate-${{ steps.q.outputs.sha }}
           path: |
             cd-release-candidate.json
             baseline-tuple.json
@@ -298,11 +343,11 @@ jobs:
     # Admission is a read-only evidence check — it never touches C00 — so it
     # can run on a regular GitHub-hosted runner. Only the deploy job below
     # needs the dedicated C00-reachable runner and secrets.
-    needs: [approve-c00, prepare-release-candidate]
-    # The manual path skips prepare-release-candidate entirely (its caller
-    # supplies an already-issued manifest), so this must not be skipped just
-    # because that job did not run. Nothing runs without the approval.
-    if: always() && needs.approve-c00.result == 'success' && (github.event_name == 'workflow_dispatch' || needs.prepare-release-candidate.result == 'success')
+    needs: [authorize-c00, prepare-release-candidate]
+    # A dispatch with evidence paths skips prepare-release-candidate entirely
+    # (its caller supplies an already-issued manifest), so this must not be
+    # skipped just because that job did not run. Nothing runs without the gate.
+    if: always() && needs.authorize-c00.result == 'success' && (inputs.candidate_sha == '' || needs.prepare-release-candidate.result == 'success')
     runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
@@ -313,25 +358,36 @@ jobs:
       - name: Resolve the evidence set for this trigger
         id: paths
         shell: bash
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_MANIFEST: ${{ inputs.manifest_path }}
+          INPUT_BASELINE: ${{ inputs.baseline_tuple_path }}
+          INPUT_EVENT: ${{ inputs.event_path }}
+          INPUT_CHECKS: ${{ inputs.checks_path }}
+          INPUT_PROVENANCE: ${{ inputs.provenance_path }}
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ -n "$CANDIDATE_SHA" ]; then
             {
-              echo "ref=${{ inputs.ref }}"
-              echo "manifest_path=${{ inputs.manifest_path }}"
-              echo "baseline_tuple_path=${{ inputs.baseline_tuple_path }}"
-              echo "event_path=${{ inputs.event_path }}"
-              echo "checks_path=${{ inputs.checks_path }}"
-              echo "provenance_path=${{ inputs.provenance_path }}"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "ref=${{ github.event.workflow_run.head_sha }}"
+              echo "ref=$CANDIDATE_SHA"
               echo "manifest_path=cd-evidence/cd-release-candidate.json"
               echo "baseline_tuple_path=cd-evidence/baseline-tuple.json"
               echo "event_path=cd-evidence/cd-event.json"
               echo "checks_path=cd-evidence/cd-checks.json"
               echo "provenance_path=cd-evidence/cd-provenance.json"
+            } >> "$GITHUB_OUTPUT"
+          else
+            for v in INPUT_MANIFEST INPUT_BASELINE INPUT_EVENT INPUT_CHECKS INPUT_PROVENANCE; do
+              [ -n "${!v}" ] || { echo "::error::set candidate_sha, or every evidence path ($v is empty)" >&2; exit 1; }
+            done
+            {
+              echo "ref=$INPUT_REF"
+              echo "manifest_path=$INPUT_MANIFEST"
+              echo "baseline_tuple_path=$INPUT_BASELINE"
+              echo "event_path=$INPUT_EVENT"
+              echo "checks_path=$INPUT_CHECKS"
+              echo "provenance_path=$INPUT_PROVENANCE"
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -348,10 +404,10 @@ jobs:
           package-manager-cache: false
 
       - name: Download the prepared evidence set
-        if: github.event_name == 'workflow_run'
+        if: inputs.candidate_sha != ''
         uses: actions/download-artifact@v8
         with:
-          name: cd-release-candidate-${{ github.event.workflow_run.head_sha }}
+          name: cd-release-candidate-${{ inputs.candidate_sha }}
           path: cd-evidence
 
       - name: Verify admission

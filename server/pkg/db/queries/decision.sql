@@ -48,9 +48,18 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'))
+ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING *;
+
+-- name: FindOpenProposal :one
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND proposal_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
+
+-- name: ListOpenProposals :many
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND asking_agent_id = sqlc.arg('agent_id') AND proposal_fingerprint IS NOT NULL AND status = 'open';
 
 -- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
@@ -92,12 +101,12 @@ WHERE request.authority = 'human' AND request.id = answer.decision_request_id AN
 RETURNING answer.*;
 
 -- name: ReopenDecisionRequest :one
-UPDATE decision_request SET status = 'open'
+UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
 -- name: RaiseDecisionClass :one
-UPDATE decision_request SET escalation_class = sqlc.arg('escalation_class')
+UPDATE decision_request SET escalation_class = sqlc.arg('escalation_class'), answer_revision = answer_revision + 1
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
 RETURNING *;
 
@@ -205,7 +214,12 @@ ORDER BY target.human_user_id;
 -- request on it) rank first, newest reference first, before the limit applies.
 -- session_id narrows the result to one lane for an eligibility check. A lane
 -- of topic_id is listed whichever agent stewards it.
-SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at,
+       EXISTS (SELECT 1 FROM chat_message unread
+               WHERE unread.chat_session_id = session.id
+                 AND unread.role = 'assistant'
+                 AND unread.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+                 AND unread.created_at > session.last_read_at) AS unseen
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -492,6 +506,11 @@ INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_so
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
 
+-- name: GetDecisionCardAnswer :one
+-- The answer a human's card click recorded for a request; one per request.
+SELECT * FROM decision_answer WHERE decision_request_id = sqlc.arg('decision_request_id') AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1;
+
 -- name: DecisionHumanAuthority :one
 -- is_owner: the person holds the workspace owner role. is_delegate: the person is
 -- listed in decision_delegates of the project the issue belongs to.
@@ -503,3 +522,8 @@ SELECT (member.role = 'owner')::boolean AS is_owner,
     ), false)::boolean AS is_delegate
 FROM member
 WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');
+
+-- name: FindOpenServerDecisionRequest :one
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';

@@ -20,6 +20,7 @@ import type {
 } from "../types";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
+import { isSchemaValidationError } from "../api/schema";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -158,6 +159,10 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  /** Status-history dialog data. Nested under `timeline(issueId)` so every
+   *  timeline invalidation (WS events, reconnect recovery) refreshes it too. */
+  statusHistory: (issueId: string) =>
+    [...issueKeys.timeline(issueId), "status-history"] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
@@ -464,6 +469,30 @@ export function projectGanttIssuesOptions(
   });
 }
 
+const ISSUE_FETCH_MAX_RETRIES = 3;
+
+/**
+ * Retry policy for the issue page's own lookups (route resolve, detail view):
+ * network failures and transient statuses back off and retry, so one dropped
+ * request does not reach the error state. A definite answer (404, other 4xx)
+ * will not change, so it settles at once. Chips, cards and lists keep the
+ * app-wide default.
+ */
+export function retryIssueFetch(failureCount: number, err: Error): boolean {
+  if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  // Unreadable data will not change on retry.
+  if (isSchemaValidationError(err)) return false;
+  // Duck-typed on `status`, like `isNotFoundError`: holds across module
+  // boundaries and test mocks. No status means a network failure.
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number") return true;
+  return status >= 500 || status === 408 || status === 429;
+}
+
+export function issueFetchRetryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -491,6 +520,8 @@ export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     refetchOnMount: authoritative ? false : "always",
     initialData: () => (listRow?.description != null ? listRow : undefined),
   });
@@ -656,6 +687,14 @@ export function issueTimelineOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.timeline(issueId),
     queryFn: () => api.listTimeline(issueId),
+  });
+}
+
+/** Timeline + truncation flag, fetched only while the status history is open. */
+export function issueStatusHistoryOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.statusHistory(issueId),
+    queryFn: () => api.listTimelineWithMeta(issueId),
   });
 }
 

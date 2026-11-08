@@ -219,6 +219,7 @@
     "chip_op_after": "after {{value}}",
     "section_project": "Project",
     "section_project_status": "Project status",
+    "section_workflow": "Workflow",
     "section_label": "Label",
     "section_date": "Date",
     "date_field": "Field",
@@ -437,6 +438,10 @@
     "metadata_description": "Key-value data recorded by agents and integrations for workflow coordination.",
     "section_load_failed_retry": "Could not load. Retry",
     "not_found": "This issue does not exist or has been deleted in this workspace.",
+    "load_failed": "Couldn't load this issue. Check your connection and retry.",
+    "card_load_failed": "Couldn't load this issue.",
+    "data_error": "This issue has data the app cannot read.",
+    "retry": "Retry",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",
     "title_placeholder": "Issue title",
@@ -1528,7 +1533,34 @@
       "rate": "more than 12 runs in an hour"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
-    "paused_banner_anonymous": "Wakeups paused at {{time}}"
+    "paused_banner_anonymous": "Wakeups paused at {{time}}",
+    "defaults": {
+      "title": "Default wakeups",
+      "rule_pr_merged": "When the linked PR merges",
+      "rule_pr_checks_failed": "When PR checks fail",
+      "rule_pr_needs_attention": "When the linked PR needs attention",
+      "state_on": "On",
+      "state_disabled": "Disabled",
+      "state_paused": "Paused: {{reason}}",
+      "inherited": "Inherited from {{source}}",
+      "overridden": "Overridden on this issue",
+      "source_workspace": "workspace",
+      "source_project": "project",
+      "source_default": "the default",
+      "open_project": "Edit in project rules",
+      "override": "Override",
+      "override_label": "Override {{rule}}",
+      "edit": "Edit override",
+      "edit_label": "Edit override {{rule}}",
+      "reset": "Reset",
+      "reset_label": "Reset {{rule}}",
+      "save": "Save override",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "save_error": "Could not save the override.",
+      "reset_error": "Could not reset the rule.",
+      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs."
+    }
   },
   "duplicates": {
     "banner_prefix": "Duplicate of",
@@ -1967,5 +1999,32 @@
     "timing_effective": "In effect since {{time}}",
     "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
     "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
+  },
+  "status_history": {
+    "title": "Status history",
+    "description": "Every status change on this issue, oldest first.",
+    "empty": "No status changes recorded.",
+    "truncated": "Older status changes are not shown. The list starts at the oldest change the server returned.",
+    "trigger_not_recorded": "Trigger not recorded",
+    "removed": "{{status}} (removed)",
+    "handoff_comment": "Handoff comment",
+    "handoff_invalid": "Handoff link invalid",
+    "scrubber_label": "Position in status history",
+    "position": "{{current}} of {{total}}",
+    "cause": {
+      "ui_or_api": "Changed by a person",
+      "workflow_edge": "Workflow edge",
+      "workflow_remap": "Workflow remap",
+      "pr_merged": "PR merged",
+      "ci_advance": "CI advance",
+      "run_budget": "Run budget",
+      "decision": "Decision",
+      "watchdog": "Watchdog",
+      "task_reset": "Failed run reset",
+      "qoder": "Qoder",
+      "duplicate": "Duplicate",
+      "system": "System"
+    },
+    "open": "Status history"
   }
 }

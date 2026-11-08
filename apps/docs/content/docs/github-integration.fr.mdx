@@ -76,6 +76,8 @@ Resolves MUL-123
 
 Une simple mention dans la description, comme `Related to MUL-123`, n'associe pas du tout la PR à cette tâche. Les messages de commit et les commentaires de PR ne déclenchent pas non plus l'association.
 
+Une PR issue d'un fork s'associe automatiquement seulement si le fork a le même propriétaire que le dépôt de base. La fusion d'une telle PR ne fait pas avancer la tâche. Associez à la main les PR issues de forks d'autres propriétaires.
+
 Vous pouvez aussi associer une PR à la main : dans le bloc **Pull requests** de la tâche, cliquez sur **+** et collez l'URL de la PR. Pour retirer une PR d'une tâche, ouvrez le menu **⋯** de sa ligne et choisissez **Retirer de la tâche** ; Multica ne la réassociera plus à partir de son titre ou de sa branche.
 
 ## Voir les PR d'une tâche
@@ -235,6 +237,14 @@ GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and ne
 Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, les PR sont toujours reflétées et les tâches toujours associées automatiquement et changées de statut à la fusion ; la carte de PR n'affiche simplement ni CI ni état de fusion.
 
 Si vous ajoutez la permission Members ou Actions à une App déjà installée, approuvez le changement de permission dans chaque organisation cible avant de la connecter à un nouvel espace de travail. Les installations existantes doivent accepter la nouvelle permission ; tant qu'elles ne l'ont pas fait, les réveils `--until-gh-run` ne reçoivent aucun événement de workflow.
+
+Définissez éventuellement `GITHUB_ALLOWED_ACCOUNT_IDS` avec une liste d'ID numériques de comptes GitHub séparés par des virgules (l'`id` de l'utilisateur ou de l'organisation, pas son login). Non définie ou vide, tout compte qui passe la vérification ci-dessus peut se connecter. Une fois définie, Multica refuse de lier une installation dont l'ID de compte n'est pas listé : le callback de configuration redirige avec `github_error=installation_not_allowed` et ne crée aucune liaison. Un callback **Redirect on update** sans code est évalué avec l'ID de compte déjà stocké pour cette liaison. Une liaison sans ID de compte stocké est refusée (échec fermé). Une valeur mal formée, comme un login, arrête le serveur au démarrage.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+Les événements GitHub `deleted` et `suspend` suppriment toujours la liaison, quelle que soit la liste.
 
 </Step>
 <Step>

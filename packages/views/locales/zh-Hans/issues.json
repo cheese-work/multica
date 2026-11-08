@@ -213,6 +213,7 @@
     "chip_op_after": "晚于 {{value}}",
     "section_project": "项目",
     "section_project_status": "项目状态",
+    "section_workflow": "工作流",
     "section_label": "标签",
     "section_date": "日期",
     "date_field": "字段",
@@ -429,6 +430,10 @@
     "metadata_description": "智能体和集成记录的键值数据，用于衔接工作流程。",
     "section_load_failed_retry": "加载失败，点击重试",
     "not_found": "这个任务不存在或已在该工作区被删除。",
+    "load_failed": "无法加载这个任务。请检查网络后重试。",
+    "card_load_failed": "无法加载这个任务。",
+    "data_error": "这个任务包含应用无法读取的数据。",
+    "retry": "重试",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",
     "title_placeholder": "任务标题",
@@ -1472,7 +1477,34 @@
       "rate": "1 小时内触发超过 12 次"
     },
     "paused_banner": "{{name}} 已于 {{time}} 暂停唤醒",
-    "paused_banner_anonymous": "唤醒已于 {{time}} 暂停"
+    "paused_banner_anonymous": "唤醒已于 {{time}} 暂停",
+    "defaults": {
+      "title": "默认唤醒",
+      "rule_pr_merged": "关联的 PR 合并时",
+      "rule_pr_checks_failed": "PR 检查失败时",
+      "rule_pr_needs_attention": "关联的 PR 需要关注时",
+      "state_on": "已开启",
+      "state_disabled": "已停用",
+      "state_paused": "已暂停：{{reason}}",
+      "inherited": "继承自{{source}}",
+      "overridden": "已在此事项上覆盖",
+      "source_workspace": "工作区",
+      "source_project": "项目",
+      "source_default": "默认值",
+      "open_project": "在项目规则中编辑",
+      "override": "覆盖",
+      "override_label": "覆盖{{rule}}",
+      "edit": "编辑覆盖",
+      "edit_label": "编辑{{rule}}的覆盖",
+      "reset": "重置",
+      "reset_label": "重置{{rule}}",
+      "save": "保存覆盖",
+      "saving": "保存中…",
+      "cancel": "取消",
+      "save_error": "无法保存覆盖。",
+      "reset_error": "无法重置该规则。",
+      "conflict_error": "有人先修改了此规则。你的修改已保留；请刷新以查看对方的修改。"
+    }
   },
   "duplicates": {
     "banner_prefix": "重复于",
@@ -1889,5 +1921,32 @@
     "timing_effective": "自 {{time}} 起生效",
     "timing_pending_window": "待生效。{{time}} 生效，{{minutes}} 分钟内可撤销。",
     "timing_pending_wake": "待生效。智能体被唤醒后立即生效。"
+  },
+  "status_history": {
+    "title": "状态历史",
+    "description": "此事项的所有状态变更，按时间从早到晚。",
+    "empty": "没有状态变更记录。",
+    "truncated": "较早的状态变更未显示。列表从服务器返回的最早一条开始。",
+    "trigger_not_recorded": "未记录触发来源",
+    "removed": "{{status}}（已移除）",
+    "handoff_comment": "交接评论",
+    "handoff_invalid": "交接链接无效",
+    "scrubber_label": "状态历史位置",
+    "position": "第 {{current}} 条，共 {{total}} 条",
+    "cause": {
+      "ui_or_api": "由人员变更",
+      "workflow_edge": "工作流转换",
+      "workflow_remap": "工作流重映射",
+      "pr_merged": "PR 已合并",
+      "ci_advance": "CI 推进",
+      "run_budget": "运行预算",
+      "decision": "决策",
+      "watchdog": "看门狗",
+      "task_reset": "失败运行重置",
+      "qoder": "Qoder",
+      "duplicate": "重复",
+      "system": "系统"
+    },
+    "open": "状态历史"
   }
 }
