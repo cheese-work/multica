@@ -28,4 +28,12 @@ if [ "$ref" != main ] && ! git -C "$dir" cat-file -e "$main_sha:$script" 2>/dev/
 fi
 git -C "$dir" checkout --quiet --force "$target"
 cd "$dir"
-exec node "$script" --ledger docs/fork/UPSTREAM-PRS.md
+rc=0
+node "$script" --ledger docs/fork/UPSTREAM-PRS.md || rc=$?
+# CHE-3960: weekly ledger stale check; a stale result files one issue (deduped for 7 days), so an owner hears of it even when the fork
+# saw no push. Ids: dev team squad, Cheese Work Setup project. Exit non-zero if either step failed (a stale ledger is not a failure once filed).
+# A pinned ref from before this script landed has no stale check: skip it.
+if [ -f scripts/fork-ledger-stale.mjs ]; then
+  node scripts/fork-ledger-stale.mjs --file "${FORK_LEDGER_ASSIGNEE:-a1073a68-4965-44ff-a8fb-244341935110}" "${FORK_LEDGER_PROJECT:-5e621e12-eeb4-40a5-9571-25657d5b0ec5}" || rc=$?
+fi
+exit "$rc"

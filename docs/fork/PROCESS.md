@@ -25,9 +25,9 @@ Refresh the ledger at each trigger, in the same PR as the change when possible.
 | Review changed on a tracked PR | The row's Notes in `UPSTREAM-PRS.md` | `scripts/upstream-pr-watch.mjs` (every 15 min) wakes the row's owning issue |
 | Upstream landed (merged, closed) | State and convergence PR in `UPSTREAM-PRS.md`; mark `fixed upstream` in `UPSTREAM-FIXES.md` and `UPSTREAM-OVERLAP.md` | The same watcher |
 | Sync done (upstream merged into fork `main`) | Move the upstream pin and re-verify `present` rows in `UPSTREAM-FIXES.md`; refresh `FORK-FEATURES.md` | The author of the sync PR |
-| Weekly | `node scripts/fork-ledger-stale.mjs`: exit 1 when upstream `main` moved from the pin, when the pin is older than 7 days or when it is missing. It also lists withheld security-class rows to re-check against upstream. | Workflow `fork-ledger-stale.yml` (Sunday 23:30 ICT). A stale ledger is a red scheduled run; the Monday brief's CI-health scan (step 2d) files it as one `fix(ci)` issue for the dev team |
+| Weekly | `node scripts/fork-ledger-stale.mjs`: exit 1 when upstream `main` moved from the pin, when the pin is older than 7 days or when it is missing. It also lists withheld security-class rows to re-check against upstream. | The X99 upstream watcher (`deploy/upstream-watch/run.sh`, every 15 min) runs `node scripts/fork-ledger-stale.mjs --file <squad> <project>`. A stale result files one issue, `chore(fork): refresh docs/fork ledger (weekly stale check)`, for the dev team; it files no second one while an issue with that title is under 7 days old (open or closed). Needs no push to the fork that week |
 
-A stale result is a red run of that workflow, which the CI-health scan turns into one refresh issue for the dev team. The refresh PR moves the pin.
+A stale result files that one refresh issue for the dev team. The refresh PR moves the pin.
 
 ## Security-class rows
 
