@@ -207,6 +207,7 @@
     "./runtimes/qoder": "./runtimes/qoder.ts"
   },
   "dependencies": {
+    "lodash": "4.17.15",
     "@formatjs/intl-localematcher": "catalog:",
     "@tanstack/react-query": "catalog:",
     "i18next": "catalog:",
@@ -228,7 +229,6 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:",
-    "lodash": "4.17.15"
+    "vitest": "catalog:"
   }
 }
