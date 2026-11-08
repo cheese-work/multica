@@ -100,6 +100,11 @@ const (
 	// is listed as queued and runs when a slot frees; nothing is lost. A property
 	// of the stage, not of the target, so it is enumeration-safe.
 	ReasonStageQueueFull ReasonCode = "stage_queue_full"
+	// ReasonAdmissionDeferred: the reviewer run was not started because an
+	// admission check on the PR head is failing, pending or missing, or the PR
+	// is DIRTY (CHE-4650). The deferral is on record. A property of the PR head,
+	// not of the target, so it is enumeration-safe.
+	ReasonAdmissionDeferred ReasonCode = "admission_deferred"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"

@@ -1296,7 +1296,7 @@ func (s *TaskService) EnqueueCommentTriggeredTask(ctx context.Context, issue db.
 		// A stage refusal must outlive this transaction: roll back, then
 		// write the queue mark on the pool.
 		_ = tx.Rollback(ctx)
-		return db.AgentTaskQueue{}, s.recordStageRefusal(ctx, err)
+		return db.AgentTaskQueue{}, s.recordRefusal(ctx, err)
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO comment_trigger_rate_limit (issue_id, agent_id, triggered_at)
 		VALUES ($1, $2, now())
@@ -1905,7 +1905,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -6939,7 +6939,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -7683,7 +7683,7 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 	}
 	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
 		_ = tx.Rollback(ctx)
-		return nil, s.recordStageRefusal(ctx, err)
+		return nil, s.recordRefusal(ctx, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -8575,7 +8575,7 @@ func (s *TaskService) runInTx(ctx context.Context, fn func(*db.Queries) error) e
 		// Roll back first: the refusal's mark row is uncommitted in this
 		// transaction and the pool write below would wait on it.
 		_ = tx.Rollback(ctx)
-		return s.recordStageRefusal(ctx, err)
+		return s.recordRefusal(ctx, err)
 	}
 	return tx.Commit(ctx)
 }

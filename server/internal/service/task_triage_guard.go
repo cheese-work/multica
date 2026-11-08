@@ -139,6 +139,10 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if err != nil {
 		return ReviewGate{}, err
 	}
+	// After the budget, before the stage: a deferred run never takes a stage slot.
+	if err := guardAdmission(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	// After the budget: a run the budget refuses never takes a stage slot.
 	if err := guardStageQueue(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err

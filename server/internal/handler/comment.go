@@ -2611,6 +2611,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrStageQueueFull) {
 		return ReasonStageQueueFull
 	}
+	if errors.Is(err, service.ErrAdmissionDeferred) {
+		return ReasonAdmissionDeferred
+	}
 	if errors.Is(err, service.ErrRunBudgetExhausted) {
 		return ReasonRunBudgetExhausted
 	}

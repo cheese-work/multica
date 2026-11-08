@@ -22,6 +22,19 @@ type ActivityLog struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AdmissionDeferral struct {
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	HeadSha          string             `json:"head_sha"`
+	Reasons          []string           `json:"reasons"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+}
+
 type Agent struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
