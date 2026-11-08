@@ -56,6 +56,7 @@ ORDER BY class;
 -- have an agent route row on the same event_id (any time). via_route_share counts
 -- matched events whose earliest agent route row has via = route. The label counts
 -- are over agent route rows created in the window and sit outside coverage.
+-- Duplicates are numbered over all time, so a twin of an earlier label counts (spec 23).
 WITH exits AS (
     SELECT a.id FROM activity_log a
     WHERE a.workspace_id = sqlc.arg('workspace_id') AND a.action = 'status_changed' AND a.actor_type = 'agent'
@@ -67,12 +68,13 @@ WITH exits AS (
     WHERE workspace_id = sqlc.arg('workspace_id') AND kind = 'route' AND decision_source = 'agent'
       AND event_id IN (SELECT id FROM exits)
     ORDER BY event_id, created_at, id
-), labels AS (
+), numbered AS (
     SELECT event_id, reversed_at, inputs, created_at,
         row_number() OVER (PARTITION BY event_id ORDER BY created_at, id) AS rn
     FROM system1_observation
     WHERE workspace_id = sqlc.arg('workspace_id') AND kind = 'route' AND decision_source = 'agent'
-      AND created_at >= sqlc.arg('since') AND created_at < sqlc.arg('until')
+), labels AS (
+    SELECT * FROM numbered WHERE created_at >= sqlc.arg('since') AND created_at < sqlc.arg('until')
 )
 SELECT
     (SELECT count(*) FROM exits)::bigint AS eligible_exits,

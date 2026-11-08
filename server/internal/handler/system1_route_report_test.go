@@ -178,6 +178,22 @@ func TestRouteReportEventMatchedNumbers(t *testing.T) {
 	}
 }
 
+// Spec decision 23: a label before `since` makes its in-window twin a duplicate.
+func TestRouteReportDuplicateCountsLabelsBeforeTheWindow(t *testing.T) {
+	s := newReportSeed(t)
+	e := s.exit("2026-01-10T12:00:00+07:00", true)
+	s.label(labelOpt{at: "2026-01-09T23:00:00+07:00", event: e, via: "status"}) // before since
+	s.label(labelOpt{at: "2026-01-10T12:00:00+07:00", event: e})                // in window: the duplicate
+
+	got := getRouteReport(t, windowQuery())
+	if got.DuplicateLabels != 1 {
+		t.Errorf("duplicate_labels = %d, want 1", got.DuplicateLabels)
+	}
+	if got.LabelsTotal != 1 {
+		t.Errorf("labels_total = %d, want 1 (only the in-window row)", got.LabelsTotal)
+	}
+}
+
 // With no window the report covers the last 24 hours.
 func TestRouteReportDefaultWindowIsTheLast24Hours(t *testing.T) {
 	s := newReportSeed(t)

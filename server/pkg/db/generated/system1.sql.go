@@ -224,12 +224,13 @@ WITH exits AS (
     WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
       AND event_id IN (SELECT id FROM exits)
     ORDER BY event_id, created_at, id
-), labels AS (
+), numbered AS (
     SELECT event_id, reversed_at, inputs, created_at,
         row_number() OVER (PARTITION BY event_id ORDER BY created_at, id) AS rn
     FROM system1_observation
     WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
-      AND created_at >= $2 AND created_at < $3
+), labels AS (
+    SELECT * FROM numbered WHERE created_at >= $2 AND created_at < $3
 )
 SELECT
     (SELECT count(*) FROM exits)::bigint AS eligible_exits,
