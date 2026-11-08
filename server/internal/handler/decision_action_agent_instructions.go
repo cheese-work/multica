@@ -71,12 +71,9 @@ func readAgentInstructions(ctx context.Context, queries *db.Queries, workspaceID
 	if err := checkAgentInstructionsSize(live, after); err != nil {
 		return configChangeRead{}, err
 	}
-	return configChangeRead{
-		Field: agentInstructionsField, TargetID: uuidToString(agent.ID),
-		Before: live, After: after,
-		LiveSHA256: decisionaction.TextDigest(live), AfterSHA256: decisionaction.TextDigest(after),
-		HumanBlocksIntact: protectedBlocksUnchanged(live, after),
-	}, nil
+	read := textConfigRead(agentInstructionsField, uuidToString(agent.ID), live, after)
+	read.HumanBlocksIntact = protectedBlocksUnchanged(live, after)
+	return read, nil
 }
 
 // checkAgentInstructionsSize applies the agent update endpoint's limit: a value

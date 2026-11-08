@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
@@ -66,6 +69,30 @@ type configChangeRead struct {
 	LiveSHA256, AfterSHA256 string
 	// HumanBlocksIntact is false when the change alters a governed:human block.
 	HumanBlocksIntact bool
+	// BeforeText and AfterText, when both set, are diffed as raw text, one line
+	// per line of the text. BeforeLines and AfterLines, when either is set, are
+	// diffed as a list with one item per line. Otherwise Before and After are
+	// diffed as indented JSON.
+	BeforeText, AfterText   *string
+	BeforeLines, AfterLines []string
+	// Meta is stored in the preview, inside its digest (for example the unit
+	// and counts of a text). Nil is omitted.
+	Meta map[string]any
+}
+
+// textConfigRead is the read of a plain text field: raw text diff, digests of
+// the UTF-8 bytes, and counts in Unicode code points. The card shows these
+// counts and never recounts. Callers set HumanBlocksIntact and may add to Meta
+// (for example a cap).
+func textConfigRead(field, targetID, before, after string) configChangeRead {
+	return configChangeRead{
+		Field: field, TargetID: targetID, Before: before, After: after,
+		BeforeText: &before, AfterText: &after,
+		LiveSHA256: decisionaction.TextDigest(before), AfterSHA256: decisionaction.TextDigest(after),
+		Meta: map[string]any{
+			"unit": "code_points", "chars_before": utf8.RuneCountInString(before), "chars_after": utf8.RuneCountInString(after),
+		},
+	}
 }
 
 var configChanges = map[string]configChange{}
@@ -132,19 +159,24 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest); err != nil {
 		return nil, err
 	}
-	diff, err := configChangeDiff(read)
+	kind, diff, err := configChangeDiff(read)
 	if err != nil {
 		return nil, err
 	}
+	meta := previewMeta(read, kind, diff)
 	keys := read.Keys
 	if keys == nil {
 		keys = []string{}
 	}
-	preview, err := json.Marshal(map[string]any{
+	fields := map[string]any{
 		"field": read.Field, "keys": keys, "target_id": read.TargetID,
-		"before": read.Before, "after": read.After, "diff": diff,
+		"before": read.Before, "after": read.After, "diff": diff, "diff_kind": kind,
 		"before_sha256": read.LiveSHA256, "after_sha256": read.AfterSHA256,
-	})
+	}
+	if meta != nil {
+		fields["meta"] = meta
+	}
+	preview, err := json.Marshal(fields)
 	if err != nil {
 		return nil, err
 	}
@@ -160,25 +192,55 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	}, nil
 }
 
-// configChangeDiff renders both values as indented JSON (map keys sorted) and
-// diffs the lines, so the approver reads the server's own change.
-func configChangeDiff(read configChangeRead) ([]decisiontx.DiffHunk, error) {
-	before, err := json.MarshalIndent(read.Before, "", "  ")
-	if err != nil {
-		return nil, err
+// Preview diff kinds, stored in the preview so a card knows how to read it.
+const (
+	diffKindJSON  = "json"
+	diffKindText  = "text"
+	diffKindLines = "lines"
+)
+
+// configChangeDiff diffs what the approver reads: the raw text, the line list,
+// or else both values as indented JSON (map keys sorted). It returns the kind.
+func configChangeDiff(read configChangeRead) (string, []decisiontx.DiffHunk, error) {
+	kind, before, after := diffKindJSON, "", ""
+	switch {
+	case read.BeforeText != nil && read.AfterText != nil:
+		kind, before, after = diffKindText, *read.BeforeText, *read.AfterText
+	case read.BeforeLines != nil || read.AfterLines != nil:
+		kind, before, after = diffKindLines, strings.Join(read.BeforeLines, "\n"), strings.Join(read.AfterLines, "\n")
+	default:
+		beforeJSON, err := json.MarshalIndent(read.Before, "", "  ")
+		if err != nil {
+			return "", nil, err
+		}
+		afterJSON, err := json.MarshalIndent(read.After, "", "  ")
+		if err != nil {
+			return "", nil, err
+		}
+		before, after = string(beforeJSON), string(afterJSON)
 	}
-	after, err := json.MarshalIndent(read.After, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	hunks, err := decisiontx.Diff(string(before), string(after))
+	hunks, err := decisiontx.Diff(before, after)
 	if errors.Is(err, decisiontx.ErrDiffTooLarge) {
-		return nil, decisionIntentRefusal{http.StatusBadRequest, "diff_too_large: split the change into smaller ones"}
+		return "", nil, decisionIntentRefusal{http.StatusBadRequest, "diff_too_large: split the change into smaller ones"}
 	}
 	if hunks == nil {
 		hunks = []decisiontx.DiffHunk{}
 	}
-	return hunks, err
+	return kind, hunks, err
+}
+
+// previewMeta is the read's Meta plus whitespace_only: the diff splits lines
+// and drops line-ending and final-newline differences, so a text that changed
+// only there has digests that differ but no changed line to show.
+func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk) map[string]any {
+	meta := maps.Clone(read.Meta)
+	if kind == diffKindText && len(hunks) == 0 && *read.BeforeText != *read.AfterText {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["whitespace_only"] = true
+	}
+	return meta
 }
 
 // executeConfigChange runs in the approval savepoint. It takes the try-lock and
