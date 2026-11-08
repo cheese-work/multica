@@ -186,6 +186,117 @@ test.describe("DM scroll position on iPhone (CHE-4638)", () => {
   });
 });
 
+// Sol's invariant (CHE-4638 design review): with no scroll input, the reading
+// point (the row at the viewport top, as an offset from it) stays within 2 px
+// on every animation frame from the first revealed restored frame, including
+// the first second after Back. `rowOffset` is relative to the reading row.
+type Growth = { rowOffset: number; afterMs: number };
+type Frame = { t: number; id: string; top: number };
+const READING_ROW = `(() => {
+  const root = document.querySelector("[data-tab-scroll-root]");
+  const rootTop = root.getBoundingClientRect().top;
+  const rows = [...document.querySelectorAll("[data-message-id]")];
+  const i = rows.findIndex((n) => n.getBoundingClientRect().bottom > rootTop + 1);
+  return { rows, i, rootTop };
+})()`;
+
+async function readingPoint(page: Page) {
+  return page.evaluate(`(() => { const { rows, i, rootTop } = ${READING_ROW}; return { id: rows[i].dataset.messageId, top: rows[i].getBoundingClientRect().top - rootTop }; })()`) as Promise<{ id: string; top: number }>;
+}
+
+async function backAndSample(page: Page, linked: Dm["linked"], growths: Growth[]) {
+  await page.getByRole("link", { name: linked.identifier }).first().click();
+  await expect(page.getByRole("button", { name: linked.title, exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.evaluate(`((plan) => {
+    const w = window;
+    w.__frames = [];
+    w.__done = false;
+    let t0 = 0;
+    const loop = (now) => {
+      const { rows, i, rootTop } = ${READING_ROW};
+      const target = rows.find((n) => n.textContent && n.textContent.includes("Target message 40"));
+      if (target && getComputedStyle(target).visibility !== "hidden" && i >= 0) {
+        if (!t0) t0 = now;
+        w.__frames.push({ t: now - t0, id: rows[i].dataset.messageId, top: rows[i].getBoundingClientRect().top - rootTop });
+        // Growth is applied inside the frame, after this frame's sample: the
+        // resize observers run before paint, so the next sample reads what the
+        // reader saw. A timer would land between frames and read a state that
+        // is never painted.
+        if (w.__frames.length >= 3) {
+          for (const g of plan) {
+            if (g.done || now - t0 < g.afterMs) continue;
+            g.done = true;
+            const r = rows[i + g.rowOffset];
+            if (r) r.style.minHeight = "260px";
+          }
+        }
+        if (now - t0 > 2600) { w.__done = true; return; }
+      }
+      requestAnimationFrame(loop);
+    };
+    requestAnimationFrame(loop);
+  })(${JSON.stringify(growths)})`);
+  await page.goBack();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __done: boolean }).__done), { timeout: 20_000 }).toBe(true);
+  return page.evaluate(() => (window as unknown as { __frames: Frame[] }).__frames);
+}
+
+// Frames where the reading point moved, for a readable failure message.
+function changes(frames: Frame[]) {
+  return frames
+    .filter((f, i) => i === 0 || f.id !== frames[i - 1]!.id || Math.abs(f.top - frames[i - 1]!.top) > 0.5)
+    .map((f) => `${Math.round(f.t)}ms:${f.id.slice(0, 4)}@${Math.round(f.top)}`)
+    .join(" ");
+}
+
+function maxDrift(frames: Frame[], expected: { id: string; top: number }) {
+  return Math.max(...frames.map((f) => (f.id === expected.id ? Math.abs(f.top - expected.top) : Infinity)));
+}
+
+test.describe("DM reading point per frame after Back (CHE-4638 design)", () => {
+  for (const [name, growths] of [
+    ["a row wholly above grows in the first second", [{ rowOffset: -2, afterMs: 120 }]],
+    ["several rows above grow at different times", [{ rowOffset: -2, afterMs: 60 }, { rowOffset: -3, afterMs: 400 }, { rowOffset: -1, afterMs: 900 }]],
+    ["a row wholly below grows in the first second", [{ rowOffset: 2, afterMs: 120 }]],
+  ] as [string, Growth[]][]) {
+    test(`${name}: no frame drifts more than 2 px`, async ({ page }, testInfo) => {
+      await withScrolledDm(page, async ({ linked }) => {
+        const before = await readingPoint(page);
+        const frames = await backAndSample(page, linked, growths);
+        await testInfo.attach("frames", { body: JSON.stringify(frames), contentType: "application/json" });
+        expect(frames.length).toBeGreaterThan(10);
+        expect(maxDrift(frames, before), `expected ${before.id.slice(0, 4)}@${Math.round(before.top)}; changes: ${changes(frames)}`).toBeLessThanOrEqual(2);
+      });
+    });
+  }
+
+  test("a tall message partly above the viewport that grows below the reader does not shift it", async ({ page }) => {
+    await withScrolledDm(page, async () => {
+      // Park a row so its top is 30 px above the viewport top, then append height to it.
+      const result = await page.evaluate(async () => {
+        const root = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        const row = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find((n) =>
+          n.textContent?.includes("Target message 40"),
+        )!;
+        const rootTop = root.getBoundingClientRect().top;
+        root.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, bubbles: true }));
+        root.scrollTop += row.getBoundingClientRect().top - rootTop + 30;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const before = row.getBoundingClientRect().top - rootTop;
+        row.style.minHeight = "420px";
+        const samples: number[] = [];
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => requestAnimationFrame(r));
+          samples.push(row.getBoundingClientRect().top - rootTop);
+        }
+        return { before, samples };
+      });
+      expect(result.before).toBeLessThan(0);
+      expect(Math.max(...result.samples.map((s) => Math.abs(s - result.before)))).toBeLessThanOrEqual(2);
+    });
+  });
+});
+
 // A late height change, as an image or a code block finishing layout does.
 // `offset` is the row's distance from the target message (negative = above).
 async function growRow(page: Page, offset: number) {
@@ -198,6 +309,15 @@ async function growRow(page: Page, offset: number) {
 
 async function settle(page: Page) {
   await page.waitForTimeout(1500);
+}
+
+async function rowTop(page: Page) {
+  return page.evaluate(
+    () =>
+      [...document.querySelectorAll("[data-message-id]")]
+        .find((n) => n.textContent?.includes("Target message 40"))!
+        .getBoundingClientRect().top,
+  );
 }
 
 async function targetTop(page: Page) {

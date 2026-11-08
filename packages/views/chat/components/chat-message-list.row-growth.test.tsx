@@ -12,9 +12,10 @@ import {
 import { ChatMessageList } from "./chat-message-list";
 
 // WebKit has no scroll anchoring, so a restored DM shifts scrollTop itself when
-// a row above the viewport grows. Growth in the first second after the list
-// lands is held back (Virtuoso is still placing rows) and applied once it
-// settles; growth after that, or after the reader's first input, applies at once.
+// a row grows above the reader. The list keeps the row at the viewport top at
+// its measured offset: growth above moves it back, growth below never does,
+// and several rows growing in one batch correct once. Row geometry is modelled
+// from the row heights, so a correction that is too big or too small shows.
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: (props: {
@@ -39,6 +40,8 @@ vi.mock("react-virtuoso", () => ({
 const TEST_RESOURCES = { en: { chat: enChat } };
 const IDS = ["m1", "m2", "m3", "m4", "m5", "m6"];
 const VIEWPORT_TOP = 100;
+const ROW = 100;
+const START = 250; // scrollTop with m3 straddling the viewport top, 50 px above it
 
 let observed: Element[] = [];
 let callbacks: ((entries: unknown[]) => void)[] = [];
@@ -57,7 +60,7 @@ beforeEach(() => {
   observed = [];
   callbacks = [];
   store = new Map([
-    ["chat::s1", JSON.stringify({ itemId: "m3", offsetInItemPx: 0, atLiveEnd: false })],
+    ["chat::s1", JSON.stringify({ itemId: "m3", offsetInItemPx: 50, atLiveEnd: false })],
   ]);
   vi.stubGlobal(
     "ResizeObserver",
@@ -98,77 +101,87 @@ function setup() {
     </I18nProvider>,
   );
   const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+  const heights = IDS.map(() => ROW);
   root.getBoundingClientRect = () => ({ top: VIEWPORT_TOP }) as DOMRect;
-  Object.defineProperty(root, "scrollTop", { value: 500, writable: true });
-  // m1 and m2 sit above the viewport top, the rest are in view.
-  const rows = IDS.map(
-    (id) => observed.find((el) => el.getAttribute("data-message-id") === id)!,
-  );
+  Object.defineProperty(root, "scrollTop", { value: START, writable: true });
+  const rows = IDS.map((id) => observed.find((el) => el.getAttribute("data-message-id") === id)!);
+  const rowTop = (i: number) =>
+    VIEWPORT_TOP - root.scrollTop + heights.slice(0, i).reduce((a, b) => a + b, 0);
   rows.forEach((row, i) => {
-    row.getBoundingClientRect = () => ({ top: i < 2 ? -200 + i * 100 : VIEWPORT_TOP + i * 100 }) as DOMRect;
+    row.getBoundingClientRect = () =>
+      ({ top: rowTop(i), bottom: rowTop(i) + heights[i]!, height: heights[i]! }) as DOMRect;
   });
-  const resize = (i: number, height: number) =>
+  // Rows grow in place; the observers then report every resized row in one batch.
+  const grow = (...by: [number, number][]) =>
     act(() => {
+      for (const [i, px] of by) heights[i]! += px;
       for (const cb of callbacks)
-        cb([{ target: rows[i]!, borderBoxSize: [{ blockSize: height }] }]);
+        cb(by.map(([i]) => ({ target: rows[i]!, borderBoxSize: [{ blockSize: heights[i]! }] })));
     });
-  return { root, resize };
+  // The first observation of every row, as the mounted list reports it.
+  act(() => {
+    for (const cb of callbacks)
+      cb(rows.map((target, i) => ({ target, borderBoxSize: [{ blockSize: heights[i]! }] })));
+  });
+  // Distance of m3, the row at the viewport top, from the viewport top.
+  const readingOffset = () => rowTop(2) - VIEWPORT_TOP;
+  return { root, grow, readingOffset };
 }
 
-describe("ChatMessageList row growth above the viewport", () => {
-  it("applies growth seen while the restored list was still landing once it settles", () => {
-    const { root, resize } = setup();
-    for (let i = 0; i < IDS.length; i++) resize(i, 100);
-    vi.advanceTimersByTime(500);
-
-    resize(0, 180); // an image above loads mid-landing
-    expect(root.scrollTop).toBe(500); // held back: Virtuoso is still placing rows
-
-    vi.advanceTimersByTime(1000);
-    expect(root.scrollTop).toBe(580);
+describe("ChatMessageList holds the reading point as rows resize", () => {
+  it("moves back for a row wholly above the viewport that grows", () => {
+    const { root, grow, readingOffset } = setup();
+    grow([0, 80]);
+    expect(readingOffset()).toBe(-50);
+    expect(root.scrollTop).toBe(START + 80);
   });
 
-  it("restarts the settle window while new rows keep arriving", () => {
-    const { root, resize } = setup();
-    resize(0, 100);
-    vi.advanceTimersByTime(900);
-    resize(1, 100); // another row lands just before the window closes
-    resize(0, 180);
-    vi.advanceTimersByTime(900);
-    expect(root.scrollTop).toBe(500);
-
-    vi.advanceTimersByTime(200);
-    expect(root.scrollTop).toBe(580);
+  it("ignores a row wholly below the viewport top that grows", () => {
+    const { root, grow, readingOffset } = setup();
+    grow([4, 80]);
+    expect(readingOffset()).toBe(-50);
+    expect(root.scrollTop).toBe(START);
   });
 
-  it("applies growth at once after the list has settled", () => {
-    const { root, resize } = setup();
-    for (let i = 0; i < IDS.length; i++) resize(i, 100);
-    vi.advanceTimersByTime(1500);
-
-    resize(1, 140);
-    expect(root.scrollTop).toBe(540);
+  it("ignores growth below the reader inside a partly visible tall message", () => {
+    const { root, grow, readingOffset } = setup();
+    grow([2, 200]); // m3 straddles the viewport top and grows at its bottom
+    expect(readingOffset()).toBe(-50);
+    expect(root.scrollTop).toBe(START);
   });
 
-  it("drops held-back growth when the reader acts first", () => {
-    const { root, resize } = setup();
-    for (let i = 0; i < IDS.length; i++) resize(i, 100);
-    resize(0, 180);
+  it("corrects several rows resized in one batch once", () => {
+    const { root, grow, readingOffset } = setup();
+    grow([0, 80], [1, 40], [4, 60]);
+    expect(readingOffset()).toBe(-50);
+    expect(root.scrollTop).toBe(START + 120);
+  });
 
+  it("keeps holding across growth that arrives later", () => {
+    const { root, grow, readingOffset } = setup();
+    grow([1, 40]);
+    grow([0, 80]);
+    grow([3, 30]);
+    expect(readingOffset()).toBe(-50);
+    expect(root.scrollTop).toBe(START + 120);
+  });
+
+  it("lets the reader move away: no snap back to the restored message", () => {
+    const { root, grow, readingOffset } = setup();
     act(() => {
       root.dispatchEvent(new Event("wheel"));
+      root.scrollTop = 400; // reader drags down: m5 now straddles the top
+      root.dispatchEvent(new Event("scroll"));
     });
-    vi.advanceTimersByTime(1500);
-
-    expect(root.scrollTop).toBe(500);
+    grow([0, 80]);
+    expect(root.scrollTop).toBe(480); // m5's offset held, m3 is not chased
+    expect(readingOffset()).toBe(-200); // m3 only moved with the growth
   });
 
-  it("ignores growth of a row at or below the viewport top", () => {
-    const { root, resize } = setup();
-    for (let i = 0; i < IDS.length; i++) resize(i, 100);
-    resize(3, 180);
-    vi.advanceTimersByTime(1500);
-
-    expect(root.scrollTop).toBe(500);
+  it("does not move a list that is following the live end", () => {
+    store.clear();
+    const { root, grow } = setup();
+    grow([0, 80]);
+    expect(root.scrollTop).toBe(START);
   });
 });

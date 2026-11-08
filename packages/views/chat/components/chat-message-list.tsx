@@ -149,7 +149,7 @@ interface ChatMessageListProps {
 const FLASH_MS = 1500;
 /** How long the jump keeps re-aiming while Virtuoso measures rows. */
 const JUMP_AIM_MS = 1000;
-/** How long a restored list takes to land before row growth above it is compensated. */
+/** How long a restored list keeps its saved position as the target while Virtuoso lands it. */
 const RESTORE_SETTLE_MS = 1000;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
@@ -434,82 +434,101 @@ export function ChatMessageList({
   }, [active, hasReachedLiveEnd, onRevealed]);
   // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
   // a row that starts above the viewport and grows late (image, embed, expanded
-  // block) pushes the reader's message down. Shift `scrollTop` by that delta so
-  // the message under the reader's eye holds. The first observation of a row is
-  // only a baseline; the live-end follow owns its own pin (CHE-4638).
+  // block) pushes the reader's message down. The reader's reading anchor is the
+  // message row at the viewport top and where it sits from that edge; after any
+  // resize batch the row is put back there. It is a measured position, not a
+  // sum of deltas: growth below the anchor never moves it, and several rows
+  // growing in one batch correct once. The first observation of a row is only a
+  // baseline; the live-end follow owns its own pin (CHE-4638).
+  // ponytail: row granularity. Growth inside the anchor row above the reading
+  // point is not corrected; a per-element anchor would be needed for that.
   const isFollowingRef = useRef(isFollowing);
   isFollowingRef.current = isFollowing;
-  // Until the reader moves the list, or a restored position has settled,
-  // Virtuoso and the live-end pin own the position (initial landing, restore);
-  // shifting then would fight them.
-  const shiftArmed = useRef(false);
-  // Row growth seen before the shift was armed. A restored list applies it once
-  // it has landed, so a row above that grew in the first second still counts.
-  const unarmedGrowth = useRef(new Map<Element, number>());
-  const restoringRef = useRef(false);
-  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const settleRestore = useCallback(() => {
+  const readingAnchor = useRef<{ id: string; top: number } | null>(null);
+  // A restored list holds its saved position (a fixed target) until the reader
+  // moves or the list has had RESTORE_SETTLE_MS to land; before then a scroll
+  // event is Virtuoso landing it, not the reader. Other lists anchor on input.
+  const restoreUntil = useRef(0);
+  const readerMoved = useRef(false);
+  const restoreTarget = useRef<{ id: string; top: number } | null>(null);
+  const captureAnchor = useCallback(() => {
     const scroller = scrollRef.current;
-    if (scroller && !shiftArmed.current) {
-      const viewportTop = scroller.getBoundingClientRect().top;
-      let shift = 0;
-      for (const [row, growth] of unarmedGrowth.current) {
-        if (row.isConnected && row.getBoundingClientRect().top < viewportTop) shift += growth;
-      }
-      scroller.scrollTop += shift;
+    if (!scroller) return;
+    const viewportTop = scroller.getBoundingClientRect().top;
+    for (const row of scroller.querySelectorAll("[data-message-id]")) {
+      const { top, bottom } = row.getBoundingClientRect();
+      if (bottom <= viewportTop) continue;
+      readingAnchor.current = { id: row.getAttribute("data-message-id")!, top: top - viewportTop };
+      return;
     }
-    unarmedGrowth.current.clear();
-    shiftArmed.current = true;
+  }, []);
+  // The saved row is where Virtuoso starts rendering (overscan included), not
+  // what the reader sees. Once it sits at its saved offset the list has landed:
+  // anchor the row at the viewport top from then on.
+  const landRestore = useCallback(() => {
+    const scroller = scrollRef.current;
+    const target = restoreTarget.current;
+    if (!scroller || !target) return;
+    const row = scroller.querySelector(`[data-message-id="${CSS.escape(target.id)}"]`);
+    if (!row) return;
+    const top = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (Math.abs(top - target.top) > 2) return;
+    restoreTarget.current = null;
+    captureAnchor();
+  }, [captureAnchor]);
+  const holdAnchor = useCallback(() => {
+    const scroller = scrollRef.current;
+    const anchor = readingAnchor.current;
+    if (!scroller || !anchor) return;
+    const row = scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
+    if (!row) return;
+    const delta = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+    if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
   }, []);
   useEffect(() => {
     if (!scrollContainerEl) return;
     const mark = () => {
-      shiftArmed.current = true;
-      unarmedGrowth.current.clear();
+      readerMoved.current = true;
+      restoreTarget.current = null;
+      captureAnchor();
+    };
+    const onScroll = () => {
+      landRestore();
+      const restored = restoreUntil.current > 0;
+      if (readerMoved.current || (restored && Date.now() >= restoreUntil.current)) captureAnchor();
     };
     const events = ["wheel", "touchstart", "keydown"] as const;
     for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
+    scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       for (const e of events) scrollContainerEl.removeEventListener(e, mark);
+      scrollContainerEl.removeEventListener("scroll", onScroll);
     };
-  }, [scrollContainerEl]);
+  }, [scrollContainerEl, captureAnchor, landRestore]);
   const rowHeights = useRef(new WeakMap<Element, number>());
   const rowObserver = useRef<ResizeObserver | null>(null);
-  const observeRow = useCallback((node: HTMLDivElement | null) => {
-    if (!node || typeof ResizeObserver === "undefined") return;
-    rowObserver.current ??= new ResizeObserver((entries) => {
-      const scroller = scrollRef.current;
-      let viewportTop: number | null = null;
-      let shift = 0;
-      let sawNewRow = false;
-      for (const { target, borderBoxSize } of entries) {
-        // A row Virtuoso unmounted reports 0 on its way out; not a resize.
-        if (!target.isConnected) continue;
-        const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
-        const prev = rowHeights.current.get(target);
-        rowHeights.current.set(target, height);
-        if (prev === undefined) sawNewRow = true;
-        if (prev === undefined || prev === height) continue;
-        if (!scroller || isFollowingRef.current()) continue;
-        if (!shiftArmed.current) {
-          unarmedGrowth.current.set(target, (unarmedGrowth.current.get(target) ?? 0) + height - prev);
-          continue;
+  const observeRow = useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node || typeof ResizeObserver === "undefined") return;
+      rowObserver.current ??= new ResizeObserver((entries) => {
+        let resized = false;
+        for (const { target, borderBoxSize } of entries) {
+          // A row Virtuoso unmounted reports 0 on its way out; not a resize.
+          if (!target.isConnected) continue;
+          const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
+          const prev = rowHeights.current.get(target);
+          rowHeights.current.set(target, height);
+          if (prev !== undefined && prev !== height) resized = true;
         }
-        viewportTop ??= scroller.getBoundingClientRect().top;
-        if (target.getBoundingClientRect().top < viewportTop) shift += height - prev;
-      }
-      // A restored list keeps adding rows as it lands; settle once none arrive for a second.
-      if (sawNewRow && restoringRef.current && !shiftArmed.current) {
-        if (settleTimer.current) clearTimeout(settleTimer.current);
-        settleTimer.current = setTimeout(settleRestore, RESTORE_SETTLE_MS);
-      }
-      if (shift !== 0 && scroller) scroller.scrollTop += shift;
-    });
-    rowObserver.current.observe(node);
-  }, [settleRestore]);
+        landRestore();
+        if (resized && !isFollowingRef.current()) holdAnchor();
+      });
+      rowObserver.current.observe(node);
+    },
+    [holdAnchor, landRestore],
+  );
   useEffect(
     () => () => {
-      if (settleTimer.current) clearTimeout(settleTimer.current);
       rowObserver.current?.disconnect();
       rowObserver.current = null;
     },
@@ -719,7 +738,7 @@ export function ChatMessageList({
     const index = renderItems.findIndex(
       (item) => item.kind === "message" && item.message.id === saved.itemId,
     );
-    return index >= 0 ? { index, offsetInItemPx: saved.offsetInItemPx } : null;
+    return index >= 0 ? { index, itemId: saved.itemId, offsetInItemPx: saved.offsetInItemPx } : null;
   });
   const restoring = restore !== null;
   // The restored list is shown where it opened, and must not be pulled to the
@@ -729,10 +748,12 @@ export function ChatMessageList({
   useEffect(() => {
     if (restoring) disengageRef.current();
   }, [restoring, scrollContainerEl]);
-  // A restored reader may be still after Back: the row observer settles the list
-  // (applies growth above the viewport, arms the shift) once it has landed, without
-  // waiting for input (CHE-4638).
-  restoringRef.current = restoring;
+  // A restored reader may be still after Back: the saved position is the reading
+  // anchor from the first frame, so growth above is corrected without input (CHE-4638).
+  if (restore && restoreUntil.current === 0) {
+    restoreUntil.current = Date.now() + RESTORE_SETTLE_MS;
+    restoreTarget.current = { id: restore.itemId, top: -restore.offsetInItemPx };
+  }
 
   // Until the list has landed, the range Virtuoso reports is not the reader's
   // position (it is on its way to the newest message), so nothing is recorded.
