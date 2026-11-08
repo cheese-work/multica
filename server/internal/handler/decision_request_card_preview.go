@@ -35,11 +35,13 @@ type ActionPreview struct {
 	SHA256 string               `json:"sha256"`
 }
 
-// DecisionRequestCardAction is the pending action an open request asks to approve.
+// DecisionRequestCardAction is the action a request asks to approve. It stays on
+// the card after approval so the card can show the outcome.
 type DecisionRequestCardAction struct {
 	ID            string `json:"id"`
 	ActionType    string `json:"action_type"`
 	PayloadSHA256 string `json:"payload_sha256"`
+	State         string `json:"state"`
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
@@ -63,18 +65,22 @@ func newActionPreview(fields []ActionPreviewField) (*ActionPreview, error) {
 	return &ActionPreview{Fields: fields, SHA256: previewDigest(raw)}, nil
 }
 
-// decisionCardAction reads the request's pending action and renders its
-// preview from live state. It returns nil when the request has no pending action.
+// decisionCardAction reads the request's action. A pending action gets a
+// preview rendered from live state; any other state carries none. It returns nil
+// when the request has no action.
 func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, requestID pgtype.UUID) *DecisionRequestCardAction {
 	action, err := handler.Queries.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: requestID, WorkspaceID: workspaceID})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && action.State != "pending") {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		slog.WarnContext(ctx, "decision card action unreadable", "request_id", uuidToString(requestID), "error", err)
 		return nil
 	}
-	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256}
+	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State}
+	if action.State != "pending" {
+		return card
+	}
 	fields, err := handler.cardPreviewFields(ctx, action)
 	if err == nil && len(fields) > 0 {
 		card.Preview, err = newActionPreview(fields)

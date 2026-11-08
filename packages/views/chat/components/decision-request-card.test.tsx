@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { chatKeys } from "@multica/core/chat/queries";
+import { applyDecisionAnswerUpdated } from "@multica/core/realtime";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
@@ -684,6 +686,57 @@ describe("DecisionRequestCard answering", () => {
       expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
       expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
+
+    describe("agent note and outcome in the DM", () => {
+      const note = "**Agent's note (not verified)**\n> Need more runs\n> [click](https://evil.test)\n> " + "x".repeat(300);
+      const proposal = { ...card, ask: `Raise the cap.\n\n${note}`, action };
+
+      it("shows the agent's note apart from the ask, as plain unverified text", async () => {
+        renderCard(proposal);
+        const box = await screen.findByTestId("decision-request-agent-note");
+        expect(box).toHaveAccessibleName("Agent's note (not verified)");
+        expect(box).toHaveTextContent("Need more runs");
+        expect(box).toHaveTextContent("[click](https://evil.test)");
+        expect(box.querySelector("a")).toBeNull();
+        expect(box.querySelector("p")).toHaveClass("break-words", "whitespace-pre-wrap");
+        const ask = screen.getByTestId("decision-request-ask");
+        expect(ask).toHaveTextContent("Raise the cap.");
+        expect(ask).not.toHaveTextContent("Need more runs");
+        expect(ask).not.toHaveTextContent("not verified");
+      });
+
+      it("shows no note box for an ask without a note", () => {
+        renderCard({ ...proposal, ask: "Raise the cap." });
+        expect(screen.queryByTestId("decision-request-agent-note")).toBeNull();
+      });
+
+      it("keeps the outcome on the same card after the request turns answered", async () => {
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
+        renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
+        expect(await screen.findByText("Cap applied")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("goes from Approve to the outcome when the server announces the change", async () => {
+        // The real handler for decision_answer:updated invalidates the DM message
+        // query; the refetch carries the action's new state into the card.
+        const qc = new QueryClient();
+        let served: RequestCard = proposal;
+        const Dm = () => {
+          const { data } = useQuery({ queryKey: chatKeys.messages("s1"), queryFn: async () => served });
+          return data ? <DecisionRequestCard card={data} /> : null;
+        };
+        renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
+        await screen.findByRole("button", { name: "Approve with passkey" });
+        expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+        served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
+        act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
+        expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+      });
     });
 
     it("shows nothing when the card has no action", () => {
