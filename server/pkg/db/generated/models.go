@@ -2934,6 +2934,16 @@ type RecoveryClaim struct {
 	SettledAt         pgtype.Timestamptz `json:"settled_at"`
 }
 
+type ReviewAdmissionDeferral struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	Trigger   string             `json:"trigger"`
+	HeadSha   string             `json:"head_sha"`
+	Reasons   []string           `json:"reasons"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
 type RunBudgetNotice struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
