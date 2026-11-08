@@ -230,7 +230,7 @@ WITH exits AS (
     FROM system1_observation
     WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
 ), labels AS (
-    SELECT * FROM numbered WHERE created_at >= $2 AND created_at < $3
+    SELECT event_id, reversed_at, inputs, created_at, rn FROM numbered WHERE created_at >= $2 AND created_at < $3
 )
 SELECT
     (SELECT count(*) FROM exits)::bigint AS eligible_exits,
@@ -265,6 +265,7 @@ type System1RouteWindowReportRow struct {
 // have an agent route row on the same event_id (any time). via_route_share counts
 // matched events whose earliest agent route row has via = route. The label counts
 // are over agent route rows created in the window and sit outside coverage.
+// Duplicates are numbered over all time, so a twin of an earlier label counts (spec 23).
 func (q *Queries) System1RouteWindowReport(ctx context.Context, arg System1RouteWindowReportParams) (System1RouteWindowReportRow, error) {
 	row := q.db.QueryRow(ctx, system1RouteWindowReport, arg.WorkspaceID, arg.Since, arg.Until)
 	var i System1RouteWindowReportRow
