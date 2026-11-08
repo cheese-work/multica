@@ -3172,6 +3172,7 @@ type System1Observation struct {
 	Outcome             pgtype.Text        `json:"outcome"`
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	EventID             pgtype.UUID        `json:"event_id"`
 }
 
 type TaskElevation struct {
