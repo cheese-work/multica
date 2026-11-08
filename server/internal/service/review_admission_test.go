@@ -6,13 +6,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
 const admissionHead = "aaaa1111"
+
+// setAdmissionReviewers sets the configured reviewer set for one test.
+func setAdmissionReviewers(t *testing.T, ids ...string) {
+	t.Helper()
+	prev := admissionReviewers
+	admissionReviewers = map[string]bool{}
+	for _, id := range ids {
+		admissionReviewers[id] = true
+	}
+	t.Cleanup(func() { admissionReviewers = prev })
+}
 
 type admissionFixture struct {
 	*stageFixture
@@ -29,6 +39,7 @@ func newAdmissionFixture(t *testing.T, mergeState string) *admissionFixture {
 	admissionChecks = []string{"ci"}
 	t.Cleanup(func() { admissionChecks = prev })
 	f := &admissionFixture{stageFixture: newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 10})}
+	setAdmissionReviewers(t, f.agentID)
 	f.issue = f.Issue(t, "PR under review", testutil.Cols{"status": "agent_review", "assignee_type": "agent", "assignee_id": f.agentID})
 	f.pr = f.Insert(t, "github_pull_request", testutil.Cols{
 		"workspace_id": f.WorkspaceID, "installation_id": 1, "repo_owner": "o", "repo_name": "r",
@@ -186,6 +197,7 @@ func TestAdmissionJudgesAReviewerMentionedOnAnotherAgentsIssue(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
 	f.Cleanup(t, `DELETE FROM review_admission_deferral WHERE issue_id = $1`, f.issue)
 	security := f.Agent(t, "Security reviewer", f.runtime)
+	setAdmissionReviewers(t, f.agentID, security)
 	f.check(t, "ci", "completed", "failure")
 	f.check(t, "security-gate", "in_progress", "")
 	if err := f.guardAs(security, "mention", true); !errors.Is(err, ErrAdmissionDeferred) {
@@ -197,6 +209,86 @@ func TestAdmissionJudgesAReviewerMentionedOnAnotherAgentsIssue(t *testing.T) {
 	f.Exec(t, `UPDATE github_pull_request_check_run SET conclusion = 'success' WHERE pr_id = $1 AND name = 'ci'`, f.pr)
 	if err := f.guardAs(security, "mention", true); err != nil {
 		t.Fatalf("mention on green CI with a pending security-gate: err = %v, want admitted", err)
+	}
+}
+
+// The reviewer set decides, not the issue state: a security reviewer mentioned
+// while the issue is still in_progress is deferred on red CI (recovery test 7).
+func TestAdmissionJudgesAReviewerWhileTheIssueIsInProgress(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	security := f.Agent(t, "Security reviewer", f.runtime)
+	setAdmissionReviewers(t, security)
+	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
+	f.check(t, "ci", "completed", "failure")
+	f.check(t, "security-gate", "in_progress", "")
+	if err := f.guardAs(security, "mention", true); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("mention on red CI: err = %v, want ErrAdmissionDeferred", err)
+	}
+	f.Exec(t, `UPDATE github_pull_request_check_run SET conclusion = 'success' WHERE pr_id = $1 AND name = 'ci'`, f.pr)
+	if err := f.guardAs(security, "mention", true); err != nil {
+		t.Fatalf("mention on green CI with a pending security-gate: err = %v, want admitted", err)
+	}
+}
+
+// An agent outside the reviewer set is never judged, even on a review-status
+// issue: the author's run is what turns red CI green.
+func TestAdmissionLeavesAgentsOutsideTheReviewerSetAlone(t *testing.T) {
+	f := newAdmissionFixture(t, "DIRTY")
+	author := f.Agent(t, "Author", f.runtime)
+	f.check(t, "ci", "completed", "failure")
+	for _, c := range []struct {
+		trigger string
+		review  bool
+	}{{"mention", true}, {"comment", true}, {"wakeup", false}, {"system wakeup", false}} {
+		if err := f.guardAs(author, c.trigger, c.review); err != nil {
+			t.Fatalf("%s by a non-reviewer: err = %v, want nil", c.trigger, err)
+		}
+	}
+	if _, _, _, ok := f.deferralOf(t, author); ok {
+		t.Fatal("a deferral record was stored for an agent outside the reviewer set")
+	}
+}
+
+// A system wakeup of a reviewer is judged like any other reviewer start.
+func TestAdmissionDefersASystemWakeup(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	if err := f.guardAs(f.agentID, "system wakeup", false); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("system wakeup on red CI: err = %v, want ErrAdmissionDeferred", err)
+	}
+}
+
+// A person naming a reviewer in a wakeup is judged; naming one in a comment is
+// still never refused.
+func TestAdmissionJudgesANamedWakeupButNotANamedMention(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	named := func(trigger string, review bool) error {
+		_, err := guardIssueRunGate(context.Background(), f.q, util.MustParseUUID(f.issue), OriginNamed,
+			RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: trigger, ReviewRun: review})
+		return err
+	}
+	if err := named("mention", true); err != nil {
+		t.Fatalf("named mention: err = %v, want nil", err)
+	}
+	if err := named("wakeup", false); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("named wakeup on red CI: err = %v, want ErrAdmissionDeferred", err)
+	}
+}
+
+// With no reviewer configured nobody is judged.
+func TestAdmissionJudgesNobodyWithoutAReviewerSet(t *testing.T) {
+	f := newAdmissionFixture(t, "DIRTY")
+	setAdmissionReviewers(t)
+	if err := f.guard(f.issue); err != nil {
+		t.Fatalf("empty reviewer set: err = %v, want nil", err)
+	}
+}
+
+func TestAdmissionReviewersFromEnv(t *testing.T) {
+	got := admissionReviewersFromEnv(func(string) string { return " AAA-1, bbb-2 ,," })
+	if len(got) != 2 || !got["aaa-1"] || !got["bbb-2"] {
+		t.Fatalf("reviewers = %v, want aaa-1 and bbb-2", got)
 	}
 }
 
@@ -225,6 +317,7 @@ func TestAdmissionWakeupTickKeepsTheDeferralRecord(t *testing.T) {
 	prev := admissionChecks
 	admissionChecks = []string{"ci"}
 	t.Cleanup(func() { admissionChecks = prev })
+	setAdmissionReviewers(t, agent)
 	f.Exec(t, `UPDATE issue SET status = 'in_review', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, util.UUIDToString(issue), agent)
 	pr := f.Insert(t, "github_pull_request", testutil.Cols{
 		"workspace_id": f.WorkspaceID, "installation_id": 1, "repo_owner": "o", "repo_name": "r",
@@ -238,9 +331,7 @@ func TestAdmissionWakeupTickKeepsTheDeferralRecord(t *testing.T) {
 	f.Cleanup(t, `DELETE FROM review_admission_deferral WHERE issue_id = $1`, util.UUIDToString(issue))
 	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Review latest changes"})
 	f.Comment(t, util.UUIDToString(issue), "source")
-	// An agent's wakeup is derived; a person's named run is never refused.
-	w.SourceTaskID = util.MustParseUUID(uuid.NewString())
-	f.Exec(t, `UPDATE issue_wakeup SET source_task_id = $2 WHERE id = $1`, util.UUIDToString(w.ID), util.UUIDToString(w.SourceTaskID))
+	// A person created this wakeup, so the run is named: still judged.
 	s.dispatchFromTick(context.Background(), w)
 	var trigger, head string
 	if err := f.Pool.QueryRow(context.Background(),

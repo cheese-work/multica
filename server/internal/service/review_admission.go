@@ -40,6 +40,21 @@ func admissionChecksFromEnv(getenv func(string) string) []string {
 	return names
 }
 
+// admissionReviewers is the explicit set of reviewer agents the guard judges
+// (MULTICA_REVIEW_ADMISSION_REVIEWERS, comma-separated agent IDs, read once at
+// start). Empty: no agent is judged.
+var admissionReviewers = admissionReviewersFromEnv(os.Getenv)
+
+func admissionReviewersFromEnv(getenv func(string) string) map[string]bool {
+	set := map[string]bool{}
+	for _, id := range strings.Split(getenv("MULTICA_REVIEW_ADMISSION_REVIEWERS"), ",") {
+		if id = strings.ToLower(strings.TrimSpace(id)); id != "" {
+			set[id] = true
+		}
+	}
+	return set
+}
+
 // admissionDeferredError is ErrAdmissionDeferred for one (issue, agent): the
 // record that must be written down. errors.Is(err, ErrAdmissionDeferred) holds.
 type admissionDeferredError struct {
@@ -97,27 +112,22 @@ func admissionReasons(required []string, runs []db.ListAdmissionCheckRunsRow, me
 // startsReview reports whether the run can start a review: a comment, handoff
 // or mention (ReviewRun) or a wakeup, but never a leader's callback.
 func startsReview(target RunTarget) bool {
-	return (target.ReviewRun || target.Trigger == "wakeup") && target.Trigger != "squad leader callback"
+	switch target.Trigger {
+	case "squad leader callback":
+		return false
+	case "wakeup", "system wakeup":
+		return true
+	}
+	return target.ReviewRun
 }
 
 // guardReviewAdmission defers a reviewer run on a PR head that is not
-// admissible (CHE-4650). Every agent run that can start a review while the
-// issue is in a review status is judged, whoever holds the issue, and only
-// when the issue has a linked open PR.
-// ponytail: an author woken on a review-status issue is judged too; the
-// workflow returns the author's issue to in_progress before it fixes red CI.
+// admissible (CHE-4650). Only an agent in the configured reviewer set is
+// judged, whatever state the issue is in and whoever holds it, and only when
+// the issue has a linked open PR. An author or any other agent is never held
+// back: its run is what turns red CI green.
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
-	if !startsReview(target) || !target.AgentID.Valid || !issueID.Valid {
-		return nil
-	}
-	issue, err := q.GetIssue(ctx, issueID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("review admission: load issue: %w", err)
-	}
-	if !IsReviewStatus(issue.Status) {
+	if !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
 		return nil
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, issueID)
