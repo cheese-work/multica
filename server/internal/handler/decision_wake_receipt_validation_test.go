@@ -124,6 +124,38 @@ func TestReceiptDeliveryRechecksWakeAtUnderAnswerLock(test *testing.T) {
 	}
 }
 
+// Terra P1 on PR #1244: an answer's wake_at stays NULL while its answering task
+// runs. A NULL wake_at is not due: no selection, no dispatch. Delivery follows
+// once finalization sets wake_at.
+func TestReceiptNotDispatchedWhileAnswerWakeAtIsNull(test *testing.T) {
+	fixture, _, leader := squadActionFixture(test)
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = NULL WHERE decision_request_id = $1`, fixture.decision.ID)
+	receipt := receiptIDFor(test, fixture.decision.ID, leader)
+	ids, err := testHandler.Queries.ListDecisionWakeReceiptCandidates(context.Background(), 100)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == receipt {
+			test.Fatalf("receipt %v selected while the answer's wake_at is NULL", id)
+		}
+	}
+	if err := testHandler.deliverDecisionWakeReceipt(context.Background(), receipt); err != nil {
+		test.Fatal(err)
+	}
+	receiptPending(test, receipt)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, fixture.issueID, leader); n != 0 {
+		test.Fatalf("leader got %d queued tasks while the answer's wake_at is NULL", n)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE decision_request_id = $1`, fixture.decision.ID)
+	if err := testHandler.deliverDecisionWakeReceipt(context.Background(), receipt); err != nil {
+		test.Fatal(err)
+	}
+	if got := receiptStateOf(test, receipt); got.Status == "pending" {
+		test.Fatalf("receipt still pending after wake_at was set: %+v", got)
+	}
+}
+
 // Sol (e): a disclaim and a delivery of the same receipt finish without a
 // deadlock, and the delivery sees the disclaim.
 func TestConcurrentDisclaimAndReceiptDeliveryFinishWithoutDeadlock(test *testing.T) {
