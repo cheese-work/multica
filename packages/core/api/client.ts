@@ -274,9 +274,9 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -498,6 +498,8 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SkillSchema,
   EMPTY_SKILL,
   AgentPresetListSchema,
@@ -2881,7 +2883,15 @@ export class ApiClient {
     runtimeId: string,
     updateId: string,
   ): Promise<RuntimeUpdate> {
-    return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/update/${updateId}`,
+    );
+    return parseWithFallback<RuntimeUpdate>(
+      raw,
+      RuntimeUpdateSchema,
+      { ...MALFORMED_RUNTIME_UPDATE, id: updateId, runtime_id: runtimeId },
+      { endpoint: "GET /api/runtimes/{id}/update/{updateId}" },
+    );
   }
 
   // Both discovery endpoints feed a UI state machine (poll while
@@ -3277,7 +3287,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number; threshold_tokens_200k?: number; threshold_tokens_1m?: number } | null; harness_profile?: "personal" | "managed" | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -4216,6 +4226,16 @@ export class ApiClient {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }
 
+  /** Ends a pending action as rejected. No passkey: declining changes nothing. */
+  rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);
+  }
+
+  async getDecisionAction(actionId: string): Promise<DecisionActionView> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}`);
+    return parsePasskeyResponse(raw, DecisionActionViewSchema, "GET /api/decision-actions/:id");
+  }
+
   async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
     const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}/outcome`);
     return parsePasskeyResponse(raw, PasskeyDecisionOutcomeSchema, "GET /api/decision-actions/:id/outcome");
@@ -4440,6 +4460,10 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  async markChatSessionUnread(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
   }
 
   // Advertises the durable draft-restore capability (#5219). The server only

@@ -273,6 +273,8 @@ multica runtime profile create --display-name "Wrapper Claude interne" \
 
 La suppression d'un runtime auquel des agents actifs sont encore liés est refusée par défaut. `multica runtime delete <id> --cascade` dissocie ces agents, préserve leur configuration et leur historique, et annule leurs exécutions actives.
 
+`multica runtime breaker list` affiche le disjoncteur de chaque fournisseur ; `multica runtime breaker reset <provider>` le ferme de force (propriétaire ou administrateur uniquement). Voir [Disjoncteur de fournisseur](/daemon-runtimes#provider-breaker).
+
 Consultez [Daemon et runtimes](/daemon-runtimes) pour son fonctionnement et les profils personnalisés.
 
 ## Projets, espaces de travail et automatisations
@@ -435,6 +437,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `runtime` | `list/usage/activity/update/rename/delete` | Consulter et gérer les runtimes | `usage` : `--days` (90 par défaut, 365 au maximum) ; `update` : `--target-version` (obligatoire), `--wait` ; `delete` : `--cascade` (dissocie les agents liés, préserve leurs données et annule leurs exécutions) |
 | | `profile list/create/update/delete` | Gérer les profils de runtime personnalisés | `create` : `--display-name`, `--command-name` (tous deux obligatoires), `--runtime-type` (ou l'ancien `--protocol-family`), `--description` ; `update` : `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | Fixer le chemin d'un exécutable local (local uniquement, jamais envoyé au serveur) | |
+| | `breaker list/reset <provider>` | Afficher ou fermer de force le disjoncteur d'un fournisseur | `reset` : propriétaire ou administrateur de l'espace de travail uniquement |
 
 ### Additional
 
@@ -448,6 +451,18 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
+
+### Propositions de décision
+
+Un jeton de tâche propose une action encadrée qu'une personne approuve avec une passkey. La proposition ne modifie rien elle-même.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
 
 ## Piloter Multica depuis un autre agent de codage
 

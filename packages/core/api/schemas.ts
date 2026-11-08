@@ -87,6 +87,7 @@ import type {
   PluginSurfaceLaunch,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
+  RuntimeUpdate,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ShareLink,
@@ -102,6 +103,7 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
+import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -1045,6 +1047,22 @@ const DecisionCardSchema = z.lazy(() => z.object({
   request_message_id: z.string().optional().catch(undefined),
 }).loose());
 
+// A malformed preview degrades to none (the card says details are unavailable and
+// offers no approval); an action without an id or digest cannot be approved, so it is dropped.
+// The preview also needs a SHA-256 hex digest and an action type this client
+// knows; otherwise it is dropped, so a newer or tampered response cannot enable approval.
+const DecisionActionSchema = z.lazy(() => z.object({
+  id: z.string(),
+  action_type: z.string().catch(""),
+  payload_sha256: z.string(),
+  state: z.string().optional().catch(undefined),
+  preview: z.object({
+    fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+}).loose().transform((action) =>
+  action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
+
 const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1073,6 +1091,7 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     option_label: z.string().optional().catch(undefined),
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
+  action: DecisionActionSchema.optional().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
@@ -3815,6 +3834,38 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
   status: "failed",
   supported: true,
   error: "invalid model discovery response",
+  created_at: "",
+  updated_at: "",
+};
+
+const RuntimeUpdateProgressSchema = z.object({
+  phase: z.string(),
+  bytes_done: z.number(),
+  bytes_total: z.number(),
+});
+
+export const RuntimeUpdateSchema = z.lazy(() => z.object({
+  id: z.string().default(""),
+  runtime_id: z.string().default(""),
+  status: z.string(),
+  target_version: z.string().default(""),
+  output: z.string().optional(),
+  error: z.string().optional(),
+  // Progress is cosmetic: a malformed value drops to absent rather than
+  // failing the whole poll.
+  progress: RuntimeUpdateProgressSchema.optional().catch(undefined),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose());
+
+// Fallback for an unparseable update response: `failed` ends the poll with an
+// explicit error rather than spinning until the client-side timeout.
+export const MALFORMED_RUNTIME_UPDATE: RuntimeUpdate = {
+  id: "",
+  runtime_id: "",
+  status: "failed",
+  target_version: "",
+  error: "invalid update response",
   created_at: "",
   updated_at: "",
 };

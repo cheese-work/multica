@@ -150,6 +150,10 @@ type ExecOptions struct {
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
 	ClaudeSettingsPath string
+	// AppendSystemPromptFile (CHE-3706, managed harness profile) is passed as
+	// --append-system-prompt-file so the runtime brief rides the cached system
+	// prompt instead of a workdir CLAUDE.md. Claude only; empty = unchanged.
+	AppendSystemPromptFile string
 	// CursorHookCommand is the argv of the multica hook relay (the daemon's own
 	// binary followed by CursorHookHelperArg). The cursor backend needs it, with
 	// EnableTaskSupplement, to accept additional messages; other providers

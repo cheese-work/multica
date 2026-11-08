@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, MessageSquareQuote } from "@multica/ui/icons";
+import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
@@ -11,6 +11,7 @@ import {
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
+import { approvablePreview } from "@multica/core/issues/decision-action-preview";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
@@ -23,6 +24,7 @@ import { LazyContentEditor as ContentEditor } from "./lazy-content-editor";
 import { RichContent } from "../../rich-content";
 import { CompactIssueChipsProvider } from "../../issues/compact-issue-chips-context";
 import { useT } from "../../i18n";
+import { DecisionActionApproval } from "../../common/decision-action-approval";
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
@@ -103,6 +105,8 @@ function DecisionAnswerForm({
     emitted.current = next;
     onDraftChange({ text: next });
   };
+  // A tap selects; a second tap on the selected option clears it. Nothing is sent until Send.
+  const toggleOption = (label: string) => onDraftChange({ option: draft.option === label ? "" : label });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
@@ -128,8 +132,9 @@ function DecisionAnswerForm({
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
   const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
-  // An option click sends at once, with whatever note is in the box. A retry keeps the kept choice.
-  const send = (option = draft.option) => {
+  // Send posts the selected option with whatever note is in the box. A retry keeps the kept choice.
+  const send = () => {
+    const option = draft.option;
     // onUpdate reaches `text` through a timer, so an Enter or click right after the last edit
     // (or a finished upload) would send stale text. Read the editor and send exactly that.
     const live = editorRef.current?.getMarkdown() ?? text;
@@ -154,18 +159,23 @@ function DecisionAnswerForm({
         {t(($) => (inIssue ? $.decision.answer_helper_issue : $.decision.answer_helper), { issue: card.issue_identifier || card.issue_id })}
       </p>
       {!!card.options?.length && (
-        <div role="group" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
+        <div role="radiogroup" aria-label={t(($) => $.decision.answer_options)} className="space-y-1">
           {card.options.map((item, index) => (
             <button
               key={item.label}
               type="button"
+              role="radio"
+              aria-checked={draft.option === item.label}
               disabled={!canSubmit}
-              onClick={() => send(item.label)}
+              onClick={() => toggleOption(item.label)}
               className={cn(
                 "flex min-h-9 w-full items-start gap-2 rounded-lg border border-surface-border px-2 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring disabled:opacity-70",
-                card.recommended_option_index === index && "border-primary bg-primary/5",
+                draft.option === item.label && "border-primary bg-primary/10 ring-1 ring-primary",
               )}
             >
+              <span aria-hidden className={cn("mt-0.5 flex size-4 shrink-0 items-center justify-center rounded-full border", draft.option === item.label ? "border-primary bg-primary text-primary-foreground" : "border-surface-border")}>
+                {draft.option === item.label && <Check className="size-3" />}
+              </span>
               <span className="min-w-0 space-y-0.5">
                 <span className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{item.label}</span>
@@ -209,10 +219,15 @@ function DecisionAnswerForm({
       {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70">
+        <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70 max-sm:h-11">
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
           {t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
+        {draft.option !== "" && (
+          <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} className="max-sm:h-11" onClick={() => onDraftChange({ option: "" })}>
+            {t(($) => $.decision.answer_clear)}
+          </Button>
+        )}
         {handoff && (
           <Button type="button" size="sm" variant="outline" onClick={onOpenWeb}>{t(($) => $.decision.answer_open_browser)}</Button>
         )}
@@ -224,6 +239,62 @@ function DecisionAnswerForm({
         )}
       </div>
     </form>
+  );
+}
+
+// What the approval would change, shown before Approve exists. No usable preview
+// (missing, empty, malformed, bad digest, unknown action type) means the server
+// could not vouch for the action: say so and keep Approve disabled.
+function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
+  const { t } = useT("chat");
+  // Once the action left pending there is nothing to preview: only its live outcome shows.
+  const pending = !action.state || action.state === "pending";
+  const fields = pending ? approvablePreview(action)?.fields : undefined;
+  if (pending && !fields) {
+    return (
+      <div className="space-y-1">
+        <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
+        <Button size="sm" disabled>{t(($) => $.decision.action_approve)}</Button>
+      </div>
+    );
+  }
+  // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
+  return (
+    <div className="space-y-2">
+      {fields && (
+        <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
+          {fields.map((field) => (
+            <div key={field.label} className="flex flex-wrap items-baseline gap-x-2">
+              <dt className="font-medium">{field.label}</dt>
+              <dd className="text-muted-foreground">{field.current} → <span className="text-foreground">{field.proposed}</span></dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />
+    </div>
+  );
+}
+
+// The server appends the agent's free text to the ask as a "> "-quoted block under this
+// heading. Show it apart, as plain text: it is the agent's claim, never a fact.
+const AGENT_NOTE_HEADING = "\n\n**Agent's note (not verified)**\n";
+
+function splitAgentNote(ask: string): { facts: string; note: string } {
+  const at = ask.indexOf(AGENT_NOTE_HEADING);
+  if (at < 0) return { facts: ask, note: "" };
+  const note = ask.slice(at + AGENT_NOTE_HEADING.length).split("\n").map((line) => line.replace(/^> ?/, "")).join("\n");
+  return { facts: ask.slice(0, at), note };
+}
+
+function AgentNote({ note }: { note: string }) {
+  const { t } = useT("chat");
+  const label = t(($) => $.decision.agent_note);
+  return (
+    <div role="group" aria-label={label} data-testid="decision-request-agent-note" className="space-y-0.5 rounded-lg border border-dashed border-surface-border px-2 py-1.5 text-label">
+      <span className="font-medium text-muted-foreground">{label}</span>
+      <p className="whitespace-pre-wrap break-words">{note}</p>
+    </div>
   );
 }
 
@@ -301,6 +372,7 @@ function useNow(card: RequestCard) {
 export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
+  const { facts, note } = splitAgentNote(card.ask);
   const shown = displayState(card, useNow(card));
   const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
@@ -408,10 +480,12 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
             <CompactIssueChipsProvider>
-              <RichContent content={card.ask} density="compact" phase="settled" />
+              <RichContent content={facts} density="compact" phase="settled" />
             </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
+        {note && <AgentNote note={note} />}
+        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} />}
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (

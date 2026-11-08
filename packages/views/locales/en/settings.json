@@ -398,7 +398,8 @@
   },
   "chat": {
     "floating_label": "Floating chat window",
-    "floating_hint": "Show the floating chat button on every page."
+    "floating_hint": "Show the floating chat button on every page.",
+    "recent_agents_label": "Recent agents in New chat"
   },
   "issue": {
     "opening": {
@@ -879,13 +880,23 @@
     "auto_compact_hint": "A web DM moves to a new DM after a reply once its context reaches the threshold.",
     "auto_compact_threshold_label": "Threshold (%)",
     "auto_compact_threshold_invalid": "Enter a whole number from 50 to 90.",
+    "auto_compact_tokens_200k_label": "Threshold, 200k models (tokens)",
+    "auto_compact_tokens_1m_label": "Threshold, 1M models (tokens)",
+    "auto_compact_tokens_200k_invalid": "Enter a whole number from 100000 to 200000.",
+    "auto_compact_tokens_1m_invalid": "Enter a whole number from 100000 to 400000.",
     "auto_compact_readonly_on": "On, at {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "On, at {{small}} / {{large}} tokens",
     "auto_compact_readonly_off": "Off",
     "agent_decisions_label": "Agent decisions",
     "agent_decisions_hint": "Agents may decide allowlisted gates for you. Each decision shows in the daily brief with a 24 h veto.",
     "agent_decisions_stopped_title": "Decisions were stopped automatically",
     "agent_decisions_stopped_description": "Reason: {{reason}}. Turning decisions on clears this record.",
     "agent_decisions_stopped_confirm": "Turn on",
+    "runtime_profile_label": "Runtime profile",
+    "runtime_profile_hint": "Workspace default for how agent CLIs get their config. Managed builds a minimal home per task. Tools without a managed adapter fail under Managed; give those agents an explicit Personal override.",
+    "runtime_profile_personal": "Personal",
+    "runtime_profile_managed": "Managed",
+    "runtime_profile_inherit": "Workspace default",
     "idle_guard_label": "Idle-issue guard",
     "idle_guard_hint": "Moves started issues with no run and no wakeup after N hours. Shadow only logs.",
     "idle_guard_off": "Off",
