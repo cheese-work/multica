@@ -60,6 +60,14 @@ Changelog: <one user-facing sentence, or none>
 2.
 3.
 
+## Cost delta
+
+<!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->
+
+- C1 Cost delta: <vs today, per day or per run: tokens (which model), agent runs, Actions runs/minutes, API calls, USD>
+- C2 Optimality check: <cheaper or simpler alternative considered, why rejected>
+- C3 Watch: <how observed after rollout (daily usage report, CHE-4324); rollback threshold>
+
 ## Checklist
 
 - [ ] I have included a thinking path that traces from project context to this change

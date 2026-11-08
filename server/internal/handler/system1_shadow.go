@@ -33,10 +33,19 @@ func recordDecisionObservation(ctx context.Context, q *db.Queries, issue db.Issu
 	if prediction.Key == system1.KeyRecommended && recommended < 0 {
 		prediction.Key = "" // no recommendation to predict the human taking
 	}
-	inputs, _ := json.Marshal(map[string]any{
+	observed := map[string]any{
 		"origin": request.Origin, "issue_status": issue.Status, "project_id": uuidToString(issue.ProjectID),
 		"asking_agent_id": uuidToString(request.AskingAgentID), "option_count": len(ask.Options),
-	})
+	}
+	if ask.Topic != "" {
+		// The waiver contract (CHE-4383 B2a): closed values only, keys in stored order. Never labels or a reason.
+		keys := make([]string, len(ask.Options))
+		for index, option := range ask.Options {
+			keys[index] = option.OptionKey
+		}
+		observed["topic"], observed["waiver"], observed["option_keys"] = ask.Topic, ask.Waiver, keys
+	}
+	inputs, _ := json.Marshal(observed)
 	params := db.CreateSystem1ObservationParams{
 		WorkspaceID: issue.WorkspaceID, Kind: "decision", SubjectID: request.ID, Class: request.EscalationClass,
 		Inputs: inputs, OptionCount: int32(len(ask.Options)),
