@@ -200,6 +200,38 @@ func (q *Queries) GetSkillInWorkspace(ctx context.Context, arg GetSkillInWorkspa
 	return i, err
 }
 
+const listAgentSkillAssignments = `-- name: ListAgentSkillAssignments :many
+SELECT skill_id, enabled FROM agent_skill
+WHERE agent_id = $1
+ORDER BY skill_id
+`
+
+type ListAgentSkillAssignmentsRow struct {
+	SkillID pgtype.UUID `json:"skill_id"`
+	Enabled bool        `json:"enabled"`
+}
+
+// The agent's skill assignments with their enabled flag, for the skill-set digest.
+func (q *Queries) ListAgentSkillAssignments(ctx context.Context, agentID pgtype.UUID) ([]ListAgentSkillAssignmentsRow, error) {
+	rows, err := q.db.Query(ctx, listAgentSkillAssignments, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentSkillAssignmentsRow{}
+	for rows.Next() {
+		var i ListAgentSkillAssignmentsRow
+		if err := rows.Scan(&i.SkillID, &i.Enabled); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentSkillNamesByAgentIDs = `-- name: ListAgentSkillNamesByAgentIDs :many
 SELECT ask.agent_id, s.name
 FROM agent_skill ask
@@ -615,6 +647,54 @@ ORDER BY name ASC
 // Skill CRUD
 func (q *Queries) ListSkillsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]Skill, error) {
 	rows, err := q.db.Query(ctx, listSkillsByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Description,
+			&i.Content,
+			&i.Config,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PluginInstallationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSkillsShare = `-- name: LockSkillsShare :many
+SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id FROM skill
+WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+ORDER BY id
+FOR SHARE NOWAIT
+`
+
+type LockSkillsShareParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+// The skill rows an approval snapshots, in the workspace, locked FOR SHARE
+// NOWAIT in id order. Every writer of a skill's files takes a conflicting
+// parent lock first, so the file set cannot change until the lock holder
+// commits. Rows are never locked per file: a new file row would escape a row
+// lock. A busy row answers 55P03. Missing and foreign ids return no row.
+func (q *Queries) LockSkillsShare(ctx context.Context, arg LockSkillsShareParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, lockSkillsShare, arg.WorkspaceID, arg.Ids)
 	if err != nil {
 		return nil, err
 	}

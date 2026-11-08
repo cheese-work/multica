@@ -11,36 +11,194 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getProviderBreakerState = `-- name: GetProviderBreakerState :one
-SELECT state FROM provider_breaker WHERE workspace_id = $1 AND provider = $2
+const acquireProviderBreakerCanary = `-- name: AcquireProviderBreakerCanary :execrows
+UPDATE provider_breaker
+SET state = 'half_open', canary_task_id = $1,
+    next_probe_at = now() + make_interval(secs => $2::int),
+    version = version + 1
+WHERE workspace_id = $3 AND provider = $4
+  AND state IN ('open', 'half_open')
+  AND (next_probe_at IS NULL OR next_probe_at <= now())
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t
+      WHERE t.id = provider_breaker.canary_task_id AND t.id <> $1
+        AND t.status IN ('dispatched', 'running', 'waiting_local_directory'))
 `
 
-type GetProviderBreakerStateParams struct {
+type AcquireProviderBreakerCanaryParams struct {
+	TaskID                pgtype.UUID `json:"task_id"`
+	CanaryDeadlineSeconds int32       `json:"canary_deadline_seconds"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Provider              string      `json:"provider"`
+}
+
+// Moves a due open (or deadline-expired half_open) breaker to half_open bound
+// to one task. next_probe_at becomes the canary deadline; if the canary settles
+// without reporting, the breaker is due again after it. A canary that has
+// not settled blocks replacement (same in-flight fence as probe_due,
+// except the task being claimed: re-claiming the bound canary itself is allowed).
+func (q *Queries) AcquireProviderBreakerCanary(ctx context.Context, arg AcquireProviderBreakerCanaryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, acquireProviderBreakerCanary,
+		arg.TaskID,
+		arg.CanaryDeadlineSeconds,
+		arg.WorkspaceID,
+		arg.Provider,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const closeProviderBreakerOnCanary = `-- name: CloseProviderBreakerOnCanary :execrows
+UPDATE provider_breaker
+SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = $1, last_success_at = now(), version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+  AND state = 'half_open' AND canary_task_id = $4 AND version = $5
+`
+
+type CloseProviderBreakerOnCanaryParams struct {
+	DefaultCoolOffSeconds int32       `json:"default_cool_off_seconds"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Provider              string      `json:"provider"`
+	TaskID                pgtype.UUID `json:"task_id"`
+	ExpectedVersion       int64       `json:"expected_version"`
+}
+
+func (q *Queries) CloseProviderBreakerOnCanary(ctx context.Context, arg CloseProviderBreakerOnCanaryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeProviderBreakerOnCanary,
+		arg.DefaultCoolOffSeconds,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.TaskID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getProviderBreaker = `-- name: GetProviderBreaker :one
+SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, pb.cool_off_s, pb.canary_task_id, pb.trip_evidence, pb.last_5xx_at, pb.last_success_at, pb.version, (
+    (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())
+    AND NOT EXISTS (
+        SELECT 1 FROM agent_task_queue t
+        WHERE t.id = pb.canary_task_id AND t.status IN ('dispatched', 'running', 'waiting_local_directory'))
+)::bool AS probe_due
+FROM provider_breaker pb WHERE pb.workspace_id = $1 AND pb.provider = $2
+`
+
+type GetProviderBreakerParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Provider    string      `json:"provider"`
 }
 
-func (q *Queries) GetProviderBreakerState(ctx context.Context, arg GetProviderBreakerStateParams) (string, error) {
-	row := q.db.QueryRow(ctx, getProviderBreakerState, arg.WorkspaceID, arg.Provider)
-	var state string
-	err := row.Scan(&state)
-	return state, err
+type GetProviderBreakerRow struct {
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Provider      string             `json:"provider"`
+	State         string             `json:"state"`
+	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
+	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
+	CoolOffS      int32              `json:"cool_off_s"`
+	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
+	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
+	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
+	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
+	Version       int64              `json:"version"`
+	ProbeDue      bool               `json:"probe_due"`
 }
 
-const getProviderBreakerVersion = `-- name: GetProviderBreakerVersion :one
-SELECT version FROM provider_breaker WHERE workspace_id = $1 AND provider = $2
+// probe_due uses the database clock: NULL next_probe_at counts as due so an
+// open breaker can never wait without a bound. A canary task that has not
+// reached a terminal status and is in flight (dispatched, running,
+// waiting_local_directory) is never replaced, even past its deadline: it is
+// fenced until it settles, so its own late result still lands. A queued or
+// deferred canary is not in flight (claims are held while half_open, so it
+// cannot start), so the deadline alone bounds it.
+func (q *Queries) GetProviderBreaker(ctx context.Context, arg GetProviderBreakerParams) (GetProviderBreakerRow, error) {
+	row := q.db.QueryRow(ctx, getProviderBreaker, arg.WorkspaceID, arg.Provider)
+	var i GetProviderBreakerRow
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.Provider,
+		&i.State,
+		&i.OpenedAt,
+		&i.NextProbeAt,
+		&i.CoolOffS,
+		&i.CanaryTaskID,
+		&i.TripEvidence,
+		&i.Last5xxAt,
+		&i.LastSuccessAt,
+		&i.Version,
+		&i.ProbeDue,
+	)
+	return i, err
+}
+
+const insertProviderBreakerAudit = `-- name: InsertProviderBreakerAudit :exec
+INSERT INTO provider_breaker_audit (workspace_id, provider, event, previous_state, new_state, actor_id, task_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
 `
 
-type GetProviderBreakerVersionParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Provider    string      `json:"provider"`
+type InsertProviderBreakerAuditParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	Provider      string      `json:"provider"`
+	Event         string      `json:"event"`
+	PreviousState string      `json:"previous_state"`
+	NewState      string      `json:"new_state"`
+	ActorID       pgtype.UUID `json:"actor_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
 }
 
-func (q *Queries) GetProviderBreakerVersion(ctx context.Context, arg GetProviderBreakerVersionParams) (int64, error) {
-	row := q.db.QueryRow(ctx, getProviderBreakerVersion, arg.WorkspaceID, arg.Provider)
-	var version int64
-	err := row.Scan(&version)
-	return version, err
+func (q *Queries) InsertProviderBreakerAudit(ctx context.Context, arg InsertProviderBreakerAuditParams) error {
+	_, err := q.db.Exec(ctx, insertProviderBreakerAudit,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.Event,
+		arg.PreviousState,
+		arg.NewState,
+		arg.ActorID,
+		arg.TaskID,
+	)
+	return err
+}
+
+const listProviderBreakers = `-- name: ListProviderBreakers :many
+SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version FROM provider_breaker WHERE workspace_id = $1 ORDER BY provider
+`
+
+func (q *Queries) ListProviderBreakers(ctx context.Context, workspaceID pgtype.UUID) ([]ProviderBreaker, error) {
+	rows, err := q.db.Query(ctx, listProviderBreakers, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProviderBreaker{}
+	for rows.Next() {
+		var i ProviderBreaker
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.Provider,
+			&i.State,
+			&i.OpenedAt,
+			&i.NextProbeAt,
+			&i.CoolOffS,
+			&i.CanaryTaskID,
+			&i.TripEvidence,
+			&i.Last5xxAt,
+			&i.LastSuccessAt,
+			&i.Version,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listRecentProviderServerFailures = `-- name: ListRecentProviderServerFailures :many
@@ -144,6 +302,59 @@ type RecordProviderSuccessParams struct {
 
 func (q *Queries) RecordProviderSuccess(ctx context.Context, arg RecordProviderSuccessParams) (int64, error) {
 	result, err := q.db.Exec(ctx, recordProviderSuccess, arg.WorkspaceID, arg.Provider, arg.ExpectedVersion)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const reopenProviderBreaker = `-- name: ReopenProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'open', canary_task_id = NULL, opened_at = now(),
+    cool_off_s = LEAST(cool_off_s * 2, $1::int),
+    next_probe_at = now() + make_interval(secs => LEAST(cool_off_s * 2, $1::int)),
+    last_5xx_at = now(), version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+  AND state = 'half_open' AND canary_task_id = $4 AND version = $5
+`
+
+type ReopenProviderBreakerParams struct {
+	MaxCoolOffSeconds int32       `json:"max_cool_off_seconds"`
+	WorkspaceID       pgtype.UUID `json:"workspace_id"`
+	Provider          string      `json:"provider"`
+	TaskID            pgtype.UUID `json:"task_id"`
+	ExpectedVersion   int64       `json:"expected_version"`
+}
+
+func (q *Queries) ReopenProviderBreaker(ctx context.Context, arg ReopenProviderBreakerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, reopenProviderBreaker,
+		arg.MaxCoolOffSeconds,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.TaskID,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const resetProviderBreaker = `-- name: ResetProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = $1, version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+`
+
+type ResetProviderBreakerParams struct {
+	DefaultCoolOffSeconds int32       `json:"default_cool_off_seconds"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Provider              string      `json:"provider"`
+}
+
+func (q *Queries) ResetProviderBreaker(ctx context.Context, arg ResetProviderBreakerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resetProviderBreaker, arg.DefaultCoolOffSeconds, arg.WorkspaceID, arg.Provider)
 	if err != nil {
 		return 0, err
 	}

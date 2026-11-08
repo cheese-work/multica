@@ -179,6 +179,14 @@ func (h *Handler) SetAgentRuntimeSkillEnabled(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "failed to update runtime skill")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.runtime_skill.update", WorkspaceID: locked.WorkspaceID, TargetID: locked.ID,
+		Before: map[string]any{"disabled_runtime_skills": disabledRuntimeSkillsAuditField(current)},
+		After:  map[string]any{"disabled_runtime_skills": disabledRuntimeSkillsAuditField(next)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.runtime_skill.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return

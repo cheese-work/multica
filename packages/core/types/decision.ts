@@ -13,12 +13,18 @@ export interface OpenDecisionRequest {
   message_id: string | null;
   source_comment_id?: string | null;
   options?: DecisionRequestOption[];
+  /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
+  covers_request_ids?: string[];
+  covered_cards?: DecisionCoveredCard[];
 }
 
 /** One answer button on an open decision card. */
 export interface DecisionRequestOption {
   label: string;
   what_happens?: string;
+  pros?: string[];
+  cons?: string[];
+  cost_or_time?: string;
 }
 
 export interface DecisionRequestCard {
@@ -31,7 +37,10 @@ export interface DecisionRequestCard {
   ask: string;
   /** The asking agent's name; absent when the agent is gone or the server is older. */
   asking_agent_name?: string;
+  /** Answer buttons; empty for a request stored without a structured ask. */
   options?: DecisionRequestOption[];
+  /** 0-based into `options`: the option the ask's recommendation names. */
+  recommended_option_index?: number;
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;
@@ -40,6 +49,41 @@ export interface DecisionRequestCard {
   record_comment_id?: string | null;
   /** Latest answer, kept after a disclaim so the card can say so. */
   answer?: DecisionRequestAnswer;
+  /** The pending executable action behind an open request, if any. */
+  action?: DecisionRequestAction;
+  /** A batch card: the per-issue cards its answer also closes. */
+  covers_request_ids?: string[];
+  /** What each covered card asks, so the human sees every decision the batch answer closes. */
+  covered_cards?: DecisionCoveredCard[];
+  /** Set when a batch card's answer closed this card. */
+  answered_by_batch_request_id?: string | null;
+}
+
+/** One per-issue card a batch card covers, with the decision it asks. */
+export interface DecisionCoveredCard {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  decision: string;
+  /** The covered card's own options with their meanings. */
+  options?: DecisionRequestOption[];
+}
+
+/** What an executable action would change, rendered by the server from the values its executor checks. */
+export interface DecisionActionPreview {
+  fields: { label: string; current: string; proposed: string }[];
+  sha256: string;
+}
+
+export interface DecisionRequestAction {
+  id: string;
+  action_type: string;
+  payload_sha256: string;
+  /** Action state. Only a pending action carries a preview; an older server omits it. */
+  state?: string;
+  /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
+  preview?: DecisionActionPreview;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

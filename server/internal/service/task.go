@@ -67,6 +67,9 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
+	// that completion dispatches to. Nil: no background output is written.
+	BackgroundWriters map[string]BackgroundWriter
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -2838,9 +2841,25 @@ type DirectChatSendResult struct {
 	BoundAttachmentIDs []pgtype.UUID
 	Queued             bool
 	InitialTitle       string
+	// Replayed marks a send whose client_message_id was already stored: nothing
+	// was written and Message / Task / BoundAttachmentIDs are the original rows.
+	Replayed bool
+}
+
+// DirectChatSendOptions carries what only a send from the human owner of the DM
+// adds to the message transaction. The zero value is a plain send (wakeups, forks).
+type DirectChatSendOptions struct {
+	// ClientMessageID makes the send idempotent per DM: a repeat returns the stored message.
+	ClientMessageID string
+	// HumanSend applies the attention transitions: T2 always, T2b for AskIDs.
+	HumanSend bool
+	AskIDs    []pgtype.UUID
 }
 
 var ErrChatSessionAlreadyStarted = errors.New("chat session already has a user message")
+
+// ErrChatAskNotOpen: a send targeted an ask that is not this user's open ask in this DM's chain.
+var ErrChatAskNotOpen = errors.New("ask is not an open ask of this chat")
 
 // SendDirectChatMessage atomically persists one web/mobile direct-chat turn:
 // the owning task (which claims its own input batch via chat_input_task_id), the
@@ -2863,11 +2882,13 @@ func (s *TaskService) SendDirectChatMessage(
 	uploaderType string,
 	uploaderID pgtype.UUID,
 	sentVia string,
+	opts DirectChatSendOptions,
 ) (*DirectChatSendResult, error) {
 	plan, err := s.PlanDirectChatSend(ctx, session.ID, agent, initiatorUserID)
 	if err != nil {
 		return nil, err
 	}
+	plan.Options = opts
 	var out DirectChatSendResult
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		var err error
@@ -2879,6 +2900,9 @@ func (s *TaskService) SendDirectChatMessage(
 			"agent_id", util.UUIDToString(session.AgentID),
 			"error", err)
 		return nil, err
+	}
+	if out.Replayed {
+		return &out, nil
 	}
 	s.RecordHumanDelegation(ctx, plan.Attribution)
 	s.NotifyDirectChatSent(ctx, out.Task)
@@ -2893,6 +2917,8 @@ type DirectChatSendPlan struct {
 	attrSource       pgtype.Text
 	attrEvidenceKind pgtype.Text
 	attrEvidenceRef  pgtype.UUID
+	// Options are set by the caller after planning; the zero value is a plain send.
+	Options DirectChatSendOptions
 }
 
 // PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
@@ -2948,6 +2974,18 @@ func (s *TaskService) SendDirectChatMessageTx(
 		currentSession, err := qtx.GetChatSession(ctx, session.ID)
 		if err != nil {
 			return fmt.Errorf("reload chat session: %w", err)
+		}
+		// A repeat of a stored send returns the original rows. Under the session
+		// lock, so a retry racing its own first attempt waits for it and sees it.
+		if plan.Options.ClientMessageID != "" {
+			replayed, found, err := s.replayDirectChatSend(ctx, qtx, session, plan.Options.ClientMessageID)
+			if err != nil {
+				return err
+			}
+			if found {
+				out = replayed
+				return nil
+			}
 		}
 		if currentSession.Status != "active" {
 			return ErrChatSessionArchived
@@ -3049,18 +3087,24 @@ func (s *TaskService) SendDirectChatMessageTx(
 		// Create the user message already owned by this task (task_id = task.id),
 		// so it belongs to this immutable input batch the instant it exists.
 		msg, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ID:            dbid.NewV7(),
-			ChatSessionID: session.ID,
-			Role:          "user",
-			Content:       content,
-			TaskID:        task.ID,
-			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
-			SentVia:       pgtype.Text{String: sentVia, Valid: sentVia != ""},
+			ID:              dbid.NewV7(),
+			ChatSessionID:   session.ID,
+			Role:            "user",
+			Content:         content,
+			TaskID:          task.ID,
+			MessageKind:     pgtype.Text{String: protocol.ChatMessageKindMessage, Valid: true},
+			SentVia:         pgtype.Text{String: sentVia, Valid: sentVia != ""},
+			ClientMessageID: pgtype.Text{String: plan.Options.ClientMessageID, Valid: plan.Options.ClientMessageID != ""},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
 		}
 		out.Message = msg
+		if plan.Options.HumanSend {
+			if err := applyHumanSendAttention(ctx, qtx, currentSession, initiatorUserID, plan.Options.AskIDs, msg.ID, task.ID); err != nil {
+				return err
+			}
+		}
 
 		if len(attachmentIDs) > 0 {
 			bound, err := qtx.LinkAttachmentsToChatMessage(ctx, db.LinkAttachmentsToChatMessageParams{
@@ -3110,6 +3154,72 @@ func (s *TaskService) SendDirectChatMessageTx(
 		return nil
 	}()
 	return out, err
+}
+
+// replayDirectChatSend loads the rows a stored send with this client_message_id wrote.
+func (s *TaskService) replayDirectChatSend(ctx context.Context, qtx *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
+	msg, err := qtx.GetChatMessageByClientID(ctx, db.GetChatMessageByClientIDParams{
+		ChatSessionID: session.ID, ClientMessageID: pgtype.Text{String: clientMessageID, Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return DirectChatSendResult{}, false, nil
+	} else if err != nil {
+		return DirectChatSendResult{}, false, fmt.Errorf("look up client message: %w", err)
+	}
+	out := DirectChatSendResult{Message: msg, Replayed: true}
+	if msg.TaskID.Valid {
+		if out.Task, err = qtx.GetAgentTask(ctx, msg.TaskID); err != nil {
+			return DirectChatSendResult{}, false, fmt.Errorf("load replayed task: %w", err)
+		}
+	}
+	attachments, err := qtx.ListAttachmentsByChatMessage(ctx, db.ListAttachmentsByChatMessageParams{ChatMessageID: msg.ID, WorkspaceID: session.WorkspaceID})
+	if err != nil {
+		return DirectChatSendResult{}, false, fmt.Errorf("list replayed attachments: %w", err)
+	}
+	for _, a := range attachments {
+		out.BoundAttachmentIDs = append(out.BoundAttachmentIDs, a.ID)
+	}
+	return out, true, nil
+}
+
+// ReplayDirectChatSend reads back a stored send for clientMessageID, so a retry is confirmed
+// before the readiness checks that guard a new send. q may be a transaction's queries.
+func (s *TaskService) ReplayDirectChatSend(ctx context.Context, q *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
+	return s.replayDirectChatSend(ctx, q, session, clientMessageID)
+}
+
+// applyHumanSendAttention is T2 and T2b of the DM attention model: the owner's send settles
+// "check later" / "unseen" for the chain, and the asks it targets wait on the task that consumes it.
+func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.ChatSession, userID pgtype.UUID, askIDs []pgtype.UUID, messageID, taskID pgtype.UUID) error {
+	if err := qtx.ResolveChatAttentionOnHumanSend(ctx, db.ResolveChatAttentionOnHumanSendParams{
+		ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
+	}); err != nil {
+		return fmt.Errorf("resolve attention on send: %w", err)
+	}
+	if len(askIDs) == 0 { // no target: wait only when the chain has exactly one open ask
+		open, err := qtx.ListOpenChatAttentionAsks(ctx, db.ListOpenChatAttentionAsksParams{ChainRootSessionID: session.ChainRootSessionID, UserID: userID})
+		if err != nil {
+			return fmt.Errorf("list open asks: %w", err)
+		}
+		if len(open) != 1 {
+			return nil
+		}
+		askIDs = open
+	} else {
+		open, err := qtx.ListOpenChatAttentionAsksByID(ctx, db.ListOpenChatAttentionAsksByIDParams{
+			Ids: askIDs, ChainRootSessionID: session.ChainRootSessionID, UserID: userID,
+		})
+		if err != nil {
+			return fmt.Errorf("check targeted asks: %w", err)
+		}
+		if len(open) != len(askIDs) { // AskIDs are deduplicated by the caller
+			return ErrChatAskNotOpen
+		}
+	}
+	if err := qtx.SetChatAttentionAsksWaiting(ctx, db.SetChatAttentionAsksWaitingParams{Ids: askIDs, MessageID: messageID, TaskID: taskID}); err != nil {
+		return fmt.Errorf("mark targeted asks waiting: %w", err)
+	}
+	return nil
 }
 
 // NotifyDirectChatSent announces a committed direct-chat task.
@@ -3279,15 +3389,10 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	var cancelled []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		cancelled, err = qtx.CancelAgentTasksByAgent(ctx, agentID)
-		if err != nil {
-			return err
-		}
-		return SettleTerminalTaskState(ctx, qtx, cancelled...)
-	}); err != nil {
+	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.CancelAgentTasksByAgent(ctx, agentID)
+	})
+	if err != nil {
 		return nil, err
 	}
 	for _, t := range cancelled {
@@ -4352,6 +4457,20 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return nil
 		}
 
+		// Provider breaker: an open or half_open breaker that is not yet due
+		// skips the claim (the task stays queued). A due breaker lets exactly
+		// one task through as the canary, bound after the claim below.
+		breakerProvider, breakerHeld, breakerCanary, berr := providerBreakerClaimGate(ctx, qtx, agent)
+		if berr != nil {
+			outcome = "error_provider_breaker_check"
+			return fmt.Errorf("check provider breaker for claim: %w", berr)
+		}
+		if breakerHeld {
+			slog.Debug("task claim skipped: provider breaker", "agent_id", util.UUIDToString(agentID), "provider", breakerProvider)
+			outcome = "provider_breaker"
+			return nil
+		}
+
 		coolingDown, err := qtx.HasRecentProviderServerFailure(ctx, db.HasRecentProviderServerFailureParams{
 			AgentID: agentID,
 			FailedSince: pgtype.Timestamptz{
@@ -4399,6 +4518,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		if breakerCanary {
+			if err := acquireProviderBreakerCanary(ctx, qtx, agent.WorkspaceID, breakerProvider, task.ID); err != nil {
+				if errors.Is(err, errProviderBreakerCanaryTaken) {
+					outcome = "provider_breaker"
+				} else {
+					outcome = "error_provider_breaker_canary"
+				}
+				return err
+			}
+		}
+
 		// Rule E: the claim stamped the epoch on a statement snapshot that a
 		// compact committed just before our DM lock may have outdated. Restamp
 		// on a fresh snapshot; the DM share lock keeps the epoch fixed until
@@ -4431,10 +4561,27 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			reanchorMs = time.Since(t0).Milliseconds()
 		}
 
+		// A retry child owns its root's input batch, which neither direct
+		// reanchor query reaches; keep a question that predates a compact
+		// beside its answer (CHE-2819).
+		if task.ChatSessionID.Valid && task.ChatInputTaskID.Valid && task.ChatInputTaskID != task.ID {
+			if err := qtx.ReanchorChatInputAcrossFloor(ctx, db.ReanchorChatInputAcrossFloorParams{
+				ChatSessionID: task.ChatSessionID,
+				InputTaskID:   task.ChatInputTaskID,
+				DispatchedAt:  task.DispatchedAt,
+			}); err != nil {
+				outcome = "error_reanchor_chat_input"
+				return fmt.Errorf("reanchor chat input across floor: %w", err)
+			}
+		}
+
 		claimedTask := task
 		claimed = &claimedTask
 		return nil
 	})
+	if errors.Is(err, errProviderBreakerCanaryTaken) {
+		return nil, nil // another claim owns the canary; the rollback left this task queued
+	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"
@@ -5418,6 +5565,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
 			return err
 		}
+		if err := s.writeBackgroundOutput(ctx, qtx, t, result); err != nil {
+			return fmt.Errorf("write background task output: %w", err)
+		}
 
 		if t.ChatSessionID.Valid {
 			// Pin the chat_session's runtime_id alongside the session_id so the
@@ -5900,12 +6050,23 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// so don't block" fail-open providerHoldVerdict documents.
 		retryAgent       db.Agent
 		retryAgentLoaded bool
+		// retryFence: set when the task is in a provider-failure recovery
+		// lineage (CHE-1773); no retry is minted and the owner is told once.
+		retryFence providerFailureOwnerDecision
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if !retryEligible(failureReason, parent) {
+			// Not retryable: nothing to mint.
+		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
+			// Fail closed: an unreadable lineage must not mint a generic retry.
+			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
+				"task_id", util.UUIDToString(taskID), "error", ferr)
+		} else if fence.Capped() {
+			retryFence = fence
+		} else {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -5949,6 +6110,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
+			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
 			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
@@ -6093,6 +6261,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					"issue_id", util.UUIDToString(t.IssueID),
 					"error", gerr,
 				)
+				createRetry = false
+			}
+		}
+		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
 				createRetry = false
 			}
 		}
@@ -6293,6 +6470,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
 	}
+	// CHE-1773: a recovery-lineage task got no retry; tell its owner once.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice
@@ -6509,6 +6688,43 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
+	if err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6648,6 +6864,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryEligible(reason, parent) {
 		return nil, nil
 	}
+	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
+	// point either; fail closed when the lineage cannot be read.
+	fence, err := s.fenceRecoveryLineage(ctx, s.Queries, parent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery lineage check: %w", err)
+	}
+	if fence.Capped() {
+		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -6694,6 +6920,18 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	// CHE-4581: replays of this hand-off queue behind the first writer, whose
+	// committed successor CreateRetryTask then sees.
+	if _, lerr := qtx.LockAgentTaskForRetry(ctx, parent.ID); lerr != nil {
+		return nil, fmt.Errorf("task auto-retry: lock parent: %w", lerr)
+	}
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil
@@ -7387,16 +7625,67 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	return cancelled, nil
 }
 
+// terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
+// of every chat task in the batch first. The one lock order is chat_session -> runtime -> agent ->
+// agent_task_queue (chat enqueue takes the session, then the agent; see lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
+// RecordChatOutcome, then sees a status that cannot change until it commits.
+//
+// The batch UPDATE picks its own rows, so the sessions are only known after it ran. Each pass runs
+// it in a savepoint; if it touched chat sessions not yet held, the pass is rolled back (releasing
+// its task row locks), those sessions are locked in id order, and it runs again. Every pass that
+// repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
-	var failed []db.AgentTaskQueue
-	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		var err error
-		failed, err = fail(qtx)
+	if s.TxStarter == nil {
+		failed, err := fail(s.Queries)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		return SettleTerminalTaskState(ctx, qtx, failed...)
-	}); err != nil {
+		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.Queries.WithTx(tx)
+
+	held := map[pgtype.UUID]bool{}
+	var failed []db.AgentTaskQueue
+	for {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("begin savepoint: %w", err)
+		}
+		failed, err = fail(s.Queries.WithTx(sp))
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			return nil, err
+		}
+		var need []pgtype.UUID
+		for _, t := range failed {
+			if t.ChatSessionID.Valid && !held[t.ChatSessionID] {
+				held[t.ChatSessionID] = true
+				need = append(need, t.ChatSessionID)
+			}
+		}
+		if len(need) == 0 {
+			if err := sp.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("release savepoint: %w", err)
+			}
+			break
+		}
+		if err := sp.Rollback(ctx); err != nil {
+			return nil, fmt.Errorf("rollback savepoint: %w", err)
+		}
+		if _, err := qtx.LockChatSessionsByIDs(ctx, need); err != nil {
+			return nil, fmt.Errorf("lock chat sessions: %w", err)
+		}
+	}
+	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return failed, nil
@@ -7491,7 +7780,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 							// caches keep showing the issue as in_progress until
 							// the next write touches it (#4648 / MUL-3782).
 							(&IssueWakeupService{Tasks: s}).publishWakeupActivities(wakeupActivity{row: activity, actorType: "system", details: activity.Details})
-							s.broadcastIssueUpdated(ctx, updatedIssue, issue.Status)
+							s.broadcastIssueUpdatedWith(ctx, updatedIssue, issue.Status, map[string]any{"activity_id": util.UUIDToString(activity.ID)})
 						}
 					}
 				}
@@ -7553,6 +7842,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		if err := settleCompactionTask(ctx, q, task); err != nil {
 			return err
 		}
+	}
+	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return fmt.Errorf("settle terminal task supplements: %w", err)
@@ -8969,7 +9261,8 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 // handler.IssueResponse and skip a map, so a background status reset does not
 // emit status-change activity / notifications. That is intentional for the
 // realtime-staleness fix (#4648 / MUL-3782); folding those side effects in
-// would mean unifying the payload type and is left as a follow-up.
+// would mean unifying the payload type and is left as a follow-up. A writer that
+// recorded a status row names it with broadcastIssueUpdatedWith.
 func (s *TaskService) broadcastIssueUpdated(ctx context.Context, issue db.Issue, prevStatus string) {
 	s.broadcastIssueUpdatedWith(ctx, issue, prevStatus, nil)
 }

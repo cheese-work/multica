@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+智能体任务发出的评论若提及成员（`[@名称](mention://member/<id>)`），只有以下几种会被接受：决策请求、`--decision-intent`、`--decision-record` 或 `--decision-veto` 评论，以及带 `--notify-only` 的评论。无需回复的知会请使用 `--notify-only`。它不会开启等待，也不算决策请求，且不能与决策类参数同时使用。检查依据的是提及链接而非措辞，代码中的链接同样计入。工作区设置 `ask_guard_mode`（`off`、`warn`、`block`）决定被拒绝的评论只记录还是返回 422。聊天任务和没有任务的调用只记录。编辑时新增成员提及同样适用此规则。
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
 
 ### 时间线
@@ -273,6 +279,8 @@ multica runtime profile create --display-name "内部 Claude 封装" \
 
 删除仍绑定活跃智能体的运行时时，命令默认拒绝。`multica runtime delete <id> --cascade` 会解绑这些智能体、保留其配置与历史记录，并取消它们的活动运行。
 
+`multica runtime breaker list` 显示各服务商的熔断器，`multica runtime breaker reset <provider>` 强制关闭熔断器（仅所有者或管理员）。参见[服务商熔断器](/daemon-runtimes#provider-breaker)。
+
 运行机制和自定义 profile 见[守护进程与运行时](/daemon-runtimes)。
 
 ## 项目、工作区和自动化
@@ -404,6 +412,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `trigger <id>` | 手动触发一次 | |
 | | `runs <id>` | 查看运行历史 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 管理定时和 webhook 触发器 | `trigger-add`：`--kind`（`schedule` 或 `webhook`）、`--cron`、`--timezone`（默认 UTC）、`--label` |
+| `workflow` | `lint [<id>]` | 检查工作流的步骤、边、处理者和指令。输出表格，加 `--output json` 输出 JSON。存在未豁免的错误时退出码非 0 | `--all`（工作区内所有工作流；与 id 二选一）、`--output`（`table` 或 `json`） |
 | `workspace` | `list/get/create/update/switch` | 管理工作区；`switch` 设置当前 profile 的默认工作区 | `create`：`--name`、`--slug`（均必填）、`--issue-prefix`、`--description`、`--context` / `--context-stdin`；`update` 可改除 slug 外的同类字段 |
 | | `mcp list/add/update/remove` | 管理工作区的 MCP 服务库 | 写操作需要 owner/admin。这里添加的服务不会分配给任何 agent——用 `multica agent mcp add` 分配给某个 agent。`list` 只列出名称与 transport；存储的条目是只写的，任何角色都读不回。`--server-config-file` / `--server-config-stdin` 避免 token 进入 shell 历史 |
 | | `member list/invite <email>` | 查看成员、发出邀请 | `invite`：`--role`（member 或 admin，默认 member） |
@@ -430,6 +439,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `runtime` | `list/usage/activity/update/rename/delete` | 查看和管理运行时 | `usage`：`--days`（默认 90，最多 365）；`update`：`--target-version`（必填）、`--wait`；`delete`：`--cascade`（解绑绑定的智能体、保留其数据并取消其运行） |
 | | `profile list/create/update/delete` | 管理自定义运行时 profile | `create`：`--display-name`、`--command-name`（均必填）、`--runtime-type`（或旧的 `--protocol-family`）、`--description`；`update`：`--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 固定本机可执行文件路径（仅本地生效，不上传服务器） | |
+| | `breaker list/reset <provider>` | 查看或强制关闭服务商熔断器 | `reset`：仅工作区所有者或管理员 |
 
 ### Additional
 
@@ -443,6 +453,18 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `config` | `show`、`set <key> <value>` | 查看或修改当前 profile 的本地配置 | 优先级：命令行 flag > 环境变量 > `config.json` > 内置默认；设为空串可清除 |
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
+
+### 决策提案
+
+任务令牌可以提出一个受管控的操作，由人用通行密钥批准。提案本身不会更改任何内容。
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。
 
 ## 在其他编码智能体里操作 Multica
 

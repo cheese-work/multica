@@ -68,11 +68,13 @@ WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','deferred'
 -- name: DisableIssueWakeups :exec
 -- Closing wins over every subscription on the issue; reopening does not rearm.
 -- A system rule only rests while its issue is closed and resumes on reopen.
+-- A waiver follow-up check is meant to run after release, so it outlives the close.
 UPDATE issue_wakeup SET enabled=false,disabled_at=clock_timestamp(),updated_at=clock_timestamp()
-WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL;
+WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL AND followup_instance_id IS NULL;
 -- name: CancelUnstartedIssueWakeupTasks :many
 UPDATE agent_task_queue SET status='cancelled',completed_at=now(),error='Issue closed; wakeup disabled'
-WHERE issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL RETURNING *;
+WHERE agent_task_queue.issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL
+ AND NOT EXISTS(SELECT 1 FROM issue_wakeup w WHERE w.id::text=agent_task_queue.context->>'wakeup_id' AND w.followup_instance_id IS NOT NULL) RETURNING *;
 -- name: ListInputWakeups :many
 -- Scheduler lane 1: rules with unprocessed inputs (subscribed events,
 -- condition hints, "wake now"). Deliberately not filtered by enabled: a once
@@ -99,7 +101,7 @@ WITH candidates AS (
  -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
  -- (everything but the closed category; see systemWakeupIssueActive).
  SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
- WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed')
+ WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed','pr_dequeued')
   AND i.status<>'cancelled'
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
@@ -315,7 +317,7 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
 -- run block together, and only while the rolling limit has room. Manual,
 -- loop and max_fires pauses never match.
 UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed') AND w.paused_reason='rate'
+WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed','pr_dequeued') AND w.paused_reason='rate'
  AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> @since) < @max_runs::bigint;
 
 -- name: CountWakeupFires :exec

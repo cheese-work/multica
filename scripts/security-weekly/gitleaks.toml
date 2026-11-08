@@ -1,0 +1,3 @@
+# Gitleaks config for the weekly scan (CHE-3701). The workflow passes it with --config so a root .gitleaks.toml in the checkout, which CODEOWNERS does not cover, is never read.
+[extend]
+useDefault = true

@@ -315,6 +315,7 @@ func runSearchForParity(t *testing.T, label, query string, args []any) []searchP
 			&sr.issue.ProjectID,
 			&sr.issue.Revision,
 			&sr.issue.DuplicateOfIssueID,
+			&sr.issue.DescriptionExternalRead,
 			&sr.matchSource,
 			&sr.matchedCommentContent,
 		); err != nil {
@@ -577,7 +578,7 @@ func buildLegacySearchQueryForParity(phrase string, terms []string, queryNum int
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision, i.duplicate_of_issue_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		%s AS match_source,
 		%s AS matched_comment_content
 	FROM issue i
