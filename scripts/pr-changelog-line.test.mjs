@@ -65,3 +65,10 @@ test("AGENTS.md requires the line with the same examples, verbatim, per stack an
   assert.match(rule, /without a valid line is hidden/i);
   for (const example of [...GOOD, ...BAD]) assert.ok(rule.includes(example), example);
 });
+
+// CHE-4396: every PR states its cost delta (C1 delta, C2 optimality, C3 watch).
+test("PR template carries the Cost delta section", () => {
+  const section = template.split(/^## Cost delta\s*$/m)[1];
+  assert.ok(section, "missing ## Cost delta");
+  for (const p of ["C1", "C2", "C3"]) assert.match(section.split(/^## /m)[0], new RegExp(`^- ${p} `, "m"));
+});

@@ -158,6 +158,12 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "workspace",
+        anchor: "runtime-profile",
+        title: t(($) => $.workspace.runtime_profile_label),
+        description: t(($) => $.workspace.runtime_profile_hint),
+      },
+      {
+        tab: "workspace",
         anchor: "idle-guard",
         title: t(($) => $.workspace.idle_guard_label),
         description: t(($) => $.workspace.idle_guard_hint),

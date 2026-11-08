@@ -64,7 +64,9 @@ describe("IssueDecisionBanner", () => {
     expect(screen.queryByText("Ask other")).toBeNull();
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveAttribute("href", expect.stringContaining("#comment-c1"));
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Hold/ }));
+    await user.click(screen.getByRole("radio", { name: /Hold/ }));
+    expect(api.answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("r1", { option: "Hold" }));
   });
 

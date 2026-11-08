@@ -17,6 +17,8 @@ export const decisionAnswerDraftKey = (requestId: string) => `decision:${request
 
 export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerDraft>({
   storageKey: "multica_decision_answer_drafts",
+  // Kept until sent or discarded, never by age (main 39ee32f3db; workspace rule on unsent input).
+  ttlMs: Number.POSITIVE_INFINITY,
   emptyData: EMPTY_DECISION_ANSWER_DRAFT,
   hasMeaningful: (d) => d.option !== "" || d.text.trim() !== "",
 });

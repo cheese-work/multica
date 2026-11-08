@@ -7,6 +7,7 @@ import { DecisionActionApproval } from "./decision-action-approval";
 const api = vi.hoisted(() => ({
   challengeDecisionAction: vi.fn(),
   approveDecisionAction: vi.fn(),
+  rejectDecisionAction: vi.fn(),
   getDecisionActionOutcome: vi.fn(),
 }));
 const sign = vi.hoisted(() => vi.fn());
@@ -60,6 +61,61 @@ describe("DecisionActionApproval", () => {
     expect(await screen.findByText(label)).toBeTruthy();
   });
 
+  it.each([
+    [{ outcome: "cap_applied", from: 10, to: 30 }, ["Cap applied", "10 → 30"]],
+    [{ outcome: "run_queued" }, ["Run queued"]],
+    [{ outcome: "still_blocked:budget_exhausted" }, ["Still blocked: budget_exhausted"]],
+    [{ outcome: "future_thing" }, ["Executed"]],
+    [undefined, ["Executed"]],
+  ])("shows the executed outcome %j", async (result, texts) => {
+    api.approveDecisionAction.mockResolvedValue({ ...outcome("executed"), result });
+    await renderApproval().approve();
+    for (const text of texts) expect(await screen.findByText(text)).toBeTruthy();
+  });
+
+  it("shows stale_base as a failed approval that needs a new request", async () => {
+    api.approveDecisionAction.mockResolvedValue(outcome("failed", "stale_base"));
+    await renderApproval().approve();
+    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(screen.getByText("The target changed after the request. Ask again.")).toBeTruthy();
+  });
+
+  it("reads the outcome again when the card around it reports a new action state", async () => {
+    const view = renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" state="pending" />);
+    await screen.findByRole("button", { name: "Approve with passkey" });
+    api.getDecisionActionOutcome.mockResolvedValue({ ...outcome("executed"), result: { outcome: "run_queued" } });
+    view.rerender(<DecisionActionApproval actionId="a1" payloadSha256="abc" state="executed" />);
+    expect(await screen.findByText("Run queued")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
+  it("rejects without a passkey and shows rejected", async () => {
+    api.rejectDecisionAction.mockResolvedValue(outcome("rejected"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+    expect(api.rejectDecisionAction).toHaveBeenCalledWith("a1");
+    expect(api.challengeDecisionAction).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+  });
+
+  it("reads the outcome back when the reject response is lost", async () => {
+    api.rejectDecisionAction.mockRejectedValue(new Error("network"));
+    api.getDecisionActionOutcome.mockResolvedValueOnce(outcome("pending")).mockResolvedValue(outcome("rejected"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+  });
+
+  it("keeps both buttons and shows an error when reject is refused", async () => {
+    api.rejectDecisionAction.mockRejectedValue(new ApiError("busy", 409, "Conflict"));
+    renderApproval();
+    fireEvent.click(await screen.findByRole("button", { name: "Reject" }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeTruthy();
+  });
+
   it("prompts enrollment when the user has no passkey", async () => {
     api.challengeDecisionAction.mockRejectedValue(new ApiError("no_passkey: enroll a passkey before approving", 409, "Conflict"));
     const { approve, onEnroll } = renderApproval();
@@ -67,6 +123,16 @@ describe("DecisionActionApproval", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add a passkey" }));
     expect(onEnroll).toHaveBeenCalledOnce();
     expect(api.approveDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it("still lets the user reject after the no-passkey prompt", async () => {
+    api.challengeDecisionAction.mockRejectedValue(new ApiError("no_passkey: enroll a passkey before approving", 409, "Conflict"));
+    api.rejectDecisionAction.mockResolvedValue(outcome("rejected"));
+    await renderApproval().approve();
+    await screen.findByRole("button", { name: "Add a passkey" });
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+    expect(api.rejectDecisionAction).toHaveBeenCalledWith("a1");
   });
 
   it("reads the outcome after a lost response and never approves twice", async () => {

@@ -103,19 +103,17 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
     def approval_state(self, heads, checks=None, files=None, wait_seconds="60",
                        live_status="ahead", main_status="ahead", live_versions=None,
                        live_sha=LIVE_SHA, ambiguous_short=False, extra_env=None):
-        protected = self.workflow["jobs"]["approve-c00"]
-        self.assertEqual(protected["environment"], "c00-production")
-        dependencies = protected.get("needs", [])
+        notify = self.workflow["jobs"]["notify-approval"]
+        dependencies = notify.get("needs", [])
         if isinstance(dependencies, str):
             dependencies = [dependencies]
         if "candidate-preflight" not in dependencies:
-            return "waiting", "No eligibility job runs before c00-production approval."
+            return "waiting", "No eligibility job runs before the dispatch notice."
 
         preflight = self.workflow["jobs"]["candidate-preflight"]
-        # CHE-4251: the read path has its own App-token environment, never the approval environment.
+        # CHE-4251: the read path has its own App-token environment, never a C00 environment.
         self.assertEqual(preflight["environment"], "ci-app-token")
-        self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", protected["if"])
-        self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", self.workflow["jobs"]["prepare-release-candidate"]["if"])
+        self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", notify["if"])
         selection = next(step for step in preflight["steps"] if step.get("id") == "candidate")
         output = self.directory / "output"
         summary = self.directory / "summary"
@@ -149,12 +147,12 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertIn(SOURCE_SHA, summary.read_text())
         return ("waiting" if outputs["eligible"] == "true" else "skipped"), summary.read_text()
 
-    def test_failed_candidate_skips_before_production_approval(self):
+    def test_failed_candidate_skips_before_the_dispatch_notice(self):
         state, reason = self.approval_state([NEW_HEAD], [{**SUCCESS, "backend": "cancelled"}])
         self.assertEqual(state, "skipped", reason)
         self.assertTrue((self.directory / "check-reads").exists())
 
-    def test_older_but_forward_candidate_reaches_approval(self):
+    def test_older_but_forward_candidate_reaches_the_dispatch_notice(self):
         state, reason = self.approval_state([NEW_HEAD])
         self.assertEqual(state, "waiting", reason)
 
@@ -244,7 +242,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertEqual(state, "skipped", reason)
         self.assertEqual((self.directory / "check-reads").read_text(), "2")
 
-    def test_current_successful_candidate_reaches_approval(self):
+    def test_current_successful_candidate_reaches_the_dispatch_notice(self):
         state, reason = self.approval_state([SOURCE_SHA])
         self.assertEqual(state, "waiting", reason)
         self.assertTrue((self.directory / "check-reads").exists())
@@ -316,7 +314,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertIn("record-checks.sh", json.dumps(preparation["steps"]))
         self.assertIn("github.event.workflow_run.head_sha", self.workflow["run-name"])
         self.assertIn("inputs.ref", self.workflow["run-name"])
-        self.assertIn("github.event_name == 'workflow_dispatch'", self.workflow["jobs"]["admission"]["if"])
+        self.assertIn("needs.authorize-c00.result == 'success'", self.workflow["jobs"]["admission"]["if"])
 
     def test_check_validation_rejects_another_candidates_sha(self):
         checks = self.directory / "other-checks.json"
