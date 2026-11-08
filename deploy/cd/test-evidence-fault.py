@@ -86,18 +86,11 @@ class ReadyzFaultOverlayTests(unittest.TestCase):
                  "JWT_SECRET": "synthetic", **env}).stdout
         return json.loads(out)["services"]
 
-    def test_candidate_start_cannot_reach_the_database(self):
-        # cutover.sh starts the candidate with MULTICA_SKIP_MIGRATIONS=1.
-        for colour in ["backend-blue", "backend-green"]:
-            url = self.render(MULTICA_SKIP_MIGRATIONS="1")[colour]["environment"]["DATABASE_URL"]
-            self.assertIn("@fault-db.invalid", url, colour)
-            self.assertNotIn("@postgres:", url, colour)
-
-    def test_migration_step_keeps_the_real_database(self):
-        # The migrator runs in the same service without that variable and must still succeed.
+    def test_overlay_points_both_colours_at_an_unresolvable_host(self):
+        # Selection is the shim's job (DrillShimTests); the overlay itself is unconditional.
         for colour in ["backend-blue", "backend-green"]:
             url = self.render()[colour]["environment"]["DATABASE_URL"]
-            self.assertIn("@postgres:5432/", url, colour)
+            self.assertIn("@fault-db.invalid:5432/", url, colour)
 
     def test_only_the_database_url_changes(self):
         services = yaml.safe_load(OVERLAY.read_text())["services"]
@@ -105,6 +98,67 @@ class ReadyzFaultOverlayTests(unittest.TestCase):
         for service in services.values():
             self.assertEqual(list(service), ["environment"])
             self.assertEqual(list(service["environment"]), ["DATABASE_URL"])
+
+
+SHIM_DIR = ROOT / "deploy/cd/drill"
+BASH = shutil.which("bash")
+
+
+@unittest.skipUnless(shutil.which("docker") and BASH, "docker compose and bash needed")
+class DrillShimTests(unittest.TestCase):
+    """The shim is how the fault reaches the real cutover.sh compose() calls."""
+
+    def setUp(self):
+        self.tmp = Path(__import__("tempfile").mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        # Stand-in for the real docker: renders what `compose <subcommand>` would run.
+        stub = self.tmp / "real-docker"
+        stub.write_text(
+            "#!/usr/bin/env bash\nset -eu\nargs=(\"$@\"); i=0; g=()\n"
+            "while [ $i -lt ${#args[@]} ]; do case \"${args[$i]}\" in\n"
+            "  compose) ;; -f) g+=(-f \"${args[$((i+1))]}\"); i=$((i+1)) ;;\n"
+            "  *) break ;; esac; i=$((i+1)); done\n"
+            "echo \"SUBCOMMAND=${args[$i]}\" >&2\n"
+            "exec /usr/bin/docker compose \"${g[@]}\" config --format json\n")
+        stub.chmod(0o755)
+        self.stub = stub
+
+    def compose(self, subcommand, drill, skip_migrations):
+        """Call cutover.sh's real compose() function with the shim first on PATH."""
+        env = {"HOME": os.environ["HOME"], "JWT_SECRET": "synthetic",
+               "PATH": f"{SHIM_DIR}:/usr/bin:/bin", "DRILL_REAL_DOCKER": str(self.stub)}
+        if drill:
+            env["DRILL_FAULT_READYZ"] = "1"
+        if skip_migrations:
+            env["MULTICA_SKIP_MIGRATIONS"] = "1"
+        script = (f'compose_dir={ROOT}; script_dir={ROOT}/deploy/cd\n'
+                  'source "$script_dir/deploy-lib.sh"\n'
+                  'compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")\n'
+                  f'compose {subcommand}')
+        out = subprocess.run([BASH, "-c", script], text=True, capture_output=True, env=env, check=True)
+        return json.loads(out.stdout)["services"]["backend-green"]["environment"]["DATABASE_URL"]
+
+    def test_candidate_start_reaches_the_fault(self):
+        url = self.compose("up -d --no-deps backend-green frontend-green", drill=True, skip_migrations=True)
+        self.assertIn("@fault-db.invalid:5432/", url)
+
+    def test_migration_step_keeps_the_real_database(self):
+        url = self.compose("run --rm --no-deps --entrypoint ./migrate backend-green up", drill=True, skip_migrations=False)
+        self.assertIn("@postgres:5432/", url)
+
+    def test_recovery_start_keeps_the_real_database(self):
+        url = self.compose("start backend-green", drill=True, skip_migrations=False)
+        self.assertIn("@postgres:5432/", url)
+
+    def test_inert_without_the_drill_switch(self):
+        url = self.compose("up -d --no-deps backend-green", drill=False, skip_migrations=True)
+        self.assertIn("@postgres:5432/", url)
+
+    def test_refuses_to_run_without_compose_files(self):
+        env = {"PATH": f"{SHIM_DIR}:/usr/bin:/bin", "DRILL_REAL_DOCKER": str(self.stub),
+               "DRILL_FAULT_READYZ": "1", "MULTICA_SKIP_MIGRATIONS": "1"}
+        r = subprocess.run(["docker", "compose", "up"], text=True, capture_output=True, env=env)
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":

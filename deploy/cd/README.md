@@ -942,13 +942,28 @@ or cutover job and never builds. Its steps are those of `cd-deploy.yml`'s
 gh workflow run cd-evidence.yml --repo cheese-work/multica --ref main -f candidate_sha=<40-hex sha>
 ```
 
-`docker-compose.fault-readyz.yml` is a hand-layered fault for one drill. No
-`cutover.sh` overlay hook loads it: its list is fixed (ab, flags, jev). It
-points the candidate backend at `fault-db.invalid1` only while
-`MULTICA_SKIP_MIGRATIONS=1`, which `cutover.sh` sets for the candidate start
-and not for the one-shot migrator in the same service. A bad URL at the
-migrator would fail the migration after the incumbent was drained, and
-`cutover.sh` treats that as an outage with neither colour running.
+`docker-compose.fault-readyz.yml` points the candidate backend at
+`fault-db.invalid` (reserved TLD, never resolves). `cutover.sh` loads a fixed
+overlay list (ab, flags, jev) and has no hook for it, so `deploy/cd/drill/docker`
+carries it in: a `docker` shim that appends the overlay to one call, the
+candidate start (`compose ... up` with `MULTICA_SKIP_MIGRATIONS=1`). The
+migrator (`run`), the incumbent recovery (`start`) and everything else pass
+through, so the migration reaches the real database. A bad URL at the migrator
+would fail the migration after the incumbent was drained, and `cutover.sh`
+treats that as an outage with neither colour running. `cutover.sh` is not edited.
+
+Drill procedure (the operator runs the real cutover; this shim changes nothing
+else):
+
+```
+export DRILL_FAULT_READYZ=1
+PATH="<repo>/deploy/cd/drill:$PATH" deploy/cd/cutover.sh cutover <the usual arguments>
+```
+
+The shim is inert without `DRILL_FAULT_READYZ=1` and refuses (exit 2) if the
+candidate start carries no `-f` files. It prints `drill shim: layering ...` on
+stderr once, at the candidate start: that line is the proof it fired. Unset the
+variable and the PATH prefix afterwards.
 
 Expected `cutover.sh cutover` outcome with the overlay applied: final gate and
 migration pass; the candidate container starts, then exits with `unable to
@@ -958,5 +973,8 @@ after 180 s (an earlier bindings check may fire first); `recover_incumbent`
 restarts the incumbent; the router generation never switches. This exercises
 `recover_incumbent`, not the `rollback` subcommand.
 
-`test-evidence-fault.py` checks the workflow shape and renders the overlay with
-and without `MULTICA_SKIP_MIGRATIONS`. It does not run `cutover.sh`.
+`test-evidence-fault.py` checks the workflow shape, renders the overlay, and
+drives `deploy-lib.sh`'s real `compose()` function through the shim against a
+stand-in `docker`: the candidate start renders the fault, the migrator, the
+recovery start and a run without the switch render the real database. It does
+not run `cutover.sh` or touch C00.

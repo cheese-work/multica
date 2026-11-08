@@ -1,29 +1,24 @@
 # Readiness fault overlay for the C00 rollback drill (CHE-4664 / CHE-4619).
 # NOT loaded by cutover.sh and never part of a normal deploy: cutover.sh's
-# overlay list is fixed (ab, flags, jev). It is layered by hand, last, after
-# docker-compose.selfhost.yml and docker-compose.ab.yml, for one drill.
+# overlay list is fixed (ab, flags, jev). deploy/cd/drill/docker (a `docker`
+# shim on PATH for one run, with DRILL_FAULT_READYZ=1) appends this file to the
+# candidate start only. See deploy/cd/README.md, "Readiness fault overlay".
 #
-# Fault: the candidate backend gets a database host that cannot resolve, so
-# it never answers /readyz. The server exits at startup ("unable to connect to
-# database" / "unable to ping database"), or never reaches /readyz.
+# Do NOT layer it by hand on every call: it points the backend at a host that
+# does not resolve, so a migrator run with it would fail the migration after
+# the incumbent was drained.
 #
-# It must hit only the candidate START. cutover.sh runs the one-shot migrator
-# in the same service (backend-<colour>) before the start; a bad URL there
-# would fail the migration after the incumbent is drained, and cutover.sh
-# treats that as an outage with neither colour running. Only the start step
-# sets MULTICA_SKIP_MIGRATIONS=1, so the host is built from that variable:
-#   unset -> "postgres" (the real host)
-#   "1"   -> "fault-db.invalid1" (.invalid never resolves, RFC 2606)
-# The migrator therefore still reaches the real database.
+# Fault: the candidate backend gets a database host in the reserved .invalid
+# TLD (RFC 2606), which never resolves. The server exits at startup ("unable to
+# connect to database" / "unable to ping database"), so /readyz never answers.
 #
-# Expected cutover.sh outcome (see deploy/cd/README.md, "Readiness fault
-# overlay"): quiescence final-gate and migration pass, the candidate starts
-# and never turns ready, wait_ready_on_port gives up after 180s, and
-# recover_incumbent restarts the incumbent. The router never switches.
+# Expected cutover.sh outcome: quiescence final-gate and migration pass, the
+# candidate starts and never turns ready, wait_ready_on_port gives up after
+# 180s, and recover_incumbent restarts the incumbent. The router never switches.
 
 services:
   backend-blue: &fault_backend
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@${MULTICA_SKIP_MIGRATIONS:+fault-db.invalid}${MULTICA_SKIP_MIGRATIONS:-postgres}:5432/${POSTGRES_DB:-multica}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@fault-db.invalid:5432/${POSTGRES_DB:-multica}?sslmode=disable
 
   backend-green: *fault_backend
