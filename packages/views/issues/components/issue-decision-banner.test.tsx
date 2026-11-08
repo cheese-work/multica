@@ -68,6 +68,49 @@ describe("IssueDecisionBanner", () => {
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("r1", { option: "Hold" }));
   });
 
+  it("shows the covered decisions of a batch card on the issue page", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([open("batch", "issue", {
+      covers_request_ids: ["c1", "c2"],
+      covered_cards: [
+        { id: "c1", issue_id: "i1", issue_identifier: "CHE-11", decision: "Merge the stack?", options: [{ label: "Ship it", what_happens: "Merges." }, { label: "Hold" }] },
+        { id: "c2", issue_id: "i2", issue_identifier: "CHE-12", decision: "Cut the release?", options: [{ label: "Ship it", what_happens: "Cuts." }, { label: "Hold" }] },
+      ],
+    })]);
+    show();
+    const items = await screen.findAllByTestId("decision-request-covered-item");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toHaveTextContent("CHE-11: Merge the stack?");
+    expect(items[1]).toHaveTextContent("CHE-12: Cut the release?");
+    expect(items[1]).toHaveTextContent("Ship it: Cuts.");
+    expect(screen.getByRole("radio", { name: /Hold/ })).toBeInTheDocument();
+  });
+
+  it("acknowledges the covered cards when a batch card is answered on the issue page", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([open("batch", "issue", {
+      covers_request_ids: ["c2", "c1"],
+      covered_cards: [
+        { id: "c2", issue_id: "i2", issue_identifier: "CHE-12", decision: "Cut the release?", options: [{ label: "Ship it", what_happens: "Cuts." }, { label: "Hold" }] },
+        { id: "c1", issue_id: "i1", issue_identifier: "CHE-11", decision: "Merge the stack?", options: [{ label: "Ship it", what_happens: "Merges." }, { label: "Hold" }] },
+      ],
+    })]);
+    show();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("radio", { name: /Hold/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
+    expect(api.answerDecisionRequest.mock.calls[0]?.[0]).toBe("batch");
+    expect(api.answerDecisionRequest.mock.calls[0]?.[1]).toEqual({ option: "Hold", covers_ack: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  });
+
+  it("offers no answer on the issue page while a batch card's covered decisions are missing", async () => {
+    api.listOpenDecisionRequests.mockResolvedValue([open("batch", "issue", { covers_request_ids: ["c1", "c2"] })]);
+    show();
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Hold/ })).toBeNull();
+    expect(screen.queryByTestId("decision-request-answer")).toBeNull();
+    expect(api.answerDecisionRequest).not.toHaveBeenCalled();
+  });
+
   it("does not tell the reader about the DM message box on the issue page", async () => {
     api.listOpenDecisionRequests.mockResolvedValue([open("r1", "issue")]);
     show();

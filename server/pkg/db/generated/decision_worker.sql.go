@@ -190,7 +190,7 @@ func (q *Queries) DeleteDecisionOrphanWakeReceipts(ctx context.Context, arg Dele
 }
 
 const listDecisionFinalizations = `-- name: ListDecisionFinalizations :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN chat_session session ON session.id = request.chat_session_id AND session.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND EXISTS (
@@ -249,6 +249,8 @@ func (q *Queries) ListDecisionFinalizations(ctx context.Context, batchSize int32
 			&i.ProposalFingerprint,
 			&i.AnswerRevision,
 			&i.WakeSeq,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
 		); err != nil {
 			return nil, err
 		}
@@ -335,7 +337,7 @@ func (q *Queries) LockDecisionOrphanIntents(ctx context.Context, arg LockDecisio
 }
 
 const lockDecisionOrphanRequests = `-- name: LockDecisionOrphanRequests :many
-SELECT request.id FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 WHERE request.workspace_id = $1 AND request.issue_id = $2
   AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id))
@@ -349,19 +351,58 @@ type LockDecisionOrphanRequestsParams struct {
 	IssueID     pgtype.UUID `json:"issue_id"`
 }
 
-func (q *Queries) LockDecisionOrphanRequests(ctx context.Context, arg LockDecisionOrphanRequestsParams) ([]pgtype.UUID, error) {
+func (q *Queries) LockDecisionOrphanRequests(ctx context.Context, arg LockDecisionOrphanRequestsParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, lockDecisionOrphanRequests, arg.WorkspaceID, arg.IssueID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	items := []DecisionRequest{}
 	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskIdentity,
+			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
+			&i.Kind,
+			&i.ExpiresAt,
+			&i.ProposalFingerprint,
+			&i.AnswerRevision,
+			&i.WakeSeq,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
