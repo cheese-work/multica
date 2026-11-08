@@ -49,13 +49,18 @@ test("downloaded scanner binaries are checksum-pinned", () => {
 });
 
 // Luna FAIL on 7adaba3d6: Go autobuild runs the root Makefile, which CODEOWNERS does not cover, before the SARIF is sealed.
-// Both languages analyze from source (build-mode none), so no checkout-controlled build step runs.
-test("CodeQL runs build-mode none for every language: no autobuild, no setup-go, no checkout build step", () => {
+// CHE-4691: the first scheduled run failed because CodeQL does not support build-mode none for Go (JavaScript/TypeScript does).
+// Go uses build-mode manual with one explicit `go build ./...` in server/, so no Makefile runs.
+test("CodeQL: Go builds manually with one explicit go build (CodeQL rejects none for Go); no autobuild, no setup-go, no make", () => {
   const job = wf.slice(wf.indexOf("  codeql:"), wf.indexOf("  image-scan:"));
-  assert.match(job, /language: go\s+build-mode: none/);
+  assert.match(job, /language: go\s+build-mode: manual/);
+  assert.doesNotMatch(job, /language: go\s+build-mode: none/);
   assert.match(job, /language: javascript-typescript\s+build-mode: none/);
   assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
+  assert.match(job, /if: matrix\.language == 'go'\n\s+working-directory: server\n\s+run: go build \.\/\.\.\.\n/);
   assert.doesNotMatch(job, /autobuild|setup-go|\bmake\b/);
+  // the build step sits between init and analyze, or CodeQL traces nothing
+  assert.ok(job.indexOf("codeql-action/init@") < job.indexOf("go build ./...") && job.indexOf("go build ./...") < job.indexOf("codeql-action/analyze@"));
 });
 
 // Luna's FAIL on b7242fd47: this repo is public, so every artifact and step summary is world-readable. Finding detail

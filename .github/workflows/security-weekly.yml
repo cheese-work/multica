@@ -169,9 +169,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # build-mode none for both: a build step would run the root Makefile (unowned by CODEOWNERS) before the SARIF is sealed.
+          # Go: CodeQL rejects build-mode none, and the automatic build runs the root Makefile (unowned by CODEOWNERS) before the SARIF is
+          # sealed. So manual, with the one owned `go build` step below. JavaScript/TypeScript supports none.
           - language: go
-            build-mode: none
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
     steps:
@@ -182,6 +183,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+      - name: Build Go for CodeQL (explicit, no Makefile)
+        if: matrix.language == 'go'
+        working-directory: server
+        run: go build ./...
       # upload: never keeps the token read-only and avoids a clash with a repo-level default setup.
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
