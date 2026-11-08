@@ -175,6 +175,35 @@ describe("Needs you box: attention rows", () => {
     expect(screen.getByText("Reminder")).toBeInTheDocument();
   });
 
+  // Server clock behind ours: the refetch returns the same next_change_at and
+  // the row is still hidden. The timer must try again, a bounded number of times.
+  it("retries a bounded number of times when next_change_at does not move", async () => {
+    const due = new Date(NOW + 60_000).toISOString();
+    const lagging = make({ id: "l1", next_change_at: due });
+    listChatSessions.mockResolvedValue([lagging]);
+    renderBox();
+    await flush();
+    expect(listChatSessions).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(61_000);
+    });
+    await flush();
+    expect(listChatSessions).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6_000);
+    });
+    await flush();
+    expect(listChatSessions).toHaveBeenCalledTimes(3);
+
+    // Bounded: it gives up instead of polling forever.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 60_000);
+    });
+    await flush();
+    expect(listChatSessions.mock.calls.length).toBeLessThanOrEqual(7);
+  });
+
   it("refetches the list when the window regains focus", async () => {
     listChatSessions.mockResolvedValue([]);
     renderBox();

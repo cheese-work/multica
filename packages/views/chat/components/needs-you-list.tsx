@@ -18,6 +18,8 @@ const REFRESH_SLACK_MS = 500;
 const REFRESH_MIN_MS = 5_000;
 /** setTimeout overflows past 2^31-1 ms; the refetch is harmless if early. */
 const REFRESH_MAX_MS = 2_147_483_647;
+/** Refetches per next_change_at value when the server keeps returning it. */
+const REFRESH_MAX_RETRIES = 5;
 
 const LEVEL_RANK: Record<string, number> = { red: 0, yellow: 1, fresh: 2 };
 
@@ -78,6 +80,10 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
     () => Math.min(...sessions.map((s) => Date.parse(s.next_change_at ?? "")).filter(Number.isFinite)),
     [sessions],
   );
+  // A refetch that returns the same next_change_at (server clock behind, failed
+  // fetch, early timeout) would not re-run the effect; `attempt` re-arms it.
+  const [attempt, setAttempt] = useState(0);
+  const retries = useRef({ for: nextChange, n: 0 });
   useEffect(() => {
     const refresh = () => void qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
     const onVisible = () => {
@@ -87,14 +93,22 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
     window.addEventListener("online", refresh);
     document.addEventListener("visibilitychange", onVisible);
     const delay = Math.min(Math.max(nextChange - Date.now() + REFRESH_SLACK_MS, REFRESH_MIN_MS), REFRESH_MAX_MS);
-    const timer = Number.isFinite(nextChange) ? setTimeout(refresh, delay) : undefined;
+    if (retries.current.for !== nextChange) retries.current = { for: nextChange, n: 0 };
+    const timer =
+      Number.isFinite(nextChange) && retries.current.n < REFRESH_MAX_RETRIES
+        ? setTimeout(() => {
+            retries.current.n += 1;
+            refresh();
+            setAttempt((a) => a + 1);
+          }, delay)
+        : undefined;
     return () => {
       window.removeEventListener("focus", refresh);
       window.removeEventListener("online", refresh);
       document.removeEventListener("visibilitychange", onVisible);
       clearTimeout(timer);
     };
-  }, [qc, wsId, nextChange]);
+  }, [qc, wsId, nextChange, attempt]);
 
   // A background re-order moves keyed rows in the DOM, which can drop focus.
   // Put it back on the same session's row.
