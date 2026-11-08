@@ -78,6 +78,7 @@ export function CustomArgsTab({
   });
   const [editorValue, setEditorValue] = useState(draft.editor?.value ?? "");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const editorInputRef = useRef<HTMLInputElement>(null);
 
   const currentArgs = entriesToArgs(entries);
@@ -90,7 +91,8 @@ export function CustomArgsTab({
 
   // Keep the unsaved list and the open editor's text across unmount. No edit
   // relative to the server is no draft. A failed save leaves it; once the
-  // list matches the server it drops here.
+  // list matches the server it drops here. Not mid-save: an optimistic parent
+  // update matches the list to the server before the save is confirmed.
   const argsKey = JSON.stringify(currentArgs);
   const editedIndex =
     editor?.kind === "edit"
@@ -104,7 +106,7 @@ export function CustomArgsTab({
   );
   useEffect(() => {
     setDraft({
-      args: dirty ? JSON.parse(argsKey) : null,
+      args: dirty || savingRef.current ? JSON.parse(argsKey) : null,
       editor: JSON.parse(editorKey),
     });
   }, [dirty, argsKey, editorKey, setDraft]);
@@ -150,6 +152,7 @@ export function CustomArgsTab({
   };
 
   const handleSave = async () => {
+    savingRef.current = true;
     setSaving(true);
     try {
       const submitted = currentArgs;
@@ -168,6 +171,7 @@ export function CustomArgsTab({
           : t(($) => $.tab_body.custom_args.save_failed_toast),
       );
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
