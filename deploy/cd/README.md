@@ -306,6 +306,8 @@ bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
 python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
+python3 deploy/cd/test-authorize-c00.py
+python3 deploy/cd/test-post-deploy-readback.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
 bash deploy/cd/test-quiescence.sh
@@ -641,7 +643,8 @@ change as part of D2 work.
 `cd-deploy.yml` runs automatically after a successful `cd-qualification` run
 for a `main` commit, and can still be dispatched by hand. The automatic path
 adds `candidate-preflight` and `prepare-release-candidate`, which the manual
-path does not need. The run title names the qualifying candidate SHA rather
+path does not need (CHE-4582: the automatic path deploys only for an
+authorized merger, below). The run title names the qualifying candidate SHA rather
 than the workflow run's default-branch SHA.
 
 `candidate-preflight` runs on X99 without a deployment environment or
@@ -673,18 +676,43 @@ A finished older build is not wasted: `require-current.sh` accepts a qualified
 older `main` commit that is a forward move from C00. This group is separate from
 every approval and C00 mutation lock.
 
-Deploy is dispatch-only (CHE-4495). A push to `main` builds, runs
-`candidate-preflight` and, when eligible, `notify-approval`, then stops: no C00
-job runs. The notice links to the workflow's dispatch page with the full
+The owner's merge deploys (CHE-4582, D5 = A); everything else builds and stops
+(CHE-4495). After a successful qualification, `authorize-c00` asks the GitHub
+API which pull request has the commit as its `main` merge commit and who merged
+it. If the merger is `congvc-dev` or a login in the repository variable
+`C00_DEPLOY_AUTHORIZERS` (comma list; CHE-3123 sets the agent merge identity
+there, no workflow change), and `candidate-preflight` found the commit
+eligible, `prepare-release-candidate`, `admission` and `deploy` run with no
+dispatch click. A merge by anyone else, or a commit with no merged `main` pull
+request, runs `candidate-preflight` and `notify-approval` and stops: no C00 job
+runs. The notice links to the workflow's dispatch page with the full
 `candidate_sha`. The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
 
-The gate is `authorize-c00`, a job that runs only on `workflow_dispatch` and
-exits 1 unless `github.triggering_actor` is `congvc-dev`. It has no environment
-and no secrets. Every C00-touching job (`prepare-release-candidate`,
-`admission`, `deploy`) depends on it, so a dispatch by anyone else fails before
-any C00 step. The `c00-runtime` deployment-branch policy allows `main` only, so
-a dispatch from another ref gets no `c00-runtime` secrets. A dispatch with
+The gate is `authorize-c00` (`deploy/cd/authorize-c00.py`, checked out from the
+workflow revision, never from a pull request). It has no environment and no C00
+secrets. For `workflow_dispatch` it exits 1 unless `github.triggering_actor` is
+`congvc-dev` or in `C00_DEPLOY_AUTHORIZERS`. For a qualification it never
+fails for a non-authorized merger: it outputs `authorized=false` and every C00
+job is skipped; a GitHub API error fails the job closed. Every C00-touching job
+(`prepare-release-candidate`, `admission`, `deploy`) keys on its
+`authorized` output, so another actor's dispatch fails before any C00 step.
+The `c00-runtime` deployment-branch policy allows `main` only, so a dispatch
+from another ref gets no `c00-runtime` secrets.
+
+After `deploy` succeeds, `readback` (outside the C00 lock) runs
+`post-deploy-readback.sh` for 15 minutes (CHE-2365): health of the public route
+and upstream, then the running commit (the deployed one or a descendant) and the
+image digests against the admitted manifest. A failed `deploy` or `readback`
+suspends automatic deploys: the next `authorize-c00` finds the latest finished
+`main` run of this workflow with a failed `deploy`/`readback` job and builds
+without deploying. A later successful deploy, such as the owner's dispatch,
+lifts it; a dispatch is never suspended. A failed cutover rolls back by digest
+inside `cutover.sh`; a failed readback after a good cutover suspends but does
+not roll back by itself. Merge-queue merges report the enqueuer or merger as
+`merged_by`; a merge by a bot not on the list builds and stops.
+
+A dispatch with
 `candidate_sha` looks up the successful `main` push qualification run and issues
 the release candidate itself; manual evidence paths remain for explicit
 admitted manifests. The `c00-production` environment is no longer used by this

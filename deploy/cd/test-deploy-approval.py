@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""C00 deploys only on dispatch by the owner; a push builds and stops (CHE-4495)."""
+"""C00 deploys on the owner's dispatch or the owner's merge; any other actor builds and stops (CHE-4495, CHE-4582)."""
 import json
 import os
 from pathlib import Path
@@ -49,35 +49,48 @@ class DeployApprovalTests(unittest.TestCase):
                 todo.extend(needs(self.jobs[current]))
         return seen
 
-    def gate_run(self, actor):
-        step = self.jobs[GATE]["steps"][0]
-        return subprocess.run(["bash", "-c", step["run"]], env={**os.environ, "ACTOR": actor},
-                              text=True, capture_output=True)
-
     def test_no_job_uses_the_reviewer_environment(self):
         # Required reviewers do not gate on a private Team repo (silent no-op).
         self.assertEqual([n for n, j in self.jobs.items() if j.get("environment") == PROTECTED], [])
 
-    def test_gate_is_dispatch_only_and_has_no_environment(self):
+    def test_gate_runs_for_dispatch_and_for_a_successful_qualification_only(self):
         gate = self.jobs[GATE]
-        self.assertEqual(gate["if"], "github.event_name == 'workflow_dispatch'")
+        self.assertIn("workflow_dispatch", gate["if"])
+        self.assertIn("workflow_run", gate["if"])
+        self.assertIn("conclusion == 'success'", gate["if"])
         self.assertNotIn("environment", gate)
-        self.assertEqual(gate["steps"][0]["env"]["ACTOR"], "${{ github.triggering_actor }}")
+        self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read"})
+        step = next(s for s in gate["steps"] if "authorize-c00.py" in s.get("run", ""))
+        self.assertEqual(step["env"]["TRIGGERING_ACTOR"], "${{ github.triggering_actor }}")
+        self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
+        self.assertEqual(step["env"]["HEAD_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(step["env"]["EXTRA_AUTHORIZERS"], "${{ vars.C00_DEPLOY_AUTHORIZERS }}")
+        self.assertEqual(set(gate["outputs"]), {"authorized", "candidate_sha"})
 
-    def test_dispatch_by_another_actor_fails_at_the_gate(self):
-        self.assertEqual(self.gate_run(OWNER).returncode, 0)
-        for actor in ["someone-else", "congvc-dev-bot", "", OWNER + "x"]:
-            with self.subTest(actor=actor):
-                self.assertNotEqual(self.gate_run(actor).returncode, 0)
+    def test_gate_checks_out_only_the_authorizer_from_the_workflow_revision(self):
+        checkout = next(s for s in self.jobs[GATE]["steps"] if s.get("uses", "").startswith("actions/checkout"))
+        self.assertEqual(checkout["with"]["sparse-checkout"], "deploy/cd/authorize-c00.py")
+        self.assertFalse(checkout["with"]["persist-credentials"])
+        self.assertNotIn("ref", checkout["with"])  # never a PR or dispatch-supplied ref
 
-    def test_push_path_stops_after_preflight_and_notice(self):
-        # workflow_run: the gate is skipped, so every job behind it is skipped too.
-        for name in ["prepare-release-candidate", "admission", "deploy"]:
+    def test_every_c00_job_runs_only_for_an_authorized_candidate(self):
+        # The skipped-gate path is gone; "authorized" is the output the chain keys on.
+        for name in ["prepare-release-candidate", "admission"]:
             with self.subTest(job=name):
-                self.assertIn(GATE, self.ancestors(name))
-                self.assertIn("workflow_dispatch", json.dumps(self.jobs[GATE]["if"]))
-        self.assertIn("workflow_run", self.jobs["notify-approval"]["if"])
-        self.assertEqual(needs(self.jobs["notify-approval"]), ["candidate-preflight"])
+                self.assertIn("needs.authorize-c00.outputs.authorized == 'true'", self.jobs[name]["if"])
+        self.assertIn(GATE, needs(self.jobs["deploy"]) + sorted(self.ancestors("deploy")))
+
+    def test_automatic_path_needs_an_eligible_preflight_and_dispatch_does_not(self):
+        prepare = self.jobs["prepare-release-candidate"]
+        self.assertIn("candidate-preflight", needs(prepare))
+        self.assertIn("needs.candidate-preflight.outputs.eligible == 'true'", prepare["if"])
+        self.assertIn("github.event_name == 'workflow_dispatch'", prepare["if"])
+
+    def test_push_path_notice_only_for_candidates_nobody_authorized(self):
+        notify = self.jobs["notify-approval"]
+        self.assertEqual(sorted(needs(notify)), sorted(["candidate-preflight", GATE]))
+        self.assertIn("workflow_run", notify["if"])
+        self.assertIn("needs.authorize-c00.outputs.authorized != 'true'", notify["if"])
 
     def test_notice_links_the_dispatch_page_with_the_full_candidate(self):
         notify = json.dumps(self.jobs["notify-approval"]["steps"])
@@ -85,10 +98,23 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("workflow_run.head_sha", notify)
         self.assertNotIn("inputs.ref", notify)
 
+    def test_readback_follows_the_deploy_for_fifteen_minutes_outside_the_lock(self):
+        readback = self.jobs["readback"]
+        self.assertEqual(needs(readback), ["admission", "deploy"])
+        self.assertEqual(readback["runs-on"], C00_RUNNER)
+        self.assertEqual(readback["environment"], RUNTIME)
+        self.assertNotIn("concurrency", readback)
+        self.assertIn("needs.deploy.result == 'success'", readback["if"])
+        text = yaml.safe_dump(readback)
+        self.assertIn("post-deploy-readback.sh", text)
+        self.assertIn("900", text)
+
     def test_dispatch_with_candidate_sha_issues_the_candidate_itself(self):
         prepare = self.jobs["prepare-release-candidate"]
-        self.assertIn("inputs.candidate_sha != ''", prepare["if"])
+        self.assertIn("needs.authorize-c00.outputs.candidate_sha != ''", prepare["if"])
         self.assertIn(GATE, needs(prepare))
+        self.assertNotIn("inputs.candidate_sha", json.dumps(self.jobs["admission"]))  # one source: the gate output
+        self.assertIn("candidate_sha == ''", self.jobs["admission"]["if"])  # evidence-path dispatch skips prepare
         self.assertNotIn("github.event.workflow_run", json.dumps(prepare))
         self.assertIn("candidate_sha", self.workflow[True]["workflow_dispatch"]["inputs"])
         resolve = prepare["steps"][0]
@@ -147,7 +173,7 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertNotIn("require-current.sh", yaml.safe_dump(self.workflow))
         self.assertNotIn("outputs.current", yaml.safe_dump(self.workflow))
         self.assertEqual(needs(self.jobs["deploy"]), ["admission"])
-        self.assertIn("needs.authorize-c00.result == 'success'", self.jobs["admission"]["if"])
+        self.assertIn("needs.authorize-c00.outputs.authorized == 'true'", self.jobs["admission"]["if"])
 
     def test_gate_holds_no_secrets(self):
         self.assertNotIn("secrets.C00", yaml.safe_dump(self.jobs[GATE]))
