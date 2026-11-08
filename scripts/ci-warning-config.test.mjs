@@ -87,6 +87,7 @@ test("dependency-review blocks a PR that adds a high or critical dependency and 
   assert.match(job, /uses: actions\/dependency-review-action@[0-9a-f]{40} # v\d+\.\d+\.\d+/)
   assert.match(job, /if: \$\{\{ github\.event_name == 'pull_request' \}\}/)
   assert.match(job, /fail-on-severity: high/)
+  assert.match(job, /fail-on-scopes: runtime, development\n/)
   assert.match(job, /comment-summary-in-pr: never/)
   assert.doesNotMatch(job, /secrets\.|: write/)
   const backend = source.match(/^  backend:\n(?:(?:    .*|)\n)+/m)[0]
