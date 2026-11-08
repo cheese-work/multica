@@ -62,7 +62,9 @@ describe("IssueDecisionBanner", () => {
     expect(screen.queryByText("Ask other")).toBeNull();
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveAttribute("href", expect.stringContaining("#comment-c1"));
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /Hold/ }));
+    await user.click(screen.getByRole("radio", { name: /Hold/ }));
+    expect(api.answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledWith("r1", { option: "Hold" }));
   });
 
@@ -80,7 +82,7 @@ describe("IssueDecisionBanner", () => {
     expect(items[0]).toHaveTextContent("CHE-11: Merge the stack?");
     expect(items[1]).toHaveTextContent("CHE-12: Cut the release?");
     expect(items[1]).toHaveTextContent("Ship it: Cuts.");
-    expect(screen.getByRole("button", { name: /Hold/ })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Hold/ })).toBeInTheDocument();
   });
 
   it("acknowledges the covered cards when a batch card is answered on the issue page", async () => {
@@ -92,7 +94,9 @@ describe("IssueDecisionBanner", () => {
       ],
     })]);
     show();
-    await userEvent.setup().click(await screen.findByRole("button", { name: /Hold/ }));
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("radio", { name: /Hold/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(api.answerDecisionRequest).toHaveBeenCalledTimes(1));
     expect(api.answerDecisionRequest.mock.calls[0]?.[0]).toBe("batch");
     expect(api.answerDecisionRequest.mock.calls[0]?.[1]).toEqual({ option: "Hold", covers_ack: expect.stringMatching(/^[0-9a-f]{64}$/) });

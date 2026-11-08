@@ -79,9 +79,12 @@ multica issue budget get <issue-id> --output json
 - `multica issue budget raise [--runs N]` and `multica issue budget top-up`
   open a spend decision request and print its approve URL. They change nothing
   themselves: an owner approves with a passkey in the web app, which a CLI
-  credential cannot do. Both refuse a task token: a person runs them. An agent
-  that hit the cap reports the blocker and asks a person to run one of these;
-  it never raises its own budget.
+  credential cannot do.
+- With a PAT, a person runs them and the request is the A1d spend request.
+- With a task token, an agent that hit the cap runs the same command (add
+  `--for <user-id>` inside an issue task). It creates an action proposal
+  (`decision propose`, see `decisions.md`) and prints the card link. The agent
+  never raises its own budget: the proposal waits for a person's approval.
 
 ## Inbound webhook endpoints
 

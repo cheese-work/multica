@@ -28,6 +28,32 @@ One row per event in `system1_observation` (migrations `936` to `939`).
 | `choice_key`, `chosen_index`, `answered_at`, `time_to_answer_ms` | Chosen handler (`agent:<id>` or `member:<id>`) | The human answer. `choice_key` is `recommended`, `other`, `option` or `free_text`. |
 | `reversed_at` | A person reassigned the issue within 1 hour | The answer was disclaimed |
 
+### Test-first waiver ask (CHE-4383 B2a)
+
+A waiver ask is an ordinary decision ask with a closed contract. System 1
+reads the typed fields, never prose. The ask file carries:
+
+- `topic`: `test_first_waiver`, the only value. The CLI flag
+  `multica decision ask --topic test_first_waiver` must equal it.
+- `waiver`: `repo` (`owner/name`), `head_sha` (40 lowercase hex),
+  `red_impossible_category` (`no_behavior_change`, `missing_test_harness`,
+  `historical_commit`, `external_dependency`, `other`), `weaker_evidence_kind`
+  (`characterization_test`, `manual_repro`, `static_check`, `review_only`),
+  `cross_lab_pass_on_head` and `tests_retrospective` (both booleans, both
+  required) and `change_kind` (`docs`, `tests_only`, `dependency`,
+  `new_file`, `code`).
+- `options[].option_key`: exactly two options, one `waive` and one `refuse`.
+
+The server refuses with HTTP 400 any other topic, a `waiver` block or an
+`option_key` without the topic, an unknown or missing waiver field, a bad
+value, or any option set other than `waive` plus `refuse`. Nothing is stored
+on refusal.
+
+The decision row's `inputs` then also holds `topic`, `waiver` and
+`option_keys`. `option_keys` follows the stored order, after the server moves
+the recommended option first. So `option_keys[0]` is the recommended key.
+No migration: these live in the existing `inputs` jsonb.
+
 How it is written:
 
 - **Decision, ask side:** `recordDecisionObservation` runs in the request
@@ -88,6 +114,8 @@ is **not built**. Add it only if the "other" slice stays too small to judge
 
 `GET /api/decisions/shadow-report` (workspace member).
 
+CLI: `multica decision shadow-report` (JSON output; any workspace member).
+
 - Per kind and class: decided, predicted, agreed, the same three for the
   "other" slice, reversed, median time to answer.
 - `ready` is true once a kind has 100 decided rows. Report precision and
@@ -139,7 +167,8 @@ Predict(precedents []string) Prediction
 - It holds no ask text. Option labels are ask text and can carry secrets or
   DM content, so only the option count and the recommended position are kept.
   A test posts a label that looks like a key and checks that the whole row
-  holds no label, decision or context text.
+  holds no label, decision or context text. The waiver contract keeps this:
+  its fields are closed values and option keys, with no free-text reason.
 - It holds no DM message text and no answer free text. `free_text` is a key,
   not the content.
 - Routing rows hold the workflow name and status key as the class. Both are

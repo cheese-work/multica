@@ -6094,6 +6094,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
 			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
+			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
@@ -6237,6 +6244,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					"issue_id", util.UUIDToString(t.IssueID),
 					"error", gerr,
 				)
+				createRetry = false
+			}
+		}
+		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
 				createRetry = false
 			}
 		}
@@ -6653,6 +6669,43 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
+	if err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6838,6 +6891,13 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil
