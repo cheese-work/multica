@@ -11,6 +11,7 @@ import type { ApiClient } from "../api/client";
 import {
   useCancelChatWakeup,
   useConsumeChatDraftRestore,
+  useMarkChatSessionUnread,
   useSetChatSessionArchived,
   useSetChatSessionProject,
 } from "./mutations";
@@ -294,5 +295,60 @@ describe("useCancelChatWakeup", () => {
     await act(() => result.current.mutateAsync({ sessionId: "s1", wakeupId: "w1" }).catch(() => undefined));
 
     expect(qc.getQueryData<{ id: string }[]>(chatKeys.wakeups("s1"))?.map((w) => w.id)).toEqual(["w1"]);
+  });
+});
+
+describe("useMarkChatSessionUnread", () => {
+  let qc: QueryClient;
+  let markChatSessionUnread: ReturnType<typeof vi.fn<(id: string) => Promise<void>>>;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    markChatSessionUnread = vi.fn();
+    setApiInstance({ markChatSessionUnread } as unknown as ApiClient);
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("optimistically shows at least one unread message", async () => {
+    let finish: () => void = () => {};
+    markChatSessionUnread.mockReturnValue(new Promise<void>((resolve) => (finish = resolve)));
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
+      makeSession({ has_unread: false, unread_count: 0 }),
+    ]);
+    const { result } = renderHook(() => useMarkChatSessionUnread(), { wrapper: createWrapper(qc) });
+
+    let pending: Promise<void> = Promise.resolve();
+    await act(async () => {
+      pending = result.current.mutateAsync("s1");
+    });
+
+    const row = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!;
+    expect(markChatSessionUnread).toHaveBeenCalledWith("s1");
+    expect(row.has_unread).toBe(true);
+    expect(row.unread_count).toBe(1);
+    await act(async () => {
+      finish();
+      await pending;
+    });
+  });
+
+  it("keeps a larger unread count and rolls back when the server refuses", async () => {
+    markChatSessionUnread.mockRejectedValue(new Error("nope"));
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions(WS_ID), [
+      makeSession({ has_unread: false, unread_count: 0 }),
+    ]);
+    const { result } = renderHook(() => useMarkChatSessionUnread(), { wrapper: createWrapper(qc) });
+
+    await act(async () => {
+      await result.current.mutateAsync("s1").catch(() => {});
+    });
+
+    const row = qc.getQueryData<ChatSession[]>(chatKeys.sessions(WS_ID))![0]!;
+    expect(row.has_unread).toBe(false);
+    expect(row.unread_count).toBe(0);
   });
 });

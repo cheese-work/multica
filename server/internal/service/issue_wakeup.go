@@ -1170,6 +1170,18 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
+	// A waiver follow-up check runs after release, when its issue is usually done.
+	closedReason := "Wakeup disabled: issue closed or permission unavailable"
+	if w.FollowupInstanceID.Valid {
+		active = true
+		recorded, err := waiverFollowupRecorded(ctx, tx, w)
+		if err != nil {
+			return err
+		}
+		if recorded {
+			active, closedReason = false, "Wakeup disabled: its follow-up result is recorded"
+		}
+	}
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
@@ -1182,7 +1194,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if authErr != nil && !errors.Is(authErr, ErrWakeupForbidden) {
 			return authErr
 		}
-		_, err = tx.Exec(ctx, "UPDATE issue_wakeup SET enabled=false,disabled_at=COALESCE(disabled_at,now()),last_error=$2 WHERE id=$1", w.ID, "Wakeup disabled: issue closed or permission unavailable")
+		_, err = tx.Exec(ctx, "UPDATE issue_wakeup SET enabled=false,disabled_at=COALESCE(disabled_at,now()),last_error=$2 WHERE id=$1", w.ID, closedReason)
 		if err != nil {
 			return err
 		}
@@ -1964,4 +1976,19 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 		return nil
 	}
 	return s.Tasks.WorkflowEdges(ctx, w)
+}
+
+// waiverFollowupRecorded reports whether this waiver's own result comment exists.
+// The marker carries the decision instance, so another waiver's result on the
+// same issue does not end this check. Only a run this wakeup dispatched can
+// record the result: the comment's source task must carry this wakeup's id and
+// belong to the agent that wrote it. A marker from a member, another agent, an
+// unrelated run of the same agent or no run at all ends nothing.
+func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (bool, error) {
+	var recorded bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM comment c JOIN agent_task_queue t ON t.id=c.source_task_id
+ WHERE c.issue_id=$1 AND c.author_type='agent' AND c.author_id=$3 AND starts_with(c.content, $2)
+ AND t.agent_id=$3 AND t.issue_id=$1 AND t.context->>'wakeup_id'=$4)`,
+		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID, util.UUIDToString(w.ID)).Scan(&recorded)
+	return recorded, err
 }

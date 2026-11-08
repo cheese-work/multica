@@ -304,3 +304,46 @@ func TestIssueWakeupCLISendsDecisionPurposeAndAgentFilter(t *testing.T) {
 		}
 	}
 }
+
+// The CLI has no definition commands: scoped defaults are managed in the web
+// and desktop apps or the API. `list` and `get` must still show where a
+// default-derived instance came from and its disabled/paused state.
+func TestIssueWakeupCLIListKeepsDefaultOriginAndState(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const issue = "a57c0511-1ebc-471d-a314-438ca16cc75d"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":"w1","enabled":false,"paused_reason":"loop","default_rule_key":"pr_merged","default_scope_kind":"project","default_scope_id":"p1"},{"id":"w2","enabled":true,"default_rule_key":null}]`))
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	cmd := newIssueWakeupCommand()
+	cmd.SetArgs([]string{"list", issue})
+	runErr := cmd.Execute()
+	os.Stdout = stdout
+	_ = w.Close()
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	var out bytes.Buffer
+	_, _ = out.ReadFrom(r)
+	var rows []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &rows); err != nil || len(rows) != 2 {
+		t.Fatalf("list output: %v %s", err, out.String())
+	}
+	d := rows[0]
+	if d["default_rule_key"] != "pr_merged" || d["default_scope_kind"] != "project" || d["default_scope_id"] != "p1" || d["enabled"] != false || d["paused_reason"] != "loop" {
+		t.Errorf("default-derived row lost its origin or state: %+v", d)
+	}
+	if rows[1]["default_rule_key"] != nil {
+		t.Errorf("local row claims an origin: %+v", rows[1])
+	}
+}

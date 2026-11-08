@@ -191,6 +191,9 @@ func cancelRaisedPastNonOwner(ctx context.Context, queries *db.Queries, raised d
 	if err != nil {
 		return decisionCancelOutcome{}, err
 	}
+	if err := withdrawCoveredAnswers(ctx, queries, raised, &withdrawn, userID); err != nil {
+		return decisionCancelOutcome{}, err
+	}
 	if len(withdrawn.Comments) > 0 && root != nil {
 		withdrawn.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: raised.IssueID, WorkspaceID: raised.WorkspaceID})
 		if err != nil {
@@ -206,5 +209,8 @@ func (handler *Handler) publishRaisedPastNonOwner(workspaceID, userID pgtype.UUI
 	if out.withdrawal.Answer.ID.Valid {
 		handler.TaskService.PublishThreadUnresolvedOnReply(out.withdrawal.ClearedComments, uuidToString(workspaceID), "member", uuidToString(userID))
 		handler.publishDecisionAnswerUpdated(uuidToString(workspaceID), "member", uuidToString(userID), out.withdrawal.Answer.ID, request.IssueID, decisionStateDisclaimed)
+	}
+	for _, item := range out.withdrawal.Covered {
+		handler.publishWithdrawalEvents(uuidToString(workspaceID), "member", uuidToString(userID), item, nil)
 	}
 }

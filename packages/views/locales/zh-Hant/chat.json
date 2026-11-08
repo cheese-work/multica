@@ -11,7 +11,33 @@
     "loading": "正在載入待處理請求…",
     "error": "無法載入待處理請求。",
     "retry": "重試",
-    "empty": "沒有待處理請求。"
+    "empty": "沒有待處理請求。",
+    "decisions": "待決定事項",
+    "show_all": "顯示全部（{{count}}）",
+    "show_less": "收合",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提問",
+      "later": "提醒",
+      "unseen": "未讀",
+      "decision": "決定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黃色",
+      "red": "紅色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分鐘",
+      "hours_other": "{{count}} 小時",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分類",
+      "replies_other": "{{count}} 則回覆"
+    }
   },
   "page": {
     "title": "聊天",
@@ -140,6 +166,12 @@
     "copied_count_other": "已複製 {{count}} 條消息",
     "fork_hint": "發送一條消息即可開始此分支。",
     "continuation_summary": "對話摘要",
+    "compaction_summary_other": "給智能體的摘要 · {{count}} 個詞",
+    "compaction_summary_show": "顯示",
+    "compaction_summary_hide": "隱藏",
+    "compaction_open_question": "待回答的問題：{{ask}}",
+    "compaction_divider": "已壓縮 · {{time}} · {{tokens}} 個 token",
+    "compaction_divider_no_tokens": "已壓縮 · {{time}}",
     "earlier_dm": "較早的私信",
     "quote_message": "引用",
     "speaker_you": "你",
@@ -191,6 +223,7 @@
     "unread": "未讀",
     "no_previous": "暫無歷史對話",
     "untitled": "新對話",
+    "recent": "最近",
     "my_agents": "我的智慧體",
     "others": "其他",
     "no_agents": "暫無智慧體",
@@ -304,21 +337,25 @@
     "archive_failed": "無法封存此對話",
     "unarchive_failed": "無法取消封存此對話",
     "pin_failed": "無法更新置頂狀態",
+    "unseen": "標記為未讀",
+    "unseen_failed": "無法將此對話標記為未讀",
     "undo": "復原"
   },
   "header": {
-    "view_profile": "檢視智慧體資料",
     "rename": "重新命名會話",
     "delete": "刪除會話",
     "archive": "歸檔會話",
     "unarchive": "取消歸檔",
     "context_meter": "{{window}} 中的 {{pct}}%",
     "context_meter_warning": "下一次回復後將壓縮",
+    "context_meter_threshold": "達到 {{threshold}} 時壓縮(目前 {{now}})",
     "compact_now": "立即壓縮",
     "more_actions": "更多操作",
+    "view_profile": "查看智慧體資料",
     "statistics": "統計",
     "pin": "置頂對話",
     "unpin": "取消置頂對話",
+    "unseen": "標記為未讀",
     "preset": { "label": "預設", "inherit": "繼承", "base": "基礎" }
   },
   "scheduled": {
@@ -355,6 +392,9 @@
   "decision": {
     "request_title": "決策請求",
     "asked_by": "來自 {{agent}}",
+    "answered_by_batch": "{{issue}}:已由批次卡片回答",
+    "covers_batch": "此回答關閉的卡片:{{count}}",
+    "covers_unavailable": "無法載入此回答將關閉的決定。請重新整理後再回答。",
     "request_label": "決策請求：{{state}}",
     "request_state": {
       "open": "待答復",
@@ -371,7 +411,12 @@
     "answer_text": "輸入回答",
     "answer_note": "新增備註（選填）",
     "answer_chose": "已選擇：{{option}}",
+    "option_recommended": "推薦",
+    "option_pros": "優點",
+    "option_cons": "缺點",
+    "option_cost": "成本或時間",
     "answer_send": "傳送",
+    "answer_clear": "清除選擇",
     "answer_error": "傳送失敗，請重試。",
     "answer_helper": "傳送會將你的回答發佈到 {{issue}}。給 DM 代理的問題請寫在下方訊息框。",
     "answer_helper_issue": "傳送會將你的回答發佈到 {{issue}}。",
@@ -380,6 +425,10 @@
     "answer_offline": "你已離線。回答已保留，重新連線後即可傳送。",
     "answer_conflict": "此卡片已無法接收你的回答，例如已被先回答。你的草稿未被發佈。你的草稿：",
     "answer_discard": "捨棄草稿",
+    "action_unavailable": "無法顯示詳細資料",
+    "action_approve": "使用通行金鑰核准",
+    "action_preview": "核准後將變更的內容",
+    "agent_note": "代理備註（未驗證）",
     "answer_send_passkey": "使用通行金鑰傳送",
     "answer_open_browser": "在瀏覽器中開啟",
     "answer_passkey_needed": "此回答需要你的通行金鑰。再次傳送以確認。",

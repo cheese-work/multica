@@ -109,3 +109,58 @@ func TestInMemoryUpdateStore_RejectsConcurrentActiveUntilTerminal(t *testing.T) 
 		t.Fatalf("create after terminal should succeed: %v", err)
 	}
 }
+
+func TestInMemoryUpdateStore_SetProgressPersistsOnRunning(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryUpdateStore()
+
+	req, err := store.Create(ctx, "rt-1", "v1.2.3", "user-1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := store.PopPending(ctx, "rt-1"); err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+
+	want := UpdateProgress{Phase: "download", BytesDone: 512, BytesTotal: 2048}
+	if err := store.SetProgress(ctx, req.ID, want); err != nil {
+		t.Fatalf("set progress: %v", err)
+	}
+	got, err := store.Get(ctx, req.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Progress == nil || *got.Progress != want {
+		t.Fatalf("progress = %+v, want %+v", got.Progress, want)
+	}
+}
+
+func TestInMemoryUpdateStore_SetProgressIgnoredOutsideRunning(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryUpdateStore()
+	progress := UpdateProgress{Phase: "download", BytesDone: 1, BytesTotal: 2}
+
+	pending, err := store.Create(ctx, "rt-1", "v1.2.3", "user-1")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.SetProgress(ctx, pending.ID, progress); err != nil {
+		t.Fatalf("set progress on pending: %v", err)
+	}
+	if got, _ := store.Get(ctx, pending.ID); got.Progress != nil {
+		t.Fatalf("pending request stored progress: %+v", got.Progress)
+	}
+
+	if _, err := store.PopPending(ctx, "rt-1"); err != nil {
+		t.Fatalf("pop: %v", err)
+	}
+	if err := store.Complete(ctx, pending.ID, "done"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := store.SetProgress(ctx, pending.ID, progress); err != nil {
+		t.Fatalf("set progress on terminal: %v", err)
+	}
+	if got, _ := store.Get(ctx, pending.ID); got.Progress != nil {
+		t.Fatalf("terminal request stored late progress: %+v", got.Progress)
+	}
+}

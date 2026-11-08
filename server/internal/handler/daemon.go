@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -3084,6 +3085,36 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// resp was snapshotted before this write; report what is now stored.
 		resp.ClaimedModel = &preset.Settings.Model
 	}
+	harnessProfile, err := h.resolveClaimHarnessProfile(r.Context(), agent)
+	if err != nil {
+		slog.Error("daemon claim: resolve harness profile failed; preserving task for redelivery",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "error", err)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			&claimBuildFailure{outcome: "error_harness_profile", status: http.StatusInternalServerError, message: "failed to resolve harness profile"}
+	}
+	// Anything other than personal restricts the launch, so only a daemon that
+	// advertises runtime-profile-v1 may receive it: an older daemon drops the
+	// field and would run the user's personal config instead (CHE-3706).
+	if harnessProfile != service.HarnessProfilePersonal && !requestHasClientCapability(r, protocol.DaemonCapabilityRuntimeProfileV1) {
+		slog.Error("daemon claim: daemon lacks runtime-profile capability; failing task instead of launching unrestricted",
+			"task_id", uuidToString(task.ID), "agent_id", uuidToString(agent.ID), "harness_profile", harnessProfile)
+		return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+			h.failClaimedTaskBeforeLaunch(r.Context(), task,
+				"This agent's runtime profile is "+harnessProfile+", but the daemon that claimed the task does not support runtime profiles. Update the daemon, or set the agent's runtime profile to personal.",
+				taskfailure.ReasonEnvironmentPrepareFailed, "error_harness_profile_unsupported", http.StatusConflict, "daemon does not support the agent's runtime profile")
+	}
+	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
+	// claim time; never stored in agent env, and the agent's own env wins.
+	if runtime.Provider == "claude" {
+		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
+			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+			if customEnv == nil {
+				customEnv = map[string]string{}
+			}
+			maps.Copy(customEnv, extra)
+		}
+	}
 	resp.Agent = &TaskAgentData{
 		ID:                    uuidToString(agent.ID),
 		Name:                  agent.Name,
@@ -3095,6 +3126,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		ThinkingLevel:         preset.Settings.ThinkingLevel,
 		ServiceTier:           preset.Settings.ServiceTier,
 		RuntimeConfig:         runtimeConfig,
+		HarnessProfile:        harnessProfile,
 		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
 	// Snapshot the agent's persistent OpenClaw model override for this claim.
@@ -3737,6 +3769,17 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		} else if !errors.Is(deliveryErr, pgx.ErrNoRows) {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
 				h.rejectClaimSourceLoad(r.Context(), task, deliveryErr, "channel task delivery", uuidToString(task.ID))
+		}
+		// The prompt lists the DM's open asks so the agent can name one in `multica chat reply-state`.
+		openAsks, asksErr := h.Queries.ListOpenChatAttentionAsksOfAgent(r.Context(), db.ListOpenChatAttentionAsksOfAgentParams{
+			ChainRootSessionID: cs.ChainRootSessionID, UserID: cs.CreatorID, AgentID: task.AgentID,
+		})
+		if asksErr != nil {
+			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
+				h.rejectClaimSourceLoad(r.Context(), task, asksErr, "chat open asks", uuidToString(task.ChatSessionID))
+		}
+		for _, id := range openAsks {
+			resp.ChatOpenAskIDs = append(resp.ChatOpenAskIDs, uuidToString(id))
 		}
 		// A web chat can opt into the same durable project context as an
 		// issue-bound task.
@@ -7478,4 +7521,19 @@ func (h *Handler) chatPointerIsCurrent(ctx context.Context, cs db.ChatSession) b
 		return false
 	}
 	return current
+}
+
+// resolveClaimHarnessProfile applies the agent override, then the workspace
+// default. An explicit agent value needs no workspace read. Otherwise a failed
+// read is an error: launching personal when the workspace default may be
+// managed would silently drop the isolation the workspace asked for.
+func (h *Handler) resolveClaimHarnessProfile(ctx context.Context, agent db.Agent) (string, error) {
+	if profile, ok := service.AgentHarnessProfile(agent.RuntimeConfig); ok {
+		return profile, nil
+	}
+	ws, err := h.Queries.GetWorkspace(ctx, agent.WorkspaceID)
+	if err != nil {
+		return "", fmt.Errorf("load workspace for harness profile: %w", err)
+	}
+	return service.ResolveHarnessProfile(ws.Settings, agent.RuntimeConfig), nil
 }

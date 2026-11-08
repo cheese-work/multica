@@ -133,6 +133,7 @@ import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
 import { useWakeupsFocus } from "./use-wakeups-focus";
 import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
+import { StatusHistoryButton } from "./status-history-button";
 import { WakeupsSection } from "./wakeups-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
@@ -3833,6 +3834,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           Hides itself when there are no runs to show. */}
       <ExecutionLogSection issueId={id} identifier={issue.identifier} issueTitle={issue.title} />
 
+      <StatusHistoryButton issueId={id} wsId={wsId} />
+
       {/* Details — creator and timestamps. Sits below the execution log
           because it is the least-read block in the sidebar: the values
           never change once the issue exists, while the log above it is
@@ -4832,8 +4835,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               spans the timeline — at column level `sticky bottom-0` can pin
               the composer across the whole scroll range.
 
-              Sticky treatment mirrors list-grid's sticky header, bottom
-              edge: opaque bg-background under/around the card (its rounded
+              Sticky treatment, bottom edge: opaque bg-background
+              under/around the card (its rounded
               corners would otherwise leak scrolled text), a 16px gradient
               fade above (exactly the mt-4 gap, so at rest it sits over the
               page background and is invisible), and pb-4 so the card floats
