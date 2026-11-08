@@ -101,6 +101,22 @@ test.describe("DM scroll position on iPhone (CHE-4638)", () => {
     });
   });
 
+  test("after Back, a row above that grows late does not move the restored message", async ({ page }) => {
+    await withScrolledDm(page, async ({ linked }) => {
+      const before = await targetTop(page);
+      await page.getByRole("link", { name: linked.identifier }).first().click();
+      await expect(page.getByRole("button", { name: linked.title, exact: true })).toBeVisible({ timeout: 30_000 });
+      await page.goBack();
+      await expect.poll(() => onScreen(page), { timeout: 15_000 }).toBe(true);
+      await settle(page);
+
+      // No wheel, touch or key input since Back: the reader is still.
+      await growRow(page, -2);
+      await page.waitForTimeout(1500);
+      expect(Math.abs((await targetTop(page)) - before)).toBeLessThanOrEqual(2);
+    });
+  });
+
   test("the offset holds while a message arrives and rows above and below resize", async ({ page }, testInfo) => {
     await withScrolledDm(page, async ({ sessionId, token }) => {
       const before = await targetTop(page);
@@ -120,16 +136,10 @@ test.describe("DM scroll position on iPhone (CHE-4638)", () => {
       const afterMessage = await drift();
 
       // Late height changes, as an image or a code block finishing layout does.
-      const grow = (offset: number) =>
-        page.evaluate((delta) => {
-          const rows = [...document.querySelectorAll<HTMLElement>("[data-message-id]")];
-          const i = rows.findIndex((n) => n.textContent?.includes("Target message 40"));
-          rows[i + delta]!.style.minHeight = "260px";
-        }, offset);
-      await grow(2);
+      await growRow(page, 2);
       await page.waitForTimeout(1500);
       const afterBelow = await drift();
-      await grow(-2);
+      await growRow(page, -2);
       await page.waitForTimeout(1500);
       const afterAbove = await drift();
 
@@ -140,6 +150,16 @@ test.describe("DM scroll position on iPhone (CHE-4638)", () => {
     });
   });
 });
+
+// A late height change, as an image or a code block finishing layout does.
+// `offset` is the row's distance from the target message (negative = above).
+async function growRow(page: Page, offset: number) {
+  await page.evaluate((delta) => {
+    const rows = [...document.querySelectorAll<HTMLElement>("[data-message-id]")];
+    const i = rows.findIndex((n) => n.textContent?.includes("Target message 40"));
+    rows[i + delta]!.style.minHeight = "260px";
+  }, offset);
+}
 
 async function settle(page: Page) {
   await page.waitForTimeout(1500);

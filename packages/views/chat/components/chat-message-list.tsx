@@ -149,6 +149,8 @@ interface ChatMessageListProps {
 const FLASH_MS = 1500;
 /** How long the jump keeps re-aiming while Virtuoso measures rows. */
 const JUMP_AIM_MS = 1000;
+/** How long a restored list takes to land before row growth above it is compensated. */
+const RESTORE_SETTLE_MS = 1000;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -437,13 +439,14 @@ export function ChatMessageList({
   // only a baseline; the live-end follow owns its own pin (CHE-4638).
   const isFollowingRef = useRef(isFollowing);
   isFollowingRef.current = isFollowing;
-  // Until the reader moves the list, Virtuoso and the live-end pin own the
-  // position (initial landing, restore); shifting then would fight them.
-  const userMoved = useRef(false);
+  // Until the reader moves the list, or a restored position has settled,
+  // Virtuoso and the live-end pin own the position (initial landing, restore);
+  // shifting then would fight them.
+  const shiftArmed = useRef(false);
   useEffect(() => {
     if (!scrollContainerEl) return;
     const mark = () => {
-      userMoved.current = true;
+      shiftArmed.current = true;
     };
     const events = ["wheel", "touchstart", "keydown"] as const;
     for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
@@ -466,7 +469,7 @@ export function ChatMessageList({
         const prev = rowHeights.current.get(target);
         rowHeights.current.set(target, height);
         if (prev === undefined || prev === height) continue;
-        if (!scroller || !userMoved.current || isFollowingRef.current()) continue;
+        if (!scroller || !shiftArmed.current || isFollowingRef.current()) continue;
         viewportTop ??= scroller.getBoundingClientRect().top;
         if (target.getBoundingClientRect().top < viewportTop) shift += height - prev;
       }
@@ -694,6 +697,15 @@ export function ChatMessageList({
   disengageRef.current = disengage;
   useEffect(() => {
     if (restoring) disengageRef.current();
+  }, [restoring, scrollContainerEl]);
+  // A restored reader may be still after Back: arm the row-above shift once
+  // Virtuoso has landed, without waiting for input (CHE-4638).
+  useEffect(() => {
+    if (!restoring || !scrollContainerEl) return;
+    const timer = setTimeout(() => {
+      shiftArmed.current = true;
+    }, RESTORE_SETTLE_MS);
+    return () => clearTimeout(timer);
   }, [restoring, scrollContainerEl]);
 
   // Until the list has landed, the range Virtuoso reports is not the reader's
