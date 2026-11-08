@@ -94,6 +94,7 @@ export type {
   DashboardFailureDaily,
   DashboardFailureByAgent,
   RuntimeUpdate,
+  RuntimeUpdateProgress,
   RuntimeUpdateStatus,
   RuntimeModel,
   RuntimeModelServiceTier,

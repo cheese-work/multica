@@ -3571,6 +3571,22 @@ type Workspace struct {
 	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
 }
 
+type WorkspaceAuditEvent struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	At                pgtype.Timestamptz `json:"at"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	ActorSource       string             `json:"actor_source"`
+	Kind              string             `json:"kind"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	Before            []byte             `json:"before"`
+	After             []byte             `json:"after"`
+	ExternalRequested []string           `json:"external_requested"`
+}
+
 type WorkspaceConfigSync struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	ID          pgtype.UUID        `json:"id"`
