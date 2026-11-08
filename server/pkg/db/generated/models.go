@@ -1335,6 +1335,16 @@ type DmProgressLaneEvent struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type DmProgressPending struct {
+	LineageID   pgtype.UUID        `json:"lineage_id"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	EventKind   string             `json:"event_kind"`
+	Immediate   bool               `json:"immediate"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ElevatedOp struct {
 	OpID        pgtype.UUID        `json:"op_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
