@@ -276,6 +276,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		writeError(w, http.StatusForbidden, errRecoveryCaused)
 		return
 	}
+	if errors.Is(err, service.ErrRecoveryNotAdmitted) {
+		writeError(w, http.StatusConflict, "recovery rerun not admitted: this failed run already has a recovery claim or the retry budget is spent")
+		return
+	}
 	var notConfirmed *service.StopNotConfirmedError
 	if errors.As(err, &notConfirmed) {
 		writeError(w, http.StatusConflict, notConfirmed.Error())

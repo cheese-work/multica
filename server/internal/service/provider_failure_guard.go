@@ -355,6 +355,23 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 	if attempt.SuccessEvidence {
 		changed, status = providerFailureSuccessState, pgtype.Int4{}
 	}
+	// CHE-4568: the recurring recovery claims through the shared store before
+	// it reserves. The run needs an issue to anchor the claim; one without
+	// keeps today's behaviour.
+	hold := &recoveryHold{}
+	if s.RecoveryClaims != nil {
+		failed, ferr := q.GetAgentTask(ctx, attempt.FailedTaskID)
+		if ferr != nil {
+			return false, fmt.Errorf("load failed task for recovery claim: %w", ferr)
+		}
+		admitted, cerr := s.claimRecovery(ctx, hold, failed.IssueID, failed.ID, RecoveryModeFreshReplay, int(failed.MaxAttempts))
+		if cerr != nil {
+			return false, fmt.Errorf("recovery claim: %w", cerr)
+		}
+		if !admitted {
+			return false, nil
+		}
+	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
 		FailedTaskID:     attempt.FailedTaskID,
 		TriggerKind:      attempt.Scope.Kind,
@@ -367,6 +384,7 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		RecoveryRunID:    recoveryRunID,
 		RecoveryTaskID:   recoveryTaskID,
 	})
+	s.finishRecoveryClaim(ctx, hold, recoveryTaskID, err == nil && rows == 1, err)
 	if err != nil {
 		return false, fmt.Errorf("reserve provider failure recovery: %w", err)
 	}

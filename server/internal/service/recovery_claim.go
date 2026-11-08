@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -191,4 +192,110 @@ func (s *RecoveryClaimStore) transition(ctx context.Context, id pgtype.UUID, set
 		return fmt.Errorf("recovery claim %s is not in a state that allows this transition", util.UUIDToString(id))
 	}
 	return nil
+}
+
+// Policy shared by every automatic retry writer, so one failed lineage spends
+// one budget whichever writer asks (CHE-4568).
+const (
+	recoveryPacedCap   = 2
+	recoverySpacing    = 2 * time.Minute
+	recoveryStaleClaim = 5 * time.Minute
+)
+
+// ErrRecoveryNotAdmitted: the claim store refused a recovery dispatch.
+var ErrRecoveryNotAdmitted = errors.New("recovery claim not admitted")
+
+// Discard drops a claim that never dispatched anything, so the failed run can
+// still be recovered later. Released claims stay: they record a decision.
+func (s *RecoveryClaimStore) Discard(ctx context.Context, id pgtype.UUID) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM recovery_claim WHERE id = $1 AND state = 'claimed'`, id)
+	if err != nil {
+		return fmt.Errorf("discard recovery claim: %w", err)
+	}
+	return nil
+}
+
+// ReapSettled frees paced slots nobody will settle: claims whose caller died
+// before dispatching, and submitted claims whose successor already finished.
+// Without it the paced cap saturates forever.
+func (s *RecoveryClaimStore) ReapSettled(ctx context.Context, workspaceID pgtype.UUID, now time.Time) error {
+	stale := now.Add(-recoveryStaleClaim)
+	for _, stmt := range []string{
+		`DELETE FROM recovery_claim WHERE workspace_id = $1 AND state = 'claimed' AND claimed_at < $2`,
+		`UPDATE recovery_claim c SET state = CASE q.status WHEN 'completed' THEN 'completed' ELSE 'failed' END, settled_at = now()
+		 FROM agent_task_queue q
+		 WHERE c.workspace_id = $1 AND c.state = 'submitted' AND c.claimed_at < $2 AND q.id = c.successor_task_id AND q.status IN ('completed', 'failed', 'cancelled')`,
+		`UPDATE recovery_claim SET state = 'reconciled', settled_at = now()
+		 WHERE workspace_id = $1 AND state = 'submitted' AND claimed_at < $2
+		   AND (successor_task_id IS NULL OR NOT EXISTS (SELECT 1 FROM agent_task_queue q WHERE q.id = successor_task_id))`,
+	} {
+		if _, err := s.pool.Exec(ctx, stmt, workspaceID, stale); err != nil {
+			return fmt.Errorf("reap recovery claims: %w", err)
+		}
+	}
+	return nil
+}
+
+// recoveryHold carries an admitted claim from a writer's gate to its outcome.
+type recoveryHold struct {
+	claim RecoveryClaim
+	held  bool
+}
+
+// claimRecovery asks the shared store to admit one recovery dispatch for the
+// failed run. admitted=false with a nil error is a refusal; the caller must
+// not dispatch. A nil store admits everything (isolated test services), and so
+// does a run with no issue to anchor the claim to.
+func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, issueID, failedTaskID pgtype.UUID, mode RecoveryMode, ceiling int) (bool, error) {
+	if s.RecoveryClaims == nil || !issueID.Valid {
+		return true, nil
+	}
+	issue, err := s.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return false, fmt.Errorf("recovery claim: load issue: %w", err)
+	}
+	now := time.Now()
+	if mode != RecoveryModeNativeResume {
+		if err := s.RecoveryClaims.ReapSettled(ctx, issue.WorkspaceID, now); err != nil {
+			slog.Warn("recovery claim: reap failed", "error", err)
+		}
+	}
+	claim, outcome, err := s.RecoveryClaims.Claim(ctx, RecoveryClaimParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issueID, FailedTaskID: failedTaskID, Mode: mode,
+		NativeCeiling: ceiling, PacedCap: recoveryPacedCap, Spacing: recoverySpacing, Now: now,
+	})
+	if err != nil {
+		return false, err
+	}
+	if outcome != RecoveryAdmitted {
+		slog.Info("recovery claim refused", "failed_task_id", util.UUIDToString(failedTaskID), "mode", string(mode), "outcome", string(outcome))
+		return false, nil
+	}
+	hold.claim, hold.held = claim, true
+	return true, nil
+}
+
+// finishRecoveryClaim records what the writer did with its claim: a successor
+// marks it submitted, a failed write discards it (nothing was dispatched, the
+// run stays recoverable), and a decision not to dispatch releases it.
+// ponytail: a crash between dispatch and this call leaves a claimed row until
+// ReapSettled drops it, which can allow one extra retry; add a dispatch-side
+// idempotency key if that ever matters.
+func (s *TaskService) finishRecoveryClaim(ctx context.Context, hold *recoveryHold, successorTaskID pgtype.UUID, dispatched bool, writeErr error) {
+	if hold == nil || !hold.held {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	var err error
+	switch {
+	case writeErr != nil:
+		err = s.RecoveryClaims.Discard(ctx, hold.claim.ID)
+	case dispatched:
+		err = s.RecoveryClaims.MarkSubmitted(ctx, hold.claim.ID, successorTaskID)
+	default:
+		err = s.RecoveryClaims.Settle(ctx, hold.claim.ID, RecoveryStateReleased)
+	}
+	if err != nil {
+		slog.Warn("recovery claim: finish failed", "claim_id", util.UUIDToString(hold.claim.ID), "error", err)
+	}
 }

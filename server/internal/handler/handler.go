@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
@@ -531,6 +532,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	)
 
 	taskSvc := service.NewTaskService(queries, txStarter, hub, bus, daemonHub)
+	// CHE-4568: the retry, recurring and watchdog writers share one claim store.
+	// Test starters that are not a pool leave it nil, which skips claiming.
+	if pool, ok := txStarter.(*pgxpool.Pool); ok {
+		taskSvc.RecoveryClaims = service.NewRecoveryClaimStore(pool)
+	}
 	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
 	if probeErr != nil {
 		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)
