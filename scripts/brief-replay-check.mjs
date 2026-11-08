@@ -14,7 +14,13 @@ const units = (text) =>
 export const parseChecklist = (text) =>
   text.split("\n").map((l) => squash(l.replace(/^\s*[-*]\s+/, ""))).filter((l) => l && !l.startsWith("#"));
 
-export function compareBriefs(oldText, newText, checklist) {
+// An empty checklist checks no rule, so it never passes.
+export const compareBriefs = (oldText, newText, checklist) => {
+  const r = diff(oldText, newText, checklist);
+  return checklist.length ? r : { ...r, ok: false, emptyChecklist: true };
+};
+
+function diff(oldText, newText, checklist) {
   const [o, n] = [units(oldText), units(newText)];
   const [oldFlat, newFlat] = [squash(oldText), squash(newText)];
   const missing = checklist.filter((p) => !newFlat.includes(p));
@@ -36,10 +42,11 @@ export function compareDirs(oldDir, newDir, checklist) {
   const fixtures = olds.map(([name, oldText], i) => {
     if (!existsSync(join(newDir, name))) return { name, ok: false, vanished: true, missing: [], removed: [], added: [] };
     const here = checklist.filter((p) => flat[i].includes(p));
-    return { name, ...compareBriefs(oldText, readFileSync(join(newDir, name), "utf8"), here) };
+    return { name, ...diff(oldText, readFileSync(join(newDir, name), "utf8"), here) };
   });
   const notInOld = checklist.filter((p) => !flat.some((f) => f.includes(p)));
-  return { ok: !notInOld.length && fixtures.every((f) => f.ok), notInOld, fixtures };
+  const emptyChecklist = !checklist.length;
+  return { ok: !emptyChecklist && !notInOld.length && fixtures.every((f) => f.ok), emptyChecklist, notInOld, fixtures };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -57,6 +64,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     for (const [tag, items] of [["MISSING", x.missing], ["NOT-IN-OLD", x.notInOld], ["REMOVED", x.removed], ["ADDED", x.added]])
       for (const item of items ?? []) console.log(`${pre}${tag}: ${item}`);
   };
+  if (r.emptyChecklist) console.log("EMPTY-CHECKLIST: no rule to check");
   show("", r);
   for (const f of r.fixtures) { console.log(`== ${f.name}: ${f.ok ? "ok" : "FAIL"}`); show("  ", f); }
   console.log(r.ok ? "PASS" : "FAIL");

@@ -83,3 +83,19 @@ test("compareDirs checks a rule only in fixtures whose old brief had it, and fai
   assert.equal(compareDirs(a, b, ["shared rule"]).ok, false);
   assert.deepEqual(compareDirs(a, b, ["nowhere"]).notInOld, ["nowhere"]);
 });
+
+test("an empty or comment-only checklist fails: it checks no rules", (t) => {
+  assert.equal(compareBriefs("critical rule", "", []).ok, false);
+  assert.equal(compareBriefs("critical rule", "", []).emptyChecklist, true);
+  const dir = mkdtempSync(join(tmpdir(), "brief-replay-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const [a, b] = [join(dir, "old"), join(dir, "new")];
+  mkdirSync(a); mkdirSync(b);
+  writeFileSync(join(a, "x.md"), "rule\n");
+  writeFileSync(join(b, "x.md"), "rule\n");
+  assert.equal(compareDirs(a, b, []).ok, false);
+  writeFileSync(join(dir, "empty.txt"), "# only a comment\n\n");
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./brief-replay-check.mjs", import.meta.url)), a, b, join(dir, "empty.txt")], { encoding: "utf8" });
+  assert.equal(cli.status, 1);
+  assert.match(cli.stdout, /EMPTY-CHECKLIST/);
+});
