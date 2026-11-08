@@ -513,22 +513,24 @@ test("PR check: an over-limit line fails with an annotation, a closed PR is skip
   assert.match(sync.summary, /Hidden: upstream-sync/);
 });
 
-test("PR check workflow: GitHub-hosted, permissions: pull-requests read, token only, skips closed PRs", () => {
-  const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
+test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, trusted checkout", () => {
+  const raw = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
-  assert.match(wf, /^permissions:\n {2}pull-requests: read$/m);
-  assert.match(wf, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
+  const job = wf.slice(wf.indexOf("\n  changelog-line:"), wf.indexOf("\n  fork-sync-guard:"));
+  assert.match(wf, /^permissions: \{\}$/m);
+  assert.match(job, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(wf, /self-hosted/);
   assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only workflow token");
-  assert.match(wf, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
-  assert.match(wf, /pulls\/\$\{?PR_NUMBER\}?\/files/);
-  assert.match(wf, /fork-changelog\.mjs --event "\$GITHUB_EVENT_PATH" --files/);
-  for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
-  assert.match(wf, /pull_request:/);
-  assert.doesNotMatch(wf, /pull_request_target/);
-  assert.match(wf, /state != 'closed'/);
-  assert.match(raw, /upstream-sync\//, "the header explains why sync heads stay off X99");
-  assert.match(wf, /fork-changelog\.mjs --event/);
+  assert.match(job, /pull-requests: read/);
+  assert.match(job, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(job, /pulls\/\$\{?PR_NUMBER\}?\/files/);
+  assert.match(job, /fork-changelog\.mjs --event "\$GITHUB_EVENT_PATH" --files/);
+  for (const type of ["opened", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
+  assert.doesNotMatch(wf, /types: \[[^\]]*edited/); // CHE-4385: a body edit does not re-run the check
+  assert.match(wf, /pull_request_target:/);
+  assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(job, /state != 'closed'/);
+  assert.match(job, /fork-changelog\.mjs --event/);
 });
 
 // --- review round 1 (x99-codex-sol, PR 229): F1-F4 ----------------------------
