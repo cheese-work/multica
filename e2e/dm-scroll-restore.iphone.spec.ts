@@ -117,6 +117,41 @@ test.describe("DM scroll position on iPhone (CHE-4638)", () => {
     });
   });
 
+  test("right after Back, a row above that grows before the list settles does not move the restored message", async ({ page }) => {
+    await withScrolledDm(page, async ({ linked }) => {
+      const before = await targetTop(page);
+      await page.getByRole("link", { name: linked.identifier }).first().click();
+      await expect(page.getByRole("button", { name: linked.title, exact: true })).toBeVisible({ timeout: 30_000 });
+      // Grow the row one frame after the restored list first renders it: after the
+      // row was measured, inside the restore window, with no input from the reader.
+      await page.evaluate(() => {
+        const w = window as unknown as { __grownAt?: number };
+        const watch = new MutationObserver(() => {
+          const rows = [...document.querySelectorAll<HTMLElement>("[data-message-id]")];
+          const i = rows.findIndex((n) => n.textContent?.includes("Target message 40"));
+          if (i < 2) return;
+          watch.disconnect();
+          const row = rows[i - 2]!;
+          // Second frame: the list has measured the row once, so this is late growth.
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              row.style.minHeight = "260px";
+              w.__grownAt = performance.now();
+            }),
+          );
+        });
+        watch.observe(document.body, { childList: true, subtree: true });
+      });
+      await page.goBack();
+      await expect
+        .poll(() => page.evaluate(() => (window as unknown as { __grownAt?: number }).__grownAt), { timeout: 15_000 })
+        .toBeDefined();
+      await settle(page);
+      await page.waitForTimeout(1500);
+      expect(Math.abs((await targetTop(page)) - before)).toBeLessThanOrEqual(2);
+    });
+  });
+
   test("the offset holds while a message arrives and rows above and below resize", async ({ page }, testInfo) => {
     await withScrolledDm(page, async ({ sessionId, token }) => {
       const before = await targetTop(page);

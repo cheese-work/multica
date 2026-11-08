@@ -443,10 +443,29 @@ export function ChatMessageList({
   // Virtuoso and the live-end pin own the position (initial landing, restore);
   // shifting then would fight them.
   const shiftArmed = useRef(false);
+  // Row growth seen before the shift was armed. A restored list applies it once
+  // it has landed, so a row above that grew in the first second still counts.
+  const unarmedGrowth = useRef(new Map<Element, number>());
+  const restoringRef = useRef(false);
+  const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleRestore = useCallback(() => {
+    const scroller = scrollRef.current;
+    if (scroller && !shiftArmed.current) {
+      const viewportTop = scroller.getBoundingClientRect().top;
+      let shift = 0;
+      for (const [row, growth] of unarmedGrowth.current) {
+        if (row.isConnected && row.getBoundingClientRect().top < viewportTop) shift += growth;
+      }
+      scroller.scrollTop += shift;
+    }
+    unarmedGrowth.current.clear();
+    shiftArmed.current = true;
+  }, []);
   useEffect(() => {
     if (!scrollContainerEl) return;
     const mark = () => {
       shiftArmed.current = true;
+      unarmedGrowth.current.clear();
     };
     const events = ["wheel", "touchstart", "keydown"] as const;
     for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
@@ -462,23 +481,35 @@ export function ChatMessageList({
       const scroller = scrollRef.current;
       let viewportTop: number | null = null;
       let shift = 0;
+      let sawNewRow = false;
       for (const { target, borderBoxSize } of entries) {
         // A row Virtuoso unmounted reports 0 on its way out; not a resize.
         if (!target.isConnected) continue;
         const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
         const prev = rowHeights.current.get(target);
         rowHeights.current.set(target, height);
+        if (prev === undefined) sawNewRow = true;
         if (prev === undefined || prev === height) continue;
-        if (!scroller || !shiftArmed.current || isFollowingRef.current()) continue;
+        if (!scroller || isFollowingRef.current()) continue;
+        if (!shiftArmed.current) {
+          unarmedGrowth.current.set(target, (unarmedGrowth.current.get(target) ?? 0) + height - prev);
+          continue;
+        }
         viewportTop ??= scroller.getBoundingClientRect().top;
         if (target.getBoundingClientRect().top < viewportTop) shift += height - prev;
+      }
+      // A restored list keeps adding rows as it lands; settle once none arrive for a second.
+      if (sawNewRow && restoringRef.current && !shiftArmed.current) {
+        if (settleTimer.current) clearTimeout(settleTimer.current);
+        settleTimer.current = setTimeout(settleRestore, RESTORE_SETTLE_MS);
       }
       if (shift !== 0 && scroller) scroller.scrollTop += shift;
     });
     rowObserver.current.observe(node);
-  }, []);
+  }, [settleRestore]);
   useEffect(
     () => () => {
+      if (settleTimer.current) clearTimeout(settleTimer.current);
       rowObserver.current?.disconnect();
       rowObserver.current = null;
     },
@@ -698,15 +729,10 @@ export function ChatMessageList({
   useEffect(() => {
     if (restoring) disengageRef.current();
   }, [restoring, scrollContainerEl]);
-  // A restored reader may be still after Back: arm the row-above shift once
-  // Virtuoso has landed, without waiting for input (CHE-4638).
-  useEffect(() => {
-    if (!restoring || !scrollContainerEl) return;
-    const timer = setTimeout(() => {
-      shiftArmed.current = true;
-    }, RESTORE_SETTLE_MS);
-    return () => clearTimeout(timer);
-  }, [restoring, scrollContainerEl]);
+  // A restored reader may be still after Back: the row observer settles the list
+  // (applies growth above the viewport, arms the shift) once it has landed, without
+  // waiting for input (CHE-4638).
+  restoringRef.current = restoring;
 
   // Until the list has landed, the range Virtuoso reports is not the reader's
   // position (it is on its way to the newest message), so nothing is recorded.
