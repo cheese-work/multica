@@ -377,6 +377,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// HarnessProfile sets settings.harness_profile alone (CHE-3706); null
+	// removes it so the workspace falls back to personal.
+	HarnessProfile json.RawMessage `json:"harness_profile"`
 	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
 	// named fields overwrite, absent fields keep their saved value. Owner only.
 	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
@@ -575,7 +578,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			err = errAutoCompactShape
 		} else {
-			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+			err = validateAutoCompactPatch(incoming)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -584,7 +587,23 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if incoming == nil {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
-			params.AutoCompact = req.AutoCompact
+			params.AutoCompact = clearStalePct(req.AutoCompact)
+		}
+	}
+	if req.HarnessProfile != nil {
+		var profile any
+		err := json.Unmarshal(req.HarnessProfile, &profile)
+		if err == nil {
+			err = validateHarnessProfileConfig(map[string]any{"harness_profile": profile})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := profile.(string); ok {
+			params.HarnessProfile = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.HarnessProfileReset = pgtype.Bool{Bool: true, Valid: true}
 		}
 	}
 	if req.IdleStartedGuard != nil {
@@ -1473,6 +1492,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 				_, err := tx.Exec(ctx, `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, requester.WorkspaceID)
 				return err
 			},
+		},
+		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete provider breaker audit",
+			run:  func() error { return qtx.DeleteProviderBreakerAuditForWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete leaf data",

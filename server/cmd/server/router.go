@@ -727,6 +727,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// is bridge code — it will simply find no rows to update
 				// on a fresh deployment and exit. MUL-2671.
 				go lark.BackfillBotUnionIDs(context.Background(), cs, larkClient, installSvc, slog.Default())
+				go lark.BackfillLegacyInboundReceipts(context.Background(), cs, slog.Default())
 
 				// Upgrade repair for deployments that ran the whole
 				// integration against Lark international via the deployment-
@@ -1074,7 +1075,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// language, resolved when the round is opened and carried
 					// on the handle to whichever closer gets there.
 					Languages: queries,
-					Logger:    slog.Default(),
+					// Who is asking, which is what decides whether their
+					// bubble may show the run's steps. Without it every
+					// bubble falls to the closed tier and shows none.
+					Identities: queries,
+					Logger:     slog.Default(),
 				})
 				// Subscribes task:failed and task:cancelled — neither a failed
 				// nor a cancelled run publishes chat:done, so this is the sole
@@ -1094,6 +1099,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						store,
 						engine.NewDBMediaIntentLedger(queries),
 						wecomSenders,
+						queries,
 						slog.Default(),
 					)
 				}
@@ -1693,6 +1699,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// /v1 prevents the Public API from accepting session cookies.
 	// A5b: routes that change other runs' issues or tasks without naming them.
 	denyRunToken := h.DenyTaskTokenWrites(taskWriteScopeMode())
+	// Human-only actions refuse a run's task token in every mode, not only under the rollout flag,
+	// and refuse a cloud-node credential (RequireHumanActor), which acts as its owner.
+	denyTaskToken := h.DenyTaskTokenWrites(handler.TaskWriteScopeOn)
+	humanOnly := func(next http.Handler) http.Handler { return handler.RequireHumanActor(denyTaskToken(next)) }
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(handler.RejectRecoveryWrites)
@@ -1784,6 +1794,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
+					r.Get("/provider-breakers", h.ListProviderBreakers)
 					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -1832,6 +1843,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// Scheduling pause: the handler also refuses agent credentials.
 					r.Post("/pause", h.PauseWorkspaceScheduling)
 					r.Post("/resume", h.ResumeWorkspaceScheduling)
+					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
@@ -2120,6 +2132,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
 			// ordinary runs keep their ambient capabilities (risk decision 8).
 			r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
+			// Every /api/chat* route is classed for task tokens (CHE-3702).
+			r.Use(h.ChatTaskTokenGate)
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
@@ -2158,6 +2172,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/table/groups", h.ListIssueTableGroups)
 				r.Post("/table/rows", h.ListIssueTableRows)
 				r.Post("/table/facets", h.ListIssueTableFacets)
+				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/children", h.ListChildrenByParents)
@@ -2171,6 +2186,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				r.Post("/relations/batch", h.GetIssueRelationsBatch)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Get("/agent-decisions", h.LookupAgentDecision)
@@ -2189,6 +2205,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/stage-queue", h.GetIssueStageQueue)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
 					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					r.With(handler.RequireHumanActor).Post("/run-budget/requests", h.RequestIssueRunBudgetAction)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
@@ -2319,8 +2336,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
+				r.Get("/lint", h.LintIssueWorkflows)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
+					r.Get("/lint", h.LintIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
@@ -2685,12 +2704,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
 					r.Post("/unread", h.MarkChatSessionUnread)
+					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.
+					r.With(humanOnly).Post("/attention/xong", h.ChatAttentionXong)
+					r.With(humanOnly).Post("/attention/later", h.ChatAttentionLater)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
+			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
 			r.Get("/api/chat/pending-tasks/has-any", h.HasPendingChatTasks)
 
@@ -2709,6 +2733,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/outcome", h.PostChatOutcome)
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
 			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
@@ -2752,6 +2777,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.Post("/api/decision-actions/proposals", h.ProposeDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
@@ -2762,6 +2788,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/code", h.StartPasskeyRevocationByCode)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/confirm", h.ConfirmPasskeyRevocationByCode)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}", h.GetDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
@@ -2849,6 +2876,7 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 		FrameDecoder:        decoder,
 		Enricher:            enricher,
 		CredentialsProvider: credsProvider,
+		InboundVerifier:     installSvc,
 		Logger:              slog.Default(),
 	})
 	if err != nil {

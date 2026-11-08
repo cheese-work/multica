@@ -1709,6 +1709,9 @@ type ghPRHeadRepository struct {
 	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
 	Fork     *bool  `json:"fork"`
+	Owner    struct {
+		ID int64 `json:"id"`
+	} `json:"owner"`
 }
 
 // sameRepository compares head and base by repository id and full name only.
@@ -1718,6 +1721,16 @@ type ghPRHeadRepository struct {
 func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) bool {
 	return repo != nil && id > 0 && repo.ID == id && owner != "" && name != "" &&
 		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
+}
+
+// sameOwnerHead reports a fork owned by the same account as the base repository.
+// Owner ids are compared, not logins: a login can be renamed and the login text
+// in full_name grants nothing. It only widens automatic issue linking; trust
+// decisions keep sameRepository.
+func (repo *ghPRHeadRepository) sameOwnerHead(baseID, baseOwnerID int64, baseOwner, baseName string) bool {
+	return repo != nil && repo.ID > 0 && repo.FullName != "" && repo.Fork != nil &&
+		repo.Owner.ID > 0 && repo.Owner.ID == baseOwnerID &&
+		baseID > 0 && baseOwner != "" && baseName != ""
 }
 
 type ghPullRequestPayload struct {
@@ -1759,12 +1772,21 @@ type ghPullRequestPayload struct {
 		Name          string `json:"name"`
 		DefaultBranch string `json:"default_branch"`
 		Owner         struct {
+			ID    int64  `json:"id"`
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
+}
+
+// prHeadLinkEligible reports whether the PR may link to issues automatically:
+// the head is the base repository, or a fork owned by the base repository's owner.
+func (p *ghPullRequestPayload) prHeadLinkEligible() bool {
+	repo, head := p.Repository, p.PullRequest.Head.Repo
+	return head.sameRepository(repo.ID, repo.Owner.Login, repo.Name) ||
+		head.sameOwnerHead(repo.ID, repo.Owner.ID, repo.Owner.Login, repo.Name)
 }
 
 func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
@@ -1894,10 +1916,14 @@ func (c prLinkPolicy) permits(identifier, workspaceID string) bool {
 // resolve it; misjudging "unique" as "ambiguous" costs a link a person can add
 // by hand, while the reverse would move someone else's issue on merge.
 func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInstallation, p *ghPullRequestPayload) prLinkPolicy {
-	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+	if !p.prHeadLinkEligible() {
 		slog.Info("github: denied automatic pull request actions", "reason", "fork_or_unverified_head_repository",
 			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
 		return prLinkPolicy{indeterminate: true}
+	}
+	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+		slog.Info("github: allowed automatic pull request links", "reason", "same_owner_head_repository",
+			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
 	}
 	if len(insts) < 2 {
 		return prLinkPolicy{unrestricted: true}
@@ -2135,7 +2161,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	workspaceID := uuidToString(wsID)
 	linkedIssueIDs := make([]string, 0)
 	touched := map[pgtype.UUID]struct{}{}
-	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && p.prHeadLinkEligible() && !linkPolicy.indeterminate {
 		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		closingIdents := prClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)

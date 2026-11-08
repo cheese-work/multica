@@ -436,15 +436,16 @@ function cli(args, env = {}) {
 }
 const tmp = () => mkdtempSync(join(tmpdir(), "fork-changelog-"));
 
-test("preview: --fixture and --out write one known entry with no credentials", () => {
+test("preview: --fixture and --out write the known entries and three deploys with no credentials", () => {
   const out = join(tmp(), "preview.json");
   const fixture = new URL("./fixtures/fork-changelog-preview.json", import.meta.url).pathname;
   const res = cli(["--fixture", fixture, "--out", out]);
   assert.equal(res.status, 0, res.stderr);
   const written = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(written.entries.length, 1);
-  assert.equal(written.entries[0].id, "fork-pr-1");
-  assert.equal(written.entries[0].text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.entries.length, 4);
+  assert.equal(written.entries.find((e) => e.id === "fork-pr-1").text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.deploys.length, 4);
+  assert.equal(written.deploys.filter((d) => d.deployedAt.startsWith("2026-11-05")).length, 3);
 });
 
 test("preview: a bad fixture exits non-zero and leaves no output file", () => {
@@ -516,7 +517,7 @@ test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips close
   const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
   assert.match(wf, /^permissions: \{\}$/m);
-  assert.match(wf, /runs-on: ubuntu-24\.04/);
+  assert.match(wf, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.doesNotMatch(wf, /self-hosted|secrets\./);
   for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
   assert.match(wf, /pull_request:/);
@@ -815,6 +816,62 @@ test("preview: --backfill adds the backfill entries to the fixture entries", () 
   assert.equal(res.status, 0, res.stderr);
   const { entries } = JSON.parse(readFileSync(out, "utf8"));
   // Fixture PR #1 is also a backfill number: the fixture entry wins, so it is not counted twice.
-  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length);
+  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length + 3);
   assert.equal(entries.find((e) => e.number === 1).text, "Issue lists now open instantly in large workspaces.");
+});
+
+// CHE-4015: bucket entries into C00 deploys.
+// first-parent is newest first: idx0 = qualified (live) build, 1..5 older commits.
+test("each entry gets the first deploy that contains it; duplicates, rollbacks and failures do not add dividers", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [5, 4, 3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00+07:00` }));
+  const prs = [1, 2, 3, 4, 5].map((n) => pr(n, { mergedAt: `2026-10-13T0${n}:00:00Z` }));
+  prs[1].body = "Changelog: none"; // PR 2 hidden, reason none
+  prs[2].body = "no line"; // PR 3 hidden, reason missing
+  const deployments = [
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T03:00:00Z" },
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T02:00:00Z" }, // duplicate: earliest wins
+    { sha: sha(4), state: "SUCCESS", createdAt: "2026-10-13T05:00:00Z" },
+    { sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T06:00:00Z" }, // rollback to older SHA, after sha(4)
+    { sha: sha(3), state: "FAILURE", createdAt: "2026-10-13T04:00:00Z" }, // failed: ignored
+    { sha: sha(5), state: "SUCCESS", createdAt: "2026-10-13T07:00:00Z" }, // the qualified SHA itself: ignored
+    { sha: sha(9), state: "SUCCESS", createdAt: "2026-10-13T08:00:00Z" }, // not in history: ignored
+  ];
+  const out = generateEntries({ prs, firstParent, deployments }, { versionOf: (s) => `v-${Number(s)}` });
+  assert.deepEqual(out.deploys.map(({ sha: s, version, deployedAt, hiddenCount, live }) => [Number(s), version, deployedAt, hiddenCount, live ?? false]), [
+    [5, "v-5", "2026-10-13T06:00:00.000Z", 0, true], // commit time 22:00Z the day before, clamped to the newest earlier deploy
+    [4, "v-4", "2026-10-13T05:00:00.000Z", 1, false], // PR 3 (missing) sits newer than deploy 2
+    [2, "v-2", "2026-10-13T02:00:00.000Z", 1, false], // PR 2 (none)
+    [1, "v-1", "2026-10-13T06:00:00.000Z", 0, false],
+  ]);
+  const deployOf = Object.fromEntries(out.entries.map((e) => [e.number, e.deploy === "live" ? "live" : Number(e.deploy)]));
+  assert.deepEqual(deployOf, { 1: 1, 4: 4, 5: "live" });
+});
+
+test("hiddenCount ignores upstream-sync, reverted and before-start-date", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: "2026-10-13T00:00:00Z" }));
+  const prs = [
+    pr(1, { body: "Changelog: none" }),
+    pr(2, { headRef: "upstream-sync/x", body: "none" }),
+    pr(3, { body: "Changelog: none", mergedAt: "2026-10-01T00:00:00Z" }),
+  ];
+  const out = generateEntries({ prs, firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T01:00:00Z" }] }, { versionOf: (s) => s });
+  assert.equal(out.deploys.find((d) => d.sha === sha(1)).hiddenCount, 1);
+  assert.equal(out.deploys.find((d) => d.live).hiddenCount, 0);
+});
+
+test("without deployments the output has no deploys field and entries have no deploy", async () => {
+  const { generateEntries, serializeEntries } = await load();
+  const out = generateEntries({ prs: [pr(1)], firstParent: [sha(1)] });
+  assert.equal(out.deploys, undefined);
+  assert.equal("deploy" in out.entries[0], false);
+  assert.equal("deploys" in JSON.parse(serializeEntries(out)), false);
+});
+
+test("Live is never dated before a later-deployed previous build", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00Z` }));
+  const out = generateEntries({ prs: [], firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T09:00:00Z" }] }, { versionOf: (s) => s });
+  assert.deepEqual(out.deploys.map((d) => [Number(d.sha), d.deployedAt]), [[2, "2026-10-13T09:00:00.000Z"], [1, "2026-10-13T09:00:00.000Z"]]);
 });
