@@ -70,7 +70,7 @@ writer.
 
 ### Waiver labels (CHE-4383 B2b)
 
-Table `system1_label` (migration `9999_system1_label`, no foreign key, no
+Table `system1_label` (migration `99951_system1_label`, no foreign key, no
 free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
 (`human_answer`), `label`, `superseded_at`.
 
