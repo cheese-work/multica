@@ -8820,6 +8820,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, d.cfg.Broker, agentEnv, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
+	}
+	defer runBrk.Close()
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9075,6 +9080,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// execution window and always remove the credential afterwards.
 	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
 	checkoutTask.StableDir = stableCwd
+	checkoutTask.Broker = runBrk
 	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 

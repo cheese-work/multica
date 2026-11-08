@@ -25,6 +25,10 @@ type Spec struct {
 	// EgressSocket is the host Unix socket of the egress proxy. When set, the
 	// run gets a loopback forwarder to it and proxy variables (see bridge.go).
 	EgressSocket string
+	// BrokerSocket is the host Unix socket of the run's push/read broker. Its
+	// directory is bound read-only at brokerDir and MULTICA_BROKER_SOCKET names
+	// the socket there, overriding any value in Env.
+	BrokerSocket string
 }
 
 var (
@@ -77,6 +81,9 @@ func (s Spec) binds(bridgeExe string) []bind {
 			bind{path: filepath.Dir(s.EgressSocket), dest: egressDir, ro: true},
 			bind{path: bridgeExe, dest: bridgeMount, ro: true})
 	}
+	if s.BrokerSocket != "" {
+		bs = append(bs, bind{path: filepath.Dir(s.BrokerSocket), dest: brokerDir, ro: true})
+	}
 	return bs
 }
 
@@ -126,11 +133,17 @@ func (s Spec) environ() []string {
 		if s.EgressSocket != "" && isProxyVar(kv) {
 			continue
 		}
+		if s.BrokerSocket != "" && strings.HasPrefix(kv, "MULTICA_BROKER_SOCKET=") {
+			continue
+		}
 		env = append(env, kv)
 	}
 	env = append(env, "HOME="+s.Home, "TMPDIR="+s.TempDir)
 	if s.EgressSocket != "" {
 		env = append(env, proxyEnv()...)
+	}
+	if s.BrokerSocket != "" {
+		env = append(env, "MULTICA_BROKER_SOCKET="+brokerDir+"/"+filepath.Base(s.BrokerSocket))
 	}
 	return env
 }

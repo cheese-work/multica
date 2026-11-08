@@ -27,6 +27,7 @@ const (
 
 	egressPort   = "3128"
 	egressDir    = "/run/multica-egress"
+	brokerDir    = "/run/multica-broker"
 	bridgeMount  = "/run/multica-bridge"
 	exitNoBridge = 125 // the bridge could not start; the agent never ran
 )

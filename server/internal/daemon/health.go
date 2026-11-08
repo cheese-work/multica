@@ -153,6 +153,8 @@ type activeRepoCheckoutTask struct {
 	Elevated      bool
 	PinnedBaseSHA string
 	PinnedHeadSHA string
+	// Broker, when set, is pinned to the run's first successful checkout.
+	Broker *runBroker
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -632,6 +634,8 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		d.startRunBroker(activeTask, req, result)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)

@@ -119,6 +119,7 @@ type Config struct {
 	HealthPort                     int                   // local HTTP port for health checks (default: 19514)
 	MaxConcurrentTasks             int                   // max tasks running in parallel (default: 20)
 	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
+	Broker                         *BrokerConfig         // MULTICA_BROKER_CONFIG: GitHub App for the per-run push/read broker; nil means none (CHE-2216 A4c)
 	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
@@ -578,6 +579,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("MULTICA_SANDBOX_MODE: %w", err)
 	}
+	brokerCfg, err := LoadBrokerConfig(strings.TrimSpace(os.Getenv("MULTICA_BROKER_CONFIG")))
+	if err != nil {
+		return Config{}, fmt.Errorf("MULTICA_BROKER_CONFIG: %w", err)
+	}
 	gcInterval, err := durationFromEnv("MULTICA_GC_INTERVAL", DefaultGCInterval)
 	if err != nil {
 		return Config{}, err
@@ -664,6 +669,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
 		SandboxMode:                     sandboxMode,
+		Broker:                          brokerCfg,
 		SandboxHomeTemplate:             strings.TrimSpace(os.Getenv("MULTICA_SANDBOX_HOME_TEMPLATE")),
 		GCEnabled:                       gcEnabled,
 		GCInterval:                      gcInterval,
