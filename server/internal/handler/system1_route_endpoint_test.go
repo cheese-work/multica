@@ -431,3 +431,35 @@ func TestRouteEndpointStubsAMarkedDescriptionForAnElevatedRun(t *testing.T) {
 		t.Fatalf("route reply leaks a marked description (status %d): %s", res.Code, res.Text())
 	}
 }
+
+// Promoting a backlog issue that sits on another member's private agent starts
+// no run for a member who cannot invoke that agent, handoff or not.
+func TestRouteEndpointJudgesTheDirectAgentByTheRequestingMember(t *testing.T) {
+	c := newRouteCase(t)
+	agentID, ownerID, memberID := privateAgentTestFixture(t)
+	dbfx.Exec(t, `UPDATE issue SET status = 'backlog', creator_type = 'member', creator_id = $2, assignee_type = 'agent', assignee_id = $3 WHERE id = $1`, c.issueID, ownerID, agentID)
+
+	got := c.route(t, routeBody("in_progress", nil), map[string]string{"X-User-ID": memberID}).Want(http.StatusOK)
+	var resp routeResponse
+	got.JSON(&resp)
+	if resp.Run.Started || resp.Run.Refused != "invocation_not_allowed" {
+		t.Fatalf("run = %+v, want refused invocation_not_allowed: %s", resp.Run, got.Text())
+	}
+	if runs := pendingStepRuns(t, c.issueID, agentID); len(runs) != 0 {
+		t.Fatalf("pending runs = %v, want none", runs)
+	}
+}
+
+// The owner of the private agent still starts the run by the same move.
+func TestRouteEndpointStartsTheDirectAgentRunForItsOwner(t *testing.T) {
+	c := newRouteCase(t)
+	agentID, ownerID, _ := privateAgentTestFixture(t)
+	dbfx.Exec(t, `UPDATE issue SET status = 'backlog', creator_type = 'member', creator_id = $2, assignee_type = 'agent', assignee_id = $3 WHERE id = $1`, c.issueID, ownerID, agentID)
+
+	got := c.route(t, routeBody("in_progress", nil), map[string]string{"X-User-ID": ownerID}).Want(http.StatusOK)
+	var resp routeResponse
+	got.JSON(&resp)
+	if !resp.Run.Started {
+		t.Fatalf("run = %+v, want started: %s", resp.Run, got.Text())
+	}
+}

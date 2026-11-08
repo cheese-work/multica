@@ -42,6 +42,10 @@ type routeRunOutcome struct {
 
 // routeRefusal names the enqueue errors that leave the move and its label
 // committed with no run. Any other enqueue error rolls the call back.
+// errAgentNotInvocable is why an assigned agent got no run: the caller may not
+// invoke it.
+var errAgentNotInvocable = errors.New("agent run not admitted")
+
 func routeRefusal(err error) (string, bool) {
 	switch {
 	case errors.Is(err, service.ErrDuplicatePendingTask):
@@ -56,6 +60,8 @@ func routeRefusal(err error) (string, bool) {
 		return "recovery_caused", true
 	case errors.Is(err, errSquadLeaderNotAdmitted):
 		return "squad_leader_not_admitted", true
+	case errors.Is(err, errAgentNotInvocable):
+		return "invocation_not_allowed", true
 	}
 	return "", false
 }
@@ -224,7 +230,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			if cancelAfter, err = th.TaskService.CancelStaleStepRunsInTx(writeCtx, q, updated, runTrigger.AgentID); err != nil {
 				return err
 			}
-			if runTrigger.AssigneeType == "agent" {
+			if runTrigger.AssigneeType == "agent" && !th.canInvokeAssignedAgent(writeCtx, r, updated, actorType, actorID) {
+				err = errAgentNotInvocable
+			} else if runTrigger.AssigneeType == "agent" {
 				runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, memberActorUserID(actorType, actorID), overlay)
 			} else {
 				runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, actorType, actorID)
@@ -331,4 +339,16 @@ func (h *Handler) writeRouteRevisionConflict(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeRevisionConflict(w, "issue", current.ID, expected, current.Revision)
+}
+
+// canInvokeAssignedAgent is the invoke gate for a run the move starts on the
+// issue's agent assignee. A handoff validated the pair before the write; a move
+// that starts a run without one (promotion out of backlog or blocked) did not,
+// so the gate is judged here for every run, on the caller and its originator.
+func (h *Handler) canInvokeAssignedAgent(ctx context.Context, r *http.Request, issue db.Issue, actorType, actorID string) bool {
+	agent, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+	if err != nil {
+		return false
+	}
+	return h.canInvokeAgent(ctx, agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), uuidToString(issue.WorkspaceID))
 }
