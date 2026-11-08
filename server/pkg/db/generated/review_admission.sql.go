@@ -80,8 +80,12 @@ INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, re
 VALUES ($1::uuid, $2::uuid, $3::text,
         $4::text, $5::text[], now(), now() + interval '24 hours')
 ON CONFLICT (issue_id, agent_id) DO UPDATE SET
-  trigger = EXCLUDED.trigger, head_sha = EXCLUDED.head_sha, reasons = EXCLUDED.reasons,
-  created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at
+  trigger = EXCLUDED.trigger, reasons = EXCLUDED.reasons,
+  created_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
+                    THEN review_admission_deferral.created_at ELSE EXCLUDED.created_at END,
+  expires_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
+                    THEN review_admission_deferral.expires_at ELSE EXCLUDED.expires_at END,
+  head_sha = EXCLUDED.head_sha
 `
 
 type MarkReviewAdmissionDeferredParams struct {
@@ -92,6 +96,8 @@ type MarkReviewAdmissionDeferredParams struct {
 	Reasons []string    `json:"reasons"`
 }
 
+// A repeat on the same head keeps the first deadline, so repeated triggers
+// cannot postpone recovery; a new head starts a new window.
 func (q *Queries) MarkReviewAdmissionDeferred(ctx context.Context, arg MarkReviewAdmissionDeferredParams) error {
 	_, err := q.db.Exec(ctx, markReviewAdmissionDeferred,
 		arg.IssueID,

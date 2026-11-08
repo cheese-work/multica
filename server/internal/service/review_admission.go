@@ -94,11 +94,20 @@ func admissionReasons(required []string, runs []db.ListAdmissionCheckRunsRow, me
 	return reasons
 }
 
+// startsReview reports whether the run can start a review: a comment, handoff
+// or mention (ReviewRun) or a wakeup, but never a leader's callback.
+func startsReview(target RunTarget) bool {
+	return (target.ReviewRun || target.Trigger == "wakeup") && target.Trigger != "squad leader callback"
+}
+
 // guardReviewAdmission defers a reviewer run on a PR head that is not
-// admissible (CHE-4650). Only the run of the agent that holds the issue in a
-// review status is judged, and only when the issue has a linked open PR.
+// admissible (CHE-4650). Every agent run that can start a review while the
+// issue is in a review status is judged, whoever holds the issue, and only
+// when the issue has a linked open PR.
+// ponytail: an author woken on a review-status issue is judged too; the
+// workflow returns the author's issue to in_progress before it fixes red CI.
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
-	if !target.ReviewRun || !target.AgentID.Valid || !issueID.Valid {
+	if !startsReview(target) || !target.AgentID.Valid || !issueID.Valid {
 		return nil
 	}
 	issue, err := q.GetIssue(ctx, issueID)
@@ -108,7 +117,7 @@ func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 		}
 		return fmt.Errorf("review admission: load issue: %w", err)
 	}
-	if !IsReviewStatus(issue.Status) || issue.AssigneeType.String != "agent" || issue.AssigneeID != target.AgentID {
+	if !IsReviewStatus(issue.Status) {
 		return nil
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, issueID)

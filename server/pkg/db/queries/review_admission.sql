@@ -20,6 +20,12 @@ WHERE pr_id = $1 AND head_sha = $2;
 INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, reasons, created_at, expires_at)
 VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('agent_id')::uuid, sqlc.arg('trigger')::text,
         sqlc.arg('head_sha')::text, sqlc.arg('reasons')::text[], now(), now() + interval '24 hours')
+-- A repeat on the same head keeps the first deadline, so repeated triggers
+-- cannot postpone recovery; a new head starts a new window.
 ON CONFLICT (issue_id, agent_id) DO UPDATE SET
-  trigger = EXCLUDED.trigger, head_sha = EXCLUDED.head_sha, reasons = EXCLUDED.reasons,
-  created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at;
+  trigger = EXCLUDED.trigger, reasons = EXCLUDED.reasons,
+  created_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
+                    THEN review_admission_deferral.created_at ELSE EXCLUDED.created_at END,
+  expires_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
+                    THEN review_admission_deferral.expires_at ELSE EXCLUDED.expires_at END,
+  head_sha = EXCLUDED.head_sha;
