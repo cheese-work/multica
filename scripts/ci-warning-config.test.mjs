@@ -73,3 +73,9 @@ test("a CI job that is new on a PR has a zero warning baseline until main runs i
   const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
   assert.match(zero, /"locale-parity"/)
 })
+
+test("the gitleaks job folded into CI by CHE-4385 has a zero warning baseline until main runs it", () => {
+  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"gitleaks"/)
+})

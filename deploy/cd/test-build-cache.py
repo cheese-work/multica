@@ -47,7 +47,7 @@ class BuildCacheTests(unittest.TestCase):
                 for step in job.get('steps', []):
                     if 'checkout@' in step.get('uses', ''):
                         checkout = True
-                    if step.get('name') == 'Use disposable build caches' and checkout and path.name != 'pr-close-target-check.yml':
+                    if step.get('name') == 'Use disposable build caches' and checkout and path.name != 'pr-guards.yml':
                         shared += 1
                         self.assertEqual(step['run'].strip(), 'bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"')
         self.assertGreater(shared, 0)
