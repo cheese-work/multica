@@ -817,7 +817,7 @@ export function ChatMessageList({
         // than the viewport, so switching sessions always shows the latest reply.
         initialTopMostItemIndex={
           restore
-            ? { index: restore.index, align: "start", offset: -restore.offsetInItemPx }
+            ? { index: restore.index, align: "start", offset: restore.offsetInItemPx }
             : { index: "LAST", align: "end" }
         }
         rangeChanged={onRangeChanged}
