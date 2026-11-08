@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Skill } from "@multica/core/types";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useSkillEditDraftStore } from "@multica/core/skills/draft-stores";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -114,5 +115,25 @@ describe("SkillDetailPage unsaved edits", () => {
 
     mount();
     expect(await screen.findByDisplayValue("animations")).toBeTruthy();
+  });
+
+  it("keeps the original base version of a restored stale draft, so the conflict survives a later visit", async () => {
+    const staleBase = "2026-07-28T18:00:00Z";
+    useSkillEditDraftStore.getState().setDraft("skill-1", {
+      name: "animations-mine",
+      description: "Animate things",
+      content: "# Animations\n",
+      files: [],
+      baseUpdatedAt: staleBase,
+    });
+
+    const first = mount();
+    expect(await screen.findByDisplayValue("animations-mine")).toBeTruthy();
+    expect(await screen.findByText("Someone else updated this skill")).toBeTruthy();
+    expect(useSkillEditDraftStore.getState().getDraft("skill-1")?.baseUpdatedAt).toBe(staleBase);
+    first.unmount();
+
+    mount();
+    expect(await screen.findByText("Someone else updated this skill")).toBeTruthy();
   });
 });

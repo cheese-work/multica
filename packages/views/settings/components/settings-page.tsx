@@ -71,6 +71,7 @@ import { CollapsedNavTrigger, PageHeader } from "../../layout/page-header";
 import { PanelHeader } from "../../layout/panel-nav";
 import { useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
+import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { useT } from "../../i18n";
 
 export interface ExtraSettingsTab {
@@ -218,6 +219,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               wide: true,
               adminOnly: true,
             }),
+            entry(
+              "provider-breakers",
+              t(($) => $.page.tabs.provider_breakers),
+              Zap,
+              <ProviderBreakersTab />,
+              { wide: true },
+            ),
             entry("labels", t(($) => $.page.tabs.labels), Tags, <LabelsTab />, {
               wide: true,
             }),

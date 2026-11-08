@@ -4,9 +4,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { chatKeys } from "@multica/core/chat/queries";
+import { applyDecisionAnswerUpdated } from "@multica/core/realtime";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { DecisionRequestCard } from "./decision-request-card";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 
@@ -293,6 +296,7 @@ describe("DecisionRequestCard answering", () => {
   const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
     uploadFile.mockReset();
     editor.hasActiveUploads = false;
@@ -317,23 +321,104 @@ describe("DecisionRequestCard answering", () => {
     await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
-  it("submits an option with one click and no text", async () => {
+  it("selects an option on tap without sending, and Send posts the chosen option", async () => {
     renderCard();
     const user = userEvent.setup();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /Option B/ }));
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    await user.click(optionB);
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    expect(optionB).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledTimes(1);
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
   });
 
+  it("acknowledges the covered cards when a batch card's option is chosen", async () => {
+    const batchId = "00000000-0000-4000-8000-0000000000b1";
+    renderCard({ ...withOptions, id: batchId, covers_request_ids: ["00000000-0000-4000-8000-0000000000c2", "00000000-0000-4000-8000-0000000000c1"],
+      covered_cards: ["c2", "c1"].map((tail) => ({ id: `00000000-0000-4000-8000-0000000000${tail}`, issue_id: `issue-${tail}`, issue_identifier: `CHE-${tail}`, decision: "Same ask?", options: withOptions.options })),
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    // Same vector as the server test: the digest of the batch id, the sorted covered ids and the option.
+    expect(answerDecisionRequest).toHaveBeenCalledWith(batchId, {
+      option: "Option B", text: undefined,
+      covers_ack: "012ee7331cfe77d20ca96126e0cae16df3acabee3149e329bb3054f42d0211e1",
+    });
+  });
+
+  it("sends no acknowledgment for a direct answer", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    expect(answerDecisionRequest.mock.calls[0]?.[1]).not.toHaveProperty("covers_ack");
+  });
+
+  it("does not style an unselected recommended option as selected; the badge is its only cue", async () => {
+    renderCard();
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveTextContent("Recommended");
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    expect(optionB.className).not.toMatch(/border-primary|bg-primary|ring-primary/);
+    await userEvent.setup().click(optionB);
+    expect(optionB.className).toMatch(/border-primary/);
+    expect(optionB.className).toMatch(/ring-primary/);
+  });
+
+  it("gives Send and Clear selection a 44px touch height on a phone", async () => {
+    renderCard();
+    await userEvent.setup().click(screen.getByRole("radio", { name: /Option A/ }));
+    for (const name of ["Send", "Clear selection"]) {
+      expect(screen.getByRole("button", { name }).className).toContain("max-sm:h-11");
+    }
+  });
+
+  it("deselects on a second tap or on Clear, and Send is disabled again", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    const optionA = screen.getByRole("radio", { name: /Option A/ });
+    await user.click(optionA);
+    await user.click(optionA);
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Clear selection" })).not.toBeInTheDocument();
+    await user.click(optionA);
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selection and the note across an unmount until it is sent", async () => {
+    const first = renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "later");
+    first.unmount();
+    renderCard();
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("textbox", { name: "Add a note (optional)" })).toHaveValue("later");
+    editor.live = "later";
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "later" }));
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("request")).toBeUndefined());
+  });
+
   it("shows each option's pros, cons and cost, and marks the recommendation", () => {
     renderCard();
-    const second = screen.getByRole("button", { name: /Option B/ });
+    const second = screen.getByRole("radio", { name: /Option B/ });
     expect(second).toHaveTextContent("safe");
     expect(second).toHaveTextContent("slow");
     expect(second).toHaveTextContent("2 days");
     expect(second).toHaveTextContent("Recommended");
-    const first = screen.getByRole("button", { name: /Option A/ });
+    const first = screen.getByRole("radio", { name: /Option A/ });
     expect(first).toHaveTextContent("fast");
     expect(first).not.toHaveTextContent("Recommended");
   });
@@ -363,7 +448,9 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day");
     editor.live = "but wait a day";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
@@ -463,7 +550,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
     expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
-    expect(screen.getByRole("group", { name: "Options" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
     expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
@@ -570,7 +657,8 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note");
     editor.live = "with a note";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");
@@ -625,6 +713,57 @@ describe("DecisionRequestCard answering", () => {
       expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });
 
+    describe("agent note and outcome in the DM", () => {
+      const note = "**Agent's note (not verified)**\n> Need more runs\n> [click](https://evil.test)\n> " + "x".repeat(300);
+      const proposal = { ...card, ask: `Raise the cap.\n\n${note}`, action };
+
+      it("shows the agent's note apart from the ask, as plain unverified text", async () => {
+        renderCard(proposal);
+        const box = await screen.findByTestId("decision-request-agent-note");
+        expect(box).toHaveAccessibleName("Agent's note (not verified)");
+        expect(box).toHaveTextContent("Need more runs");
+        expect(box).toHaveTextContent("[click](https://evil.test)");
+        expect(box.querySelector("a")).toBeNull();
+        expect(box.querySelector("p")).toHaveClass("break-words", "whitespace-pre-wrap");
+        const ask = screen.getByTestId("decision-request-ask");
+        expect(ask).toHaveTextContent("Raise the cap.");
+        expect(ask).not.toHaveTextContent("Need more runs");
+        expect(ask).not.toHaveTextContent("not verified");
+      });
+
+      it("shows no note box for an ask without a note", () => {
+        renderCard({ ...proposal, ask: "Raise the cap." });
+        expect(screen.queryByTestId("decision-request-agent-note")).toBeNull();
+      });
+
+      it("keeps the outcome on the same card after the request turns answered", async () => {
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
+        renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
+        expect(await screen.findByText("Cap applied")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("goes from Approve to the outcome when the server announces the change", async () => {
+        // The real handler for decision_answer:updated invalidates the DM message
+        // query; the refetch carries the action's new state into the card.
+        const qc = new QueryClient();
+        let served: RequestCard = proposal;
+        const Dm = () => {
+          const { data } = useQuery({ queryKey: chatKeys.messages("s1"), queryFn: async () => served });
+          return data ? <DecisionRequestCard card={data} /> : null;
+        };
+        renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
+        await screen.findByRole("button", { name: "Approve with passkey" });
+        expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+        served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
+        act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
+        expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+      });
+    });
+
     it("shows nothing when the card has no action", () => {
       renderCard();
       expect(screen.queryByText("Details unavailable")).toBeNull();
@@ -642,9 +781,11 @@ describe("DecisionRequestCard passkey-gated answering", () => {
   const pickAndSend = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "why");
     editor.live = "why";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
   };
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockRejectedValueOnce(gated()).mockResolvedValue(undefined);
     challengeDecisionAnswer.mockReset().mockResolvedValue(challenge);
     signPasskeyChallenge.mockReset().mockResolvedValue({ challenge_id: "ch-1", credential: { id: "cred" } });

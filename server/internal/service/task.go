@@ -67,6 +67,9 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
+	// that completion dispatches to. Nil: no background output is written.
+	BackgroundWriters map[string]BackgroundWriter
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -5562,6 +5565,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
 			return err
 		}
+		if err := s.writeBackgroundOutput(ctx, qtx, t, result); err != nil {
+			return fmt.Errorf("write background task output: %w", err)
+		}
 
 		if t.ChatSessionID.Valid {
 			// Pin the chat_session's runtime_id alongside the session_id so the
@@ -6044,12 +6050,23 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// so don't block" fail-open providerHoldVerdict documents.
 		retryAgent       db.Agent
 		retryAgentLoaded bool
+		// retryFence: set when the task is in a provider-failure recovery
+		// lineage (CHE-1773); no retry is minted and the owner is told once.
+		retryFence providerFailureOwnerDecision
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if !retryEligible(failureReason, parent) {
+			// Not retryable: nothing to mint.
+		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
+			// Fail closed: an unreadable lineage must not mint a generic retry.
+			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
+				"task_id", util.UUIDToString(taskID), "error", ferr)
+		} else if fence.Capped() {
+			retryFence = fence
+		} else {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -6093,6 +6110,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
+			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
 			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
@@ -6237,6 +6261,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					"issue_id", util.UUIDToString(t.IssueID),
 					"error", gerr,
 				)
+				createRetry = false
+			}
+		}
+		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
 				createRetry = false
 			}
 		}
@@ -6437,6 +6470,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
 	}
+	// CHE-1773: a recovery-lineage task got no retry; tell its owner once.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice
@@ -6653,6 +6688,43 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
 
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
+	if err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
+}
+
 // refuseRetryForProviderHold checks the just-created retry child's agent
 // against workspace provider holds and, if held, immediately cancels the
 // child in the SAME transaction that created it — so nothing outside this
@@ -6792,6 +6864,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryEligible(reason, parent) {
 		return nil, nil
 	}
+	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
+	// point either; fail closed when the lineage cannot be read.
+	fence, err := s.fenceRecoveryLineage(ctx, s.Queries, parent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery lineage check: %w", err)
+	}
+	if fence.Capped() {
+		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -6838,6 +6920,13 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil

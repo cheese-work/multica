@@ -28,24 +28,35 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := chi.URLParam(r, "sessionId")
 	var session db.ChatSession
 	var taskID pgtype.UUID
+	var task db.AgentTaskQueue
+	op := chatOpContinue
 	if r.Header.Get("X-Actor-Source") == "task_token" {
 		headerTaskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
 		if err != nil {
 			writeError(w, http.StatusForbidden, "a session chat task is required")
 			return
 		}
-		task, err := h.Queries.GetAgentTask(r.Context(), headerTaskID)
-		if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
-			writeError(w, http.StatusForbidden, "a running session chat task is required")
+		task, err = h.Queries.GetAgentTask(r.Context(), headerTaskID)
+		if err != nil || !task.ChatSessionID.Valid {
+			writeErrorCode(w, http.StatusForbidden, codeChatTaskNotActive, "a running session chat task is required")
 			return
 		}
 		if sessionID != "" && sessionID != uuidToString(task.ChatSessionID) {
-			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+			writeErrorCode(w, http.StatusForbidden, codeChatTaskSessionMismatch, "task does not belong to this chat session")
 			return
 		}
 		session, err = h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-		if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
-			writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+		if err != nil {
+			writeErrorCode(w, http.StatusForbidden, codeChatTaskSessionMismatch, "task does not belong to this chat session")
+			return
+		}
+		// A compaction task finishes in place, so it is judged as a compact;
+		// any other task continues the DM. The archived-DM branch below
+		// refuses a compaction task outright.
+		if task.Purpose.Valid && task.Purpose.String == taskPurposeCompaction {
+			op = chatOpCompact
+		}
+		if !h.authorizeChatTask(r.Context(), w, h.Queries, op, task, session, workspaceID) {
 			return
 		}
 		taskID = task.ID
@@ -61,6 +72,9 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// A DM archived by an earlier continuation answers with its successor.
 	if session.ContinuedIntoSessionID.Valid {
+		if taskID.Valid && op == chatOpCompact && !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpContinue, task, session, workspaceID) {
+			return
+		}
 		next, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{ID: session.ContinuedIntoSessionID, WorkspaceID: session.WorkspaceID})
 		if err != nil || next.CreatorID != session.CreatorID {
 			writeError(w, http.StatusConflict, "the continuation is no longer available")
@@ -75,7 +89,7 @@ func (h *Handler) ContinueChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session, _, fail := h.compactChatInPlace(r.Context(), session.ID, taskID, summaryText)
 	if fail != nil {
-		writeError(w, fail.status, fail.message)
+		fail.write(w)
 		return
 	}
 	h.writeChatContinue(r.Context(), w, session.ID, session)

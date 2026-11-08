@@ -11,7 +11,33 @@
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",
     "retry": "重试",
-    "empty": "没有待处理请求。"
+    "empty": "没有待处理请求。",
+    "decisions": "待决定事项",
+    "show_all": "显示全部（{{count}}）",
+    "show_less": "收起",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提问",
+      "later": "提醒",
+      "unseen": "未读",
+      "decision": "决定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黄色",
+      "red": "红色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分钟",
+      "hours_other": "{{count}} 小时",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分类",
+      "replies_other": "{{count}} 条回复"
+    }
   },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
@@ -101,6 +127,12 @@
     "copied_count_other": "已复制 {{count}} 条消息",
     "fork_hint": "发送一条消息即可开始此分支。",
     "continuation_summary": "对话摘要",
+    "compaction_summary_other": "给智能体的摘要 · {{count}} 个词",
+    "compaction_summary_show": "显示",
+    "compaction_summary_hide": "隐藏",
+    "compaction_open_question": "待回答的问题：{{ask}}",
+    "compaction_divider": "已压缩 · {{time}} · {{tokens}} 个 token",
+    "compaction_divider_no_tokens": "已压缩 · {{time}}",
     "earlier_dm": "较早的私信",
     "quote_message": "引用",
     "speaker_you": "你",
@@ -191,6 +223,7 @@
     "unread": "未读",
     "no_previous": "暂无历史对话",
     "untitled": "新对话",
+    "recent": "最近",
     "my_agents": "我的智能体",
     "others": "其他",
     "no_agents": "暂无智能体",
@@ -401,6 +434,9 @@
   "decision": {
     "request_title": "决策请求",
     "asked_by": "来自 {{agent}}",
+    "answered_by_batch": "{{issue}}:已由批量卡片回答",
+    "covers_batch": "此回答关闭的卡片:{{count}}",
+    "covers_unavailable": "无法加载此回答将关闭的决定。请刷新后再回答。",
     "request_label": "决策请求：{{state}}",
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "picked_up": "已接手", "not_picked_up": "未接手", "disclaimed": "已撤销" },
     "picked_up_by": "{{agent}} 已接手",
@@ -415,6 +451,7 @@
     "option_cons": "缺点",
     "option_cost": "成本或时间",
     "answer_send": "发送",
+    "answer_clear": "清除选择",
     "answer_error": "发送失败，请重试。",
     "answer_helper": "发送会将你的回答发布到 {{issue}}。给 DM 智能体的问题请写在下方消息框。",
     "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
@@ -426,6 +463,7 @@
     "action_unavailable": "无法显示详情",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
+    "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",
     "answer_open_browser": "在浏览器中打开",
     "answer_passkey_needed": "此回答需要你的通行密钥。再次发送以确认。",

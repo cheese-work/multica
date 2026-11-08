@@ -447,6 +447,10 @@ function SkillDetail({ skillId }: { skillId: string }) {
   const heldEditsRef = useRef(false);
 
   const seededKeyRef = useRef<string | null>(null);
+  // Base version of edits restored from a previous visit. Kept until the page
+  // adopts a server version, so re-storing them never re-bases a stale draft
+  // onto the current version and loses its conflict.
+  const restoredBaseRef = useRef<string | null>(null);
 
   /**
    * The draft this page last handed the user, normalized by `toDraft`. Dirty
@@ -478,6 +482,7 @@ function SkillDetail({ skillId }: { skillId: string }) {
   const adoptServerVersion = useCallback(
     (s: Skill, resetSelection = false) => {
       seededKeyRef.current = `${wsId}:${s.id}@${s.updated_at}`;
+      restoredBaseRef.current = null;
       setConflictPending(false);
       seedFromSkill(s);
       if (resetSelection) setSelectedPath(SKILL_MD);
@@ -519,6 +524,7 @@ function SkillDetail({ skillId }: { skillId: string }) {
       setDescription(held.description);
       setContent(held.content);
       setFiles(held.files);
+      restoredBaseRef.current = held.baseUpdatedAt;
       if (held.baseUpdatedAt !== skill.updated_at) setConflictPending(true);
     }
   }, [skill, wsId, adoptServerVersion, name, description, content, files]);
@@ -629,7 +635,8 @@ function SkillDetail({ skillId }: { skillId: string }) {
         description,
         content,
         files,
-        baseUpdatedAt: seededKeyRef.current?.split("@")[1] ?? skill.updated_at,
+        baseUpdatedAt:
+          restoredBaseRef.current ?? seededKeyRef.current?.split("@")[1] ?? skill.updated_at,
       });
     } else if (heldEditsRef.current) {
       heldEditsRef.current = false;

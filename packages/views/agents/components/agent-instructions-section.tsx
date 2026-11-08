@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Pencil, X } from "@multica/ui/icons";
 import type { Agent } from "@multica/core/types";
+import { useAgentInstructionsDraftStore } from "@multica/core/agents";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -98,6 +99,7 @@ export function AgentInstructionsSection({
                 variant="destructive"
                 onClick={() => {
                   setConfirmDiscard(false);
+                  useAgentInstructionsDraftStore.getState().clearDraft(agent.id);
                   stopEditing();
                 }}
               >

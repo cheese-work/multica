@@ -3,7 +3,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, AgentRuntime, MemberWithUser } from "@multica/core/types";
-import { providerSupportsMcpConfig } from "@multica/core/agents";
+import {
+  providerSupportsMcpConfig,
+  useAgentCustomArgsDraftStore,
+  useAgentEnvDraftStore,
+} from "@multica/core/agents";
 import { useFeatureEnabled } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -223,6 +227,11 @@ export function AgentAdvancedSettings({
 
   const confirmDiscard = () => {
     if (pending === undefined) return;
+    // Discarding is explicit: the section's stored draft goes with it.
+    if (active.id === "env") useAgentEnvDraftStore.getState().clearDraft(agent.id);
+    if (active.id === "custom_args") {
+      useAgentCustomArgsDraftStore.getState().clearDraft(agent.id);
+    }
     setDirty(false);
     onSectionChange(pending);
     setPending(undefined);

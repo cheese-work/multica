@@ -1079,6 +1079,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
   id: z.string(),
   action_type: z.string().catch(""),
   payload_sha256: z.string(),
+  state: z.string().optional().catch(undefined),
   preview: z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
@@ -1115,6 +1116,19 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
   action: DecisionActionSchema.optional().catch(undefined),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
+  answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
@@ -1161,6 +1175,18 @@ export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
     label: z.string(),
     what_happens: z.string().optional().catch(undefined),
   }).loose()).catch([]),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
 }).loose()));
 
 // An unknown status degrades to `uncertain`: it never claims the agent read the
@@ -2570,6 +2596,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   attention_since: z.string().nullable().optional().catch(undefined),
   stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
   next_change_at: z.string().nullable().optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -4510,3 +4537,19 @@ export const RoutingAgentSettingSchema = z.lazy(() => z.object({
   overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
 }).loose());
 export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+
+// Provider breaker state (CHE-4382). An unknown state reads as `open`: the
+// panel must not tell an admin a breaker is closed when it cannot tell.
+export const ProviderBreakerSchema = z.lazy(() => z.object({
+  provider: z.string(),
+  state: z.enum(["closed", "open", "half_open"]).catch("open"),
+  open_reason: z.string().nullish().transform((v) => v ?? ""),
+  failure_count: z.number().int().nonnegative().catch(0),
+  opened_at: z.string().nullish().transform((v) => v ?? null),
+  next_probe_at: z.string().nullish().transform((v) => v ?? null),
+  last_success_at: z.string().nullish().transform((v) => v ?? null),
+  trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+export const ProviderBreakerListSchema = z.lazy(() => z.object({
+  breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
+}));

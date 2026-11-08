@@ -32,7 +32,8 @@ args="$(cat "$work_dir/curl-args")"
 [[ "$args" != *"$SOURCE_SHA"* ]] || { echo "message must travel in the body, not argv: $args" >&2; exit 1; }
 body="$(cat "$work_dir/curl-body")"
 [[ "$body" == *"0123456789ab"* ]] || { echo "version missing from body: $body" >&2; exit 1; }
-[[ "$body" == *"$RUN_URL"* ]] || { echo "approval link missing from body: $body" >&2; exit 1; }
+[[ "$body" == *"candidate_sha=$SOURCE_SHA"* ]] || { echo "full candidate missing from body: $body" >&2; exit 1; }
+[[ "$body" == *"$RUN_URL"* ]] || { echo "dispatch link missing from body: $body" >&2; exit 1; }
 python3 -c 'import json,sys; json.loads(sys.argv[1])' "$body" || { echo "body is not JSON: $body" >&2; exit 1; }
 
 # A failing webhook warns but must not fail the job.

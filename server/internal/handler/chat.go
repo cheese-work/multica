@@ -292,6 +292,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSource = a.AttentionSource
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
+		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
 	}
 	return nil
 }
@@ -1701,6 +1702,11 @@ func (h *Handler) MarkChatSessionUnread(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
 		return
 	}
+	if err := h.openUnseenAttention(r.Context(), session, userID); err != nil {
+		slog.Warn("open unseen attention item failed", "session_id", sessionID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
+		return
+	}
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{
@@ -2309,8 +2315,11 @@ type ChatSessionResponse struct {
 	AttentionSince  *string `json:"attention_since"`
 	StaleLevel      string  `json:"stale_level"`
 	NextChangeAt    *string `json:"next_change_at"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
+	// collapsed, never coloured or aged, and not counted in stale_level.
+	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
+	CreatedAt                 string   `json:"created_at"`
+	UpdatedAt                 string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
@@ -2576,6 +2585,8 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactionSummary:
+		return protocol.ChatMessageKindCompactionSummary
 	case protocol.ChatMessageKindCompactNotice:
 		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:

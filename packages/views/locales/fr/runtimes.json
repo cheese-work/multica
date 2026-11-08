@@ -347,6 +347,11 @@
       "completed": "Mise à jour terminée. Le daemon redémarre...",
       "failed": "Échec de la mise à jour",
       "timeout": "Délai dépassé"
+    },
+    "phase": {
+      "download": "Téléchargement",
+      "verify": "Vérification",
+      "install": "Installation"
     }
   },
   "charts": {
