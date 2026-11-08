@@ -103,6 +103,18 @@ func (h *Handler) DisconnectQoderConnection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "Qoder is stopped and still cancelling remote sessions; retry shortly")
 		return
 	}
+	var external []string
+	if len(runtimeIDs) > 0 {
+		external = []string{auditExternalRuntimeGone}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "qoder.disconnect", WorkspaceID: ws, TargetID: ws,
+		After:    map[string]any{"runtimes_removed": len(runtimeIDs)},
+		External: external,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "qoder.disconnect")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot disconnect Qoder")
 		return
@@ -153,8 +165,13 @@ func (h *Handler) stopQoderForDisconnect(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "cannot revoke runtime credential")
 		return false
 	}
-	if _, err = tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws); err != nil {
+	tag, err := tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot stop Qoder Cloud Agents runtime")
+		return false
+	}
+	if err := h.writeQoderStopAudit(r, tx, ws, tag.RowsAffected()); err != nil {
+		writeAuditFailure(w, r, err, "qoder.stop")
 		return false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -165,6 +182,20 @@ func (h *Handler) stopQoderForDisconnect(w http.ResponseWriter, r *http.Request,
 		h.DaemonTokenCache.Invalidate(r.Context(), revokedHash)
 	}
 	return true
+}
+
+// writeQoderStopAudit records a stop in the stop transaction. A stop that
+// matched no connection changed nothing and writes no row. Credentials are
+// never part of the row.
+func (h *Handler) writeQoderStopAudit(r *http.Request, tx pgx.Tx, ws pgtype.UUID, rowsAffected int64) error {
+	if rowsAffected == 0 {
+		return nil
+	}
+	return h.writeAudit(r.Context(), h.Queries.WithTx(tx), r, auditInput{
+		Kind: "qoder.stop", WorkspaceID: ws, TargetID: ws,
+		Before: map[string]any{"enabled": true},
+		After:  map[string]any{"enabled": false, "status": "stopped"},
+	})
 }
 
 // checkQoderDisconnectPlan locks the workspace's Qoder runtimes and refuses

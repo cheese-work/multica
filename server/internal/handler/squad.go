@@ -296,7 +296,15 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		avatarURL = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	squad, err := h.Queries.CreateSquad(r.Context(), db.CreateSquadParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	squad, err := qtx.CreateSquad(r.Context(), db.CreateSquadParams{
 		WorkspaceID: wsUUID,
 		Name:        req.Name,
 		Description: req.Description,
@@ -310,12 +318,26 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-add leader as a member with role "leader".
-	h.Queries.AddSquadMember(r.Context(), db.AddSquadMemberParams{
+	if _, err := qtx.AddSquadMember(r.Context(), db.AddSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: "agent",
 		MemberID:   leaderUUID,
 		Role:       "leader",
-	})
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.create", WorkspaceID: wsUUID, TargetID: squad.ID,
+		After: squadAuditFields(squad),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.create")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create squad")
+		return
+	}
 
 	resp, err := h.squadToResponseWithPreview(r.Context(), squad)
 	if err != nil {
@@ -423,11 +445,14 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "this request may only include instructions and expected_before_digest")
 			return
 		}
-		result, reason, swapErr := h.hermesExceptionVerifyAndSwapSquadInstructions(r.Context(), uuidToString(squad.ID), hermesExceptionRequest{
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapSquadInstructions(r.Context(), r, workspaceID, uuidToString(squad.ID), hermesExceptionRequest{
 			NewContent:           *req.Instructions,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
 		logHermesExceptionOutcome(r, actorID, "squad.instructions", uuidToString(squad.ID), result, reason, swapErr)
+		if failedAudit(w, r, swapErr, "squad.instructions") {
+			return
+		}
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return
@@ -571,6 +596,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.update", WorkspaceID: wsUUID, TargetID: squad.ID,
+		Before: squadAuditFields(squad), After: squadAuditFields(updated),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update squad")
 		return
@@ -611,12 +643,25 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := requestUserID(r)
+	userUUID, _ := parseUUIDOrBadRequest(w, userID, "user_id")
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to archive squad")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
 	// Transfer issues assigned to this squad to the leader agent.
-	if err := h.Queries.TransferSquadAssignees(r.Context(), db.TransferSquadAssigneesParams{
+	if err := qtx.TransferSquadAssignees(r.Context(), db.TransferSquadAssigneesParams{
 		AssigneeID:   squad.ID,
 		AssigneeID_2: squad.LeaderID,
 	}); err != nil {
 		slog.Warn("transfer squad assignees failed", "squad_id", uuidToString(squad.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to archive squad")
+		return
 	}
 
 	// Mirror the issue-assignee transfer for autopilots that target this
@@ -625,20 +670,30 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 	// "assignee squad is archived" — visible to ops but useless to the
 	// owner. Rewriting to the leader keeps the autopilot semantics
 	// unchanged (Path A from MUL-2429 is leader-only execution anyway).
-	if err := h.Queries.TransferSquadAutopilotsToLeader(r.Context(), db.TransferSquadAutopilotsToLeaderParams{
+	if err := qtx.TransferSquadAutopilotsToLeader(r.Context(), db.TransferSquadAutopilotsToLeaderParams{
 		AssigneeID:   squad.ID,
 		AssigneeID_2: squad.LeaderID,
 	}); err != nil {
 		slog.Warn("transfer squad autopilots failed", "squad_id", uuidToString(squad.ID), "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to archive squad")
+		return
 	}
 
-	userID := requestUserID(r)
-	userUUID, _ := parseUUIDOrBadRequest(w, userID, "user_id")
-
-	if _, err := h.Queries.ArchiveSquad(r.Context(), db.ArchiveSquadParams{
+	if _, err := qtx.ArchiveSquad(r.Context(), db.ArchiveSquadParams{
 		ID:         squad.ID,
 		ArchivedBy: userUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to archive squad")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.delete", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
+		Before: squadAuditFields(squad),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.delete")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive squad")
 		return
 	}
@@ -942,7 +997,15 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	sm, err := h.Queries.AddSquadMember(r.Context(), db.AddSquadMemberParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to add squad member")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	sm, err := qtx.AddSquadMember(r.Context(), db.AddSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -953,6 +1016,17 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "member already in squad")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "failed to add squad member")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.member.add", WorkspaceID: wsUUID, TargetID: squad.ID,
+		After: map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), sm.Role)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.member.add")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add squad member")
 		return
 	}
@@ -999,7 +1073,20 @@ func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.Queries.RemoveSquadMember(r.Context(), db.RemoveSquadMemberParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	role, err := squadMemberRole(r.Context(), qtx, squad.ID, req.MemberType, memberUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
+		return
+	}
+	rows, err := qtx.RemoveSquadMember(r.Context(), db.RemoveSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -1010,6 +1097,17 @@ func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows == 0 {
 		writeError(w, http.StatusNotFound, "squad member not found")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.member.remove", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
+		Before: map[string]any{"member": squadMemberAuditField(req.MemberType, req.MemberID, role)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.member.remove")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
 		return
 	}
 
@@ -1050,7 +1148,20 @@ func (h *Handler) UpdateSquadMemberRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sm, err := h.Queries.UpdateSquadMemberRole(r.Context(), db.UpdateSquadMemberRoleParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update squad member")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	oldRole, err := squadMemberRole(r.Context(), qtx, squad.ID, req.MemberType, memberUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update squad member")
+		return
+	}
+	sm, err := qtx.UpdateSquadMemberRole(r.Context(), db.UpdateSquadMemberRoleParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -1058,6 +1169,18 @@ func (h *Handler) UpdateSquadMemberRole(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "squad member not found")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "squad.member.role.update", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
+		Before: map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), oldRole)},
+		After:  map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), sm.Role)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "squad.member.role.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update squad member")
 		return
 	}
 
