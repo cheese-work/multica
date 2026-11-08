@@ -3,8 +3,8 @@
 -- UPDATE that workspace deletion takes first, so a capture that overlaps a
 -- deletion waits, then finds no workspace and inserts nothing: the table has no
 -- FK to catch the orphan.
-INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at)
-SELECT workspace.id, sqlc.arg('kind')::text, sqlc.arg('subject_id')::uuid, sqlc.arg('class')::text, sqlc.narg('decision_source')::text, sqlc.arg('inputs')::jsonb, sqlc.arg('option_count')::int, sqlc.narg('recommended_index')::int, sqlc.narg('agent_confidence')::real, sqlc.narg('predicted_key')::text, sqlc.narg('predicted_confidence')::real, sqlc.narg('predicted_precedents')::int, clock_timestamp(), sqlc.narg('choice_key')::text, sqlc.narg('outcome')::text, CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END
+INSERT INTO system1_observation (workspace_id, kind, subject_id, class, decision_source, inputs, option_count, recommended_index, agent_confidence, predicted_key, predicted_confidence, predicted_precedents, predicted_at, choice_key, outcome, answered_at, event_id)
+SELECT workspace.id, sqlc.arg('kind')::text, sqlc.arg('subject_id')::uuid, sqlc.arg('class')::text, sqlc.narg('decision_source')::text, sqlc.arg('inputs')::jsonb, sqlc.arg('option_count')::int, sqlc.narg('recommended_index')::int, sqlc.narg('agent_confidence')::real, sqlc.narg('predicted_key')::text, sqlc.narg('predicted_confidence')::real, sqlc.narg('predicted_precedents')::int, clock_timestamp(), sqlc.narg('choice_key')::text, sqlc.narg('outcome')::text, CASE WHEN sqlc.narg('outcome')::text = 'applied' THEN clock_timestamp() END, sqlc.narg('event_id')::uuid
 FROM workspace WHERE workspace.id = sqlc.arg('workspace_id')
 FOR KEY SHARE OF workspace;
 
@@ -14,6 +14,13 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND kind = sqlc.arg('kind') AND cl
   AND choice_key IS NOT NULL AND reversed_at IS NULL
 ORDER BY created_at DESC
 LIMIT 200;
+
+-- name: ListRecentIssueStatusChanges :many
+-- The last few statuses an issue moved to, newest first (route label input).
+SELECT (details->>'to')::text AS to_status FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id') AND action = 'status_changed' AND details->>'to' IS NOT NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 3;
 
 -- name: MarkSystem1RoutingOverridden :exec
 -- A person changed the assignee a workflow handoff had just chosen.
