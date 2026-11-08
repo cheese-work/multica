@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -723,4 +724,30 @@ func TestWithUserMessageUnlessNetwork(t *testing.T) {
 			t.Errorf("WithUserMessageUnlessNetwork(_, nil) should be nil")
 		}
 	})
+}
+
+// CHE-2909 (DX-4): the chat task authority refusals carry a stable code and a
+// server-authored message that reaches the user and exits non-zero.
+func TestChatTaskAuthorityRefusalReachesUser(t *testing.T) {
+	for _, tc := range []struct{ code, msg string }{
+		{"chat_task_not_active", "This task is no longer running, so it cannot use this chat session."},
+		{"chat_task_session_mismatch", "This task does not belong to this chat session."},
+		{"chat_task_agent_mismatch", "This task's agent does not own this chat session."},
+		{"compaction_agent_not_current", "This agent is no longer the workspace's compaction agent."},
+		{"compaction_continue_refused", "A compaction task finishes in place with `multica chat compact` or `multica chat continue` without --fork; it cannot fork or archive the DM."},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]string{"error": tc.msg, "code": tc.code})
+			err := fmt.Errorf("continue chat: %w", &HTTPError{Method: "POST", Path: "/api/chat/continue", StatusCode: 403, Body: string(body)})
+			if got := ServerErrorCode(err); got != tc.code {
+				t.Fatalf("ServerErrorCode = %q, want %q", got, tc.code)
+			}
+			if got := FormatError(err, false); !strings.Contains(got, tc.msg) {
+				t.Fatalf("FormatError = %q, want it to contain %q", got, tc.msg)
+			}
+			if ExitCodeFor(err) == 0 {
+				t.Fatal("exit code is 0 for a refusal")
+			}
+		})
+	}
 }

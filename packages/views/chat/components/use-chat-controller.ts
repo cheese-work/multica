@@ -415,7 +415,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     if (!currentHasUnread) return;
     const sessionId = activeSessionId;
     const timer = setTimeout(() => {
-      if (useChatStore.getState().activeSessionId !== sessionId) return;
+      const { activeSessionId: openId, autoReadSuppressedId } = useChatStore.getState();
+      if (openId !== sessionId || autoReadSuppressedId === sessionId) return;
       uiLogger.info("auto markRead", { sessionId });
       markRead.mutate(sessionId);
     }, 0);

@@ -26,18 +26,27 @@ const (
 	UpdateTimeout   UpdateStatus = "timeout"
 )
 
+// UpdateProgress is the daemon's latest self-reported download state for a
+// running update.
+type UpdateProgress struct {
+	Phase      string `json:"phase"`
+	BytesDone  int64  `json:"bytes_done"`
+	BytesTotal int64  `json:"bytes_total"`
+}
+
 // UpdateRequest represents a pending or completed CLI update request.
 type UpdateRequest struct {
-	ID              string       `json:"id"`
-	RuntimeID       string       `json:"runtime_id"`
-	InitiatorUserID string       `json:"-"`
-	Status          UpdateStatus `json:"status"`
-	TargetVersion   string       `json:"target_version"`
-	Output          string       `json:"output,omitempty"`
-	Error           string       `json:"error,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
-	RunStartedAt    *time.Time   `json:"-"`
+	ID              string          `json:"id"`
+	RuntimeID       string          `json:"runtime_id"`
+	InitiatorUserID string          `json:"-"`
+	Status          UpdateStatus    `json:"status"`
+	TargetVersion   string          `json:"target_version"`
+	Output          string          `json:"output,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Progress        *UpdateProgress `json:"progress,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	RunStartedAt    *time.Time      `json:"-"`
 }
 
 const (
@@ -53,6 +62,9 @@ type UpdateStore interface {
 	PopPending(ctx context.Context, runtimeID string) (*UpdateRequest, error)
 	Complete(ctx context.Context, id string, output string) error
 	Fail(ctx context.Context, id string, errMsg string) error
+	// SetProgress records progress on a running request; any other status is
+	// a no-op so a late report cannot touch a settled request.
+	SetProgress(ctx context.Context, id string, progress UpdateProgress) error
 }
 
 func updateRequestTerminal(status UpdateStatus) bool {
@@ -204,6 +216,17 @@ func (s *InMemoryUpdateStore) Fail(_ context.Context, id string, errMsg string) 
 	return nil
 }
 
+func (s *InMemoryUpdateStore) SetProgress(_ context.Context, id string, progress UpdateProgress) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if req, ok := s.requests[id]; ok && req.Status == UpdateRunning {
+		req.Progress = &progress
+		req.UpdatedAt = time.Now()
+	}
+	return nil
+}
+
 // Handlers
 
 // InitiateUpdate creates a new CLI update request (protected route, called by frontend).
@@ -314,9 +337,10 @@ func (h *Handler) ReportUpdateResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Status string `json:"status"` // "running", "completed", or "failed"
-		Output string `json:"output"`
-		Error  string `json:"error"`
+		Status   string          `json:"status"` // "running", "completed", or "failed"
+		Output   string          `json:"output"`
+		Error    string          `json:"error"`
+		Progress *UpdateProgress `json:"progress"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -337,9 +361,15 @@ func (h *Handler) ReportUpdateResult(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "running":
-		// No-op: status is already "running" from PopPending. This call is
-		// just a progress signal from the daemon to confirm it received the
-		// update command and is executing it.
+		// Status is already "running" from PopPending; this call confirms the
+		// daemon received the command and optionally carries download progress.
+		if req.Progress != nil {
+			if err := h.UpdateStore.SetProgress(r.Context(), updateID, *req.Progress); err != nil {
+				slog.Error("UpdateStore SetProgress failed", "error", err, "update_id", updateID)
+				writeError(w, http.StatusInternalServerError, "failed to persist progress")
+				return
+			}
+		}
 	default:
 		writeError(w, http.StatusBadRequest, "invalid status: "+req.Status)
 		return
