@@ -252,6 +252,16 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 	return normalized, conditionHints(out), nil
 }
 
+// checksRollupIgnoringVerdict is the PR rollup a checks_finished rule reads.
+// The security-gate status stays PENDING until a cross-lab verdict exists, and
+// flows wait for finished checks before asking for it, so a PENDING rollup
+// whose only unfinished contexts are verdict statuses reads as SUCCESS. A
+// failing check already makes the rollup FAILURE, so only PENDING needs this.
+const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
+	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
+
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
 // small observation for the woken agent's trigger facts.
@@ -302,7 +312,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -334,8 +344,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				missingSnapshot = missingSnapshot || head == ""
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
-					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
-					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks)})
+					keys = append(keys, prChecksKey(number, head, checks))
+					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks), "head_current": head == currentHead})
 					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "conflicts":
@@ -412,7 +422,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				if head != "" && checks != "" {
 					keys = append(keys, fmt.Sprintf("vcs:%s@%s:%s", util.UUIDToString(id), head, checks))
-					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks)})
+					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks), "head_current": true})
 				}
 			}
 		}
@@ -603,9 +613,10 @@ func conditionNewlyMet(previous, current string) bool {
 }
 
 // conditionFiresOnChange reports whether facts already true at registration
-// are ignored. Finished checks usually belong to the head the agent just
-// replaced, so a checks condition waits for a newer result; states such as a
-// status value, finished sub-issues or a merged PR fire as soon as they hold.
+// can be ignored. Finished checks may belong to the head the agent just
+// replaced, so baselineCondition ignores those, but not checks finished on the
+// PR's current head; states such as a status value, finished sub-issues or a
+// merged PR fire as soon as they hold.
 func conditionFiresOnChange(raw []byte) bool {
 	var c WakeupCondition
 	_ = json.Unmarshal(raw, &c)
@@ -615,7 +626,7 @@ func conditionFiresOnChange(raw []byte) bool {
 // baselineCondition records which facts already satisfy a new or re-enabled
 // rule, so it wakes the agent when they change rather than immediately.
 func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) error {
-	met, fingerprint, _, err := s.evaluateCondition(ctx, tx, q, w)
+	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
 	if err != nil && !conditionDiagnostic(err) {
 		return err
 	}
@@ -624,8 +635,42 @@ func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q
 	}
 	if !met {
 		fingerprint = ""
+	} else if staleOnly, ok := replacedHeadChecks(w.Condition, observed); ok {
+		fingerprint = staleOnly
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
+}
+
+// prChecksKey is the fingerprint key of one finished checks result.
+func prChecksKey(number any, head, checks string) string {
+	return fmt.Sprintf("%v@%s:%s", number, head, strings.ToUpper(checks))
+}
+
+// replacedHeadChecks returns the fingerprint a new checks_finished rule
+// baselines: only the results on a replaced head, since those are not news.
+// A result on a PR's current head stays out of it, so the next poll fires,
+// whatever the other linked PRs show. ok is false for any other rule.
+func replacedHeadChecks(raw []byte, observed map[string]any) (fingerprint string, ok bool) {
+	var c WakeupCondition
+	_ = json.Unmarshal(raw, &c)
+	if c.Type != "pull_request" || c.Event != "checks_finished" {
+		return "", false
+	}
+	var keys []string
+	prs, _ := observed["pull_requests"].([]map[string]any)
+	for _, pr := range prs {
+		if current, _ := pr["head_current"].(bool); current {
+			continue
+		}
+		head, _ := pr["head_sha"].(string)
+		checks, _ := pr["checks"].(string)
+		keys = append(keys, prChecksKey(pr["number"], head, checks))
+	}
+	if len(keys) == 0 {
+		return "", true
+	}
+	sort.Strings(keys)
+	return "pr:" + strings.Join(keys, ","), true
 }
 
 // A completed evaluation replaces the previous pass's error with its current
@@ -812,6 +857,10 @@ type linkedPR struct {
 // splitHaltedPRs returns the matching PRs outside halted repositories, and the
 // identities of all linked PRs inside them. repos[i] is the repository of prs[i].
 func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
+	// Held to the end of the evaluation's transaction: a switch change waits for it, or is seen by it (CHE-2223).
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspaceID); err != nil {
+		return nil, nil, err
+	}
 	halted := map[[2]string]bool{}
 	isHalted := func(repo [2]string) (bool, error) {
 		if h, ok := halted[repo]; ok {

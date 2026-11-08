@@ -102,12 +102,34 @@ func TestAgentDecisionBriefMarkdownIsEmptyWhenOffAndNothingToShow(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder
-			if err := writeAgentDecisionMarkdown(&buf, tc.feed); err != nil {
+			if err := writeAgentDecisionMarkdown(&buf, tc.feed, nil); err != nil {
 				t.Fatal(err)
 			}
 			if got := buf.Len() == 0; got != tc.wantEmpty {
 				t.Fatalf("empty=%v want %v; output:\n%s", got, tc.wantEmpty, buf.String())
 			}
 		})
+	}
+}
+
+func TestAgentDecisionBriefMarkdownLabelsJevAndWaiver(t *testing.T) {
+	feed := map[string]any{"enabled": true, "decisions": []any{
+		map[string]any{"identifier": "CHE-7", "gate": "test_first_red", "state": "effective", "outcome": "WAIVED", "decider": "Jev for Cheese", "confidence": 0.8,
+			"review_target_at": "2026-10-31T10:00:00Z", "link": "https://app/x/issues/CHE-7#comment-c3", "veto_line": "Veto: decision:i3 sha member:u1"},
+		map[string]any{"identifier": "CHE-6", "gate": "screenshot_evidence", "state": "effective",
+			"review_target_at": "2026-10-31T10:00:00Z", "link": "https://app/x/issues/CHE-6#comment-c4", "veto_line": "Veto: decision:i4 sha member:u1"},
+	}}
+	var b strings.Builder
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"CHE-7 · test_first_red · effective · WAIVED", "Decided by Jev for Cheese (agent decision, confidence 0.8)."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "CHE-6 · screenshot_evidence · effective ·") || strings.Count(out, "Decided by") != 1 {
+		t.Errorf("an existing-gate record must print unchanged:\n%s", out)
 	}
 }

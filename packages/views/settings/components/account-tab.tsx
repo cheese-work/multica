@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { Input } from "@multica/ui/components/ui/input";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { api } from "@multica/core/api";
+import { useAccountProfileDraftStore } from "@multica/core/settings/draft-stores";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useT } from "../../i18n";
 import {
@@ -16,6 +17,7 @@ import {
   SettingsTab,
 } from "./settings-layout";
 import { useAutoSave } from "./use-auto-save";
+import { useSettingsDraft } from "./use-settings-draft";
 
 // Mirror server/internal/handler/auth.go:MaxProfileDescriptionLen. Counted in
 // JS String.length (UTF-16 code units) here while the server counts runes,
@@ -37,31 +39,27 @@ export function AccountTab() {
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
 
-  const [profileName, setProfileName] = useState(user?.name ?? "");
-  const [profileDescription, setProfileDescription] = useState(
-    user?.profile_description ?? "",
+  const savedFields = useMemo(
+    () => ({ name: user?.name ?? "", profileDescription: user?.profile_description ?? "" }),
+    [user?.name, user?.profile_description],
   );
-
-  useEffect(() => {
-    setProfileName(user?.name ?? "");
-    setProfileDescription(user?.profile_description ?? "");
-    // Preserve in-progress edits when an avatar upload or auto-save replaces
-    // the current user object in the auth store.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on user identity
-  }, [user?.id]);
+  // Keyed on user id and persisted: edits survive remounts and reloads, and an
+  // avatar upload or auto-save replacing the user object never wipes them.
+  const [fields, setFields, confirmFields] = useSettingsDraft(
+    useAccountProfileDraftStore,
+    user?.id ?? "",
+    savedFields,
+  );
+  const profileName = fields.name;
+  const profileDescription = fields.profileDescription;
+  const setProfileName = (name: string) => setFields({ name });
+  const setProfileDescription = (profileDescription: string) => setFields({ profileDescription });
 
   const descriptionTooLong = profileDescription.length > MAX_PROFILE_DESCRIPTION_LEN;
 
   const draft = useMemo(
     () => ({ name: profileName, profileDescription }),
     [profileDescription, profileName],
-  );
-  const savedDraft = useMemo(
-    () => ({
-      name: user?.name ?? "",
-      profileDescription: user?.profile_description ?? "",
-    }),
-    [user?.name, user?.profile_description],
   );
   const saveProfile = useCallback(
     async (next: ProfileDraft) => {
@@ -75,8 +73,10 @@ export function AccountTab() {
   );
   const autoSave = useAutoSave({
     value: draft,
-    savedValue: savedDraft,
+    savedValue: savedFields,
     onSave: saveProfile,
+    onSuccess: confirmFields,
+    onIdle: confirmFields,
     onError: (error) =>
       toast.error(
         error instanceof Error

@@ -2,7 +2,9 @@
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       w.export_redaction_mode, w.export_manifest_retention_days
+       w.export_redaction_mode, w.export_manifest_retention_days,
+       w.decision_passkey_gate, w.policy_revision,
+       w.scheduling_paused_at, w.scheduling_paused_by
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
@@ -29,6 +31,13 @@ WHERE id = $1;
 -- name: GetWorkspace :one
 SELECT * FROM workspace
 WHERE id = $1;
+
+-- name: GetWorkspaceForUpdate :one
+-- Scheduling pause/resume reads the prior state under this lock, so the caller
+-- that flips it is the only one that sees a transition.
+SELECT * FROM workspace
+WHERE id = $1
+FOR UPDATE;
 
 -- name: GetWorkspaceBySlug :one
 SELECT * FROM workspace
@@ -85,11 +94,23 @@ UPDATE workspace SET
     -- named fields into the saved object so an unnamed field keeps its value.
     -- CHE-2269: github_review_members / github_review_authors replace one settings
     -- key each; the other survives.
+    -- CHE-3296: idle_started_guard merges named fields into the saved object, so
+    -- the statuses list and any unnamed field keep their value.
+    -- CHE-3706: harness_profile sets or (reset) removes one settings key.
     settings = (
         SELECT CASE
+            WHEN sqlc.narg('harness_profile_reset')::bool THEN h.v - 'harness_profile'
+            WHEN sqlc.narg('harness_profile')::text IS NOT NULL THEN jsonb_set(h.v, '{harness_profile}', to_jsonb(sqlc.narg('harness_profile')::text))
+            ELSE h.v
+        END
+        FROM (SELECT CASE
+            WHEN sqlc.narg('idle_started_guard')::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || sqlc.narg('idle_started_guard')::jsonb)
+            ELSE g.v
+        END AS v
+        FROM (SELECT CASE
             WHEN sqlc.narg('github_review_authors')::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', sqlc.narg('github_review_authors')::jsonb)
             ELSE m.v
-        END
+        END AS v
         FROM (SELECT CASE
             WHEN sqlc.narg('github_review_members')::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', sqlc.narg('github_review_members')::jsonb)
             ELSE a.v
@@ -102,7 +123,7 @@ UPDATE workspace SET
             WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
             WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
             ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m
+        END AS v) AS base) AS a) AS m) AS g) AS h
     ),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
@@ -320,3 +341,18 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
+
+-- name: PauseWorkspaceScheduling :one
+-- Pause claim for every agent in the workspace. Same contract as
+-- PauseAgentScheduling (idempotent, first actor and time win): enqueue and running tasks are untouched.
+UPDATE workspace
+SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+WHERE id = @id
+RETURNING *;
+
+-- name: ResumeWorkspaceScheduling :one
+UPDATE workspace
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+WHERE id = @id
+RETURNING *;

@@ -12,7 +12,7 @@ import (
 )
 
 const findDecisionRequestRetry = `-- name: FindDecisionRequestRetry :one
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
 WHERE request.authority = 'human' AND request.workspace_id = $1
   AND request.issue_id = $2 AND request.asking_agent_id = $3
@@ -69,12 +69,19 @@ func (q *Queries) FindDecisionRequestRetry(ctx context.Context, arg FindDecision
 		&i.AskJson,
 		&i.Authority,
 		&i.ProjectID,
+		&i.Kind,
+		&i.ExpiresAt,
+		&i.ProposalFingerprint,
+		&i.AnswerRevision,
+		&i.WakeSeq,
+		&i.CoversRequestIds,
+		&i.AnsweredByBatchRequestID,
 	)
 	return i, err
 }
 
 const getDecisionAnswerReference = `-- name: GetDecisionAnswerReference :one
-SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids FROM chat_message message
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids, message.client_message_id, message.reanchored_at FROM chat_message message
 JOIN chat_session session ON session.id = message.chat_session_id
 WHERE session.workspace_id = $1 AND message.decision_answer_id = $2
   AND message.message_kind = 'decision_reference'
@@ -112,6 +119,8 @@ func (q *Queries) GetDecisionAnswerReference(ctx context.Context, arg GetDecisio
 		&i.DecisionAnswerID,
 		&i.LineageMessageIds,
 		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
 	)
 	return i, err
 }
@@ -168,7 +177,7 @@ SET status = 'cancelled', cancel_reason = 'agent_withdrawn', withdraw_reason = $
     withdrawn_at = clock_timestamp(), withdrawn_by_task_id = $2, withdrawn_by_user_id = $3,
     cancel_notice_posted_at = clock_timestamp()
 WHERE authority = 'human' AND workspace_id = $4 AND id = $5 AND status = 'open'
-RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id
+RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id
 `
 
 type WithdrawOpenDecisionRequestParams struct {
@@ -220,6 +229,13 @@ func (q *Queries) WithdrawOpenDecisionRequest(ctx context.Context, arg WithdrawO
 		&i.AskJson,
 		&i.Authority,
 		&i.ProjectID,
+		&i.Kind,
+		&i.ExpiresAt,
+		&i.ProposalFingerprint,
+		&i.AnswerRevision,
+		&i.WakeSeq,
+		&i.CoversRequestIds,
+		&i.AnsweredByBatchRequestID,
 	)
 	return i, err
 }

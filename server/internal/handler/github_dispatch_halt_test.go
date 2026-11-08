@@ -583,3 +583,73 @@ func TestGitHubDispatchHaltCancelsCIGreenRun(t *testing.T) {
 		t.Fatalf("halt left %d CI-green runs live, want 0", got)
 	}
 }
+
+// Every switch change leaves an audit row naming the actor, the scope and the runs it revoked.
+func TestGitHubDispatchHaltWritesAuditRecord(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	clean := func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	}
+	clean()
+	t.Cleanup(clean)
+	if w := setHalt(t, "acme", true, false); w.Code != http.StatusOK {
+		t.Fatalf("halt: %d %s", w.Code, w.Body)
+	}
+	if w := setHalt(t, "acme", false, false); w.Code != http.StatusOK {
+		t.Fatalf("resume: %d %s", w.Code, w.Body)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND scope='acme' AND halted AND actor_id=$2 AND actor_source='member'`, testWorkspaceID, testUserID); n != 1 {
+		t.Fatalf("halt audit rows = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt_audit WHERE workspace_id=$1 AND scope='acme' AND NOT halted AND actor_id=$2`, testWorkspaceID, testUserID); n != 1 {
+		t.Fatalf("resume audit rows = %d, want 1", n)
+	}
+	w := httptest.NewRecorder()
+	testHandler.GetGitHubDispatchHalt(w, newRequest("GET", "/api/github/dispatch-halt", nil))
+	var out struct {
+		Audit []struct {
+			Scope  string `json:"scope"`
+			Halted bool   `json:"halted"`
+		} `json:"audit"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Audit) != 2 || out.Audit[0].Halted {
+		t.Fatalf("status audit = %+v (err %v), want 2 rows newest first", out.Audit, err)
+	}
+}
+
+// A change whose audit row cannot be written must not happen at all.
+func TestGitHubDispatchHaltChangeAndAuditAreAtomic(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	clean := func() {
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1`, testWorkspaceID)
+	}
+	clean()
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS test_audit_fail ON github_dispatch_halt_audit`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS test_audit_fail()`)
+		clean()
+	})
+	for _, ddl := range []string{
+		`CREATE OR REPLACE FUNCTION test_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit insert refused'; END $$`,
+		`CREATE TRIGGER test_audit_fail BEFORE INSERT ON github_dispatch_halt_audit FOR EACH ROW EXECUTE FUNCTION test_audit_fail()`,
+	} {
+		if _, err := testPool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := setHalt(t, "acme", true, false)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status with a failing audit = %d, want 500", w.Code)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM github_dispatch_halt WHERE workspace_id=$1`, testWorkspaceID); n != 0 {
+		t.Fatalf("a change without its audit row left %d halt rows", n)
+	}
+}

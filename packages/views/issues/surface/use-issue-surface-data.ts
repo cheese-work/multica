@@ -9,12 +9,23 @@ import { issueSurfaceGanttOptions } from "@multica/core/issues/surface/repositor
 import type { IssueSurfaceQueryPlan } from "@multica/core/issues/surface/query-plan";
 import type { IssueStatus, ProjectStatus, PropertyFilterValue } from "@multica/core/types";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
+import {
+  advancedFilterUsesField,
+  statusColumnFilter,
+  type AdvancedFilterGroup,
+  type DueDateFilter,
+} from "@multica/core/issues/stores/filter-tree";
 import { useColumnWorkflow, workflowColumns } from "../utils/workflow-columns";
 import { issueBehavesAsAny, statusColumnKeys, visibleStatusKeys } from "@multica/core/issues";
+import type {
+  IssueRelationFilter,
+  NegatableFilterDimension,
+} from "@multica/core/issues/stores/view-store";
 import {
   applyIssueFilters,
   type IssueFilterState,
   type IssueFilters,
+  type IssueRelationContext,
 } from "../utils/filter";
 import type { ChildProgress } from "../components/list-row";
 import type {
@@ -115,7 +126,14 @@ export function useIssueSurfaceData({
   projectFilters,
   includeNoProject,
   projectStatusFilters,
+  workflowFilters,
   labelFilters,
+  relationFilters,
+  relationContext,
+  dueDateFilters,
+  advancedFilter,
+  today,
+  negatedFilters,
   propertyFilters,
   workingIssueIDs,
   showSubIssues,
@@ -145,7 +163,17 @@ export function useIssueSurfaceData({
   projectFilters: string[];
   includeNoProject: boolean;
   projectStatusFilters: ProjectStatus[];
+  workflowFilters: string[];
   labelFilters: string[];
+  relationFilters: IssueRelationFilter[];
+  relationContext: IssueRelationContext | undefined;
+  dueDateFilters: DueDateFilter[];
+  /** The scoped, pruned rule tree. */
+  advancedFilter: AdvancedFilterGroup | null;
+  /** Set when due-date buckets are in play. */
+  today: string | undefined;
+  /** Negations that change the result (`effectiveNegatedFilters`). */
+  negatedFilters: NegatableFilterDimension[];
   propertyFilters: Record<string, PropertyFilterValue[]>;
   /** Distinct running-task issue ids projected by `/api/working-agents`. */
   workingIssueIDs: ReadonlySet<string>;
@@ -191,15 +219,15 @@ export function useIssueSurfaceData({
   // `statusFilterError` give a custom status filter. Table and the
   // server-status branches filter server-side and never read the catalog.
   const usesClientProjectStatusFilter =
-    projectStatusFilters.length > 0 &&
+    (projectStatusFilters.length > 0 || advancedFilterUsesField(advancedFilter, "projectStatus")) &&
     !usesTable &&
     (usesGantt || !serverStatusBranches.enabled);
   const projectCatalogPending = usesClientProjectStatusFilter && projectsPending;
   const projectCatalogError = usesClientProjectStatusFilter && projectsError;
 
   const workingFilterContext = useMemo(
-    () => ({ runningIssueIds: workingIssueIDs, projectStatusById }),
-    [projectStatusById, workingIssueIDs],
+    () => ({ runningIssueIds: workingIssueIDs, projectStatusById, relation: relationContext, today }),
+    [projectStatusById, relationContext, today, workingIssueIDs],
   );
   const bucketedIssues = serverStatusBranches.enabled
     ? serverStatusBranches.issues
@@ -228,24 +256,34 @@ export function useIssueSurfaceData({
       projectFilters,
       includeNoProject,
       projectStatusFilters,
+      workflowFilters,
       labelFilters,
+      relationFilters,
+      dueDateFilters,
+      advancedFilter,
+      negatedFilters,
       propertyFilters,
       workingOnly: agentRunningFilter,
       showSubIssues,
     }),
     [
+      advancedFilter,
       assigneeFilters,
       agentRunningFilter,
       creatorFilters,
+      dueDateFilters,
       includeNoAssignee,
       includeNoProject,
       labelFilters,
+      negatedFilters,
       priorityFilters,
       projectFilters,
       projectStatusFilters,
       propertyFilters,
+      relationFilters,
       showSubIssues,
       statusFilters,
+      workflowFilters,
     ],
   );
 
@@ -373,20 +411,31 @@ export function useIssueSurfaceData({
   const catalog = useIssueStatuses(wsId);
   // Columns follow the project's workflow, or Default outside a project.
   // (MUL-7420)
-  const { workflow: projectWorkflow } = useColumnWorkflow(wsId, projectId, statusFilters.length > 0);
+  const statusNegated = negatedFilters.includes("status");
+  const columnStatus = useMemo(
+    () => statusColumnFilter(statusFilters, statusNegated, advancedFilter, hiddenStatusKeys),
+    [advancedFilter, hiddenStatusKeys, statusFilters, statusNegated],
+  );
+  const { workflow: projectWorkflow } = useColumnWorkflow(
+    wsId,
+    projectId,
+    (columnStatus.statuses.length > 0 && !columnStatus.negated) ||
+      workflowFilters.length > 0,
+  );
   const { workflow: scopeWorkflow } = useColumnWorkflow(wsId, projectId, false);
 
   const visibleStatuses = useMemo<IssueStatus[]>(() => {
     // An explicit exact-key filter wins over hidden column preferences.
     return workflowColumns(
       visibleStatusKeys(
-        statusFilters,
-        hiddenStatusKeys,
+        columnStatus.statuses,
+        columnStatus.hiddenStatuses,
         catalog,
+        columnStatus.negated,
       ),
       projectWorkflow,
     );
-  }, [statusFilters, hiddenStatusKeys, catalog, projectWorkflow]);
+  }, [columnStatus, catalog, projectWorkflow]);
 
   // The columns Display can show or hide: this surface's workflow steps, or
   // the whole catalog without a workflow. A status filter does not change
@@ -408,23 +457,37 @@ export function useIssueSurfaceData({
       includeNoProject,
       projectStatusFilters,
       projectStatusById,
+      workflowFilters,
       labelFilters,
+      relationFilters,
+      relationContext,
+      dueDateFilters,
+      advancedFilter,
+      today,
+      negatedFilters,
       propertyFilters,
       showSubIssues,
     }),
     [
+      advancedFilter,
       assigneeFilters,
       agentRunningFilter,
       creatorFilters,
+      dueDateFilters,
       includeNoAssignee,
       includeNoProject,
       labelFilters,
+      negatedFilters,
       propertyFilters,
       priorityFilters,
       projectFilters,
       projectStatusById,
       projectStatusFilters,
+      relationContext,
+      relationFilters,
       showSubIssues,
+      workflowFilters,
+      today,
       workingIssueIDs,
     ],
   );

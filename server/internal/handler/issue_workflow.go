@@ -117,6 +117,9 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
+	// StartStatusKey is where new issues of the workflow start; empty means
+	// todo (CHE-3113).
+	StartStatusKey string `json:"start_status_key"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -194,6 +197,7 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 
 		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
 		IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey:  row.StartStatusKey.String,
 	}
 }
 
@@ -418,6 +422,10 @@ type IssueWorkflowWriteRequest struct {
 	// IncludeChildPRs sets whether a parent's PR guards read its children's
 	// PRs. Omitted keeps the stored value (true for a new workflow).
 	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
+	// StartStatusKey names the status where new issues of the workflow start
+	// (CHE-3113). Omitted keeps the stored value; "" clears it back to todo.
+	// It must be an unstarted or started step of the workflow.
+	StartStatusKey *string `json:"start_status_key,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -749,8 +757,13 @@ func writeMappingRequired(w http.ResponseWriter, plan workflowMappingPlan, msg s
 // remapIssues applies a validated mapping inside the caller's transaction.
 // An issue it moves into a done or closed status ends its wakeups, as any
 // status write does; the returned runs are for the caller's post-commit
-// broadcast.
-func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, projectIDs []pgtype.UUID, plan workflowMappingPlan, mapping map[string]string) ([]db.Issue, []db.AgentTaskQueue, error) {
+// broadcast. Each moved issue gets its status_changed row in the same
+// transaction, attributed to the member who made the workflow change.
+func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, projectIDs []pgtype.UUID, plan workflowMappingPlan, mapping map[string]string, actorID string) ([]db.Issue, []db.AgentTaskQueue, error) {
+	trigger := service.StatusTrigger{
+		Cause:   service.StatusCause{Kind: service.StatusCauseWorkflowRemap, By: service.StatusCauseActor{Type: "member", ID: actorID}},
+		Channel: "unknown",
+	}
 	var changed []db.Issue
 	var cancelled []db.AgentTaskQueue
 	for _, req := range plan.Required {
@@ -764,6 +777,9 @@ func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, proje
 			return nil, nil, err
 		}
 		for _, issue := range rows {
+			if _, err := service.RecordStatusChange(ctx, qtx, issue, req.StatusKey, issue.Status, trigger, nil); err != nil {
+				return nil, nil, fmt.Errorf("record status change: %w", err)
+			}
 			stopped, err := service.StopClosedIssueWakeups(ctx, qtx, issue)
 			if err != nil {
 				return nil, nil, err
@@ -803,7 +819,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -901,6 +917,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
+	// The start status is checked against the steps this save leaves, so a
+	// step edit cannot strand it.
+	startStatus := pgtype.Text{}
+	startKey := current.StartStatusKey.String
+	if req.StartStatusKey != nil {
+		startKey = strings.TrimSpace(*req.StartStatusKey)
+		startStatus = pgtype.Text{String: startKey, Valid: true}
+	}
+	if err := issueworkflow.ValidateStartStatus(startKey, steps, catalog); err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
 	if msg, err := h.subWorkflowTargetsMessage(ctx, qtx, wsUUID, current.ID, steps); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
@@ -966,7 +994,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}
@@ -985,6 +1013,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Steps:            raw,
 		MaxRunsPerIssue:  maxRuns,
 		IncludeChildPrs:  includeChildPRs,
+		StartStatusKey:   startStatus,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -995,7 +1024,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	}
-	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping)
+	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
 		slog.Warn("UpdateIssueWorkflow remap failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
@@ -1286,10 +1315,20 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to change workflow")
 		return
 	}
-	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, []pgtype.UUID{project.ID}, plan, req.StatusMapping)
+	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, []pgtype.UUID{project.ID}, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
 		slog.Warn("SetProjectWorkflow remap failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind:        "project.workflow.update",
+		WorkspaceID: wsUUID,
+		TargetID:    project.ID,
+		Before:      map[string]any{"workflow_id": optionalUUIDString(project.WorkflowID)},
+		After:       map[string]any{"workflow_id": optionalUUIDString(updated.WorkflowID), "issues_remapped": len(changed)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.workflow.update")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1414,7 +1453,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}

@@ -144,6 +144,7 @@ const hasMemberMoveToStatusSince = `-- name: HasMemberMoveToStatusSince :one
 SELECT EXISTS (
   SELECT 1 FROM activity_log
   WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+    AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
     AND created_at >= $2::timestamptz AND details->>'to' = $3::text
 )
 `
@@ -326,6 +327,52 @@ func (q *Queries) LockIssueRunBudget(ctx context.Context, issueID pgtype.UUID) (
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockIssueRunBudgetBoundary = `-- name: LockIssueRunBudgetBoundary :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':run_budget_boundary', 0))
+`
+
+// Orders the moves that start a run-budget window on one issue (a person's
+// status move, a top-up). An advisory lock, not the issue row: the move's own
+// write and its listeners update that row while the lock is held.
+func (q *Queries) LockIssueRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssueRunBudgetBoundary, issueID)
+	return err
+}
+
+const lockRunBudgetBlockMarker = `-- name: LockRunBudgetBlockMarker :one
+SELECT id FROM run_budget_notice
+WHERE issue_id = $1::uuid AND window_id = $2::text AND kind = 'blocked'
+FOR SHARE
+`
+
+type LockRunBudgetBlockMarkerParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+// Whether the budget's block of the issue still stands in this window, holding
+// the marker so the move out of blocked (which deletes it) waits for the
+// caller's transaction.
+func (q *Queries) LockRunBudgetBlockMarker(ctx context.Context, arg LockRunBudgetBlockMarkerParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRunBudgetBlockMarker, arg.IssueID, arg.WindowID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const runBudgetBoundaryClock = `-- name: RunBudgetBoundaryClock :one
+SELECT clock_timestamp()::timestamptz
+`
+
+// The time now, not the transaction's start: a window boundary taken after a
+// wait for the boundary lock must sort after every boundary written during it.
+func (q *Queries) RunBudgetBoundaryClock(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, runBudgetBoundaryClock)
+	var column_1 pgtype.Timestamptz
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const sumIssueRunBudgetCap = `-- name: SumIssueRunBudgetCap :one

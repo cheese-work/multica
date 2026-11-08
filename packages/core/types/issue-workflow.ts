@@ -17,7 +17,8 @@ export type IssueWorkflowHandlerType =
   | "member"
   | "project_lead"
   | "creator"
-  | "human_by_role";
+  | "human_by_role"
+  | "human_in_charge";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;

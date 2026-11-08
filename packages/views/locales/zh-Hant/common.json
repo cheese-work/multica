@@ -135,5 +135,38 @@
   },
   "navigation": {
     "open_in_new_tab": "在新標籤頁開啟"
+  },
+  "decision_action": {
+    "approve": "使用通行金鑰核准",
+    "reject": "拒絕",
+    "reject_error": "拒絕未完成。請重試。",
+    "waiting": "正在等待你的通行金鑰…",
+    "state": {
+      "executed": "已執行",
+      "failed": "失敗",
+      "rejected": "已拒絕",
+      "expired": "已過期",
+      "cancelled": "已取消"
+    },
+    "failed_code": {
+      "stale_cap": "已有更高的上限生效。",
+      "stale_window": "預算視窗已變更。請發起新請求。",
+      "not_budgeted": "此事項已不再受預算限制。",
+      "other": "失敗：{{code}}",
+      "stale_base": "請求之後目標已變更。請重新請求。"
+    },
+    "no_passkey": "核准前請先新增通行金鑰。",
+    "add_passkey": "新增通行金鑰",
+    "error": "通行金鑰核准未完成。請重試。",
+    "lost": "回應遺失。該操作不會被再次核准。請檢查結果。",
+    "check": "檢查結果",
+    "outcome": { "cap_applied": "已套用上限", "run_queued": "執行已排入佇列", "still_blocked": "仍被封鎖：{{reason}}" },
+    "panel": {
+      "title": "執行預算請求",
+      "raise_cap": "將此視窗中 {{issue}} 的執行上限提高到 {{cap}} 次。",
+      "top_up": "為此視窗中的 {{issue}} 補充執行預算。",
+      "mismatch": "此核准不是針對該議題的執行預算請求，無法在此核准。",
+      "unreadable": "你無權查看此核准，或它已不存在。"
+    }
   }
 }

@@ -18,6 +18,7 @@
 package ghsnapshot
 
 import (
+	"bytes"
 	"context"
 	"crypto/rsa"
 	"encoding/json"
@@ -26,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -220,21 +222,49 @@ func (client *Client) mintInstallationToken(ctx context.Context, installationID 
 	return parsed.Token, nil
 }
 
+// StatusError is a non-200 REST answer. Callers branch on Status (a missing
+// file is a 404) without reading the body.
+type StatusError struct{ Status int }
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("github REST: unexpected status %d", e.Status)
+}
+
 // restGet authenticates against a fixed API path. Response bodies and tokens
 // never appear in errors; permission failures must not pause an installation.
 func (client *Client) restGet(ctx context.Context, installationID int64, path string) (json.RawMessage, error) {
+	return client.restDo(ctx, installationID, http.MethodGet, path, nil, http.StatusOK)
+}
+
+// restPost sends a JSON body and expects 201 Created.
+func (client *Client) restPost(ctx context.Context, installationID int64, path string, payload any) (json.RawMessage, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return client.restDo(ctx, installationID, http.MethodPost, path, raw, http.StatusCreated)
+}
+
+func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, error) {
 	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}
 	endpoint := strings.TrimRight(client.apiBase, "/") + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	var reqBody io.Reader
+	if payload != nil {
+		reqBody = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -248,8 +278,8 @@ func (client *Client) restGet(ctx context.Context, installationID int64, path st
 	if isRateLimited(resp, body) {
 		return nil, rateLimitFromResponse(resp, client.now())
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github REST: unexpected status %d", resp.StatusCode)
+	if !slices.Contains(okStatus, resp.StatusCode) {
+		return nil, &StatusError{Status: resp.StatusCode}
 	}
 	if len(body) > maxBody {
 		return nil, errors.New("github REST: response exceeds size limit")

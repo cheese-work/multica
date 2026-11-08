@@ -25,6 +25,7 @@ export type WSEventType =
   | "agent:archived"
   | "agent:restored"
   | "task:queued"
+  | "task:coalesced"
   | "task:dispatch"
   | "task:running"
   | "task:waiting_local_directory"
@@ -65,6 +66,7 @@ export type WSEventType =
   | "chat:session_read"
   | "chat:session_deleted"
   | "chat:session_updated"
+  | "chat:supplement_updated"
   | "project:created"
   | "project:updated"
   | "project:deleted"
@@ -312,7 +314,14 @@ export interface TaskMessagePayload {
   issue_id: string;
   chat_session_id?: string;
   seq: number;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
+  type:
+    | "text"
+    | "thinking"
+    | "tool_use"
+    | "tool_result"
+    | "error"
+    | "silence_warn"
+    | "tool_stalled";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
@@ -333,6 +342,17 @@ export interface TaskMessagePayload {
 }
 
 export interface TaskQueuedPayload {
+  task_id: string;
+  agent_id: string;
+  issue_id: string;
+  chat_session_id?: string;
+  status: string;
+}
+
+// task:coalesced fires when a comment folds into a run that has not started.
+// The status is unchanged, but the run's trigger and covered comments changed,
+// which moves its block under the newest comment it answers.
+export interface TaskCoalescedPayload {
   task_id: string;
   agent_id: string;
   issue_id: string;
@@ -436,6 +456,10 @@ export interface ChatMessageEventPayload {
   task_id?: string;
   created_at: string;
   message_kind?: import("./chat").ChatMessageKind;
+}
+
+export interface ChatSupplementUpdatedPayload {
+  supplement: import("./chat").ChatSupplement;
 }
 
 export interface ChatDonePayload {
@@ -612,6 +636,7 @@ export interface WSEventPayloadMap {
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
   "task:queued": TaskQueuedPayload;
+  "task:coalesced": TaskCoalescedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;
   "task:waiting_local_directory": TaskWaitingLocalDirectoryPayload;
@@ -643,6 +668,7 @@ export interface WSEventPayloadMap {
   "chat:session_read": ChatSessionReadPayload;
   "chat:session_deleted": ChatSessionDeletedPayload;
   "chat:session_updated": unknown;
+  "chat:supplement_updated": ChatSupplementUpdatedPayload;
   "project:created": ProjectCreatedPayload;
   "project:updated": ProjectUpdatedPayload;
   "project:deleted": ProjectDeletedPayload;

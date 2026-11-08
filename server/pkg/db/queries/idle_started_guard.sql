@@ -5,10 +5,10 @@ WHERE settings -> 'idle_started_guard' ->> 'mode' IN ('shadow', 'act');
 -- name: ListIdleStartedGuardIssues :many
 -- Main scan. idle_since is the newest human or agent signal on the issue; system
 -- comments, system activity and metadata writes never count, so the guard's own
--- writes cannot reset the clock. Issues that already carry an idle_guard episode
+-- writes cannot reset the clock. Issues that already carry an issue_idle_guard episode
 -- are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
 -- the scan to one issue: act mode re-runs it under the issue lock. episode keeps
--- an issue that carries an idle_guard receipt, for re-checking its own episode.
+-- an issue that carries an issue_idle_guard receipt, for re-checking its own episode.
 SELECT i.id, i.workspace_id, i.status, clock.idle_since::timestamptz AS idle_since
 FROM issue i
 CROSS JOIN LATERAL (
@@ -24,7 +24,7 @@ CROSS JOIN LATERAL (
 WHERE i.workspace_id = sqlc.arg('workspace_id')
   AND (sqlc.narg('issue_id')::uuid IS NULL OR i.id = sqlc.narg('issue_id')::uuid)
   AND i.status = ANY (sqlc.arg('statuses')::text[])
-  AND (sqlc.narg('episode')::bool IS TRUE OR NOT i.metadata ? 'idle_guard')
+  AND (sqlc.narg('episode')::bool IS TRUE OR NOT EXISTS (SELECT 1 FROM issue_idle_guard g WHERE g.issue_id = i.id))
   AND clock.idle_since <= now() - make_interval(secs => sqlc.arg('after_seconds')::float8)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
@@ -70,34 +70,52 @@ SELECT (
 )::bool AS waiting;
 
 -- name: ListIdleStartedGuardEpisodes :many
--- Issues with an idle_guard receipt that need another look: a notice owed, a
+-- Issues with an issue_idle_guard receipt that need another look: a notice owed, a
 -- refused move to retry, or an issue that left the episode (a repair). A settled
 -- receipt on an issue still where it settled is left alone. A move the guard
 -- gave up on is settled until a person or an agent acts on the issue again: the
 -- idle clock, not counting the alert task the guard queued itself, is then past
 -- the idle time the receipt recorded.
-SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
+SELECT i.id, i.workspace_id, i.status, sqlc.embed(g)
 FROM issue i
+JOIN issue_idle_guard g ON g.issue_id = i.id
 CROSS JOIN LATERAL (
   SELECT GREATEST(
     i.created_at,
     (SELECT max(c.created_at) FROM comment c
       WHERE c.issue_id = i.id AND c.deleted_at IS NULL AND c.author_type <> 'system'),
     (SELECT max(GREATEST(t.created_at, t.completed_at)) FROM agent_task_queue t
-      WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM (i.metadata -> 'idle_guard' ->> 'alert_id')),
+      WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM g.alert_id::text),
     (SELECT max(a.created_at) FROM activity_log a
       WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent'))
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = sqlc.arg('workspace_id')
-  AND i.metadata ? 'idle_guard'
   AND NOT (
-    i.status = i.metadata -> 'idle_guard' ->> 'to'
-    AND i.metadata -> 'idle_guard' ->> 'state' IN ('notified', 'gave_up', 'resumed')
-    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') <> '')
+    i.status = g.to_status
+    AND g.state IN ('notified', 'gave_up', 'resumed')
+    AND g.moved_at IS NOT NULL)
   AND NOT (
-    i.status = i.metadata -> 'idle_guard' ->> 'from'
-    AND i.metadata -> 'idle_guard' ->> 'state' = 'gave_up'
-    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = ''
-    AND clock.idle_since <= (i.metadata -> 'idle_guard' ->> 'idle_since')::timestamptz)
+    i.status = g.from_status
+    AND g.state = 'gave_up'
+    AND g.moved_at IS NULL
+    AND clock.idle_since <= g.idle_since)
 ORDER BY i.id;
+
+-- name: GetIssueIdleGuard :one
+SELECT * FROM issue_idle_guard WHERE workspace_id = $1 AND issue_id = $2;
+
+-- name: UpsertIssueIdleGuard :exec
+INSERT INTO issue_idle_guard (issue_id, workspace_id, state, kind, from_status, to_status, idle_since, moved_at,
+                              attempts, alert_id, comment_id, error, alert_attempts, alert_at, alert_error)
+VALUES (sqlc.arg('issue_id'), sqlc.arg('workspace_id'), sqlc.arg('state'), sqlc.arg('kind'), sqlc.arg('from_status'),
+        sqlc.arg('to_status'), sqlc.arg('idle_since'), sqlc.arg('moved_at'), sqlc.arg('attempts'), sqlc.arg('alert_id'),
+        sqlc.arg('comment_id'), sqlc.arg('error'), sqlc.arg('alert_attempts'), sqlc.arg('alert_at'), sqlc.arg('alert_error'))
+ON CONFLICT (issue_id) DO UPDATE SET
+    state = EXCLUDED.state, kind = EXCLUDED.kind, from_status = EXCLUDED.from_status, to_status = EXCLUDED.to_status,
+    idle_since = EXCLUDED.idle_since, moved_at = EXCLUDED.moved_at, attempts = EXCLUDED.attempts,
+    alert_id = EXCLUDED.alert_id, comment_id = EXCLUDED.comment_id, error = EXCLUDED.error,
+    alert_attempts = EXCLUDED.alert_attempts, alert_at = EXCLUDED.alert_at, alert_error = EXCLUDED.alert_error;
+
+-- name: DeleteIssueIdleGuard :exec
+DELETE FROM issue_idle_guard WHERE workspace_id = $1 AND issue_id = $2;
