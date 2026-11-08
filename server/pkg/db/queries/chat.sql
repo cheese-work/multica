@@ -2375,7 +2375,9 @@ CROSS JOIN messages;
 -- name: MarkChatTaskCompact :one
 -- CHE-1807: flags a chat task as a compaction run. An automatic compaction
 -- carries the server-built reason and the prompt size that triggered it; a
--- manual /compact carries neither.
+-- manual /compact carries neither. It does not set purpose: both flows still run
+-- as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+-- purpose='compaction'.
 UPDATE agent_task_queue
 SET task_kind = 'compact',
     compact_reason = sqlc.narg('compact_reason'),
@@ -2432,14 +2434,40 @@ ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
 -- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
 -- task of the workspace, whichever agent it was queued for, so a task queued
 -- under the old value never delivers the transcript. The chat resume pointer is
--- not touched (SEC-2).
+-- not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+-- so match either marker or it would survive A->B->A with DM access.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE task_kind = 'compact'
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 RETURNING *;
+
+-- name: LockChatSessionShared :one
+-- CHE-2909: retry admission takes the same chat_session lock a compact chain
+-- change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+-- reads the committed outcome of any change in flight.
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE;
+
+-- name: LockedClockTimestamp :one
+-- CHE-2909: wall-clock time read while a settings write holds its locks. The
+-- activity row is stamped with it because now() is the transaction start, which
+-- can predate a task created and failed while the write waited for its locks.
+SELECT clock_timestamp()::timestamptz AS at;
+
+-- name: CompactChainChangedSince :one
+-- CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+-- changed after a task was created. The change sweep cancels only live tasks,
+-- so a task that had already failed would otherwise retry into the new chain
+-- (A -> B -> A included).
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed;
 
 -- name: GetLatestCompactionSummary :one
 -- The newest in-place compaction summary of a DM: the seed of its next turn

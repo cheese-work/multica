@@ -88,6 +88,8 @@ is **not built**. Add it only if the "other" slice stays too small to judge
 
 `GET /api/decisions/shadow-report` (workspace member).
 
+CLI: `multica decision shadow-report` (JSON output; any workspace member).
+
 - Per kind and class: decided, predicted, agreed, the same three for the
   "other" slice, reversed, median time to answer.
 - `ready` is true once a kind has 100 decided rows. Report precision and

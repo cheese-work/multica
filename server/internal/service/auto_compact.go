@@ -143,6 +143,13 @@ func autoCompactReason(tokens, window int64, rule AutoCompact) string {
 		compactTokensK(tokens), compactTokensK(window), tokens*100/window, compactTokensK(rule.ThresholdTokens(window)))
 }
 
+// autoCompactNotice is the line the member reads in the DM after an automatic
+// compaction (CHE-4438). Compaction happens in place, so it never says "new DM".
+func autoCompactNotice(tokens, window int64, rule AutoCompact) string {
+	return fmt.Sprintf("Compacted in this DM at %dk tokens (limit %dk). Earlier messages are summarized below.",
+		compactTokensK(tokens), compactTokensK(rule.ThresholdTokens(window)))
+}
+
 // syncChatCompacting tells clients whether the DM of a compaction task is
 // compacting, from the task's own status. Called for every task event, so each
 // start and each terminal path reports it without per-path wiring.
@@ -264,7 +271,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 			ID:            dbid.NewV7(),
 			ChatSessionID: session.ID,
 			Role:          "assistant",
-			Content:       reason + " Continuing in a new DM.",
+			Content:       autoCompactNotice(runContext.Tokens, runContext.Window, rule),
 			MessageKind:   pgtype.Text{String: protocol.ChatMessageKindCompactNotice, Valid: true},
 		}); err != nil {
 			return err
