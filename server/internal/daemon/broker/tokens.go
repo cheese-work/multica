@@ -271,8 +271,9 @@ func (b *Broker) markAlerted(g grant) {
 // minted first, so a failed mint leaves the old one working; the old one is
 // revoked before the reply, so a reply means the old token is dead. Refreshes
 // run one at a time: a caller whose stale token is already gone gets the
-// newest token instead of causing a third mint. The swap takes the old token's
-// slot, so refreshing never raises the count under maxReadTokens.
+// newest token instead of causing a third mint. A refresh needs a free slot
+// (the old token holds its own until its revoke succeeds); with none free it
+// answers 429 and mints nothing, and the caller keeps its current token.
 func (b *Broker) handleReadRefresh(w http.ResponseWriter, r *http.Request) {
 	if !b.readTokenAllowed(w) {
 		return
@@ -311,15 +312,13 @@ func (b *Broker) refreshRead(w http.ResponseWriter, r *http.Request, stale strin
 			return
 		}
 	}
-	if idx < 0 && !b.reserveRead() {
+	if !b.reserveRead() { // a swap needs a slot too: the old token stays live until its revoke succeeds
 		http.Error(w, "this run holds the most read tokens it may", http.StatusTooManyRequests)
 		return
 	}
 	g, status, err := b.mintWith(r.Context(), readPerms)
 	b.rdmu.Lock()
-	if idx < 0 {
-		b.pending--
-	}
+	b.pending--
 	if err != nil {
 		b.rdmu.Unlock()
 		b.log.Warn("broker read token refresh", "task", b.pin.Task, "repo", b.pin.Repo, "status", status, "error", err)
@@ -372,11 +371,13 @@ func (b *Broker) newestRead() (grant, bool) {
 }
 
 // reserveRead takes one of the maxReadTokens slots before a mint starts, so
-// concurrent requests cannot pass the cap together.
+// concurrent requests cannot pass the cap together. A replaced token whose
+// revoke has not succeeded still holds its slot, so a revoke outage cannot
+// grow the number of live tokens.
 func (b *Broker) reserveRead() bool {
 	b.rdmu.Lock()
 	defer b.rdmu.Unlock()
-	if len(b.reads)+b.pending >= maxReadTokens {
+	if len(b.reads)+len(b.unrevoked)+b.pending >= maxReadTokens {
 		return false
 	}
 	b.pending++

@@ -251,6 +251,39 @@ func TestRefreshRevokeGaveUpRetriedAtClose(t *testing.T) {
 	}
 }
 
+// While revokes fail, every replaced token stays live and tracked. Refreshing
+// again and again must stop at the cap and mint nothing more; the run keeps its
+// newest token.
+func TestRefreshDuringRevokeOutageStaysUnderCap(t *testing.T) {
+	t.Parallel()
+	r, f, _ := readRig(t, nil)
+	tok, err := GetReadToken(context.Background(), r.socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.failRevoke = -1
+	f.mu.Unlock()
+	refused := 0
+	for range 2 * maxReadTokens {
+		n, err := RefreshReadToken(context.Background(), r.socket, tok.Token)
+		if err != nil {
+			refused++
+			continue
+		}
+		tok = n
+	}
+	if f.liveCount() > maxReadTokens {
+		t.Fatalf("live %d tokens during the outage, want at most %d", f.liveCount(), maxReadTokens)
+	}
+	if refused == 0 || len(f.minted) != maxReadTokens {
+		t.Fatalf("refused %d, minted %d, want refusals and exactly %d mints", refused, len(f.minted), maxReadTokens)
+	}
+	if !f.isLive(tok.Token) {
+		t.Fatal("the run's newest token must stay live after a refusal")
+	}
+}
+
 // Forces the ordering where Close sweeps the unrevoked tokens while the retry
 // worker is still between "gave up" and "marked as given up" (it is held in the
 // Alert callback). The old token must still be revoked before Close returns.
