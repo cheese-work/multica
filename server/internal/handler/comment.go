@@ -1457,11 +1457,14 @@ type SupersedeResult struct {
 }
 
 type CreateCommentRequest struct {
-	Content          string   `json:"content"`
-	Supersedes       []string `json:"supersedes"`
-	DecisionIntent   bool     `json:"decision_intent"`
-	DecisionRecord   bool     `json:"decision_record"`
-	DecisionVeto     bool     `json:"decision_veto"`
+	Content        string   `json:"content"`
+	Supersedes     []string `json:"supersedes"`
+	DecisionIntent bool     `json:"decision_intent"`
+	DecisionRecord bool     `json:"decision_record"`
+	DecisionVeto   bool     `json:"decision_veto"`
+	// NotifyOnly declares an FYI: an agent-task comment may mention a member
+	// without a decision request. It never binds a wait.
+	NotifyOnly       bool     `json:"notify_only"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
 	Excerpts         []string `json:"excerpts"`
@@ -1721,6 +1724,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.NotifyOnly && (req.DecisionIntent || req.DecisionRecord || req.DecisionVeto) {
+		writeError(w, http.StatusBadRequest, "notify_only cannot combine with decision_intent, decision_record or decision_veto")
+		return
+	}
+
 	// Strip bytes PostgreSQL's TEXT column rejects before the empty check. The
 	// case reachable over the JSON API is an embedded NUL (0x00, SQLSTATE
 	// 22021) that survives a JSON round trip; sanitizeNullBytes also drops
@@ -1853,8 +1861,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// no_action guards below, and autopilotDelegationAuthority's lineage
 	// verification (MUL-4857).
 	var sourceTaskID pgtype.UUID
+	var actorTask *db.AgentTaskQueue
 	if authorType == "agent" {
 		if task, ok := h.taskFromRequestHeader(r); ok {
+			actorTask = &task
 			// Defense against resumed-session drift: when an agent posts from
 			// inside a comment-triggered task AND the comment is being posted on
 			// that same issue, the parent_id must exactly match the task's
@@ -1899,6 +1909,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceTaskID = task.ID
 		}
+	}
+
+	if !req.DecisionIntent && !req.NotifyOnly && !h.askGuardAllowsComment(w, r, issue, authorType, actorTask, req.Content) {
+		return
 	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
@@ -4050,6 +4064,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if existing.Content != req.Content {
 		triggerType, triggerID := commentTriggerActor(existing, actorType, actorID)
 		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
+			return
+		}
+		if !h.askGuardAllowsCommentEdit(w, r, issueForSource, actorType, existing.Content, req.Content) {
 			return
 		}
 	}
