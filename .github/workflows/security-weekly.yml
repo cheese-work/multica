@@ -162,9 +162,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # build-mode none for both: a build step would run the root Makefile (unowned by CODEOWNERS) before the SARIF is sealed.
+          # Go does not support build-mode none (first scheduled run, 8 Nov 2026), and autobuild would run the root Makefile
+          # (unowned by CODEOWNERS) before the SARIF is sealed. So Go uses manual with a plain `go build` below.
           - language: go
-            build-mode: none
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
     steps:
@@ -175,6 +176,16 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+      - uses: actions/setup-go@v7
+        if: matrix.language == 'go'
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Build Go for CodeQL (no Makefile)
+        if: matrix.language == 'go'
+        working-directory: server
+        run: go build ./...
       # upload: never keeps the token read-only and avoids a clash with a repo-level default setup.
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
