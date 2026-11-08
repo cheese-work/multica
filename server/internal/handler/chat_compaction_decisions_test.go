@@ -340,6 +340,34 @@ func TestCompactionDropsAPartialCredentialAtTheRetrievalCut(t *testing.T) {
 	}
 }
 
+// The redact rules read only ASCII whitespace as a word boundary, so a password
+// that holds a no-break space is still one credential to them. A cut that ends
+// the text at that space would leave the front of the password without its "@".
+func TestCompactionKeepsAConnectionCredentialWholeAtTheRetrievalCut(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "compaction-decisions-nbsp", []byte("[]"))
+	sessionID := dbfx.ChatSession(t, agentID)
+	credential := "postgres" + "://" + "svc:" + "pw" + "\u00a0" + "tail@db.internal/app"
+	words := "Use this: " + credential + strings.Repeat("z", decisionsWordsFetchChars)
+	recordDecision(t, agentID, sessionID, "nbsp decision", words, false)
+	session, summary, fail := testHandler.compactChatInPlace(ctx, parseUUID(sessionID), pgtype.UUID{}, "Nothing kept.")
+	if fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	}
+	seed, err := testHandler.compactionSeedBlock(ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for where, text := range map[string]string{"row": summary.Content, "prompt": seed} {
+		if strings.Contains(text, "svc:pw") {
+			t.Fatalf("%s carries the front of a connection credential:\n%.900s", where, text)
+		}
+	}
+}
+
 // Enough decisions to pass the block budget: the newest stay in full, older ones
 // collapse to one line that still names key, time and record id, and a count
 // line says so. Nothing is dropped silently, and the block stays bounded.

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/redact"
@@ -100,14 +99,16 @@ var privateKeyBegin = regexp.MustCompile(`-----BEGIN[A-Z\s]*PRIVATE KEY-----`)
 
 // redactDecisionWords redacts provider tokens in text the query may have cut
 // short. When the query cut it, the last word may be the front half of a
-// credential, so the text ends at the last whitespace: redaction would not match
-// the half, and cutting later to the display size could bring it into view. A
+// credential, so the text ends at the last ASCII whitespace, the only boundary
+// the redact rules read (Unicode spaces can sit inside a password they match):
+// redaction would not match the half, and cutting later to the display size
+// could bring it into view. A
 // private key whose end marker lies past the cut is not matched by the redact
 // rules either, so any begin marker left after them starts an unterminated key
 // and the text from there on is dropped.
 func redactDecisionWords(words string, cutByQuery bool) string {
 	if cutByQuery {
-		words = words[:max(strings.LastIndexFunc(words, unicode.IsSpace), 0)]
+		words = words[:max(strings.LastIndexAny(words, " \t\n\f\r"), 0)]
 	}
 	words = redact.Prose(words)
 	if loc := privateKeyBegin.FindStringIndex(words); loc != nil {
