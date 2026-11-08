@@ -6,26 +6,45 @@
 //
 //   node scripts/ux-explorer-negative-authz.mjs
 // Env: KEYDIR (default ~/.multica-explorer, needs seeder.pat and explorer.pat; optional reader.pat,
-//      a member of the real workspace used only to confirm the real fixtures exist, default seeder), MULTICA_SERVER_URL,
+//      a member of the real workspace used only to confirm the real fixtures exist and download, default seeder), MULTICA_SERVER_URL,
 //      REAL_WORKSPACE_ID, REAL_ISSUE_ID, REAL_ATTACHMENT_ID (a cheese-work issue and attachment).
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DENIED = new Set([401, 403, 404]);
 
-async function call(server, token, method, path, { ws, json, form } = {}) {
+// Daemon-managed agent task markers, mirroring the CLI's strong task-identity signals
+// (server/cmd/multica/cmd_agent.go inDaemonTaskIdentityContext). MULTICA_DAEMON_PORT alone is not one.
+export function inAgentContext(env = process.env, cwd = process.cwd()) {
+  if (env.MULTICA_TASK_ID || env.MULTICA_AGENT_ID || String(env.MULTICA_TASK_CONFIG_ROOT ?? '').trim()) return true;
+  for (let dir = cwd; ; dir = dirname(dir)) {
+    try {
+      if (JSON.parse(readFileSync(join(dir, '.multica', 'daemon_task_context.json'), 'utf8')).managed_by === 'multica-daemon-task') return true;
+    } catch { /* missing, unreadable or foreign marker: no signal here */ }
+    if (dirname(dir) === dir) return false;
+  }
+}
+
+// Each call is bounded by timeoutMs. A response body is read only when `data` is set (setup and readback
+// by the seeder); every other call, including all explorer attempts, records the status and cancels the body.
+// A transport error or timeout is status 'error': it fails the row and is never a denial.
+async function call(server, token, method, path, { ws, json, form, data: wantData = false, timeoutMs = 15000 } = {}) {
   const headers = { Authorization: `Bearer ${token}` };
   if (ws) headers['X-Workspace-ID'] = ws;
   let body;
   if (json !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(json); }
   if (form) body = form;
-  const res = await fetch(server + path, { method, headers, body, redirect: 'manual' });
-  let data = null;
-  if (res.status >= 200 && res.status < 300 && res.status !== 204) data = await res.json().catch(() => null);
-  else await res.body?.cancel();
-  return { status: res.status, data };
+  try {
+    const res = await fetch(server + path, { method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+    let data = null;
+    if (wantData && res.status >= 200 && res.status < 300 && res.status !== 204) data = await res.json().catch(() => null);
+    else await res.body?.cancel().catch(() => {});
+    return { status: res.status, data };
+  } catch {
+    return { status: 'error', data: null };
+  }
 }
 
 const listOf = (data, key) => (Array.isArray(data) ? data : data?.[key] ?? []);
@@ -54,49 +73,50 @@ export function probeWs(url, token, timeoutMs = 10000) {
   });
 }
 
-export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, probeWs: probe = probeWs }) {
+export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, probeWs: probe = probeWs, requestTimeoutMs = 15000 }) {
   // reader: an identity that can read the real workspace, to prove its fixtures exist (default: seeder).
   const { seeder: S, explorer: E, reader: R = S } = tokens;
   const rows = [];
   let stop = false;
+  const request = (token, method, path, opts = {}) => call(server, token, method, path, { timeoutMs: requestTimeoutMs, ...opts });
   const add = (name, expect, got, ok) => { rows.push({ name, expect, got: String(got), ok }); return ok; };
 
   // An explorer attempt must be denied. A 2xx/3xx is an unexpected success and stops the run;
   // any other non-denial code (400, 5xx) proves nothing and fails the row without stopping.
   const expectDenied = async (name, method, path, opts) => {
     if (stop) return;
-    const { status } = await call(server, E, method, path, opts);
+    const { status } = await request(E, method, path, opts);
     const ok = DENIED.has(status);
     if (status >= 200 && status < 400) stop = true;
     add(name, '401/403/404', status, ok);
   };
 
   const slug = `ux-negative-${Date.now().toString(36)}`;
-  const created = await call(server, S, 'POST', '/api/workspaces', {
-    json: { name: 'UX negative check (disposable)', slug, issue_prefix: 'UXN' },
+  const created = await request(S, 'POST', '/api/workspaces', {
+    data: true, json: { name: 'UX negative check (disposable)', slug, issue_prefix: 'UXN' },
   });
   if (created.status !== 201 && created.status !== 200) throw new Error(`W-neg create failed: ${created.status}`);
   const wneg = created.data.id;
 
   try {
-    const issue = await call(server, S, 'POST', '/api/issues', { ws: wneg, json: { title: 'W-neg issue', status: 'todo' } });
+    const issue = await request(S, 'POST', '/api/issues', { ws: wneg, data: true, json: { title: 'W-neg issue', status: 'todo' } });
     const issueId = issue.data?.id;
     const identifier = issue.data?.identifier;
     const seeded = add('seed W-neg issue', '2xx', issue.status, !!issueId);
     let attachmentId = null;
     if (seeded) {
-      const comment = await call(server, S, 'POST', `/api/issues/${issueId}/comments`, { ws: wneg, json: { content: 'W-neg comment' } });
+      const comment = await request(S, 'POST', `/api/issues/${issueId}/comments`, { ws: wneg, json: { content: 'W-neg comment' } });
       add('seed W-neg comment', '2xx', comment.status, comment.status < 300);
       const form = new FormData();
       form.set('file', new Blob(['W-neg file']), 'w-neg.txt');
       form.set('issue_id', issueId);
-      const upload = await call(server, S, 'POST', '/api/upload-file', { ws: wneg, form });
+      const upload = await request(S, 'POST', '/api/upload-file', { ws: wneg, form, data: true });
       attachmentId = upload.data?.id ?? null;
       add('seed W-neg attachment', '2xx', upload.status, !!attachmentId);
     }
 
-    const controlS = await call(server, S, 'GET', `/api/workspaces/${wneg}`);
-    const controlE = await call(server, E, 'GET', `/api/workspaces/${sandboxId}`);
+    const controlS = await request(S, 'GET', `/api/workspaces/${wneg}`);
+    const controlE = await request(E, 'GET', `/api/workspaces/${sandboxId}`);
     const controls = add('control: seeder reads W-neg', '200', controlS.status, controlS.status === 200)
       && add('control: explorer reads sandbox', '200', controlE.status, controlE.status === 200);
     if (!seeded || !controls) return { rows, stop };
@@ -106,21 +126,28 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
     const wsBase = `${server.replace(/^http/, 'ws')}/ws?workspace_id=`;
     const wsCtl = await probe(wsBase + sandboxId, E);
     const wsControlOk = add('control: explorer websocket subscribes to sandbox', 'ack', `${wsCtl.outcome} (${wsCtl.detail})`, wsCtl.outcome === 'ack');
-    const fixture = async (name, path, ws) => {
-      const { status } = await call(server, R, 'GET', path, { ws });
-      return add(`control: cheese-work ${name} exists`, '200', status, status === 200);
+    // Download controls need a real 200 (proxy mode) or 302 (presigned redirect); the body is never read.
+    const downloadOk = (status) => status === 200 || status === 302;
+    let wnegDownloadOk = false;
+    if (attachmentId) {
+      const { status } = await request(S, 'GET', `/api/attachments/${attachmentId}/download`);
+      wnegDownloadOk = add('control: seeder downloads W-neg attachment', '200/302', status, downloadOk(status));
+    }
+    const fixture = async (name, path, ws, okStatus = (st) => st === 200) => {
+      const { status } = await request(R, 'GET', path, { ws });
+      return add(`control: cheese-work ${name} exists`, okStatus === downloadOk ? '200/302' : '200', status, okStatus(status));
     };
     const realWs = await fixture('workspace', `/api/workspaces/${real.workspaceId}`);
     const realIssue = await fixture('issue', `/api/issues/${real.issueId}`, real.workspaceId);
-    const realAtt = await fixture('attachment', `/api/attachments/${real.attachmentId}/download-metadata`);
+    const realAtt = await fixture('attachment download', `/api/attachments/${real.attachmentId}/download`, undefined, downloadOk);
 
     // 1. Reads against W-neg by known ID.
     await expectDenied('W-neg workspace read', 'GET', `/api/workspaces/${wneg}`);
     await expectDenied('W-neg issue by id', 'GET', `/api/issues/${issueId}`, { ws: wneg });
     await expectDenied('W-neg issue by identifier', 'GET', `/api/issues/${identifier}`, { ws: wneg });
     await expectDenied('W-neg comment list', 'GET', `/api/issues/${issueId}/comments`, { ws: wneg });
-    if (attachmentId) await expectDenied('W-neg attachment download', 'GET', `/api/attachments/${attachmentId}/download`);
-    else add('W-neg attachment download', '401/403/404', 'NOT-RUN (no attachment seeded)', false);
+    if (wnegDownloadOk) await expectDenied('W-neg attachment download', 'GET', `/api/attachments/${attachmentId}/download`);
+    else add('W-neg attachment download', '401/403/404', 'NOT-RUN (no verified attachment download)', false);
     if (!stop) {
       if (wsControlOk) {
         const { outcome, detail } = await probe(wsBase + wneg, E);
@@ -140,10 +167,10 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
 
     if (!stop) {
       const [one, comments, atts, list] = await Promise.all([
-        call(server, S, 'GET', `/api/issues/${issueId}`, { ws: wneg }),
-        call(server, S, 'GET', `/api/issues/${issueId}/comments`, { ws: wneg }),
-        call(server, S, 'GET', `/api/issues/${issueId}/attachments`, { ws: wneg }),
-        call(server, S, 'GET', '/api/issues', { ws: wneg }),
+        request(S, 'GET', `/api/issues/${issueId}`, { ws: wneg, data: true }),
+        request(S, 'GET', `/api/issues/${issueId}/comments`, { ws: wneg, data: true }),
+        request(S, 'GET', `/api/issues/${issueId}/attachments`, { ws: wneg, data: true }),
+        request(S, 'GET', '/api/issues', { ws: wneg, data: true }),
       ]);
       const counts = `status=${one.data?.status} comments=${listOf(comments.data, 'comments').length} attachments=${listOf(atts.data, 'attachments').length} issues=${listOf(list.data, 'issues').length}`;
       add('W-neg readback unchanged', 'status=todo comments=1 attachments=1 issues=1', counts,
@@ -152,8 +179,10 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
 
     // 3. E's own view and the real workspace (reads only).
     if (!stop) {
-      const mine = await call(server, E, 'GET', '/api/workspaces');
+      const mine = await request(E, 'GET', '/api/workspaces', { data: true });
       const slugs = listOf(mine.data, 'workspaces').map((w) => w.slug);
+      // Any workspace other than the sandbox is an unexpected success: stop before probing the real one.
+      if (slugs.some((x) => x !== sandboxSlug)) stop = true;
       add('E workspace list is the sandbox only', `[${sandboxSlug}]`, `count=${slugs.length} match=${slugs.length === 1 && slugs[0] === sandboxSlug}`,
         slugs.length === 1 && slugs[0] === sandboxSlug);
     }
@@ -165,8 +194,8 @@ export async function runChecks({ server, sandboxId, sandboxSlug, real, tokens, 
     await realDenied(realAtt, 'cheese-work attachment download', 'GET', `/api/attachments/${real.attachmentId}/download`);
     return { rows, stop };
   } finally {
-    const del = await call(server, S, 'DELETE', `/api/workspaces/${wneg}`).catch(() => ({ status: 'error' }));
-    const after = await call(server, S, 'GET', `/api/workspaces/${wneg}`).catch(() => ({ status: 'error' }));
+    const del = await request(S, 'DELETE', `/api/workspaces/${wneg}`).catch(() => ({ status: 'error' }));
+    const after = await request(S, 'GET', `/api/workspaces/${wneg}`).catch(() => ({ status: 'error' }));
     add('cleanup: W-neg deleted', 'delete 2xx, then 403/404', `delete=${del.status} then=${after.status}`,
       del.status >= 200 && del.status < 300 && DENIED.has(after.status));
   }
@@ -180,7 +209,7 @@ function readPat(keydir, name) {
 }
 
 async function main() {
-  if (process.env.MULTICA_TASK_ID) { console.error('refusing: running inside an agent task'); process.exit(2); }
+  if (inAgentContext()) { console.error('refusing: running inside an agent task'); process.exit(2); }
   const keydir = process.env.KEYDIR ?? join(homedir(), '.multica-explorer');
   const out = await runChecks({
     server: process.env.MULTICA_SERVER_URL ?? 'https://congvc-c00.taila6fa8a.ts.net:19444',
