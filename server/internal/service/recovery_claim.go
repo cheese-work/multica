@@ -202,7 +202,12 @@ func (s *RecoveryClaimStore) MarkAmbiguous(ctx context.Context, id pgtype.UUID) 
 
 // Settle ends a claim and frees its paced slot.
 func (s *RecoveryClaimStore) Settle(ctx context.Context, id pgtype.UUID, state RecoveryState) error {
-	return transition(ctx, s.pool, id, `state = $2, settled_at = now()`, `state IN ('claimed', 'submitted', 'ambiguous')`, string(state))
+	return s.SettleIn(ctx, s.pool, id, state)
+}
+
+// SettleIn is Settle on the executor that holds the claim row's lock.
+func (s *RecoveryClaimStore) SettleIn(ctx context.Context, ex db.DBTX, id pgtype.UUID, state RecoveryState) error {
+	return transition(ctx, ex, id, `state = $2, settled_at = now()`, `state IN ('claimed', 'submitted', 'ambiguous')`, string(state))
 }
 
 func transition(ctx context.Context, ex db.DBTX, id pgtype.UUID, set, from string, args ...any) error {
@@ -230,7 +235,12 @@ var ErrRecoveryNotAdmitted = errors.New("recovery claim not admitted")
 // Discard drops a claim that never dispatched anything, so the failed run can
 // still be recovered later. Released claims stay: they record a decision.
 func (s *RecoveryClaimStore) Discard(ctx context.Context, id pgtype.UUID) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM recovery_claim WHERE id = $1 AND state = 'claimed'`, id)
+	return s.DiscardIn(ctx, s.pool, id)
+}
+
+// DiscardIn is Discard on the executor that holds the claim row's lock.
+func (s *RecoveryClaimStore) DiscardIn(ctx context.Context, ex db.DBTX, id pgtype.UUID) error {
+	_, err := ex.Exec(ctx, `DELETE FROM recovery_claim WHERE id = $1 AND state = 'claimed'`, id)
 	if err != nil {
 		return fmt.Errorf("discard recovery claim: %w", err)
 	}
@@ -289,6 +299,14 @@ type recoveryHold struct {
 	claim     RecoveryClaim
 	held      bool
 	submitted bool // marked inside the dispatch transaction
+	// ex is the transaction that holds the renewed claim row's lock, set by a
+	// writer that fences inside a transaction it outlives. The writer settles the claim on it: any other connection would wait
+	// on the lock for ever. nil means no lock is held (pool autocommit).
+	ex db.DBTX
+	// owned is the fence transaction this writer began (watchdog rerun); the
+	// writer ends it when it settles the claim. nil when the caller's own
+	// transaction holds the lock.
+	owned pgx.Tx
 }
 
 // claimRecovery asks the shared store to admit one recovery dispatch for the
@@ -347,9 +365,6 @@ func (s *TaskService) claimRecovery(ctx context.Context, hold *recoveryHold, iss
 // was paused: the writer must not dispatch, and its hold is dropped. Inside a
 // transaction the renewed row stays locked until commit, so no reaper can take
 // it between the fence and the dispatch.
-// ponytail: a writer outside a transaction (watchdog rerun) is fenced for one
-// stale window; a pause longer than that between fence and enqueue is not
-// covered. Wrap the rerun in a transaction if that ever happens.
 func (s *TaskService) fenceRecoveryClaim(ctx context.Context, hold *recoveryHold, ex db.DBTX) bool {
 	if hold == nil || !hold.held {
 		return true
@@ -359,6 +374,31 @@ func (s *TaskService) fenceRecoveryClaim(ctx context.Context, hold *recoveryHold
 		hold.held = false
 		return false
 	}
+	if s.afterRecoveryFence != nil {
+		s.afterRecoveryFence(ctx)
+	}
+	return true
+}
+
+// fenceRecoveryClaimOwned fences a writer that has no transaction of its own
+// (watchdog rerun): it begins one, renews the claim on it and keeps it open
+// until finishRecoveryClaim, so the row lock covers the whole dispatch however
+// long the writer pauses. A writer holding no claim (nil store, refusal) passes.
+// ponytail: costs one pooled connection for the length of the rerun.
+func (s *TaskService) fenceRecoveryClaimOwned(ctx context.Context, hold *recoveryHold) bool {
+	if hold == nil || !hold.held {
+		return true
+	}
+	tx, err := s.RecoveryClaims.pool.Begin(ctx)
+	if err != nil {
+		slog.Warn("recovery claim: fence transaction failed", "claim_id", util.UUIDToString(hold.claim.ID), "error", err)
+		return false
+	}
+	if !s.fenceRecoveryClaim(ctx, hold, tx) {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return false
+	}
+	hold.owned, hold.ex = tx, tx
 	return true
 }
 
@@ -387,15 +427,32 @@ func (s *TaskService) finishRecoveryClaim(ctx context.Context, hold *recoveryHol
 	if hold == nil || !hold.held || hold.submitted && writeErr == nil {
 		return
 	}
+	if writeErr != nil && hold.ex != nil && hold.owned == nil {
+		// The caller's transaction holds the claim row and is failing: it rolls
+		// back, and the reaper frees the claim after the stale window.
+		return
+	}
 	ctx = context.WithoutCancel(ctx)
+	var ex db.DBTX = s.RecoveryClaims.pool
+	if hold.ex != nil {
+		ex = hold.ex
+	}
 	var err error
 	switch {
 	case writeErr != nil:
-		err = s.RecoveryClaims.Discard(ctx, hold.claim.ID)
+		err = s.RecoveryClaims.DiscardIn(ctx, ex, hold.claim.ID)
 	case dispatched:
-		err = s.RecoveryClaims.MarkSubmitted(ctx, hold.claim.ID, successorTaskID)
+		err = s.RecoveryClaims.MarkSubmittedIn(ctx, ex, hold.claim.ID, successorTaskID)
 	default:
-		err = s.RecoveryClaims.Settle(ctx, hold.claim.ID, RecoveryStateReleased)
+		err = s.RecoveryClaims.SettleIn(ctx, ex, hold.claim.ID, RecoveryStateReleased)
+	}
+	if tx := hold.owned; tx != nil {
+		hold.owned = nil
+		if err != nil {
+			_ = tx.Rollback(ctx)
+		} else if cerr := tx.Commit(ctx); cerr != nil {
+			err = cerr
+		}
 	}
 	if err != nil {
 		slog.Warn("recovery claim: finish failed", "claim_id", util.UUIDToString(hold.claim.ID), "error", err)

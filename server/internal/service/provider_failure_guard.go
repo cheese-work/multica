@@ -371,6 +371,11 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		if !admitted || !s.fenceRecoveryClaim(ctx, hold, q.Conn()) {
 			return false, nil
 		}
+		// The renewed claim row stays locked by the caller's transaction until it
+		// ends, so the cleanup below must run on it, not on a second connection.
+		if tx, ok := q.Conn().(pgx.Tx); ok {
+			hold.ex = tx
+		}
 	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
 		FailedTaskID:     attempt.FailedTaskID,

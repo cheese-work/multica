@@ -59,6 +59,9 @@ type TaskService struct {
 	// afterRecoveryClaim runs once a writer holds an admitted claim and has
 	// not yet dispatched. Tests pause the writer here; nil in production.
 	afterRecoveryClaim func(context.Context)
+	// afterRecoveryFence runs once a writer has renewed its claim and has not
+	// yet dispatched; nil in production.
+	afterRecoveryFence func(context.Context)
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
@@ -7175,6 +7178,11 @@ func IsFreshRerun(task db.AgentTaskQueue) bool {
 // from trusted internal callers (tests, backfill) that have already gated.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, fresh bool, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	hold := &recoveryHold{}
+	defer func() {
+		if hold.owned != nil { // a panic skipped the finish; free the row lock
+			_ = hold.owned.Rollback(context.WithoutCancel(ctx))
+		}
+	}()
 	task, err := s.rerunIssue(ctx, hold, issueID, sourceTaskID, triggerCommentID, actorUserID, fresh, canInvoke)
 	s.finishRecoveryClaim(ctx, hold, childID(task), task != nil, err)
 	return task, err
@@ -7439,7 +7447,7 @@ func (s *TaskService) rerunIssue(ctx context.Context, hold *recoveryHold, issueI
 		if cerr != nil {
 			return nil, fmt.Errorf("rerun: recovery claim: %w", cerr)
 		}
-		if !admitted || !s.fenceRecoveryClaim(ctx, hold, s.RecoveryClaims.pool) {
+		if !admitted || !s.fenceRecoveryClaimOwned(ctx, hold) {
 			return nil, ErrRecoveryNotAdmitted
 		}
 	}

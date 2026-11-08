@@ -587,3 +587,97 @@ func TestIssuelessClaimsAreBudgetedByLineage(t *testing.T) {
 		t.Fatalf("issue-less claim of another lineage = %s, want admitted", got)
 	}
 }
+
+// pauseBeyondStaleWindow stands in for a writer that stalls after its fence for
+// longer than the stale window: a reaper runs with a clock ten minutes ahead.
+func pauseBeyondStaleWindow(t *testing.T, o ownerFixture) {
+	t.Helper()
+	o.svc.TaskSvc.afterRecoveryFence = func(context.Context) {
+		if err := o.svc.TaskSvc.RecoveryClaims.ReapSettled(context.Background(), parseTestUUID(t, o.WorkspaceID), time.Now().Add(10*time.Minute)); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// The watchdog rerun keeps its claim locked from the fence through the enqueue
+// (CHE-4568 review round 4, P1-1): a reaper running after a long pause between
+// the renewal and the enqueue cannot free it.
+func TestWatchdogRerunClaimSurvivesPauseAfterFence(t *testing.T) {
+	o := newClaimWritersFixture(t)
+	ctx := context.Background()
+	failed := o.failedRun(t, nil)
+	pauseBeyondStaleWindow(t, o)
+	task, err := o.svc.TaskSvc.RerunIssue(ctx, parseTestUUID(t, o.issueID), parseTestUUID(t, failed), pgtype.UUID{}, pgtype.UUID{}, false, nil)
+	if err != nil || task == nil {
+		t.Fatalf("RerunIssue task=%v err=%v, want a rerun", task, err)
+	}
+	if got := o.claimState(t, failed); got != "submitted" {
+		t.Fatalf("claim state after the rerun = %q, want submitted (a reaper freed it during the pause)", got)
+	}
+	if got := o.Count(t, `SELECT count(*) FROM recovery_claim WHERE failed_task_id=$1 AND successor_task_id=$2`, failed, util.UUIDToString(task.ID)); got != 1 {
+		t.Fatalf("claims bound to the rerun = %d, want 1", got)
+	}
+}
+
+// A service built without a claim store (isolated test services) must still
+// rerun: the fence must not dereference the nil store (round 4, P2).
+func TestWatchdogRerunWithoutClaimStoreDoesNotPanic(t *testing.T) {
+	o := newClaimWritersFixture(t)
+	failed := o.failedRun(t, nil)
+	o.svc.TaskSvc.RecoveryClaims = nil
+	task, err := o.svc.TaskSvc.RerunIssue(context.Background(), parseTestUUID(t, o.issueID), parseTestUUID(t, failed), pgtype.UUID{}, pgtype.UUID{}, false, nil)
+	if err != nil || task == nil {
+		t.Fatalf("RerunIssue task=%v err=%v, want a rerun", task, err)
+	}
+}
+
+// A transactional recurring writer holds the claim row lock until the caller's
+// transaction ends, so a refused or failed reservation must not touch the claim
+// from another connection (P1-2). The call must return, not wait on its own lock.
+func TestRecurringReservationDoesNotDeadlockOnItsOwnClaim(t *testing.T) {
+	run := func(t *testing.T, prepare func(o ownerFixture, failed string, cancel context.CancelFunc, attempt func() *providerFailureRecoveryAttempt), wantReserved bool) {
+		o := newClaimWritersFixture(t)
+		wakeupID := o.wakeup(t, "every", "continuous", nil)
+		failed := o.failedTask(t, wakeupContext(t, wakeupID))
+		attempt := func() *providerFailureRecoveryAttempt {
+			return &providerFailureRecoveryAttempt{
+				FailedTaskID: parseTestUUID(t, failed), FailedAt: time.Now().UTC().Add(-2 * time.Hour), ProbeAt: time.Now().UTC(), ProbeStatus: 401,
+				Scope: providerFailureRecoveryScope{Kind: "issue_wakeup", TriggerID: parseTestUUID(t, wakeupID)},
+			}
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		prepare(o, failed, cancel, attempt)
+		tx := o.begin(t)
+		done := make(chan struct{})
+		var reserved bool
+		go func() {
+			defer close(done)
+			reserved, _ = o.svc.TaskSvc.reserveProviderFailureRecovery(ctx, o.q.WithTx(tx), attempt(), pgtype.UUID{}, dbid.NewV7())
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = tx.Rollback(context.Background()) // release the lock so the writer can finish
+			<-done
+			t.Fatal("reservation waited on a claim row its own transaction holds")
+		}
+		if reserved != wantReserved {
+			t.Fatalf("reserved=%t, want %t", reserved, wantReserved)
+		}
+	}
+	t.Run("ReservationConflict", func(t *testing.T) {
+		run(t, func(o ownerFixture, failed string, _ context.CancelFunc, attempt func() *providerFailureRecoveryAttempt) {
+			// Another writer already recorded the reservation, and its claim is gone.
+			if reserved, err := o.svc.TaskSvc.reserveProviderFailureRecovery(context.Background(), o.q, attempt(), pgtype.UUID{}, dbid.NewV7()); err != nil || !reserved {
+				t.Fatalf("setup reservation reserved=%t err=%v", reserved, err)
+			}
+			o.Exec(t, `DELETE FROM recovery_claim WHERE failed_task_id=$1`, failed)
+		}, false)
+	})
+	t.Run("WriteError", func(t *testing.T) {
+		run(t, func(o ownerFixture, _ string, cancel context.CancelFunc, _ func() *providerFailureRecoveryAttempt) {
+			o.svc.TaskSvc.afterRecoveryFence = func(context.Context) { cancel() }
+		}, false)
+	})
+}
