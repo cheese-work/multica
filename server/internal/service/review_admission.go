@@ -121,13 +121,30 @@ func startsReview(target RunTarget) bool {
 	return target.ReviewRun
 }
 
+// actsAsAuthor reports whether the run hands the issue's own PR back to its
+// assignee for work: the assignee outside a review status. The same agent in a
+// review status, or any agent that does not hold the issue, acts as reviewer.
+// ponytail: the PR link records no author agent (only a GitHub login), so the
+// role comes from assignee and status; add a PR-author agent column if a
+// reviewer ever authors work while the issue sits in a review status.
+func actsAsAuthor(issue db.Issue, agentID pgtype.UUID) bool {
+	return issue.AssigneeType.String == "agent" && issue.AssigneeID == agentID && !IsReviewStatus(issue.Status)
+}
+
 // guardReviewAdmission defers a reviewer run on a PR head that is not
 // admissible (CHE-4650). Only an agent in the configured reviewer set is
-// judged, whatever state the issue is in and whoever holds it, and only when
-// the issue has a linked open PR. An author or any other agent is never held
-// back: its run is what turns red CI green.
+// judged, only while it acts as reviewer on this issue (actsAsAuthor), and only
+// when the issue has a linked open PR. An author run is never held back: it is
+// what turns red CI green, even when the same agent reviews other PRs.
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
 	if !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
+		return nil
+	}
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return fmt.Errorf("review admission: load issue: %w", err)
+	}
+	if actsAsAuthor(issue, target.AgentID) {
 		return nil
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, issueID)

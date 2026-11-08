@@ -373,3 +373,41 @@ func TestAdmissionRepeatedDeferralKeepsTheDeadline(t *testing.T) {
 		t.Fatalf("new head left %v on the deadline, want a fresh 24h", left)
 	}
 }
+
+// One configured agent holds two roles. Handed its own PR while the issue is
+// in_progress it is the author, and its run repairs the red CI. Handed the same
+// PR for review it is the reviewer, and red CI defers it.
+func TestAdmissionJudgesTheRoleNotTheAgent(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
+	for _, c := range []struct {
+		trigger string
+		review  bool
+	}{{"assignment", true}, {"comment", true}, {"wakeup", false}, {"system wakeup", false}} {
+		if err := f.guardAs(f.agentID, c.trigger, c.review); err != nil {
+			t.Fatalf("author %s on red CI: err = %v, want admitted", c.trigger, err)
+		}
+	}
+	if _, _, _, ok := f.deferral(t); ok {
+		t.Fatal("a deferral record was stored for an author run")
+	}
+	for _, status := range []string{"in_review", "agent_review"} {
+		f.Exec(t, `UPDATE issue SET status = $2 WHERE id = $1`, f.issue, status)
+		if err := f.guardAs(f.agentID, "assignment", true); !errors.Is(err, ErrAdmissionDeferred) {
+			t.Fatalf("reviewer in %s on red CI: err = %v, want ErrAdmissionDeferred", status, err)
+		}
+	}
+}
+
+// The author wakeup path too: a named wakeup of the assignee in progress.
+func TestAdmissionAdmitsAnAuthorWakeupOnRedCI(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.Exec(t, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, f.issue)
+	_, err := guardIssueRunGate(context.Background(), f.q, util.MustParseUUID(f.issue), OriginNamed,
+		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "wakeup"})
+	if err != nil {
+		t.Fatalf("named author wakeup on red CI: err = %v, want admitted", err)
+	}
+}
