@@ -6967,6 +6967,11 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	// CHE-4581: replays of this hand-off queue behind the first writer, whose
+	// committed successor CreateRetryTask then sees.
+	if _, lerr := qtx.LockAgentTaskForRetry(ctx, parent.ID); lerr != nil {
+		return nil, fmt.Errorf("task auto-retry: lock parent: %w", lerr)
+	}
 	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
 		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
 	} else if revoked {
