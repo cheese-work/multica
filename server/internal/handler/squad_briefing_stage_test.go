@@ -48,11 +48,16 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	for _, title := range []string{"PR A", "PR B"} {
 		dbfx.Task(t, owner, testutil.Cols{"issue_id": reviewPR(t, owner, title), "status": "running", "runtime_id": rt})
 	}
+	// PR C is this squad's: a member authored it. PR D is another team's.
 	queued := reviewPR(t, owner, "PR C")
-	if err := testHandler.Queries.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
-		IssueID: util.MustParseUUID(queued), AgentID: util.MustParseUUID(owner), TaintIds: []string{},
-	}); err != nil {
-		t.Fatal(err)
+	dbfx.Task(t, idle, testutil.Cols{"issue_id": queued, "status": "completed", "runtime_id": rt})
+	foreign := reviewPR(t, owner, "PR D")
+	for _, id := range []string{queued, foreign} {
+		if err := testHandler.Queries.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
+			IssueID: util.MustParseUUID(id), AgentID: util.MustParseUUID(owner), TaintIds: []string{},
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, false)
@@ -70,6 +75,15 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	if i := strings.Index(got, "Idle members"); i < 0 || strings.Contains(got[i:], "mention://agent/"+busy) {
 		t.Errorf("busy member listed as idle, or no idle list:\n%s", got)
 	}
+	if strings.Contains(got, foreign) {
+		t.Errorf("briefing names a PR this squad does not own:\n%s", got)
+	}
+	// A squad that owns no queued PR gets no directive.
+	otherLeader := dbfx.Agent(t, "Other leader", rt)
+	otherSquad := seedSquadForBriefing(t, otherLeader, fmt.Sprintf("Other squad %d", time.Now().UnixNano()), "")
+	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, otherSquad, true, false); strings.Contains(got, "## Stage Queue") {
+		t.Errorf("unrelated squad got a Stage Queue directive:\n%s", got)
+	}
 	if strings.Contains(got, "No push task is open") == false {
 		t.Errorf("queued PR with no open push task is not marked:\n%s", got)
 	}
@@ -78,5 +92,40 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	dbfx.Task(t, idle, testutil.Cols{"issue_id": queued, "status": "queued", "runtime_id": rt})
 	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, false); !strings.Contains(got, "push task open") {
 		t.Errorf("open push task not shown:\n%s", got)
+	}
+}
+
+// The claim path hands the squad leader the directive: a leader task on a squad
+// with a queued PR carries the dispatch instruction in its agent instructions.
+func TestClaim_LeaderTaskOnFullStage_GetsQueuedPRDispatch(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	fx := newSquadBriefingClaimFixture(t, ctx, "Stage claim")
+	rt := dbfx.Runtime(t, "Stage claim owner runtime")
+	owner := dbfx.Agent(t, "Stage claim reviewer", rt)
+	member := dbfx.Agent(t, "Stage claim author", rt)
+	addAgentMember(t, util.MustParseUUID(fx.SquadID), member, "dev")
+	for _, title := range []string{"PR A", "PR B"} {
+		dbfx.Task(t, owner, testutil.Cols{"issue_id": reviewPR(t, owner, title), "status": "running", "runtime_id": rt})
+	}
+	queued := reviewPR(t, owner, "PR C")
+	dbfx.Task(t, member, testutil.Cols{"issue_id": queued, "status": "completed", "runtime_id": rt})
+	if err := testHandler.Queries.MarkStageWaiting(ctx, db.MarkStageWaitingParams{
+		IssueID: util.MustParseUUID(queued), AgentID: util.MustParseUUID(owner), TaintIds: []string{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	want := enqueueClaimTask(t, ctx, fx, true, true)
+
+	got, instr, _, raw := claimAgentInstructionsForTest(t, fx.RuntimeID)
+	if got != want {
+		t.Fatalf("claimed task id = %q, want %q: %s", got, want, raw)
+	}
+	for _, s := range []string{"## Stage Queue", queued, "mention://agent/" + member, "update the branch from `main`", "New PR work waits"} {
+		if !strings.Contains(instr, s) {
+			t.Errorf("leader instructions lack %q:\n%s", s, instr)
+		}
 	}
 }
