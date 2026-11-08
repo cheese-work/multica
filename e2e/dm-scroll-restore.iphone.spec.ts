@@ -297,6 +297,38 @@ test.describe("DM reading point per frame after Back (CHE-4638 design)", () => {
   });
 });
 
+test.describe("DM reading point inside one tall message (CHE-4638 design)", () => {
+  test("a block above the visible text grows inside the same message: no frame moves the text", async ({ page }) => {
+    await withScrolledDm(page, async () => {
+      // Park the target message so its first paragraph ends 8 px above the
+      // viewport top; its second paragraph is the text the reader is on.
+      const result = await page.evaluate(async () => {
+        const root = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        const row = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find((n) =>
+          n.textContent?.includes("Target message 40"),
+        )!;
+        const [first, marker] = [...row.querySelectorAll("p")] as HTMLElement[];
+        if (!first || !marker) throw new Error("target message needs two paragraphs");
+        const rootTop = root.getBoundingClientRect().top;
+        root.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, bubbles: true }));
+        root.scrollTop += first.getBoundingClientRect().bottom - rootTop + 8;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const markerTop = () => marker.getBoundingClientRect().top - rootTop;
+        const before = markerTop();
+        first.style.minHeight = `${first.getBoundingClientRect().height + 120}px`;
+        const samples: number[] = [];
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => requestAnimationFrame(r));
+          samples.push(markerTop());
+        }
+        return { before, samples };
+      });
+      expect(result.before).toBeLessThan(40);
+      expect(Math.max(...result.samples.map((s) => Math.abs(s - result.before)))).toBeLessThanOrEqual(2);
+    });
+  });
+});
+
 // A late height change, as an image or a code block finishing layout does.
 // `offset` is the row's distance from the target message (negative = above).
 async function growRow(page: Page, offset: number) {

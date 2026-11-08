@@ -111,6 +111,25 @@ function setup() {
     row.getBoundingClientRect = () =>
       ({ top: rowTop(i), bottom: rowTop(i) + heights[i]!, height: heights[i]! }) as DOMRect;
   });
+  // m3 holds two blocks: `above` is wholly above the viewport top, `marker` is
+  // the visible text the reader is on. Row geometry stays in `heights`.
+  let aboveH = 30;
+  const above = document.createElement("div");
+  const marker = document.createElement("div");
+  rows[2]!.append(above, marker);
+  above.getBoundingClientRect = () =>
+    ({ top: rowTop(2), bottom: rowTop(2) + aboveH, height: aboveH }) as DOMRect;
+  marker.getBoundingClientRect = () =>
+    ({ top: rowTop(2) + aboveH, bottom: rowTop(2) + heights[2]!, height: heights[2]! - aboveH }) as DOMRect;
+  // Block `above` grows inside m3: the row grows with it, the marker moves down.
+  const growAbove = (px: number) =>
+    act(() => {
+      aboveH += px;
+      heights[2]! += px;
+      for (const cb of callbacks)
+        cb([{ target: rows[2]!, borderBoxSize: [{ blockSize: heights[2]! }] }]);
+    });
+  const markerOffset = () => marker.getBoundingClientRect().top - VIEWPORT_TOP;
   // Rows grow in place; the observers then report every resized row in one batch.
   const grow = (...by: [number, number][]) =>
     act(() => {
@@ -125,7 +144,7 @@ function setup() {
   });
   // Distance of m3, the row at the viewport top, from the viewport top.
   const readingOffset = () => rowTop(2) - VIEWPORT_TOP;
-  return { root, grow, readingOffset };
+  return { root, grow, growAbove, markerOffset, readingOffset };
 }
 
 describe("ChatMessageList holds the reading point as rows resize", () => {
@@ -148,6 +167,14 @@ describe("ChatMessageList holds the reading point as rows resize", () => {
     grow([2, 200]); // m3 straddles the viewport top and grows at its bottom
     expect(readingOffset()).toBe(-50);
     expect(root.scrollTop).toBe(START);
+  });
+
+  it("moves back for a block above the visible text that grows inside the same message", () => {
+    const { root, growAbove, markerOffset } = setup();
+    expect(markerOffset()).toBe(-20);
+    growAbove(60);
+    expect(markerOffset()).toBe(-20);
+    expect(root.scrollTop).toBe(START + 60);
   });
 
   it("corrects several rows resized in one batch once", () => {

@@ -384,6 +384,15 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Footer: ChatListFooter,
 };
 
+// First child whose box still reaches below the viewport top: the element the
+// reader is looking at inside its parent.
+function firstReaching(parent: Element, viewportTop: number): Element | undefined {
+  for (const child of parent.children) {
+    if (child.getBoundingClientRect().bottom > viewportTop) return child;
+  }
+  return undefined;
+}
+
 export function ChatMessageList({
   active = true,
   revealKey = null,
@@ -435,16 +444,18 @@ export function ChatMessageList({
   // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
   // a row that starts above the viewport and grows late (image, embed, expanded
   // block) pushes the reader's message down. The reader's reading anchor is the
-  // message row at the viewport top and where it sits from that edge; after any
-  // resize batch the row is put back there. It is a measured position, not a
-  // sum of deltas: growth below the anchor never moves it, and several rows
-  // growing in one batch correct once. The first observation of a row is only a
+  // message row at the viewport top, narrowed to the deepest element still
+  // reaching below that edge (the visible content point inside a tall message),
+  // and where it sits from the edge; after any resize batch it is put back
+  // there. It is a measured position, not a sum of deltas: growth below the
+  // anchor never moves it, growth above it moves it back once, even when it
+  // happens inside the same message. The first observation of a row is only a
   // baseline; the live-end follow owns its own pin (CHE-4638).
-  // ponytail: row granularity. Growth inside the anchor row above the reading
-  // point is not corrected; a per-element anchor would be needed for that.
   const isFollowingRef = useRef(isFollowing);
   isFollowingRef.current = isFollowing;
-  const readingAnchor = useRef<{ id: string; top: number } | null>(null);
+  const readingAnchor = useRef<{ id: string; top: number; point: Element; pointTop: number } | null>(
+    null,
+  );
   // A restored list holds its saved position (a fixed target) until the reader
   // moves or the list has had RESTORE_SETTLE_MS to land; before then a scroll
   // event is Virtuoso landing it, not the reader. Other lists anchor on input.
@@ -458,7 +469,16 @@ export function ChatMessageList({
     for (const row of scroller.querySelectorAll("[data-message-id]")) {
       const { top, bottom } = row.getBoundingClientRect();
       if (bottom <= viewportTop) continue;
-      readingAnchor.current = { id: row.getAttribute("data-message-id")!, top: top - viewportTop };
+      let point = row;
+      for (let next = firstReaching(point, viewportTop); next; next = firstReaching(point, viewportTop)) {
+        point = next;
+      }
+      readingAnchor.current = {
+        id: row.getAttribute("data-message-id")!,
+        top: top - viewportTop,
+        point,
+        pointTop: point.getBoundingClientRect().top - viewportTop,
+      };
       return;
     }
   }, []);
@@ -480,9 +500,14 @@ export function ChatMessageList({
     const scroller = scrollRef.current;
     const anchor = readingAnchor.current;
     if (!scroller || !anchor) return;
-    const row = scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
-    if (!row) return;
-    const delta = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.top;
+    // The content point can be re-rendered away; the row is then the anchor.
+    const live = anchor.point.isConnected;
+    const el = live
+      ? anchor.point
+      : scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
+    if (!el) return;
+    const delta =
+      el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (live ? anchor.pointTop : anchor.top);
     if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
   }, []);
   useEffect(() => {
