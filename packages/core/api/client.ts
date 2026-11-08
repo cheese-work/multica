@@ -4170,7 +4170,7 @@ export class ApiClient {
   /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
   async answerDecisionRequest(
     requestId: string,
-    input: { option?: string; text?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
+    input: { option?: string; text?: string; covers_ack?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
   ): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }

@@ -23,10 +23,10 @@ func previewOf(test *testing.T, read configChangeRead) (stored map[string]any, p
 	test.Helper()
 	params, _ := json.Marshal(configChangeClaim{BaseSHA256: read.LiveSHA256, AfterSHA256: read.AfterSHA256})
 	draft := &decisionActionDraft{Type: "test.diff", Params: params, Definition: &decisionaction.Definition{RequiresPreview: true}}
-	change := configChange{Read: func(context.Context, *db.Queries, pgtype.UUID, json.RawMessage) (configChangeRead, error) {
+	change := configChange{Fields: []string{read.Field}, Read: func(context.Context, *db.Queries, pgtype.UUID, json.RawMessage) (configChangeRead, error) {
 		return read, nil
 	}}
-	stored, err := configChangePreconditions(context.Background(), nil, pgtype.UUID{}, draft, change)
+	stored, err := configChangePreconditions(context.Background(), nil, pgtype.UUID{}, pgtype.UUID{}, draft, change)
 	if err != nil {
 		test.Fatal(err)
 	}

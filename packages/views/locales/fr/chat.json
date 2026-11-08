@@ -417,6 +417,9 @@
   "decision": {
     "request_title": "Demande de décision",
     "asked_by": "de {{agent}}",
+    "answered_by_batch": "{{issue}} : répondu par la carte groupée",
+    "covers_batch": "Clôturées par cette réponse : {{count}}",
+    "covers_unavailable": "Impossible de charger les décisions que cette réponse clôturerait. Rechargez pour répondre.",
     "request_label": "Demande de décision : {{state}}",
     "request_state": { "open": "Ouverte", "answered": "Répondue", "withdrawn": "Retirée", "recorded": "Enregistrée", "delivered": "Livrée", "picked_up": "Prise en charge", "not_picked_up": "Non prise en charge", "disclaimed": "Désavouée" },
     "picked_up_by": "Prise en charge par {{agent}}",

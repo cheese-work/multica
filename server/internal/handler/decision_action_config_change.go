@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -33,6 +34,16 @@ import (
 
 // configChange is the per-action part of the shared core.
 type configChange struct {
+	// Fields are the only governed fields Read may report for this action. A
+	// read that names another field is refused, so a settings patch cannot be
+	// relabelled as a dedicated field. A workflow write reports either of two.
+	Fields []string
+	// Authorize is the per-action proposer policy. The core calls it at request
+	// time with the request's asking agent and again at approval, after the
+	// locks and the re-Read, with the action's stored requesting agent; the
+	// proposer never comes from params or the agent's note. An action with a
+	// hook and no valid proposer fails closed.
+	Authorize func(ctx context.Context, queries *db.Queries, workspaceID, proposer pgtype.UUID, params json.RawMessage, read configChangeRead) error
 	// Lock takes the target row FOR UPDATE NOWAIT before the approval's first
 	// read, so an ordinary edit cannot commit between that read and Apply. The
 	// core calls it first; a busy row answers busy_retry.
@@ -101,6 +112,9 @@ func registerConfigChange(actionType string, change configChange) {
 	if change.Lock == nil {
 		panic("config change " + actionType + " must lock its target row")
 	}
+	if len(change.Fields) == 0 {
+		panic("config change " + actionType + " must name the fields it writes")
+	}
 	configChanges[actionType] = change
 	decisionActionExecutors[actionType] = func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {
 		return executeConfigChange(ctx, change, execution)
@@ -123,12 +137,15 @@ type configChangeClaim struct {
 type configChangeWant struct{ Field, TargetID, Before string }
 
 // checkConfigChange applies the rules shared by the request and the approval,
-// in this order: denylist, governed blocks, drift of the live value, and the
+// in this order: denylist, the action's bound fields, governed blocks, drift of the live value, and the
 // agent's after digest against the server's own. status is the code for the
 // two refusals that differ between the request (400) and the approval (409).
-func checkConfigChange(read configChangeRead, claim configChangeClaim, want configChangeWant, status int) error {
+func checkConfigChange(fields []string, read configChangeRead, claim configChangeClaim, want configChangeWant, status int) error {
 	if err := decisionaction.CheckConfigChange(read.Field, read.Keys); err != nil {
 		return decisionIntentRefusal{http.StatusForbidden, decisionaction.CodeDenylisted + ": " + err.Error()}
+	}
+	if !slices.Contains(fields, read.Field) {
+		return decisionIntentRefusal{http.StatusForbidden, decisionaction.CodeDenylisted + ": this action may not write " + read.Field}
 	}
 	if !read.HumanBlocksIntact {
 		return decisionIntentRefusal{status, "governed_blocks_changed: a governed:human block may not change"}
@@ -144,7 +161,7 @@ func checkConfigChange(read configChangeRead, claim configChangeClaim, want conf
 
 // configChangePreconditions validates the agent's claim against the server's
 // own reading and stores the preview the approver must be shown.
-func configChangePreconditions(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, draft *decisionActionDraft, change configChange) (map[string]any, error) {
+func configChangePreconditions(ctx context.Context, queries *db.Queries, workspaceID, proposer pgtype.UUID, draft *decisionActionDraft, change configChange) (map[string]any, error) {
 	if !draft.Definition.RequiresPreview {
 		return nil, errors.New("config change " + draft.Type + " must require a preview")
 	}
@@ -156,7 +173,10 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	if err != nil {
 		return nil, err
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest); err != nil {
+	if err := checkConfigChange(change.Fields, read, claim, configChangeWant{read.Field, read.TargetID, claim.BaseSHA256}, http.StatusBadRequest); err != nil {
+		return nil, err
+	}
+	if err := authorizeConfigChange(ctx, change, queries, workspaceID, proposer, draft.Params, read); err != nil {
 		return nil, err
 	}
 	kind, diff, err := configChangeDiff(read)
@@ -190,6 +210,19 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 		"before_sha256": read.LiveSHA256, "after_sha256": read.AfterSHA256,
 		"preview": json.RawMessage(canonical), "preview_sha256": hex.EncodeToString(digest[:]),
 	}, nil
+}
+
+// authorizeConfigChange runs the action's proposer policy, if it has one. The
+// proposer is the stored asking agent, never a value from params. An action
+// with a policy and no valid proposer fails closed.
+func authorizeConfigChange(ctx context.Context, change configChange, queries *db.Queries, workspaceID, proposer pgtype.UUID, params json.RawMessage, read configChangeRead) error {
+	if change.Authorize == nil {
+		return nil
+	}
+	if !proposer.Valid {
+		return decisionIntentRefusal{http.StatusForbidden, "proposer_required: this change needs an identified proposing agent"}
+	}
+	return change.Authorize(ctx, queries, workspaceID, proposer, params, read)
 }
 
 // Preview diff kinds, stored in the preview so a card knows how to read it.
@@ -278,7 +311,10 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 	if err != nil {
 		return nil, err
 	}
-	if err := checkConfigChange(read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict); err != nil {
+	if err := checkConfigChange(change.Fields, read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict); err != nil {
+		return nil, err
+	}
+	if err := authorizeConfigChange(ctx, change, queries, action.WorkspaceID, action.RequestedByAgentID, action.Params, read); err != nil {
 		return nil, err
 	}
 	execution.Agent, execution.Workflow = db.Agent{}, db.IssueWorkflow{}
