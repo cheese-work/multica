@@ -491,14 +491,18 @@ SELECT head_sha FROM (
 ) open_prs;
 
 -- name: HasAgentVerdictForHead :one
--- Whether the agent already commented a verdict (PASS, FAIL), BLOCKED or
--- NOT-RUN on the issue for this PR head. A comment names the head by its
--- first seven characters at least; the marker is upper case on purpose, so
--- prose such as "this may fail" is not a verdict.
+-- Whether the agent already commented its verdict on the issue for this PR
+-- head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
+-- (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
+-- "Head:" line that names the head by its first seven characters at least.
+-- Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
+-- verdict for another head from counting. The markers are upper case on
+-- purpose, so prose such as "this may fail" is not a verdict. A comment in
+-- another shape does not match, and the run starts as before.
 SELECT EXISTS (
     SELECT 1 FROM comment
     WHERE issue_id = sqlc.arg('issue_id') AND author_type = 'agent' AND author_id = sqlc.arg('agent_id')
       AND deleted_at IS NULL
-      AND position(left(sqlc.arg('head_sha')::text, 7) IN content) > 0
-      AND content ~ '\m(PASS|FAIL|BLOCKED|NOT-RUN)\M'
+      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
+      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left(sqlc.arg('head_sha')::text, 7))
 );

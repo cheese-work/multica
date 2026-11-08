@@ -2,10 +2,14 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
@@ -34,6 +38,23 @@ func agentSays(t *testing.T, c edgeCase, agentID, text string) {
 		c.issueID, testWorkspaceID, agentID, text)
 }
 
+// verdictFor is a reviewer's signed verdict comment for one candidate head.
+func verdictFor(word, head string) string {
+	return "**Verdict: " + word + "**\nReviewer: x\nCandidate: `" + head + "`\n\nFindings: none.\n"
+}
+
+// waitSkipped waits for the async skip record (the refusal rolls back the
+// enqueue transaction, so the hook writes it on its own connection).
+func waitSkipped(t *testing.T, issueID, head string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_skipped' AND details->>'reason'='review_head_answered' AND details->>'head_sha'=$2`, issueID, head) >= 1 {
+			return
+		}
+	}
+	t.Fatal("no run_skipped activity with reason review_head_answered")
+}
+
 func enqueueReview(t *testing.T, c edgeCase) error {
 	t.Helper()
 	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(c.issueID))
@@ -45,26 +66,27 @@ func enqueueReview(t *testing.T, c edgeCase) error {
 }
 
 func TestReviewRunSkippedWhenAgentAlreadyGaveVerdictForHead(t *testing.T) {
-	for name, verdict := range map[string]string{"verdict": "Verdict: PASS", "blocked": "BLOCKED: no runner", "not-run": "NOT-RUN: device offline"} {
+	for name, verdict := range map[string]string{
+		"pass":    verdictFor("PASS", headOld),
+		"changes": verdictFor("CHANGES REQUESTED", headOld),
+		"blocked": verdictFor("BLOCKED", headOld),
+		"not-run": verdictFor("NOT-RUN", headOld),
+		"bare":    "BLOCKED: no runner\nCandidate: `" + headOld + "`\n",
+	} {
 		t.Run(name, func(t *testing.T) {
 			if testHandler == nil {
 				t.Skip("database not available")
 			}
 			c, agentID := reviewCase(t, 4649001)
 			linkPR(t, c.issueID, 4649001, headOld)
-			agentSays(t, c, agentID, "Reviewed head "+headOld[:7]+". "+verdict)
+			agentSays(t, c, agentID, verdict)
 			if err := enqueueReview(t, c); !errors.Is(err, service.ErrReviewHeadAnswered) {
 				t.Fatalf("same-head review run = %v, want ErrReviewHeadAnswered", err)
 			}
 			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, c.issueID); n != 0 {
 				t.Fatalf("task rows = %d, want none: a skipped run must not count against the run budget", n)
 			}
-			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-				if dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_skipped' AND details->>'reason'='review_head_answered' AND details->>'head_sha'=$2`, c.issueID, headOld) == 1 {
-					return
-				}
-			}
-			t.Fatal("no run_skipped activity with reason review_head_answered")
+			waitSkipped(t, c.issueID, headOld)
 		})
 	}
 }
@@ -75,7 +97,7 @@ func TestReviewRunStartsOnNewHead(t *testing.T) {
 	}
 	c, agentID := reviewCase(t, 4649002)
 	linkPR(t, c.issueID, 4649002, headOld)
-	agentSays(t, c, agentID, "Reviewed head "+headOld[:7]+". Verdict: FAIL")
+	agentSays(t, c, agentID, verdictFor("FAIL", headOld))
 	dbfx.Exec(t, `UPDATE github_pull_request SET head_sha=$2 WHERE id IN (SELECT pull_request_id FROM issue_pull_request WHERE issue_id=$1)`, c.issueID, headNew)
 	if err := enqueueReview(t, c); err != nil {
 		t.Fatalf("new-head review run = %v, want it started", err)
@@ -89,7 +111,7 @@ func TestReviewRunIgnoresAnotherAgentsVerdict(t *testing.T) {
 	c, _ := reviewCase(t, 4649003)
 	linkPR(t, c.issueID, 4649003, headOld)
 	other := "0f0f0f0f-0000-4000-8000-00000000c4a9"
-	agentSays(t, c, other, "Reviewed head "+headOld[:7]+". Verdict: PASS")
+	agentSays(t, c, other, verdictFor("PASS", headOld))
 	if err := enqueueReview(t, c); err != nil {
 		t.Fatalf("review run after another agent's verdict = %v, want it started", err)
 	}
@@ -101,7 +123,7 @@ func TestReviewRunStartsWithoutExactlyOneLinkedPR(t *testing.T) {
 	}
 	t.Run("no PR", func(t *testing.T) {
 		c, agentID := reviewCase(t, 4649004)
-		agentSays(t, c, agentID, "Reviewed head "+headOld[:7]+". Verdict: PASS")
+		agentSays(t, c, agentID, verdictFor("PASS", headOld))
 		if err := enqueueReview(t, c); err != nil {
 			t.Fatalf("run with 0 linked PRs = %v, want it started", err)
 		}
@@ -110,9 +132,113 @@ func TestReviewRunStartsWithoutExactlyOneLinkedPR(t *testing.T) {
 		c, agentID := reviewCase(t, 4649005)
 		linkPR(t, c.issueID, 4649005, headOld)
 		linkPR(t, c.issueID, 4649006, headNew)
-		agentSays(t, c, agentID, "Reviewed head "+headOld[:7]+". Verdict: PASS")
+		agentSays(t, c, agentID, verdictFor("PASS", headOld))
 		if err := enqueueReview(t, c); err != nil {
 			t.Fatalf("run with 2 linked PRs = %v, want it started", err)
 		}
 	})
+}
+
+// A comment that merely contains PASS next to the head is not the reviewer's
+// verdict: a CI status report, or a verdict for another head, starts the run.
+func TestReviewRunStartsWhenCommentIsNotAVerdictForThisHead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for name, text := range map[string]string{
+		"ci status report": "CI PASS on " + headOld[:7] + ", reviewing now.",
+		"other head":       verdictFor("PASS", headNew),
+		"head in prose":    "**Verdict: PASS**\nSuperseded " + headOld[:7] + " earlier.\n",
+		"lower case":       "verdict: this may fail on " + headOld[:7],
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, agentID := reviewCase(t, 4649007)
+			linkPR(t, c.issueID, 4649007, headOld)
+			agentSays(t, c, agentID, text)
+			if err := enqueueReview(t, c); err != nil {
+				t.Fatalf("review run after %q = %v, want it started", name, err)
+			}
+		})
+	}
+}
+
+// A wakeup reaches the reviewer through issue_wakeup dispatch, not the comment
+// path: it must skip an answered head (and still start on a new one).
+func TestReviewWakeupSkippedWhenAgentAlreadyAnsweredHead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wakeups := &service.IssueWakeupService{Tasks: testHandler.TaskService}
+	fire := func(t *testing.T, c edgeCase, agentID string) {
+		t.Helper()
+		w, err := wakeups.Create(ctx, parseUUID(c.issueID), parseUUID(testUserID), pgtype.UUID{}, service.WakeupInput{
+			AgentID: agentID, Kind: "event", Mode: "once", EventTypes: []string{"comment.created"}, Instruction: "Review the PR head.",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE id = $1`, w.ID)
+		dbfx.Cleanup(t, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id = $1`, w.ID)
+		dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, c.issueID)
+		dbfx.Exec(t, `INSERT INTO issue_wakeup_receipt (id, wakeup_id, revision, event_key, event_type, payload) VALUES (gen_random_uuid(), $1, $2, 'review-head-test', 'comment.created', '{}'::jsonb)`, w.ID, w.Revision)
+		if err := wakeups.TickWorkspaces(ctx, parseUUID(testWorkspaceID)); err != nil {
+			t.Fatal(err)
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id=$1 AND processed_at IS NULL`, w.ID); n != 0 {
+			t.Fatalf("%d receipts left unprocessed: the skip must consume them, not retry", n)
+		}
+	}
+	t.Run("answered head", func(t *testing.T) {
+		c, agentID := reviewCase(t, 4649008)
+		linkPR(t, c.issueID, 4649008, headOld)
+		agentSays(t, c, agentID, verdictFor("PASS", headOld))
+		fire(t, c, agentID)
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, c.issueID); n != 0 {
+			t.Fatalf("wakeup started %d runs on an answered head, want none", n)
+		}
+		waitSkipped(t, c.issueID, headOld)
+	})
+	t.Run("new head", func(t *testing.T) {
+		c, agentID := reviewCase(t, 4649009)
+		linkPR(t, c.issueID, 4649009, headNew)
+		agentSays(t, c, agentID, verdictFor("PASS", headOld))
+		fire(t, c, agentID)
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, c.issueID); n != 1 {
+			t.Fatalf("wakeup on a new head started %d runs, want 1", n)
+		}
+	})
+}
+
+// The skip shows in the run list the UI and `multica issue runs` read.
+func TestReviewRunSkipIsInRunList(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, agentID := reviewCase(t, 4649010)
+	linkPR(t, c.issueID, 4649010, headOld)
+	agentSays(t, c, agentID, verdictFor("PASS", headOld))
+	if err := enqueueReview(t, c); !errors.Is(err, service.ErrReviewHeadAnswered) {
+		t.Fatalf("same-head review run = %v, want ErrReviewHeadAnswered", err)
+	}
+	waitSkipped(t, c.issueID, headOld)
+	req := withURLParam(newRequest("GET", "/api/issues/"+c.issueID+"/task-runs", nil), "id", c.issueID)
+	w := httptest.NewRecorder()
+	testHandler.ListTasksByIssue(w, req)
+	if w.Code != 200 {
+		t.Fatalf("run list = %d: %s", w.Code, w.Body.String())
+	}
+	var runs []AgentTaskResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range runs {
+		if run.FailureReason == string(ReasonReviewHeadAnswered) {
+			if run.AgentID != agentID || run.Status != "cancelled" || run.Error == nil || !strings.Contains(*run.Error, headOld[:7]) {
+				t.Fatalf("skipped run = %+v, want agent %s, status cancelled, error naming the head", run, agentID)
+			}
+			return
+		}
+	}
+	t.Fatalf("run list has no skipped run with reason review_head_answered: %s", w.Body.String())
 }
