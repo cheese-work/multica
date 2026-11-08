@@ -177,6 +177,9 @@ func cancelDecisionLifecycleLocked(ctx context.Context, queries *db.Queries, cur
 	if err != nil {
 		return out, err
 	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &out.withdrawal, pgtype.UUID{}); err != nil {
+		return out, err
+	}
 	if root != nil {
 		out.withdrawal.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{WorkspaceID: workspaceID, IssueID: current.IssueID, ThreadRootID: root.ID})
 		if err != nil {
