@@ -123,6 +123,22 @@ func (q *Queries) ListSystem1PrecedentKeys(ctx context.Context, arg ListSystem1P
 	return items, nil
 }
 
+const markSystem1RouteOverridden = `-- name: MarkSystem1RouteOverridden :exec
+UPDATE system1_observation SET reversed_at = clock_timestamp()
+WHERE id = (
+    SELECT latest.id FROM system1_observation latest
+    WHERE latest.kind = 'route' AND latest.subject_id = $1 AND latest.reversed_at IS NULL
+    ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+) AND created_at > clock_timestamp() - interval '1 hour'
+`
+
+// A person changed the status or owner of an issue whose latest route label
+// an agent had just written. Runs in the person's write, under the issue lock.
+func (q *Queries) MarkSystem1RouteOverridden(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, markSystem1RouteOverridden, issueID)
+	return err
+}
+
 const markSystem1RoutingOverridden = `-- name: MarkSystem1RoutingOverridden :exec
 UPDATE system1_observation SET reversed_at = clock_timestamp()
 WHERE id = (
