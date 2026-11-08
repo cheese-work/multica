@@ -191,7 +191,7 @@ export function DecisionActionApproval({
   return (
     <div className="space-y-1 text-label">
       {refusal && (
-        <p role="alert" className="text-caption text-destructive">
+        <p role="alert" data-testid="decision-action-refusal" className="text-caption text-destructive">
           {isRefusalCode(refusal) ? (
             <>
               {t(($) => $.decision_action.refusal[refusal])} <code className="font-mono">{refusal}</code>
@@ -199,12 +199,12 @@ export function DecisionActionApproval({
           ) : t(($) => $.decision_action.refusal.other, { code: refusal })}
         </p>
       )}
-      {!canApprove && <p className="text-caption text-muted-foreground">{t(($) => $.decision_action.owner_only)}</p>}
+      {!canApprove && <p data-testid="decision-action-owner-note" className="text-caption text-muted-foreground">{t(($) => $.decision_action.owner_only)}</p>}
       {view.step === "retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.error)}</p>}
       {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
       <div className="flex flex-wrap gap-2">
         {mayApprove && (
-          <Button size="sm" onClick={approve} disabled={view.step === "busy" || view.step === "rejecting"}>
+          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={view.step === "busy" || view.step === "rejecting"}>
             {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
           </Button>
         )}
