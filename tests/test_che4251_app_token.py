@@ -155,7 +155,7 @@ class Wiring(unittest.TestCase):
     def test_jobs_that_hold_c00_secrets_never_get_the_app_key(self):
         # prepare-release-candidate and deploy hold C00 secrets in their own environments; the key stays out of them.
         cd = dict(workflows())["cd-deploy.yml"]["jobs"]
-        for name in ("prepare-release-candidate", "approve-c00", "admission", "deploy"):
+        for name in ("prepare-release-candidate", "authorize-c00", "admission", "deploy"):
             text = json.dumps(cd[name])
             self.assertNotIn(ENV_NAME, text, name)
             self.assertNotIn("C00_MULTICADO_", text, name)

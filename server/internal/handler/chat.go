@@ -1701,6 +1701,11 @@ func (h *Handler) MarkChatSessionUnread(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
 		return
 	}
+	if err := h.openUnseenAttention(r.Context(), session, userID); err != nil {
+		slog.Warn("open unseen attention item failed", "session_id", sessionID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to mark session unread")
+		return
+	}
 
 	resolvedSessionID := uuidToString(session.ID)
 	h.publishChat(protocol.EventChatSessionRead, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionReadPayload{
@@ -2576,6 +2581,8 @@ func normalizeMessageKind(kind string) string {
 	switch kind {
 	case protocol.ChatMessageKindContinuationSummary:
 		return protocol.ChatMessageKindContinuationSummary
+	case protocol.ChatMessageKindCompactionSummary:
+		return protocol.ChatMessageKindCompactionSummary
 	case protocol.ChatMessageKindCompactNotice:
 		return protocol.ChatMessageKindCompactNotice
 	case protocol.ChatMessageKindNoResponse:
