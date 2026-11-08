@@ -233,6 +233,14 @@ func TestDMProgressCapture_PRStateWritePaths(t *testing.T) {
 		}
 		wantPending(t, w.issue, w.lane, "pr")
 	})
+	t.Run("draft to ready captures", func(t *testing.T) {
+		w := newCapWorld(t)
+		pr := insertGitHubPR(t, "draft")
+		dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, w.issue, pr)
+		dbfx.Exec(t, `DELETE FROM dm_progress_pending WHERE issue_id = $1`, w.issue)
+		dbfx.Exec(t, `UPDATE github_pull_request SET state = 'open' WHERE id = $1`, pr)
+		wantPending(t, w.issue, w.lane, "pr")
+	})
 	t.Run("unchanged state captures nothing", func(t *testing.T) {
 		w := newCapWorld(t)
 		pr := insertGitHubPR(t, "open")
@@ -272,8 +280,8 @@ func TestDMProgressCapture_OneRowPerActiveFollowAndPerTransition(t *testing.T) {
 			t.Errorf("lane %s has %d pending rows, want %d (one per transition)", lane, got, n)
 		}
 	}
-	if got := dbfx.Count(t, `SELECT count(DISTINCT event_id) FROM dm_progress_pending WHERE issue_id = $1`, w.issue); got != 6 {
-		t.Errorf("distinct event ids = %d, want 6", got)
+	if got := dbfx.Count(t, `SELECT count(DISTINCT event_id) FROM dm_progress_pending WHERE issue_id = $1`, w.issue); got != 3 {
+		t.Errorf("distinct event ids = %d, want 3 (one per change, shared across lanes)", got)
 	}
 }
 
