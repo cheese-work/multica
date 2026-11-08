@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,18 +15,33 @@ func newIssueBudgetRaiseTestCmd() *cobra.Command {
 	c := &cobra.Command{Use: "raise"}
 	c.Flags().Int("runs", 0, "")
 	c.Flags().String("output", "table", "")
+	c.Flags().String("for", "", "")
 	return c
 }
 
-const budgetWebAppPointer = "approve in the web app; until then move the status in the web app"
-
-// refusingBudgetServer fails the test on any request: a raise or top-up from
-// the CLI is a web-app action, so the CLI must not send one (CHE-2798 S1a).
-func refusingBudgetServer(t *testing.T) {
+// budgetRequestServer serves the budget snapshot and records the request
+// POSTs, answering each with one approve link.
+func budgetRequestServer(t *testing.T, posts *[]map[string]any) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("CLI sent %s %s; a budget raise or top-up is approved in the web app", r.Method, r.URL.Path)
-		http.NotFound(w, r)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+testIssueUUID+"/run-budget":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"budgeted": true, "window_id": "2026-11-01T05:22:39.123456Z", "runs_used": 45, "runs_limit": 40,
+				"raise_preview": map[string]any{"limit_after": 55},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+testIssueUUID+"/run-budget/requests":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			*posts = append(*posts, body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?approve=act-1",
+				"requests": []map[string]any{{"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/" + testIssueUUID + "?approve=act-1"}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	t.Setenv("MULTICA_SERVER_URL", srv.URL)
@@ -33,13 +49,34 @@ func refusingBudgetServer(t *testing.T) {
 	t.Setenv("MULTICA_TOKEN", "mat_test-token")
 }
 
-func TestRunIssueBudgetRaisePointsToTheWebApp(t *testing.T) {
-	refusingBudgetServer(t)
+func TestRunIssueBudgetRaiseRequestsAndPrintsTheApproveURL(t *testing.T) {
+	var posts []map[string]any
+	budgetRequestServer(t, &posts)
+	asPAT(t)
 	cmd := newIssueBudgetRaiseTestCmd()
-	_ = cmd.Flags().Set("runs", "20")
-	err := runIssueBudgetRaise(cmd, []string{testIssueUUID})
-	if err == nil || !strings.Contains(err.Error(), budgetWebAppPointer) {
-		t.Fatalf("raise err = %v, want the web-app pointer", err)
+	_ = cmd.Flags().Set("runs", "60")
+	out, err := captureStdout(t, func() error { return runIssueBudgetRaise(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("raise: %v", err)
+	}
+	want := map[string]any{"kind": "raise", "new_cap": float64(60), "window_id": "2026-11-01T05:22:39.123456Z"}
+	if len(posts) != 1 || !reflect.DeepEqual(posts[0], want) {
+		t.Fatalf("posts = %v, want [%v]", posts, want)
+	}
+	if !strings.Contains(out, "/acme/issues/"+testIssueUUID+"?approve=act-1") {
+		t.Fatalf("output %q lacks the approve URL", out)
+	}
+}
+
+func TestRunIssueBudgetRaiseDefaultsToTheSuggestedCap(t *testing.T) {
+	var posts []map[string]any
+	budgetRequestServer(t, &posts)
+	asPAT(t)
+	if _, err := captureStdout(t, func() error { return runIssueBudgetRaise(newIssueBudgetRaiseTestCmd(), []string{testIssueUUID}) }); err != nil {
+		t.Fatalf("raise: %v", err)
+	}
+	if len(posts) != 1 || posts[0]["new_cap"] != float64(55) {
+		t.Fatalf("posts = %v, want new_cap 55 from the raise preview", posts)
 	}
 }
 
@@ -112,12 +149,21 @@ func TestRunIssueBudgetGetJSONKeepsEveryServerField(t *testing.T) {
 	}
 }
 
-func TestRunIssueBudgetTopUpPointsToTheWebApp(t *testing.T) {
-	refusingBudgetServer(t)
+func TestRunIssueBudgetTopUpRequestsWithoutACap(t *testing.T) {
+	var posts []map[string]any
+	budgetRequestServer(t, &posts)
+	asPAT(t)
 	cmd := &cobra.Command{Use: "top-up"}
 	cmd.Flags().String("output", "table", "")
-	err := runIssueBudgetTopUp(cmd, []string{testIssueUUID})
-	if err == nil || !strings.Contains(err.Error(), budgetWebAppPointer) {
-		t.Fatalf("top-up err = %v, want the web-app pointer", err)
+	out, err := captureStdout(t, func() error { return runIssueBudgetTopUp(cmd, []string{testIssueUUID}) })
+	if err != nil {
+		t.Fatalf("top-up: %v", err)
+	}
+	want := map[string]any{"kind": "top_up", "window_id": "2026-11-01T05:22:39.123456Z"}
+	if len(posts) != 1 || !reflect.DeepEqual(posts[0], want) {
+		t.Fatalf("posts = %v, want [%v]", posts, want)
+	}
+	if !strings.Contains(out, "?approve=act-1") {
+		t.Fatalf("output %q lacks the approve URL", out)
 	}
 }

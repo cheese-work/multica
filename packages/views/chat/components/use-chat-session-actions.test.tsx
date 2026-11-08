@@ -1,18 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import { createChatStore, registerChatStore } from "@multica/core/chat";
+import { createChatStore, registerChatStore, useChatStore } from "@multica/core/chat";
 import type { ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 
 const archiveAsync = vi.hoisted(() => vi.fn());
 const pinAsync = vi.hoisted(() => vi.fn());
+const unseenAsync = vi.hoisted(() => vi.fn());
 const toastFn = vi.hoisted(() => Object.assign(vi.fn(), { error: vi.fn() }));
 
 vi.mock("sonner", () => ({ toast: toastFn }));
 vi.mock("@multica/core/chat/mutations", () => ({
   useSetChatSessionArchived: () => ({ mutateAsync: archiveAsync }),
   useSetChatSessionPinned: () => ({ mutateAsync: pinAsync }),
+  useMarkChatSessionUnread: () => ({ mutateAsync: unseenAsync }),
 }));
 
 import { useChatSessionActions } from "./use-chat-session-actions";
@@ -33,6 +35,7 @@ function setup() {
 beforeEach(() => {
   archiveAsync.mockReset();
   pinAsync.mockReset();
+  unseenAsync.mockReset();
   toastFn.mockReset();
   toastFn.error.mockReset();
   registerChatStore(createChatStore({ storage: localStorage }));
@@ -158,5 +161,43 @@ describe("useChatSessionActions", () => {
       expect(await result.current.togglePin(session)).toBe(false);
     });
     expect(toastFn.error).toHaveBeenCalledWith("pin refused");
+  });
+
+  it("marks a DM unseen, holds back the auto mark-read, then leaves it", async () => {
+    unseenAsync.mockResolvedValue(undefined);
+    const onMarked = vi.fn(() =>
+      expect(useChatStore.getState().autoReadSuppressedId).toBe("s1"),
+    );
+    const { result } = setup();
+
+    await act(async () => {
+      expect(await result.current.markUnseen(session, { onMarked })).toBe(true);
+    });
+
+    expect(unseenAsync).toHaveBeenCalledWith("s1");
+    expect(onMarked).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().autoReadSuppressedId).toBe("s1");
+  });
+
+  it("stays on the DM, releases the hold and shows the error when marking fails", async () => {
+    unseenAsync.mockRejectedValue(new Error("nope"));
+    const onMarked = vi.fn();
+    const { result } = setup();
+
+    await act(async () => {
+      expect(await result.current.markUnseen(session, { onMarked })).toBe(false);
+    });
+
+    expect(onMarked).not.toHaveBeenCalled();
+    expect(useChatStore.getState().autoReadSuppressedId).toBeNull();
+    expect(toastFn.error).toHaveBeenCalledWith("nope");
+  });
+
+  it("refuses an archived DM", async () => {
+    const { result } = setup();
+    await act(async () => {
+      expect(await result.current.markUnseen(archived)).toBe(false);
+    });
+    expect(unseenAsync).not.toHaveBeenCalled();
   });
 });

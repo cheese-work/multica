@@ -21,6 +21,7 @@ import { useRecipientActions } from "../hooks/use-recipient-actions";
 import { SteerAttachmentNotice } from "./steer-attachment-notice";
 import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
+import { useClearOnDraftConsumed } from "./use-clear-on-draft-consumed";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
 import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
@@ -128,12 +129,19 @@ function ReplyInput({
     onDrop: lazy.uploadOrQueue,
   });
 
+  useClearOnDraftConsumed(draftKey, editorRef, () => {
+    setContent("");
+    setIsEmpty(true);
+  });
+
   // Flush on tab close / mobile background — same rationale as CommentInput.
   useEffect(() => {
     if (!draftKey) return;
     const flush = () => {
-      const md = editorRef.current?.getMarkdown();
-      if (md && md.trim().length > 0) setDraft(draftKey, md);
+      // Trimmed like the editor's onUpdate: a raw value with trailing blank
+      // lines would differ from the send snapshot and defeat the stale-submit guard.
+      const md = editorRef.current?.getMarkdown()?.trim();
+      if (md) setDraft(draftKey, md);
     };
     const onVis = () => { if (document.visibilityState === "hidden") flush(); };
     document.addEventListener("visibilitychange", onVis);

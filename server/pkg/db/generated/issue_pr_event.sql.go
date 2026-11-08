@@ -306,17 +306,18 @@ func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREv
 
 const lockGitHubPRForEvent = `-- name: LockGitHubPRForEvent :one
 
-SELECT id, workspace_id, head_sha, state
+SELECT id, workspace_id, head_sha, state, head_repo_same
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE
 `
 
 type LockGitHubPRForEventRow struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	HeadSha     string      `json:"head_sha"`
-	State       string      `json:"state"`
+	ID           pgtype.UUID `json:"id"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	HeadSha      string      `json:"head_sha"`
+	State        string      `json:"state"`
+	HeadRepoSame bool        `json:"head_repo_same"`
 }
 
 // PR event store (CHE-2298 a1).
@@ -329,6 +330,7 @@ func (q *Queries) LockGitHubPRForEvent(ctx context.Context, id pgtype.UUID) (Loc
 		&i.WorkspaceID,
 		&i.HeadSha,
 		&i.State,
+		&i.HeadRepoSame,
 	)
 	return i, err
 }

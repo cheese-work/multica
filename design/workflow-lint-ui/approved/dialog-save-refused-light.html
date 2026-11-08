@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:oklch(.988 0 0);--fg:oklch(.141 .005 285.8);--card:#fff;--mut:oklch(.967 .001 286.4);--mfg:oklch(.505 .016 285.9);--bd:oklch(.92 .004 286.3);--err:oklch(.577 .245 27.3);--pri:oklch(.21 .006 285.9);--prifg:oklch(.985 0 0);--scrim:rgb(15 23 42/.4);--float:0 16px 40px rgb(15 23 42/.18),0 3px 10px rgb(15 23 42/.1)}
+.dark{--bg:oklch(.18 .005 285.8);--fg:oklch(.985 0 0);--card:oklch(.21 .006 285.9);--mut:oklch(.274 .006 286);--mfg:oklch(.705 .015 286.1);--bd:oklch(1 0 0/12%);--err:oklch(.704 .191 22.2);--pri:oklch(.92 .004 286.3);--prifg:oklch(.21 .006 285.9);--scrim:rgb(0 0 0/.6);--float:0 16px 40px rgb(0 0 0/.6)}
+*{box-sizing:border-box;margin:0;font-family:Inter,"DejaVu Sans",Arial,sans-serif!important}body{width:960px;height:640px;background:var(--scrim);background-color:color-mix(in oklch,var(--bg) 70%,#000);font-size:13px;line-height:1.45;color:var(--fg);display:grid;place-items:center;position:relative}
+body:before{content:"";position:absolute;inset:0;background:var(--scrim)}
+svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.mono,.id{font-family:ui-monospace,"DejaVu Sans Mono",monospace!important}
+.dlg{position:relative;width:520px;background:var(--card);border:1px solid var(--bd);border-radius:12px;box-shadow:var(--float);padding:22px 24px 18px}
+.x{position:absolute;right:16px;top:16px;color:var(--mfg)}
+h2{font-size:16px;font-weight:600;margin-bottom:4px}.lead{color:var(--mfg);margin-bottom:14px}
+.lst{border:1px solid var(--bd);border-radius:8px;margin-bottom:18px}
+.r{display:grid;grid-template-columns:14px 1fr;gap:0 10px;padding:10px 12px}.r+.r{border-top:1px solid var(--bd)}.r svg{color:var(--err);margin-top:3px}
+.r .m{font-weight:500}.r .t{color:var(--mfg);font-size:12px;margin-top:2px;display:flex;gap:10px;align-items:center}.r .t u{color:var(--fg);text-underline-offset:3px}
+.r .fx{color:var(--mfg);font-size:12px}
+label{display:block;font-weight:500;margin-bottom:4px}.hint{color:var(--mfg);font-size:12px;margin-bottom:8px}
+.ta{min-height:76px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;background:var(--bg);color:var(--mfg)}
+.cnt{display:flex;justify-content:space-between;font-size:12px;color:var(--mfg);margin-top:6px}
+.ft{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.btn{height:32px;padding:0 14px;border-radius:6px;font-weight:500;display:flex;align-items:center;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
+.btn.d{background:var(--pri);color:var(--prifg);border-color:var(--pri);opacity:.4}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="e" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.8v3.6M8 11h.01"/></symbol>
+<symbol id="x" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></symbol></defs></svg>
+<div class="dlg"><svg class="x"><use href="#x"/></svg>
+<h2>Can’t save “Delivery”</h2><p class="lead">2 errors are not waived. Fix them, or save anyway with a written reason.</p>
+<div class="lst">
+<div class="r"><svg><use href="#e"/></svg><div><div class="m">“If rejected” sends back to this same step, so a rejection loops with no exit.</div><div class="fx">Fix: pick an earlier step, such as Todo.</div><div class="t"><span class="id">WF-LOOP-001</span><span>In progress</span><u>Go to step</u></div></div></div>
+<div class="r"><svg><use href="#e"/></svg><div><div class="m">Squad “Reviewers” has no leader, so nobody can dispatch the run.</div><div class="fx">Fix: pick a squad that has a leader, or hand to a member.</div><div class="t"><span class="id">WF-STEP-003</span><span>In review</span><u>Go to step</u></div></div></div>
+</div>
+<label>Reason for saving anyway</label><p class="hint">Saved with both errors, on the record. Shown in Checks as waived.</p>
+<div class="ta">Why is it safe to save with these errors?</div>
+<div class="cnt"><span>Required</span><span class="mono">0 / 500</span></div>
+<div class="ft"><span class="btn">Back to editing</span><span class="btn d">Save anyway</span></div></div>
+</body></html>
