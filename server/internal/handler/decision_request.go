@@ -33,8 +33,10 @@ type decisionRequestInput struct {
 	SourceCommentID pgtype.UUID
 	Fingerprint     string
 	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
-	Kind             string  `json:"-"`
-	ExpiresInSeconds float64 `json:"-"`
+	// Covers are the open cards this batch card answers for (CHE-4453).
+	Covers           []pgtype.UUID `json:"-"`
+	Kind             string        `json:"-"`
+	ExpiresInSeconds float64       `json:"-"`
 	// Parsed is the decoded caller ask. When set, the request is fingerprinted
 	// from it and enriched once, for a new request. Nil means finished text.
 	Parsed *decisiontx.Ask `json:"-"`
@@ -496,6 +498,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, errProposalRaced
 	}
 	if err != nil {
+		return empty, err
+	}
+	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {

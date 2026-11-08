@@ -570,12 +570,16 @@ func runAgentList(cmd *cobra.Command, _ []string) error {
 		return cli.PrintJSON(os.Stdout, agents)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "ARCHIVED"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "ARCHIVED", "PAUSED"}
 	rows := make([][]string, 0, len(agents))
 	for _, a := range agents {
 		archived := ""
 		if v := strVal(a, "archived_at"); v != "" {
 			archived = "yes"
+		}
+		paused := ""
+		if strVal(a, "scheduling_paused_at") != "" {
+			paused = "yes"
 		}
 		rows = append(rows, []string{
 			strVal(a, "id"),
@@ -583,6 +587,7 @@ func runAgentList(cmd *cobra.Command, _ []string) error {
 			strVal(a, "status"),
 			strVal(a, "runtime_mode"),
 			archived,
+			paused,
 		})
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
@@ -608,7 +613,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
@@ -617,6 +622,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		strVal(agent, "visibility"),
 		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
+		strVal(agent, "scheduling_paused_at"),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil

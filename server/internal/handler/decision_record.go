@@ -44,6 +44,8 @@ type decisionRecordResult struct {
 	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
 	Replayed        bool
+	// Covered holds the per-issue cards a batch answer closed (CHE-4453).
+	Covered []coveredCardAnswer
 }
 
 func (handler *Handler) createAskedDecisionRecord(request *http.Request, issue db.Issue, input decisionRecordInput) (decisionRecordResult, error) {
