@@ -1,8 +1,14 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -85,5 +91,49 @@ func TestWakeupOperationPayloadIgnoresEventOrder(t *testing.T) {
 	}
 	if a.EventTypes[0] != "comment.created" {
 		t.Error("payload reordered the caller's slice")
+	}
+}
+
+// lockProbeDB runs probe before each single-row read, which is where the guard
+// starts: a guard that runs inside save's transaction fails the probe.
+type lockProbeDB struct {
+	db.DBTX
+	probe func()
+}
+
+func (d lockProbeDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	d.probe()
+	return d.DBTX.QueryRow(ctx, sql, args...)
+}
+
+// The guard commits its own event on a second connection, so it must run
+// before save takes the issue row lock, never while it is held.
+func TestIssueWakeupAskGuardRunsOutsideIssueLock(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	f.Exec(t, `UPDATE workspace SET settings = '{"ask_guard_mode":"block"}' WHERE id = $1`, f.WorkspaceID)
+	f.Cleanup(t, "DELETE FROM ask_guard_event WHERE issue_id=$1", issue)
+	run := wakeWaitingRun(t, f, issue, agent, f.UserID)
+	var probes int
+	var lockErr error
+	probe := func() {
+		probes++
+		tx, err := f.Pool.Begin(context.Background())
+		if err != nil {
+			lockErr = err
+			return
+		}
+		defer tx.Rollback(context.Background())
+		_, lockErr = tx.Exec(context.Background(), "SELECT 1 FROM issue WHERE id=$1 FOR UPDATE NOWAIT", issue)
+	}
+	s.AskGuard = &WakeupAskGuard{Guard: askguard.Guard{Queries: db.New(lockProbeDB{DBTX: f.Pool, probe: probe})}, TaskID: parseTestUUID(t, run)}
+	_, err := s.Create(context.Background(), issue, parseTestUUID(t, f.UserID), pgtype.UUID{}, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "wait for the member"})
+	if !errors.Is(err, ErrWakeupAskGuardBlocked) {
+		t.Fatalf("err = %v, want ErrWakeupAskGuardBlocked", err)
+	}
+	if probes == 0 {
+		t.Fatal("the guard never read the database")
+	}
+	if lockErr != nil {
+		t.Fatalf("issue row was locked while the guard ran: %v", lockErr)
 	}
 }

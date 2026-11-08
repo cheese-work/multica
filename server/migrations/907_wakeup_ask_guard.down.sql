@@ -1,6 +1,8 @@
 -- Rolling back drops the binding and purpose. An agent-wide actor filter has no
--- ID to keep, so its rules are disabled rather than widened or left invalid.
-UPDATE issue_wakeup SET enabled=false, disabled_at=now() WHERE enabled AND filter_actor_type='agent' AND filter_actor_id IS NULL;
+-- ID to keep, so its rules are disabled and their type is cleared: a row with a
+-- type and no ID would fail the restored CHECK on every later UPDATE. A person
+-- who re-enables one must set the filter again.
+UPDATE issue_wakeup SET enabled=false, disabled_at=COALESCE(disabled_at,now()), filter_actor_type=NULL WHERE filter_actor_type='agent' AND filter_actor_id IS NULL;
 ALTER TABLE issue_wakeup
  DROP CONSTRAINT IF EXISTS issue_wakeup_decision_binding,
  DROP CONSTRAINT IF EXISTS issue_wakeup_purpose,

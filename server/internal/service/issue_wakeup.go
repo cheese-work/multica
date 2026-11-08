@@ -390,7 +390,24 @@ func (s *IssueWakeupService) Save(ctx context.Context, issueID, member, source, 
 	return s.save(ctx, issueID, member, source, existingID, in, nil)
 }
 
+// save runs the guard outside the transaction: the guard commits its event on
+// its own pooled connection, and taking that second connection while this one
+// holds the issue row lock lets concurrent registrations exhaust the pool. So
+// saveTx rolls back with a wakeupGuardPending, the guard runs, and the save is
+// re-read and re-run under fresh locks with the guard marked done.
 func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, existingID pgtype.UUID, in WakeupInput, enable *WakeupEnableInput) (db.IssueWakeup, error) {
+	out, err := s.saveTx(ctx, issueID, member, source, existingID, in, enable, false)
+	var pending *wakeupGuardPending
+	if !errors.As(err, &pending) {
+		return out, err
+	}
+	if err := s.askGuardHit(ctx, pending.issue, pending.in); err != nil {
+		return db.IssueWakeup{}, err
+	}
+	return s.saveTx(ctx, issueID, member, source, existingID, in, enable, true)
+}
+
+func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source, existingID pgtype.UUID, in WakeupInput, enable *WakeupEnableInput, guarded bool) (db.IssueWakeup, error) {
 	var out db.IssueWakeup
 	tx, err := s.Tasks.TxStarter.Begin(ctx)
 	if err != nil {
@@ -567,8 +584,8 @@ func (s *IssueWakeupService) save(ctx context.Context, issueID, member, source, 
 	if err != nil {
 		return out, err
 	}
-	if err := s.askGuardWakeup(ctx, issue, in, binding); err != nil {
-		return out, err
+	if !guarded && s.askGuardNeeded(in, binding) {
+		return out, &wakeupGuardPending{issue: issue, in: in}
 	}
 	if existingID.Valid {
 		old, e := q.LockIssueWakeup(ctx, existingID)

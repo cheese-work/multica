@@ -40,15 +40,27 @@ func wakeupBinding(ctx context.Context, q *db.Queries, issue db.Issue, in Wakeup
 	return id, nil
 }
 
-// askGuardWakeup is S1: an agent may register a rule a member's action can
+// wakeupGuardPending is saveTx's request to run the S1 guard after it has
+// rolled back, so no connection or row lock is held during the guard's writes.
+type wakeupGuardPending struct {
+	issue db.Issue
+	in    WakeupInput
+}
+
+func (*wakeupGuardPending) Error() string { return "wakeup ask guard pending" }
+
+// askGuardNeeded is S1: an agent may register a rule a member's action can
 // fire only when it is bound to a decision request, declares purpose observe,
-// or filters on agent actors. It returns nil when the rule may be saved.
-func (s *IssueWakeupService) askGuardWakeup(ctx context.Context, issue db.Issue, in WakeupInput, binding pgtype.UUID) error {
-	g := s.AskGuard
+// or filters on agent actors. It reports whether the guard must see the rule.
+func (s *IssueWakeupService) askGuardNeeded(in WakeupInput, binding pgtype.UUID) bool {
 	rule := askguard.WakeupRule{Kind: in.Kind, EventTypes: in.EventTypes, FilterActorType: in.FilterActorType, FilterActorID: in.FilterActorID, Condition: hasWakeupCondition(in.Condition)}
-	if g == nil || binding.Valid || in.Purpose == askguard.PurposeObserve || !rule.MemberEligible() {
-		return nil
-	}
+	return s.AskGuard != nil && !binding.Valid && in.Purpose != askguard.PurposeObserve && rule.MemberEligible()
+}
+
+// askGuardHit records the rule as a guard event. It returns nil when the rule
+// may be saved.
+func (s *IssueWakeupService) askGuardHit(ctx context.Context, issue db.Issue, in WakeupInput) error {
+	g := s.AskGuard
 	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, askguard.Op{
 		IssueID: issue.ID, TaskID: g.TaskID, Kind: "wakeup",
 		Payload: wakeupOperationPayload(issue, in), WarnOnly: g.WarnOnly,
