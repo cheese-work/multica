@@ -3820,6 +3820,11 @@ SELECT
     COALESCE($6::uuid, gen_random_uuid())
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- One successor per failed task (CHE-4581). A pending slot only dedupes
+  -- queued/dispatched children, so a replay after the child started, finished,
+  -- or was deferred would otherwise mint a second one. Callers other than
+  -- FailTask lock the parent row first so a concurrent replay sees the child.
+  AND NOT EXISTS (SELECT 1 FROM agent_task_queue prior WHERE prior.retry_of_task_id = p.id)
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
   AND lock_active_project(CASE WHEN p.issue_id IS NULL THEN NULLIF(p.context->>'project_id','')::uuid END, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
 ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
@@ -9078,6 +9083,19 @@ func (q *Queries) LockAgentInWorkspaceShared(ctx context.Context, arg LockAgentI
 		&i.SchedulingPausedBy,
 	)
 	return i, err
+}
+
+const lockAgentTaskForRetry = `-- name: LockAgentTaskForRetry :one
+SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE
+`
+
+// Serializes retry writers on one failed task (CHE-4581): the next statement of
+// a waiting writer takes a fresh snapshot and sees the committed successor.
+func (q *Queries) LockAgentTaskForRetry(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockAgentTaskForRetry, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const lockAgentTaskLegacyStart = `-- name: LockAgentTaskLegacyStart :one
