@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 
 	"github.com/jackc/pgx/v5"
@@ -123,7 +124,7 @@ func (handler *Handler) deliverDecisionWakeReceipt(ctx context.Context, receiptI
 			return err
 		}
 	}
-	return nil
+	return errors.New("decision wake receipt state kept changing")
 }
 
 func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, receiptID pgtype.UUID) (restart bool, err error) {
@@ -150,7 +151,7 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 		}
 	}
 	if state.recipient.ID != state.request.AskingAgentID {
-		if _, err := queries.LockDecisionRecipientAgent(ctx, db.LockDecisionRecipientAgentParams{WorkspaceID: workspaceID, ID: state.recipient.ID}); err != nil {
+		if _, err := queries.LockDecisionReceiptRecipient(ctx, db.LockDecisionReceiptRecipientParams{WorkspaceID: workspaceID, ID: state.recipient.ID}); err != nil {
 			return false, err
 		}
 	}
@@ -169,6 +170,11 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	}
 	if _, err := queries.LockDecisionRequest(ctx, db.LockDecisionRequestParams{WorkspaceID: workspaceID, ID: state.request.ID}); err != nil {
 		return false, err
+	}
+	if state.event.AnswerID.Valid {
+		if _, err := queries.LockDecisionAnswerForWake(ctx, state.event.AnswerID); err != nil {
+			return false, err
+		}
 	}
 	if _, err := queries.LockDecisionWakeReceipt(ctx, receiptID); err != nil {
 		return false, err
@@ -191,8 +197,11 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 			decisionWakeSnapshot{issue: state.issue, recipient: state.recipient, squadID: state.receipt.SquadID, task: state.task, head: state.head},
 			trigger, []pgtype.UUID{trigger.ID},
 			fmt.Sprintf("Human action request %s: %s.\n- Source comment %s\n", uuidToString(state.request.ID), state.event.Type, uuidToString(trigger.ID)))
-		if err != nil || dispatched == "" {
+		if err != nil {
 			return false, err
+		}
+		if dispatched == "" {
+			return false, errors.New("decision dispatch produced no outcome")
 		}
 		status, outcome = "delivered", pgtype.Text{String: dispatched, Valid: true}
 		enqueued = queued
@@ -204,6 +213,9 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if rows != 1 {
 		return false, errors.New("decision wake receipt changed")
 	}
+	if err := acknowledgeDecisionWakeEvent(ctx, queries, state); err != nil {
+		return false, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return false, err
 	}
@@ -211,4 +223,42 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 		handler.TaskService.PublishTaskEnqueued(ctx, enqueued)
 	}
 	return false, nil
+}
+
+// acknowledgeDecisionWakeEvent sets the answer's woken_at and wake_outcome once
+// the last receipt of its event has settled. The answer row lock taken before
+// the settle makes the last settler see every other receipt as committed.
+func acknowledgeDecisionWakeEvent(ctx context.Context, queries *db.Queries, state decisionReceiptState) error {
+	if !state.event.AnswerID.Valid {
+		return nil
+	}
+	summary, err := queries.SummarizeDecisionWakeEvent(ctx, state.event.ID)
+	if err != nil || summary.Pending > 0 {
+		return err
+	}
+	// Zero rows: the answer was already woken or has been withdrawn.
+	_, err = queries.AcknowledgeDecisionWake(ctx, db.AcknowledgeDecisionWakeParams{WorkspaceID: state.request.WorkspaceID, ID: state.event.AnswerID, Outcome: pgtype.Text{String: summary.Outcome, Valid: true}})
+	return err
+}
+
+// deliverDecisionWakeReceipts is the worker stage: every due pending receipt is
+// delivered in its own transaction. A failure is recorded on that receipt with
+// a backoff and does not stop the others.
+func (handler *Handler) deliverDecisionWakeReceipts(ctx context.Context) error {
+	ids, err := handler.Queries.ListDecisionWakeReceiptCandidates(ctx, decisionBatchSize)
+	if err != nil {
+		return err
+	}
+	var failures error
+	for _, id := range ids {
+		err := decisionAttempt(ctx, func() error { return handler.deliverDecisionWakeReceipt(ctx, id) })
+		if err == nil || ctx.Err() != nil {
+			continue
+		}
+		slog.Warn("decision wake receipt delivery failed", "receipt_id", uuidToString(id), "error", err)
+		if _, recordErr := handler.Queries.RecordDecisionWakeReceiptFailure(ctx, db.RecordDecisionWakeReceiptFailureParams{ID: id, LastError: pgtype.Text{String: err.Error(), Valid: true}}); recordErr != nil {
+			failures = errors.Join(failures, recordErr)
+		}
+	}
+	return failures
 }

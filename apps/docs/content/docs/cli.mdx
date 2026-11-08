@@ -397,6 +397,17 @@ A running workspace agent task can rename a DM in that workspace, including a DM
 
 The agent receives only the session ID, new title, previous title, and announcement message ID. Rename does not grant permission to list DM lanes, read messages, access resume pointers, or change project context. Automatic title generation does not overwrite a manual rename, including a rename back to the original title.
 
+### DM attention
+
+```bash
+multica chat attention [--stale] --output json
+multica chat later <session> [duration | RFC3339 time]
+```
+
+`attention` lists the DM chains that need you, one row per chain, oldest `attention_since` first. Chains with nothing open, archived chains and chains whose `later` is still in the future are not listed. `--stale` keeps only `yellow` (4 h or more) and `red` (24 h or more) rows.
+
+`later` snoozes the obligations the server shows for the chain right now. Durations take `2h`, `90m`, `7d`, `1d12h` or plain seconds; with no duration the server uses 2 hours. The server accepts 1 second to 168 hours from now. The CLI sends the value as given and prints the server's range error; it never caps silently. Repeat a call with the same `--request-id` and the due time does not move. Agent tasks cannot use `later`.
+
 ### Decision lane metadata
 
 A running assigned issue task can open a three-minute decision window by posting a comment with `--decision-intent` and member mentions. Only that task can list active web DM lanes for the people named in the window:
