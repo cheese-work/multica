@@ -267,9 +267,11 @@ LIMIT $1
 
 // Due pending receipts, oldest due first: a failed receipt moves its own
 // next_attempt_at, so it never holds back the others. A receipt is not due
-// while its answer's wake_at is NULL (the answering task has not finished), in the future, or an older receipt of the same
-// request and recipient is still pending; delivery repeats both checks under
-// the locks.
+// while its answer's wake_at is NULL (the answering task has not finished) or
+// in the future, or while an older receipt of the same request and recipient
+// is still pending. A withdrawn answer is always selectable: withdrawal clears
+// its wake_at, and delivery must settle its receipts so they stop blocking
+// later ones. Delivery repeats these checks under the locks.
 func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSize int32) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDecisionWakeReceiptCandidates, batchSize)
 	if err != nil {
