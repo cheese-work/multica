@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useAgentCustomArgsDraftStore } from "@multica/core/agents";
 import type { Agent, AgentRuntime } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -312,6 +313,17 @@ describe("AgentAdvancedSettings unsaved edits", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
     expect(onSectionChange).toHaveBeenCalledWith("general");
+  });
+
+  it("drops the section's stored draft when the user confirms the discard", () => {
+    useAgentCustomArgsDraftStore.getState().setDraft("agent-1", { args: ["--unsaved"] });
+    renderDialog([makeRuntime("claude")], { section: "custom_args" });
+
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    expect(useAgentCustomArgsDraftStore.getState().getDraft("agent-1")).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(useAgentCustomArgsDraftStore.getState().getDraft("agent-1")).toBeUndefined();
   });
 
   it("moves straight to a section when nothing is unsaved", () => {
