@@ -248,6 +248,41 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	}
 }
 
+// Order 2, two agents (CHE-2894 step 8): agent B's claim parks mid-transaction
+// once agent A's task has settled. A compact from A's settled task beside
+// that claim answers 403 or 409 and leaves the epoch untouched. A second
+// active task cannot sit in the DM beside B's (one-active-per-DM index), so
+// the caller stays settled instead of turning running as in Order 2 above.
+func TestRuleE_BarrierCompactBesideOtherAgentsInFlightClaim(t *testing.T) {
+	svc := ruleENewService()
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "order2")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
+		t.Fatal(err)
+	}
+
+	key, release := ruleEPause(t, "UPDATE", "agent_task_queue",
+		fmt.Sprintf(`OLD.status = 'queued' AND NEW.status = 'dispatched' AND NEW.chat_session_id = '%s'`, fx.sessionID))
+	claimed := make(chan bool, 1)
+	go func() { claimed <- ruleEClaimUntil(t, svc, b.runtimeID, queued, 30*time.Second) }()
+	ruleEWaitParked(t, key)
+
+	// The settled caller is refused before the handler takes the DM lock, so
+	// the compact does not wait; it must not change the DM either way.
+	if code, body := postCompact(t, fx.token, "x"); code != http.StatusConflict && code != http.StatusForbidden {
+		t.Fatalf("compact beside a parked claim = %d %s, want 403 or 409", code, body)
+	}
+	release()
+	if !<-claimed {
+		t.Fatal("the parked claim did not return the queued task")
+	}
+	assertCompactUntouched(t, fx.sessionID)
+	if got := taskStatus(t, queued); got != "dispatched" {
+		t.Fatalf("agent B task = %q, want dispatched", got)
+	}
+}
+
 // Order 3: a DM row lock held by another transaction (a stand-in for a compact
 // with no running caller, which L1a-2 adds) is skipped by the claim within the
 // limit. A wait would run into the deadline and fail the test.
