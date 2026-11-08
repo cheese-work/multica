@@ -909,10 +909,26 @@ jobs:
           # Use the already-fetched local merge base instead.
           args: --new-from-merge-base=origin/${{ github.base_ref }}
 
+  # CHE-4666: fails a PR that adds a high or critical vulnerable dependency; findings already on the base never fail it.
+  # Always runs so the `backend` gate can expect success on every event; the action itself needs a pull_request diff.
+  # Output stays limited to what the PR adds: no PR comment, and the public logs never list the fork's existing findings.
+  dependency-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependencies the PR adds
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: never
+
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
@@ -920,7 +936,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
+          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
