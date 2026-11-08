@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -248,6 +250,63 @@ func TestHeldRetryReceiptFailureRollsBackEffectAndKeepsFailure(t *testing.T) {
 		s.wantNoEffect(t)
 		if s.reservations != 0 {
 			t.Fatalf("reservations=%d, want 0 after a failed receipt", s.reservations)
+		}
+	})
+}
+
+// 1 (held contract, M3c): the retry is a deferred row carrying
+// context.provider_hold = {provider, since, max_hold_until}, and no promotion
+// path flips it to queued before release. A plain dispatchable retry, or a
+// queued row with a reservation and receipt, must fail this test.
+func TestHeldRetryIsHeldAndCannotDispatchBeforeRelease(t *testing.T) {
+	forEachHeldRetryReason(t, func(t *testing.T, o ownerFixture, reason string) {
+		ctx := context.Background()
+		id := o.runningTask(t, nil)
+		s := o.failWith(t, id, reason)
+		s.wantFailed(t, reason)
+		if s.children != 1 {
+			t.Fatalf("children=%d, want one held retry", s.children)
+		}
+		var child, status, runtimeID string
+		var hold []byte
+		if err := o.Pool.QueryRow(ctx, `
+			SELECT id::text, status, runtime_id::text, COALESCE(context->'provider_hold', 'null'::jsonb)::text::bytea
+			FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1`, id).Scan(&child, &status, &runtimeID, &hold); err != nil {
+			t.Fatalf("no held retry for the failed task: %v", err)
+		}
+		if status != "deferred" {
+			t.Fatalf("retry status=%q, want deferred (held)", status)
+		}
+		var marker map[string]any
+		if err := json.Unmarshal(hold, &marker); err != nil || marker == nil {
+			t.Fatalf("retry context.provider_hold=%s err=%v, want {provider, since, max_hold_until}", hold, err)
+		}
+		for _, k := range []string{"provider", "since", "max_hold_until"} {
+			if v, ok := marker[k]; !ok || v == nil || v == "" {
+				t.Fatalf("provider_hold=%v is missing %q", marker, k)
+			}
+		}
+		// Make the held row due on an online runtime: a due, unmarked deferred
+		// row would be promoted, so only the hold keeps this one back.
+		if _, err := o.Pool.Exec(ctx, `UPDATE agent_task_queue SET fire_at = now() - interval '1 hour' WHERE id=$1`, child); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := o.Pool.Exec(ctx, `UPDATE agent_runtime SET status='online', last_seen_at=now() WHERE id=$1`, runtimeID); err != nil {
+			t.Fatal(err)
+		}
+		promoted, err := db.New(o.Pool).PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{
+			RuntimeID: parseTestUUID(t, runtimeID), RuntimeStaleSecs: 3600,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range promoted {
+			if util.UUIDToString(p.ID) == child {
+				t.Fatalf("PromoteDueDeferredTasksForRuntime promoted held retry %s, want it held until release", child)
+			}
+		}
+		if err := o.Pool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id=$1`, child).Scan(&status); err != nil || status != "deferred" {
+			t.Fatalf("held retry status=%q err=%v after a due promotion tick, want deferred", status, err)
 		}
 	})
 }
