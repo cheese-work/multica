@@ -19,12 +19,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check as ci_check  # noqa: E402
 
 WRITE_PERMISSIONS = {"write", "admin"}  # effective repository permission; author_association says nothing about it (CWE-863)
 VERDICTS = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}  # a COMMENTED review changes nothing
 COMPARE_CAP = 250  # the compare API lists at most this many commits
+HANDOFF = ".github/workflows/ci-policy-handoff.yml"
 GROUP_REF = re.compile(r"^refs/heads/(gh-readonly-queue/(.+)/pr-(\d+)-[0-9a-f]{40})$")
 
 
@@ -90,6 +93,41 @@ def extract_head(root: Path, head: str, dest: Path) -> list[str]:
     return skipped
 
 
+def handoff_violations(root: Path, base: str, tree: Path) -> list:
+    """The review/queue handoff is the only signal that revokes a cached success (an approval withdrawn without a push), and
+    its definition comes from the PR. A PR that removes or narrows it would hide the withdrawal, even with a human approval
+    of the edit. So the head must keep the contract: the file, its name (the trusted receiver follows it by name), the
+    `pull_request_review` (submitted, dismissed) and `merge_group` triggers, and no job that can skip. A repo whose base
+    does not carry the file yet is not enrolled and is not judged by it."""
+    enrolled = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{base}:{HANDOFF}"], capture_output=True).returncode == 0
+    path = tree / HANDOFF
+    if not path.exists():
+        return [ci_check.Violation(HANDOFF, "handoff-disabled", "the handoff workflow is missing: a withdrawn approval would not be seen")] if enrolled else []
+
+    def bad(reason):
+        return [ci_check.Violation(HANDOFF, "handoff-disabled", reason)]
+
+    try:
+        doc = yaml.safe_load(path.read_text())
+    except yaml.YAMLError:
+        return bad("not valid YAML")
+    if not isinstance(doc, dict):
+        return bad("not a workflow")
+    triggers = doc.get("on", doc.get(True))
+    review = triggers.get("pull_request_review") if isinstance(triggers, dict) else None
+    reasons = []
+    if doc.get("name") != "ci-policy-handoff":
+        reasons.append("name must be ci-policy-handoff")
+    if not isinstance(review, dict) or not {"submitted", "dismissed"} <= set(review.get("types") or []):
+        reasons.append("needs the pull_request_review trigger with types submitted and dismissed")
+    if not isinstance(triggers, dict) or "merge_group" not in triggers:
+        reasons.append("needs the merge_group trigger")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or not jobs or any(not isinstance(j, dict) or "if" in j for j in jobs.values()):
+        reasons.append("needs at least one job and no job `if:`")
+    return bad("; ".join(reasons)) if reasons else []
+
+
 def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool, default_branch: str, api=gh_api) -> list:
     live = api(f"repos/{repo}/pulls/{pr}")
     if live["head"]["sha"] != head:
@@ -102,6 +140,7 @@ def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool
     with tempfile.TemporaryDirectory() as tmp:
         skipped = extract_head(root, head, Path(tmp))
         violations, _ = ci_check.check(Path(tmp), repo, private, default_branch)
+        found += handoff_violations(root, base, Path(tmp))
     found += [ci_check.Violation(p, "head-unreadable", "not a regular file: the checker cannot read it") for p in skipped]
     return found + violations
 

@@ -5,10 +5,11 @@
 # SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` runs the PR check with the BASE revision's
 # checker. The job checks out the base SHA and only FETCHES head objects; gate.py reads the head's `.github` tree as data.
 # Do not add a head checkout, a head `run:` or a secret to this workflow.
-# `pull_request_review` and `merge_group` run the definition from the PR merge / queue commit, which the PR can edit, so
-# neither may compute or name a verdict: they only run the no-op `handoff` job (no token, no permissions). The trusted
-# ci-policy-queue.yml (`workflow_run`, default branch) follows those runs: after a review change it re-runs this PR check
-# and re-evaluates the open queue groups, and for a queue run it posts the `ci-policy` queue status itself.
+# This workflow has one trigger and one job, so no skipped run can ever report a check named `ci-policy`. The review and
+# queue events live in ci-policy-handoff.yml: they run the definition from the PR merge / queue commit, which the PR can
+# edit, so they may only hand off. The trusted ci-policy-queue.yml (`workflow_run`, default branch) follows those runs: after
+# a review change it re-runs this PR check and re-evaluates the open queue groups, and for a queue run it posts the
+# `ci-policy` queue status itself. gate.py refuses a PR that disables the handoff (`handoff-disabled`).
 # After a policy-changed approval, the review event re-runs this job on its own (a re-run keeps the trusted definition).
 # Not a required check until D-9 promotion; a push trigger is never needed (D-4).
 
@@ -17,32 +18,19 @@ name: ci-policy
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
-  pull_request_review:
-    types: [submitted, dismissed]
-  merge_group:
 
 permissions:
   contents: read
   pull-requests: read
 
-# One group per event type and head.
+# One group per PR.
 concurrency:
-  group: ci-policy-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  group: ci-policy-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  handoff:
-    # A review or queue run must not report a check named `ci-policy`: that name is not authenticated.
-    name: ${{ github.event_name == 'merge_group' && 'queue-handoff' || 'review-handoff' }}
-    if: github.event_name != 'pull_request_target'
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
-    permissions: {}
-    timeout-minutes: 2
-    steps:
-      - run: echo "ci-policy-queue.yml follows this run"
   ci-policy:
     name: ci-policy
-    if: github.event_name == 'pull_request_target'
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:

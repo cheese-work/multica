@@ -1,0 +1,31 @@
+# ci-policy: class=gate
+# ci-policy handoff (D-6). Same content in every enrolled repo; scripts/ci-policy/sync.py keeps the copies current.
+#
+# SECURITY: `pull_request_review` and `merge_group` run the definition from the PR merge / queue commit, which the PR can
+# edit, so these runs compute and name no verdict. They exist to give the trusted ci-policy-queue.yml (`workflow_run`,
+# default branch) an event to follow: a review change re-runs the PR check and re-evaluates the queue groups, a queue run
+# gets its `ci-policy` status. No token, no permission, no checkout, no secret. This is the only signal that revokes a cached
+# success, so the trusted PR check (gate.py) fails a PR that removes or narrows it (`handoff-disabled`).
+# It is a separate file so that ci-policy.yml has one trigger and one job: no skipped run can then report a
+# check named `ci-policy`.
+
+name: ci-policy-handoff
+
+on:
+  pull_request_review:
+    types: [submitted, dismissed]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: ci-policy-handoff-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  handoff:
+    name: ${{ github.event_name == 'merge_group' && 'queue-handoff' || 'review-handoff' }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 2
+    steps:
+      - run: echo "ci-policy-queue.yml follows this run"

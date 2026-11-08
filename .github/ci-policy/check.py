@@ -57,11 +57,11 @@ def load_policy(root: Path) -> dict:
     return yaml.safe_load((root / POLICY).read_text()) or {}
 
 
-def evaluate(cond, event, known=None):
+def evaluate(cond, event, known=None, funcs=None):
     """Three-valued evaluation of a workflow `if:`/`cancel-in-progress` value for one event.
 
-    Only `github.event_name` and the `known` atoms are known; any other atom is unknown (None), so callers treat
-    "not provably False" as admitted. Parse trouble also yields unknown."""
+    Only `github.event_name`, the `known` atoms and the `funcs` (name -> value of a call without arguments) are known; any
+    other atom or call is unknown (None), so callers treat "not provably False" as admitted. Parse trouble also yields unknown."""
     if cond is None or isinstance(cond, bool):
         return cond
     expr = re.sub(r"^\s*\$\{\{(.*)\}\}\s*$", r"\1", str(cond), flags=re.S)
@@ -118,18 +118,33 @@ def evaluate(cond, event, known=None):
         if tok.startswith("'"):
             return tok[1:-1].replace("''", "'")
         if peek() == "(":  # function call: skip the balanced argument list
-            depth = 0
+            depth, start = 0, pos
             while True:
                 t = take()
                 depth += (t == "(") - (t == ")")
                 if depth == 0:
-                    return None
+                    return (funcs or {}).get(tok) if pos - start == 2 else None
         return {"github.event_name": event, "true": True, "false": False, **(known or {})}.get(tok)
 
     try:
         return truth(or_())
     except IndexError:
         return None
+
+
+MAX_MATRIX = 256  # GitHub itself rejects a matrix with more jobs than this
+
+
+def matrix_size(matrix: dict) -> int:
+    """Upper bound on the jobs a matrix makes, computed from list lengths without building the product."""
+    size = 1
+    for k, v in matrix.items():
+        if isinstance(v, list) and k not in ("include", "exclude"):
+            size *= len(v)
+            if size > MAX_MATRIX:
+                return size
+    include = matrix.get("include")
+    return size + (len(include) if isinstance(include, list) else 0)
 
 
 def job_names(job_id: str, job: dict, by_file: dict) -> list[tuple[str, dict]]:
@@ -147,6 +162,8 @@ def job_names(job_id: str, job: dict, by_file: dict) -> list[tuple[str, dict]]:
     if not isinstance(matrix, dict):
         return [(name, job)]
     axes = {k: v for k, v in matrix.items() if isinstance(v, list) and k not in ("include", "exclude")}
+    if matrix_size(matrix) > MAX_MATRIX:  # a PR controls the axes: never expand an oversized product
+        return [(f"{name} / ", job)]
     combos = [dict(zip(axes, vals)) for vals in itertools.product(*axes.values())] if axes else []
     subset = lambda part, whole: all(k in whole and whole[k] == v for k, v in part.items())
     combos = [c for c in combos if not any(subset(x, c) for x in matrix.get("exclude") or [])]
@@ -202,6 +219,10 @@ def workflow_rules(w: Workflow, producing: bool, mq: bool, private: bool, defaul
     def bad(rule, reason):
         out.append(Violation(w.file, rule, reason))
 
+    for jid, job in (w.doc.get("jobs") or {}).items():
+        matrix = (job.get("strategy") or {}).get("matrix") if isinstance(job, dict) and isinstance(job.get("strategy"), dict) else None
+        if isinstance(matrix, dict) and matrix_size(matrix) > MAX_MATRIX:
+            bad("D-3", f"job {jid} matrix expands to more than {MAX_MATRIX} jobs: the check names cannot be verified")
     if w.cls not in CLASSES:
         bad("D-1", "unclassified workflow: add `# ci-policy: class=<" + "|".join(sorted(CLASSES)) + ">`"
             if w.cls is None else f"unknown class {w.cls!r}")
@@ -303,6 +324,26 @@ def failing_states(job: dict, need: str, producer_if=None) -> set[str]:
     return states
 
 
+AGGREGATE_EVENTS = ("pull_request", "pull_request_target", "merge_group")
+
+
+def skip_witness(cond, needs: list, w: Workflow) -> str | None:
+    """A case in which the aggregate's `if:` is not provably true on an event that runs the required check, or None.
+    `always()` alone is not enough: `always() && needs.changes.result == 'success'` skips the job (a passing check) when
+    the selector fails. Every combination of the needed jobs' results is tried; any other atom is unknown and so a witness."""
+    if len(needs) > 6:
+        return "it needs more than 6 jobs"
+    events = [e for e in AGGREGATE_EVENTS if e in w.on] or [None]
+    for event in events:
+        if evaluate(cond, event, None, {"always": True, "cancelled": False}) is False:
+            continue  # excluded on this event whatever the needs are: R5 reports that
+        for states in itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(needs)):
+            known = {f"needs.{n}.result": s for n, s in zip(needs, states)}
+            if evaluate(cond, event, known, {"always": True, "cancelled": False}) is not True:
+                return f"{event or 'the event'} runs with " + (", ".join(f"{n} {s}" for n, s in zip(needs, states)) or "no needs")
+    return None
+
+
 def aggregate_rules(w: Workflow, name: str, job_id: str, job: dict, jobs: dict) -> list[Violation]:
     """R8 (D-5, D13): a required check is an aggregate job that cannot pass when the selector failed or a job was skipped."""
     out = []
@@ -310,10 +351,13 @@ def aggregate_rules(w: Workflow, name: str, job_id: str, job: dict, jobs: dict) 
     def bad(reason):
         out.append(Violation(w.file, "R8", f"required check {name!r}: job {job_id} {reason}"))
 
-    if not re.search(r"\balways\(\)", re.sub(r"^\s*\$\{\{(.*)\}\}\s*$", r"\1", str(job.get("if") or ""), flags=re.S)):
-        bad("`if:` must use always(): a skipped or failed selector would otherwise pass the check")
     needs = job.get("needs") or []
     needs = [needs] if isinstance(needs, str) else needs
+    cond = job.get("if")
+    if not re.search(r"\balways\(\)", re.sub(r"^\s*\$\{\{(.*)\}\}\s*$", r"\1", str(cond or ""), flags=re.S)):
+        bad("`if:` must use always(): a skipped or failed selector would otherwise pass the check")
+    elif skippable := skip_witness(cond, needs, w):
+        bad(f"`if:` can skip the aggregate when {skippable}: a skipped job passes the check, so only always() may gate it")
     if SELECTOR not in needs:
         bad(f"must need the `{SELECTOR}` selector job")
     if job.get("continue-on-error") not in (None, False, "false"):

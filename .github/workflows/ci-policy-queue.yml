@@ -6,10 +6,10 @@
 # name is not authenticated, so neither can be trusted to say `ci-policy` passed. This workflow runs the default branch's
 # gate.py on every queued head and posts the `ci-policy` commit status on the queue commit itself. The only inputs read
 # from the trigger are the queue commit SHA and ref name, which GitHub sets. The queue ref is fetched as data and never
-# checked out or executed. It holds no secret and no environment. If ci-policy.yml loses its `merge_group` run, this
+# checked out or executed. It holds no secret and no environment. If ci-policy-handoff.yml loses its `merge_group` run, this
 # workflow never fires and the required `ci-policy` context stays missing: the queue blocks (fail closed).
 #
-# A `pull_request_review` run (review submitted or dismissed) is the same kind of trusted follow-up: ci-policy.yml's review
+# A `pull_request_review` run (review submitted or dismissed) is the same kind of trusted follow-up: ci-policy-handoff.yml's review
 # definition comes from the PR, so it only hands off. Here the default branch's gate.py re-runs the PR check of the open PR
 # at that head (a re-run keeps the base-branch definition and re-reads the reviews) and re-evaluates every open queue group,
 # so a withdrawn approval flips the cached success. The only input read from the trigger is the head SHA, which is matched
@@ -19,7 +19,7 @@ name: ci-policy-queue
 
 on:
   workflow_run:
-    workflows: [ci-policy]
+    workflows: [ci-policy-handoff]
     types: [completed]
 
 permissions:
@@ -36,7 +36,7 @@ jobs:
   ci-policy-queue:
     name: ci-policy-queue-eval
     # A merge-queue run of this repository, or a review run (a fork PR's head repository is the fork, so no repository check
-    # there; the head SHA is matched against open PRs). A `push` or `pull_request` run that happens to be named ci-policy is ignored.
+    # there; the head SHA is matched against open PRs). A `push` or `pull_request` run that happens to be named ci-policy-handoff is ignored.
     if: >-
       (github.event.workflow_run.event == 'merge_group' &&
       github.event.workflow_run.head_repository.full_name == github.repository) ||
