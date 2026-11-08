@@ -210,6 +210,44 @@ func TestReviewWakeupSkippedWhenAgentAlreadyAnsweredHead(t *testing.T) {
 	})
 }
 
+// Scheduled check-ins (at/every/cron) are not review runs: CHE-4615 excludes
+// them, so a verdict on the head must not consume their schedule.
+func TestScheduledCheckinRunsAfterVerdictOnUnchangedHead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	wakeups := &service.IssueWakeupService{Tasks: testHandler.TaskService}
+	inputs := map[string]service.WakeupInput{
+		"every": {Kind: "every", Mode: "continuous", IntervalSeconds: 3600, Instruction: "Check in."},
+		"at":    {Kind: "at", Mode: "once", AfterSeconds: 3600, Instruction: "Check in."},
+		"cron":  {Kind: "cron", Mode: "continuous", CronExpression: "0 * * * *", Timezone: "UTC", Instruction: "Check in."},
+	}
+	installation := int64(4649020)
+	for name, in := range inputs {
+		installation++
+		t.Run(name, func(t *testing.T) {
+			c, agentID := reviewCase(t, installation)
+			linkPR(t, c.issueID, int32(installation), headOld)
+			agentSays(t, c, agentID, verdictFor("PASS", headOld))
+			in.AgentID = agentID
+			w, err := wakeups.Create(ctx, parseUUID(c.issueID), parseUUID(testUserID), pgtype.UUID{}, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dbfx.Cleanup(t, `DELETE FROM issue_wakeup WHERE id = $1`, w.ID)
+			dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, c.issueID)
+			dbfx.Exec(t, `UPDATE issue_wakeup SET next_fire_at = now() - interval '1 minute' WHERE id = $1`, w.ID)
+			if err := wakeups.TickWorkspaces(ctx, parseUUID(testWorkspaceID)); err != nil {
+				t.Fatal(err)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, c.issueID); n != 1 {
+				t.Fatalf("%s check-in after a verdict on the same head started %d runs, want 1", name, n)
+			}
+		})
+	}
+}
+
 // The skip shows in the run list the UI and `multica issue runs` read.
 func TestReviewRunSkipIsInRunList(t *testing.T) {
 	if testHandler == nil {

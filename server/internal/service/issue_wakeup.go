@@ -1497,10 +1497,15 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			origin = OriginDerived
 		}
 		// A reviewer that already answered the PR head needs no run for it
-		// (CHE-4649). Checked here, for named and derived wakeups alike: the
-		// receipts are consumed rather than retried, because the head will not
-		// change by waiting.
-		if err := guardReviewHeadAnswered(ctx, q, issue.ID, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", ReviewRun: true}); errors.Is(err, ErrReviewHeadAnswered) {
+		// (CHE-4649). Checked here, for named and derived event wakeups alike:
+		// the receipts are consumed rather than retried, because the head will
+		// not change by waiting. Scheduled check-ins (at, every, cron) are not
+		// review runs and always run.
+		var answered error
+		if w.Kind == "event" {
+			answered = guardReviewHeadAnswered(ctx, q, issue.ID, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", ReviewRun: true})
+		}
+		if errors.Is(answered, ErrReviewHeadAnswered) {
 			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 				return err
 			}
