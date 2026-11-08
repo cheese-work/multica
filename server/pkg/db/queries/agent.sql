@@ -1094,6 +1094,14 @@ WHERE id = (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
@@ -1148,6 +1156,14 @@ WITH candidates AS MATERIALIZED (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
