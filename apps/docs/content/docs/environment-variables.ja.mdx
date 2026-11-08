@@ -185,6 +185,7 @@ allowlist の正確な判定順序は[ログインとサインアップ](/auth-s
 | GitHub | `GITHUB_APP_CLIENT_SECRET` | Client ID と対になる client secret。用途は同じです |
 | GitHub | `GITHUB_APP_ID` | 新規 installation の検証、PR カードの CI ステータス・マージ可否、「GitHub から選択」リポジトリに必要です |
 | GitHub | `GITHUB_APP_PRIVATE_KEY` | App ID と対になる完全な PEM 秘密鍵。用途は同上 |
+| GitHub | `GITHUB_ALLOWED_ACCOUNT_IDS` | 接続を許可する GitHub アカウントの数値 ID（カンマ区切り）。空の場合は任意のアカウント |
 | Lark | `MULTICA_LARK_SECRET_KEY` | base64 エンコードされた 32 バイトの資格情報暗号化キー |
 | Slack | `MULTICA_SLACK_SECRET_KEY` | base64 エンコードされた 32 バイトの token 暗号化キー |
 | Telegram | `MULTICA_TELEGRAM_SECRET_KEY` | base64 エンコードされた 32 バイトの Bot token 暗号化キー |
