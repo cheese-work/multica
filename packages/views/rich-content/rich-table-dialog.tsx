@@ -8,7 +8,7 @@
  * Markdown cells, so links, mentions and inline code behave as they do inline.
  */
 
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   getCoreRowModel,
   getFilteredRowModel,
@@ -67,10 +67,21 @@ function isNumeric(values: string[]): boolean {
 
 function useCopyFeedback() {
   const [copied, setCopied] = useState<string | null>(null);
+  const timer = useRef<number | undefined>(undefined);
+  const mounted = useRef(true);
+  // A timer left running after unmount can fire once the test environment is torn down.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      window.clearTimeout(timer.current);
+    };
+  }, []);
   const copy = async (id: string, text: string) => {
-    if (await copyText(text)) {
+    if ((await copyText(text)) && mounted.current) {
       setCopied(id);
-      setTimeout(() => setCopied((current) => (current === id ? null : current)), 2000);
+      window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setCopied((current) => (current === id ? null : current)), 2000);
     }
   };
   return { copied, copy };

@@ -60,6 +60,8 @@ export interface DecisionRequestAction {
   id: string;
   action_type: string;
   payload_sha256: string;
+  /** Action state. Only a pending action carries a preview; an older server omits it. */
+  state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
 }

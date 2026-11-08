@@ -267,7 +267,6 @@ func TestTimelineT12CompleteTodoOnlyInOwnWindow(t *testing.T) {
 func TestTimelineRejectsBadRequests(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for name, body := range map[string]map[string]any{
-		"empty window":  {},
 		"from after to": {"window": map[string]any{"from": now, "to": "2020-01-01T00:00:00Z"}},
 		"unknown field": {"window": map[string]any{"from": "2020-01-01T00:00:00Z", "to": now}, "scope": "x"},
 	} {

@@ -145,6 +145,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
+	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
 	"893_issue_search_text_title_trgm_idx":                      "idx_issue_search_text_title_trgm",
 	"894_issue_search_text_description_trgm_idx":                "idx_issue_search_text_description_trgm",
