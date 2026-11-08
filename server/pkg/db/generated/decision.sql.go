@@ -734,6 +734,68 @@ func (q *Queries) FindOpenProposal(ctx context.Context, arg FindOpenProposalPara
 	return i, err
 }
 
+const findOpenServerDecisionRequest = `-- name: FindOpenServerDecisionRequest :one
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2 AND human_user_id = $3
+  AND request_fingerprint = $4 AND status = 'open'
+`
+
+type FindOpenServerDecisionRequestParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+	Fingerprint string      `json:"fingerprint"`
+}
+
+func (q *Queries) FindOpenServerDecisionRequest(ctx context.Context, arg FindOpenServerDecisionRequestParams) (DecisionRequest, error) {
+	row := q.db.QueryRow(ctx, findOpenServerDecisionRequest,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HumanUserID,
+		arg.Fingerprint,
+	)
+	var i DecisionRequest
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AskingAgentID,
+		&i.HumanUserID,
+		&i.ChatSessionID,
+		&i.PingMessageID,
+		&i.IssueCommentID,
+		&i.Ask,
+		&i.EscalationClass,
+		&i.Status,
+		&i.Origin,
+		&i.DecisionIntentID,
+		&i.CancelReason,
+		&i.CancelNoticePostedAt,
+		&i.PingNotifiedAt,
+		&i.ReaskDeliveredAt,
+		&i.ReaskOutcome,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.SourceContentSnapshot,
+		&i.RequestFingerprint,
+		&i.WithdrawReason,
+		&i.WithdrawnAt,
+		&i.WithdrawnByTaskID,
+		&i.WithdrawnByUserID,
+		&i.Options,
+		&i.AskIdentity,
+		&i.AskJson,
+		&i.Authority,
+		&i.ProjectID,
+		&i.Kind,
+		&i.ExpiresAt,
+		&i.ProposalFingerprint,
+		&i.AnswerRevision,
+		&i.WakeSeq,
+	)
+	return i, err
+}
+
 const getDecisionAnswer = `-- name: GetDecisionAnswer :one
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
@@ -747,6 +809,53 @@ type GetDecisionAnswerParams struct {
 
 func (q *Queries) GetDecisionAnswer(ctx context.Context, arg GetDecisionAnswerParams) (DecisionAnswer, error) {
 	row := q.db.QueryRow(ctx, getDecisionAnswer, arg.WorkspaceID, arg.ID)
+	var i DecisionAnswer
+	err := row.Scan(
+		&i.ID,
+		&i.DecisionRequestID,
+		&i.AnsweredByTaskID,
+		&i.SourceChatSessionID,
+		&i.ChatMessageIds,
+		&i.ContentSnapshot,
+		&i.EffectiveAt,
+		&i.WakeAt,
+		&i.WokenAt,
+		&i.WakeOutcome,
+		&i.IssueCommentID,
+		&i.DisclaimedAt,
+		&i.DisclaimCommentPostedAt,
+		&i.DisclaimedByUserID,
+		&i.DisclaimReason,
+		&i.DisclaimedByAgentID,
+		&i.DisclaimedByTaskID,
+		&i.VetoReason,
+		&i.VetoNotePostedAt,
+		&i.RetractionDeliveredAt,
+		&i.RetractionOutcome,
+		&i.WithdrawalCommentID,
+		&i.CreatedAt,
+		&i.SourceCommentID,
+		&i.AnsweredByUserID,
+		&i.AnswerSource,
+		&i.ChosenOptionIndex,
+		&i.ReplyText,
+		&i.ContextMessageID,
+		&i.Excerpted,
+		&i.AnsweredLabel,
+		&i.StateVersion,
+		&i.HindsightAckedVersion,
+	)
+	return i, err
+}
+
+const getDecisionCardAnswer = `-- name: GetDecisionCardAnswer :one
+SELECT id, decision_request_id, answered_by_task_id, source_chat_session_id, chat_message_ids, content_snapshot, effective_at, wake_at, woken_at, wake_outcome, issue_comment_id, disclaimed_at, disclaim_comment_posted_at, disclaimed_by_user_id, disclaim_reason, disclaimed_by_agent_id, disclaimed_by_task_id, veto_reason, veto_note_posted_at, retraction_delivered_at, retraction_outcome, withdrawal_comment_id, created_at, source_comment_id, answered_by_user_id, answer_source, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, state_version, hindsight_acked_version FROM decision_answer WHERE decision_request_id = $1 AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1
+`
+
+// The answer a human's card click recorded for a request; one per request.
+func (q *Queries) GetDecisionCardAnswer(ctx context.Context, decisionRequestID pgtype.UUID) (DecisionAnswer, error) {
+	row := q.db.QueryRow(ctx, getDecisionCardAnswer, decisionRequestID)
 	var i DecisionAnswer
 	err := row.Scan(
 		&i.ID,

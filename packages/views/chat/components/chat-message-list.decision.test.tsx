@@ -298,3 +298,91 @@ describe("ChatMessageList — a card answer bubble", () => {
     expect(within(bubble).queryByTestId("decision-answer-chip")).toBeNull();
   });
 });
+
+// CHE-4438: an auto-compaction shows one notice and one folded summary row, and
+// the last assistant message's open asks stay visible below it.
+describe("ChatMessageList — compaction summary", () => {
+  const openAsk = {
+    id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2088",
+    ask: "Ship the reversible change?", state: "open" as const, created_at: "2026-10-26T05:00:00Z",
+  };
+  const thread = () => [
+    message("a", { role: "assistant", decision_request: openAsk, message_kind: "decision_request" }),
+    message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+    message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY one two three" }),
+  ];
+
+  it("folds the summary by default and opens it on click", () => {
+    renderList({ messages: thread() });
+    expect(screen.queryByText("SUMMARY one two three")).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Summary for the agent · 4 words · Show" });
+    act(() => toggle.click());
+    expect(screen.getByText("SUMMARY one two three")).toBeTruthy();
+  });
+
+  it("repeats the open ask under the folded row and jumps to its message", () => {
+    renderList({ messages: thread() });
+    const link = screen.getByRole("button", { name: /^Open question: Ship the reversible change\?/ });
+    act(() => link.click());
+    expect(scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }));
+  });
+
+  it("shows no ask line when the last assistant message has no open ask", () => {
+    renderList({ messages: thread().map((m) => (m.id === "a" ? { ...m, decision_request: { ...openAsk, state: "answered" as const } } : m)) });
+    expect(screen.queryByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeNull();
+  });
+
+  describe("plain-text questions", () => {
+    const asked = (content: string, extra: Partial<ChatMessage>[] = []) => [
+      message("q", { role: "assistant", content }),
+      ...extra.map((e, i) => message(`x${i}`, e)),
+      message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+      message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY" }),
+    ];
+    const line = /^Open question: Which database should we use\?/;
+
+    it("repeats an unanswered question of the last assistant message and jumps to it", () => {
+      renderList({ messages: asked("Here is the plan.\n\n- Which database should we use?\nNo rush.") });
+      act(() => screen.getByRole("button", { name: line }).click());
+      expect(scrollToIndex).toHaveBeenCalledWith(expect.objectContaining({ index: 0 }));
+    });
+
+    it("ignores questions inside code fences and plain statements", () => {
+      renderList({ messages: asked("Done.\n```\nwhat is this?\n```") });
+      expect(screen.queryByRole("button", { name: /^Open question/ })).toBeNull();
+    });
+
+    it("keeps an open decision card and a plain question after an unrelated member message", () => {
+      const open = {
+        id: "request-2", issue_id: "issue-1", issue_identifier: "CHE-2088",
+        ask: "Ship the reversible change?", state: "open" as const, created_at: "2026-10-26T05:00:00Z",
+      };
+      renderList({
+        messages: [
+          message("q", { role: "assistant", content: "Which database should we use?", decision_request: open, message_kind: "decision_request" }),
+          message("u", { role: "user", content: "Unrelated chat" }),
+          message("n", { role: "assistant", message_kind: "compact_notice", content: "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below." }),
+          message("s", { role: "assistant", message_kind: "compaction_summary", content: "SUMMARY" }),
+        ],
+      });
+      expect(screen.getByRole("button", { name: /^Open question: Ship the reversible change\?/ })).toBeTruthy();
+      expect(screen.getByRole("button", { name: line })).toBeTruthy();
+    });
+
+    it("keeps the question when the member's later message is about something else", () => {
+      renderList({ messages: asked("Which database should we use?\nWhat about caching?", [{ role: "user", content: "Postgres" }]) });
+      expect(screen.getByRole("button", { name: line })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /^Open question: What about caching\?/ })).toBeTruthy();
+    });
+
+    it("hides only the question the member's later message quotes", () => {
+      renderList({
+        messages: asked("Which database should we use?\nWhat about caching?", [
+          { role: "user", content: "> Which database should we use?\n\nPostgres" },
+        ]),
+      });
+      expect(screen.queryByRole("button", { name: line })).toBeNull();
+      expect(screen.getByRole("button", { name: /^Open question: What about caching\?/ })).toBeTruthy();
+    });
+  });
+});
