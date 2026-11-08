@@ -304,6 +304,43 @@ func TestWakeupOverCapIs422(t *testing.T) {
 
 // N6 (timeline half): an other_issue source outside the workspace is omitted,
 // with no placeholder and no ID.
+// Small batches force the keyset cursor across rows that are hidden by agent
+// access, dropped for a foreign source, or visible. Nothing may be lost,
+// repeated or reordered at a batch boundary.
+func TestWakeupBatchBoundariesKeepVisibleEventsInOrder(t *testing.T) {
+	old := wakeupBatchSize
+	wakeupBatchSize = 2
+	t.Cleanup(func() { wakeupBatchSize = old })
+	target := newWakeupTarget(t)
+	privateAgent := dbfx.Agent(t, "batch private agent", "")
+	viewer := dbfx.User(t, "batch viewer", fmt.Sprintf("batch-%d@multica.test", time.Now().UnixNano()))
+	dbfx.Member(t, testWorkspaceID, viewer, "member")
+	ownAgent := dbfx.Agent(t, "batch own agent", "", testutil.Cols{"owner_id": viewer})
+	foreign := dbfx.Issue(t, "batch foreign source", testutil.Cols{"workspace_id": dbfx.Workspace(t, "batch foreign", fmt.Sprintf("batch-%d", time.Now().UnixNano()))})
+	var want []string
+	for i := 0; i < 14; i++ {
+		age := day + time.Duration(20-i)*time.Minute
+		switch i % 3 {
+		case 0: // visible agent, source outside the workspace: dropped
+			insertWakeupRow(t, target, age, snapshotOf(ownAgent, "event", map[string]any{"type": "other_issue", "issue_id": foreign, "state": "done"}),
+				fireExtra(map[string]any{"observed": map[string]any{"issue_id": foreign, "status": "done"}}))
+		case 1: // agent the viewer cannot see: hidden
+			insertWakeupRow(t, target, age, snapshotOf(privateAgent, "event", nil), fireExtra(nil))
+		default: // visible
+			want = append(want, insertWakeupRow(t, target, age, snapshotOf(ownAgent, "event", nil), fireExtra(nil)))
+		}
+	}
+	got := eventsFor(fetchWakeupEvents(t, func(r *http.Request) { r.Header.Set("X-User-ID", viewer) }), target)
+	if len(got) != len(want) {
+		t.Fatalf("got %d events, want %d: %+v", len(got), len(want), got)
+	}
+	for i, e := range got {
+		if e.ID != want[i] {
+			t.Fatalf("event %d = %s, want %s", i, e.ID, want[i])
+		}
+	}
+}
+
 func TestWakeupN6ForeignSourceOmitted(t *testing.T) {
 	target := newWakeupTarget(t)
 	agent := dbfx.Agent(t, "n6 agent", "")

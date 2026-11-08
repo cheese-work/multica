@@ -25,6 +25,9 @@ const (
 	timelineMaxWakeupEvents = 5000
 )
 
+// wakeupBatchSize is the keyset batch size; a var so a test can use small batches.
+var wakeupBatchSize = timelineMaxWakeupEvents + 1
+
 type timelineWakeupEvent struct {
 	ID            string    `json:"id"`
 	At            time.Time `json:"at"`
@@ -99,18 +102,61 @@ func (h *Handler) loadTimelineWakeupEvents(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to resolve agent access")
 		return nil, false
 	}
-	rows, err := h.DB.Query(r.Context(), `
+	allowedIDs := make([]string, 0, len(allowed))
+	for id := range allowed {
+		allowedIDs = append(allowedIDs, id)
+	}
+	// Rows are read in keyset batches and filtered batch by batch, so one
+	// request holds at most the visible events plus one batch, and stops
+	// reading as soon as the visible events pass the cap.
+	cursorAt, cursorID := from, "00000000-0000-0000-0000-000000000000"
+	for {
+		batch, last, err := h.loadWakeupBatch(r.Context(), workspaceID, issueIDs, allowedIDs, allowed, from, to, asOf, cursorAt, cursorID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
+			return nil, false
+		}
+		events = append(events, batch.kept...)
+		// The cap counts events the viewer can see, so hidden rows never use it up.
+		if len(events) > timelineMaxWakeupEvents {
+			writeError(w, http.StatusUnprocessableEntity, "too many wakeup events for this window; narrow the window")
+			return nil, false
+		}
+		if batch.rows < wakeupBatchSize {
+			return events, true
+		}
+		cursorAt, cursorID = last.At, last.ID
+	}
+}
+
+type wakeupBatch struct {
+	kept []timelineWakeupEvent
+	rows int // rows read, before filtering
+}
+
+// loadWakeupBatch reads the next batch of rows after the cursor and returns the
+// events the viewer can see. The returned last event is the batch's last row
+// (kept or not), which is the next cursor.
+func (h *Handler) loadWakeupBatch(ctx context.Context, workspaceID string, issueIDs, allowedIDs []string, allowed map[string]struct{}, from, to, asOf, cursorAt time.Time, cursorID string) (wakeupBatch, timelineWakeupEvent, error) {
+	var (
+		out  wakeupBatch
+		last timelineWakeupEvent
+	)
+	rows, err := h.DB.Query(ctx, `
 SELECT id::text, issue_id::text, created_at, details
 FROM activity_log
 WHERE workspace_id = $1 AND issue_id = ANY($2::uuid[]) AND action = 'wakeup_triggered'
   AND created_at >= $3 AND created_at < $4 AND created_at <= $5
+  AND (created_at, id) > ($6, $7::uuid)
   AND COALESCE(details->>'task_id', '') <> ''
-ORDER BY created_at, id`, workspaceID, issueIDs, from, to, asOf)
+  AND (COALESCE(details->'wakeup'->>'agent_id', '') = '' OR details->'wakeup'->>'agent_id' = ANY($8::text[]))
+ORDER BY created_at, id
+LIMIT $9`, workspaceID, issueIDs, from, to, asOf, cursorAt, cursorID, allowedIDs, wakeupBatchSize)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
-		return nil, false
+		return out, last, err
 	}
 	defer rows.Close()
+	var events []timelineWakeupEvent
 	sources := map[string]struct{}{}
 	for rows.Next() {
 		var (
@@ -119,9 +165,10 @@ ORDER BY created_at, id`, workspaceID, issueIDs, from, to, asOf)
 			d   wakeupRowDetails
 		)
 		if err := rows.Scan(&e.ID, &e.TargetIssueID, &e.At, &raw); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
-			return nil, false
+			return out, last, err
 		}
+		out.rows++
+		last = e
 		if json.Unmarshal(raw, &d) != nil {
 			d = wakeupRowDetails{} // unreadable details stay a marker
 		}
@@ -146,31 +193,23 @@ ORDER BY created_at, id`, workspaceID, issueIDs, from, to, asOf)
 		}
 		events = append(events, e)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
-		return nil, false
+	if err := rows.Err(); err != nil {
+		return out, last, err
 	}
 	rows.Close()
-	live, err := h.workspaceIssueSet(r.Context(), workspaceID, sources)
+	live, err := h.workspaceIssueSet(ctx, workspaceID, sources)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load wakeup events")
-		return nil, false
+		return out, last, err
 	}
-	kept := events[:0]
 	for _, e := range events {
 		if e.SourceIssueID != nil {
 			if _, ok := live[*e.SourceIssueID]; !ok {
 				continue
 			}
 		}
-		kept = append(kept, e)
+		out.kept = append(out.kept, e)
 	}
-	// The cap counts events the viewer can see, so hidden rows never use it up.
-	if len(kept) > timelineMaxWakeupEvents {
-		writeError(w, http.StatusUnprocessableEntity, "too many wakeup events for this window; narrow the window")
-		return nil, false
-	}
-	return kept, true
+	return out, last, nil
 }
 
 // workspaceIssueSet returns the subset of ids that are issues of the workspace.
