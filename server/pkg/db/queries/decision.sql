@@ -214,7 +214,12 @@ ORDER BY target.human_user_id;
 -- request on it) rank first, newest reference first, before the limit applies.
 -- session_id narrows the result to one lane for an eligibility check. A lane
 -- of topic_id is listed whichever agent stewards it.
-SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at,
+       EXISTS (SELECT 1 FROM chat_message unread
+               WHERE unread.chat_session_id = session.id
+                 AND unread.role = 'assistant'
+                 AND unread.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+                 AND unread.created_at > session.last_read_at) AS unseen
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -501,6 +506,11 @@ INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_so
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
 
+-- name: GetDecisionCardAnswer :one
+-- The answer a human's card click recorded for a request; one per request.
+SELECT * FROM decision_answer WHERE decision_request_id = sqlc.arg('decision_request_id') AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1;
+
 -- name: DecisionHumanAuthority :one
 -- is_owner: the person holds the workspace owner role. is_delegate: the person is
 -- listed in decision_delegates of the project the issue belongs to.
@@ -512,3 +522,8 @@ SELECT (member.role = 'owner')::boolean AS is_owner,
     ), false)::boolean AS is_delegate
 FROM member
 WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');
+
+-- name: FindOpenServerDecisionRequest :one
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';

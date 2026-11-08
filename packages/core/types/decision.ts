@@ -19,6 +19,9 @@ export interface OpenDecisionRequest {
 export interface DecisionRequestOption {
   label: string;
   what_happens?: string;
+  pros?: string[];
+  cons?: string[];
+  cost_or_time?: string;
 }
 
 export interface DecisionRequestCard {
@@ -31,7 +34,10 @@ export interface DecisionRequestCard {
   ask: string;
   /** The asking agent's name; absent when the agent is gone or the server is older. */
   asking_agent_name?: string;
+  /** Answer buttons; empty for a request stored without a structured ask. */
   options?: DecisionRequestOption[];
+  /** 0-based into `options`: the option the ask's recommendation names. */
+  recommended_option_index?: number;
   state: "open" | "answered" | "withdrawn";
   created_at: string;
   withdrawn_at?: string | null;
@@ -40,6 +46,24 @@ export interface DecisionRequestCard {
   record_comment_id?: string | null;
   /** Latest answer, kept after a disclaim so the card can say so. */
   answer?: DecisionRequestAnswer;
+  /** The pending executable action behind an open request, if any. */
+  action?: DecisionRequestAction;
+}
+
+/** What an executable action would change, rendered by the server from the values its executor checks. */
+export interface DecisionActionPreview {
+  fields: { label: string; current: string; proposed: string }[];
+  sha256: string;
+}
+
+export interface DecisionRequestAction {
+  id: string;
+  action_type: string;
+  payload_sha256: string;
+  /** Action state. Only a pending action carries a preview; an older server omits it. */
+  state?: string;
+  /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
+  preview?: DecisionActionPreview;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

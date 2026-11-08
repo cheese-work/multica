@@ -70,6 +70,11 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "recent-agents",
+        title: t(($) => $.chat.recent_agents_label),
+      },
+      {
+        tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.click),
         description: t(($) => $.issue.opening.hint),
@@ -150,6 +155,12 @@ export function useSettingsSearchIndex(
         anchor: "auto-compact",
         title: t(($) => $.workspace.auto_compact_label),
         description: t(($) => $.workspace.auto_compact_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "runtime-profile",
+        title: t(($) => $.workspace.runtime_profile_label),
+        description: t(($) => $.workspace.runtime_profile_hint),
       },
       {
         tab: "workspace",

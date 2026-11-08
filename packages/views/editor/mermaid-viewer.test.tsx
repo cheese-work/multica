@@ -481,6 +481,19 @@ describe("MermaidViewer canvas interaction", () => {
     expect(currentScale()).toBeCloseTo(fitted, 5);
   });
 
+  it("leaves browser-zoom shortcuts (Ctrl/Cmd + - = 0) to the browser", () => {
+    render(<Harness />);
+    const fitted = currentScale();
+
+    for (const key of ["+", "=", "-", "0"]) {
+      for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+        const notPrevented = fireEvent.keyDown(canvas(), { key, ...mod });
+        expect(notPrevented).toBe(true);
+        expect(currentScale()).toBeCloseTo(fitted, 5);
+      }
+    }
+  });
+
   it("pans with the arrow keys", () => {
     render(<Harness />);
     const before = currentTranslate();
