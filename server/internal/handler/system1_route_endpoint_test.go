@@ -378,3 +378,56 @@ func TestRouteEndpointRefusesANoOp(t *testing.T) {
 	c.route(t, routeBody("in_progress", nil), nil).Want(http.StatusConflict)
 	c.wantNothingWritten(t, "in_progress")
 }
+
+// A squad's leader runs on the authority of the member who routed, not on the
+// issue creator's: a member who cannot invoke the leader starts no run by
+// routing an issue its creator could have started.
+func TestRouteEndpointJudgesTheSquadLeaderByTheRequestingMember(t *testing.T) {
+	c := newRouteCase(t)
+	leader, ownerID, memberID := privateAgentTestFixture(t)
+	squadID := createSquadInWorkspace(t, ownerID, testWorkspaceID, "route squad "+workflowTestSuffix(), leader)
+	dbfx.Exec(t, `UPDATE issue SET status = 'backlog', creator_type = 'member', creator_id = $2, assignee_type = 'squad', assignee_id = $3 WHERE id = $1`, c.issueID, ownerID, squadID)
+
+	got := c.route(t, routeBody("in_progress", nil), map[string]string{"X-User-ID": memberID}).Want(http.StatusOK)
+	var resp routeResponse
+	got.JSON(&resp)
+	if resp.Run.Started || resp.Run.Refused != "squad_leader_not_admitted" {
+		t.Fatalf("run = %+v, want refused squad_leader_not_admitted: %s", resp.Run, got.Text())
+	}
+	if runs := pendingStepRuns(t, c.issueID, leader); len(runs) != 0 {
+		t.Fatalf("pending leader runs = %v, want none", runs)
+	}
+}
+
+// A run that carries taint cannot route work into an untainted run: the run
+// the move starts inherits the caller's taint.
+func TestRouteEndpointPassesTheCallersTaintToTheRunItStarts(t *testing.T) {
+	c := newRouteCase(t)
+	headers := c.agentRun(t, c.otherAgent(t), "in_progress")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['intake-1'] WHERE id = $1`, headers["X-Task-ID"])
+
+	c.route(t, routeBody("in_review", nil), headers).Want(http.StatusOK)
+
+	var taint []string
+	dbfx.QueryRow(t, `SELECT COALESCE(taint_ids, '{}') FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched')`, c.issueID, c.handlerID).Scan(&taint)
+	if len(taint) != 1 || taint[0] != "intake-1" {
+		t.Fatalf("started run taint = %v, want [intake-1]", taint)
+	}
+}
+
+// The reply is a read of the issue: an elevated run gets a stub, not the text,
+// of a description an external source may have written.
+func TestRouteEndpointStubsAMarkedDescriptionForAnElevatedRun(t *testing.T) {
+	c := newRouteCase(t)
+	f := claimElevated(t, "multica_cross_issue")
+	dbfx.Exec(t, `UPDATE issue SET description = $2, description_external_read = true WHERE id = $1`, c.issueID, hostileBody)
+
+	req := withURLParam(workflowRequest("POST", "/api/issues/"+c.issueID+"/route", routeBody("in_review", nil)), "id", c.issueID)
+	res := testutil.Call(t, testHandler.RouteIssue, testutil.WithHeaders(asElevatedToken(req, f.taskID), "X-Agent-ID", c.otherAgent(t)))
+	if res.Code != http.StatusOK {
+		t.Fatalf("route status = %d: %s", res.Code, res.Text())
+	}
+	if strings.Contains(res.Text(), hostileBody) {
+		t.Fatalf("route reply leaks a marked description (status %d): %s", res.Code, res.Text())
+	}
+}

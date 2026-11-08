@@ -145,7 +145,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	suppress, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prev, params, handoff, req.SuppressRun)
-	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prev, params, false, handoff != nil, suppress))
+	writeCtx, handed := withWakeupHandedTo(h.actingTaskContext(r), h.handedToAgentIfRun(r, actorType, actorID, prev, params, false, handoff != nil, suppress))
 	writeCtx = withBudgetActor(writeCtx, r)
 	if handoff != nil {
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -227,7 +227,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			if runTrigger.AssigneeType == "agent" {
 				runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, memberActorUserID(actorType, actorID), overlay)
 			} else {
-				runAfter, err = th.enqueueSquadLeaderRunInTx(writeCtx, q, updated)
+				runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, actorType, actorID)
 			}
 			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 			if refused, isRefusal := routeRefusal(err); isRefusal {
@@ -315,6 +315,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 
 	resp := issueToResponse(updated, h.getIssuePrefix(r.Context(), updated.WorkspaceID))
 	h.fillStatusCategory(r.Context(), updated.WorkspaceID, &resp)
+	h.newReadFilter(r).stubDescription(h, updated, &resp)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"issue":          resp,
 		"observation_id": util.UUIDToString(observationID),
