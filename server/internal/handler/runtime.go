@@ -553,10 +553,23 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 
 	changed := false
 
-	if req.Visibility != nil || req.SharedWith != nil {
-		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), rt, member, req)
+	// Access and rename (and their audit rows) commit together or not at all.
+	var tx pgx.Tx
+	var qtx *db.Queries
+	if req.Visibility != nil || req.SharedWith != nil || req.CustomName != nil {
+		tx, err = h.TxStarter.Begin(r.Context())
 		if err != nil {
-			if writeRuntimeRevocationBusy(w, err) {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx = h.Queries.WithTx(tx)
+	}
+
+	if req.Visibility != nil || req.SharedWith != nil {
+		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, qtx, rt, member, req)
+		if err != nil {
+			if failedAudit(w, r, err, "runtime.access.update") || writeRuntimeRevocationBusy(w, err) {
 				return
 			}
 			if errors.Is(err, errRuntimeOwnerChanged) {
@@ -585,6 +598,23 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSpace(*req.CustomName)
 		customName := pgtype.Text{String: trimmed, Valid: trimmed != ""}
 
+		// The row lock makes the audited before-name the one this rename replaces.
+		current, err := qtx.LockAgentRuntimeForAccessChange(r.Context(), runtimeUUID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "runtime not found")
+				return
+			}
+			slog.Error("lock runtime for rename failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		audit := auditInput{
+			Kind: "runtime.rename", WorkspaceID: rt.WorkspaceID, TargetID: runtimeUUID,
+			Before: map[string]any{"custom_name": auditText(current.CustomName)},
+			After:  map[string]any{"custom_name": auditText(customName)},
+		}
+
 		if req.ApplyToMachine && rt.DaemonID.Valid {
 			// Non-admins may only relabel their own runtimes on the machine;
 			// owners/admins rename every runtime sharing the daemon_id. A NULL
@@ -593,7 +623,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			if !roleAllowed(member.Role, "owner", "admin") {
 				ownerFilter = member.UserID
 			}
-			rows, err := h.Queries.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
+			rows, err := qtx.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
 				CustomName:  customName,
 				WorkspaceID: rt.WorkspaceID,
 				DaemonID:    rt.DaemonID,
@@ -604,6 +634,9 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to update runtime")
 				return
 			}
+			// One row on the addressed runtime plus the fan-out count keeps the
+			// rename atomic without a row per machine runtime.
+			audit.After["runtimes_renamed"] = len(rows)
 			// The actor always owns (or admins) the runtime addressed by :id,
 			// so it is among the updated rows — surface it in the response.
 			for _, row := range rows {
@@ -612,9 +645,8 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			changed = true
 		} else {
-			updated, err := h.Queries.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
+			updated, err := qtx.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
 				CustomName: customName,
 				ID:         runtimeUUID,
 			})
@@ -624,7 +656,17 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rt = updated
-			changed = true
+		}
+		if err := h.writeAudit(r.Context(), qtx, r, audit); err != nil {
+			writeAuditFailure(w, r, err, "runtime.rename")
+			return
+		}
+		changed = true
+	}
+	if tx != nil {
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
 		}
 	}
 
@@ -701,17 +743,11 @@ func (p runtimeWorkspaceAccessRevocationPlan) hasDependencies() bool {
 // updateRuntimeAccessIfNoDependencies applies grants without disrupting work.
 // Binding writers take the same runtime lock and recheck access.
 //
-// A non-empty plan is deliberately returned without committing. The caller
+// The caller owns the transaction and commits it. A non-empty plan is
+// deliberately returned without committing. The caller
 // turns it into the same confirmation response used by the disruptive path;
 // the confirmed endpoint will take a fresh locked snapshot before revoking.
-func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
-
+func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, qtx *db.Queries, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
 	lockedRuntime, err := qtx.LockAgentRuntimeForAccessChange(ctx, rt.ID)
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("lock runtime: %w", err)
@@ -765,8 +801,11 @@ func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("update runtime visibility: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("commit transaction: %w", err)
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "runtime.access.update", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: runtimeAccessAuditFields(updated),
+	}); err != nil {
+		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, auditWriteError{err}
 	}
 	return updated, runtimeWorkspaceAccessRevocationPlan{}, true, nil
 }
@@ -1145,6 +1184,17 @@ func (h *Handler) RevokeRuntimeWorkspaceAccess(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to revoke runtime access")
 		return
 	}
+	revokeAfter := runtimeAccessAuditFields(updated)
+	revokeAfter["agents_unbound"] = len(result.UnboundAgents)
+	revokeAfter["tasks_cancelled"] = len(result.CancelledTasks)
+	revokeAfter["autopilots_paused"] = len(result.PausedAutopilots)
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.access.revoke", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: revokeAfter,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.access.revoke")
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit runtime privacy change")
@@ -1397,6 +1447,13 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
@@ -1615,6 +1672,13 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	// Finally delete the runtime row itself.
 	if err := qtx.DeleteAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
 		return
 	}
 
