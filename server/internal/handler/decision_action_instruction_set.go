@@ -43,6 +43,7 @@ func textSetRead(field, targetID, live, after string) configChangeRead {
 
 func init() {
 	registerConfigChange("squad.instructions.set", configChange{
+		Fields: []string{"squad.instructions"},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			_, err := loadSquadTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
 			return err
@@ -89,6 +90,7 @@ func init() {
 		},
 	})
 	registerConfigChange("workspace.context.set", configChange{
+		Fields: []string{"workspace.context"},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
 			return err
