@@ -319,6 +319,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `multica chat` 读取的是**智能体当前正在处理的外部聊天会话**，主要供聊天集成中的智能体使用，不能用来浏览任意工作区对话。
 
+### 影子报告
+
+任何工作区成员都可以读取 System 1 影子报告：
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` 和 `routing` 块覆盖全部时间。`route` 块覆盖 `[since, until)` 窗口：`--since` 和 `--until` 接受 RFC 3339 时间，`--until` 默认为现在，`--since` 默认为 `--until` 之前 24 小时。时间格式错误或 `--since` 晚于 `--until` 时，服务器返回 400。
+
+`route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
+
 ## ID 和输出格式
 
 任务使用 `MUL-123` 这样的 key 或完整 UUID，不接受 UUID 短前缀。

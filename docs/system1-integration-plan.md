@@ -28,6 +28,16 @@ One row per event in `system1_observation` (migrations `936` to `939`).
 | `choice_key`, `chosen_index`, `answered_at`, `time_to_answer_ms` | Chosen handler (`agent:<id>` or `member:<id>`) | The human answer. `choice_key` is `recommended`, `other`, `option` or `free_text`. |
 | `reversed_at` | A person reassigned the issue within 1 hour | The answer was disclaimed |
 
+### Route label (CHE-4439 S1)
+
+Kind `route` is the routing agent's own pick, written in the issue write's
+transaction. `class` is `<workflow>/<from status>`, `choice_key` is
+`<to status>|<owner type>:<owner id>`, `decision_source` is `agent` or `human`,
+and `inputs.via` is `route` (`issue route`) or `status` (the fallback).
+`event_id` is the id of the `status_changed` activity row the label belongs to.
+An owner-only route changes no status and keeps `event_id` NULL.
+`inputs.routing_exit` is false for a route from a step with no routing agent.
+
 ### Test-first waiver ask (CHE-4383 B2a)
 
 A waiver ask is an ordinary decision ask with a closed contract. System 1
@@ -121,6 +131,35 @@ CLI: `multica decision shadow-report` (JSON output; any workspace member).
 - `ready` is true once a kind has 100 decided rows. Report precision and
   coverage by class at that point.
 - Precision = agreed / predicted. Coverage = predicted / decided.
+
+#### Route block (CHE-4439 S6)
+
+`since` and `until` (RFC 3339; default: the last 24 hours, `until` defaults to
+now) set the window `[since, until)`. They apply to the `route` block only.
+The `decision` and `routing` blocks stay all-time. A bad time or `since` after
+`until` is a 400. The CLI takes `--since` and `--until`.
+
+Coverage and adoption use one event population, joined by `event_id`:
+
+- `eligible_exits`: agent `status_changed` rows in the window with
+  `details.routing_exit = true`. The mark is written at apply time, so a later
+  setting change does not move past numbers.
+- `matched_labels`: eligible events with at least one route row with
+  `decision_source = agent`. `label_coverage = matched_labels / eligible_exits`,
+  at most 1. A fallback capture failure is an eligible exit with no match.
+- `via_route_share`: matched events whose earliest agent route row has
+  `via = route`, divided by `matched_labels`.
+- `duplicate_labels`: agent route rows in the window that share a non-null
+  `event_id` with an earlier row. Target 0. One task leaving the same step
+  twice is two events, not duplicates.
+- Outside coverage and adoption: `labels_total` (agent route rows in the
+  window), `owner_only_labels` (`event_id` NULL), `non_routing_labels` (non-null
+  `event_id` and `inputs.routing_exit = false`, so it does not overlap
+  `owner_only_labels`).
+- `overridden`: agent route rows in the window with `reversed_at` set.
+  `override_rate = overridden / labels_total`.
+- Per class: `decided`, `predicted`, `agreed`, `coverage`, `precision` over
+  route rows created in the window, from every decision source.
 
 ## Where System 1 plugs in
 

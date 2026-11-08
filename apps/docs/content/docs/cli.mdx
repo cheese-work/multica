@@ -440,6 +440,18 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
+### Shadow report
+
+Any workspace member reads the System 1 shadow report:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+The `decision` and `routing` blocks cover all time. The `route` block covers the window `[since, until)`: `--since` and `--until` take RFC 3339 times, `--until` defaults to now and `--since` to 24 hours before `--until`. The server refuses a bad time or a `--since` after `--until` with 400.
+
+The `route` block counts one population of events: agent status changes marked as leaving a routing step (`eligible_exits`) and the route labels that carry the same event id (`matched_labels`). `label_coverage` is `matched_labels / eligible_exits` and never exceeds 1. `via_route_share` is the part of matched events whose first label came from `issue route`, not from the status fallback. `duplicate_labels` counts labels that share an event with an earlier label (target 0). `labels_total`, `owner_only_labels` (a route that kept the status, so it has no event) and `non_routing_labels` (a route from a step with no routing agent) sit outside coverage. `overridden` counts agent labels a person reversed within 1 hour, and `override_rate` is `overridden / labels_total`. The block also carries the per-class `decided`, `predicted`, `agreed`, `coverage` and `precision`.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.
