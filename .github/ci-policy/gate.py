@@ -93,12 +93,43 @@ def extract_head(root: Path, head: str, dest: Path) -> list[str]:
     return skipped
 
 
+HANDOFF_DOC = {  # the parsed `.github/workflows/ci-policy-handoff.yml` (key `on` as a string); a test pins it to the shipped file
+    "name": "ci-policy-handoff",
+    "on": {"pull_request_review": {"types": ["submitted", "dismissed"]}, "merge_group": None},
+    "permissions": {},
+    "concurrency": {
+        "group": "ci-policy-handoff-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}",
+        "cancel-in-progress": True,
+    },
+    "jobs": {"handoff": {
+        "name": "${{ github.event_name == 'merge_group' && 'queue-handoff' || 'review-handoff' }}",
+        "runs-on": "${{ github.repository_owner == 'cheese-work' && fromJSON('[\"self-hosted\",\"Linux\",\"X64\",\"cheese-x99-gate\"]') || fromJSON('[\"ubuntu-latest\"]') }}",
+        "timeout-minutes": 2,
+        "steps": [{"run": 'echo "ci-policy-queue.yml follows this run"'}],
+    }},
+}
+
+
+def first_difference(want, got, path="") -> str | None:
+    if isinstance(want, dict) and isinstance(got, dict):
+        for key in sorted(set(want) | set(got), key=str):
+            if key not in got or key not in want:
+                return f"{path}/{key}"
+            if diff := first_difference(want[key], got[key], f"{path}/{key}"):
+                return diff
+        return None
+    if isinstance(want, list) and isinstance(got, list) and len(want) == len(got):
+        return next((d for i, (x, y) in enumerate(zip(want, got)) if (d := first_difference(x, y, f"{path}/{i}"))), None)
+    return None if type(want) is type(got) and want == got else (path or "/")
+
+
 def handoff_violations(root: Path, base: str, tree: Path) -> list:
     """The review/queue handoff is the only signal that revokes a cached success (an approval withdrawn without a push), and
-    its definition comes from the PR. A PR that removes or narrows it would hide the withdrawal, even with a human approval
-    of the edit. So the head must keep the contract: the file, its name (the trusted receiver follows it by name), the
-    `pull_request_review` (submitted, dismissed) and `merge_group` triggers, and no job that can skip. A repo whose base
-    does not carry the file yet is not enrolled and is not judged by it."""
+    its definition comes from the PR. Any edit can delay or drop it: a removed trigger, a narrowed type, a job `if:`, a
+    runner label that never picks the job up, a long timeout or a queueing concurrency group. A human approval of such an
+    edit would not undo a withdrawal later. So the head must keep the whole contract: the parsed workflow equals
+    `HANDOFF_DOC` (comments aside). A repo whose base does not carry the file yet is not enrolled, so a missing file is not
+    judged there. Changing the contract takes a change to this script first."""
     enrolled = subprocess.run(["git", "-C", str(root), "cat-file", "-e", f"{base}:{HANDOFF}"], capture_output=True).returncode == 0
     path = tree / HANDOFF
     if not path.exists():
@@ -113,19 +144,10 @@ def handoff_violations(root: Path, base: str, tree: Path) -> list:
         return bad("not valid YAML")
     if not isinstance(doc, dict):
         return bad("not a workflow")
-    triggers = doc.get("on", doc.get(True))
-    review = triggers.get("pull_request_review") if isinstance(triggers, dict) else None
-    reasons = []
-    if doc.get("name") != "ci-policy-handoff":
-        reasons.append("name must be ci-policy-handoff")
-    if not isinstance(review, dict) or not {"submitted", "dismissed"} <= set(review.get("types") or []):
-        reasons.append("needs the pull_request_review trigger with types submitted and dismissed")
-    if not isinstance(triggers, dict) or "merge_group" not in triggers:
-        reasons.append("needs the merge_group trigger")
-    jobs = doc.get("jobs")
-    if not isinstance(jobs, dict) or not jobs or any(not isinstance(j, dict) or "if" in j for j in jobs.values()):
-        reasons.append("needs at least one job and no job `if:`")
-    return bad("; ".join(reasons)) if reasons else []
+    doc = {("on" if k is True else k): v for k, v in doc.items()}  # PyYAML (YAML 1.1) reads the key `on` as True
+    if diff := first_difference(HANDOFF_DOC, doc):
+        return bad(f"differs from the trusted handoff contract at {diff}: a changed trigger, job, runner, timeout or concurrency can delay a withdrawn approval")
+    return []
 
 
 def check_pr(root: Path, repo: str, pr: int, base: str, head: str, private: bool, default_branch: str, api=gh_api) -> list:

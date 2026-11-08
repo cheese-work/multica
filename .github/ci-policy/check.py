@@ -61,7 +61,8 @@ def evaluate(cond, event, known=None, funcs=None):
     """Three-valued evaluation of a workflow `if:`/`cancel-in-progress` value for one event.
 
     Only `github.event_name`, the `known` atoms and the `funcs` (name -> value of a call without arguments) are known; any
-    other atom or call is unknown (None), so callers treat "not provably False" as admitted. Parse trouble also yields unknown."""
+    other atom or call is unknown (None), so callers treat "not provably False" as admitted. Parse trouble, and any token
+    left over after the expression, also yield unknown."""
     if cond is None or isinstance(cond, bool):
         return cond
     expr = re.sub(r"^\s*\$\{\{(.*)\}\}\s*$", r"\1", str(cond), flags=re.S)
@@ -113,7 +114,8 @@ def evaluate(cond, event, known=None, funcs=None):
         tok = take()
         if tok == "(":
             v = or_()
-            take()
+            if take() != ")":
+                raise ValueError("unbalanced")
             return v
         if tok.startswith("'"):
             return tok[1:-1].replace("''", "'")
@@ -127,11 +129,13 @@ def evaluate(cond, event, known=None, funcs=None):
         return {"github.event_name": event, "true": True, "false": False, **(known or {})}.get(tok)
 
     try:
-        return truth(or_())
-    except IndexError:
+        value = truth(or_())
+    except (IndexError, ValueError):
         return None
+    return value if pos == len(toks) else None  # a suffix the parser did not read (`< 3`, a second `==`) makes it unknown
 
 
+ALWAYS = {"always": True, "cancelled": False}  # how a no-argument always() and cancelled() read when a job is judged by event
 MAX_MATRIX = 256  # GitHub itself rejects a matrix with more jobs than this
 
 
@@ -276,7 +280,7 @@ def required_check_rules(w: Workflow, name: str, job_id: str, job: dict, mq: boo
             continue
         if {"paths", "paths-ignore"} & w.on[event].keys():
             out.append(Violation(w.file, "R5", f"required check {name!r}: {event} trigger has a paths filter (check can hang)"))
-        if evaluate(job.get("if"), event) is False:
+        if evaluate(job.get("if"), event, None, ALWAYS) is False:  # the same reading of always() as R8's skip_witness
             out.append(Violation(w.file, "R5", f"required check {name!r}: job {job_id} `if:` excludes {event}"))
     return out
 
@@ -335,11 +339,11 @@ def skip_witness(cond, needs: list, w: Workflow) -> str | None:
         return "it needs more than 6 jobs"
     events = [e for e in AGGREGATE_EVENTS if e in w.on] or [None]
     for event in events:
-        if evaluate(cond, event, None, {"always": True, "cancelled": False}) is False:
+        if evaluate(cond, event, None, ALWAYS) is False:
             continue  # excluded on this event whatever the needs are: R5 reports that
         for states in itertools.product(("success", "failure", "cancelled", "skipped"), repeat=len(needs)):
             known = {f"needs.{n}.result": s for n, s in zip(needs, states)}
-            if evaluate(cond, event, known, {"always": True, "cancelled": False}) is not True:
+            if evaluate(cond, event, known, ALWAYS) is not True:
                 return f"{event or 'the event'} runs with " + (", ".join(f"{n} {s}" for n, s in zip(needs, states)) or "no needs")
     return None
 
