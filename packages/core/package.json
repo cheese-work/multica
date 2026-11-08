@@ -221,6 +221,7 @@
   },
   "devDependencies": {
     "@multica/eslint-config": "workspace:*",
+    "lodash": "4.17.15",
     "@multica/tsconfig": "workspace:*",
     "@testing-library/react": "catalog:",
     "@types/react": "catalog:",
