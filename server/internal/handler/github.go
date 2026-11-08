@@ -1734,7 +1734,9 @@ func (repo *ghPRHeadRepository) sameOwnerHead(baseID, baseOwnerID int64, baseOwn
 }
 
 type ghPullRequestPayload struct {
-	Action      string `json:"action"`
+	Action string `json:"action"`
+	// Reason is GitHub's cause of a dequeued action (e.g. MERGE_CONFLICT).
+	Reason      string `json:"reason"`
 	PullRequest struct {
 		Number         int32  `json:"number"`
 		HTMLURL        string `json:"html_url"`
@@ -2256,6 +2258,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
+	case p.Action == "dequeued":
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. EventAt is
+		// the signed updated_at, which keys the wake (not the unsigned header).
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, EventAt: p.PullRequest.UpdatedAt}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
