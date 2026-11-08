@@ -155,7 +155,7 @@ func ownerCASParse(w http.ResponseWriter, raw map[string]json.RawMessage, c owne
 // row version if a concurrent writer committed first; there is no
 // read-then-write window. Zero rows updated means stale or missing, told apart
 // by a read that writes nothing.
-func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
+func (h *Handler) ownerCASWrite(ctx context.Context, r *http.Request, c ownerCASColumn, workspaceID, id, newContent, expectedDigest string) (hermesExceptionSwapResult, hermesExceptionRejectReason, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
@@ -165,10 +165,37 @@ func (h *Handler) ownerCASWrite(ctx context.Context, c ownerCASColumn, workspace
 	if reason != hermesExceptionRejectNone {
 		return result, reason, err
 	}
+	if err := h.auditGovernedWrite(ctx, tx, r, c, workspaceID, id, result); err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 	return result, hermesExceptionRejectNone, nil
+}
+
+// auditGovernedWrite records the swap in the swap's own transaction. The audit
+// kind is the column kind. A failed insert comes back as an auditWriteError so
+// the caller answers a retryable 500 and the deferred rollback undoes the swap.
+func (h *Handler) auditGovernedWrite(ctx context.Context, tx pgx.Tx, r *http.Request, c ownerCASColumn, workspaceID, id string, res hermesExceptionSwapResult) error {
+	wsUUID, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return auditWriteError{err}
+	}
+	idUUID, err := util.ParseUUID(id)
+	if err != nil {
+		return auditWriteError{err}
+	}
+	if err := h.writeAudit(ctx, h.Queries.WithTx(tx), r, auditInput{
+		Kind:        c.kind,
+		WorkspaceID: wsUUID,
+		TargetID:    idUUID,
+		Before:      map[string]any{c.field: res.BeforeText},
+		After:       map[string]any{c.field: res.AfterText},
+	}); err != nil {
+		return auditWriteError{err}
+	}
+	return nil
 }
 
 // ownerCASWriteTx is the compare-and-swap inside the caller's transaction; the
@@ -180,6 +207,13 @@ func ownerCASWriteTx(ctx context.Context, tx pgx.Tx, c ownerCASColumn, workspace
 	}
 	idUUID, err := util.ParseUUID(id)
 	if err != nil {
+		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
+	}
+	// Lock the row and read the old text for the audit row. A missing row or a
+	// stale digest is still decided by the UPDATE below.
+	var beforeText string
+	err = tx.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(%s, '') FROM %s WHERE id = $1 AND %s = $2 FOR UPDATE`, c.col, c.table, c.scopeCol), idUUID, wsUUID).Scan(&beforeText)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal, err
 	}
 	var storedDigest string
@@ -205,7 +239,7 @@ func ownerCASWriteTx(ctx context.Context, tx pgx.Tx, c ownerCASColumn, workspace
 		return hermesExceptionSwapResult{}, hermesExceptionRejectInternal,
 			fmt.Errorf("post-write digest mismatch: stored %s, sent %s", storedDigest, want)
 	}
-	return hermesExceptionSwapResult{BeforeDigest: expectedDigest, AfterDigest: storedDigest}, hermesExceptionRejectNone, nil
+	return hermesExceptionSwapResult{BeforeDigest: expectedDigest, AfterDigest: storedDigest, BeforeText: beforeText, AfterText: newContent}, hermesExceptionRejectNone, nil
 }
 
 // ownerCASApply runs authorize, parse, write and audit for one request. It
@@ -223,9 +257,12 @@ func (h *Handler) ownerCASApply(w http.ResponseWriter, r *http.Request, actorTyp
 	if !configSyncSettingsValid(w, c, content) || !h.instructionTokenLimitOK(w, r, c, workspaceID, id, content) {
 		return hermesExceptionSwapResult{}, false
 	}
-	result, reason, err := h.ownerCASWrite(r.Context(), c, workspaceID, id, content, digest)
+	result, reason, err := h.ownerCASWrite(r.Context(), r, c, workspaceID, id, content, digest)
 	logOwnerCASOutcome(r, c, id, result, reason, "", err)
 	if reason != hermesExceptionRejectNone {
+		if failedAudit(w, r, err, c.kind) {
+			return hermesExceptionSwapResult{}, false
+		}
 		hermesExceptionWriteRejection(w, r, reason, err)
 		return hermesExceptionSwapResult{}, false
 	}
