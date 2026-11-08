@@ -68,6 +68,29 @@ Not captured: the original `decision_source = agent` case. No code path lets an
 agent decide a request today, so the value exists in the schema and has no
 writer.
 
+### Waiver labels (CHE-4383 B2b)
+
+Table `system1_label` (migration `99951_system1_label`, no foreign key, no
+free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
+(`human_answer`), `label`, `superseded_at`.
+
+- **Answer side:** the `decision_answer` insert trigger reads the stored
+  `inputs.option_keys` of an observation with topic `test_first_waiver` and
+  writes one label for the chosen index: `waive` or `refuse`, whatever the
+  option order. A free-text answer (no index), or a key outside
+  `waive`/`refuse`, is `unmapped`. `unmapped` stays out of the agreement
+  denominator and is counted separately.
+- **Disclaim:** the disclaim trigger sets `superseded_at` on the answer's
+  label, beside the existing `reversed_at`. A superseded row is never the
+  label of record.
+- **Withdraw then re-answer:** a replacement answer on the reopened request
+  writes its own label (the old one stays superseded), because no live label
+  remains. The observation row keeps the first answer's choice fields.
+- An ask without the topic gets no label row; its `choice_key` stays
+  positional.
+- Later slices add labeller rows (`source`, task id, correction link) and
+  the lookup index when a query needs it.
+
 ## Recommended option stays first
 
 - The request API (`RequireRecommendedFirst`) moves the recommended option to
