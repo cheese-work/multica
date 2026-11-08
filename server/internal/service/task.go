@@ -9325,11 +9325,12 @@ func commentEventFields(c db.Comment) map[string]any {
 }
 
 // failureNoticeText keeps a terminal-failure notice on the timeline but, when the
-// failing agent cannot act (archived, no runtime, or unreadable), flattens the
-// (untrusted) error text's agent/squad/member/@all mention links into plain @labels,
-// so the notice never points a wake or a notification at anyone. Labels may hold
-// brackets, so one pass can assemble a new link out of the leftovers; repeat until
-// none is left (each pass shortens the text, so it ends). Issue links stay.
+// failing agent cannot act (archived, no runtime, or unreadable), makes the
+// (untrusted) error text's agent/squad/member/@all mention links inert, so the
+// notice never points a wake or a notification at anyone. Issue links stay.
+// Pass 1 flattens links to plain @labels. Labels may hold brackets, so that pass
+// can assemble a new link from the leftovers; pass 2 then renames the scheme of
+// whatever is left. Two passes, never a loop: a loop is quadratic on deep nesting.
 func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID, text string) string {
 	if !strings.Contains(text, "mention://") {
 		return text
@@ -9337,18 +9338,16 @@ func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID
 	if agent, err := s.Queries.GetAgent(ctx, agentID); err == nil && !agent.ArchivedAt.Valid && agent.RuntimeID.Valid {
 		return text
 	}
-	for {
-		flat := util.MentionRe.ReplaceAllStringFunc(text, func(m string) string {
-			if sub := util.MentionRe.FindStringSubmatch(m); sub[2] != "issue" {
-				return "@" + sub[1]
-			}
-			return m
-		})
-		if flat == text {
-			return text
+	text = util.MentionRe.ReplaceAllStringFunc(text, func(m string) string {
+		if sub := util.MentionRe.FindStringSubmatch(m); sub[2] != "issue" {
+			return "@" + sub[1]
 		}
-		text = flat
+		return m
+	})
+	if util.MentionRe.MatchString(text) {
+		text = strings.ReplaceAll(text, "](mention://", "](mention-removed://")
 	}
+	return text
 }
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
