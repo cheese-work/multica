@@ -8677,7 +8677,6 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		promptOptions = append(promptOptions, WithWorktreeBranch(env.LocalWorktree.Branch, env.LocalWorktree.BaseCommit))
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
-	initContext := buildInitContext(runtimeBrief, prompt)
 
 	// Pass task-scoped auth credentials and context so the spawned agent CLI
 	// can call the Multica API and the local daemon (e.g. `multica repo checkout`).
@@ -8863,6 +8862,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		runtimeBrief = freshBrief
 		prompt = BuildPrompt(task, provider, promptOptions...)
 	}
+	// Built after the clock-guard rebuild so the byte counts describe the
+	// brief and prompt actually launched.
+	initContext := buildInitContext(runtimeBrief, prompt)
 	backend, err := agent.ResolveBackend(provider, backendConfig)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
