@@ -68,7 +68,7 @@ WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('i
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = intent.issue_id AND issue.workspace_id = intent.workspace_id));
 
 -- name: LockDecisionOrphanRequests :many
-SELECT request.id FROM decision_request request
+SELECT request.* FROM decision_request request
 WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.issue_id = sqlc.arg('issue_id')
   AND (NOT EXISTS (SELECT 1 FROM workspace WHERE workspace.id = request.workspace_id)
     OR NOT EXISTS (SELECT 1 FROM issue WHERE issue.id = request.issue_id AND issue.workspace_id = request.workspace_id))
