@@ -71,6 +71,7 @@ import {
   type SettingsSaveStatus,
 } from "./settings-layout";
 import { IdleGuardRows } from "./idle-guard-rows";
+import { RuntimeProfileRow } from "./runtime-profile-row";
 import { RoutingAgentRows } from "./routing-agent-rows";
 import { useAutoSave } from "./use-auto-save";
 import { useSettingsDraft } from "./use-settings-draft";
@@ -666,6 +667,8 @@ export function WorkspaceTab() {
             </SettingsRow>
             </>
           )}
+
+          <RuntimeProfileRow workspace={workspace} canEdit={canManageWorkspace && !readOnly} />
 
           {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
           <IdleGuardRows workspace={workspace} canEdit={isOwner} />

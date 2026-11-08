@@ -352,6 +352,7 @@ export function ChatPage() {
     <NewChatButton
       agents={c.availableAgents}
       userId={c.user?.id}
+      sessions={c.sessions}
       onStart={startNewChat}
       side="bottom"
     />

@@ -15,6 +15,7 @@ func newIssueBudgetRaiseTestCmd() *cobra.Command {
 	c := &cobra.Command{Use: "raise"}
 	c.Flags().Int("runs", 0, "")
 	c.Flags().String("output", "table", "")
+	c.Flags().String("for", "", "")
 	return c
 }
 
@@ -51,6 +52,7 @@ func budgetRequestServer(t *testing.T, posts *[]map[string]any) {
 func TestRunIssueBudgetRaiseRequestsAndPrintsTheApproveURL(t *testing.T) {
 	var posts []map[string]any
 	budgetRequestServer(t, &posts)
+	asPAT(t)
 	cmd := newIssueBudgetRaiseTestCmd()
 	_ = cmd.Flags().Set("runs", "60")
 	out, err := captureStdout(t, func() error { return runIssueBudgetRaise(cmd, []string{testIssueUUID}) })
@@ -69,6 +71,7 @@ func TestRunIssueBudgetRaiseRequestsAndPrintsTheApproveURL(t *testing.T) {
 func TestRunIssueBudgetRaiseDefaultsToTheSuggestedCap(t *testing.T) {
 	var posts []map[string]any
 	budgetRequestServer(t, &posts)
+	asPAT(t)
 	if _, err := captureStdout(t, func() error { return runIssueBudgetRaise(newIssueBudgetRaiseTestCmd(), []string{testIssueUUID}) }); err != nil {
 		t.Fatalf("raise: %v", err)
 	}
@@ -149,6 +152,7 @@ func TestRunIssueBudgetGetJSONKeepsEveryServerField(t *testing.T) {
 func TestRunIssueBudgetTopUpRequestsWithoutACap(t *testing.T) {
 	var posts []map[string]any
 	budgetRequestServer(t, &posts)
+	asPAT(t)
 	cmd := &cobra.Command{Use: "top-up"}
 	cmd.Flags().String("output", "table", "")
 	out, err := captureStdout(t, func() error { return runIssueBudgetTopUp(cmd, []string{testIssueUUID}) })

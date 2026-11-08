@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -44,13 +45,17 @@ var issueBudgetTopUpCmd = &cobra.Command{
 	RunE:  runIssueBudgetTopUp,
 }
 
+const forFlagHelp = "Task token only: user ID of the person who approves the proposal (an issue task needs it; a chat task asks the chat's creator)"
+
 func init() {
 	issueBudgetTopUpCmd.Flags().String("output", "table", "Output format: table or json")
+	issueBudgetTopUpCmd.Flags().String("for", "", forFlagHelp)
 	issueBudgetCmd.AddCommand(issueBudgetTopUpCmd)
 	issueBudgetGetCmd.Flags().String("output", "table", "Output format: table or json")
 	issueBudgetCmd.AddCommand(issueBudgetGetCmd)
 	issueBudgetRaiseCmd.Flags().Int("runs", 0, "Total runs the issue may use (default: the suggested raise)")
 	issueBudgetRaiseCmd.Flags().String("output", "table", "Output format: table or json")
+	issueBudgetRaiseCmd.Flags().String("for", "", forFlagHelp)
 	issueBudgetCmd.AddCommand(issueBudgetRaiseCmd)
 	issueCmd.AddCommand(issueBudgetCmd)
 }
@@ -95,6 +100,9 @@ func requestIssueBudgetAction(cmd *cobra.Command, issueArg, kind string) error {
 		}
 		body["new_cap"] = runs
 	}
+	if strings.HasPrefix(resolveToken(cmd), cli.TaskTokenPrefix) {
+		return proposeIssueBudgetAction(ctx, cmd, client, issueRef, kind, body)
+	}
 	var raw json.RawMessage
 	if err := client.PostJSON(ctx, path+"/requests", body, &raw); err != nil {
 		return fmt.Errorf("request run budget %s: %w", kind, err)
@@ -115,6 +123,25 @@ func requestIssueBudgetAction(cmd *cobra.Command, issueArg, kind string) error {
 		fmt.Fprintln(os.Stdout, r.ApproveURL)
 	}
 	return nil
+}
+
+// proposeIssueBudgetAction is the task-token path: an agent cannot open the
+// spend request itself, so it proposes the action and the person approves the
+// card. The PAT path above is unchanged (CHE-2964).
+func proposeIssueBudgetAction(ctx context.Context, cmd *cobra.Command, client *cli.APIClient, issue resolvedID, kind string, body map[string]any) error {
+	actionType := "issue.run_budget." + kind
+	params := map[string]json.RawMessage{}
+	for key, value := range map[string]any{"issue_id": issue.ID, "window_id": body["window_id"], "new_cap": body["new_cap"]} {
+		if value != nil {
+			params[key], _ = json.Marshal(value)
+		}
+	}
+	forUser, _ := cmd.Flags().GetString("for")
+	raw, err := postActionProposal(ctx, client, actionType, 1, issue.ID, forUser, "", params)
+	if err != nil {
+		return err
+	}
+	return printActionProposal(ctx, cmd, client, actionType, issue, raw)
 }
 
 // issueBudgetSnapshot is the part of GET /api/issues/{id}/run-budget the CLI

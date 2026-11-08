@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // SocketEnv names the variable that tells the in-sandbox client where the
@@ -136,6 +137,33 @@ func PR(ctx context.Context, socket string, req PRRequest) (PRResult, error) {
 	}
 	err = json.NewDecoder(resp.Body).Decode(&res)
 	return res, err
+}
+
+// ReadToken is a read-only GitHub token for the run's own repository.
+type ReadToken struct {
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// GetReadToken asks the broker for a read-only token. The broker revokes it
+// when the run ends.
+func GetReadToken(ctx context.Context, socket string) (ReadToken, error) {
+	var t ReadToken
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker/readtoken", nil)
+	if err != nil {
+		return t, err
+	}
+	resp, err := unixClient(socket).Do(req)
+	if err != nil {
+		return t, fmt.Errorf("broker unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return t, fmt.Errorf("read token refused (%d): %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	}
+	err = json.NewDecoder(resp.Body).Decode(&t)
+	return t, err
 }
 
 func getJSON(ctx context.Context, hc *http.Client, u string, v any) error {
