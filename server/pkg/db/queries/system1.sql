@@ -31,6 +31,16 @@ WHERE id = (
     ORDER BY latest.created_at DESC LIMIT 1
 ) AND created_at > clock_timestamp() - interval '1 hour';
 
+-- name: MarkSystem1RouteOverridden :exec
+-- A person changed the status or owner of an issue whose latest route label
+-- an agent had just written. Runs in the person's write, under the issue lock.
+UPDATE system1_observation SET reversed_at = clock_timestamp()
+WHERE id = (
+    SELECT latest.id FROM system1_observation latest
+    WHERE latest.kind = 'route' AND latest.subject_id = sqlc.arg('issue_id') AND latest.reversed_at IS NULL
+    ORDER BY latest.created_at DESC, latest.id DESC LIMIT 1
+) AND created_at > clock_timestamp() - interval '1 hour';
+
 -- name: System1ReportByClass :many
 -- Precision and coverage of the shadow predictions that preceded an answer.
 -- other_* is the audit slice: answers where the human did not take the recommendation (another option, or free text).
@@ -47,3 +57,9 @@ FROM system1_observation
 WHERE workspace_id = sqlc.arg('workspace_id') AND kind = sqlc.arg('kind')
 GROUP BY class
 ORDER BY class;
+
+-- name: GetLatestSystem1RouteObservation :one
+-- The route row a just-committed route call wrote (the issue's newest one).
+SELECT id FROM system1_observation
+WHERE kind = 'route' AND subject_id = sqlc.arg('issue_id')
+ORDER BY created_at DESC, id DESC LIMIT 1;
