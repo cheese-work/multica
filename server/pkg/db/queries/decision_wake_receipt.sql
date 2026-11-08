@@ -34,15 +34,17 @@ SELECT * FROM decision_request WHERE authority = 'human' AND id = sqlc.arg('id')
 
 -- Due pending receipts, oldest due first: a failed receipt moves its own
 -- next_attempt_at, so it never holds back the others. A receipt is not due
--- while its answer's wake_at is NULL (the answering task has not finished), in the future, or an older receipt of the same
--- request and recipient is still pending; delivery repeats both checks under
--- the locks.
+-- while its answer's wake_at is NULL (the answering task has not finished) or
+-- in the future, or while an older receipt of the same request and recipient
+-- is still pending. A withdrawn answer is always selectable: withdrawal clears
+-- its wake_at, and delivery must settle its receipts so they stop blocking
+-- later ones. Delivery repeats these checks under the locks.
 -- name: ListDecisionWakeReceiptCandidates :many
 SELECT receipt.id FROM decision_wake_receipt receipt
 JOIN decision_wake_event event ON event.id = receipt.event_id
 LEFT JOIN decision_answer answer ON answer.id = event.answer_id
 WHERE receipt.status = 'pending' AND receipt.next_attempt_at <= clock_timestamp()
-  AND (event.answer_id IS NULL OR answer.wake_at <= clock_timestamp())
+  AND (event.answer_id IS NULL OR answer.disclaimed_at IS NOT NULL OR answer.wake_at <= clock_timestamp())
   AND NOT EXISTS (
       SELECT 1 FROM decision_wake_receipt older
       JOIN decision_wake_event older_event ON older_event.id = older.event_id

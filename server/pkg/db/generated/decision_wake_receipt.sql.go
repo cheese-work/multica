@@ -255,7 +255,7 @@ SELECT receipt.id FROM decision_wake_receipt receipt
 JOIN decision_wake_event event ON event.id = receipt.event_id
 LEFT JOIN decision_answer answer ON answer.id = event.answer_id
 WHERE receipt.status = 'pending' AND receipt.next_attempt_at <= clock_timestamp()
-  AND (event.answer_id IS NULL OR answer.wake_at <= clock_timestamp())
+  AND (event.answer_id IS NULL OR answer.disclaimed_at IS NOT NULL OR answer.wake_at <= clock_timestamp())
   AND NOT EXISTS (
       SELECT 1 FROM decision_wake_receipt older
       JOIN decision_wake_event older_event ON older_event.id = older.event_id
