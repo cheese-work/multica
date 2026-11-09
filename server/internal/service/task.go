@@ -6465,7 +6465,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		notice := redact.Text(errMsg)
+		if isGatewayClassFailureReason(failureReason) {
+			// CHE-4575: raw provider text may carry a mention link; a live
+			// agent mention would enqueue a run for a failure notice.
+			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
+		}
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
@@ -8483,11 +8489,34 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 	return delegatedFailureRecoveryCovered, fmt.Errorf("delegate failure recovery could not acquire coordinator task slot")
 }
 
+// isGatewayClassFailureReason reports the provider/gateway failures (transport,
+// capacity, quota, config, unknown) whose terminal failure comment is the whole
+// notice: waking an LLM coordinator cannot fix them (CHE-4575).
+func isGatewayClassFailureReason(reason string) bool {
+	switch taskfailure.Reason(reason) {
+	case taskfailure.ReasonAgentProviderNetwork,
+		taskfailure.ReasonAgentProviderCapacityOrRateLimit,
+		taskfailure.ReasonAgentProviderServerError,
+		taskfailure.ReasonAgentProviderQuotaLimit,
+		taskfailure.ReasonAgentProviderAuthOrAccess,
+		taskfailure.ReasonAgentMissingConfig,
+		taskfailure.ReasonAgentModelNotFoundOrUnavailable,
+		taskfailure.ReasonAgentUnknown:
+		return true
+	}
+	return false
+}
+
 // recoverDelegatedTaskFailure is the shared post-terminal hook for FailTask and
 // HandleFailedTasks. handled reports whether the failure was an eligible
 // delegated terminal; the production terminal paths deliberately retain their
 // legacy raw-error notice alongside the richer coordinator recovery signal.
 func (s *TaskService) recoverDelegatedTaskFailure(ctx context.Context, failed db.AgentTaskQueue) (handled bool, err error) {
+	// CHE-4575: a gateway-class terminal failure keeps its timeline failure
+	// comment but never wakes the coordinator: no recovery comment, no task.
+	if isGatewayClassFailureReason(failed.FailureReason.String) {
+		return false, nil
+	}
 	target, _, err := s.ensureDelegatedFailureRecoveryComment(ctx, failed.ID)
 	if err != nil || target == nil {
 		return false, err
