@@ -400,6 +400,46 @@ type AutopilotTrigger struct {
 	CreatedByID pgtype.UUID `json:"created_by_id"`
 }
 
+type BrowserInstance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Epoch       int64              `json:"epoch"`
+	Phase       string             `json:"phase"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BrowserLease struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	InstanceID     pgtype.UUID        `json:"instance_id"`
+	ProfileID      pgtype.UUID        `json:"profile_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	DecisionID     pgtype.UUID        `json:"decision_id"`
+	Class          string             `json:"class"`
+	State          string             `json:"state"`
+	Epoch          pgtype.Int8        `json:"epoch"`
+	JtiHash        pgtype.Text        `json:"jti_hash"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	GrantedAt      pgtype.Timestamptz `json:"granted_at"`
+	EndedAt        pgtype.Timestamptz `json:"ended_at"`
+	EndReason      pgtype.Text        `json:"end_reason"`
+	CleanupAckedAt pgtype.Timestamptz `json:"cleanup_acked_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type BrowserProfile struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Class       string             `json:"class"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`

@@ -437,6 +437,8 @@
       "no_changes": "沒有行變更。",
       "whitespace_only": "只有空白或行尾符號發生變化。",
       "target": "目標",
+      "workflow": "工作流程",
+      "step_status": "步驟",
       "keys": "鍵",
       "field_agent_instructions": "代理指令",
       "field_squad_instructions": "小隊指令",
