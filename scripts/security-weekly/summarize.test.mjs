@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { normalize, summarize, line, run } from "./summarize.mjs";
+import { normalize, summarize, line, ageLine, run } from "./summarize.mjs";
 
 // A throwaway checkout: finding ids hash the flagged source text, so the files must exist.
 const repo = (files) => {
@@ -171,4 +171,42 @@ test("semgrep: ids do not depend on report order", () => {
 test("a flagged file that cannot be read still yields an id (rule|path), never a crash", () => {
   const ids = normalize("semgrep", { results: [sg(4, "gone.go")] }, repo({})).map((i) => i.id);
   assert.deepEqual(ids, ["r.a|gone.go|#1"]);
+});
+
+// CHE-4658 P3: age and SLA. First-seen dates live in the summary (X99 state), never in the repo.
+const DAY = 86400e3;
+const at = (days) => new Date(Date.parse("2026-11-01T00:00:00Z") + days * DAY);
+
+test("age: first seen is kept from the previous run, new ids get today, legacy ids get the previous run date", () => {
+  const items = [{ id: "old", severity: "high" }, { id: "legacy", severity: "high" }, { id: "fresh", severity: "high" }];
+  const prev = { at: at(0).toISOString(), ids: ["old", "legacy"], firstSeen: { old: at(-10).toISOString() } };
+  const s = summarize("pnpm-audit", items, prev, at(3));
+  assert.deepEqual(s.firstSeen, { fresh: at(3).toISOString(), legacy: at(0).toISOString(), old: at(-10).toISOString() });
+});
+
+test("age line: per severity open count, oldest age in days, count past SLA (critical 2d, high 7d, medium 30d)", () => {
+  const items = [
+    { id: "c1", severity: "critical" }, { id: "h1", severity: "high" }, { id: "h2", severity: "high" },
+    { id: "m1", severity: "medium" }, { id: "l1", severity: "low" },
+  ];
+  const prev = { ids: ["c1", "h1", "h2", "m1", "l1"], firstSeen: {
+    c1: at(-3).toISOString(), h1: at(-8).toISOString(), h2: at(-1).toISOString(), m1: at(-29).toISOString(), l1: at(-400).toISOString(),
+  } };
+  const s = summarize("pnpm-audit", items, prev, at(0));
+  assert.equal(ageLine(s), "pnpm-audit age: critical 1 open, oldest 3d, past SLA 1; high 2 open, oldest 8d, past SLA 1; medium 1 open, oldest 29d, past SLA 0; low 1 open, oldest 400d");
+});
+
+test("age line: severity with nothing open shows oldest -, and exactly the SLA age is not a breach", () => {
+  const s = summarize("gitleaks", [{ id: "h1", severity: "high" }], { ids: ["h1"], firstSeen: { h1: at(-7).toISOString() } }, at(0));
+  assert.equal(ageLine(s), "gitleaks age: critical 0 open, oldest -, past SLA 0; high 1 open, oldest 7d, past SLA 0; medium 0 open, oldest -, past SLA 0; low 0 open, oldest -");
+});
+
+test("run: every scanner that ran also prints an age line; NOT RUN scanners keep their first-seen dates", () => {
+  const dir = mkdtempSync(join(tmpdir(), "sw-"));
+  writeFileSync(join(dir, "gitleaks.json"), JSON.stringify([{ RuleID: "aws", File: "x", Fingerprint: "f1" }]));
+  const previous = { ids: [], summaries: [{ scanner: "semgrep", ids: ["s1"], firstSeen: { s1: "2026-10-01T00:00:00.000Z" } }] };
+  const { lines, summaries } = run(dir, previous, ".", at(0));
+  assert.ok(lines.includes("gitleaks age: critical 0 open, oldest -, past SLA 0; high 1 open, oldest 0d, past SLA 0; medium 0 open, oldest -, past SLA 0; low 0 open, oldest -"));
+  assert.equal(lines.filter((l) => l.includes(" age: ")).length, 1);
+  assert.deepEqual(summaries.find((s) => s.scanner === "semgrep").firstSeen, { s1: "2026-10-01T00:00:00.000Z" });
 });

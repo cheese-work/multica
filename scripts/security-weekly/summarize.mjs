@@ -1,7 +1,7 @@
 // CHE-3701: turn the weekly scanners' raw reports into one line per scanner (new / fixed / total by severity).
 // Usage: node summarize.mjs <reports-dir> <previous-summary.json|-> <summary.json> [checkout-root]
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -73,8 +73,12 @@ const NORMALIZERS = {
 
 export const normalize = (scanner, raw, root = ".") => NORMALIZERS[scanner](raw, root);
 
+// CHE-4658 P3: SLA per severity in days (critical 48 h, high 7 d, medium 30 d); low has none.
+const DAY = 86400e3;
+const SLA_DAYS = { critical: 2, high: 7, medium: 30 };
+
 const RANK = { critical: 3, high: 2, medium: 1, low: 0 };
-export function summarize(scanner, rawItems, prev) {
+export function summarize(scanner, rawItems, prev, now = new Date()) {
   // One finding per id (worst severity wins) so total, by-severity and new count the same thing.
   const worst = new Map();
   for (const i of rawItems) if (!worst.has(i.id) || RANK[i.severity] > RANK[worst.get(i.id).severity]) worst.set(i.id, i);
@@ -83,8 +87,15 @@ export function summarize(scanner, rawItems, prev) {
   const before = new Set(prev?.ids ?? []);
   const bySeverity = Object.fromEntries(SEVERITIES.map((s) => [s, items.filter((i) => i.severity === s).length]));
   const fresh = items.filter((i) => !before.has(i.id));
+  // First-seen dates ride in the summary (X99 state). An id from before dates were kept is dated by the previous run.
+  const firstSeen = Object.fromEntries(ids.map((id) => [id, prev?.firstSeen?.[id] ?? (before.has(id) ? prev.at : undefined) ?? now.toISOString()]));
+  const age = Object.fromEntries(SEVERITIES.map((sev) => {
+    const ages = items.filter((i) => i.severity === sev).map((i) => now - Date.parse(firstSeen[i.id]));
+    return [sev, { open: ages.length, oldestDays: ages.length ? Math.floor(Math.max(...ages) / DAY) : null,
+      pastSla: sev in SLA_DAYS ? ages.filter((a) => a > SLA_DAYS[sev] * DAY).length : null }];
+  }));
   return {
-    scanner, baseline: !prev, total: items.length, bySeverity, ids,
+    scanner, baseline: !prev, at: now.toISOString(), firstSeen, age, total: items.length, bySeverity, ids,
     new: [...new Set(fresh.map((i) => i.id))].sort(),
     fixed: [...before].filter((id) => !ids.includes(id)).sort(),
     newHighCritical: [...new Set(fresh.filter((i) => i.severity === "critical" || i.severity === "high").map((i) => i.id))].sort(),
@@ -94,13 +105,19 @@ export function summarize(scanner, rawItems, prev) {
 
 export const line = (s) => `${s.scanner}: new ${s.new.length} / fixed ${s.fixed.length} / total ${s.total} (${SEVERITIES.map((v) => `${v} ${s.bySeverity[v]}`).join(", ")})`;
 
+export const ageLine = (s) => `${s.scanner} age: ${SEVERITIES.map((v) => {
+  const a = s.age[v];
+  return `${v} ${a.open} open, oldest ${a.oldestDays === null ? "-" : `${a.oldestDays}d`}${a.pastSla === null ? "" : `, past SLA ${a.pastSla}`}`;
+}).join("; ")}`;
+
 // A scanner with no report, or one that cannot be read, is NOT RUN: reading it as zero findings would hide a broken scan.
-export function run(dir, previous, root = ".") {
+export function run(dir, previous, root = ".", now = new Date()) {
   const files = readdirSync(dir);
   const summaries = SCANNERS.map((scanner) => {
-    const prev = previous?.summaries?.find((s) => s.scanner === scanner);
+    const found = previous?.summaries?.find((s) => s.scanner === scanner);
+    const prev = found && { ...found, at: found.at ?? previous.at };
     const mine = files.filter((f) => f === `${scanner}.json` || f === `${scanner}.txt` || f.startsWith(`${scanner}-`));
-    const notRun = (why) => ({ scanner, notRun: true, why, ids: prev?.ids ?? [] });
+    const notRun = (why) => ({ scanner, notRun: true, why, ids: prev?.ids ?? [], firstSeen: prev?.firstSeen, at: prev?.at });
     if (!mine.length) return notRun("no report");
     const missing = (REQUIRED[scanner] ?? []).find((f) => !files.includes(f));
     if (missing) return notRun(`missing ${missing}`);
@@ -109,17 +126,18 @@ export function run(dir, previous, root = ".") {
         const text = readFileSync(join(dir, f), "utf8");
         return normalize(scanner, f.endsWith(".txt") ? text : JSON.parse(text), root);
       });
-      return summarize(scanner, items, prev);
+      return summarize(scanner, items, prev, now);
     } catch {
       return notRun("unreadable report");
     }
   });
-  return { summaries, lines: summaries.map((s) => (s.notRun ? `${s.scanner}: NOT RUN (${s.why})` : line(s))) };
+  return { summaries, lines: summaries.flatMap((s) => (s.notRun ? [`${s.scanner}: NOT RUN (${s.why})`] : [line(s), ageLine(s)])) };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   const [dir, prevPath, out, root] = process.argv.slice(2);
   const previous = prevPath && prevPath !== "-" && existsSync(prevPath) ? JSON.parse(readFileSync(prevPath, "utf8")) : undefined;
+  if (previous) previous.at ??= statSync(prevPath).mtime.toISOString(); // a summary from before dates were kept: its file time is the run date
   const { summaries, lines } = run(dir, previous, root);
   writeFileSync(out, JSON.stringify({ summaries }, null, 1));
   console.log(lines.join("\n"));
