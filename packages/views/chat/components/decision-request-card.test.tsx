@@ -711,19 +711,19 @@ describe("DecisionRequestCard answering", () => {
       ["digestless", { ...preview, sha256: "" }],
       ["not a sha-256 digest", { ...preview, sha256: "digest" }],
       ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
-    ])("says details are unavailable and keeps Approve disabled when the preview is %s", (_name, bad) => {
+    ])("says details are unavailable, keeps Approve disabled and keeps Reject when the preview is %s", async (_name, bad) => {
       show({ ...action, preview: bad });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });
 
-    it("keeps Approve disabled for an action type this client does not know, even with fields", () => {
+    it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
       show({ ...action, action_type: "future.thing" });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
       expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
+      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });
 
     describe("config change", () => {
@@ -800,12 +800,33 @@ describe("DecisionRequestCard answering", () => {
         ["not a Scope A field", { ...change, field: "members.roles" }],
         ["digestless", { ...change, sha256: "" }],
         ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
-      ])("says details are unavailable and keeps Approve disabled when the change is %s", (_name, bad) => {
+      ])("says details are unavailable and keeps Approve disabled for the owner, with Reject, when the change is %s", async (_name, bad) => {
         show({ ...configAction, config_change: bad });
         expect(screen.getByText("Details unavailable")).toBeInTheDocument();
         expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-        expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("shows a non-owner no Approve and keeps Reject when the change is %s", async (_name, bad) => {
+        member.role = "member";
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("shows no Approve and keeps Reject when there is no current workspace and the change is missing", async () => {
+        member.workspace = null;
+        show({ ...configAction, config_change: undefined });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
       });
 
       it("shows the viewer for a settings change with its keys", async () => {

@@ -199,21 +199,22 @@ type CardAction = NonNullable<RequestCard["action"]>;
 
 // Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
 // member list yet or any other role the button is absent. The server still refuses a non-owner.
-function OwnerGatedApproval({ action, previewSha256 }: { action: CardAction; previewSha256?: string }) {
+function OwnerGatedApproval({ action, previewSha256, approveDisabled }: { action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
   const workspace = useCurrentWorkspace();
   return workspace
-    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} />
+    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} approveDisabled={approveDisabled} />
     : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} />;
 }
 
-function MemberGatedApproval({ wsId, action, previewSha256 }: { wsId: string; action: CardAction; previewSha256?: string }) {
+function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: { wsId: string; action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
   const { role } = useCurrentMember(wsId);
-  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} state={action.state} />;
+  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} approveDisabled={approveDisabled} state={action.state} />;
 }
 
 // What the approval would change, shown before Approve exists. No usable preview
 // (missing, empty, malformed, bad digest, unknown action type) means the server
-// could not vouch for the action: say so and keep Approve disabled.
+// could not vouch for the action: say so, keep Approve disabled for who may approve,
+// show it to nobody else, and leave Reject to everyone.
 function ActionPreview({ action }: { action: CardAction }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
@@ -222,17 +223,11 @@ function ActionPreview({ action }: { action: CardAction }) {
   const ownerOnly = configAction || action.owner_only === true;
   const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
   const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
-  if (pending && !fields && !configChange) {
-    return (
-      <div className="space-y-1">
-        <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
-        <Button size="sm" disabled>{t(($) => $.decision.action_approve)}</Button>
-      </div>
-    );
-  }
+  const unavailable = pending && !fields && !configChange;
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
+      {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && <ConfigChangeViewer change={configChange} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
@@ -245,8 +240,8 @@ function ActionPreview({ action }: { action: CardAction }) {
         </dl>
       )}
       {ownerOnly
-        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} />
-        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />}
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} />
+        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} />}
     </div>
   );
 }

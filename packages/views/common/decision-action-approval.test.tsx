@@ -229,6 +229,16 @@ describe("DecisionActionApproval", () => {
     expect(api.approveDecisionAction).toHaveBeenCalledOnce();
   });
 
+  it("shows action_not_executable with its code when the server answers 501", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("action_not_executable: this action type cannot be approved yet", 501, "Not Implemented"));
+    await renderApproval().approve();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("This kind of change cannot be approved yet.");
+    expect(alert.textContent).toContain("action_not_executable");
+    expect(screen.queryByTestId("decision-action-approve")).toBeNull();
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
+  });
+
   it("shows an unknown refusal code verbatim", async () => {
     api.approveDecisionAction.mockRejectedValue(new ApiError("future_code: a newer refusal", 409, "Conflict"));
     await renderApproval().approve();

@@ -28,6 +28,9 @@ const isRefusalCode = (code: string): code is RefusalCode => (REFUSAL_CODES as r
 // Asking again cannot change these answers.
 const FINAL_REFUSALS: readonly string[] = ["class_needs_owner", "not_permitted", "action_not_executable", "approval_proof_unavailable"];
 
+// A definite server answer: any 4xx, and 501 (action_not_executable). Other 5xx leave the outcome unknown.
+const isDefiniteAnswer = (error: unknown): error is ApiError => error instanceof ApiError && (error.status < 500 || error.status === 501);
+
 /** The `code` of a `code: message` refusal, or "" when the error carries none. */
 function refusalCode(error: ApiError): string {
   const [code, rest] = error.message.split(":", 2);
@@ -75,6 +78,7 @@ export function DecisionActionApproval({
   payloadSha256,
   previewSha256,
   canApprove = true,
+  approveDisabled = false,
   state,
   onEnroll,
 }: {
@@ -84,6 +88,8 @@ export function DecisionActionApproval({
   previewSha256?: string;
   /** False hides Approve (the person may not approve this action). Reject stays. */
   canApprove?: boolean;
+  /** Shows Approve but not clickable: the person may approve, the details they would approve are unavailable. */
+  approveDisabled?: boolean;
   /** The action state the surrounding card reports; a change reads the outcome again (a decision made in another tab or by a worker). */
   state?: string;
   onEnroll?: () => void;
@@ -120,7 +126,7 @@ export function DecisionActionApproval({
       });
       setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
     } catch (error) {
-      const refused = error instanceof ApiError && error.status < 500;
+      const refused = isDefiniteAnswer(error);
       if (sent && refused) markApproveSent(actionId, false); // the server answered: nothing was approved
       const reason = refused ? refusalCode(error) : "";
       if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
@@ -204,7 +210,7 @@ export function DecisionActionApproval({
       {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
       <div className="flex flex-wrap gap-2">
         {mayApprove && (
-          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={view.step === "busy" || view.step === "rejecting"}>
+          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={approveDisabled || view.step === "busy" || view.step === "rejecting"}>
             {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
           </Button>
         )}
