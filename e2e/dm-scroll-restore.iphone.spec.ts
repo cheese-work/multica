@@ -4,9 +4,13 @@ import { expect, test, type Page } from "@playwright/test";
 import pg from "pg";
 import { createTestApi } from "./helpers";
 
+// Where setup parks the target message: below the 80 px `onScreen` floor, and
+// far enough down that the two rows above it end above the viewport top.
+const PARKED_TARGET_TOP = 110;
+
 type Dm = { slug: string; sessionId: string; token: string; linked: { id: string; identifier: string; title: string } };
 
-// Seeds a DM with 80 messages (message 40 links an issue), opens it and scrolls
+// Seeds a DM with 80 messages (message 40 links an issue and renders inline <strong>), opens it and scrolls
 // up until message 40 is on screen. The reader is then still.
 async function withScrolledDm(page: Page, run: (dm: Dm) => Promise<void>) {
   const databaseUrl = process.env.DATABASE_URL;
@@ -45,7 +49,7 @@ async function withScrolledDm(page: Page, run: (dm: Dm) => Promise<void>) {
     await database.query(
       `INSERT INTO chat_message (chat_session_id, role, content, created_at)
        SELECT $1, 'assistant',
-         CASE WHEN step = 40 THEN 'Target message 40: see ' || $2 || E'\n\n' || repeat('filler text ', 30)
+         CASE WHEN step = 40 THEN 'Target message 40: see ' || $2 || ' and **bold lead** words' || E'\n\n' || repeat('filler text ', 30) || ' then **late bold** end'
               ELSE 'Message ' || step || ': ' || repeat('filler text ', 30) END,
          now() - (80 - step) * interval '1 second'
        FROM generate_series(1, 80) AS step`,
@@ -64,6 +68,12 @@ async function withScrolledDm(page: Page, run: (dm: Dm) => Promise<void>) {
       await page.waitForTimeout(80);
     }
     expect(await onScreen(page)).toBe(true);
+    // The drag stride lands the target at a different offset for each seed, so
+    // park it: the two rows above it then sit wholly above the viewport top (a
+    // row that straddles it is the reader's row, and growing it is growth below
+    // the reader, not above).
+    await dragUp(page, -((await targetTop(page)) - PARKED_TARGET_TOP));
+    await expect.poll(() => targetTop(page)).toBeCloseTo(PARKED_TARGET_TOP, -1);
     await settle(page);
     await run({ slug: workspace.slug, sessionId, token: api.getToken()!, linked });
   } finally {
