@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -268,4 +269,28 @@ func TestCarryOver_AnswerCompletedBehindACompactIsCarried(t *testing.T) {
 		t.Fatalf("answer above the floor: %d rows, want 1", n)
 	}
 	wantInClaim(t, dm.claim(t, "NEXT-QUESTION").ChatMessage, "ANSWER-BEHIND-COMPACT")
+}
+
+// A decision withdrawn after the compaction must not reach the claim as a
+// standing record: the carry-over reconciles against the live records.
+func TestCarryOver_ClaimDropsDecisionsWithdrawnAfterCompaction(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	dm := newCarryOverDM(t)
+	kept := recordDecision(t, dm.agentID, dm.sessionID, "still standing", "Keep the cache layer.", false)
+	revoked := recordDecision(t, dm.agentID, dm.sessionID, "later withdrawn", "Approve the schema drop.", false)
+	if _, summary, fail := testHandler.compactChatInPlace(context.Background(), parseUUID(dm.sessionID), pgtype.UUID{}, "Nothing kept."); fail != nil {
+		t.Fatalf("compact: %s", fail.message)
+	} else {
+		requireDecisions(t, "row at compaction", summary.Content, kept, revoked)
+	}
+	dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = now() WHERE id = $1`, revoked.answerID)
+	got := dm.claim(t, "NEXT-QUESTION").ChatMessage
+	// The fixture's source message sits in the old-segment tail; only the
+	// summary block holds the server records.
+	summary, _, _ := strings.Cut(got, carryOverSummaryClose)
+	requireDecisions(t, "claim summary", summary, kept)
+	wantNotIn(t, summary, revoked.words)
+	wantNotIn(t, got, revoked.answerID)
 }
