@@ -62,7 +62,7 @@ export function StatusHistoryDialog({
   entries: readonly TimelineEntry[];
   truncated: boolean;
   resolveStatus: (statusKey: string) => ResolvedStatus;
-  /** When given, the graph beside the list shows the selected change. */
+  /** When given, the graph above the list shows the selected change. */
   workflow?: Pick<IssueWorkflow, "steps"> | null;
   project?: Pick<Project, "lead_type" | "lead_id"> | null;
 }) {
