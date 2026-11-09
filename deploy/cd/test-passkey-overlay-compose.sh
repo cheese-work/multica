@@ -6,7 +6,9 @@ set -euo pipefail
 # replaces C00's compose files with the released ones, so a key missing here
 # silently turns passkey approval off after a cutover (passkey.FromEnv returns
 # nil when RP id/origins are empty). Unset renders empty and must still succeed.
-# Real `docker compose config` (no daemon), synthetic values only.
+# Real `docker compose config` (no daemon), synthetic values only. Both flag-file
+# vars are set: the overlay volume source nests a required legacy fallback that
+# some compose versions (CI) evaluate eagerly.
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root_dir"
@@ -18,7 +20,7 @@ flags_file="$root_dir/deploy/cd/fixtures/jev-feature-flags.synthetic.yaml"
 
 # render <set|unset> -> JSON on stdout
 render() {
-  local -a vars=(JWT_SECRET=synthetic-jwt-secret MULTICA_FEATURE_FLAGS_FILE="$flags_file")
+  local -a vars=(JWT_SECRET=synthetic-jwt-secret MULTICA_FEATURE_FLAGS_FILE="$flags_file" MULTICA_JEV_FLAGS_FILE="$flags_file")
   if [ "$1" = set ]; then
     vars+=(MULTICA_WEBAUTHN_RP_ID=synthetic.example MULTICA_WEBAUTHN_ORIGINS=https://synthetic.example:1 MULTICA_PASSKEY_ENROLL_KEY=synthetic-enroll-key)
   fi
