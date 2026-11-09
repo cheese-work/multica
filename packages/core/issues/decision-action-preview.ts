@@ -46,6 +46,16 @@ export function approvableConfigChange(action: Pick<DecisionRequestAction, "acti
   if (!(CONFIG_CHANGE_FIELDS as readonly string[]).includes(change.field)) return undefined;
   if ((change.field === "workspace.settings") !== (change.keys.length > 0)) return undefined;
   if (!["json", "text", "lines"].includes(change.diff_kind)) return undefined;
+  if (change.field === "workflow.instructions" && !(workflowStepTarget(change))) return undefined;
   const wellFormed = change.diff.every((hunk) => hunk.lines.every((line) => line.length > 0 && " +-".includes(line[0]!)));
   return wellFormed ? change : undefined;
+}
+
+/** The server-resolved workflow name and status key of a workflow step change, or undefined when either is missing. */
+export function workflowStepTarget({ meta }: Pick<DecisionConfigChange, "meta">): { workflowName: string; statusKey: string } | undefined {
+  const workflowName = meta?.workflow_name;
+  const statusKey = meta?.status_key;
+  return typeof workflowName === "string" && workflowName !== "" && typeof statusKey === "string" && statusKey !== ""
+    ? { workflowName, statusKey }
+    : undefined;
 }
