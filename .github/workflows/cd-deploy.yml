@@ -97,11 +97,13 @@ jobs:
           fi
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead webhook never holds a deploy.
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
+  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # reach the tailnet-only Multica server.
   notify-approval:
     needs: candidate-preflight
     if: always() && github.event_name == 'workflow_run' && needs.candidate-preflight.outputs.eligible == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v6
@@ -113,6 +115,11 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
+          MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID }}
+          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE }}
+          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 

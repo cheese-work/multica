@@ -683,7 +683,11 @@ every approval and C00 mutation lock.
 Deploy is dispatch-only (CHE-4495). A push to `main` builds, runs
 `candidate-preflight` and, when eligible, `notify-approval`, then stops: no C00
 job runs. The notice links to the workflow's dispatch page with the full
-`candidate_sha`. The `approve-c00` environment approval was removed: required
+`candidate_sha`. The notice goes by `C00_APPROVAL_WEBHOOK_URL` and/or a Multica
+comment (secrets `C00_APPROVAL_MULTICA_{SERVER_URL,TOKEN,WORKSPACE_ID,ISSUE,MEMBER_ID}`:
+a comment on that issue mentions the member with the dispatch one-liner and
+supersedes the older open ask). With no route configured or delivered the job
+fails (CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
 
 The gate is `authorize-c00`, a job that runs only on `workflow_dispatch` and
