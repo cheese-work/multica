@@ -246,16 +246,16 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(job["if"].strip(), "${{ always() }}")  # it ran after every completed Main Build before
         self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
 
-    def test_main_build_runs_pr_main_sync_and_it_has_no_push_trigger(self):
-        self.assertEqual(triggers(load("pr-main-sync.yml")), {"workflow_dispatch", "workflow_call"})
-        job = load("main-build.yml")["jobs"]["pr-main-sync"]
-        self.assertEqual(job["uses"], "./.github/workflows/pr-main-sync.yml")
-        self.assertEqual(job["permissions"], {"contents": "read"})
-        self.assertNotIn("needs", job)  # it did not wait for the build before either
+    def test_pr_main_sync_runs_hourly_not_per_push_and_main_build_does_not_call_it(self):
+        # CHE-4963: it holds the App key, so the repo guard (CHE-4251) requires a schedule or workflow_run definition.
+        doc = load("pr-main-sync.yml")
+        self.assertEqual(triggers(doc), {"schedule", "workflow_dispatch"})
+        self.assertEqual([c["cron"] for c in doc["on"]["schedule"]], ["17 * * * *"])  # 24 runs a day
+        self.assertNotIn("pr-main-sync", load("main-build.yml")["jobs"])
 
     def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):
         caller = load("main-build.yml")["concurrency"]["group"]
-        for name in ("cache-maintenance.yml", "pr-main-sync.yml"):
+        for name in ("cache-maintenance.yml",):
             self.assertNotEqual(load(name)["concurrency"]["group"], caller)
 
     def test_pr_main_sync_keeps_its_gate_runner_and_dry_run_switch(self):
