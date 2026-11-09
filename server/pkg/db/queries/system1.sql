@@ -15,6 +15,24 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND kind = sqlc.arg('kind') AND cl
 ORDER BY created_at DESC
 LIMIT 200;
 
+-- name: CreateSystem1Prediction :exec
+-- One predictor's guess for the decision observation of a request (CHE-4383 B3).
+-- Runs in the ask transaction right after CreateSystem1Observation, which holds
+-- the workspace FOR KEY SHARE lock; if that insert found no workspace, this finds
+-- no observation and inserts nothing. A NULL key is an abstention.
+INSERT INTO system1_prediction (workspace_id, observation_id, scope, predictor_id, predictor_version, predicted_key, predicted_confidence, predicted_precedents)
+SELECT o.workspace_id, o.id, o.inputs->>'topic', sqlc.arg('predictor_id')::text, sqlc.arg('predictor_version')::text, sqlc.narg('predicted_key')::text, sqlc.narg('predicted_confidence')::real, sqlc.narg('predicted_precedents')::int
+FROM system1_observation o
+WHERE o.kind = 'decision' AND o.subject_id = sqlc.arg('subject_id') AND o.workspace_id = sqlc.arg('workspace_id');
+
+-- name: ListSystem1WaiverPrecedentKeys :many
+-- Earlier mapped waiver labels of record, newest first. `unmapped` and superseded labels are not precedents.
+SELECT label::text AS label FROM system1_label
+WHERE workspace_id = sqlc.arg('workspace_id') AND scope = 'test_first_waiver' AND kind = 'burn_in'
+  AND label IN ('waive', 'refuse') AND superseded_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200;
+
 -- name: ListRecentIssueStatusChanges :many
 -- The last few statuses an issue moved to, newest first (route label input).
 SELECT (details->>'to')::text AS to_status FROM activity_log
