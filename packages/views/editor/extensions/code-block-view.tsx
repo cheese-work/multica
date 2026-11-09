@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
-import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "lucide-react";
+import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "@multica/ui/icons";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { HtmlPreviewSurface } from "../html-preview-surface";
@@ -110,7 +110,7 @@ function CodeBlockView({ node }: NodeViewProps) {
       )}
       <div
         contentEditable={false}
-        className="code-block-header absolute top-0 right-0 z-10 flex items-center gap-1.5 px-2 py-1.5 opacity-0 transition-opacity group-hover/code:opacity-100 focus-within:opacity-100"
+        className="code-block-header absolute top-0 right-0 z-10 flex items-center gap-1.5 px-2 py-1.5 opacity-0 transition-opacity group-hover/code:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100"
       >
         {language && (
           <span className="text-caption text-muted-foreground select-none">
@@ -153,7 +153,7 @@ function CodeBlockView({ node }: NodeViewProps) {
             label={t(($) => $.attachment.reload)}
             onClick={reload}
           >
-            <RotateCw className="h-3.5 w-3.5" />
+            <RotateCw className="size-3.5" />
           </IconButton>
         )}
         {isHtml && (
@@ -165,7 +165,7 @@ function CodeBlockView({ node }: NodeViewProps) {
             label={t(($) => $.code_block.fullscreen)}
             onClick={() => setFullscreen(true)}
           >
-            <Maximize2 className="h-3.5 w-3.5" />
+            <Maximize2 className="size-3.5" />
           </IconButton>
         )}
         <TooltipHint label={t(($) => $.code_block.copy_code)}>

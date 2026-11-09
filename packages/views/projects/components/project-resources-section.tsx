@@ -11,7 +11,7 @@ import {
   Plus,
   Search,
   Trash2,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { toast } from "sonner";
 import {
   projectResourcesOptions,
@@ -36,6 +36,7 @@ import {
 import { useConfigStore } from "@multica/core/config";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
+import { Spinner } from "@multica/ui/components/ui/spinner";
 import {
   Popover,
   PopoverContent,
@@ -132,7 +133,6 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
   );
   const createResource = useCreateProjectResource(wsId, projectId);
   const updateResource = useUpdateProjectResource(wsId, projectId);
-  const deleteResource = useDeleteProjectResource(wsId, projectId);
 
   // Desktop-only entry points. We hide (not just disable) on web so users
   // there don't see an action they can never complete — the spec calls for
@@ -364,19 +364,6 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
     }
   };
 
-  const handleRemove = async (resource: ProjectResource) => {
-    try {
-      await deleteResource.mutateAsync(resource.id);
-      toast.success(t(($) => $.resources.toast_removed));
-    } catch (err) {
-      toast.error(
-        err instanceof Error && err.message
-          ? err.message
-          : t(($) => $.resources.toast_remove_failed),
-      );
-    }
-  };
-
   return (
     <div>
       <button
@@ -409,7 +396,6 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
                       : undefined
                   }
                   localDaemonId={localDaemonId}
-                  onRemove={() => handleRemove(resource)}
                   onEditGithubRef={(target) => {
                     setRefError(null);
                     setRefDialog({ resource: target });
@@ -634,7 +620,6 @@ interface ResourceRowProps {
   resource: ProjectResource;
   githubRepoDescription?: string;
   localDaemonId: string | null;
-  onRemove: () => void;
   onEditGithubRef: (
     resource: ProjectResource & { resource_ref: GithubRepoResourceRef },
   ) => void;
@@ -647,11 +632,28 @@ function ResourceRow({
   resource,
   githubRepoDescription,
   localDaemonId,
-  onRemove,
   onEditGithubRef,
   onEditLocalDirectoryMode,
 }: ResourceRowProps) {
   const { t } = useT("projects");
+  const deleteResource = useDeleteProjectResource(
+    resource.workspace_id,
+    resource.project_id,
+  );
+  const onRemove = async () => {
+    if (deleteResource.isPending) return;
+    try {
+      await deleteResource.mutateAsync(resource.id);
+      toast.success(t(($) => $.resources.toast_removed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.resources.toast_remove_failed),
+      );
+    }
+  };
+
   if (isGithubRef(resource)) {
     const ref = resource.resource_ref;
     const display = resource.label || githubShortLabel(ref.url);
@@ -700,10 +702,16 @@ function ResourceRow({
             <button
               type="button"
               onClick={onRemove}
-              className="opacity-0 group-hover:opacity-100 transition-opacity rounded-sm p-0.5 hover:bg-accent"
+              disabled={deleteResource.isPending}
+              aria-busy={deleteResource.isPending}
+              className="opacity-0 group-hover:opacity-100 disabled:opacity-100 transition-opacity rounded-sm p-0.5 hover:bg-accent"
               aria-label={t(($) => $.resources.remove_tooltip)}
             >
-              <Trash2 className="size-3 text-muted-foreground" />
+              {deleteResource.isPending ? (
+                <Spinner className="size-3" aria-hidden="true" />
+              ) : (
+                <Trash2 className="size-3 text-muted-foreground" />
+              )}
             </button>
           </TooltipHint>
         </div>
@@ -744,6 +752,7 @@ function ResourceRow({
         resource={resource}
         localDaemonId={localDaemonId}
         onRemove={onRemove}
+        removing={deleteResource.isPending}
         onEditMode={onEditLocalDirectoryMode}
       />
     );
@@ -793,10 +802,16 @@ function ResourceRow({
         <button
           type="button"
           onClick={onRemove}
+          disabled={deleteResource.isPending}
+          aria-busy={deleteResource.isPending}
           className="rounded-sm p-0.5 hover:bg-accent"
           aria-label={t(($) => $.resources.remove_tooltip)}
         >
-          <Trash2 className="size-3" />
+          {deleteResource.isPending ? (
+            <Spinner className="size-3" aria-hidden="true" />
+          ) : (
+            <Trash2 className="size-3" />
+          )}
         </button>
       </TooltipHint>
     </div>
@@ -807,6 +822,7 @@ interface LocalDirectoryRowProps {
   resource: ProjectResource & { resource_ref: LocalDirectoryResourceRef };
   localDaemonId: string | null;
   onRemove: () => void;
+  removing: boolean;
   onEditMode: (
     resource: ProjectResource & { resource_ref: LocalDirectoryResourceRef },
   ) => void;
@@ -816,6 +832,7 @@ function LocalDirectoryRow({
   resource,
   localDaemonId,
   onRemove,
+  removing,
   onEditMode,
 }: LocalDirectoryRowProps) {
   const { t } = useT("projects");
@@ -894,10 +911,16 @@ function LocalDirectoryRow({
         <button
           type="button"
           onClick={onRemove}
-          className="opacity-0 group-hover:opacity-100 transition-opacity rounded-sm p-0.5 hover:bg-accent"
+          disabled={removing}
+          aria-busy={removing}
+          className="opacity-0 group-hover:opacity-100 disabled:opacity-100 transition-opacity rounded-sm p-0.5 hover:bg-accent"
           aria-label={t(($) => $.resources.remove_tooltip)}
         >
-          <Trash2 className="size-3 text-muted-foreground" />
+          {removing ? (
+            <Spinner className="size-3" aria-hidden="true" />
+          ) : (
+            <Trash2 className="size-3 text-muted-foreground" />
+          )}
         </button>
       </TooltipHint>
     </div>

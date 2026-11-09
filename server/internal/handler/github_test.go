@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -335,8 +336,8 @@ func TestStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signState: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 5 {
-		t.Fatalf("default return state has %d parts, want timestamped 5-part format", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 6 {
+		t.Fatalf("default return state has %d parts, want timestamped 6-part format", len(parts))
 	}
 	got, ok := verifyState(tok)
 	if !ok {
@@ -364,14 +365,14 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
 	wsID := "11111111-2222-3333-4444-555555555555"
 
-	tok, err := signStateForReturn(wsID, githubReturnToRepositories)
+	tok, err := signStateForReturn(wsID, githubReturnToRepositories, "")
 	if err != nil {
 		t.Fatalf("signStateForReturn: %v", err)
 	}
-	if parts := strings.Split(tok, "."); len(parts) != 5 {
-		t.Fatalf("repository return state has %d parts, want timestamped 5-part format", len(parts))
+	if parts := strings.Split(tok, "."); len(parts) != 6 {
+		t.Fatalf("repository return state has %d parts, want timestamped 6-part format", len(parts))
 	}
-	gotWorkspaceID, gotReturnTo, ok := verifyStateWithReturn(tok)
+	gotWorkspaceID, gotReturnTo, _, ok := verifyStateWithReturn(tok)
 	if !ok {
 		t.Fatal("verifyStateWithReturn rejected a freshly-signed token")
 	}
@@ -386,7 +387,7 @@ func TestStateRoundTripWithRepositoryReturnTarget(t *testing.T) {
 	}
 
 	tampered := strings.Replace(tok, ".repositories.", ".github.", 1)
-	if _, _, ok := verifyStateWithReturn(tampered); ok {
+	if _, _, _, ok := verifyStateWithReturn(tampered); ok {
 		t.Error("tampered return target should fail verification")
 	}
 }
@@ -420,7 +421,7 @@ func TestGitHubConnectRepositoryReturnTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse install URL: %v", err)
 	}
-	_, returnTo, ok := verifyStateWithReturn(installURL.Query().Get("state"))
+	_, returnTo, _, ok := verifyStateWithReturn(installURL.Query().Get("state"))
 	if !ok || returnTo != githubReturnToRepositories {
 		t.Fatalf("signed return target = %q, valid=%v, want repositories", returnTo, ok)
 	}
@@ -442,7 +443,7 @@ func TestGitHubSetupCallbackRepositoryReturnTarget(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
 	t.Setenv("FRONTEND_ORIGIN", "https://app.multica.test/")
 	wsID := "11111111-2222-3333-4444-555555555555"
-	state, err := signStateForReturn(wsID, githubReturnToRepositories)
+	state, err := signStateForReturn(wsID, githubReturnToRepositories, "")
 	if err != nil {
 		t.Fatalf("signStateForReturn: %v", err)
 	}
@@ -1817,6 +1818,61 @@ func TestWebhook_MergedPR_MovesAgentAccepted(t *testing.T) {
 	}
 }
 
+// TestPRAutoComplete_RespectsProjectWorkflow: a merge writes only a status the
+// issue's project workflow lists. Issues outside any project and projects on
+// Default move as before; a named workflow without the target leaves the
+// issue where it is, and the issue page says nothing about it.
+func TestPRAutoComplete_RespectsProjectWorkflow(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	secret := "workflow-target-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	const installationID int64 = 30264021
+	// done is in every workflow, so the target here is one a workflow may omit.
+	setWorkspacePRMergeStatusForTest(t, "in_review")
+
+	withTarget := createTestWorkflow(t, "PR merge: lists in_review", "in_progress", "in_review")
+	withoutTarget := createTestWorkflow(t, "PR merge: no in_review", "in_progress")
+	defaultProject := createWorkflowTestProject(t, "PR merge on Default")
+	withTargetProject := createWorkflowTestProject(t, "PR merge with in_review")
+	setProjectWorkflow(t, withTargetProject, map[string]any{"workflow_id": withTarget.ID}).Want(http.StatusOK)
+	withoutTargetProject := createWorkflowTestProject(t, "PR merge without in_review")
+	setProjectWorkflow(t, withoutTargetProject, map[string]any{"workflow_id": withoutTarget.ID}).Want(http.StatusOK)
+
+	cases := []struct {
+		name      string
+		projectID string
+		wantState string
+		wantAfter string
+	}{
+		{"no project", "", prAutoCompleteWaiting, "in_review"},
+		{"default workflow", defaultProject, prAutoCompleteWaiting, "in_review"},
+		{"named workflow lists the target", withTargetProject, prAutoCompleteWaiting, "in_review"},
+		{"named workflow without the target", withoutTargetProject, prAutoCompleteNotInWorkflow, "in_progress"},
+	}
+	for i, tc := range cases {
+		inst := int64(0)
+		if i == 0 {
+			inst = installationID
+		}
+		issue := prAutoCompleteTestIssue(t, "workflow target: "+tc.name, inst)
+		if tc.projectID != "" {
+			dbfx.Exec(t, `UPDATE issue SET project_id = $2 WHERE id = $1`, issue.ID, tc.projectID)
+		}
+		number := int32(100 + i)
+		branch := fmt.Sprintf("fix/workflow-%d", i)
+		firePRWebhook(t, secret, installationID, number, issue.Identifier+": fix", "", branch, "opened")
+		if got := prAutoCompleteStateForTest(t, issue.ID); got.State != tc.wantState {
+			t.Errorf("%s: before merge auto_complete = %+v, want %s", tc.name, got, tc.wantState)
+		}
+		firePRWebhook(t, secret, installationID, number, issue.Identifier+": fix", "", branch, "merged")
+		if got := issueStatusForTest(t, issue.ID); got != tc.wantAfter {
+			t.Errorf("%s: status after merge = %q, want %q", tc.name, got, tc.wantAfter)
+		}
+	}
+}
+
 func TestPRMergeStatusSetting(t *testing.T) {
 	for _, tc := range []struct {
 		settings string
@@ -3014,14 +3070,13 @@ func TestWebhook_InstallationCreatedRefreshesUnknownLogin(t *testing.T) {
 	}
 }
 
-// TestSetupCallback_ConsumesPendingInstallationCreated covers the inverse
-// race to TestWebhook_InstallationCreatedRefreshesUnknownLogin: GitHub can
-// deliver installation.created before the setup callback has created the local
-// workspace binding. The webhook cannot broadcast yet, but it must not be lost;
-// after the callback independently verifies the installation and authorizing
-// organization admin, it clears the pending snapshot without letting stale
-// webhook metadata override the authoritative App lookup.
-func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
+// TestSetupCallback_UnboundInstallationCreatedStoresNothing covers the race
+// where GitHub delivers installation.created before the setup callback has
+// created the local workspace binding. The webhook must not store a pending
+// snapshot for an unbound installation (CHE-3414); the callback independently
+// verifies the installation and authorizing organization admin through the
+// App API and binds from that authoritative lookup alone.
+func TestSetupCallback_UnboundInstallationCreatedStoresNothing(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
 	}
@@ -3092,13 +3147,13 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		t.Fatalf("webhook: expected 202, got %d (%s)", rec.Code, rec.Body.String())
 	}
 
-	var pendingLogin string
+	var pendingBefore int
 	dbfx.QueryRow(t,
-		`SELECT account_login FROM github_pending_installation WHERE installation_id = $1`,
+		`SELECT count(*) FROM github_pending_installation WHERE installation_id = $1`,
 		installationID,
-	).Scan(&pendingLogin)
-	if pendingLogin != "pending-octocat" {
-		t.Fatalf("pending account_login = %q, want pending-octocat", pendingLogin)
+	).Scan(&pendingBefore)
+	if pendingBefore != 0 {
+		t.Fatalf("unbound installation.created stored %d pending rows, want 0", pendingBefore)
 	}
 
 	state, err := signState(testWorkspaceID)
@@ -3142,7 +3197,7 @@ func TestSetupCallback_ConsumesPendingInstallationCreated(t *testing.T) {
 		installationID,
 	).Scan(&pendingCount)
 	if pendingCount != 0 {
-		t.Fatalf("pending installation row should be consumed, got count %d", pendingCount)
+		t.Fatalf("setup callback left %d pending rows, want 0", pendingCount)
 	}
 }
 
@@ -3752,5 +3807,71 @@ func TestWebhook_UninstallDeletesAllBindings(t *testing.T) {
 	}
 	if !seen[testWorkspaceID] || !seen[uuidToString(wsB.ID)] {
 		t.Errorf("deleted broadcasts must cover both workspaces; saw %v", seen)
+	}
+}
+
+// CHE-3622: setup callback returns to the origin that started the install,
+// only when it is in CORS_ALLOWED_ORIGINS; otherwise FRONTEND_ORIGIN.
+func TestGitHubSetupCallbackReturnsToStartingOrigin(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("FRONTEND_ORIGIN", "https://ts.test:19443")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://ts.test:19443,https://multica.congvc.dev")
+	wsID := "11111111-2222-3333-4444-555555555555"
+	cases := []struct{ name, origin, wantPrefix string }{
+		{"allow-listed origin", "https://multica.congvc.dev", "https://multica.congvc.dev/settings?tab=repositories&"},
+		{"origin outside allow-list", "https://evil.example", "https://ts.test:19443/settings?tab=repositories&"},
+		{"no origin", "", "https://ts.test:19443/settings?tab=repositories&"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			state, err := signStateForReturn(wsID, githubReturnToRepositories, c.origin)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/github/setup?installation_id=nan&state="+url.QueryEscape(state), nil)
+			rec := httptest.NewRecorder()
+			(&Handler{}).GitHubSetupCallback(rec, req)
+			if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, c.wantPrefix) {
+				t.Fatalf("redirect = %q, want prefix %q", loc, c.wantPrefix)
+			}
+		})
+	}
+}
+
+func TestGitHubStateCarriesOriginAndRejectsTamper(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	wsID := "11111111-2222-3333-4444-555555555555"
+	tok, err := signStateForReturn(wsID, githubReturnToGitHub, "https://multica.congvc.dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, got, ok := verifyStateWithReturn(tok); !ok || got != "https://multica.congvc.dev" {
+		t.Fatalf("origin = %q ok=%v, want multica.congvc.dev", got, ok)
+	}
+	// Swap the origin segment for another valid one; signature must fail.
+	parts := strings.Split(tok, ".")
+	parts[4] = base64.RawURLEncoding.EncodeToString([]byte("https://evil.example"))
+	if _, _, _, ok := verifyStateWithReturn(strings.Join(parts, ".")); ok {
+		t.Fatal("tampered origin accepted")
+	}
+	// Connect handler signs the request's Origin header into the state.
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/"+wsID+"/github/connect", nil)
+	req.Header.Set("Origin", "https://multica.congvc.dev")
+	req = withURLParam(req, "id", wsID)
+	t.Setenv("GITHUB_APP_SLUG", "multica-test")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "test-client-id")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "test-client-secret")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
+	rec := httptest.NewRecorder()
+	(&Handler{}).GitHubConnect(rec, req)
+	var body GitHubConnectResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil || body.URL == "" {
+		t.Fatalf("connect: %d %s", rec.Code, rec.Body.String())
+	}
+	u, _ := url.Parse(body.URL)
+	if _, _, got, ok := verifyStateWithReturn(u.Query().Get("state")); !ok || got != "https://multica.congvc.dev" {
+		t.Fatalf("connect state origin = %q ok=%v", got, ok)
 	}
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession, agent db.Agent, humanID, requestID pgtype.UUID, content string, attachmentIDs []pgtype.UUID) (*service.DirectChatSendResult, error) {
+func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession, agent db.Agent, humanID, requestID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, clientMessageID string) (*service.DirectChatSendResult, error) {
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision replies require the request's human in its original interactive DM"}
 	if r.Header.Get("X-Actor-Source") != "interactive_jwt" || session.CreatorID != humanID || agent.Kind == "system" {
 		return nil, deny
@@ -46,6 +46,13 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	session, err = queries.GetChatSession(ctx, session.ID)
 	if err != nil {
 		return nil, err
+	}
+	if clientMessageID != "" { // a retry that raced the first reply: its message and record are stored
+		if stored, found, err := h.TaskService.ReplayDirectChatSend(ctx, queries, session, clientMessageID); err != nil {
+			return nil, err
+		} else if found {
+			return &stored, nil
+		}
 	}
 	if session.CreatorID != humanID || session.Status != "active" || session.ChannelOriginAt.Valid || session.IsAgentIntro {
 		return nil, deny
@@ -110,8 +117,9 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 		return nil, decisionIntentRefusal{http.StatusConflict, "this request cannot accept another answer"}
 	}
 	var sent service.DirectChatSendResult
+	plan.Options.HumanSend, plan.Options.ClientMessageID = true, clientMessageID // the owner's reply is a persisted send: attention T2
 	if foreign {
-		message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content, MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}})
+		message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "user", Content: content, MessageKind: pgtype.Text{String: "message", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}, ClientMessageID: pgtype.Text{String: clientMessageID, Valid: clientMessageID != ""}})
 		if err != nil {
 			return nil, err
 		}
@@ -119,6 +127,9 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 			return nil, err
 		}
 		sent.Message = message
+		if err := queries.ResolveChatAttentionOnHumanSend(ctx, db.ResolveChatAttentionOnHumanSendParams{ChainRootSessionID: session.ChainRootSessionID, UserID: humanID}); err != nil {
+			return nil, err
+		}
 	} else if sent, err = h.TaskService.SendDirectChatMessageTx(ctx, queries, plan, session, humanID, content, attachmentIDs, "member", humanID, "interactive_jwt"); err != nil {
 		return nil, err
 	}
@@ -151,7 +162,7 @@ func (h *Handler) sendChatDecisionReply(r *http.Request, session db.ChatSession,
 	h.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": response, "issue_title": issue.Title, "issue_status": issue.Status})
 	h.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	h.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, issue.ID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
-	h.publishChat(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(session.ID), protocol.ChatMessagePayload{
+	h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatMessagePayload{
 		ChatSessionID: uuidToString(session.ID), MessageID: uuidToString(result.Message.ID), Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
 	})
 	return &sent, nil

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  Check,
   Copy,
   Crown,
   Link,
@@ -15,7 +16,7 @@ import {
   User,
   UserMinus,
   X,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AppLink, useOptionalNavigation } from "../../navigation";
 import type {
@@ -66,9 +67,12 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuSubContent,
 } from "@multica/ui/components/ui/dropdown-menu";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
+import { useInviteDraftStore } from "@multica/core/settings/draft-stores";
+import { useSettingsDraft } from "./use-settings-draft";
 import {
   usePreviewWorkspaceSeatPurchase,
   usePurchaseWorkspaceSeats,
@@ -103,6 +107,7 @@ import {
   seatPurchaseMatchesPreview,
 } from "./seat-invite-purchase";
 
+const INVITE_DEFAULTS = { email: "", role: "member" };
 const SEAT_PURCHASE_CONFIRM_TIMEOUT_MS = 2 * 60_000;
 
 type MembersView = "members" | "invitations" | "links";
@@ -273,7 +278,7 @@ function MemberRow({
                             </span>
                           </div>
                           {member.role === role && (
-                            <span className="ml-auto text-caption text-muted-foreground">{"✓"}</span>
+                            <Check className="ml-auto size-3.5 text-muted-foreground" />
                           )}
                         </DropdownMenuItem>
                       );
@@ -375,12 +380,13 @@ function ShareLinkRow({
           <span>{t(($) => $.members.share_link_uses, { used: link.use_count, max: link.max_uses ?? "∞" })}</span>
           {link.expires_at && <span>· {t(($) => $.members.share_link_expires, { date: new Date(link.expires_at).toLocaleDateString(locale) })}</span>}
         </div>
-        <div
-          className="truncate font-mono text-caption text-muted-foreground"
-          title={joinUrl}
-        >
-          {joinUrl}
-        </div>
+        <TruncatedTooltip content={joinUrl}>
+          <div
+            className="truncate font-mono text-caption text-muted-foreground"
+          >
+            {joinUrl}
+          </div>
+        </TruncatedTooltip>
       </div>
       <span className="w-24 shrink-0 text-body">{rc.label}</span>
       <IconButton
@@ -442,8 +448,17 @@ export function MembersTab() {
     );
   };
   const [memberQuery, setMemberQuery] = useState("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<MemberRole>("member");
+  // The unsent invite is kept per workspace and persisted: closing the dialog
+  // or leaving the page keeps it; only a sent invitation clears it.
+  const [inviteFields, setInviteFields] = useSettingsDraft(
+    useInviteDraftStore,
+    workspace?.id ?? "",
+    INVITE_DEFAULTS,
+  );
+  const inviteEmail = inviteFields.email;
+  const inviteRole = inviteFields.role as MemberRole;
+  const setInviteEmail = (email: string) => setInviteFields({ email });
+  const setInviteRole = (role: MemberRole) => setInviteFields({ role });
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteSeatPurchase, setInviteSeatPurchase] =
     useState<InviteSeatPurchase | null>(null);
@@ -474,6 +489,18 @@ export function MembersTab() {
 
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
   const canManageWorkspace = currentMember?.role === "owner" || currentMember?.role === "admin";
+
+  // The Team panel's invite button links here with `?invite=1`; it waits for
+  // the member list so only managers get the dialog.
+  const inviteRequested = navigation?.searchParams.has("invite") ?? false;
+  useEffect(() => {
+    if (!inviteRequested || !navigation || !currentMember) return;
+    if (canManageWorkspace) setInviteOpen(true);
+    const params = new URLSearchParams(navigation.searchParams);
+    params.delete("invite");
+    navigation.replace(`${navigation.pathname}?${params}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- consume the intent once the role is known
+  }, [inviteRequested, currentMember?.role]);
   const isOwner = currentMember?.role === "owner";
   const ownerCount = members.filter((m) => m.role === "owner").length;
   // Only owners/admins may list share links; skip the request for plain
@@ -497,14 +524,14 @@ export function MembersTab() {
     async (email: string, role: MemberRole) => {
       if (!workspace) return;
       await api.createMember(workspace.id, { email, role });
-      setInviteEmail("");
-      setInviteRole("member");
+      // Sent: the unsent draft is done. A failed send never reaches this line.
+      setInviteFields({ email: undefined, role: undefined });
       await qc.invalidateQueries({
         queryKey: workspaceKeys.invitations(wsId),
       });
       toast.success(t(($) => $.members.toast_invitation_sent));
     },
-    [qc, t, workspace, wsId],
+    [qc, t, workspace, wsId, setInviteFields],
   );
 
   const handleInviteMember = async () => {

@@ -10,6 +10,7 @@ import {
   registerActiveHostElement,
   registerCoordinatorQueryClient,
 } from "@/platform/tab-coordinator";
+import { initIssueViewTabs } from "@/platform/issue-view-tabs";
 
 /**
  * Renders the active tab session through THE single app router
@@ -39,6 +40,7 @@ export function TabContent() {
   // is idempotent.
   useState(() => {
     initTabCoordinator();
+    initIssueViewTabs();
     return true;
   });
 
@@ -47,11 +49,12 @@ export function TabContent() {
   }, [qc]);
 
   // Sync document.title when switching tabs within the active workspace.
+  const activeTabId = group?.activeTabId;
+  const tabs = group?.tabs;
   useEffect(() => {
-    if (!group) return;
-    const tab = group.tabs.find((t) => t.id === group.activeTabId);
+    const tab = tabs?.find((t) => t.id === activeTabId);
     if (tab) document.title = tab.title;
-  }, [group?.activeTabId, group?.tabs]);
+  }, [activeTabId, tabs]);
 
   if (!group) return null;
 

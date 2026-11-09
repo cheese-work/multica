@@ -67,3 +67,32 @@ test("runner pinning preserves historical probe and floating-image cache comment
   assert.match(source, /runs Linux 6\.6\.141, GitHub-hosted ubuntu-latest runs 6\.17\.0/)
   assert.match(source, /when ubuntu-latest moves to a new/)
 })
+
+test("a CI job that is new on a PR has a zero warning baseline until main runs it", () => {
+  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"locale-parity"/)
+})
+
+test("the gitleaks job folded into CI by CHE-4385 has a zero warning baseline until main runs it", () => {
+  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"gitleaks"/)
+})
+
+test("dependency-review blocks a PR that adds a high or critical dependency and prints nothing about existing ones (CHE-4666)", () => {
+  const source = workflow("ci.yml")
+  const job = source.match(/^  dependency-review:\n(?:(?:    .*|)\n)+/m)?.[0] ?? ""
+  assert.match(job, /runs-on: ubuntu-24\.04\n/)
+  assert.match(job, /uses: actions\/dependency-review-action@[0-9a-f]{40} # v\d+\.\d+\.\d+/)
+  assert.match(job, /if: \$\{\{ github\.event_name == 'pull_request' \}\}/)
+  assert.match(job, /fail-on-severity: high/)
+  assert.match(job, /fail-on-scopes: runtime, development\n/)
+  assert.match(job, /comment-summary-in-pr: never/)
+  assert.doesNotMatch(job, /secrets\.|: write/)
+  const backend = source.match(/^  backend:\n(?:(?:    .*|)\n)+/m)[0]
+  assert.match(backend, /needs: \[[^\]]*\bdependency-review\b/)
+  assert.match(backend, /"dependency-review":"always"/)
+  const zero = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8").match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"dependency-review"/)
+})

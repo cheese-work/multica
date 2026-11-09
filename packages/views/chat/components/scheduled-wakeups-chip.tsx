@@ -1,6 +1,6 @@
 "use client";
 
-import { Clock } from "lucide-react";
+import { Clock } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -74,7 +74,9 @@ export function ScheduledWakeupsChip({
             return (
               <li key={wakeup.id} className="flex items-start gap-2" data-testid="scheduled-row">
                 <div className="min-w-0 flex-1">
-                  <div className="text-caption tabular-nums text-muted-foreground">{time}</div>
+                  <div className="text-caption tabular-nums text-muted-foreground">
+                    {wakeup.issue_id ? t(($) => $.scheduled.watching_until, { time }) : time}
+                  </div>
                   <div className="truncate text-body">{firstLine(wakeup.instruction)}</div>
                 </div>
                 <Button

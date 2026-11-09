@@ -36,6 +36,24 @@ func claudeTerminateGrace() time.Duration {
 	return 5 * time.Second
 }
 
+// claudeErrorResultGraceNanos optionally overrides, in nanoseconds, how long
+// claude may keep running after it reported an error result. Set via atomic
+// store in tests; zero keeps the default.
+var claudeErrorResultGraceNanos atomic.Int64
+
+// claudeErrorResultGrace bounds the wait for claude to exit after an error
+// result. With stdin closed the CLI still stays alive while any background
+// task it started is running, then opens a new turn when the task ends. After
+// an error result (a spent session limit, an API failure) that turn cannot
+// change the outcome, so the daemon stops waiting instead of holding the run
+// open for the task's lifetime.
+func claudeErrorResultGrace() time.Duration {
+	if n := claudeErrorResultGraceNanos.Load(); n > 0 {
+		return time.Duration(n)
+	}
+	return 10 * time.Second
+}
+
 // claudeBackend implements Backend by spawning the Claude Code CLI
 // with --output-format stream-json.
 type claudeBackend struct {
@@ -90,6 +108,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
+	if opts.StableCwd != "" && opts.Cwd != "" {
+		if err := wrapStableCwd(cmd, opts.Cwd, opts.StableCwd); err != nil {
+			b.cfg.Logger.Warn("stable cwd unavailable, running at the task workdir", "error", err)
+		}
+	}
 	// Take over context cancellation: the default kills the whole group the
 	// instant runCtx is done. We instead drive a graceful group-wide
 	// SIGTERM→SIGKILL from the cancellation goroutine below and close stdout
@@ -232,6 +255,22 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		unreadableAssistantCount := 0
 		controlErrors := make(chan error, 1)
 		var controlWrites sync.WaitGroup
+		var stopAfterErrorResultOnce sync.Once
+		// stopAfterErrorResult terminates a claude that outlives its error
+		// result past the grace period, the same way cancellation does.
+		stopAfterErrorResult := func() {
+			select {
+			case <-procDone:
+				return
+			case <-time.After(claudeErrorResultGrace()):
+			}
+			b.cfg.Logger.Warn("claude still running after an error result; terminating process group", "pid", cmd.Process.Pid)
+			signalProcessGroup(cmd, syscall.SIGTERM)
+			if !waitProcessGroupGone(cmd, claudeTerminateGrace()) {
+				signalProcessGroup(cmd, syscall.SIGKILL)
+			}
+			_ = stdout.Close()
+		}
 
 		// On cancellation / timeout, terminate claude (and every MCP server and
 		// tool subprocess it spawned) BEFORE unblocking the scanner. EOF stdin
@@ -335,6 +374,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				contextWindow = claudeContextWindow(msg.ModelUsage, contextModel)
 				closeStdin()
+				if resultIsError || terminalReasonError != "" {
+					stopAfterErrorResultOnce.Do(func() { go stopAfterErrorResult() })
+				}
 			case "log":
 				if msg.Log != nil {
 					trySend(msgCh, Message{
@@ -1182,6 +1224,9 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	// Claude Code loads the per-task CLAUDE.md the daemon writes into the
 	// workdir, so inlining the same runtime brief would duplicate it on every
 	// turn. Verified against Claude Code 2.1.220 (MUL-5392).
+	if opts.AppendSystemPromptFile != "" {
+		args = append(args, "--append-system-prompt-file", opts.AppendSystemPromptFile)
+	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
@@ -1200,6 +1245,11 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
 	if opts.ClaudeSettingsPath != "" {
 		args = append(args, "--settings", opts.ClaudeSettingsPath)
+	}
+	if opts.DisableProviderWebTools {
+		// Last, so no earlier user argument can follow it. A deny rule beats
+		// any --allowedTools entry.
+		args = append(args, "--disallowedTools", "WebSearch,WebFetch")
 	}
 	return args
 }

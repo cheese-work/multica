@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, type ReactNode } from "react";
-import { AlertCircle, Info, LogIn } from "lucide-react";
+import { AlertCircle, Info, LogIn } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
+import { Progress } from "@multica/ui/components/ui/progress";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { cn } from "@multica/ui/lib/utils";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { toast } from "sonner";
 import {
   SettingsCard,
@@ -33,18 +35,21 @@ function DiagnosticsRow({
   return (
     <div className="grid grid-cols-[140px_minmax(0,1fr)] items-baseline gap-3 py-1.5">
       <span className="text-caption text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "min-w-0 truncate text-body",
-          mono && "font-mono text-caption",
-        )}
-        title={typeof value === "string" ? value : undefined}
-      >
-        {value}
-      </span>
+      <TruncatedTooltip content={typeof value === "string" ? value : undefined}>
+        <span
+          className={cn(
+            "min-w-0 truncate text-body",
+            mono && "font-mono text-caption",
+          )}
+        >
+          {value}
+        </span>
+      </TruncatedTooltip>
     </div>
   );
 }
+
+const MB = 1024 * 1024;
 
 export function DaemonSettingsTab() {
   const { t } = useT("settings");
@@ -133,6 +138,23 @@ export function DaemonSettingsTab() {
             {t(($) => $.desktop.daemon.external_description_after)}
           </p>
         </div>
+      )}
+
+      {status.state === "installing_cli" && status.cliDownload && (
+        <Progress
+          className="mt-4"
+          value={Math.min(
+            100,
+            Math.round((status.cliDownload.bytesDone / status.cliDownload.bytesTotal) * 100),
+          )}
+        >
+          <span className="text-caption text-muted-foreground tabular-nums">
+            {t(($) => $.desktop.daemon.cli_download_progress, {
+              done: (status.cliDownload.bytesDone / MB).toFixed(1),
+              total: (status.cliDownload.bytesTotal / MB).toFixed(1),
+            })}
+          </span>
+        </Progress>
       )}
 
       <SettingsCard>

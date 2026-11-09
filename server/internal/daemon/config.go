@@ -64,6 +64,8 @@ const (
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
 	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
+	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
 	DefaultWorkspaceBootstrapSyncInterval = 30 * time.Second
 	DefaultWorkspaceLegacySyncInterval    = 5 * time.Minute
@@ -155,6 +157,8 @@ type Config struct {
 	OpenCodeIdleWatchdog        time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog           time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog           time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call, which now also covers a live Cursor background shell); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
+	AgentSilenceWarnAfter       time.Duration // mark the transcript when a run is silent (no message, no tool in flight) this long (0 = off)
+	AgentSilenceAlertAfter      time.Duration // also post one comment on the issue after this much silence (0 = off); never below the warn tier when both are on
 	ClaudeArgs                  []string
 	CodexArgs                   []string
 	CodebuddyArgs               []string
@@ -165,6 +169,9 @@ type Config struct {
 	// initialize because its SQLite state runtime could not be opened
 	// (MULTICA_CODEX_SQLITE_INIT_RETRY, default off; CHE-737 canary gate).
 	CodexSQLiteInitRetry bool
+	// StableCwdAgents (MULTICA_STABLE_CWD_AGENTS=name,name; default off) runs listed Claude agents
+	// at <WorkspacesRoot>/.stable-cwd/<agent id> so the cwd in the system prompt, and the prompt cache behind it, is stable.
+	StableCwdAgents []string
 
 	// ProfileCommandOverrides maps a custom runtime profile_id -> the absolute
 	// executable path to use for that profile on THIS machine (MUL-3284).
@@ -344,6 +351,21 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	agentIdleWatchdog, err := durationFromEnv("MULTICA_AGENT_IDLE_WATCHDOG", DefaultAgentIdleWatchdog)
 	if err != nil {
 		return Config{}, err
+	}
+	// The silence tiers only mark and report; the idle watchdog above stays the
+	// only thing that stops a run. 0 turns a tier off.
+	silenceWarnAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_WARN_AFTER", DefaultAgentSilenceWarnAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	silenceAlertAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_ALERT_AFTER", DefaultAgentSilenceAlertAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	silenceWarnAfter, silenceAlertAfter, clamped := resolveSilenceTiers(silenceWarnAfter, silenceAlertAfter)
+	if clamped {
+		slog.Warn("MULTICA_AGENT_SILENCE_ALERT_AFTER is below MULTICA_AGENT_SILENCE_WARN_AFTER; using the warn value",
+			"warn_after", silenceWarnAfter)
 	}
 	// MULTICA_OPENCODE_IDLE_WATCHDOG narrows the no-message window for
 	// OpenCode's streamed model responses. Zero removes the provider-specific
@@ -671,8 +693,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		CodexTurnInterruptTimeout:       codexTurnInterruptTimeout,
 		CodexThreadHandshakeTimeout:     codexThreadHandshakeTimeout,
 		CodexSQLiteInitRetry:            codexSQLiteInitRetry,
+		StableCwdAgents:                 patternsFromEnv("MULTICA_STABLE_CWD_AGENTS", nil),
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
+		AgentSilenceWarnAfter:           silenceWarnAfter,
+		AgentSilenceAlertAfter:          silenceAlertAfter,
 		AgentToolWatchdog:               agentToolWatchdog,
 		ClaudeArgs:                      claudeArgs,
 		CodexArgs:                       codexArgs,

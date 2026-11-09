@@ -249,6 +249,7 @@ func TestRuntimeBlockedNeedsNotice(t *testing.T) {
 		{"runtime unusable: MUL-6164's original case", dispatch.ReasonRuntimeUnusable, true},
 		{"runtime profile missing: MUL-6164's second case", dispatch.ReasonRuntimeProfileMissing, true},
 		{"provider hold: CHE-588's case, the gap this test closes", dispatch.ReasonProviderHold, true},
+		{"provider breaker: CHE-1735's case", dispatch.ReasonProviderBreaker, true},
 		{"runtime offline: the sleeping-laptop wait needs no notice", dispatch.ReasonRuntimeOffline, false},
 		{"target unavailable: not a runtime-repair or policy-hold cause", dispatch.ReasonTargetUnavailable, false},
 	}
@@ -315,6 +316,29 @@ func TestRuntimeUnusableNoticeProviderHoldFailClosedDetailPassesThrough(t *testi
 	for _, wrong := range []string{"reinstall", "Reinstall", "postinstall", "cannot be executed", "runtime profile"} {
 		if strings.Contains(got, wrong) {
 			t.Errorf("fail-closed provider-hold notice contains %q, which belongs to the runtime-repair text: %q", wrong, got)
+		}
+	}
+}
+
+func TestRuntimeProfileNoticeIncludesManualMigrationPath(t *testing.T) {
+	verdict := runtimeVerdict(db.AgentRuntime{
+		Status:   "offline",
+		Metadata: []byte(`{"offline_reason":{"code":"dsh_profile","detail":"the multica DSH profile needs manual migration","installing":false}}`),
+	}, db.Agent{})
+	if !verdict.Blocked() || verdict.Reason != dispatch.ReasonRuntimeProfileMissing {
+		t.Fatalf("migration must refuse the trigger with the existing profile reason: %+v", verdict)
+	}
+	notice := RuntimeUnusableNotice("Kit", verdict)
+	for _, required := range []string{
+		"Kit",
+		"https://github.com/multica-ai/dsh-multica-runtime",
+		"`dsh.profile.bundles`",
+		"replace `dsh-profile-multica` with `@multica-ai/dsh-runtime`",
+		"back up",
+		"will not migrate",
+	} {
+		if !strings.Contains(notice, required) {
+			t.Errorf("blocked-trigger notice lacks migration instruction %q:\n%s", required, notice)
 		}
 	}
 }

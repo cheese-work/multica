@@ -181,7 +181,15 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		enabled = *req.Enabled
 	}
 
-	profile, err := h.Queries.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	profile, err := qtx.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
 		WorkspaceID:    wsUUID,
 		DisplayName:    req.DisplayName,
 		ProtocolFamily: req.ProtocolFamily,
@@ -199,6 +207,17 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("CreateRuntimeProfile failed", "error", err, "workspace_id", wsID)
+		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime_profile.create", WorkspaceID: wsUUID, TargetID: profile.ID,
+		After: runtimeProfileAuditFields(profile), External: []string{auditExternalProfileRefresh},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime_profile.create")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
 		return
 	}
@@ -333,7 +352,26 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		params.Enabled = pgtype.Bool{Bool: *req.Enabled, Valid: true}
 	}
 
-	profile, err := h.Queries.UpdateRuntimeProfile(r.Context(), params)
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// The row lock makes the audited before-state the one this update replaces.
+	before, err := qtx.LockRuntimeProfileForDelete(r.Context(), db.LockRuntimeProfileForDeleteParams{ID: profileUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "runtime profile not found")
+			return
+		}
+		slog.Error("UpdateRuntimeProfile lock failed", "error", err, "profile_id", uuidToString(profileUUID))
+		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
+		return
+	}
+	profile, err := qtx.UpdateRuntimeProfile(r.Context(), params)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "runtime profile not found")
@@ -344,6 +382,18 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		slog.Error("UpdateRuntimeProfile failed", "error", err, "profile_id", uuidToString(profileUUID))
+		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime_profile.update", WorkspaceID: wsUUID, TargetID: profile.ID,
+		Before: runtimeProfileAuditFields(before), After: runtimeProfileAuditFields(profile),
+		External: []string{auditExternalProfileRefresh},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime_profile.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
 		return
 	}
@@ -519,6 +569,17 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	// Lock runtime rows in deterministic ID order. Their agent/task foreign-key
 	// inserts take KEY SHARE locks, preventing dependencies from appearing after
 	// the active-agent check.
+	// Chat sessions before the runtime and agent locks (session -> runtime -> agent -> task): chat
+	// enqueue holds a session while it takes KEY SHARE on the runtime and locks the agent.
+	plannedIDs, err := unlockedRuntimeIDs(r.Context(), tx, `SELECT id FROM agent_runtime WHERE profile_id=$1 AND workspace_id=$2 ORDER BY id`, profileUUID, wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to enumerate profile runtimes")
+		return
+	}
+	if _, err := qtx.LockChatSessionsForRuntimes(r.Context(), plannedIDs); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lock profile chat sessions")
+		return
+	}
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByProfile(r.Context(), db.ListAgentRuntimeIDsByProfileParams{
 		ProfileID:   profileUUID,
 		WorkspaceID: wsUUID,
@@ -612,6 +673,24 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to delete runtime profile")
 			return
 		}
+	}
+	// A profile already gone has no snapshot; the row then records only the
+	// orphaned runtimes this call cleaned up.
+	var beforeProfile map[string]any
+	if !profileMissing {
+		beforeProfile = runtimeProfileAuditFields(profile)
+	}
+	external := []string{auditExternalProfileRefresh}
+	if len(deletedRuntimes) > 0 {
+		external = append(external, auditExternalRuntimeGone)
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime_profile.delete", WorkspaceID: wsUUID, TargetID: profileUUID,
+		Before: beforeProfile, After: map[string]any{"runtimes_removed": len(deletedRuntimes)},
+		External: external,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime_profile.delete")
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit transaction")

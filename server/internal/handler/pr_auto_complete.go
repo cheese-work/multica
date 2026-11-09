@@ -51,6 +51,7 @@ const (
 	prAutoCompleteIssueDisabled     = "issue_disabled"     // turned off for this issue
 	prAutoCompleteTerminal          = "terminal"           // already done / cancelled
 	prAutoCompleteTriage            = "triage"             // not accepted yet
+	prAutoCompleteNotInWorkflow     = "not_in_workflow"    // project workflow does not list the target
 	prAutoCompleteAtTarget          = "at_target"          // already in the target status
 	prAutoCompleteWaiting           = "waiting"            // some PRs still open / draft
 	prAutoCompleteNotMerged         = "not_merged"         // some PRs closed without merging
@@ -205,6 +206,19 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 	case disabled:
 		d.State = prAutoCompleteIssueDisabled
 		return d, nil
+	}
+	// A merge writes only a status the issue's project workflow lists, the same
+	// rule a manual status change follows (applyIssueWorkflow). Default and
+	// issues outside any project accept every status. The issue page shows
+	// nothing for this state: the issue just stays where it is.
+	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+	if err != nil {
+		return prAutoCompleteDecision{}, err
+	}
+	switch {
+	case issueworkflow.CheckStatus(def, d.Target) != nil:
+		d.State = prAutoCompleteNotInWorkflow
+		return d, nil
 	case issue.Status == d.Target:
 		d.State = prAutoCompleteAtTarget
 		return d, nil
@@ -254,52 +268,60 @@ func (h *Handler) workflowRoutesPRMerge(ctx context.Context, issue db.Issue) (bo
 	return ok && step.HasGuard(issueworkflow.GuardPRMerged), nil
 }
 
-// maybeAutoCompleteIssue runs the decision for one issue after a PR event and
+// maybeAutoCompleteIssue is autoCompleteIssue for callers with nothing to retry:
+// a failure is logged and dropped.
+func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issueID pgtype.UUID, resolver *issuestatus.Resolver) {
+	if err := h.autoCompleteIssue(ctx, workspaceID, issueID, resolver); err != nil {
+		slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
+	}
+}
+
+// autoCompleteIssue runs the decision for one issue after a PR event and
 // moves it to the workspace's target status when every delivery PR is merged.
+// It returns the failures a retry can fix (database reads and writes).
 // Safe to call for any issue: every guard lives in decidePRAutoComplete, and
 // the status write is conditional on the status the decision saw, so
 // concurrent merges move the issue once. It starts no agent run: a merge is not
 // a person handing the issue to anyone.
-func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issueID pgtype.UUID, resolver *issuestatus.Resolver) {
+func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pgtype.UUID, resolver *issuestatus.Resolver) error {
 	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("pr auto-complete: load issue failed", "err", err, "issue_id", uuidToString(issueID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
 		}
-		return
+		return fmt.Errorf("load issue: %w", err)
 	}
 	ws, err := h.Queries.GetWorkspace(ctx, workspaceID)
 	if err != nil {
-		slog.Warn("pr auto-complete: load workspace failed", "err", err, "workspace_id", uuidToString(workspaceID))
-		return
+		return fmt.Errorf("load workspace: %w", err)
 	}
 	d, err := h.decidePRAutoComplete(ctx, ws, issue, resolver)
 	if err != nil {
-		slog.Warn("pr auto-complete: decision failed", "err", err, "issue_id", uuidToString(issueID))
-		return
+		return fmt.Errorf("decision: %w", err)
 	}
 	if d.State != prAutoCompleteAllMerged {
-		return
+		return nil
 	}
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
-		slog.Warn("pr auto-complete: list children failed", "err", err, "issue_id", uuidToString(issue.ID))
-		return
+		return fmt.Errorf("list children: %w", err)
 	}
 	if len(children) > 0 {
 		effective := h.childStatusResolver(ctx)
 		for _, child := range children {
 			status, err := effective(child)
-			if err != nil || !isTerminalChildStatus(status) {
-				return
+			if err != nil {
+				return fmt.Errorf("child status: %w", err)
+			}
+			if !isTerminalChildStatus(status) {
+				return nil
 			}
 		}
 	}
 
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		slog.Warn("pr auto-complete: begin failed", "err", err)
-		return
+		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
@@ -311,19 +333,22 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Someone changed the status since the decision; their write wins.
-		return
+		return nil
 	}
 	var cancelledWakeups []db.AgentTaskQueue
+	var recorded *db.ActivityLog
 	if err == nil {
 		// A no-op unless the target closes the issue.
 		cancelledWakeups, err = service.StopClosedIssueWakeups(ctx, qtx, updated)
 	}
 	if err == nil {
+		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, map[string]string{"pr": prNumberList(d.PRs)})
+	}
+	if err == nil {
 		err = tx.Commit(ctx)
 	}
 	if err != nil {
-		slog.Warn("pr auto-complete: status write failed", "err", err, "issue_id", uuidToString(issueID))
-		return
+		return fmt.Errorf("status write: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, updated.WorkspaceID, cancelledWakeups)
 	// A merged PR is the most common way a sub-issue reaches done; the parent
@@ -335,7 +360,7 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
-	h.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
+	payload := map[string]any{
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,
@@ -347,7 +372,9 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 		// both ends so the activity log and clients see the mark go.
 		"duplicate_of_issue_id":      liveDuplicateMark(updated.Status, updated.DuplicateOfIssueID),
 		"prev_duplicate_of_issue_id": liveDuplicateMark(issue.Status, issue.DuplicateOfIssueID),
-	})
+	}
+	h.publishSystemStatusChange(uuidToString(workspaceID), recorded, payload)
+	return nil
 }
 
 // prNumberList renders "#12, #15" for the activity entry.

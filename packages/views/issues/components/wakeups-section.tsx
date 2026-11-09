@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Clock3, ChevronRight, GitPullRequest, Link2, ListChecks, CircleDot, Play } from "lucide-react";
+import { Bell, Clock3, ChevronRight, GitPullRequest, Link2, ListChecks, CircleDot, Play } from "@multica/ui/icons";
 import { toast } from "sonner";
 import {
   issueSystemWakeupsOptions,
@@ -39,6 +39,7 @@ import { WakeupControl } from "./wakeup-control";
 import { WakeupsPausedBanner } from "./wakeups-paused-banner";
 import { WakeupCreate } from "./wakeup-create";
 import { SystemWakeupRow } from "./system-wakeup-row";
+import { IssueWakeupDefaults } from "./issue-wakeup-defaults";
 import { TranscriptButton } from "../../common/task-transcript";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
@@ -184,7 +185,7 @@ function WakeupRow({
           render={
             <button
               type="button"
-              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-caption hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+              className="col-span-2 col-start-1 row-start-1 grid min-w-0 grid-cols-subgrid rounded-md py-2 text-left text-label hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
             />
           }
         >
@@ -197,7 +198,7 @@ function WakeupRow({
               {text.trigger(wakeup)}
             </span>
           </span>
-          <span className="col-span-2 min-w-0 break-words pl-7.5 pr-2 text-micro">
+          <span className="col-span-2 min-w-0 break-words pl-7.5 pr-2 text-caption">
             <span className="block text-muted-foreground">
               {text.summary(wakeup, closed)}
             </span>
@@ -364,9 +365,12 @@ export function WakeupsSection({
   issueId,
   closed = false,
   defaultAgentId,
+  projectId,
 }: {
   issueId: string;
   closed?: boolean;
+  /** The issue's project, when it has one: inherited project rules link to it. */
+  projectId?: string;
   /** Preselected target for a new wakeup: the issue's agent assignee. */
   defaultAgentId?: string;
 }) {
@@ -454,14 +458,14 @@ export function WakeupsSection({
           {isError && (
             <button
               type="button"
-              className="flex min-h-8 w-full items-center rounded-md px-2 py-1.5 text-left text-caption text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              className="flex min-h-8 w-full items-center rounded-md px-2 py-1.5 text-left text-label text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
               onClick={() => { void refetch(); void refetchSystemRules(); }}
             >
               {t(($) => $.wakeups.retry)}
             </button>
           )}
           {closed && (
-            <p className="px-2 text-caption text-muted-foreground">
+            <p className="px-2 text-label text-muted-foreground">
               {t(($) => $.wakeups.closed_hint)}
             </p>
           )}
@@ -476,7 +480,7 @@ export function WakeupsSection({
                 type="button"
                 aria-expanded={historyOpen}
                 onClick={() => setHistoryOpen(!historyOpen)}
-                className="flex min-h-9 w-full items-center gap-1 rounded-md px-2 py-1 text-caption text-muted-foreground hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
+                className="flex min-h-9 w-full items-center gap-1 rounded-md px-2 py-1 text-label text-muted-foreground hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-ring"
               >
                 <ChevronRight
                   className={`size-3 ${historyOpen ? "rotate-90" : ""}`}
@@ -487,6 +491,7 @@ export function WakeupsSection({
               {historyOpen && history.map(row)}
             </>
           )}
+          {!closed && <IssueWakeupDefaults workspaceId={workspaceId} issueId={issueId} projectId={projectId} />}
         </div>
       )}
     </section>

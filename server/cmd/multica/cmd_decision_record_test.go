@@ -136,3 +136,33 @@ func TestIssueCommentDecisionRecordExcerptBody(test *testing.T) {
 		test.Fatalf("--excerpt without --decision-record must be refused locally: %v", err)
 	}
 }
+
+// A decision comment never binds to a running turn, so --steer and
+// --steer-active refuse it locally instead of being dropped by the server.
+func TestIssueCommentDecisionRecordRefusesSteer(test *testing.T) {
+	for _, flag := range []string{"steer", "steer-active"} {
+		test.Run(flag, func(test *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests++
+				_ = json.NewEncoder(writer).Encode(map[string]any{"id": "11111111-1111-4111-8111-111111111111"})
+			}))
+			defer server.Close()
+			test.Setenv("MULTICA_SERVER_URL", server.URL)
+			test.Setenv("MULTICA_TOKEN", "mat_test-token")
+			command := newIssueCommentAddTestCmd()
+			command.Flags().Bool("decision-record", true, "")
+			command.Flags().Bool("decision-intent", false, "")
+			command.Flags().StringArray("message", []string{"source"}, "")
+			command.Flags().String("class", "", "")
+			value := "true"
+			if flag == "steer" {
+				value = "22222222-2222-4222-8222-222222222222"
+			}
+			_ = command.Flags().Set(flag, value)
+			if err := runIssueCommentAdd(command, []string{"TST-1"}); err == nil || requests != 0 || !strings.Contains(err.Error(), "--decision-record") {
+				test.Fatalf("steer on a decision record: err=%v network requests=%d", err, requests)
+			}
+		})
+	}
+}

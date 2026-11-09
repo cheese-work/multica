@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -102,7 +103,14 @@ func (h *Handler) ListWorkspaceWakeups(w http.ResponseWriter, r *http.Request) {
 }
 
 func wakeupError(w http.ResponseWriter, err error) {
+	if askGuardWakeupError(w, err) {
+		return
+	}
 	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.ConstraintName == "idx_issue_wakeup_decision_request" {
+		writeErrorCode(w, 409, "wakeup_decision_bound", "another enabled wakeup already waits on this decision request")
+		return
+	}
 	if errors.As(err, &pgErr) && (pgErr.ConstraintName == "issue_wakeup_active_limit" || pgErr.ConstraintName == "issue_wakeup_default_capacity") {
 		writeErrorCode(w, 400, "wakeup_capacity_exceeded", pgErr.Message)
 		return
@@ -194,6 +202,10 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if dispatch.BudgetRecoveryCaller(r.Context()) {
+		writeError(w, http.StatusForbidden, errRecoveryCaused)
+		return
+	}
 	var in service.WakeupInput
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768))
 	dec.DisallowUnknownFields()
@@ -211,7 +223,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	member := parseUUID(originator)
-	svc := service.IssueWakeupService{Tasks: h.TaskService}
+	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType)}
 	existingID := pgtype.UUID{}
 	if rawID := chi.URLParam(r, "wakeupID"); rawID != "" {
 		var valid bool
@@ -291,7 +303,7 @@ func (h *Handler) EnableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "a human originator is required")
 		return
 	}
-	svc := service.IssueWakeupService{Tasks: h.TaskService}
+	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType)}
 	result, err := svc.Enable(r.Context(), issue.ID, parseUUID(originator), h.wakeupSourceTaskID(r), id, in)
 	if err != nil {
 		wakeupError(w, err)

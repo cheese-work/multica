@@ -318,7 +318,10 @@ var issueStatusCmd = &cobra.Command{
 		"To cancel an issue because it duplicates another, mark it instead of only cancelling:\n" +
 		"  multica issue status <id> cancelled --duplicate-of <original>\n" +
 		"The original then lists it as a duplicate. Moving the issue to any status other\n" +
-		"than cancelled later removes the mark.",
+		"than cancelled later removes the mark.\n\n" +
+		"A workflow step can set entry gates a status write must meet. A refused write\n" +
+		"names each failed gate, the fact and the fix. A person's own login may pass a\n" +
+		"block gate with --override-reason; agent runs cannot.",
 	Args: exactArgs(2),
 	RunE: runIssueStatus,
 }
@@ -358,8 +361,19 @@ var issueCommentListCmd = &cobra.Command{
 var issueCommentAddCmd = &cobra.Command{
 	Use:   "add <issue-id>",
 	Short: "Add a comment to an issue",
-	Args:  exactArgs(1),
-	RunE:  runIssueCommentAdd,
+	Long: "Add a comment to an issue.\n\n" +
+		"A plain comment reaches a busy agent only after its current run ends. To add the message to a run " +
+		"that is in progress instead, pass --steer <run-id> (repeatable; from `multica issue runs <issue-id> --active`) " +
+		"or --steer-active for every running agent on the issue you may steer. You may steer an agent's run " +
+		"exactly when your comment could start that agent; an agent never steers its own run, and one agent can " +
+		"add at most 3 messages to a run (10 from all agents). The steered agents are mentioned in the comment. " +
+		"Only a run that accepts additional messages can be steered (`can_supplement: true` in " +
+		"`multica issue runs <issue-id> --active --output json`). A run that cannot take the message gets the " +
+		"normal trigger; the command reports per run whether it was steered or queued, coalesced, deferred or " +
+		"blocked. If a steered run ends before reading an agent's message, the message is handled in a follow-up " +
+		"run. Steering cannot carry attachments.",
+	Args: exactArgs(1),
+	RunE: runIssueCommentAdd,
 }
 
 var issueCommentUpdateCmd = &cobra.Command{
@@ -372,7 +386,10 @@ var issueCommentUpdateCmd = &cobra.Command{
 		"with the newer revision: that overwrites the other edit.\n\n" +
 		"Changing the content is a new trigger, not a silent fix: the server cancels runs this " +
 		"comment triggered that are still in flight and re-enqueues every agent the new body " +
-		"mentions. Attachments are left as they are.",
+		"mentions. Attachments are left as they are.\n\n" +
+		"A mention of an agent that does not exist, is archived or that you cannot invoke is refused " +
+		"(invalid_agent_mentions): the command exits non-zero, lists each rejected range with its text, " +
+		"and the comment is not saved (attachments uploaded before the post stay on the issue).",
 	Args: exactArgs(1),
 	RunE: runIssueCommentUpdate,
 }
@@ -466,10 +483,23 @@ var issueUsageCmd = &cobra.Command{
 }
 
 var issueRerunCmd = &cobra.Command{
-	Use:   "rerun <id>",
-	Short: "Re-enqueue an issue's current agent assignment as a fresh run",
-	Args:  exactArgs(1),
-	RunE:  runIssueRerun,
+	Use:        "rerun <id>",
+	Short:      "Re-enqueue an issue's current agent assignment as a fresh run",
+	Deprecated: "use `multica issue rerun-task <run-id>` instead; find run IDs with `multica issue runs <issue-id> --full-id`",
+	Hidden:     true,
+	Args:       exactArgs(1),
+	RunE:       runIssueRerun,
+}
+
+var issueRerunTaskCmd = &cobra.Command{
+	Use:   "rerun-task <run-id>",
+	Short: "Repeat a specific run using its original agent and trigger context",
+	Long: "Repeat a specific run, even if the issue has since been reassigned. " +
+		"Pass a full run UUID, or a short prefix with --issue <issue-id>. " +
+		"By default, reuse the source working directory and resume its session when safe. " +
+		"Use --fresh to start with a new session and working directory.",
+	Args: exactArgs(1),
+	RunE: runIssueRerunTask,
 }
 
 var issueCancelTaskCmd = &cobra.Command{
@@ -518,10 +548,11 @@ const issueListMaxPageSize = 100
 
 // validIssueSortColumns are the sort keys `issue list --sort` accepts. They
 // mirror the server's ListIssues handler. "position" is the default and is
-// always sorted ascending (the board's manual drag order), so --direction is
-// only meaningful for the other columns.
+// always sorted ascending (the board's manual drag order), and "effective_due"
+// has one fixed order (dated first by date, then undated by priority and
+// age), so --direction is only meaningful for the other columns.
 var validIssueSortColumns = []string{
-	"position", "title", "created_at", "start_date", "due_date", "priority",
+	"position", "title", "created_at", "start_date", "due_date", "priority", "effective_due",
 }
 
 // validIssueFields are the top-level keys /api/issues actually emits for
@@ -538,16 +569,16 @@ var validIssueFields = []string{
 	"assignee_id", "creator_type", "creator_id", "parent_issue_id",
 	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "position", "stage", "start_date", "due_date", "created_at",
 	"updated_at", "revision", "last_activity_at", "metadata", "properties",
-	"labels",
+	"labels", "effective_due", "due_source", "diagnostics",
 }
 
 // directionalIssueSortColumns are the sort keys for which --direction is
-// meaningful: every valid column except "position". Derived from
+// meaningful: every valid column except "position" and "effective_due". Derived from
 // validIssueSortColumns so the two stay in sync.
 var directionalIssueSortColumns = func() []string {
-	cols := make([]string, 0, len(validIssueSortColumns)-1)
+	cols := make([]string, 0, len(validIssueSortColumns)-2)
 	for _, c := range validIssueSortColumns {
-		if c != "position" {
+		if c != "position" && c != "effective_due" {
 			cols = append(cols, c)
 		}
 	}
@@ -592,6 +623,11 @@ func validateIssueEnum(field, value string, allowed []string) error {
 	return fmt.Errorf("invalid %s %q; valid values: %s", field, value, strings.Join(allowed, ", "))
 }
 
+// noStartHandoffNote is the server's suppressRunForWrite rule: --no-start means
+// "my own work is already underway", so a workflow handoff to another handler
+// still queues that handler's run, or nobody would start it.
+const noStartHandoffNote = " Exception: a workflow handoff to a different agent still reassigns the issue and queues that handler's run (see `issue runs`)."
+
 func init() {
 	issueCmd.AddCommand(issueListCmd)
 	issueCmd.AddCommand(issueGetCmd)
@@ -608,6 +644,7 @@ func init() {
 	issueCmd.AddCommand(issueRunMessagesCmd)
 	issueCmd.AddCommand(issueUsageCmd)
 	issueCmd.AddCommand(issueRerunCmd)
+	issueCmd.AddCommand(issueRerunTaskCmd)
 	issueCmd.AddCommand(issueCancelTaskCmd)
 	issueCmd.AddCommand(issueSearchCmd)
 
@@ -637,8 +674,8 @@ func init() {
 	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" or as a comparison such as "Score>=3", "Ship Date<2026-01-01" or "Notes~=review" (repeatable, one member per flag; quote it so the shell does not read < and > as redirection). Name is a property name (case-insensitive) or its UUID; a name containing =, <, >, ! or ~ has to be given by UUID. Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id. Repeating a property matches ANY of its members; different properties must ALL match. The per-type value forms and comparisons are in the command description above.`)
 	issueListCmd.Flags().Int("limit", 50, fmt.Sprintf("Page size, 1 to %d (the server returns at most %d issues per request; use --offset to page through more)", issueListMaxPageSize, issueListMaxPageSize))
 	issueListCmd.Flags().Int("offset", 0, "Number of issues to skip (for pagination; while --output json reports has_more, advance it by the number of issues in that same response)")
-	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
-	issueListCmd.Flags().String("direction", "", "Sort direction (asc or desc); requires --sort to be a non-position column or a property sort (position is always ascending)")
+	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, effective_due (dated issues first by earliest inherited due date, then undated by priority, oldest first; adds effective_due, due_source and diagnostics to each row), or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
+	issueListCmd.Flags().String("direction", "", "Sort direction (asc or desc); requires --sort to be a column other than position or effective_due, or a property sort (those always sort one way)")
 	issueListCmd.Flags().String("fields", "", "JSON output only: comma-separated list of issue fields to include (e.g. id,title,status,priority). Filtering happens client-side after the full response is fetched, so this shrinks CLI output size and agent context cost, not network/server-side cost. Omit for the full issue object (default, unchanged). Valid fields: "+strings.Join(validIssueFields, ", "))
 	issueListCmd.Flags().Bool("resolve-properties", false, resolvePropertiesHelp)
 
@@ -695,14 +732,16 @@ func init() {
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run."+noStartHandoffNote)
 	issueUpdateCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID) and cancel it; --status, if given, must be cancelled, and description/attachment changes must go in a separate update")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run."+noStartHandoffNote)
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
+	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
+	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// issue reorder
@@ -740,6 +779,11 @@ func init() {
 	// issue rerun
 	issueRerunCmd.Flags().String("output", "json", "Output format: table or json")
 	issueRerunCmd.Flags().String("reason", "", "Optional explanation for this forced rerun, carried into the server's audit log (not persisted on the run)")
+	// issue rerun-task
+	issueRerunTaskCmd.Flags().String("output", "json", "Output format: table or json")
+	issueRerunTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short run ID prefix resolution")
+	issueRerunTaskCmd.Flags().Bool("fresh", false, "Start with a new session and working directory")
+	issueRerunTaskCmd.Flags().String("reason", "", "Optional explanation for this forced rerun, carried into the server's audit log (not persisted on the run)")
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short run ID prefix resolution")
@@ -750,13 +794,14 @@ func init() {
 
 	// issue comment add
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
-	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's decision from attested DM messages or a member comment")
+	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
+	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
 	issueCommentAddCmd.Flags().String("context-message", "", "Earlier assistant DM message UUID that offered the options; quoted as \"Options offered\" above the reply (requires --decision-record)")
-	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class: reversible, spend, deploy, publish, irreversible, product_direction; when unsure choose a held class, never reversible")
+	issueCommentAddCmd.Flags().String("class", "", "Unprompted record class; only reversible is accepted (other classes: spend, deploy, publish, irreversible, product_direction need the decision card, so the server refuses them)")
 	issueCommentAddCmd.Flags().String("content", "", "Comment content (decodes \\n, \\r, \\t, \\\\; pipe via --content-stdin for multi-line bodies or to preserve literal backslashes)")
 	issueCommentAddCmd.Flags().Bool("content-stdin", false, "Read comment content from stdin (preserves multi-line content verbatim)")
 	issueCommentAddCmd.Flags().String("content-file", "", "Read comment content from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
@@ -765,6 +810,8 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("supersedes", nil, "Comment ID this comment supersedes (repeatable; a reply ID names its whole thread, same issue only). The server resolves each superseded thread unless a human posted its newest reply or it changed after this request began, and links old and new")
 	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
+	issueCommentAddCmd.Flags().StringSlice("steer", nil, "Run ID (full UUID or short prefix) whose in-progress turn should receive this comment instead of a follow-up run (repeatable)")
+	issueCommentAddCmd.Flags().Bool("steer-active", false, "Add this comment to the running turn of every agent on this issue you may steer, and of any other recipient that is running")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue comment update
@@ -911,8 +958,8 @@ func runIssueList(cmd *cobra.Command, _ []string) error {
 		// ignores --direction for it. Reject the combination up front rather
 		// than silently dropping the flag — a passed-but-ignored flag is a
 		// footgun, especially in scripts.
-		if sortVal == "" || sortVal == "position" {
-			return fmt.Errorf("--direction requires --sort to be one of %s, or a property:<name-or-id> sort; position (the default manual board order) is always ascending", strings.Join(directionalIssueSortColumns, ", "))
+		if sortVal == "" || sortVal == "position" || sortVal == "effective_due" {
+			return fmt.Errorf("--direction requires --sort to be one of %s, or a property:<name-or-id> sort; position (the default manual board order) and effective_due always sort one way", strings.Join(directionalIssueSortColumns, ", "))
 		}
 		params.Set("direction", d)
 	}
@@ -2344,6 +2391,22 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 	return cli.PrintJSON(os.Stdout, result)
 }
 
+// findingFlags parses repeatable --finding "<P0-P3>:<summary>" values; the
+// server owns the severity rules, the CLI only splits and rejects a missing part.
+func findingFlags(cmd *cobra.Command) ([]map[string]string, error) {
+	raw, _ := cmd.Flags().GetStringArray("finding")
+	findings := make([]map[string]string, 0, len(raw))
+	for _, f := range raw {
+		severity, summary, ok := strings.Cut(f, ":")
+		severity, summary = strings.TrimSpace(severity), strings.TrimSpace(summary)
+		if !ok || severity == "" || summary == "" {
+			return nil, fmt.Errorf("--finding %q: want <P0-P3>:<summary>", f)
+		}
+		findings = append(findings, map[string]string{"severity": severity, "summary": summary})
+	}
+	return findings, nil
+}
+
 func runIssueStatus(cmd *cobra.Command, args []string) error {
 	id := args[0]
 	status := args[1]
@@ -2353,6 +2416,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	duplicateOf, err := duplicateOfFlag(cmd, status, true)
+	if err != nil {
+		return err
+	}
+	findings, err := findingFlags(cmd)
 	if err != nil {
 		return err
 	}
@@ -2380,6 +2447,12 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	}
 	if noStart {
 		body["suppress_run"] = true
+	}
+	if reason, _ := cmd.Flags().GetString("override-reason"); strings.TrimSpace(reason) != "" {
+		body["entry_gate_override_reason"] = strings.TrimSpace(reason)
+	}
+	if len(findings) > 0 {
+		body["review_findings"] = findings
 	}
 	var result map[string]any
 	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
@@ -2928,6 +3001,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
+	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
+	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
+		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -2971,16 +3048,20 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
 		return err
 	}
-	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
-		return err
-	}
-	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
 	attachments, _ := cmd.Flags().GetStringSlice("attachment")
 	if decisionRecord && len(attachments) > 0 {
 		return fmt.Errorf("--decision-record cannot combine with --attachment")
+	}
+	steerInputs, _ := cmd.Flags().GetStringSlice("steer")
+	steerActive, _ := cmd.Flags().GetBool("steer-active")
+	if (len(steerInputs) > 0 || steerActive) && (decisionRecord || decisionVeto) {
+		return fmt.Errorf("--steer / --steer-active cannot combine with --decision-record or --decision-veto: decision comments never bind to a running turn")
+	}
+	if (len(steerInputs) > 0 || steerActive) && len(attachments) > 0 {
+		return fmt.Errorf("--steer / --steer-active cannot be combined with --attachment: a running turn takes text only; post the files in a separate comment")
 	}
 	if len(attachments) > 0 {
 		timeout = cli.AtLeastAPITimeout(60 * time.Second)
@@ -2993,6 +3074,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolve issue: %w", err)
 	}
 	issueID := issueRef.ID
+
+	steerTargets, err := resolveSteerTargets(ctx, client, issueID, steerInputs, steerActive)
+	if err != nil {
+		return err
+	}
 
 	// Validate and read ALL attachments before uploading any. URLs are skipped
 	// with a warning — `--attachment` only accepts local file paths. Reading
@@ -3018,6 +3104,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionVeto {
 		body["decision_veto"] = true
 	}
+	if notifyOnly {
+		body["notify_only"] = true
+	}
 	if decisionRecord {
 		body["decision_record"] = true
 		body["message_ids"] = messageIDs
@@ -3034,6 +3123,19 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 			body["escalation_class"] = escalationClass
 		}
 	}
+	if len(steerTargets) > 0 {
+		steerTaskIDs := make([]string, len(steerTargets))
+		for i, target := range steerTargets {
+			steerTaskIDs[i] = target.TaskID
+		}
+		body["content"] = withSteerMentions(content, steerTargets)
+		body["steer_task_ids"] = steerTaskIDs
+	}
+	if steerActive {
+		// The server also steers a recipient whose run started after the
+		// listing above.
+		body["steer"] = true
+	}
 	if parentID, _ := cmd.Flags().GetString("parent"); parentID != "" {
 		body["parent_id"] = parentID
 	}
@@ -3048,11 +3150,14 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/issues/"+issueID+"/comments", body, &result); err != nil {
-		return fmt.Errorf("add comment: %w", err)
+		output, _ := cmd.Flags().GetString("output")
+		sent, _ := body["content"].(string)
+		return fmt.Errorf("add comment: %w", invalidAgentMentionsError(err, sent, output, os.Stdout))
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment added to issue %s.\n", issueRef.Display)
 	warnBlockedTriggerOutcomes(os.Stderr, result)
+	reportSteerOutcomes(os.Stderr, steerTargets, result)
 	printSupersedeOutcomes(os.Stderr, result)
 	if hints, ok := result["hints"].([]any); ok {
 		for _, value := range hints {
@@ -3120,10 +3225,6 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 	if err := guardCommentSelfMention(content, client.AgentID); err != nil {
 		return err
 	}
-	if err := guardCommentHumanAsk(content, client.AgentID); err != nil {
-		return err
-	}
-	warnCommentHumanAsk(content, client.AgentID, cmd.ErrOrStderr())
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
@@ -3134,7 +3235,8 @@ func runIssueCommentUpdate(cmd *cobra.Command, args []string) error {
 		"content":           content,
 		"expected_revision": expectedRevision,
 	}, &result); err != nil {
-		return fmt.Errorf("update comment: %w", err)
+		output, _ := cmd.Flags().GetString("output")
+		return fmt.Errorf("update comment: %w", invalidAgentMentionsError(err, content, output, os.Stdout))
 	}
 
 	fmt.Fprintf(os.Stderr, "Comment %s updated.\n", commentID)
@@ -3496,6 +3598,44 @@ func runIssueRunMessages(cmd *cobra.Command, args []string) error {
 }
 
 // Search command
+
+func runIssueRerunTask(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueScope := ""
+	if issueInput, _ := cmd.Flags().GetString("issue"); issueInput != "" {
+		issueRef, err := resolveIssueRef(ctx, client, issueInput)
+		if err != nil {
+			return fmt.Errorf("resolve issue: %w", err)
+		}
+		issueScope = issueRef.ID
+	}
+	taskRef, err := resolveTaskRunID(ctx, client, issueScope, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve run: %w", err)
+	}
+	fresh, _ := cmd.Flags().GetBool("fresh")
+	body := map[string]any{"fresh": fresh}
+	if reason, _ := cmd.Flags().GetString("reason"); reason != "" {
+		body["reason"] = reason
+	}
+	var task map[string]any
+	if err := client.PostJSON(ctx, "/api/tasks/"+url.PathEscape(taskRef.ID)+"/rerun", body, &task); err != nil {
+		return fmt.Errorf("rerun run: %w", err)
+	}
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, task)
+	}
+	agent := loadActorDisplayLookup(ctx, client).agent(strVal(task, "agent_id"))
+	fmt.Fprintf(os.Stdout, "Re-enqueued run %s on agent %s\n", strVal(task, "id"), agent)
+	return nil
+}
 
 func runIssueRerun(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)

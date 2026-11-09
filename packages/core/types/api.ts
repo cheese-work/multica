@@ -13,6 +13,8 @@ export interface CreateIssueRequest {
   assignee_id?: string;
   parent_issue_id?: string;
   project_id?: string;
+  /** The workflow this issue follows instead of its project's; omit to follow the project. */
+  workflow_id?: string;
   /** Ordered stage (>= 1) grouping this sub-issue under its parent. */
   stage?: number;
   start_date?: string;
@@ -96,6 +98,10 @@ export interface UpdateIssueRequest {
    *  project move is administrative. Control field — strip from optimistic
    *  cache patches. */
   enter_workflow_step?: boolean;
+  /** Reason (1 to 500 characters) that passes a status write a block entry gate
+   *  refuses. Honored for a person's own credential only (CHE-2531). Control
+   *  field — strip from optimistic cache patches. */
+  entry_gate_override_reason?: string;
   /** Marks this issue as a duplicate of another issue (MUL-7349). The server
    *  also sets status to cancelled; any later status change away from
    *  cancelled removes the mark. Write-only — read it back through
@@ -139,6 +145,17 @@ export interface HandoffPreviewBinding {
 export interface BatchUpdateIssuesResponse {
   updated: number;
   updated_ids?: string[];
+  /** Issues a step entry gate refused (CHE-2531); absent when none failed. */
+  failed?: { id: string; code: string; step?: string; failed_guards?: EntryGateFailure[] }[];
+}
+
+/** A step entry gate that did not hold, with the fact behind it and the fix. */
+export interface EntryGateFailure {
+  guard: string;
+  mode: string;
+  fact: string;
+  fix: string;
+  member_override: boolean;
 }
 
 export interface MoveIssueRequest
@@ -345,6 +362,38 @@ export type IssueTableScope =
   | { kind: "creator"; actor: IssueActorRef }
   | { kind: "my"; relation: "assigned" | "created" | "involved" | "any" };
 
+export type IssueTableRelation = "assigned" | "created" | "my_agents";
+
+export type IssueTableNegatableFilter =
+  | "statuses"
+  | "priorities"
+  | "assignees"
+  | "creators"
+  | "project_ids"
+  | "project_statuses"
+  | "label_ids"
+  | "relations"
+  | "due_dates";
+
+export type IssueTableDueDate = "overdue" | "today" | "this_week" | "next_7_days" | "none";
+
+/** One node of `filters.advanced`: a group when it has `children`. */
+export type IssueTableFilterNode = IssueTableFilterGroup | IssueTableFilterCondition;
+
+export interface IssueTableFilterGroup {
+  match: "all" | "any";
+  children: IssueTableFilterNode[];
+}
+
+export interface IssueTableFilterCondition {
+  /** A flat filter's field, or `property:<definitionId>`. */
+  field: IssueTableNegatableFilter | `property:${string}`;
+  negate?: boolean;
+  /** Actors are `${type}:${id}`; assignees and project_ids accept "none".
+   *  A property takes `filters.properties` members. */
+  values: PropertyFilterValue[];
+}
+
 export interface IssueTableFilters {
   statuses?: IssueStatus[];
   priorities?: IssuePriority[];
@@ -357,7 +406,22 @@ export interface IssueTableFilters {
    *  `project_ids` (AND across the two); an issue with no project never
    *  matches. */
   project_statuses?: ProjectStatus[];
+  /** Workflow ids matched against an issue's own override (`workflow_id`). */
+  workflow_ids?: string[];
   label_ids?: string[];
+  /** How the requesting user relates to the issue, OR within the list:
+   *  assigned to me, created by me, assigned to an agent I own. */
+  relations?: IssueTableRelation[];
+  /** Dimensions whose predicate is inverted ("is not"). Listing a dimension
+   *  that has no values of its own changes nothing. */
+  negate?: IssueTableNegatableFilter[];
+  /** Relative due-date buckets, OR within the list. Needs `today`. */
+  due_dates?: IssueTableDueDate[];
+  /** The viewer's calendar day ("YYYY-MM-DD") the due-date buckets resolve
+   *  against. */
+  today?: string;
+  /** A condition tree ANDed with the flat filters above. */
+  advanced?: IssueTableFilterGroup;
   /** Same shape as `ListIssuesParams.properties`: bare strings are exact
    *  equality / "No value", operator objects narrow scalar matches. */
   properties?: Record<string, PropertyFilterValue[]>;

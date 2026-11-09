@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +29,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
@@ -662,6 +665,14 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+
+	// hostSampler holds the latest host CPU/RAM/disk sample. Built in New so it
+	// exists before Run starts any reader; Run starts its sampling loop.
+	// Attached to every runtime heartbeat via heartbeatRequest.
+	hostSampler *hostSampler
+	// Sticky for this process: a finished task can leave independent processes
+	// behind even after activeTasks reaches zero.
+	cleanupUnconfirmed atomic.Bool
 	// runningTasks counts live provider execution sessions, beginning only after
 	// backend.Execute returns. It can briefly lag the server-side running state,
 	// which starts during preparation before provider launch. resourceWaitTasks
@@ -768,6 +779,10 @@ type Daemon struct {
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
 	runUpdateFn func(targetVersion string) (string, error)
+
+	// updateProgress is set while a server-triggered update runs, so the fork
+	// download can report its progress. Nil for auto-updates.
+	updateProgress atomic.Pointer[updateProgressReporter]
 }
 
 type profileLaunchSpec struct {
@@ -787,6 +802,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
 		repoCache:                   repocache.New(cacheRoot, logger),
 		skillCache:                  NewSkillBundleCache(skillCacheRoot),
@@ -2137,6 +2153,8 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
+		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
+		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
 		// Logged explicitly because it is normally derived from idle_watchdog:
 		// without it an operator cannot read the tool budget actually in effect.
 		"tool_watchdog", d.cfg.AgentToolWatchdog,
@@ -2200,6 +2218,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
+	go d.hostSampler.Run(ctx, hostSampleWarmup, protocol.HostSampleInterval, d.logger)
 	go d.heartbeatLoop(ctx)
 	go d.gcLoop(ctx)
 	go d.autoUpdateLoop(ctx)
@@ -2407,6 +2426,8 @@ const (
 	// Deterministic like the two above — the same binary keeps refusing until
 	// someone installs the profile — and the reason carries that repair.
 	builtinProbeMissingProfile
+	// A bridge is configured but cannot safely serve work; manual migration only.
+	builtinProbeProfileMigration
 	// builtinProbeIncompatibleProfile: something answered `--probe`, with a
 	// protocol version this daemon does not drive — a bundle older than the
 	// check, or a newer one this build has yet to catch up with. Reported, and
@@ -2437,7 +2458,7 @@ const (
 // learned this round.
 func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 	switch verdict {
-	case builtinProbeBelowMinimum, builtinProbeNotExecutable, builtinProbeMissingProfile:
+	case builtinProbeBelowMinimum, builtinProbeNotExecutable, builtinProbeMissingProfile, builtinProbeProfileMigration:
 		return true
 	}
 	return false
@@ -2448,7 +2469,7 @@ func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 //
 // Only builtinProbeBelowMinimum does not: it is a pure function of a version
 // string this round already parsed, so a second look reaches the same
-// conclusion. The other two are deterministic about the state they describe but
+// conclusion. The other demotable verdicts describe deterministic states but
 // rest on an observation that is not — an installer overwriting the bin entry in
 // place (the very repair we tell users to run) or a DSH upgrade moving the
 // profile under a probe. Requiring a second sighting a window later makes those
@@ -2457,6 +2478,8 @@ func demotableBuiltinProbeVerdict(verdict builtinProbeVerdict) bool {
 func builtinProbeNeedsConfirmation(verdict builtinProbeVerdict) bool {
 	return verdict != builtinProbeBelowMinimum
 }
+
+const dshProfileMigrationReason = "the multica DSH profile needs manual migration; back up the profile, build a compatible " + dshMulticaRuntimePackage + " bundle from https://github.com/multica-ai/dsh-multica-runtime following its README, install the directory or tarball with dsh plugin, and update dsh.profile.bundles to load " + dshMulticaRuntimePackage + " instead of " + dshLegacyRuntimePackage + "; a dependencies entry alone does not load the runtime"
 
 // dshMissingProfileReason is the user-facing explanation for a
 // builtinProbeMissingProfile drop. It names the repair because nothing else in
@@ -2518,7 +2541,7 @@ func newRuntimeVerdict(verdict builtinProbeVerdict, reason, execPath string, ins
 			offline.Repair = &repair
 		}
 		return runtimeVerdict{reason: reason, offline: offline}
-	case builtinProbeMissingProfile:
+	case builtinProbeMissingProfile, builtinProbeProfileMigration:
 		// The same class of finding as an unrunnable file: the machine is
 		// reachable and the CLI cannot serve work, so the server must refuse
 		// the trigger and say what is missing rather than queue behind a wait
@@ -2529,7 +2552,7 @@ func newRuntimeVerdict(verdict builtinProbeVerdict, reason, execPath string, ins
 		offline := &RuntimeOfflineReason{
 			Code:       RuntimeOfflineCodeDshProfile,
 			Detail:     reason,
-			Installing: installing,
+			Installing: installing && verdict != builtinProbeProfileMigration,
 		}
 		repair := dshProfileRepair()
 		offline.Repair = &repair
@@ -2679,14 +2702,19 @@ probeLoop:
 		// above.
 		if name == "dsh" {
 			// What the probe said decides what may happen next. Only a
-			// confirmed-absent profile may install a bundle or condemn the
-			// runtime. An incompatible one is reported and neither installed
+			// confirmed-absent profile may install a bundle. A configuration
+			// needing migration may demote the runtime but is never overwritten.
+			// A protocol-incompatible profile is reported and neither installed
 			// over nor demoted — the profile is deliberately there, and this
 			// daemon may be the stale side of the skew. A probe that merely
 			// failed is transient, on the same rule every other provider's
 			// version probe gets.
 			switch probeDshMulticaProfile(ctx, resolved.Path) {
 			case dshProbeOK:
+			case dshProbeNeedsMigration:
+				d.logger.Warn("skip registering runtime: DSH Multica runtime profile needs manual migration",
+					"name", name, "path", resolved.Path)
+				return "", dshProfileMigrationReason, builtinProbeProfileMigration
 			case dshProbeMissingProfile:
 				d.logger.Warn("skip registering runtime: DSH Multica runtime profile is not installed",
 					"name", name, "path", resolved.Path)
@@ -4523,7 +4551,7 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) bool {
 		return false
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(ctx, d.heartbeatRequest(rid))
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -4669,7 +4697,7 @@ func (d *Daemon) handlePendingWorkHint(runtimeID, kind string) {
 		return
 	}
 	hbCtx, cancel := context.WithTimeout(ctx, pendingWorkHeartbeatTimeout)
-	resp, err := d.client.SendHeartbeat(hbCtx, runtimeID, int(d.activeTasks.Load()))
+	resp, err := d.client.SendHeartbeat(hbCtx, d.heartbeatRequest(runtimeID))
 	cancel()
 	if err != nil {
 		if isRuntimeNotFoundError(err) {
@@ -4857,7 +4885,7 @@ func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID stri
 func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID string) {
 	d.logger.Info("runtime local skills requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
-	skills, supported, err := listRuntimeLocalSkills(rt.Provider)
+	skills, supported, err := d.listLocalSkills(ctx, rt)
 	if err != nil {
 		d.reportLocalSkillListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
@@ -4884,7 +4912,7 @@ func (d *Daemon) handleLocalSkillList(ctx context.Context, rt Runtime, requestID
 func (d *Daemon) handleLocalSkillImport(ctx context.Context, rt Runtime, pending PendingLocalSkillImport) {
 	d.logger.Info("runtime local skill import requested", "runtime_id", rt.ID, "request_id", pending.ID, "provider", rt.Provider, "skill_key", pending.SkillKey)
 
-	skill, supported, err := loadRuntimeLocalSkillBundle(rt.Provider, pending.SkillKey)
+	skill, supported, err := d.loadLocalSkillBundle(ctx, rt, pending.SkillKey)
 	if err != nil {
 		d.reportLocalSkillImportResult(ctx, rt, pending.ID, map[string]any{
 			"status": "failed",
@@ -5041,7 +5069,13 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		"status": "running",
 	})
 
+	rep := newUpdateProgressReporter(func(ctx context.Context, payload map[string]any) error {
+		return d.client.ReportUpdateResult(ctx, runtimeID, update.ID, payload)
+	})
+	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
+	d.updateProgress.Store(nil)
+	rep.wait() // a late progress report must not land after the terminal one
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
@@ -5382,13 +5416,7 @@ func (d *Daemon) pollLoop(ctx context.Context, taskWakeups <-chan taskWakeup) er
 			// poller between ClaimTasksWSFirst and taskWG.Add(1) cannot race
 			// taskWG.Wait at a zero counter.
 			<-pollerDone
-			waitDone := make(chan struct{})
-			go func() { taskWG.Wait(); close(waitDone) }()
-			select {
-			case <-waitDone:
-			case <-time.After(30 * time.Second):
-				d.logger.Warn("timed out waiting for in-flight tasks")
-			}
+			d.waitForTaskCleanup(&taskWG, 30*time.Second)
 			return ctx.Err()
 		case <-runtimeSetCh:
 			// The batch poller re-derives allRuntimeIDs() each cycle; nudge it to
@@ -7598,6 +7626,25 @@ type taskModelSelection struct {
 	ThinkingLevelWarning string
 }
 
+// launchContextArgs lists the context-window args every launch input carries, in
+// argv order: the runtime's launch prefix, the daemon's default args, then the
+// agent's custom args.
+func launchContextArgs(provider string, prefix, defaults, custom []string) []string {
+	return agentpreset.ContextArgsOf(provider, slices.Concat(prefix, defaults, custom))
+}
+
+// reportAppliedSettings tells the server what this launch will use (CHE-2248). It
+// runs only for a claim the server marked as supporting it, and a failure is
+// logged and dropped: the applied columns stay NULL and the task still runs.
+func (d *Daemon) reportAppliedSettings(ctx context.Context, task Task, provider string, applied AppliedSettings, log *slog.Logger) {
+	if !task.AppliedSettingsSupported {
+		return
+	}
+	if err := d.client.ReportAppliedSettings(ctx, task, applied); err != nil {
+		log.Warn("report applied settings failed; continuing", "provider", provider, "error", err)
+	}
+}
+
 // resolveTaskModelSelection settles the model selector and its capability
 // overrides against the runtime's own model catalog, reading that catalog at
 // most once per task — and not at all when nothing needs it.
@@ -7891,6 +7938,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepare isolated execution environment.
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
+	harnessProfile, err := managedHarnessProfile(task.Agent, provider)
+	if err != nil {
+		return TaskResult{}, err
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
@@ -8070,10 +8121,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// on the issue, which is the same rule that makes a failing tool call a
 	// tool error rather than a task error.
 	pluginHookConfig, pluginHookServer, pluginHookErr := startTaskPluginHookMCP(
-		ctx, task.ID, task.PluginHookTools,
-		func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
+		ctx, task.ID, taskHookTools(task, decisionAskReachable(provider, resolvedVersion, !usesCustomProfileCommand)),
+		taskHookInvoker(task, d.client, func(callCtx context.Context, taskID, installationID, hookKey string, input json.RawMessage) (json.RawMessage, error) {
 			return d.client.InvokeAgentPluginHook(callCtx, task.RemoteMCPDaemonToken, taskID, installationID, hookKey, input)
-		},
+		}),
 		taskLog,
 	)
 	if pluginHookErr != nil {
@@ -8093,7 +8144,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentMcpConfig = task.Agent.McpConfig
 		effectiveMcpConfig = agentMcpConfig
-		if merged, mergeErr := mergeRuntimeAndAgentMcpConfig(provider, agentMcpConfig); mergeErr != nil {
+		if merged, mergeErr := agentMcpConfigForProfile(provider, harnessProfile, agentMcpConfig); mergeErr != nil {
 			taskLog.Warn("mcp_config: runtime merge failed; using agent configuration only",
 				"provider", provider,
 				"error", mergeErr,
@@ -8207,7 +8258,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			d.markActiveStore(store)
 			defer d.unmarkActiveStore(store)
 		}
-		// The overlay links state.db here so the conversation transcript
+		// The conversation store is the isolated home, so its ordinary state.db
 		// survives the task and a follow-up turn can actually resume it
 		// (GH #6806). Keyed on (agent, resolved source home, conversation):
 		// tasks of one conversation are serial, so the shard has a single
@@ -8255,6 +8306,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// locked and the directory we use could differ.
 			WorkDir:               priorWorkDir,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			ResumeSessionID:       task.PriorSessionID,
@@ -8307,6 +8359,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// it implies; preparation must not try to take it again.
 			EnvRootPreclaimed:     true,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			OpenclawBin:           openclawBin,
@@ -8565,13 +8618,12 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		taskCapabilities = append(taskCapabilities, protocol.DaemonCapabilityPiProcessCleanupV1)
 	}
 	var cursorHookCommand []string
-	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && task.IssueID != ""
+	supplementSupported := agent.SupportsTaskSupplement(provider, resolvedVersion) && (task.IssueID != "" || task.ChatSessionID != "")
 	if supplementSupported && provider == "cursor" {
 		cursorHookCommand, supplementSupported = cursorSupplementHookCommand(env)
 	}
 	if supplementSupported {
-		taskCapabilities = append(taskCapabilities,
-			protocol.DaemonCapabilityTaskSupplementV1, protocol.DaemonCapabilityTaskSupplementPREventV1)
+		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
 	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
 	if err != nil {
@@ -8612,7 +8664,27 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	var managedClaude execenv.ManagedClaudeHome
+	isManagedClaude := harnessProfile == execenv.HarnessProfileManaged && provider == "claude"
+	// injectBrief writes the runtime brief. Managed Claude delivers it through
+	// --append-system-prompt-file (no workdir CLAUDE.md); everything else is
+	// unchanged.
+	injectBrief := func() (string, error) {
+		if !isManagedClaude {
+			return execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		brief := execenv.RuntimeBrief(provider, taskCtx)
+		return brief, os.WriteFile(managedClaude.BriefPath, []byte(brief), 0o600)
+	}
+	var runtimeBrief string
+	if isManagedClaude {
+		// A managed failure must not fall back to the personal config.
+		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), execenv.RuntimeBrief(provider, taskCtx), taskCtx.AgentSkills, effectiveMcpConfig)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("prepare managed claude home: %w", err)
+		}
+	}
+	runtimeBrief, err = injectBrief()
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8731,6 +8803,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if isManagedClaude {
+		// Set after custom_env so a configured value cannot point the run back
+		// at the personal config home.
+		agentEnv["CLAUDE_CONFIG_DIR"] = managedClaude.ConfigDir
+	}
 	// CHE-2216 A2b: per-run HOME and read-only provider credential copy. Set
 	// after custom_env so a configured HOME cannot point the run back at the
 	// daemon user's home. A no-op unless MULTICA_SANDBOX_MODE is on or audit.
@@ -8793,6 +8870,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
 	}
+	if hermesOverlayActive {
+		// Retire an owner left by a crashed/interrupted daemon before it can
+		// execute tools with the preceding task's frozen environment.
+		if err := agent.StopHermesTaskGateway(backendConfig, env.HermesHome); err != nil {
+			return TaskResult{}, err
+		}
+		defer func() {
+			if err := agent.StopHermesTaskGateway(backendConfig, env.HermesHome); err != nil {
+				d.logger.Warn("failed to stop task Hermes gateway", "home", env.HermesHome, "error", err)
+			}
+		}()
+	}
 	// Register retirement before any fresh-session launch can fail. The check
 	// uses the backend's final binary, environment, working directory and MCP
 	// configuration, rather than the daemon's ambient OpenCode store.
@@ -8805,7 +8894,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}()
 	retiredSessionID = gateOpenCodeResumeToSaneClock(ctx, &task, &taskCtx, provider, backendConfig, env.WorkDir, effectiveMcpConfig, taskLog)
 	if retiredSessionID != "" {
-		freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		freshBrief, briefErr := injectBrief()
 		if briefErr != nil {
 			return TaskResult{}, fmt.Errorf("prepare fresh OpenCode session after clock check: %w", briefErr)
 		}
@@ -8877,12 +8966,24 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	selection := resolveTaskModelSelection(ctx, provider, agent.NewCommand(entry.Path, profileFixedArgs),
 		taskModelSelection{Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier}, taskLog)
 	model, thinkingLevel, serviceTier = selection.Model, selection.ThinkingLevel, selection.ServiceTier
+	d.reportAppliedSettings(ctx, task, provider, AppliedSettings{
+		Model: model, ThinkingLevel: thinkingLevel, ServiceTier: serviceTier,
+		ContextArgs: launchContextArgs(provider, profileFixedArgs, extraArgs, customArgs),
+	}, taskLog)
 
 	var idleWatchdogTimeout time.Duration
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
+	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd = ""
+		}
+	}
 	execOpts := agent.ExecOptions{
+		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -8909,17 +9010,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// only the daemon knows — hence handing the backend finished text rather
 		// than a flag. Empty when the prompt already carries the notice, so a turn
 		// can never pay for it twice (MUL-5722).
-		ResumeExpected:         task.PriorSessionID != "",
-		ResumeContinuityNotice: backendResumeContinuityNotice(task),
-		ExtraArgs:              extraArgs,
-		CustomArgs:             customArgs,
-		McpConfig:              mcpConfig,
-		ThinkingLevel:          thinkingLevel,
-		ServiceTier:            serviceTier,
-		OpenclawMode:           openclawMode,
-		OpenclawModelOverride:  openclawModelOverride,
-		ClaudeSettingsPath:     env.ClaudeSettingsPath,
-		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ResumeExpected:          task.PriorSessionID != "",
+		ResumeContinuityNotice:  backendResumeContinuityNotice(task),
+		ExtraArgs:               extraArgs,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		ThinkingLevel:           thinkingLevel,
+		ServiceTier:             serviceTier,
+		OpenclawMode:            openclawMode,
+		OpenclawModelOverride:   openclawModelOverride,
+		ClaudeSettingsPath:      env.ClaudeSettingsPath,
+		AppendSystemPromptFile:  managedClaude.BriefPath,
+		DisableProviderWebTools: task.DisableProviderWebTools(),
+		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -8946,6 +9049,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if providerNeedsInlineSystemPrompt(provider) {
 		execOpts.SystemPrompt = runtimeBrief
 	}
+	if provider == "codex" {
+		execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
+	}
 
 	// A quick-actions refresh task from a server that predates server-side
 	// generation (MUL-5573). This daemon no longer has a suggestion pass to run
@@ -8967,17 +9073,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// branch ownership from this in-memory record instead of trusting request
 	// fields or ambient process environment. Register only for the provider
 	// execution window and always remove the credential afterwards.
-	d.registerActiveRepoCheckoutTask(agentToken, activeRepoCheckoutTask{
-		WorkspaceID:     task.WorkspaceID,
-		TaskID:          task.ID,
-		AgentID:         task.AgentID,
-		AgentName:       task.Agent.Name,
-		WorkDir:         env.WorkDir,
-		IssueIdentifier: task.IssueIdentifier,
-		IntakeRun:       task.IntakeRun,
-		PinnedBranch:    task.PinnedBranch,
-		PinnedRepo:      task.PinnedRepo,
-	})
+	checkoutTask := newActiveRepoCheckoutTask(task, env.WorkDir)
+	checkoutTask.StableDir = stableCwd
+	d.registerActiveRepoCheckoutTask(agentToken, checkoutTask)
 	defer d.clearActiveRepoCheckoutTask(agentToken)
 
 	taskLog.Debug("invoking backend",
@@ -9042,12 +9140,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		if freshBrief, briefErr := injectBrief(); briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
 			if providerNeedsInlineSystemPrompt(provider) {
 				execOpts.SystemPrompt = runtimeBrief
+			}
+			if provider == "codex" {
+				// The rewritten brief has a new size; the later -c wins.
+				execOpts.ExtraArgs = append(execOpts.ExtraArgs, codexBriefBudget(env.RootDir, env.WorkDir, runtimeBrief, taskLog)...)
 			}
 		}
 		freshPrompt := BuildPrompt(task, provider, promptOptions...)
@@ -9625,7 +9727,12 @@ func freshSessionMayHelp(errText string) bool {
 // messages and is owned by the caller so a same-task retry continues the
 // sequence instead of restarting at 1 — the server orders the transcript by
 // seq alone, and duplicate seqs would interleave the two attempts' rows.
-func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (agent.Result, int32, error) {
+func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, prompt string, opts agent.ExecOptions, taskLog *slog.Logger, taskID, codexHome string, msgSeq *atomic.Int32) (finalResult agent.Result, finalTools int32, finalErr error) {
+	defer func() {
+		if finalResult.Status == "cleanup_unconfirmed" {
+			d.cleanupUnconfirmed.Store(true)
+		}
+	}()
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	// Wrap the caller's ctx so the idle watchdog (below) can interrupt both
 	// the agent subprocess (via the ctx passed to backend.Execute) AND the
@@ -9748,6 +9855,34 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 	defer stopWatchdog()
 	if idleWindow > 0 {
 		go d.runIdleWatchdog(watchdogCtx, idleWindow, d.cfg.AgentToolWatchdog, &lastActivityAt, watchdogToolCount, &idleWatchdogFired, &idleWatchdogThreshold, agentCancel, session.Messages, session.InterruptBackgroundTools, terminalObserved, taskLog)
+	}
+
+	// Silence tiers run beside the idle watchdog but never stop the run. Markers
+	// post straight to the transcript (the drain batch is private to its
+	// goroutine); a failed marker or alert is logged and dropped.
+	var toolCalls toolCallRegistry
+	if d.cfg.AgentSilenceWarnAfter > 0 || d.cfg.AgentSilenceAlertAfter > 0 {
+		sw := &silenceWatchdog{
+			warn: d.cfg.AgentSilenceWarnAfter, alert: d.cfg.AgentSilenceAlertAfter,
+			last: &lastActivityAt, inFlight: watchdogToolCount, calls: toolCalls.running,
+			now: awakeclock.Now, log: taskLog,
+			mark: func(typ, content, callID, tool string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				err := d.client.ReportTaskMessages(ctx, taskID, []TaskMessageData{{
+					Seq: int(msgSeq.Add(1)), Type: typ, Content: content, CallID: callID, Tool: tool, CreatedAt: time.Now(),
+				}})
+				if err != nil {
+					taskLog.Warn("failed to report silence marker", "type", typ, "error", err)
+				}
+			},
+			raise: func(segmentID string, silentFor time.Duration) error {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				return d.client.ReportSilenceAlert(ctx, taskID, segmentID, silentFor)
+			},
+		}
+		go sw.run(watchdogCtx)
 	}
 
 	// drainFinished closes after the drain goroutine has flushed the last
@@ -9925,6 +10060,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					sealPendingLocked()
 					if msg.CallID != "" {
 						callIDToTool[msg.CallID] = msg.Tool
+						toolCalls.start(transcriptCallID(msg.CallID), msg.Tool, awakeclock.Now())
 					}
 					s := msgSeq.Add(1)
 					batch = append(batch, TaskMessageData{
@@ -9964,6 +10100,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					output, outputTruncated := toolOutputPreview(msg.Output)
 					mu.Lock()
 					sealPendingLocked()
+					toolCalls.finish(transcriptCallID(msg.CallID))
 					toolName := msg.Tool
 					if toolName == "" && msg.CallID != "" {
 						toolName = callIDToTool[msg.CallID]
@@ -11017,4 +11154,43 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// agentMcpConfigForProfile merges the personal runtime MCP servers into the
+// agent config. A managed task gets only the servers assigned to the agent, so
+// an unassigned personal server and its credentials never reach it (CHE-3706).
+// Managed Claude with no saved config gets an explicit empty set: buildClaudeArgs
+// omits --strict-mcp-config for a null/absent config, which would let Claude
+// discover MCP servers from the user's own files.
+func agentMcpConfigForProfile(provider, profile string, agentConfig json.RawMessage) (json.RawMessage, error) {
+	if profile == execenv.HarnessProfileManaged {
+		if provider == "claude" {
+			if t := bytes.TrimSpace(agentConfig); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+				return json.RawMessage(`{}`), nil
+			}
+		}
+		return agentConfig, nil
+	}
+	return mergeRuntimeAndAgentMcpConfig(provider, agentConfig)
+}
+
+// managedHarnessProfile returns the harness profile this task launches with:
+// "" for personal, "managed" for a provider with a managed adapter. Anything
+// else — managed on a provider without an adapter, or an unknown value — is an
+// error, never a silent personal launch (CHE-3706).
+func managedHarnessProfile(agentData *AgentData, provider string) (string, error) {
+	if agentData == nil {
+		return "", nil
+	}
+	switch agentData.HarnessProfile {
+	case "", execenv.HarnessProfilePersonal:
+		return "", nil
+	case execenv.HarnessProfileManaged:
+		switch provider {
+		case "claude", "codex":
+			return execenv.HarnessProfileManaged, nil
+		}
+		return "", fmt.Errorf("runtime profile %q is not implemented for provider %q; refusing to launch with the personal config", agentData.HarnessProfile, provider)
+	}
+	return "", fmt.Errorf("unknown runtime profile %q; refusing to launch with the personal config", agentData.HarnessProfile)
 }

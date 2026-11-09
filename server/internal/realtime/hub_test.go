@@ -11,11 +11,13 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 )
 
@@ -180,6 +182,39 @@ func TestClientHandleSubscribeReportsLookupFailure(t *testing.T) {
 
 	if len(client.subscriptions) != 0 {
 		t.Fatalf("lookup failure must not subscribe client, got %d subscriptions", len(client.subscriptions))
+	}
+}
+
+// A workspace-member room carries one member's private content in one
+// workspace. A connection joins only its own room, at connect time, and no
+// subscribe frame can add another one.
+func TestWorkspaceMemberScopeReachesOnlyThatMembersWorkspaceConnection(t *testing.T) {
+	hub := NewHub()
+	newClient := func(userID, workspaceID string) *Client {
+		c := &Client{hub: hub, send: make(chan []byte, 4), userID: userID, workspaceID: workspaceID}
+		hub.registerClient(c)
+		return c
+	}
+	owner := newClient("owner", "ws-x")
+	ownerElsewhere := newClient("owner", "ws-y")
+	peer := newClient("peer", "ws-x")
+
+	peer.handleSubscribe(ScopeWorkspaceMember, WorkspaceMemberScopeID("ws-x", "owner"))
+	select {
+	case raw := <-peer.send:
+		if !strings.Contains(string(raw), "subscribe_error") {
+			t.Fatalf("peer subscribe reply = %s, want subscribe_error", raw)
+		}
+	default:
+		t.Fatal("peer subscribe to another member's room was not refused")
+	}
+
+	hub.BroadcastToScope(ScopeWorkspaceMember, WorkspaceMemberScopeID("ws-x", "owner"), []byte(`{"type":"chat:done"}`))
+	if len(owner.send) != 1 {
+		t.Fatalf("owner's ws-x connection got %d frames, want 1", len(owner.send))
+	}
+	if len(ownerElsewhere.send) != 0 || len(peer.send) != 0 {
+		t.Fatalf("frame reached ws-y owner (%d) or peer (%d)", len(ownerElsewhere.send), len(peer.send))
 	}
 }
 
@@ -623,4 +658,84 @@ func TestReadPump_AcceptsFrameUnderReadLimit(t *testing.T) {
 	if !strings.Contains(string(raw), "pong") {
 		t.Fatalf("got %s, want a pong frame", raw)
 	}
+}
+
+// generationResolver is a PATResolver that also reads a mutable stored
+// session generation, like the production resolver.
+type generationResolver struct {
+	gen  atomic.Int32
+	fail atomic.Bool
+}
+
+func (*generationResolver) ResolveToken(context.Context, string) (string, bool) { return "", false }
+func (r *generationResolver) GetUserSessionGeneration(context.Context, pgtype.UUID) (int32, error) {
+	if r.fail.Load() {
+		return 0, errors.New("storage down")
+	}
+	return r.gen.Load(), nil
+}
+
+// A socket opened before passkey recovery must not outlive the bump: writePump
+// rereads the generation on every ping and closes a revoked session.
+func TestWritePump_ClosesSocketWhenSessionGenerationBumps(t *testing.T) {
+	testWritePumpClosesSocket(t, func(r *generationResolver) { r.gen.Store(1) })
+}
+
+// A storage error is not a reason to keep a possibly revoked session open.
+func TestWritePump_ClosesSocketWhenTheGenerationCannotBeRead(t *testing.T) {
+	testWritePumpClosesSocket(t, func(r *generationResolver) { r.fail.Store(true) })
+}
+
+func testWritePumpClosesSocket(t *testing.T, breakSession func(*generationResolver)) {
+	t.Helper()
+	old := pingPeriod
+	pingPeriod = 20 * time.Millisecond
+	t.Cleanup(func() { pingPeriod = old })
+
+	hub := NewHub()
+	go hub.Run()
+	mc := &mockMembershipChecker{}
+	hub.SetMembershipChecker(mc)
+	resolver := &generationResolver{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		HandleWebSocket(hub, mc, resolver, nil, w, r)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	userID := "8a1f4a52-7a39-4c3b-9d3e-1d5f6c6f0a11"
+	conn := connectWSAs(t, server, makeTestTokenForUser(t, userID, ""))
+	t.Cleanup(func() { conn.Close() })
+
+	time.Sleep(10 * pingPeriod)
+	if got := totalClients(hub); got != 1 {
+		t.Fatalf("socket with a current session must stay open, clients=%d", got)
+	}
+
+	breakSession(resolver)
+	waitFor(t, "revoked socket to close", func() bool { return totalClients(hub) == 0 })
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("revoked socket still delivers frames")
+	}
+}
+
+func connectWSAs(t *testing.T, server *httptest.Server, token string) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?workspace_id=" + testWorkspaceID
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	authMsg, _ := json.Marshal(map[string]any{"type": "auth", "payload": map[string]string{"token": token}})
+	if err := conn.WriteMessage(websocket.TextMessage, authMsg); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, ack, err := conn.ReadMessage(); err != nil || !strings.Contains(string(ack), "auth_ack") {
+		t.Fatalf("auth_ack: %s %v", ack, err)
+	}
+	conn.SetReadDeadline(time.Time{})
+	return conn
 }

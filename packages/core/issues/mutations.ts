@@ -163,6 +163,7 @@ function useIssueCreateMutation<TVariables>(
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
     },
   });
@@ -204,6 +205,7 @@ export function useUpdateIssue() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description: _description,
         description_base: _descriptionBase,
@@ -319,6 +321,7 @@ export function useUpdateIssue() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         duplicate_of_issue_id: _duplicateOfIssueId,
         description_base: _descriptionBase,
         move_intent: _moveIntent,
@@ -498,6 +501,7 @@ export function useDeleteIssue() {
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       if (ctx?.metadata) invalidateDeletedIssueParentCaches(qc, wsId, ctx.metadata);
     },
@@ -547,6 +551,7 @@ export function useBatchUpdateIssues() {
         stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
         handoff_preview: _handoffPreview,
         enter_workflow_step: _enterWorkflowStep,
+        entry_gate_override_reason: _entryGateOverrideReason,
         description: _description,
         description_base: _descriptionBase,
         ...patch
@@ -811,6 +816,7 @@ export function useBatchDeleteIssues() {
       qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
       qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
+      qc.invalidateQueries({ queryKey: issueKeys.sidebarAll(wsId) });
       qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       if (ctx?.parentIssueIds && ctx.parentIssueIds.size > 0) {
         invalidateDeletedIssueParentCaches(qc, wsId, {

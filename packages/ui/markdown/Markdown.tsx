@@ -6,13 +6,14 @@ import rehypeSanitize from 'rehype-sanitize'
 import remarkBreaks from 'remark-breaks'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
-import { FileText, Download } from 'lucide-react'
+import { FileText, Download } from '@multica/ui/icons'
 import { cn } from '@multica/ui/lib/utils'
 import { CODE_LIGATURE_CLASS } from '@multica/ui/lib/code-style'
 import { CodeBlock, InlineCode } from './CodeBlock'
 import { isAllowedFileCardHref, preprocessFileCards } from './file-cards'
 import { preprocessLinks } from './linkify'
 import { preprocessIssueIdentifiers } from './issue-identifiers'
+import { preprocessCommentIds } from './comment-ids'
 import { preprocessMentionShortcodes } from './mentions'
 import { markdownSanitizeSchema, markdownUrlTransform } from './sanitize'
 import 'katex/dist/katex.min.css'
@@ -410,7 +411,7 @@ export function Markdown({
   const processedContent = React.useMemo(
     () => {
       let result = preprocessMentionShortcodes(children)
-      if (autolinkIssueIdentifiers) result = preprocessIssueIdentifiers(result)
+      if (autolinkIssueIdentifiers) result = preprocessCommentIds(preprocessIssueIdentifiers(result))
       result = preprocessLinks(result)
       result = preprocessFileCards(result, cdnDomain ?? '')
       return result

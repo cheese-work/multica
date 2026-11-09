@@ -13,7 +13,7 @@ import {
   PinOff,
   Square,
   Trash2,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
@@ -516,7 +516,7 @@ function ChatThreadListBody({
   if (view === "archived") {
     return (
       <>
-        <NeedsYouList />
+        <NeedsYouList sessions={rows} agents={agents} />
         <button
           type="button"
           onClick={() => setView("history")}
@@ -554,7 +554,7 @@ function ChatThreadListBody({
   if (historySessions.length === 0) {
     return (
       <>
-        <NeedsYouList />
+        <NeedsYouList sessions={rows} agents={agents} />
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
@@ -565,7 +565,7 @@ function ChatThreadListBody({
 
   return (
     <>
-      <NeedsYouList />
+      <NeedsYouList sessions={rows} agents={agents} />
       <div className="contents" data-testid="chat-thread-group-recent">
         {historySessions.map(renderRow)}
       </div>

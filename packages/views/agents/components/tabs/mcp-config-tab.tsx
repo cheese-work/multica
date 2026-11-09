@@ -7,7 +7,7 @@ import {
   Plus,
   RefreshCw,
   Server,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, AgentRuntime, WorkspaceMcpServer } from "@multica/core/types";
 import { ApiError } from "@multica/core/api";
@@ -110,7 +110,10 @@ export function McpConfigTab({
     () => new Set(managedServers.map((server) => server.name)),
     [managedServers],
   );
-  const assignedServers = assignedQuery.data ?? [];
+  const assignedServers = useMemo(
+    () => assignedQuery.data ?? [],
+    [assignedQuery.data],
+  );
   const assignedIds = useMemo(
     () => new Set(assignedServers.map((server) => server.id)),
     [assignedServers],
@@ -521,6 +524,7 @@ export function McpConfigTab({
           server={editingServer}
           existingNames={managedNames}
           hideNameWhenEditing
+          draftKey={`${agent.id}:${editingServer?.name ?? "new"}`}
           onOpenChange={setEditorOpen}
           onSave={handleSaveServer}
         />

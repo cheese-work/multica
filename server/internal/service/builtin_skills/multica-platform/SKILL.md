@@ -20,17 +20,18 @@ Read the invariants below, then open the reference(s) your task actually needs
 | Open | When the task is about |
 |---|---|
 | `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
+| `references/issue-turn.md` | The runtime brief's issue Workflow steps: waiver reports, comment catch-up, `--no-start`, how a child closes itself |
 | `references/charts.md` | Rendering a chart or attaching a file in a comment: fenced `html`/`mermaid` blocks, `--attachment`, theme variables |
 | `references/pull-requests.md` | Linked PR state and current GitHub checks |
 | `references/wakeups.md` | Wakeups: event/time triggers, ownership and close behavior, retained inputs and status |
-| `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing |
+| `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing; steering another agent's running turn (`comment add --steer`) |
 | `references/agents.md` | Creating, copying or debugging an agent definition: fields, secrets, MCP config, skill binding |
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
 | `references/autopilots.md` | Autopilots: schedule / webhook / manual triggers, `create_issue` vs `run_only`, why one did not fire |
 | `references/projects.md` | Projects and their durable resources (`github_repo`, `local_directory`, worktree mode); project workflows — status columns, handoffs, a `[Project workflow]` block in your prompt |
 | `references/workflows.md` | Reading and editing a workflow: `workflow list/get`, step instructions, run rules (owner/admin writes), per-issue run budget (`issue budget get/raise`) |
 | `references/decisions.md` | Asking a named person to decide: `decision request/get/list/withdraw`, DM lane choice |
-| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork), `chat rename`, `chat wakeup` |
+| `references/chat.md` | The conversation you run in: `chat history/thread`, `chat continue` (summary or fork), `chat rename`, `chat wakeup`, `chat reply-state` |
 | `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
 | `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |

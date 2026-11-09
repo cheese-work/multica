@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
-  JevCredentialPresenceSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -29,6 +28,8 @@ import {
   DashboardUsageDailyListSchema,
   ChatDraftRestoresResponseSchema,
   ChatPendingTaskSchema,
+  ChatMessageSchema,
+  ChatSupplementSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   PrioritizeQueuedChatTaskResponseSchema,
@@ -50,6 +51,8 @@ import {
   ListPropertiesResponseSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SearchProjectsResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
@@ -68,7 +71,7 @@ import {
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
-import { IssueViewSchema, IssueViewListSchema } from "./schemas";
+import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema } from "./schemas";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
@@ -121,6 +124,36 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
   });
 
+  it("reads the DM attention projection and tolerates older or newer servers", () => {
+    const attention = {
+      attention_source: "ask",
+      attention_since: "2026-11-05T01:00:00Z",
+      stale_level: "yellow",
+      next_change_at: "2026-11-06T01:00:00Z",
+    };
+    expect(ChatSessionSchema.parse({ ...baseSession, ...attention })).toMatchObject(attention);
+
+    // Older server: fields absent.
+    const old = ChatSessionSchema.parse(baseSession);
+    expect(old.stale_level).toBeUndefined();
+    expect(old.attention_source).toBeUndefined();
+
+    // Newer server: unknown enum values fall back instead of dropping the session.
+    const newer = ChatSessionListSchema.parse([
+      { ...baseSession, ...attention, stale_level: "purple", attention_source: "turn", next_change_at: 7 },
+    ]);
+    expect(newer).toHaveLength(1);
+    expect(newer[0]?.stale_level).toBe("none");
+    expect(newer[0]?.attention_source).toBeNull();
+    expect(newer[0]?.next_change_at).toBeUndefined();
+
+    // Untyped turns ride along as subject keys; a malformed value is dropped.
+    const keys = ["turn:t1", "turn:t2"];
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
+    expect(old.attention_unclassified_keys).toBeUndefined();
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
+  });
+
   it("keeps sessions readable when older servers send lane-summary data", () => {
     for (const summary of [
       { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
@@ -168,6 +201,8 @@ describe("ChatSessionSchema", () => {
   });
 
   it("drops one malformed list item without hiding the other Chats", () => {
+    const latestMessageId = "00000000-0000-4000-8000-000000000002";
+    const latestMessageTaskId = "00000000-0000-4000-8000-000000000003";
     const parsed = ChatSessionListSchema.parse([
       baseSession,
       { ...baseSession, id: 42 },
@@ -175,6 +210,8 @@ describe("ChatSessionSchema", () => {
         ...baseSession,
         id: "onboarding-chat",
         last_message: {
+          id: latestMessageId,
+          task_id: latestMessageTaskId,
           content: "Welcome",
           role: "assistant",
           created_at: "2026-08-18T00:00:00Z",
@@ -185,6 +222,8 @@ describe("ChatSessionSchema", () => {
 
     expect(parsed.map((session) => session.id)).toEqual(["chat-1", "onboarding-chat"]);
     expect(parsed[1]?.last_message?.message_kind).toBe("onboarding_opening");
+    expect(parsed[1]?.last_message?.id).toBe(latestMessageId);
+    expect(parsed[1]?.last_message?.task_id).toBe(latestMessageTaskId);
   });
 });
 describe("IssueSchema (via ListIssuesResponseSchema)", () => {
@@ -226,6 +265,25 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
       const issue = parse({ workflow_id: bad });
       expect(issue?.id).toBe(baseIssue.id);
       expect(issue?.workflow_id ?? null).toBeNull();
+    }
+  });
+  it("reads the deadline projection and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    const diagnostics = [{ type: "cycle", members: ["CHE-1", "CHE-2"] }, { type: "depth_limit" }];
+    const issue = parse({ effective_due: "2026-12-01", due_source: "parent:CHE-9", diagnostics });
+    expect(issue?.effective_due).toBe("2026-12-01");
+    expect(issue?.due_source).toBe("parent:CHE-9");
+    expect(issue?.diagnostics).toEqual(diagnostics);
+    const bare = parse({});
+    expect(bare?.effective_due).toBeUndefined();
+    expect(bare?.due_source).toBeUndefined();
+    expect(bare?.diagnostics).toBeUndefined();
+    for (const bad of [42, { date: "x" }, true]) {
+      const dropped = parse({ effective_due: bad, due_source: bad, diagnostics: bad });
+      expect(dropped?.id).toBe(baseIssue.id);
+      expect(dropped?.effective_due).toBeUndefined();
+      expect(dropped?.due_source).toBeUndefined();
+      expect(dropped?.diagnostics).toBeUndefined();
     }
   });
   it("keeps the issue while independently dropping a malformed source context", () => {
@@ -340,12 +398,24 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.metadata).toEqual({});
   });
 
-  it("rejects metadata with non-primitive values (nested object)", () => {
+  // CHE-3472: the server's decision park writes an object under `decision_park`.
+  // One non-primitive entry must not fail the whole issue, or the detail view
+  // reads a malformed response as "does not exist".
+  it("drops non-primitive metadata entries and keeps the issue (decision_park)", () => {
     const payload = {
-      issues: [{ ...baseIssue, metadata: { nested: { x: 1 } } }],
+      issues: [
+        {
+          ...baseIssue,
+          metadata: {
+            decision_park: { status: "blocked", to: "need_decision", set: "opt-1" },
+            status_summary: "Blocked",
+          },
+        },
+      ],
       total: 1,
     };
-    expect(ListIssuesResponseSchema.safeParse(payload).success).toBe(false);
+    const parsed = ListIssuesResponseSchema.parse(payload);
+    expect(parsed.issues[0]?.metadata).toEqual({ status_summary: "Blocked" });
   });
 
   it("accepts a numeric stage", () => {
@@ -2484,23 +2554,136 @@ describe("AgentActivityBucketListSchema duration", () => {
   });
 });
 
-describe("JevCredentialPresenceSchema", () => {
-  it("carries the storage capability the server reports", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false, configurable: false })).toEqual({
-      present: false,
-      configurable: false,
+// CHE-2820: the server steers a DM follow-up into the running task and keeps a
+// delivery receipt. A malformed or future receipt must degrade to the queue
+// state, never crash the transcript or read as delivered.
+describe("chat supplement receipts", () => {
+  const receipt = {
+    message_id: "m1",
+    chat_session_id: "s1",
+    task_id: "t1",
+    status: "delivered",
+    failure_reason: null,
+    delivered_at: "2026-11-01T00:00:00Z",
+    acked_after_resend_at: null,
+    resent_task_id: null,
+  };
+
+  it("parses a receipt on a chat message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: receipt,
     });
-    expect(JevCredentialPresenceSchema.parse({ present: true, configurable: true })).toEqual({
-      present: true,
-      configurable: true,
-    });
+    expect(msg.supplement).toMatchObject({ status: "delivered", delivered_at: "2026-11-01T00:00:00Z" });
   });
 
-  it("assumes a server that omits the capability can store a key", () => {
-    expect(JevCredentialPresenceSchema.parse({ present: false })).toEqual({ present: false, configurable: true });
+  it.each(["pending", "delivering", "delivered", "uncertain", "failed"])("keeps status %s", (status) => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status }).status).toBe(status);
   });
 
-  it("rejects a response without the presence flag", () => {
-    expect(JevCredentialPresenceSchema.safeParse({ configurable: true }).success).toBe(false);
+  it("treats an unknown status as uncertain, never delivered or failed", () => {
+    expect(ChatSupplementSchema.parse({ ...receipt, status: "teleported" }).status).toBe("uncertain");
+  });
+
+  it("drops a malformed receipt without losing the message", () => {
+    const msg = ChatMessageSchema.parse({
+      id: "m1", chat_session_id: "s1", role: "user", content: "hi", supplement: "nope",
+    });
+    expect(msg.content).toBe("hi");
+    expect(msg.supplement).toBeUndefined();
+  });
+
+  it("is absent on messages from older servers", () => {
+    const msg = ChatMessageSchema.parse({ id: "m1", chat_session_id: "s1", role: "user", content: "hi" });
+    expect(msg.supplement).toBeUndefined();
+  });
+});
+
+describe("ChatPendingTaskSchema head_supplement", () => {
+  it.each(["capable", "starting", "unsupported"])("keeps %s", (value) => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: value }).head_supplement).toBe(value);
+  });
+
+  it("is absent on an older server", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t" }).head_supplement).toBeUndefined();
+  });
+
+  it("maps an unknown value to unsupported so Steer never fires on a guess", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t", head_supplement: "maybe" }).head_supplement).toBe("unsupported");
+  });
+});
+
+describe("CommentPreviewSchema", () => {
+  it("defaults optional text fields and requires ids", async () => {
+    const { CommentPreviewSchema } = await import("./schemas");
+    const ok = CommentPreviewSchema.parse({
+      comment_id: "c",
+      issue_id: "i",
+      issue_identifier: "CHE-1",
+      author_name: null,
+    });
+    expect(ok.author_name).toBe("");
+    expect(ok.preview).toBe("");
+    expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("RuntimeUpdateSchema", () => {
+  const running = {
+    id: "u-1",
+    runtime_id: "rt-1",
+    status: "running",
+    target_version: "v1.2.3",
+    created_at: "2026-11-04T00:00:00Z",
+    updated_at: "2026-11-04T00:00:01Z",
+  };
+  const parse = (data: unknown) =>
+    parseWithFallback(data, RuntimeUpdateSchema, MALFORMED_RUNTIME_UPDATE, {
+      endpoint: "test",
+    });
+
+  it("keeps a well-formed progress", () => {
+    const progress = { phase: "download", bytes_done: 512, bytes_total: 2048 };
+    expect(parse({ ...running, progress }).progress).toEqual(progress);
+  });
+
+  it("parses a response without progress (older server)", () => {
+    const parsed = parse(running);
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "50%"],
+    ["wrong field types", { phase: "download", bytes_done: "x", bytes_total: 1 }],
+    ["missing fields", { phase: "download" }],
+  ])("drops a malformed progress (%s) and keeps the rest", (_name, progress) => {
+    const parsed = parse({ ...running, progress });
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it("falls back to failed when the body is not an update", () => {
+    expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
+  });
+});
+
+describe("AgentDecisionSettingSchema", () => {
+  it("keeps enabled and the stop reason, and ignores the rest of the brief", () => {
+    const parsed = AgentDecisionSettingSchema.parse({
+      enabled: false,
+      stopped: { reason: "excluded category", at: "2026-11-02T00:00:00Z" },
+      decisions: [],
+    });
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.stopped).toEqual({ reason: "excluded category" });
+  });
+
+  it("reads a missing or null stop record as no stop", () => {
+    expect(AgentDecisionSettingSchema.parse({ enabled: true }).stopped).toBeNull();
+    expect(AgentDecisionSettingSchema.parse({ enabled: true, stopped: null }).stopped).toBeNull();
+  });
+
+  it("falls back to null when enabled is missing instead of guessing a value", () => {
+    expect(parseWithFallback({}, AgentDecisionSettingSchema, null, { endpoint: "t" })).toBeNull();
   });
 });

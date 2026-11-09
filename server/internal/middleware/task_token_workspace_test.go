@@ -30,8 +30,9 @@ const (
 	ttSlugDBError = "ws-db-error"
 )
 
-// fakeTaskTokenDB is a minimal db.DBTX that answers the two queries the
-// task-token auth path issues: GetTaskTokenByHash and GetWorkspaceBySlug.
+// fakeTaskTokenDB is a minimal db.DBTX that answers the queries the
+// task-token auth path issues: GetTaskTokenByHash, IsBudgetRecoveryTask and
+// GetWorkspaceBySlug.
 // Anything else fails the test, so an unexpected query on this path is
 // caught rather than silently returning zero values.
 type fakeTaskTokenDB struct {
@@ -62,6 +63,8 @@ func (f *fakeTaskTokenDB) QueryRow(_ context.Context, sql string, args ...interf
 			*dest[5].(*pgtype.UUID) = util.MustParseUUID(ttUserID)
 			*dest[8].(*string) = "agent_task"
 		}}
+	case strings.Contains(sql, "name: IsBudgetRecoveryTask"):
+		return fakeRow{scan: func(dest ...any) { *dest[0].(*bool) = false }}
 	case strings.Contains(sql, "name: GetWorkspaceBySlug"):
 		var id string
 		switch args[0] {

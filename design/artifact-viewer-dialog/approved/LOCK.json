@@ -1,0 +1,25 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "MJ4yJPTHt6",
+  "page_id": "MJ4yJPTHt6:page1",
+  "screens": [
+    {
+      "screen": "artifact-viewer-dialog (direction B, dialog replaces the inline tabs; card, desktop dialog with left rail, phone 390 fullscreen with bottom bar; light and dark; loading, failed, first revision)",
+      "frame_id": "Bi32qQ55Hi",
+      "updatedAt": "2026-11-01T04:43:09.622Z",
+      "content_sha256": "78744097ad833804a9e741d50a310f2a0103125d4868ac49ca0e8f72ec61d399"
+    }
+  ],
+  "export_sha256": "34548102737651d8fc21f33c8fc4f9c64435ff2329957140c37f5cd827c00ae0",
+  "export_sha256_method": "sha256 of the line '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "artifact-dialog-b.html": "78744097ad833804a9e741d50a310f2a0103125d4868ac49ca0e8f72ec61d399"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; length 17000 characters equals htmlBytes from get_frame",
+  "exported_at": "2026-11-01 15:10 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-2810",
+  "selection_id": "01a19580-8cd4-7537-bd61-7b94239f23b8",
+  "ux_verdict_id": "01a19570-7789-7e31-b745-f95f1c476323"
+}

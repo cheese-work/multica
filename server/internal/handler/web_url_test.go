@@ -58,14 +58,11 @@ func TestChatContinueWebURL(t *testing.T) {
 			sourceID := dbfx.ChatSession(t, agentID, testutil.Cols{})
 			dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sourceID, "role": "user", "content": "Goal."})
 			response := continueChatRequest(t, sourceID, "Retained goal.", "")
-			if response.Code != http.StatusCreated {
+			if response.Code != http.StatusOK {
 				t.Fatalf("continue: %d %s", response.Code, response.Body.String())
 			}
 			object := decodeObject(t, response.Body.Bytes())
-			childID := object["session"].(map[string]any)["id"].(string)
-			dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, childID)
-			dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, childID)
-			relative := "/" + handlerTestWorkspaceSlug + "/chat?session=" + childID
+			relative := "/" + handlerTestWorkspaceSlug + "/chat?session=" + sourceID
 			if object["url"] != relative {
 				t.Fatalf("url = %v, want unchanged %q", object["url"], relative)
 			}

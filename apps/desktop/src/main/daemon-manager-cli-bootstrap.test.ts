@@ -13,6 +13,8 @@ const ctx = vi.hoisted(() => ({
   statuses: [] as string[],
   downloads: [] as Array<{ serverUrl?: string | null; token?: string }>,
   failDownload: false,
+  // When set, the download reports this progress and then never finishes.
+  stalledProgress: null as { bytesDone: number; bytesTotal: number } | null,
 }));
 
 vi.mock("electron", () => ({
@@ -21,6 +23,7 @@ vi.mock("electron", () => ({
     getPath: () => "/review-only/user-data",
     getAppPath: () => "/review-only/app",
     getVersion: () => "0.7.0",
+    getPreferredSystemLanguages: () => ["en"],
   },
   BrowserWindow: class {},
   ipcMain: {
@@ -34,8 +37,16 @@ vi.mock("electron", () => ({
 vi.mock("./cli-bootstrap", () => ({
   managedCliPath: () => "/review-only/managed-cli",
   ensureManagedCli: vi.fn(
-    async (opts: { serverUrl?: string | null; token?: string }) => {
+    async (opts: {
+      serverUrl?: string | null;
+      token?: string;
+      onProgress?: (p: { bytesDone: number; bytesTotal: number }) => void;
+    }) => {
       ctx.downloads.push({ serverUrl: opts.serverUrl, token: opts.token });
+      if (ctx.stalledProgress) {
+        opts.onProgress?.(ctx.stalledProgress);
+        return new Promise<string>(() => {});
+      }
       if (ctx.failDownload || !opts.serverUrl || !opts.token) {
         throw new Error("authenticated CLI download failed");
       }
@@ -100,6 +111,7 @@ beforeEach(() => {
   ctx.statuses.length = 0;
   ctx.downloads.length = 0;
   ctx.failDownload = false;
+  ctx.stalledProgress = null;
 });
 afterEach(() => {
   vi.clearAllTimers();
@@ -154,5 +166,24 @@ describe("CLI bootstrap waits for its download prerequisites", () => {
     expect(ctx.downloads).toHaveLength(1);
     expect(ctx.statuses.at(-1)).toBe("cli_not_found");
     await expect(call("daemon:is-cli-installed")).resolves.toBe(false);
+  });
+
+  it("reports download progress in the polled status when a retry follows cli_not_found", async () => {
+    ctx.failDownload = true;
+    await startManager();
+    await call("daemon:set-target-api-url", SERVER);
+    await call("daemon:sync-token", "mul_pat_from_login", "user-1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.statuses.at(-1)).toBe("cli_not_found");
+
+    ctx.failDownload = false;
+    ctx.stalledProgress = { bytesDone: 5, bytesTotal: 20 };
+    void call("daemon:retry-install");
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(call("daemon:get-status")).resolves.toEqual({
+      state: "installing_cli",
+      cliDownload: { bytesDone: 5, bytesTotal: 20 },
+    });
   });
 });

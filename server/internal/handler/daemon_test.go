@@ -874,6 +874,34 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 	}
 }
 
+// The ops page uses __cloud__, __unbound__ and __unknown__ as synthetic machine
+// keys. A daemon_id of the form __x__ must never register, or a real machine
+// would merge into a synthetic group.
+func TestDaemonRegister_RejectsReservedDaemonID(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID)
+	})
+	for _, id := range []string{"__cloud__", "__unbound__", "__unknown__", "__anything__", "  __cloud__  "} {
+		req := newRequest("POST", "/api/daemon/register", map[string]any{
+			"workspace_id": testWorkspaceID,
+			"daemon_id":    id,
+			"device_name":  "test-device",
+			"runtimes": []map[string]any{
+				{"name": "reserved-id-runtime", "type": "claude", "version": "1.0.0", "status": "online"},
+			},
+		})
+		testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusBadRequest)
+	}
+	var n int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("runtimes with reserved daemon_id = %d err %v, want 0", n, err)
+	}
+}
+
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -920,7 +948,7 @@ func TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError(t *testing.T) {
 				missingRuntime: daemonws.NewRuntimeLease(testWorkspaceID, "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true),
 			},
 		},
-		missingRuntime, false, nil)
+		protocol.DaemonHeartbeatRequestPayload{RuntimeID: missingRuntime})
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}
@@ -964,7 +992,7 @@ func TestHandleDaemonWSHeartbeat_AllowsAnyAuthorizedWorkspace(t *testing.T) {
 				runtimeID: daemonws.NewRuntimeLease(workspaceID, "online", time.Now(), true),
 			},
 		},
-		runtimeID, false, nil)
+		protocol.DaemonHeartbeatRequestPayload{RuntimeID: runtimeID})
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}
@@ -2039,10 +2067,7 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 
 	ctx := context.Background()
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t, `
-		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
 		"workspace_id":    testWorkspaceID,
@@ -2135,11 +2160,7 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	`, projectID, testWorkspaceID, `{"url":"`+projectRepoURL+`","ref":"`+projectRepoRef+`"}`)
 
 	// Agent + runtime + queued task in this project.
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	issueID := dbfx.Issue(t, "project repo override", testutil.Cols{
 		"project_id": projectID,
@@ -2201,11 +2222,7 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		"description": projectDescription,
 	})
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	issueID := dbfx.Issue(t, "project description", testutil.Cols{
 		"project_id": projectID,
@@ -2290,11 +2307,7 @@ func TestClaimTask_ProjectWithoutRepos_FallsBackToWorkspaceRepos(t *testing.T) {
 
 	projectID := dbfx.Project(t, "Claim project without repos")
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	issueID := dbfx.Issue(t, "no project repos", testutil.Cols{
 		"project_id": projectID,
@@ -2336,10 +2349,7 @@ func TestClaimTask_AutopilotRunOnly_PopulatesWorkspaceAndProjectContext(t *testi
 
 	ctx := context.Background()
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t, `
-		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	const projectDescription = "Use only the bound project resources."
 	projectID := dbfx.Project(t, "Run-only autopilot project", testutil.Cols{
@@ -2476,11 +2486,7 @@ func TestClaimTaskByRuntime_TaskWorkspaceMismatch_CancelsAndRejects(t *testing.T
 	}
 
 	// Local agent/runtime (belongs to testWorkspace).
-	var localAgentID, localRuntimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&localAgentID, &localRuntimeID)
+	localAgentID, localRuntimeID := sharedClaimAgent(t)
 
 	// Foreign workspace with its own issue — what the misrouted task will
 	// resolve to.

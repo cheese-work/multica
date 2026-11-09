@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Save } from "lucide-react";
+import { Loader2, Save } from "@multica/ui/icons";
 import type { Agent } from "@multica/core/types";
 import {
   OPENCLAW_GATEWAY_TOKEN_MASK,
@@ -129,7 +129,13 @@ export function RuntimeConfigTab({
     setSaving(true);
     try {
       await onSave({
-        runtime_config: serializeOpenclawRuntimeConfig(currentCfg),
+        runtime_config: {
+          ...serializeOpenclawRuntimeConfig(currentCfg),
+          // Owned by the General tab; this form must not drop it.
+          ...(agent.runtime_config.auto_compact != null
+            ? { auto_compact: agent.runtime_config.auto_compact }
+            : {}),
+        },
       });
       toast.success(t(($) => $.tab_body.runtime_config.saved_toast));
     } catch (err) {

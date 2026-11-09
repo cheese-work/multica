@@ -47,6 +47,9 @@ type ProjectResponse struct {
 	// WorkflowID is the workflow this project uses; null means the workspace
 	// Default workflow. (MUL-7420)
 	WorkflowID *string `json:"workflow_id"`
+	// DecisionDelegates are the member ids, besides the workspace owner, that a
+	// reversible decision on this project's issues may concern. Owner-only to set.
+	DecisionDelegates []string `json:"decision_delegates"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -65,6 +68,8 @@ func projectToResponse(p db.Project) ProjectResponse {
 		CreatedAt:   timestampToString(p.CreatedAt),
 		UpdatedAt:   timestampToString(p.UpdatedAt),
 		WorkflowID:  uuidToPtr(p.WorkflowID),
+
+		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
 	}
 }
 
@@ -139,6 +144,8 @@ type UpdateProjectRequest struct {
 	LeadID      *string `json:"lead_id"`
 	StartDate   *string `json:"start_date"`
 	DueDate     *string `json:"due_date"`
+	// DecisionDelegates replaces the whole list; null or [] clears it.
+	DecisionDelegates *[]string `json:"decision_delegates"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -424,20 +431,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		WorkflowID:  workflowID,
 	}
 
-	// Without resources, keep the simple non-tx path.
-	if len(req.Resources) == 0 {
-		project, err := h.Queries.CreateProject(r.Context(), createParams)
-		if err != nil {
-			h.writeProjectWriteError(w, r, err, "create")
-			return
-		}
-		resp := projectToResponse(project)
-		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
-		writeJSON(w, http.StatusCreated, resp)
-		return
-	}
-
-	// Transactional path: project + all resources are atomic.
+	// Project, bundled resources and their audit rows are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -449,6 +443,15 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	project, err := qtx.CreateProject(r.Context(), createParams)
 	if err != nil {
 		h.writeProjectWriteError(w, r, err, "create")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.create",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    project.ID,
+		After:       projectAuditFields(project),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.create")
 		return
 	}
 
@@ -480,10 +483,26 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to attach resource at index "+strconv.Itoa(i))
 			return
 		}
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "project.resource.create",
+			WorkspaceID: row.WorkspaceID,
+			TargetID:    row.ID,
+			After:       projectResourceAuditFields(row),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "project.resource.create")
+			return
+		}
 		resourceRows = append(resourceRows, row)
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project create")
+		return
+	}
+
+	if len(resourceRows) == 0 {
+		resp := projectToResponse(project)
+		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
+		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
 
@@ -571,6 +590,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if rejectGovernedFieldForAgentActor(w, r, actorType, descriptionKeyPresent, "description") {
 		return
 	}
+	_, delegatesKeyPresent := rawFields["decision_delegates"]
+	if rejectGovernedFieldForAgentActor(w, r, actorType, delegatesKeyPresent, "decision_delegates") {
+		return
+	}
 
 	params := db.UpdateProjectParams{ID: prevProject.ID}
 	_, params.DescriptionSet = rawFields["description"]
@@ -652,8 +675,29 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
 	}
-	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent")
+	if delegatesKeyPresent {
+		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
+		if !ok {
+			return
+		}
+		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
+	}
+	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
+		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
+				Before: projectAuditFields(previous), After: projectAuditFields(updated),
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
+		var auditErr auditWriteError
+		if errors.As(err, &auditErr) {
+			writeAuditFailure(w, r, auditErr.err, "project.update")
+			return
+		}
 		if writeProjectAdmissionError(w, err) {
 			return
 		}
@@ -664,7 +708,42 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	h.publish(protocol.EventProjectUpdated, workspaceID, "member", userID, map[string]any{"project": resp})
+	if delegatesKeyPresent {
+		// Removing a delegate cancels that person's open requests on the worker's next pass.
+		h.DecisionWorker.Notify()
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseDecisionDelegates validates a decision_delegates write: only a workspace
+// owner sets it, and every id must be a distinct member of the workspace.
+func (h *Handler) parseDecisionDelegates(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, userID string, requested *[]string) ([]pgtype.UUID, bool) {
+	caller, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(workspaceID))
+	if err != nil || caller.Role != "owner" {
+		writeError(w, http.StatusForbidden, "only a workspace owner can set decision_delegates")
+		return nil, false
+	}
+	delegates := []pgtype.UUID{}
+	if requested == nil {
+		return delegates, true
+	}
+	seen := map[string]bool{}
+	for _, raw := range *requested {
+		id, ok := parseUUIDOrBadRequest(w, raw, "decision_delegates")
+		if !ok {
+			return nil, false
+		}
+		if seen[uuidToString(id)] {
+			continue
+		}
+		seen[uuidToString(id)] = true
+		if _, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: id, WorkspaceID: workspaceID}); err != nil {
+			writeError(w, http.StatusBadRequest, "decision_delegates must be members of this workspace")
+			return nil, false
+		}
+		delegates = append(delegates, id)
+	}
+	return delegates, true
 }
 
 func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
@@ -734,6 +813,15 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: project.WorkspaceID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete project")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.delete",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    project.ID,
+		Before:      projectAuditFields(project),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

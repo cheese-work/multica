@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check } from "lucide-react";
+import { Check } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -17,6 +17,7 @@ import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { WakeupsPausedBanner } from "../../issues/components/wakeups-paused-banner";
 import { useT } from "../../i18n";
+import { WorkspaceWakeupRules } from "./workspace-wakeup-rules";
 import { SettingsCard, SettingsRow, SettingsSection, SettingsTab } from "./settings-layout";
 
 const MAX_INSTRUCTION_BYTES = 4000;
@@ -51,6 +52,7 @@ export function WakeupsTab() {
       <PauseSwitch canManage={canManage} />
       {childDone && <ChildDoneDefault rule={childDone} canManage={canManage} paused={paused} />}
       {childDone && !canManage && <p className="text-caption text-muted-foreground">{t(($) => $.wakeups.admin_only)}</p>}
+      <WorkspaceWakeupRules workspaceId={wsId} canManage={canManage} />
     </SettingsTab>
   );
 }

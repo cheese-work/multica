@@ -131,6 +131,12 @@ func ensureCodexDisabledSkillsConfig(configPath, codexHome string, disabled []Ru
 		seen[skillPath] = struct{}{}
 		paths = append(paths, skillPath)
 	}
+	return appendDisabledCodexSkillPaths(configPath, paths)
+}
+
+// appendDisabledCodexSkillPaths appends one disabled [[skills.config]] block per
+// path. Callers dedupe within their own list; Codex tolerates repeated paths.
+func appendDisabledCodexSkillPaths(configPath string, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}

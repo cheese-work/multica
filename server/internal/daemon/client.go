@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -124,28 +125,26 @@ type Client struct {
 func NewClient(baseURL string) *Client {
 	return &Client{
 		baseURL:      baseURL,
-		client:       &http.Client{Timeout: 30 * time.Second, Transport: cloneDefaultTransport()},
-		bundleClient: &http.Client{},
+		client:       &http.Client{Timeout: 30 * time.Second, Transport: httptransport.CloneDefault()},
+		bundleClient: &http.Client{Transport: httptransport.CloneDefault()},
 		platform:     "daemon",
 		os:           normalizeGOOS(runtime.GOOS),
 	}
 }
 
-func cloneDefaultTransport() http.RoundTripper {
-	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
-		return transport.Clone()
-	}
-	return http.DefaultTransport
-}
-
-// CloseIdleConnections drops pooled control-plane HTTP connections. The
+// CloseIdleConnections drops pooled daemon HTTP connections. The
 // daemon calls this after repeated heartbeat transport failures so a stale
 // keep-alive socket from a server restart cannot delay recovery indefinitely.
 func (c *Client) CloseIdleConnections() {
-	if c == nil || c.client == nil {
+	if c == nil {
 		return
 	}
-	c.client.CloseIdleConnections()
+	if c.client != nil {
+		c.client.CloseIdleConnections()
+	}
+	if c.bundleClient != nil {
+		c.bundleClient.CloseIdleConnections()
+	}
 }
 
 // normalizeGOOS maps Go's runtime.GOOS values to the protocol vocabulary
@@ -205,15 +204,15 @@ func daemonCommonCapabilities() []string {
 	return []string{
 		protocol.DaemonCapabilitySkillBundlesV1,
 		protocol.DaemonCapabilityCoalescedCommentsV1,
-		protocol.DaemonCapabilityExecutionManifestV1,
-		protocol.DaemonCapabilityAgentSkillV1,
-		protocol.DaemonCapabilityRemoteMCPV1,
 		protocol.DaemonCapabilityLocalWorktreeV1,
 		protocol.DaemonCapabilitySourceContextQuickCreateV1,
 		protocol.DaemonCapabilityRPCV1,
 		protocol.DaemonCapabilityPlatformSkillV1,
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
+		protocol.DaemonCapabilityCLICommentSteerV1,
+		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 
@@ -444,6 +443,7 @@ func (c *Client) ExtendTaskPrepareLease(ctx context.Context, runtimeID, taskID s
 
 type TaskSupplement struct {
 	CommentID  string `json:"comment_id"`
+	AuthorType string `json:"author_type"`
 	AuthorName string `json:"author_name"`
 	Content    string `json:"content"`
 }
@@ -480,7 +480,9 @@ func (c *Client) AckTaskPREvent(ctx context.Context, taskID, eventID string, del
 
 func (c *Client) ClaimTaskSupplement(ctx context.Context, taskID string) (*TaskSupplement, error) {
 	var supplement TaskSupplement
-	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/supplements/claim", taskID), map[string]any{}, &supplement); err != nil {
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/supplements/claim", taskID), map[string]any{
+		"capabilities": []string{protocol.DaemonCapabilityTaskSupplementAuthorV1},
+	}, &supplement); err != nil {
 		return nil, err
 	}
 	if supplement.CommentID == "" {
@@ -541,8 +543,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			}
 		}
 		negotiated = TaskNegotiation{
-			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
-			PREvent:    response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
+				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
 		}
 		return nil
 	}
@@ -573,6 +576,35 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		return TaskNegotiation{}, err
 	}
 	return negotiated, nil
+}
+
+// AppliedSettings is the launch selection the daemon resolved for one claim.
+type AppliedSettings struct {
+	Model, ThinkingLevel, ServiceTier string
+	ContextArgs                       []string
+}
+
+// ReportAppliedSettings records the launch selection against the claim
+// generation. One bounded attempt: the report is advisory, so callers log and
+// carry on when it fails.
+func (c *Client) ReportAppliedSettings(ctx context.Context, task Task, applied AppliedSettings) error {
+	if task.RuntimeID == "" || task.DispatchedAt == "" {
+		return fmt.Errorf("report applied settings: claim is missing runtime_id or dispatched_at")
+	}
+	contextArgs := applied.ContextArgs
+	if contextArgs == nil {
+		contextArgs = []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
+	defer cancel()
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/applied-settings", task.ID), map[string]any{
+		"runtime_id":             task.RuntimeID,
+		"dispatched_at":          task.DispatchedAt,
+		"applied_model":          applied.Model,
+		"applied_thinking_level": applied.ThinkingLevel,
+		"applied_service_tier":   applied.ServiceTier,
+		"applied_context_args":   contextArgs,
+	}, nil)
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
@@ -688,6 +720,15 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
+// ReportSilenceAlert asks the server to leave one comment on the task's issue
+// for the silent segment. The server dedupes on (task, segment).
+func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID string, silentFor time.Duration) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/silence-alert", taskID), map[string]any{
+		"segment_id":         segmentID,
+		"silent_for_seconds": int(silentFor.Seconds()),
+	}, nil)
+}
+
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
 }
@@ -796,6 +837,25 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 	return resp.Status, nil
 }
 
+// BrokerPolicyName is the server policy record the push broker enforces.
+const BrokerPolicyName = "default"
+
+// BrokerPolicy returns the push broker's Policy: it reads the workspace's
+// protected-path record from the server on every call, so an admin edit applies
+// to the next push and a failed read is an error the broker refuses on.
+func (c *Client) BrokerPolicy(workspaceID string) func(context.Context) ([]string, error) {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/protected-path-policies/%s", workspaceID, BrokerPolicyName)
+	return func(ctx context.Context) ([]string, error) {
+		var resp struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := c.getJSON(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Patterns, nil
+	}
+}
+
 // HeartbeatResponse, PendingUpdate, etc. alias the wire types so HTTP and WS
 // heartbeat paths share a single type and a single decoder shape. Aliases
 // (rather than wrappers) keep call sites unchanged.
@@ -807,13 +867,9 @@ type (
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, inFlightTasks int) (*HeartbeatResponse, error) {
+func (c *Client) SendHeartbeat(ctx context.Context, req protocol.DaemonHeartbeatRequestPayload) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":            runtimeID,
-		"supports_batch_import": true,
-		"in_flight_tasks":       inFlightTasks,
-	}, &resp); err != nil {
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -1460,6 +1516,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

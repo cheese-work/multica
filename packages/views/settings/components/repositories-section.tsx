@@ -10,7 +10,7 @@ import {
   Plus,
   Search,
   Trash2,
-} from "lucide-react";
+} from "@multica/ui/icons";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Button } from "@multica/ui/components/ui/button";
@@ -48,6 +48,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { toast } from "sonner";
 import {
   useInfiniteQuery,
@@ -225,7 +226,11 @@ export function RepositoriesSection() {
     }
 
     if (githubError) {
-      toast.error(t(($) => $.repositories.github_connect_failed));
+      toast.error(
+        githubError === "installation_not_allowed"
+          ? t(($) => $.repositories.github_installation_not_allowed)
+          : t(($) => $.repositories.github_connect_failed),
+      );
     } else if (githubInstallations.length > 0 && githubBrowseConfigured) {
       setSelectedInstallationID(githubInstallations[0]!.id);
       setGitHubPickerOpen(true);
@@ -461,9 +466,11 @@ export function RepositoriesSection() {
                   )}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-mono text-label" title={repository.url}>
-                    {repository.url}
-                  </p>
+                  <TruncatedTooltip content={repository.url}>
+                    <p className="truncate font-mono text-label">
+                      {repository.url}
+                    </p>
+                  </TruncatedTooltip>
                   {repository.description ? (
                     <p className="mt-0.5 truncate text-caption text-muted-foreground">
                       {repository.description}

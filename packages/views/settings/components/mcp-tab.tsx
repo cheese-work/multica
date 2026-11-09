@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ArrowRight, Blocks, Loader2, Plug, Plus, Server } from "lucide-react";
+import { ArrowRight, Blocks, Loader2, Plug, Plus, Server } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -314,6 +314,7 @@ export function McpTab() {
         server={dialogServer}
         existingNames={existingNames}
         replacementMode={editingServer !== null}
+        draftKey={`workspace:${editingServer?.id ?? "new"}`}
         onOpenChange={setEditorOpen}
         onSave={handleSaveServer}
       />

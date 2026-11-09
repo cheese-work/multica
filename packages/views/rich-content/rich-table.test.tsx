@@ -41,6 +41,7 @@ vi.mock("../editor/link-hover-card", () => ({
   LinkHoverCard: () => null,
 }));
 
+import { trackFeedbackTimers } from "../test/feedback-timer";
 import { RichContent } from "./rich-content";
 
 const TABLE = [
@@ -322,5 +323,71 @@ describe("RichTable", () => {
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("clears the copy-feedback timer when the dialog unmounts", async () => {
+    const view = renderTable();
+    await userEvent.click(screen.getByRole("button", { name: "Expand table" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const timers = trackFeedbackTimers();
+    try {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Copy as CSV" }));
+      expect(timers.ids).toHaveLength(1);
+      view.unmount();
+      expect(timers.cleared(timers.ids[0])).toBe(true);
+    } finally {
+      timers.restore();
+    }
+  });
+
+  it("clears the copy-feedback timer when the table unmounts", async () => {
+    const view = renderTable();
+    const timers = trackFeedbackTimers();
+    try {
+      await userEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+      expect(timers.ids).toHaveLength(1);
+      view.unmount();
+      expect(timers.cleared(timers.ids[0])).toBe(true);
+    } finally {
+      timers.restore();
+    }
+  });
+
+  it("starts no feedback timer when the dialog unmounts before the copy resolves", async () => {
+    let resolveCopy!: (copied: boolean) => void;
+    copyText.mockReturnValueOnce(new Promise<boolean>((resolve) => (resolveCopy = resolve)));
+    const view = renderTable();
+    await userEvent.click(screen.getByRole("button", { name: "Expand table" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const timers = trackFeedbackTimers();
+    try {
+      await userEvent.click(within(dialog).getByRole("button", { name: "Copy as CSV" }));
+      view.unmount();
+      resolveCopy(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(timers.ids).toHaveLength(0);
+    } finally {
+      timers.restore();
+    }
+  });
+
+  it("starts no feedback timer when the table unmounts before the copy resolves", async () => {
+    let resolveCopy!: (copied: boolean) => void;
+    copyText.mockReturnValueOnce(new Promise<boolean>((resolve) => (resolveCopy = resolve)));
+    const view = renderTable();
+    const timers = trackFeedbackTimers();
+    try {
+      await userEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
+      view.unmount();
+      resolveCopy(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(timers.ids).toHaveLength(0);
+    } finally {
+      timers.restore();
+    }
   });
 });

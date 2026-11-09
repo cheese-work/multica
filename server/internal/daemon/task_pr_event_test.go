@@ -153,7 +153,7 @@ func TestFormatTaskSupplementInstructionIsByteStable(t *testing.T) {
 		"- Do not send a separate acknowledgement.\n" +
 		"- Replace or cancel the original objective only if the human explicitly asks for replacement or cancellation.\n\n" +
 		"Human message:\nplease add docs"
-	if got := formatTaskSupplementInstruction("Ada", "please add docs"); got != want {
+	if got := formatTaskSupplementInstruction("member", "Ada", "please add docs"); got != want {
 		t.Fatalf("instruction changed:\n got: %q\nwant: %q", got, want)
 	}
 }

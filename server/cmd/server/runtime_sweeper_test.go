@@ -923,6 +923,13 @@ func TestSweepResetsInProgressIssueToTodo(t *testing.T) {
 	if issueStatus != "todo" {
 		t.Fatalf("expected issue status 'todo' after sweep, got '%s' — issue is stuck", issueStatus)
 	}
+	var resetRows int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'status_changed' AND details #>> '{trigger,cause,kind}' = 'task_reset' AND details #>> '{trigger,cause,ref,run_id}' = $2`, issueID, taskID).Scan(&resetRows); err != nil {
+		t.Fatal(err)
+	}
+	if resetRows != 1 {
+		t.Fatalf("task_reset status_changed rows = %d, want 1", resetRows)
+	}
 }
 
 // TestSweepDoesNotResetIssueAlreadyInReview verifies that the sweeper only resets
@@ -1331,4 +1338,53 @@ func unhex(c byte) byte {
 		return c - 'A' + 10
 	}
 	return 0
+}
+
+// The 20-minute limit on a budget recovery run is enforced by a stage of the
+// runtime sweeper; this runs the sweeper's own round so a dropped stage fails
+// (CHE-2297 L3).
+func TestRuntimeSweepRoundCancelsAnExpiredBudgetRecoveryRun(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	ctx := context.Background()
+	issueID, agentID, expired := setupSweeperTestFixture(t, "running")
+	t.Cleanup(func() { cleanupSweeperFixture(t, issueID, agentID) })
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	var fresh string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, dispatched_at, started_at)
+		VALUES ($1, $2, $3, 'running', 0, now(), now()) RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&fresh); err != nil {
+		t.Fatal(err)
+	}
+	// Both are healthy runs (just started); only the recovery run's age differs.
+	for id, age := range map[string]time.Duration{expired: 21 * time.Minute, fresh: 5 * time.Minute} {
+		if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET task_kind = 'budget_recovery',
+			created_at = now() - make_interval(secs => $2), dispatched_at = now(), started_at = now() WHERE id = $1`, id, age.Seconds()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queries := db.New(testPool)
+	bus := events.New()
+	runtimeSweepRound(ctx, queries, nil, service.NewTaskService(queries, testPool, nil, bus), bus, defaultRuntimeReconnectGrace)
+
+	status := func(id string) string {
+		var s string
+		if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, id).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if got := status(expired); got != "cancelled" {
+		t.Errorf("recovery run past 20 minutes is %s after a sweep round, want cancelled", got)
+	}
+	if got := status(fresh); got != "running" {
+		t.Errorf("recovery run at 5 minutes is %s after a sweep round, want running", got)
+	}
 }

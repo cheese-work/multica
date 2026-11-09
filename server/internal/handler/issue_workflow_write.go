@@ -65,6 +65,10 @@ type workflowWrite struct {
 	stopPrevious bool
 	stopRuns     []db.AgentTaskQueue
 	stopFrom     service.TaskAssignee
+	// system marks a move the platform makes by itself (edge, CI, run budget).
+	// Step entry gates bind explicit status writes only.
+	system bool
+	entry  entryWrite
 }
 
 // decideIssueWorkflow applies the project's workflow to params, like
@@ -72,8 +76,14 @@ type workflowWrite struct {
 // the decision. An issue that lands in no project still gets a write: it
 // checks that no one moved the issue into a project in the meantime.
 func (h *Handler) decideIssueWorkflow(ctx context.Context, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
+	return h.decideIssueWorkflowWith(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+}
+
+// decideIssueWorkflowWith is decideIssueWorkflow reading through q, the
+// queries of a transaction the caller has open.
+func (h *Handler) decideIssueWorkflowWith(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, *workflowWrite, error) {
 	write := &workflowWrite{prev: prev, pre: *params, statusExplicit: statusExplicit, assigneeTouched: assigneeTouched, enterOn: enterOnMove, caller: caller}
-	handoff, err := h.applyIssueWorkflow(ctx, h.Queries, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+	handoff, err := h.applyIssueWorkflow(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
 	if err != nil {
 		return handoff, nil, err
 	}
@@ -154,6 +164,9 @@ func (w *workflowWrite) verify(ctx context.Context, h *Handler, q *db.Queries, l
 			!sameOptional(w.preview.HandlerID, uuidToString(params.AssigneeID)) {
 			return errHandoffPreviewStale
 		}
+	}
+	if err := w.checkEntry(ctx, h, q, locked, params); err != nil {
+		return err
 	}
 	w.stopRuns, w.stopFrom = nil, service.TaskAssignee{}
 	if w.stopPrevious && handoff != nil &&

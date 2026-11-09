@@ -146,6 +146,25 @@ func (h *Handler) withIssueWriteTaint(w http.ResponseWriter, r *http.Request, ct
 
 type issueWriteTaintKey struct{}
 
+type issueWriteExternalReadKey struct{}
+
+// withIssueWriteExternalRead puts the external_read mark of the task making a
+// description write on the write's context, so the description stores it in
+// the same transaction (CHE-2216 plan 3.7). If the requesting task cannot be
+// read, the write does not happen.
+func (h *Handler) withIssueWriteExternalRead(w http.ResponseWriter, r *http.Request, ctx context.Context) (context.Context, bool) {
+	actor, ok, err := service.ActingTask(h.actingTaskContext(r), h.Queries)
+	if err != nil {
+		slog.Error("could not read requesting task", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to update issue")
+		return ctx, false
+	}
+	if !ok || !(actor.ExternalRead || len(actor.TaintIds) > 0) {
+		return ctx, true
+	}
+	return context.WithValue(ctx, issueWriteExternalReadKey{}, true), true
+}
+
 func issueWriteTaint(ctx context.Context) []string {
 	taint, _ := ctx.Value(issueWriteTaintKey{}).([]string)
 	return taint
@@ -314,7 +333,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						humans, err := h.workflowHumans(r.Context(), step, project, wsUUID, previewRequester(actorType, actorID))
+						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID))
 						if err != nil {
 							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
 							return

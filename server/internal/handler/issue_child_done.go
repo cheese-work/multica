@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -331,13 +332,19 @@ func stageGenerationKey(issue db.Issue) int32 {
 // here because bumpStageGenerationOnReopen and claimStageCompletionWake both
 // need it for their LockStageCompletion-guarded read-then-write window.
 func (h *Handler) withTx(ctx context.Context, fn func(qtx *db.Queries) error) error {
+	return h.withPgxTx(ctx, func(tx pgx.Tx) error { return fn(h.Queries.WithTx(tx)) })
+}
+
+// withPgxTx is withTx for a body that also needs the transaction itself, to open
+// a savepoint.
+func (h *Handler) withPgxTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	if err := fn(h.Queries.WithTx(tx)); err != nil {
+	if err := fn(tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

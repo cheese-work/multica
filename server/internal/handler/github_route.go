@@ -66,6 +66,13 @@ func (h *Handler) canRoute(ctx context.Context, githubUserID int64, issue db.Iss
 		return routeDeny("github user not mapped")
 	}
 
+	return h.canRouteMember(ctx, userID, issue, agent)
+}
+
+// canRouteMember is canRoute from the Multica user onward: the same membership,
+// project, grant and agent-invocation checks, for a caller already identified
+// as a user (the GitHub-author mapping step is skipped).
+func (h *Handler) canRouteMember(ctx context.Context, userID pgtype.UUID, issue db.Issue, agent db.Agent) routeDecision {
 	if _, err := h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: userID, WorkspaceID: issue.WorkspaceID}); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return routeDeny("not a workspace member")
@@ -111,7 +118,7 @@ func (h *Handler) canRoute(ctx context.Context, githubUserID int64, issue db.Iss
 // ponytail: the PR row has no GitHub repo-ID or fork column, so owner/name stands
 // in for repo identity here; the repo-ID check lands with the column that stores it.
 func (h *Handler) routeTargetIssues(ctx context.Context, installationID int64, repoOwner, repoName string, prNumber int32) ([]db.Issue, error) {
-	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, installationID)
+	installations, err := h.allowedGitHubInstallations(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}

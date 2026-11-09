@@ -167,9 +167,11 @@
       "compact": "Résumer cette conversation et continuer dans une nouvelle",
       "rename": "Renommer cette conversation sans lancer l’agent",
       "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé",
+      "preset": "Choisir le preset utilisé par ce DM",
       "statistic": "Afficher l’utilisation et le coût de cette conversation",
       "archive": "Archiver cette conversation sans lancer l’agent",
       "pin": "Épingler ou détacher cette conversation",
+      "unseen": "Marquer ce DM comme non vu et le quitter",
       "unarchive": "Désarchiver cette conversation. Rien n’est envoyé à l’agent."
     }
   },

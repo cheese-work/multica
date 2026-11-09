@@ -1,8 +1,8 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { lazy, memo, Suspense, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { AnimatePresence, motion, useIsPresent, useReducedMotion } from "motion/react";
-import { ChevronDown, ChevronUp, Maximize2, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Maximize2, X } from "@multica/ui/icons";
 import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import {
   Tooltip,
@@ -24,7 +24,6 @@ import { AppLink } from "../../navigation";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
-import { IssueDetail } from "./issue-detail";
 import {
   IssuePeekActionsContext,
   IssuePeekIdContext,
@@ -36,6 +35,13 @@ import {
   type IssuePeekActions,
   type IssuePeekColumns,
 } from "../surface/peek-context";
+
+// The detail carries the rich-text editor and markdown renderer (~800 KiB). It
+// loads off the list's critical path: warmed on the first pointer or focus on a
+// card, otherwise at the first peek. Not on idle: on a slow link the idle fetch
+// competes with the list's own first paint.
+const loadIssueDetail = () => import("./issue-detail").then((m) => ({ default: m.IssueDetail }));
+const IssueDetail = lazy(loadIssueDetail);
 
 const NEXT_KEY = createShortcutChord("J");
 const PREV_KEY = createShortcutChord("K");
@@ -107,10 +113,14 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
           <div
             data-peek-open={openId ? "" : undefined}
             className="group/peek relative flex min-h-0 flex-1 flex-col [--issue-peek-width:520px]"
+            onFocus={(event) => {
+              if ((event.target as Element).closest(`[${PEEK_TARGET_ATTR}]`)) void loadIssueDetail();
+            }}
             onPointerOver={(event) => {
               hoveredCardRef.current =
                 (event.target as Element).closest(`[${PEEK_TARGET_ATTR}]`)?.getAttribute(PEEK_TARGET_ATTR) ||
                 null;
+              if (hoveredCardRef.current) void loadIssueDetail();
             }}
             onPointerLeave={() => {
               hoveredCardRef.current = null;
@@ -185,15 +195,17 @@ const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: stri
           </div>
         )}
       >
-        <IssueDetail
-          key={issueId}
-          issueId={issueId}
-          variant="peek"
-          defaultSidebarOpen={false}
-          leadingAction={<IssuePeekNav />}
-          trailingActions={<IssuePeekTrailingActions issueId={issueId} />}
-          onDelete={actions.close}
-        />
+        <Suspense fallback={null}>
+          <IssueDetail
+            key={issueId}
+            issueId={issueId}
+            variant="peek"
+            defaultSidebarOpen={false}
+            leadingAction={<IssuePeekNav />}
+            trailingActions={<IssuePeekTrailingActions issueId={issueId} />}
+            onDelete={actions.close}
+          />
+        </Suspense>
       </ErrorBoundary>
     </motion.aside>
   );

@@ -136,6 +136,8 @@ allowlist의 정확한 판단 순서는 [로그인과 가입](/auth-setup#가입
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`, `cloudfront`, `presign`, `proxy` 중 하나 |
 | `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | 서명된 다운로드 주소의 유효 기간 |
 
+`AWS_ENDPOINT_URL`이 Google Cloud Storage를 가리키면 `Accept-Encoding`이 요청 서명에서 자동으로 제외됩니다.
+
 내부 네트워크의 MinIO처럼 브라우저에서 endpoint에 직접 접근할 수 없다면 `ATTACHMENT_DOWNLOAD_MODE=proxy`를 사용하세요.
 
 ### 로컬 디스크
@@ -183,6 +185,7 @@ reverse proxy 뒤에 배포한다면 실제 proxy 네트워크를 입력해야 �
 | GitHub | `GITHUB_APP_CLIENT_SECRET` | Client ID와 짝을 이루는 client secret. 용도는 동일함 |
 | GitHub | `GITHUB_APP_ID` | 새 installation 검증, PR 카드의 CI 상태와 merge 가능 여부, "GitHub에서 선택" 저장소에 필요 |
 | GitHub | `GITHUB_APP_PRIVATE_KEY` | App ID와 짝을 이루는 전체 PEM private key. 용도는 위와 같음 |
+| GitHub | `GITHUB_ALLOWED_ACCOUNT_IDS` | 연결을 허용할 GitHub 계정 숫자 ID(쉼표로 구분). 비워 두면 모든 계정 |
 | Feishu | `MULTICA_LARK_SECRET_KEY` | base64로 인코딩한 32바이트 자격 증명 암호화 키 |
 | Slack | `MULTICA_SLACK_SECRET_KEY` | base64로 인코딩한 32바이트 token 암호화 키 |
 | Telegram | `MULTICA_TELEGRAM_SECRET_KEY` | base64로 인코딩한 32바이트 Bot token 암호화 키 |
