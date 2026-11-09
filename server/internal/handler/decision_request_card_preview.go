@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,7 +17,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
-	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -39,24 +36,6 @@ type ActionPreview struct {
 	SHA256 string               `json:"sha256"`
 }
 
-// ActionDiff is the stored text diff an approver must be shown before a
-// RequiresPreview action; SHA256 is the digest approval compares.
-type ActionDiff struct {
-	Kind   string                `json:"kind"`
-	Hunks  []decisiontx.DiffHunk `json:"hunks"`
-	SHA256 string                `json:"sha256"`
-	// Target is the workflow step the diff applies to, resolved by the server
-	// from the live workflow, never from the agent's ask text.
-	Target *ActionDiffTarget `json:"target,omitempty"`
-}
-
-// ActionDiffTarget names the workflow and status key an approval would change.
-type ActionDiffTarget struct {
-	WorkflowID   string `json:"workflow_id"`
-	WorkflowName string `json:"workflow_name"`
-	StatusKey    string `json:"status_key"`
-}
-
 // DecisionRequestCardAction is the action a request asks to approve. It stays on
 // the card after approval so the card can show the outcome.
 type DecisionRequestCardAction struct {
@@ -67,8 +46,28 @@ type DecisionRequestCardAction struct {
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
-	// Diff is the stored change of a config-change action, pending only.
-	Diff *ActionDiff `json:"diff,omitempty"`
+	// OwnerOnly: only the workspace owner may approve (the server refuses
+	// anyone else with needs_owner); the card hides the approve button.
+	OwnerOnly bool `json:"owner_only,omitempty"`
+	// ConfigChange is the stored server preview of a pending config change,
+	// the exact text whose digest approve checks. Absent for other actions.
+	ConfigChange *ConfigChangeCard `json:"config_change,omitempty"`
+}
+
+// ConfigChangeCard is a config change's stored preview and its digest.
+type ConfigChangeCard struct {
+	Field    string                `json:"field"`
+	TargetID string                `json:"target_id"`
+	Keys     []string              `json:"keys"`
+	DiffKind string                `json:"diff_kind"`
+	Diff     []decisiontx.DiffHunk `json:"diff"`
+	// After is the value approve would write, as the server read it: a string
+	// for text, a list of lines, or a JSON value.
+	After        any            `json:"after"`
+	BeforeSHA256 string         `json:"before_sha256"`
+	AfterSHA256  string         `json:"after_sha256"`
+	Meta         map[string]any `json:"meta,omitempty"`
+	SHA256       string         `json:"sha256"`
 }
 
 // previewDigest is the digest of a preview's canonical fields.
@@ -101,8 +100,12 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		slog.WarnContext(ctx, "decision card action unreadable", "request_id", uuidToString(requestID), "error", err)
 		return nil
 	}
-	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State}
+	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State, OwnerOnly: actionOwnerOnly(action)}
 	if action.State != "pending" {
+		return card
+	}
+	if _, configured := configChanges[action.ActionType]; configured {
+		card.ConfigChange = handler.cardConfigChange(ctx, action)
 		return card
 	}
 	fields, err := handler.cardPreviewFields(ctx, action)
@@ -113,54 +116,41 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		slog.WarnContext(ctx, "decision card preview unavailable", "action_id", card.ID, "action_type", action.ActionType, "error", err)
 		card.Preview = nil
 	}
-	card.Diff = storedActionDiff(action.Preconditions)
-	if card.Diff != nil && action.ActionType == decisionaction.WorkflowStepInstructionsSet {
-		// The diff alone does not say which step it edits, so the card names the
-		// target from live state. A target that cannot be resolved withholds the
-		// diff and with it the approve button.
-		card.Diff.Target = handler.stepInstructionsDiffTarget(ctx, action)
-		if card.Diff.Target == nil {
-			card.Diff = nil
-		}
-	}
 	return card
 }
 
-// stepInstructionsDiffTarget resolves the workflow and status key a pending
-// workflow.step.instructions.set action would change, from the live workflow
-// and the action's validated params, never from the request's ask text. It is
-// nil when the workflow or its step is gone.
-func (handler *Handler) stepInstructionsDiffTarget(ctx context.Context, action db.DecisionAction) *ActionDiffTarget {
-	var wanted decisionaction.WorkflowStepInstructionsSetParams
-	if json.Unmarshal(action.Params, &wanted) != nil {
-		return nil
-	}
-	workflow, err := loadWorkflowTarget(ctx, handler.Queries, action.WorkspaceID, action.Params, http.StatusConflict, false)
-	if err != nil {
-		return nil
-	}
-	steps, err := issueworkflow.DecodeSteps(workflow.Steps)
-	if err != nil || !slices.ContainsFunc(steps, func(step issueworkflow.Step) bool { return step.StatusKey == wanted.StatusKey }) {
-		return nil
-	}
-	return &ActionDiffTarget{WorkflowID: uuidToString(workflow.ID), WorkflowName: workflow.Name, StatusKey: wanted.StatusKey}
-}
-
-// storedActionDiff reads the text diff a config-change action stored with its
-// preview, and the digest approval compares. It is nil for an action without
-// one or whose stored preview is not a text diff.
-func storedActionDiff(preconditions []byte) *ActionDiff {
+// cardConfigChange reads the preview stored with the action, the one approve
+// checks by digest. It quotes agent settings, so it is withheld for an agent
+// the card's human could not view. Any unreadable part gives no preview, and the
+// client then offers no approve.
+func (handler *Handler) cardConfigChange(ctx context.Context, action db.DecisionAction) *ConfigChangeCard {
 	var stored struct {
-		Preview struct {
-			Diff     []decisiontx.DiffHunk `json:"diff"`
-			DiffKind string                `json:"diff_kind"`
-		} `json:"preview"`
-		SHA256 string `json:"preview_sha256"`
+		Preview       ConfigChangeCard `json:"preview"`
+		PreviewSHA256 string           `json:"preview_sha256"`
 	}
-	if json.Unmarshal(preconditions, &stored) != nil || stored.Preview.DiffKind != diffKindText || stored.SHA256 == "" {
+	if err := json.Unmarshal(action.Preconditions, &stored); err != nil || stored.PreviewSHA256 == "" || stored.Preview.Field == "" {
+		slog.WarnContext(ctx, "decision card config change unreadable", "action_id", uuidToString(action.ID), "error", err)
 		return nil
 	}
-	return &ActionDiff{Kind: diffKindText, Hunks: stored.Preview.Diff, SHA256: stored.SHA256}
+	if strings.HasPrefix(stored.Preview.Field, "agent.") {
+		request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+		if err == nil {
+			_, err = handler.agentForAction(ctx, action.WorkspaceID, stored.Preview.TargetID, request.HumanUserID)
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "decision card config change withheld", "action_id", uuidToString(action.ID), "error", err)
+			return nil
+		}
+	}
+	card := stored.Preview
+	card.SHA256 = stored.PreviewSHA256
+	if card.Keys == nil {
+		card.Keys = []string{}
+	}
+	if card.Diff == nil {
+		card.Diff = []decisiontx.DiffHunk{}
+	}
+	return &card
 }
 
 // cardPreviewFields renders the preview for the request's human, the only

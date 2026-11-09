@@ -140,7 +140,6 @@
     "approve": "使用通行密钥批准",
     "reject": "拒绝",
     "reject_error": "拒绝未完成。请重试。",
-    "preview_required": "所显示的更改与请求不再一致。请重新加载卡片并再次查看。",
     "waiting": "正在等待你的通行密钥…",
     "state": {
       "executed": "已执行",
@@ -156,6 +155,18 @@
       "other": "失败：{{code}}",
       "stale_base": "请求之后目标已更改。请重新请求。"
     },
+    "refusal": {
+      "class_needs_owner": "只有工作区所有者可以批准此更改。",
+      "payload_mismatch": "批准的更改与所请求的更改不一致。请重新请求。",
+      "preview_required": "请针对所显示的预览进行批准。请重新加载卡片。",
+      "precondition_drift": "自请求以来目标已更改。请重新请求。",
+      "busy_retry": "另一项更改正在进行。请重试。",
+      "not_permitted": "你无权进行此更改。",
+      "action_not_executable": "此类更改暂时无法批准。",
+      "approval_proof_unavailable": "此服务器暂时无法验证通行密钥批准。",
+      "other": "已拒绝：{{code}}"
+    },
+    "owner_only": "只有工作区所有者可以批准此更改。",
     "no_passkey": "批准前请先添加通行密钥。",
     "add_passkey": "添加通行密钥",
     "error": "通行密钥批准未完成。请重试。",

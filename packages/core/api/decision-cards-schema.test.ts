@@ -93,6 +93,44 @@ describe("DM decision cards", () => {
     });
   });
 
+  describe("config change", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
+    const digest = "a".repeat(64);
+    const config_change = {
+      field: "workflow.instructions", target_id: "wf-1", keys: [], diff_kind: "text",
+      diff: [{ old_start: 1, new_start: 1, lines: ["-old", "+new"] }], after: "new",
+      before_sha256: "b".repeat(64), after_sha256: "c".repeat(64), sha256: digest,
+    };
+    const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", state: "pending", owner_only: true, config_change };
+    const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
+
+    it("keeps the server preview and the owner flag", () => {
+      expect(parse(action)).toEqual(action);
+    });
+
+    it("drops a malformed change but keeps the action, so the card says details are unavailable", () => {
+      for (const bad of [
+        "x",
+        { ...config_change, sha256: "abc" },
+        { ...config_change, diff_kind: "other" },
+        { ...config_change, diff: "x" },
+        { ...config_change, diff: [{ old_start: 1, new_start: 1, lines: [7] }] },
+        { ...config_change, field: undefined },
+        { ...config_change, keys: "x" },
+      ]) {
+        const parsed = parse({ ...action, config_change: bad });
+        expect(parsed?.config_change).toBeUndefined();
+        expect(parsed?.id).toBe("action");
+      }
+    });
+
+    it("treats a missing or malformed owner flag as unknown", () => {
+      expect(parse({ ...action, owner_only: undefined })?.owner_only).toBeUndefined();
+      expect(parse({ ...action, owner_only: "yes" })?.owner_only).toBeUndefined();
+      expect(parse({ ...action, owner_only: false })?.owner_only).toBe(false);
+    });
+  });
+
   it("keeps the receipt fields and degrades a malformed answer on its own", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
     const answer = { state: "delivered", chosen_option_index: 1, option_label: "Hold", answered_at: "2026-10-26T06:00:00Z" };
@@ -209,32 +247,5 @@ describe("issue quote card fields", () => {
     };
     expect(CommentSchema.parse({ ...base, ...fields }).decision_recorder_agent_id).toBe("agent");
     expect(CommentSchema.parse({ ...base, ...fields, decision_state: "future" }).decision_state).toBeUndefined();
-  });
-});
-
-describe("action diff", () => {
-  const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
-  const target = { workflow_id: "wf", workflow_name: "Production flow", status_key: "todo" };
-  const diff = { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }], sha256: "e".repeat(64), target };
-  const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", diff };
-  const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
-
-  it("keeps a well-formed diff of a type this client knows", () => {
-    expect(parse(action)?.diff).toEqual(diff);
-  });
-
-  it("keeps the server-resolved target and drops one that is malformed", () => {
-    expect(parse(action)?.diff?.target).toEqual(target);
-    for (const bad of ["todo", { ...target, status_key: 1 }, { workflow_id: "wf" }]) {
-      expect(parse({ ...action, diff: { ...diff, target: bad } })?.diff?.target).toBeUndefined();
-    }
-  });
-
-  it("drops a malformed diff or one of an unknown action type, keeping the action", () => {
-    for (const bad of ["x", { ...diff, sha256: "abc" }, { ...diff, kind: "json" }, { ...diff, hunks: [{ old_start: 1, new_start: 1, lines: ["bad"] }] }, { ...diff, hunks: "x" }]) {
-      expect(parse({ ...action, diff: bad })?.diff).toBeUndefined();
-      expect(parse({ ...action, diff: bad })?.id).toBe("action");
-    }
-    expect(parse({ ...action, action_type: "future.thing" })?.diff).toBeUndefined();
   });
 });

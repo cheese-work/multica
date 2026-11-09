@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +45,17 @@ const approveDecisionAction = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
   api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction },
+}));
+
+// Config-change approval is owner-only: the role comes from the member list of the current workspace.
+const member = vi.hoisted(() => ({ role: "owner" as string | null, workspace: { id: "ws-1" } as { id: string } | null }));
+vi.mock("@multica/core/permissions", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/permissions")>()),
+  useCurrentMember: () => ({ userId: "u1", role: member.role, member: null, isLoading: member.role === null }),
+}));
+vi.mock("@multica/core/paths", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => member.workspace,
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -671,91 +682,6 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
   });
 
-  describe("workflow step instructions diff", () => {
-    const diff = {
-      kind: "text",
-      hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }],
-      sha256: "e".repeat(64),
-      target: { workflow_id: "wf-prod", workflow_name: "Production flow", status_key: "todo" },
-    };
-    const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", state: "pending", diff };
-    const show = (value: unknown) => renderCard({ ...card, action: value as RequestCard["action"] });
-    beforeEach(() => getDecisionActionOutcome.mockReset().mockResolvedValue({ id: "action", state: "pending" }));
-    afterEach(() => sessionStorage.clear()); // an approve that left this tab is remembered per action id
-
-    it("shows the exact before and after text of the step and enables Approve", async () => {
-      show(action);
-      const region = await screen.findByTestId("decision-request-action-diff");
-      expect(region).toHaveTextContent("do A");
-      expect(region).toHaveTextContent("do A better");
-      expect(region).toHaveTextContent("1 lines added, 1 removed.");
-      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
-    });
-
-    it("names the server-resolved workflow and status key, not the ask text", async () => {
-      renderCard({ ...card, ask: "Tweak the SANDBOX flow's todo step", action: action as RequestCard["action"] });
-      const region = await screen.findByTestId("decision-request-action-diff");
-      const target = within(region).getByTestId("decision-request-action-diff-target");
-      expect(target).toHaveTextContent("Production flow");
-      expect(target).toHaveTextContent("todo");
-      expect(target).not.toHaveTextContent(/sandbox/i);
-    });
-
-    it("shows two identical diffs on different targets apart", async () => {
-      const other = { ...diff, target: { workflow_id: "wf-sandbox", workflow_name: "Sandbox flow", status_key: "in_review" } };
-      const { unmount } = show(action);
-      expect(await screen.findByTestId("decision-request-action-diff-target")).toHaveTextContent("Production flow");
-      unmount();
-      show({ ...action, diff: other });
-      const target = await screen.findByTestId("decision-request-action-diff-target");
-      expect(target).toHaveTextContent("Sandbox flow");
-      expect(target).toHaveTextContent("in_review");
-    });
-
-    it.each([
-      ["absent", undefined],
-      ["without a workflow name", { workflow_id: "wf", workflow_name: "", status_key: "todo" }],
-      ["without a status key", { workflow_id: "wf", workflow_name: "Flow", status_key: "" }],
-      ["malformed", "todo"],
-    ])("keeps Approve disabled when the target is %s", (_name, bad) => {
-      show({ ...action, diff: { ...diff, target: bad } });
-      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-      expect(screen.queryByTestId("decision-request-action-diff")).toBeNull();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-    });
-
-    it("opens the changes in the fullscreen viewer", async () => {
-      show(action);
-      await userEvent.setup().click(await screen.findByRole("button", { name: "Review changes" }));
-      const dialog = await screen.findByTestId("decision-action-diff-dialog");
-      expect(dialog).toHaveClass("h-dvh", "w-full", "max-w-none");
-      expect(dialog).toHaveTextContent("do A better");
-    });
-
-    it("approves with the digest of the diff it rendered", async () => {
-      approveDecisionAction.mockResolvedValue({ id: "action", state: "executed" });
-      challengeDecisionAction.mockResolvedValue({});
-      signPasskeyChallenge.mockResolvedValue({ challenge_id: "ch" });
-      show(action);
-      await userEvent.setup().click(await screen.findByRole("button", { name: "Approve with passkey" }));
-      await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledWith("action", expect.objectContaining({ preview_sha256: "e".repeat(64) })));
-    });
-
-    it.each([
-      ["absent", undefined],
-      ["digestless", { ...diff, sha256: "" }],
-      ["not a sha-256 digest", { ...diff, sha256: "digest" }],
-      ["not a text diff", { ...diff, kind: "json" }],
-      ["malformed hunks", { ...diff, hunks: [{ old_start: 1, new_start: 1, lines: ["no prefix"] }] }],
-    ])("says details are unavailable and keeps Approve disabled when the diff is %s", (_name, bad) => {
-      show({ ...action, diff: bad });
-      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-      expect(screen.queryByTestId("decision-request-action-diff")).toBeNull();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
-    });
-  });
-
   describe("action preview", () => {
     const preview = {
       fields: [
@@ -785,19 +711,136 @@ describe("DecisionRequestCard answering", () => {
       ["digestless", { ...preview, sha256: "" }],
       ["not a sha-256 digest", { ...preview, sha256: "digest" }],
       ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
-    ])("says details are unavailable and keeps Approve disabled when the preview is %s", (_name, bad) => {
+    ])("says details are unavailable, keeps Approve disabled and keeps Reject when the preview is %s", async (_name, bad) => {
       show({ ...action, preview: bad });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
     });
 
-    it("keeps Approve disabled for an action type this client does not know, even with fields", () => {
+    it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
       show({ ...action, action_type: "future.thing" });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
       expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
+      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+    });
+
+    describe("config change", () => {
+      const change = {
+        field: "workspace.context",
+        target_id: "ws-1",
+        keys: [] as string[],
+        diff_kind: "text" as const,
+        diff: [{ old_start: 1, new_start: 1, lines: ["-old rule", "+new rule"] }],
+        after: "new rule",
+        before_sha256: "b".repeat(64),
+        after_sha256: "c".repeat(64),
+        sha256: "e".repeat(64),
+      };
+      const configAction = { id: "action", action_type: "workspace.context.set", payload_sha256: "payload", config_change: change, owner_only: true };
+      const approve = () => screen.findByRole("button", { name: "Approve with passkey" });
+      // An approve that left this tab is remembered per action id for the session; every test starts clean.
+      beforeEach(() => {
+        sessionStorage.clear();
+        member.role = "owner";
+        member.workspace = { id: "ws-1" };
+        challengeDecisionAction.mockReset().mockResolvedValue({ challenge_id: "ch" });
+        signPasskeyChallenge.mockReset().mockResolvedValue({ id: "cred" });
+        approveDecisionAction.mockReset().mockResolvedValue({ id: "action", state: "executed" });
+      });
+
+      afterEach(() => sessionStorage.clear());
+
+      it("shows the server preview in the viewer and enables Approve for the owner", async () => {
+        show(configAction);
+        const viewer = await screen.findByTestId("config-change-viewer");
+        expect(viewer).toHaveTextContent("Workspace context");
+        await userEvent.setup().click(screen.getByTestId("config-change-tab-changes"));
+        expect(screen.getByRole("region", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+      });
+
+      it("approves with the digest of the preview that was shown", async () => {
+        show(configAction);
+        await userEvent.setup().click(await approve());
+        await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledOnce());
+        expect(approveDecisionAction).toHaveBeenCalledWith("action", { payload_sha256: "payload", assertion: { id: "cred" }, preview_sha256: change.sha256 });
+      });
+
+      it.each([
+        ["a member", "member"],
+        ["an admin", "admin"],
+        ["a person whose role is not known yet", null],
+      ])("hides Approve for %s and keeps Reject", async (_name, role) => {
+        member.role = role;
+        show(configAction);
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.getByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("hides Approve when there is no current workspace to read the role from", async () => {
+        member.workspace = null;
+        show(configAction);
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("treats a config-change action as owner-only even when the server flag is missing", async () => {
+        member.role = "member";
+        show({ ...configAction, owner_only: undefined });
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("says details are unavailable and keeps Approve disabled for the owner, with Reject, when the change is %s", async (_name, bad) => {
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("shows a non-owner no Approve and keeps Reject when the change is %s", async (_name, bad) => {
+        member.role = "member";
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("shows no Approve and keeps Reject when there is no current workspace and the change is missing", async () => {
+        member.workspace = null;
+        show({ ...configAction, config_change: undefined });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      });
+
+      it("shows the viewer for a settings change with its keys", async () => {
+        show({ ...configAction, action_type: "workspace.settings.patch", config_change: { ...change, field: "workspace.settings", keys: ["compact_prompt"] } });
+        expect(await screen.findByTestId("config-change-keys")).toHaveTextContent("compact_prompt");
+      });
+
+      it("keeps the run-budget preview and Approve for a person who is not the owner", async () => {
+        member.role = "member";
+        show(action);
+        expect(await screen.findByTestId("decision-request-action-preview")).toBeInTheDocument();
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+      });
     });
 
     describe("agent note and outcome in the DM", () => {

@@ -4233,7 +4233,7 @@ export class ApiClient {
 
   approveDecisionAction(
     actionId: string,
-    input: { payload_sha256: string; preview_sha256?: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }

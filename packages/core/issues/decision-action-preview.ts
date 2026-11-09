@@ -1,4 +1,4 @@
-import type { DecisionActionDiff, DecisionActionPreview, DecisionRequestAction } from "../types/decision";
+import type { DecisionActionPreview, DecisionConfigChange, DecisionRequestAction } from "../types/decision";
 
 // The action types the server renders a preview for. A type outside this list
 // is newer than this client: it cannot be vouched for, so it is not approvable here.
@@ -8,9 +8,6 @@ const PREVIEWED_ACTION_TYPES = [
   "agent.env.patch",
   "agent.copy",
 ] as const;
-
-// Config-change actions whose card shows the stored text diff instead of preview fields.
-const DIFF_ACTION_TYPES = ["workflow.step.instructions.set"] as const;
 
 export const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -27,18 +24,28 @@ export function approvablePreview(action: Pick<DecisionRequestAction, "action_ty
   return wellFormed ? preview : undefined;
 }
 
-export function isDiffActionType(type: string): boolean {
-  return (DIFF_ACTION_TYPES as readonly string[]).includes(type);
+/** Scope A: the only fields this client shows and approves. Anything else is newer than this client or denied. */
+export const CONFIG_CHANGE_FIELDS = [
+  "agent.instructions", "squad.instructions", "workspace.context",
+  "workflow.steps", "workflow.instructions", "workspace.settings",
+] as const;
+
+const CONFIG_CHANGE_ACTION_TYPES = [
+  "agent.instructions.set", "squad.instructions.set", "workspace.context.set",
+  "workflow.steps.set", "workflow.step.instructions.set", "workspace.settings.patch",
+] as const;
+
+export function isConfigChangeActionType(type: string): boolean {
+  return (CONFIG_CHANGE_ACTION_TYPES as readonly string[]).includes(type);
 }
 
-/** The diff to show and approve against, or undefined to fail closed ("details unavailable"). */
-export function approvableDiff(action: Pick<DecisionRequestAction, "action_type" | "diff">): DecisionActionDiff | undefined {
-  const { diff } = action;
-  if (!diff || !isDiffActionType(action.action_type) || diff.kind !== "text" || !SHA256_HEX.test(diff.sha256)) return undefined;
-  const wellFormed = Array.isArray(diff.hunks) && diff.hunks.every((h) =>
-    Number.isInteger(h.old_start) && Number.isInteger(h.new_start) && Array.isArray(h.lines)
-    && h.lines.every((line) => typeof line === "string" && /^[ +-]/.test(line)));
-  // The diff does not say which step it edits: without a named workflow and status key there is nothing to approve.
-  const named = !!diff.target?.workflow_name && !!diff.target.status_key;
-  return wellFormed && named ? diff : undefined;
+/** The server preview to show and approve against, or undefined to fail closed ("details unavailable"). */
+export function approvableConfigChange(action: Pick<DecisionRequestAction, "action_type" | "config_change">): DecisionConfigChange | undefined {
+  const change = action.config_change;
+  if (!change || !isConfigChangeActionType(action.action_type) || !SHA256_HEX.test(change.sha256)) return undefined;
+  if (!(CONFIG_CHANGE_FIELDS as readonly string[]).includes(change.field)) return undefined;
+  if ((change.field === "workspace.settings") !== (change.keys.length > 0)) return undefined;
+  if (!["json", "text", "lines"].includes(change.diff_kind)) return undefined;
+  const wellFormed = change.diff.every((hunk) => hunk.lines.every((line) => line.length > 0 && " +-".includes(line[0]!)));
+  return wellFormed ? change : undefined;
 }
