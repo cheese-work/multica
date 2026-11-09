@@ -172,6 +172,9 @@ jobs:
       full: ${{ steps.decide.outputs.full }}
       merge_group_green: ${{ steps.decide.outputs.merge_group_green }}
       push_full: ${{ steps.decide.outputs.push_full }}
+      push_backend: ${{ steps.decide.outputs.push_backend }}
+      push_frontend: ${{ steps.decide.outputs.push_frontend }}
+      push_sqlc: ${{ steps.decide.outputs.push_sqlc }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -209,7 +212,7 @@ jobs:
 
   sqlc-check:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_sqlc == 'true' }}
     runs-on: ${{ vars.RUNNER_SQLC_CHECK || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
@@ -242,7 +245,7 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
     runs-on: ${{ vars.RUNNER_FRONTEND_BUILD || 'ubuntu-24.04' }}
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
@@ -306,7 +309,7 @@ jobs:
 
   frontend-test:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
     runs-on: ${{ vars.RUNNER_FRONTEND_TEST || 'ubuntu-24.04' }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
@@ -452,7 +455,7 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -508,7 +511,7 @@ jobs:
   backend-test-shards:
     name: backend-test-shards (${{ matrix.partition }})
     needs: [changes, migration-prefix-check]
-    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
     strategy:
       # A red shard must not cancel the others: the slowest evidence is the
       # most useful, and the aggregate fails on any non-success anyway.
@@ -749,7 +752,7 @@ jobs:
   # cancelled or missing fails it.
   backend-tests:
     needs: [changes, migration-prefix-check, backend-test-shards]
-    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
     runs-on: ${{ vars.RUNNER_BACKEND_TESTS_GATE || 'ubuntu-24.04' }}
     steps:
       - name: Require shard results
@@ -848,7 +851,7 @@ jobs:
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
     runs-on: ${{ vars.RUNNER_GO_VULNERABILITY_SCAN || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
@@ -876,7 +879,7 @@ jobs:
   # merge base to diff against, and its branch was already checked.
   go-lint:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
     runs-on: ${{ vars.RUNNER_GO_LINT || 'ubuntu-24.04' }}
@@ -941,7 +944,7 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
