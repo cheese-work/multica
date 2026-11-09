@@ -224,7 +224,7 @@ curl -X DELETE "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged?r
 
 - 在工作区现有的唤醒设置转换完成之前，写入保持关闭（`403`，代码 `wakeup_definition_writes_closed`），应用也会隐藏编辑入口。读取和预览不受影响。
 - 智能体只能提议工作区或项目规则：在运行中使用 `multica wakeup-definition create --config-file rule.json`（项目规则加 `--project <project>`），或用运行令牌调用 `POST /api/wakeup-definitions` 与 `POST /api/projects/{id}/wakeup-definitions`。无论请求如何填写，服务器都以 `enabled: false` 保存该规则；在工作区所有者或管理员启用之前，它在其下任何范围都不会触发，成员的议题覆盖也不能让它生效。智能体不能修改、删除或预览定义，也不能写入议题范围（`403`）。其他机器凭证完全不能写入（`403`，不保存任何内容）。
-- 在 CLI 中，`multica wakeup-definition get pr_merged` 可读取工作区规则的最终生效值。项目规则加 `--project <project>`，issue 加 `--issue <issue>`。它输出与 API 相同的 `effective` JSON，`--output table` 输出一行。写入和重置仍在 API 和应用中进行（智能体也可用 `create` 提议规则）。`multica issue wakeup list` 和 `get` 显示规则正在运行的实例（含暂停状态）。
+- 在 CLI 中，`multica wakeup-definition get pr_merged` 可读取工作区规则的最终生效值。项目规则加 `--project <project>`，issue 加 `--issue <issue>`。它输出与 API 相同的 `effective` JSON，`--output table` 输出一行。工作区和项目规则也可通过 CLI 的 `list`、`update`、`delete`、`preview` 处理（见 [CLI 页面](/cli)）。issue 级写入仍在 API 和应用中进行（智能体也可用 `create` 提议规则）。`multica issue wakeup list` 和 `get` 显示规则正在运行的实例（含暂停状态）。
 - 规则的目标必须是编写者有权调用的智能体或小队。看不到目标智能体的查看者，看到的规则不含目标和指令。
 - 新建的自定义规则默认限制为每小时 12 次唤醒。编辑器的**预览**会在保存前显示已有多少个未关闭工单符合条件。
 

@@ -229,6 +229,19 @@ A rule a person can trigger is an event rule on a comment, issue, reaction or at
 
 In `block` mode the refusal is a 422 whose message gives the fix command. In `warn` mode the rule is created and an event is recorded.
 
+### Wakeup rules
+
+Workspace and project wakeup rules (see [Issue wakeups](/issue-wakeups)) have their own command, with `create` and `get` beside these:
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` is the revision you last read with `list` or `get`; `update` with `--revision 0` creates an override. `preview` saves nothing: it prints the resolved rule, and for a condition rule `already_satisfied` counts the issues that would match at once. Only an owner or admin can edit, delete or preview; an agent gets `403`, and a rule it creates stays disabled until a human enables it.
+
 ### Following progress in a DM
 
 A DM follows the issues its agent creates for you. Members manage follows only in a DM they created, with `--chat`. An agent runs `multica issue follow <issue>` without `--chat`: the DM comes from its own task, and a task with no DM is refused. Child issues inherit their parent's active follow.

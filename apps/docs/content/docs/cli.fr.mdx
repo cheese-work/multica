@@ -204,6 +204,19 @@ Une règle qu'une personne peut déclencher est une règle d'événement sur un 
 
 En mode `block`, le refus est un 422 dont le message donne la commande de correction. En mode `warn`, la règle est créée et un événement est enregistré.
 
+### Règles de réveil
+
+Les règles de réveil d'espace de travail et de projet (voir [Réveils de ticket](/issue-wakeups)) ont leur propre commande, avec `create` et `get` à côté de celles-ci :
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` est la révision lue en dernier avec `list` ou `get` ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue et, pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement. Seul un propriétaire ou un administrateur peut modifier, supprimer ou prévisualiser ; un agent reçoit `403`, et une règle qu'il crée reste désactivée jusqu'à ce qu'un humain l'active.
+
 ### Suivre la progression dans un DM
 
 Un DM suit les tickets que son agent crée pour vous. Les membres gèrent les suivis uniquement dans un DM qu'ils ont créé, avec `--chat`. Un agent exécute `multica issue follow <issue>` sans `--chat` : le DM vient de sa propre tâche, et une tâche sans DM est refusée. Les sous-tickets héritent du suivi actif de leur parent.
