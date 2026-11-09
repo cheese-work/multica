@@ -176,6 +176,25 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 // caller asked for no run: the step's handler is not the caller.
 const handoffRunReasonTargetDiffers = "handoff_target_differs"
 
+// handoffRunReasonStageQueueFull records why a handoff started no run: the
+// handler's WIP limit for the step's stage is reached, so the stage queue holds
+// the run until the scheduler releases it (CHE-3611).
+const handoffRunReasonStageQueueFull = "stage_queue_full"
+
+// deferHandoffRun is the run flag and reason a handoff records once the stage
+// queue is consulted: a run the queue will refuse is not started. It reads the
+// queue and writes nothing; the enqueue that follows stays the authority.
+func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun bool, runReason string) (bool, string) {
+	if !willRun {
+		return false, runReason
+	}
+	snap, err := service.LoadStageQueueSnapshot(ctx, h.Queries, issue)
+	if err == nil && snap.State == "queued" {
+		return false, handoffRunReasonStageQueueFull
+	}
+	return true, runReason
+}
+
 // suppressRunForWrite is the write's suppress_run after the handoff rule:
 // --no-start says the caller's own work is already underway, which holds only
 // when the caller is the agent the handoff goes to. A handoff to anyone else
@@ -204,7 +223,7 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 	if runStarted && note != "" {
 		out["note"] = note
 	}
-	if runStarted && runReason != "" {
+	if runReason != "" && (runStarted || runReason == handoffRunReasonStageQueueFull) {
 		out["run_reason"] = runReason
 	}
 	return out
