@@ -32,11 +32,11 @@ FAKE_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"  # split so this file does not trip the g
 VULN_DIFF = f'+++ b/app.py\n@@ -1 +1,2 @@\n+aws = "{FAKE_KEY}"\n'
 
 
-def verdict(result="PASS", reviewer="x99-codex-sol (gpt-6.1-sol)", sha=HEAD, findings="none", signed=True,
+def verdict(result="PASS", reviewer="x99-claude-opus (claude-opus-5-5)", sha=HEAD, findings="none", signed=True,
             repo="cheese-work/multica-dotfiles", pr=405, base="main"):
     lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {reviewer}"]
     if signed:
-        lines.append("Signed: x99-codex-sol, 2026-10-30 23:50 ICT")
+        lines.append("Signed: x99-claude-opus, 2026-10-30 23:50 ICT")
     lines += [f"Repo: {repo}", f"PR: {pr}", f"Base: {base}", f"SHA: {sha}", f"Findings: {findings}"]
     return "\n".join(lines)
 
@@ -49,7 +49,7 @@ class GateDecisionTest(unittest.TestCase):
     def run_gate(self, comments, diff=CLEAN_DIFF, pr=PR):
         return sg.evaluate(pr, comments, TRUSTED, diff, human_ids=HUMANS)
 
-    def test_clean_pr_with_cross_lab_pass_on_head_succeeds(self):
+    def test_clean_pr_with_opus_pass_on_head_succeeds(self):
         state, _ = self.run_gate([comment(verdict())])
         self.assertEqual(state, "success")
 
@@ -76,14 +76,16 @@ class GateDecisionTest(unittest.TestCase):
         state, _ = self.run_gate([comment(verdict("FAIL", findings="looks bad"))])
         self.assertEqual(state, "pending")
 
-    def test_same_lab_reviewer_is_rejected(self):
-        state, why = self.run_gate([comment(verdict(reviewer="x99-claude-opus (claude-opus-5-5)"))])
+    def test_opus_never_signs_its_own_pr(self):
+        # CHE-4596: the lab-diversity rule is replaced by named signer roles
+        pr = {**PR, "head_ref": "agent/x99-claude-opus/che-2671-1c5d373a16a5"}
+        state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
-        self.assertIn("lab", why)
+        self.assertIn("own PR", why)
 
-    def test_author_cannot_review_itself(self):
+    def test_sonnet_is_not_a_signer(self):
         state, _ = self.run_gate([comment(verdict(reviewer="x99-claude-sonnet (claude-sonnet-5-5)"))])
-        self.assertEqual(state, "failure")
+        self.assertEqual(state, "pending")
 
     def test_untrusted_commenter_is_ignored(self):
         self.assertEqual(self.run_gate([comment(verdict(), author=999)])[0], "pending")
@@ -95,7 +97,7 @@ class GateDecisionTest(unittest.TestCase):
         self.assertEqual(self.run_gate([comment(verdict(findings="app.py:1 meh"))])[0], "pending")
 
     def test_any_reviewer_fail_on_head_beats_another_pass(self):
-        fail = verdict("FAIL", reviewer="x99-codex-luna (gpt-6-luna)", findings="\n- a.py:3 sqli via id -> dump table")
+        fail = verdict("FAIL", reviewer="x99-codex-sol (gpt-6.1-sol)", findings="\n- a.py:3 sqli via id -> dump table")
         state, _ = self.run_gate([comment(verdict(), cid=1), comment(fail, cid=2)])
         self.assertEqual(state, "failure")
 
@@ -107,14 +109,14 @@ class GateDecisionTest(unittest.TestCase):
         ])
         self.assertEqual(state, "success")
 
-    def test_human_author_gets_any_agent_reviewer(self):
+    def test_human_author_gets_the_opus_reviewer(self):
         pr = {**PR, "head_ref": "feature/x", "author_id": HUMAN}
         self.assertEqual(self.run_gate([comment(verdict())], pr=pr)[0], "success")
 
     def test_unregistered_pr_author_cannot_pick_its_own_reviewer(self):
         # finding 2: a non-agent branch used to mean "external author", so the author could sign their own PASS
         pr = {**PR, "head_ref": "feature/x", "author_id": BOT}
-        state, why = self.run_gate([comment(verdict(reviewer="x99-claude-opus (claude-opus-5-5)"))], pr=pr)
+        state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
         self.assertIn("author", why)
         pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699333}

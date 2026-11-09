@@ -157,12 +157,13 @@ test("deploy admission accepts skipped push tests only after green merge-group C
   const contexts = { mobile: "success", "cd-qualification": "success" };
   for (const gate of ["backend", "frontend"]) {
     const needs = productionNeeds(gate, outputs);
-    for (const job of Object.keys(productionMapping(gate))) {
-      needs[job].result = "skipped";
+    for (const [job, scope] of Object.entries(productionMapping(gate))) {
+      if (scope !== "always") needs[job].result = "skipped";
     }
     checkGate(needs, productionMapping(gate));
     contexts[gate] = "success";
-    assert.ok(Object.values(productionNeeds(gate, outputs)).slice(1).every((job) => job.result === "skipped"));
+    const mapping = productionMapping(gate);
+    assert.ok(Object.entries(productionNeeds(gate, outputs)).slice(1).every(([job, { result }]) => mapping[job] === "always" || result === "skipped"));
   }
   const checks = join(directory, "checks.json");
   writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts }));
