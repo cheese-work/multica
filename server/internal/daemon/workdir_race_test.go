@@ -758,6 +758,7 @@ const (
 
 func TestRunTask_PrepareTimeoutStopsLeaseDuringBlockedStartTask(t *testing.T) {
 	t.Parallel()
+	t.Skip("CHE-4873 quarantine (CHE-4909): wall-clock bound (budget+1s) fails on loaded CI shards, 1.3s observed; passes alone 5/5")
 
 	for budget := minPrepareBudgetForBlockedStart; ; budget *= 2 {
 		if prepareTimeoutStopsLeaseDuringBlockedStart(t, budget) {
