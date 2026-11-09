@@ -2,15 +2,17 @@
 # cannot run does, so a broken scan is never read as clean. Read-only token, GitHub-hosted runners, no secrets, no image build.
 # This repo is public, so artifacts and logs are world-readable: every report is sealed (scripts/security-weekly/seal.sh) to a
 # key only X99 holds, and nothing about findings is printed. The Monday brief unseals, summarizes and files on X99
-# (scripts/security-weekly/weekly.sh). Schedule is the only trigger: GitHub runs it on the default branch only. pull_request and
-# workflow_dispatch (which takes any branch via --ref) would run a branch's own recipient.asc, so its author could read the sealed
-# reports. A merged PR could also swap recipient.asc: seal.sh pins the key fingerprint below, and CODEOWNERS routes any change to
-# the key, seal.sh or this file to the owner. security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and images.
+# (scripts/security-weekly/weekly.sh). Triggers: schedule, plus workflow_dispatch so a missed run can be started by hand. Every job
+# runs only when github.ref is main, so a dispatch from another branch (--ref) skips them all. The guard lives in the dispatched
+# ref's own copy of this file: it stops a mistaken dispatch, not an author who edits the file. The real control is CODEOWNERS on this
+# file, seal.sh and recipient.asc: seal.sh pins the key fingerprint below, and a change to any of them goes to the owner.
+# security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and images.
 name: security-weekly
 
 on:
   schedule:
-    - cron: "0 16 * * 0" # Sunday 23:00 ICT, so results land in the Monday brief
+    - cron: "23 16 * * 0" # Sunday 23:23 ICT (off the busy top of the hour), so results land in the Monday brief
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,6 +33,7 @@ env:
 
 jobs:
   semgrep:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -55,6 +58,7 @@ jobs:
           retention-days: 14
 
   govulncheck:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -90,6 +94,7 @@ jobs:
           retention-days: 14
 
   pnpm-audit:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -126,6 +131,7 @@ jobs:
           retention-days: 14
 
   gitleaks:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -153,6 +159,7 @@ jobs:
           retention-days: 14
 
   codeql:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -162,9 +169,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # build-mode none for both: a build step would run the root Makefile (unowned by CODEOWNERS) before the SARIF is sealed.
+          # Go: CodeQL rejects build-mode none, and the automatic build runs the root Makefile (unowned by CODEOWNERS) before the SARIF is
+          # sealed. So manual, with the one owned `go build` step below. JavaScript/TypeScript supports none.
           - language: go
-            build-mode: none
+            build-mode: manual
           - language: javascript-typescript
             build-mode: none
     steps:
@@ -175,6 +183,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+      - name: Build Go for CodeQL (explicit, no Makefile)
+        if: matrix.language == 'go'
+        working-directory: server
+        run: go build ./...
       # upload: never keeps the token read-only and avoids a clash with a repo-level default setup.
       - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
@@ -193,6 +205,7 @@ jobs:
           retention-days: 14
 
   image-scan:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

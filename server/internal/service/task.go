@@ -1905,7 +1905,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -6465,7 +6465,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		notice := redact.Text(errMsg)
+		if isGatewayClassFailureReason(failureReason) {
+			// CHE-4575: raw provider text may carry a mention link; a live
+			// agent mention would enqueue a run for a failure notice.
+			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
+		}
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
@@ -6920,6 +6926,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	// CHE-4581: replays of this hand-off queue behind the first writer, whose
+	// committed successor CreateRetryTask then sees.
+	if _, lerr := qtx.LockAgentTaskForRetry(ctx, parent.ID); lerr != nil {
+		return nil, fmt.Errorf("task auto-retry: lock parent: %w", lerr)
+	}
 	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
 		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
 	} else if revoked {
@@ -6934,7 +6945,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -8478,11 +8489,34 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 	return delegatedFailureRecoveryCovered, fmt.Errorf("delegate failure recovery could not acquire coordinator task slot")
 }
 
+// isGatewayClassFailureReason reports the provider/gateway failures (transport,
+// capacity, quota, config, unknown) whose terminal failure comment is the whole
+// notice: waking an LLM coordinator cannot fix them (CHE-4575).
+func isGatewayClassFailureReason(reason string) bool {
+	switch taskfailure.Reason(reason) {
+	case taskfailure.ReasonAgentProviderNetwork,
+		taskfailure.ReasonAgentProviderCapacityOrRateLimit,
+		taskfailure.ReasonAgentProviderServerError,
+		taskfailure.ReasonAgentProviderQuotaLimit,
+		taskfailure.ReasonAgentProviderAuthOrAccess,
+		taskfailure.ReasonAgentMissingConfig,
+		taskfailure.ReasonAgentModelNotFoundOrUnavailable,
+		taskfailure.ReasonAgentUnknown:
+		return true
+	}
+	return false
+}
+
 // recoverDelegatedTaskFailure is the shared post-terminal hook for FailTask and
 // HandleFailedTasks. handled reports whether the failure was an eligible
 // delegated terminal; the production terminal paths deliberately retain their
 // legacy raw-error notice alongside the richer coordinator recovery signal.
 func (s *TaskService) recoverDelegatedTaskFailure(ctx context.Context, failed db.AgentTaskQueue) (handled bool, err error) {
+	// CHE-4575: a gateway-class terminal failure keeps its timeline failure
+	// comment but never wakes the coordinator: no recovery comment, no task.
+	if isGatewayClassFailureReason(failed.FailureReason.String) {
+		return false, nil
+	}
 	target, _, err := s.ensureDelegatedFailureRecoveryComment(ctx, failed.ID)
 	if err != nil || target == nil {
 		return false, err

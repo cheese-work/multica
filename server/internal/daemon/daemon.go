@@ -2152,6 +2152,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"ws_claim_poll_interval", d.cfg.WSClaimPollInterval,
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
+		"codex_agent_timeout", d.cfg.CodexAgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
 		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
 		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
@@ -8996,7 +8997,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    taskRunTimeout(d.cfg.AgentTimeout, task),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -9321,7 +9322,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// goes through the FailTask path that forwards session info.
 		comment := result.Error
 		if comment == "" {
-			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.AgentTimeout)
+			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.agentTimeoutFor(provider))
 		}
 		failureReason := "timeout"
 		if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {
