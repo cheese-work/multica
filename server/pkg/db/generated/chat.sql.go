@@ -3101,7 +3101,7 @@ func (q *Queries) ListChannelOutboundMessageIDsForContext(ctx context.Context, a
 }
 
 const listChatCarryOverMessages = `-- name: ListChatCarryOverMessages :many
-SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids FROM chat_message m
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
 JOIN chat_session cs ON cs.id = m.chat_session_id
 WHERE m.chat_session_id = $1
   AND m.message_kind = 'message'
@@ -3155,6 +3155,8 @@ func (q *Queries) ListChatCarryOverMessages(ctx context.Context, arg ListChatCar
 			&i.DecisionAnswerID,
 			&i.LineageMessageIds,
 			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -3827,7 +3829,7 @@ WITH prev_divider AS (
     ORDER BY created_at DESC, id DESC
     LIMIT 1
 )
-SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids FROM chat_message m
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
 JOIN prev_segment ps ON ps.id = m.id
 LEFT JOIN last_answer la ON true
 WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
@@ -3880,6 +3882,8 @@ func (q *Queries) ListChatSegmentTail(ctx context.Context, arg ListChatSegmentTa
 			&i.DecisionAnswerID,
 			&i.LineageMessageIds,
 			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
 		); err != nil {
 			return nil, err
 		}
