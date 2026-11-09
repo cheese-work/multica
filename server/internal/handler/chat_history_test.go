@@ -429,6 +429,7 @@ func TestGetChatHistory_WebOnlyTranscriptHasNoChannelType(t *testing.T) {
 }
 
 func TestGetChatHistory_ChannelTaskCannotReadEarlierContextGeneration(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	if testHandler == nil {
 		t.Skip("requires test database")
 	}

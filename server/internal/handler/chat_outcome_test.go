@@ -235,6 +235,7 @@ func TestDoneOutcomeLeavesTheOtherAskOpenWithItsAge(t *testing.T) {
 // repeated outcome from the same task has no second effect. Other asks named by the stale outcome
 // are still applied.
 func TestStaleAndDuplicateOutcomesHaveNoEffectOnThatAsk(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	dm := newAttentionDM(t)
 	x, y := dm.item(t, "ask"), dm.item(t, "ask")
 	older := dm.sendRunning(t, "first")

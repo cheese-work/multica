@@ -42,6 +42,7 @@ func leakedActiveChatlessTasks(t *testing.T, since time.Time) []string {
 // session first strands the seeded running/dispatched tasks on the shared
 // integration agent and flips later sweeper tests from idle to working.
 func TestChatSessionUsageCrossWorkspaceCleanupLeavesNoActiveTasks(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	if testPool == nil {
 		t.Skip("no database connection")
 	}

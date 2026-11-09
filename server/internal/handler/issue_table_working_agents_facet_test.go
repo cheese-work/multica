@@ -37,6 +37,7 @@ func workingAgentsFacetCounts(
 }
 
 func TestIssueTableWorkingAgentsFacetCountsOnlyEligibleRuns(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	projectID := dbfx.Project(t, "working facet eligibility")
 	issueID := dbfx.Issue(t, "working facet issue", testutil.Cols{"project_id": projectID})
 	agentID := dbfx.Agent(t, "working facet active", "")

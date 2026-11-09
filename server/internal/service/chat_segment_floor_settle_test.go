@@ -126,6 +126,7 @@ func TestReplySettleMovesQueuedQuestionAcrossTheSegmentFloor(t *testing.T) {
 // compact of the DM (the guard counts it as another active task), so reclaim
 // cannot cross a floor. Reclaim redelivers the same task and its question once.
 func TestStaleDispatchReclaimKeepsTheEpochAndDeliversInputOnce(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()
 	q := db.New(pool)

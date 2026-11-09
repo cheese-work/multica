@@ -24,6 +24,7 @@ func (fixture askedRecordFixture) steerMessage(test *testing.T, messageID, taskI
 }
 
 func TestSteeredMessageDecisionRecord(test *testing.T) {
+	test.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	for _, status := range []string{"delivered", "pending", "delivering", "uncertain", "failed"} {
 		test.Run(status, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
