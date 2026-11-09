@@ -144,6 +144,32 @@ class SolAuthorTest(unittest.TestCase):
         self.assertEqual(run(SOL_PR, SENSITIVE, OPUS), "success")
 
 
+class IndependentFailTest(unittest.TestCase):
+    """A trusted reviewer from another lab blocks with a FAIL even when its role never signs a PASS (RGS-1 base behaviour)."""
+
+    def test_non_signer_fail_from_another_lab_blocks_an_opus_pass(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (LUNA, "FAIL")), "failure")
+        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL"), OPUS), "failure")
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "failure")
+
+    def test_non_signer_fail_blocks_with_no_pass_yet(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL")), "failure")
+
+    def test_non_signer_fail_blocks_a_sensitive_pr(self):
+        self.assertEqual(run(SONNET_PR, SENSITIVE, OPUS, SOL, (LUNA, "FAIL")), "failure")
+
+    def test_same_lab_non_signer_fail_does_not_block(self):
+        sonnet2 = "x99-claude-sonnet-200k (claude-sonnet-5-5)"
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (sonnet2, "FAIL")), "success")
+
+    def test_the_author_own_fail_does_not_block(self):
+        self.assertEqual(run(LUNA_PR, PLAIN, OPUS, (LUNA, "FAIL")), "success")
+
+    def test_non_signer_pass_still_never_counts(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, LUNA), "success")
+        self.assertEqual(run(SONNET_PR, PLAIN, LUNA), "pending")
+
+
 class Issue1098Test(unittest.TestCase):
     def test_sonnet_author_opus_pass_on_a_plain_path_succeeds(self):
         # cheese-work/multica#1098 (CHE-4229): was `failure` under RGS-1 lab diversity
