@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -5856,7 +5858,7 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	if err != nil {
 		return nil, err
 	}
-	if err := writeChatInterimMessages(ctx, qtx, task, replySessionID); err != nil {
+	if _, err := writeChatInterimMessages(ctx, qtx, task, replySessionID, body, true); err != nil {
 		return nil, err
 	}
 	params := db.CreateChatMessageParams{
@@ -5928,49 +5930,202 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	return &row, nil
 }
 
-// writeChatInterimMessages turns the text a direct-chat agent wrote BEFORE its
-// last tool step into ordinary assistant rows, ahead of the final reply
-// (CHE-4704). Only the final Output became a chat_message, so status lines and
-// multi-part replies written between tool calls stayed in task_message, where
-// the UI folds them into the step block. Text after the last tool step is the
-// final reply and is not repeated here. Channel tasks are skipped: their
-// outbound pushes every assistant row to Slack/Lark.
-func writeChatInterimMessages(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, sessionID pgtype.UUID) error {
+// chatInterimBlock is one message the agent wrote: the contiguous text rows of
+// a turn. The daemon seals a text row every 500 ms and on every type change, so
+// a single sentence can span several rows (CHE-4704); whitespace-only chunks
+// are part of the sentence and must survive the join. A block is sealed once a
+// non-text row follows it, which is the earliest moment it can no longer grow.
+type chatInterimBlock struct {
+	seq    int32
+	text   string
+	sealed bool
+}
+
+func chatInterimBlocks(steps []db.ListTaskTextStepsRow) []chatInterimBlock {
+	var blocks []chatInterimBlock
+	open := false
+	for _, m := range steps {
+		if m.Type != "text" {
+			if open {
+				blocks[len(blocks)-1].sealed = true
+			}
+			open = false
+			continue
+		}
+		if !open {
+			blocks = append(blocks, chatInterimBlock{seq: m.Seq})
+			open = true
+		}
+		blocks[len(blocks)-1].text += m.Content
+	}
+	return blocks
+}
+
+// chatInterimBody is the text a block shows in the DM: the same unescape and
+// quick-actions strip the final reply gets, trimmed of chunk-boundary spaces.
+func chatInterimBody(text string) string {
+	body, _ := splitChatQuickActions(util.UnescapeBackslashEscapes(text))
+	return strings.TrimSpace(body)
+}
+
+type chatInterimMessage struct {
+	seq  int32
+	body string
+}
+
+// selectChatInterimMessages picks the blocks that become their own DM rows.
+// While the turn runs (completing=false) that is every sealed block. At
+// completion the final reply is written separately, so it must not be repeated:
+// finalBody is matched as a suffix of the last block that ends with it, which
+// keeps the text before it — a provider that reports only its last message as
+// Output (Codex) leaves earlier text after the last tool step. With no match
+// only sealed blocks are written, and an empty finalBody (attachment-only or
+// no_response turn) writes every block.
+func selectChatInterimMessages(blocks []chatInterimBlock, finalBody string, completing bool) []chatInterimMessage {
+	finalBody = strings.TrimSpace(finalBody)
+	var out []chatInterimMessage
+	add := func(seq int32, text string) {
+		if body := chatInterimBody(text); body != "" {
+			out = append(out, chatInterimMessage{seq: seq, body: body})
+		}
+	}
+	final := -1
+	if completing && finalBody != "" {
+		for i := len(blocks) - 1; i >= 0; i-- {
+			if strings.HasSuffix(chatInterimBody(blocks[i].text), finalBody) {
+				final = i
+				break
+			}
+		}
+	}
+	for i, b := range blocks {
+		switch {
+		case i == final:
+			add(b.seq, strings.TrimSuffix(chatInterimBody(b.text), finalBody))
+		case completing && (finalBody == "" || final >= 0 && i < final || b.sealed):
+			add(b.seq, b.text)
+		case !completing && b.sealed:
+			add(b.seq, b.text)
+		}
+	}
+	return out
+}
+
+// chatInterimMessageID is the deterministic id of the block that starts at seq.
+// The live writer and the completion writer both derive it, so whichever runs
+// second finds the row and skips it. The seq leads the id so rows written in
+// one transaction (same created_at) still sort in transcript order, ahead of
+// the final reply, whose time-ordered id starts with a far larger timestamp.
+func chatInterimMessageID(taskID pgtype.UUID, seq int32) pgtype.UUID {
+	h := sha256.Sum256([]byte("chat-interim:" + util.UUIDToString(taskID) + ":" + strconv.Itoa(int(seq))))
+	var id [16]byte
+	copy(id[:], h[:16])
+	binary.BigEndian.PutUint32(id[:4], uint32(seq))
+	id[6] = id[6]&0x0f | 0x80
+	id[8] = id[8]&0x3f | 0x80
+	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+// writeChatInterimMessages writes the agent's earlier messages of a direct-chat
+// turn as ordinary assistant rows (CHE-4704). Only the final Output became a
+// chat_message, so status lines and multi-part replies stayed in task_message,
+// where the UI folds them into the step block. The rows carry no task_id: with
+// one, web and mobile key them like the final reply and render the whole task
+// timeline under each. Rows that already exist are skipped and returned
+// nothing. Channel tasks are skipped: their outbound pushes every assistant row
+// to Slack/Lark.
+func writeChatInterimMessages(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, sessionID pgtype.UUID, finalBody string, completing bool) ([]db.ChatMessage, error) {
 	if !task.ChatInputTaskID.Valid {
-		return nil
+		return nil, nil
 	}
 	if channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, task.ChatInputTaskID); err != nil {
-		return fmt.Errorf("check interim chat channel provenance: %w", err)
+		return nil, fmt.Errorf("check interim chat channel provenance: %w", err)
 	} else if channelIngested {
-		return nil
+		return nil, nil
 	}
-	steps, err := qtx.ListTaskMessages(ctx, task.ID)
+	steps, err := qtx.ListTaskTextSteps(ctx, task.ID)
 	if err != nil {
-		return fmt.Errorf("list chat task messages: %w", err)
+		return nil, fmt.Errorf("list chat task steps: %w", err)
 	}
-	lastTool := -1
-	for i, m := range steps {
-		if m.Type == "tool_use" || m.Type == "tool_result" {
-			lastTool = i
-		}
-	}
-	for _, m := range steps[:lastTool+1] {
-		if m.Type != "text" {
+	var created []db.ChatMessage
+	for _, m := range selectChatInterimMessages(chatInterimBlocks(steps), finalBody, completing) {
+		id := chatInterimMessageID(task.ID, m.seq)
+		if _, err := qtx.GetChatMessage(ctx, id); err == nil {
 			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("check interim chat message: %w", err)
 		}
-		body, _ := splitChatQuickActions(util.UnescapeBackslashEscapes(m.Content.String))
-		if strings.TrimSpace(body) == "" {
-			continue
-		}
-		if _, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
-			ID:            dbid.NewV7(),
+		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			ID:            id,
 			ChatSessionID: sessionID,
 			Role:          "assistant",
-			Content:       redact.Prose(body),
-			TaskID:        task.ID,
-		}); err != nil {
-			return fmt.Errorf("create interim chat message: %w", err)
+			Content:       redact.Prose(m.body),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create interim chat message: %w", err)
 		}
+		created = append(created, row)
+	}
+	return created, nil
+}
+
+// PublishChatInterimMessages shows the agent's finished messages in the DM
+// while its turn still runs, instead of when the turn ends (CHE-4704). It
+// writes each sealed text block once, so a turn that later fails or is
+// cancelled keeps what the agent already said. Called after each step batch;
+// best-effort, because the completion path writes whatever this missed.
+func (s *TaskService) PublishChatInterimMessages(ctx context.Context, task db.AgentTaskQueue) error {
+	if !task.ChatSessionID.Valid || !task.ChatInputTaskID.Valid {
+		return nil
+	}
+	var created []db.ChatMessage
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+			return err
+		}
+		// Re-read under the session lock: once the task has settled, the
+		// completion or failure path owns the transcript.
+		current, err := qtx.GetAgentTask(ctx, task.ID)
+		if err != nil {
+			return fmt.Errorf("get task for interim chat messages: %w", err)
+		}
+		if current.Status != "running" {
+			return nil
+		}
+		sessionID, err := chatReplySessionID(ctx, qtx, task.ChatSessionID)
+		if err != nil {
+			return err
+		}
+		created, err = writeChatInterimMessages(ctx, qtx, task, sessionID, "", false)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(created) == 0 {
+		return nil
+	}
+	scope := s.ResolveTaskScope(ctx, task)
+	if scope.WorkspaceID == "" {
+		return nil
+	}
+	for _, msg := range created {
+		s.Bus.Publish(events.Event{
+			Type:               protocol.EventChatMessage,
+			WorkspaceID:        scope.WorkspaceID,
+			ActorType:          "agent",
+			ActorID:            util.UUIDToString(task.AgentID),
+			ChatSessionID:      util.UUIDToString(msg.ChatSessionID),
+			ChatSessionOwnerID: scope.ChatSessionOwnerID,
+			Payload: protocol.ChatMessagePayload{
+				ChatSessionID: util.UUIDToString(msg.ChatSessionID),
+				MessageID:     util.UUIDToString(msg.ID),
+				Role:          msg.Role,
+				Content:       msg.Content,
+				CreatedAt:     msg.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+				MessageKind:   msg.MessageKind,
+			},
+		})
 	}
 	return nil
 }
