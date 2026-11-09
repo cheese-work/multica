@@ -561,7 +561,7 @@ class WorkflowTest(unittest.TestCase):
 
     def test_a_created_edited_or_deleted_verdict_comment_evaluates_without_a_dispatch(self):
         # CHE-4385: `created` is restored so a new FAIL flips the status at once; edit/delete revoke a PASS.
-        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["created", "deleted", "edited"])
+        self.assertEqual(sorted(self.doc[True]["issue_comment"]["types"]), ["deleted", "edited"])
         cond = self.doc["jobs"]["security-gate"]["if"]
         self.assertIn("github.event_name != 'issue_comment'", cond)
         self.assertIn("Security-Gate-Verdict:", cond)

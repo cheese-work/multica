@@ -90,14 +90,15 @@ class NewFailVerdictRevokesAGreenCommit(unittest.TestCase):
 
     def test_sweep_skips_the_scan_when_no_open_pr_needs_one(self):
         jobs = load("security-gate-sweep.yml")["jobs"]
-        self.assertEqual(jobs["list"]["outputs"]["green"], "${{ steps.list.outputs.green }}")
+        self.assertEqual(jobs["list"]["outputs"]["sweep"], "${{ steps.list.outputs.sweep }}")
         self.assertEqual(jobs["list"]["outputs"]["queued"], "${{ steps.list.outputs.queued }}")
-        self.assertIn("needs.list.outputs.green != '[]'", jobs["sweep"]["if"])
+        self.assertIn("needs.list.outputs.sweep != '[]'", jobs["sweep"]["if"])
         self.assertIn("needs.list.outputs.queued != '[]'", jobs["revoke"]["if"])
 
     def test_a_failed_pr_listing_fails_the_job_instead_of_listing_nothing(self):
         # Terra P1: process substitution hid the exit status of `gh api`, so a failed list looked like "no open PR".
-        step = load("security-gate-sweep.yml")["jobs"]["list"]["steps"][0]["run"]
+        steps = load("security-gate-sweep.yml")["jobs"]["list"]["steps"]
+        step = next(st["run"] for st in steps if st.get("id") == "list")
         self.assertIn("set -euo pipefail", step)
         self.assertNotIn("< <(", step)
         self.assertRegex(step, r'pulls="\$\(gh api --paginate')
@@ -155,7 +156,7 @@ esac
             e = {"PATH": f"{tmp}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "FAKE_ARGV": str(argv),
                  "GITHUB_REPOSITORY": "o/r", "DEFAULT_BRANCH": "main", "GITHUB_SERVER_URL": "https://x",
                  "GITHUB_RUN_ID": "1", "PR_NUMBER": "7", "FAKE_PULLS": "", "FAKE_REFS": "", "FAKE_STATE": "",
-                 "FAKE_FAIL": "", **env}
+                 "FAKE_FAIL": "", "FRESH": "[]", **env}
             proc = subprocess.run(["bash", "-e", "-c", run], env=e, cwd=tmp, capture_output=True, text=True)
             return proc, out.read_text(), argv.read_text()
 
@@ -167,12 +168,12 @@ esac
             proc, out, _ = self.listing(FAKE_FAIL=failing, FAKE_PULLS="7 " + "a" * 40, FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x",
                                         FAKE_STATE="success")
             self.assertNotEqual(proc.returncode, 0, failing)
-            self.assertNotIn("green=", out, failing)
+            self.assertNotIn("sweep=", out, failing)
 
     def test_a_green_open_pr_is_listed_for_the_sweep(self):
         proc, out, _ = self.listing(FAKE_PULLS="7 " + "a" * 40, FAKE_STATE="success")
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("green=[7]", out)
+        self.assertIn("sweep=[7]", out)
         self.assertIn("queued=[]", out)
 
     def test_a_non_success_pr_is_listed_for_a_revoke_retry_only_while_a_queue_branch_exists(self):
@@ -180,9 +181,25 @@ esac
         proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure", FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("queued=[7]", out)
-        self.assertIn("green=[]", out)
+        self.assertIn("sweep=[]", out)
         proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure")
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("queued=[]", out)
+
+    def test_a_pending_pr_with_a_fresh_verdict_is_listed_for_the_sweep_once(self):
+        # CHE-4655: no `created` run, so the sweep must pick up a verdict on a PR that is not green yet.
+        pulls = "7 " + "a" * 40
+        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="pending", FRESH="[7]")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("sweep=[7]", out)
+        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="success", FRESH="[7]")
+        self.assertIn("sweep=[7]", out)
+
+    def test_a_fresh_verdict_pr_is_swept_not_queued_even_while_a_queue_branch_exists(self):
+        proc, out, _ = self.listing(FAKE_PULLS="7 " + "a" * 40, FAKE_STATE="failure", FRESH="[7]",
+                                    FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("sweep=[7]", out)
         self.assertIn("queued=[]", out)
 
     def test_the_revoke_job_calls_the_script_for_its_pr_with_revoke_only_and_no_scan(self):
@@ -194,14 +211,14 @@ esac
 
 
 class NoCommentOrCascadeRuns(unittest.TestCase):
-    def test_only_security_gate_starts_on_a_comment_and_it_includes_created(self):
-        # `created` is restored (Cheese, CHE-4385): a new FAIL verdict must flip the status without waiting for a sweep.
-        # The job-level `if` skips every comment that is not a trusted verdict, but that run still counts (about 284/day).
+    def test_only_security_gate_starts_on_a_comment_and_never_for_a_new_one(self):
+        # CHE-4655 (Cheese): `created` is dropped again; the 30 min sweep reads a new verdict. An edit or a delete still
+        # starts the gate: a revocation is rare and must not wait.
         for p in WF.glob("*.yml"):
             on = load(p.name)["on"]
             if "issue_comment" in triggers(load(p.name)):
                 self.assertEqual(p.name, "security-gate.yml")
-                self.assertEqual(sorted(on["issue_comment"]["types"]), ["created", "deleted", "edited"])
+                self.assertEqual(sorted(on["issue_comment"]["types"]), ["deleted", "edited"])
 
     def test_the_queue_workflow_starts_only_for_a_merge_queue_branch(self):
         # `workflow_run` runs only from main; the branch filter stops a non-queue security-gate run starting a skipped queue run.
