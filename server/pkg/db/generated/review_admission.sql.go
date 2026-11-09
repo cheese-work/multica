@@ -11,6 +11,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteReviewAdmissionDeferral = `-- name: DeleteReviewAdmissionDeferral :exec
+DELETE FROM review_admission_deferral
+WHERE issue_id = $1::uuid AND agent_id = $2::uuid
+`
+
+type DeleteReviewAdmissionDeferralParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) DeleteReviewAdmissionDeferral(ctx context.Context, arg DeleteReviewAdmissionDeferralParams) error {
+	_, err := q.db.Exec(ctx, deleteReviewAdmissionDeferral, arg.IssueID, arg.AgentID)
+	return err
+}
+
 const getIssueAdmissionPR = `-- name: GetIssueAdmissionPR :one
 
 SELECT pr.id, pr.workspace_id, pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number, pr.title, pr.state, pr.html_url, pr.branch, pr.author_login, pr.author_avatar_url, pr.merged_at, pr.closed_at, pr.pr_created_at, pr.pr_updated_at, pr.created_at, pr.updated_at, pr.head_sha, pr.mergeable_state, pr.additions, pr.deletions, pr.changed_files, pr.api_mergeable, pr.api_merge_state_status, pr.checks_rollup_state, pr.snapshot_head_sha, pr.snapshot_fetched_at, pr.snapshot_base_ref, pr.snapshot_recheck_at, pr.head_repo_same, pr.review_state, pr.review_head_sha, pr.review_id, pr.review_at
@@ -105,27 +120,86 @@ func (q *Queries) ListAdmissionCheckRuns(ctx context.Context, arg ListAdmissionC
 	return items, nil
 }
 
+const listReviewAdmissionDeferrals = `-- name: ListReviewAdmissionDeferrals :many
+SELECT issue_id, agent_id, trigger, head_sha, expires_at, actor_user_id, trigger_comment_id, taint_ids
+FROM review_admission_deferral
+WHERE $1::uuid[] IS NULL OR issue_id = ANY($1::uuid[])
+ORDER BY created_at
+`
+
+type ListReviewAdmissionDeferralsRow struct {
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	HeadSha          string             `json:"head_sha"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
+}
+
+// The records the release evaluates: all of them (fallback tick), or those of
+// the given issues (a GitHub event for their PR).
+func (q *Queries) ListReviewAdmissionDeferrals(ctx context.Context, issueIds []pgtype.UUID) ([]ListReviewAdmissionDeferralsRow, error) {
+	rows, err := q.db.Query(ctx, listReviewAdmissionDeferrals, issueIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListReviewAdmissionDeferralsRow{}
+	for rows.Next() {
+		var i ListReviewAdmissionDeferralsRow
+		if err := rows.Scan(
+			&i.IssueID,
+			&i.AgentID,
+			&i.Trigger,
+			&i.HeadSha,
+			&i.ExpiresAt,
+			&i.ActorUserID,
+			&i.TriggerCommentID,
+			&i.TaintIds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markReviewAdmissionDeferred = `-- name: MarkReviewAdmissionDeferred :exec
-INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, reasons, created_at, expires_at)
+INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, reasons, created_at, expires_at, actor_user_id, trigger_comment_id, taint_ids)
 VALUES ($1::uuid, $2::uuid, $3::text,
-        $4::text, $5::text[], now(), now() + interval '24 hours')
+        $4::text, $5::text[], now(), now() + interval '24 hours',
+        $6::uuid, $7::uuid, $8::text[])
 ON CONFLICT (issue_id, agent_id) DO UPDATE SET
   trigger = EXCLUDED.trigger, reasons = EXCLUDED.reasons,
   created_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
                     THEN review_admission_deferral.created_at ELSE EXCLUDED.created_at END,
   expires_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
                     THEN review_admission_deferral.expires_at ELSE EXCLUDED.expires_at END,
-  head_sha = EXCLUDED.head_sha
+  head_sha = EXCLUDED.head_sha,
+  actor_user_id = COALESCE(EXCLUDED.actor_user_id, review_admission_deferral.actor_user_id),
+  trigger_comment_id = COALESCE(EXCLUDED.trigger_comment_id, review_admission_deferral.trigger_comment_id),
+  taint_ids = (SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+                 FROM unnest(review_admission_deferral.taint_ids || EXCLUDED.taint_ids) AS t)
 `
 
 type MarkReviewAdmissionDeferredParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
-	Trigger string      `json:"trigger"`
-	HeadSha string      `json:"head_sha"`
-	Reasons []string    `json:"reasons"`
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	Trigger          string      `json:"trigger"`
+	HeadSha          string      `json:"head_sha"`
+	Reasons          []string    `json:"reasons"`
+	ActorUserID      pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+	TaintIds         []string    `json:"taint_ids"`
 }
 
+// A repeat keeps the latest non-null actor and comment and only adds taint, as
+// MarkStageWaiting does.
 // A repeat on the same head keeps the first deadline, so repeated triggers
 // cannot postpone recovery; a new head starts a new window.
 func (q *Queries) MarkReviewAdmissionDeferred(ctx context.Context, arg MarkReviewAdmissionDeferredParams) error {
@@ -135,6 +209,9 @@ func (q *Queries) MarkReviewAdmissionDeferred(ctx context.Context, arg MarkRevie
 		arg.Trigger,
 		arg.HeadSha,
 		arg.Reasons,
+		arg.ActorUserID,
+		arg.TriggerCommentID,
+		arg.TaintIds,
 	)
 	return err
 }

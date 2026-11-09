@@ -1,0 +1,117 @@
+package service
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// deferralExpiredNote is the reason a run carries when it starts because the
+// 24 h deferral ran out, not because the head became admissible.
+const deferralExpiredNote = "deferral expired"
+
+type admissionBypassKey struct{}
+
+// withAdmissionBypass makes guardReviewAdmission admit the run: the deferral
+// has expired, so the review starts on whatever the head is.
+func withAdmissionBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, admissionBypassKey{}, true)
+}
+
+func admissionBypassed(ctx context.Context) bool {
+	bypass, _ := ctx.Value(admissionBypassKey{}).(bool)
+	return bypass
+}
+
+// releaseAdmissionDeferrals starts the deferred reviewer runs whose PR head is
+// admissible now, and the ones whose 24 h ran out (CHE-4651). issueIDs limits
+// it to those issues (a GitHub event for their PR); nil takes every record (the
+// fallback tick).
+//
+// The enqueue judges the head again, so nothing here decides admissibility:
+// a head that is still not admissible is deferred again by the guard, which
+// replaces the record when the head changed. A record whose PR is no longer
+// open is dropped. A started run, or one already pending for the same issue,
+// agent and head (ErrDuplicatePendingTask), ends the record.
+//
+// A run starts under the actor, trigger comment and taint its deferral
+// recorded, so a released run is never cleaner or more privileged than the one
+// that was deferred.
+func releaseAdmissionDeferrals(ctx context.Context, q *db.Queries, issueIDs []pgtype.UUID,
+	enqueue func(ctx context.Context, issue db.Issue, agentID, actor, comment pgtype.UUID, note string) error) error {
+	records, err := q.ListReviewAdmissionDeferrals(ctx, issueIDs)
+	if err != nil {
+		return fmt.Errorf("admission release: list: %w", err)
+	}
+	var errs []error
+	for _, r := range records {
+		if err := releaseAdmissionDeferral(ctx, q, r, enqueue); err != nil {
+			errs = append(errs, fmt.Errorf("admission release %s: %w", util.UUIDToString(r.IssueID), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListReviewAdmissionDeferralsRow,
+	enqueue func(ctx context.Context, issue db.Issue, agentID, actor, comment pgtype.UUID, note string) error) error {
+	drop := func() error {
+		return q.DeleteReviewAdmissionDeferral(ctx, db.DeleteReviewAdmissionDeferralParams{IssueID: r.IssueID, AgentID: r.AgentID})
+	}
+	pr, err := q.GetIssueAdmissionPR(ctx, r.IssueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return drop()
+		}
+		return fmt.Errorf("load PR: %w", err)
+	}
+	// The dispatch halt (CHE-2220) holds the record, not drops it: a failed
+	// read holds too, because a run that cannot be shown allowed must not start.
+	halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName})
+	if err != nil {
+		return fmt.Errorf("read dispatch halt: %w", err)
+	}
+	if halted {
+		return nil
+	}
+	issue, err := q.GetIssue(ctx, r.IssueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return drop()
+		}
+		return fmt.Errorf("load issue: %w", err)
+	}
+	note := ""
+	if !r.ExpiresAt.Time.After(time.Now()) {
+		ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
+	}
+	err = enqueue(withStageTaint(ctx, r.TaintIds), issue, r.AgentID, r.ActorUserID, r.TriggerCommentID, note)
+	switch {
+	case err == nil || errors.Is(err, ErrDuplicatePendingTask):
+		slog.Info("admission release: run started", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha, "note", note)
+		return drop()
+	case errors.Is(err, ErrAdmissionDeferred):
+		return nil // still not admissible; the guard kept or replaced the record
+	}
+	return err
+}
+
+// ReleaseAdmissionDeferrals is the entry for the GitHub event (issueIDs of the
+// PR) and the scheduler's fallback tick (nil).
+func (s *TaskService) ReleaseAdmissionDeferrals(ctx context.Context, issueIDs []pgtype.UUID) error {
+	return releaseAdmissionDeferrals(ctx, s.Queries, issueIDs, func(ctx context.Context, issue db.Issue, agentID, actor, comment pgtype.UUID, note string) error {
+		var err error
+		if issue.AssigneeID == agentID {
+			_, err = s.enqueueIssueTask(ctx, issue, comment, false, note, actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+		} else {
+			_, err = s.enqueueMentionTask(ctx, issue, agentID, comment, false, pgtype.UUID{}, false, note, actor, pgtype.UUID{}, OriginDerived)
+		}
+		return err
+	})
+}

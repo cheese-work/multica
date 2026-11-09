@@ -73,16 +73,23 @@ func admissionReviewersFromEnv(getenv func(string) string) map[string]bool {
 // record that must be written down. errors.Is(err, ErrAdmissionDeferred) holds.
 type admissionDeferredError struct {
 	issueID, agentID pgtype.UUID
+	actor, comment   pgtype.UUID
 	trigger, head    string
 	reasons          []string
+	taint            []string
 }
 
 func (*admissionDeferredError) Error() string        { return ErrAdmissionDeferred.Error() }
 func (*admissionDeferredError) Is(target error) bool { return target == ErrAdmissionDeferred }
 
 func markAdmissionDeferred(ctx context.Context, q *db.Queries, d *admissionDeferredError) error {
+	taint := d.taint
+	if taint == nil {
+		taint = []string{}
+	}
 	if err := q.MarkReviewAdmissionDeferred(ctx, db.MarkReviewAdmissionDeferredParams{
 		IssueID: d.issueID, AgentID: d.agentID, Trigger: d.trigger, HeadSha: d.head, Reasons: d.reasons,
+		ActorUserID: d.actor, TriggerCommentID: d.comment, TaintIds: taint,
 	}); err != nil {
 		return fmt.Errorf("review admission: record deferral: %w", err)
 	}
@@ -144,7 +151,7 @@ func startsReview(target RunTarget) bool {
 // An unknown or ambiguous author skips only the exemption; the deferral then
 // records "author: unresolved".
 func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
-	if !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
+	if admissionBypassed(ctx) || !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
 		return nil
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, issueID)
@@ -177,8 +184,14 @@ func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	if !authorKnown {
 		reasons = append(reasons, "author: unresolved")
 	}
+	// Fail closed: a requester whose taint cannot be read is never shown clean.
+	taint, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return fmt.Errorf("review admission: read requester taint: %w", err)
+	}
 	deferral := &admissionDeferredError{
 		issueID: issueID, agentID: target.AgentID, trigger: target.Trigger, head: pr.HeadSha, reasons: reasons,
+		actor: target.ActorUserID, comment: target.TriggerCommentID, taint: append(taint, stageTaint(ctx)...),
 	}
 	if err := markAdmissionDeferred(ctx, q, deferral); err != nil {
 		return err
