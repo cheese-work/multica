@@ -312,6 +312,22 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
 
+### 設定変更の提案
+
+`multica config propose` は、ワークスペース設定の変更用アクションファイルを作ります。現在の値を読み、サーバーが再計算するのと同じ方式で `before_sha256` と `after_sha256` を計算し、`multica decision request --action-file` が受け取るファイルを書き出します。何も送信せず、シークレットも書きません。承認は引き続き人がパスキーで行います。
+
+対象フィールド: `agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>`、`workspace.settings --set key=value|key:=<json>`。テキストは `--file`（UTF-8、NUL バイトなし）で渡します。`workflow.steps` にはワークフロー GET が返す steps 配列を渡します。この出力を編集してください。サーバーが steps を別の形に正規化すると、リクエストは拒否されます（`after_digest_mismatch`）。`workflow.step.instructions` ではサーバーが after ダイジェストを計算するため、ファイルに `after_sha256` は入らず、表示されるダイジェストは比較用です。`--out <path>` でファイルを書き、`--dry-run` で何も書かずに 2 つのダイジェストとアクションを表示します。`--expires-in <秒>` で有効期限を指定します。
+
+それ以外のフィールドは、何も読む前に `denylisted` で拒否されます: `project.description`、パスキーと決定ゲート、メンバーとロール、オーナー移譲、認証・連携のシークレット、ワークスペース削除、アクションレジストリ、`delegated_governed_writes`。サーバーの許可テーブルにない設定キーも同様に拒否され、許可キーと拒否キーが混在するパッチは全体が拒否されます。サーバーはリクエスト時と承認時にもう一度確認します。
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
 ## コマンド概要
 
 | コマンド | 用途 |
