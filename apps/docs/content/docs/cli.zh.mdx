@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+智能体任务发出的评论若提及成员（`[@名称](mention://member/<id>)`），只有以下几种会被接受：决策请求、`--decision-intent`、`--decision-record` 或 `--decision-veto` 评论，以及带 `--notify-only` 的评论。无需回复的知会请使用 `--notify-only`。它不会开启等待，也不算决策请求，且不能与决策类参数同时使用。检查依据的是提及链接而非措辞，代码中的链接同样计入。工作区设置 `ask_guard_mode`（`off`、`warn`、`block`）决定被拒绝的评论只记录还是返回 422。聊天任务和没有任务的调用只记录。编辑时新增成员提及同样适用此规则。
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
 
 ### 时间线
@@ -189,6 +195,14 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 ```
 
 在终端里以成员身份创建时需要 `--agent-id`；智能体在自己的运行中创建时默认唤醒它自己。
+
+人可以触发的规则，是针对评论、任务、回应或附件变更的事件规则，且其操作者筛选不排除成员。当工作区设置 `ask_guard_mode` 为 `warn` 或 `block` 时，智能体不能自行注册这类规则，除非满足下列之一：
+
+- `--decision <request-id>` 把规则绑定到本任务的决定请求。请求必须处于已提问或已回答状态；若设置了 `--filter-actor-id`，请求须属于该成员。一个请求同一时间只绑定一条启用的唤醒。
+- `--purpose observe` 表示不等待人的规则。由成员引起的每次触发都会记录一条审计事件。
+- 不带 `--filter-actor-id` 的 `--filter-actor-type agent` 匹配任何智能体，不匹配任何成员。
+
+`block` 模式下返回 422，错误信息包含修复命令。`warn` 模式下规则照常创建，只记录一条事件。
 
 ### 在 DM 中关注进度
 
@@ -318,6 +332,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `update`、`version` | 更新 CLI 或查看版本 |
 
 `multica chat` 读取的是**智能体当前正在处理的外部聊天会话**，主要供聊天集成中的智能体使用，不能用来浏览任意工作区对话。
+
+### 影子报告
+
+任何工作区成员都可以读取 System 1 影子报告：
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` 和 `routing` 块覆盖全部时间。`route` 块覆盖 `[since, until)` 窗口：`--since` 和 `--until` 接受 RFC 3339 时间，`--until` 默认为现在，`--since` 默认为 `--until` 之前 24 小时。时间格式错误或 `--since` 晚于 `--until` 时，服务器返回 400。
+
+`route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
 
 ## ID 和输出格式
 

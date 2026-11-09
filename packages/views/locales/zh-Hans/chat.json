@@ -11,7 +11,33 @@
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",
     "retry": "重试",
-    "empty": "没有待处理请求。"
+    "empty": "没有待处理请求。",
+    "decisions": "待决定事项",
+    "show_all": "显示全部（{{count}}）",
+    "show_less": "收起",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提问",
+      "later": "提醒",
+      "unseen": "未读",
+      "decision": "决定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黄色",
+      "red": "红色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分钟",
+      "hours_other": "{{count}} 小时",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分类",
+      "replies_other": "{{count}} 条回复"
+    }
   },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",

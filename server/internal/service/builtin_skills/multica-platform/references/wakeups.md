@@ -33,6 +33,7 @@ multica issue wakeup create <issue> --until-issue <other-issue-id> --until-issue
 - `--parent <comment-id>` keeps result delivery in the original thread.
 - `wakeup checkin <issue> <wakeup-id> --note "..."` ends an every/cron run that found nothing worth a reply. Only the running task started by that rule may use it; the `[WAKEUP]` block gives the exact command. The note (1–500 characters) appears in run history and the issue timeline, and the run ends without a comment. Otherwise post a comment when something changed or needs attention.
 - `multica wakeup-definition create [--project <id>] --config-file ./rule.json` creates a workspace or project rule. An agent's rule is stored disabled until an owner or admin enables it; the command prints that state.
+- `multica wakeup-definition get <rule> [--project <id> | --issue <id>] [--output json|table]` reads a rule's effective definition: resolved `config`, `sources`, `overrides` and the runtime `execution` state.
 - Members create the same rules in the issue sidebar. A parent's stage wake appears there as a system rule; a member may turn it off for that issue or customize its instruction.
 - Linked GitHub PRs wake the issue's assignee without a rule: a merge into any branch (the prompt names it; a merge into a non-default branch is a delivered stack layer that closing keywords do not act on, so move the issue yourself), failing checks, a merge state of `DIRTY` or `BEHIND` (once per head and base), and a return to draft after the issue was accepted (re-ready or explain). The platform never merges or rebases.
 

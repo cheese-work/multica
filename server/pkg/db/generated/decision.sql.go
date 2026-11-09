@@ -1240,6 +1240,83 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 	return items, nil
 }
 
+const listChatSessionDecisionRecords = `-- name: ListChatSessionDecisionRecords :many
+SELECT answer.id AS answer_id, answer.created_at AS answered_at,
+       LEFT(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                 ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END, $1::int)::text AS words,
+       octet_length(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                         ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::int AS words_bytes,
+       (count(*) OVER ())::int AS total_count,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $2 AND answer.disclaimed_at IS NULL
+  AND answer.source_chat_session_id = $3
+ORDER BY answer.created_at DESC, answer.id DESC
+LIMIT $4::int
+`
+
+type ListChatSessionDecisionRecordsParams struct {
+	WordsMaxChars int32       `json:"words_max_chars"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	SessionID     pgtype.UUID `json:"session_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+type ListChatSessionDecisionRecordsRow struct {
+	AnswerID   pgtype.UUID        `json:"answer_id"`
+	AnsweredAt pgtype.Timestamptz `json:"answered_at"`
+	Words      string             `json:"words"`
+	WordsBytes int32              `json:"words_bytes"`
+	TotalCount int32              `json:"total_count"`
+	IssueKey   string             `json:"issue_key"`
+}
+
+// The standing answers of a DM, newest first: the answers
+// whose source message lives in this DM. An agent record quotes a DM message;
+// a card answer is written into its card's DM; either way source_chat_session_id
+// is that DM, so a request asked in one DM and answered in another belongs to
+// the answering DM. A disclaimed answer is gone. A card answer's words are the
+// whole snapshot (chosen option and note); other records quote the human's own
+// words without pasted context. Feeds the "Decisions in this DM" block that
+// compaction adds (CHE-4447). Retrieval is bounded: at most row_limit rows, each
+// with its words cut to words_max_chars characters; words_bytes is the full
+// size and total_count the number of standing answers, so the block can state
+// every omission.
+func (q *Queries) ListChatSessionDecisionRecords(ctx context.Context, arg ListChatSessionDecisionRecordsParams) ([]ListChatSessionDecisionRecordsRow, error) {
+	rows, err := q.db.Query(ctx, listChatSessionDecisionRecords,
+		arg.WordsMaxChars,
+		arg.WorkspaceID,
+		arg.SessionID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSessionDecisionRecordsRow{}
+	for rows.Next() {
+		var i ListChatSessionDecisionRecordsRow
+		if err := rows.Scan(
+			&i.AnswerID,
+			&i.AnsweredAt,
+			&i.Words,
+			&i.WordsBytes,
+			&i.TotalCount,
+			&i.IssueKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionCards = `-- name: ListDecisionCards :many
 SELECT answer.id AS answer_id, answer.chat_message_ids, answer.source_chat_session_id, answer.source_comment_id,
        answer.issue_comment_id, answer.effective_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at,
