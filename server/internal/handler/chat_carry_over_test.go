@@ -70,7 +70,7 @@ func (dm carryOverDM) claim(t *testing.T, question string) AgentTaskResponse {
 	return claimedChatTask(t, dm.runtimeID, dm.daemonID)
 }
 
-func wantIn(t *testing.T, got string, wants ...string) {
+func wantInClaim(t *testing.T, got string, wants ...string) {
 	t.Helper()
 	for _, want := range wants {
 		if !strings.Contains(got, want) {
@@ -101,7 +101,7 @@ func TestCarryOver_ClaimCarriesSummaryAndCurrentSegmentOnly(t *testing.T) {
 	if got.PriorSessionID != "" {
 		t.Fatalf("PriorSessionID = %q, want empty", got.PriorSessionID)
 	}
-	wantIn(t, got.ChatMessage, "SUMMARY-TEXT", "REPLY-AFTER-DIVIDER", "NEXT-QUESTION")
+	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "REPLY-AFTER-DIVIDER", "NEXT-QUESTION")
 	wantNotIn(t, got.ChatMessage, "OLD-QUESTION", "OLD-ANSWER", "OLD-USER-AFTER-ANSWER")
 	if n := strings.Count(got.ChatMessage, "NEXT-QUESTION"); n != 1 {
 		t.Errorf("the new question appears %d times, want once", n)
@@ -117,7 +117,7 @@ func TestCarryOver_FallsBackToTheOldSegmentTail(t *testing.T) {
 	dm := newCarryOverDM(t)
 	dm.compact(t, "SUMMARY-TEXT")
 	got := dm.claim(t, "NEXT-QUESTION")
-	wantIn(t, got.ChatMessage, "SUMMARY-TEXT", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "NEXT-QUESTION")
+	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "NEXT-QUESTION")
 	wantNotIn(t, got.ChatMessage, "OLD-QUESTION-FIRST", "OLD-ANSWER-FIRST", "OLD-QUESTION-SECOND")
 }
 
@@ -131,7 +131,7 @@ func TestCarryOver_QueuedQuestionIsDeliveredOnce(t *testing.T) {
 	sendDirectChat(t, context.Background(), dm.agentID, dm.sessionID, "QUEUED-BEFORE-COMPACT")
 	dm.compact(t, "SUMMARY-TEXT")
 	got := claimedChatTask(t, dm.runtimeID, dm.daemonID)
-	wantIn(t, got.ChatMessage, "SUMMARY-TEXT", "QUEUED-BEFORE-COMPACT")
+	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "QUEUED-BEFORE-COMPACT")
 	if n := strings.Count(got.ChatMessage, "QUEUED-BEFORE-COMPACT"); n != 1 {
 		t.Errorf("queued question appears %d times, want once:\n%s", n, got.ChatMessage)
 	}
@@ -153,7 +153,7 @@ func TestCarryOver_FallbackStopsAtThePreviousDivider(t *testing.T) {
 			dbfx.Exec(t, `INSERT INTO chat_message (chat_session_id, role, content, created_at) VALUES ($1, $2, $3, clock_timestamp())`, dm.sessionID, seg1[0], seg1[1])
 			dm.compact(t, "SUMMARY-TWO")
 			got := dm.claim(t, "NEXT-QUESTION")
-			wantIn(t, got.ChatMessage, "SUMMARY-TWO", seg1[1], "NEXT-QUESTION")
+			wantInClaim(t, got.ChatMessage, "SUMMARY-TWO", seg1[1], "NEXT-QUESTION")
 			wantNotIn(t, got.ChatMessage, "SUMMARY-ONE", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "OLD-QUESTION")
 		})
 	}
@@ -169,7 +169,7 @@ func TestCarryOver_LaterQueuedQuestionStaysOut(t *testing.T) {
 	sendDirectChat(t, context.Background(), dm.agentID, dm.sessionID, "SECOND-QUEUED")
 	dm.compact(t, "SUMMARY-TEXT")
 	got := claimedChatTask(t, dm.runtimeID, dm.daemonID)
-	wantIn(t, got.ChatMessage, "FIRST-QUEUED")
+	wantInClaim(t, got.ChatMessage, "FIRST-QUEUED")
 	wantNotIn(t, got.ChatMessage, "SECOND-QUEUED")
 }
 
@@ -190,7 +190,7 @@ func TestCarryOver_CompactedForkSkipsTheForkBlock(t *testing.T) {
 	dbfx.Exec(t, `UPDATE chat_session SET forked_from_session_id = $2 WHERE id = $1`, dm.sessionID, sourceID)
 	dm.compact(t, "SUMMARY-TEXT")
 	got := dm.claim(t, "NEXT-QUESTION")
-	wantIn(t, got.ChatMessage, "SUMMARY-TEXT", "NEXT-QUESTION")
+	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "NEXT-QUESTION")
 	wantNotIn(t, got.ChatMessage, "fork_history", "fork of another DM", "Copied attachments")
 }
 
@@ -207,7 +207,7 @@ func TestCarryOver_IndependentWriterLandsInTheCurrentSegment(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	wantIn(t, dm.claim(t, "NEXT-QUESTION").ChatMessage, "INDEPENDENT-WRITE")
+	wantInClaim(t, dm.claim(t, "NEXT-QUESTION").ChatMessage, "INDEPENDENT-WRITE")
 }
 
 // (m): the completion that waited behind a compact writes its answer after the
@@ -267,5 +267,5 @@ func TestCarryOver_AnswerCompletedBehindACompactIsCarried(t *testing.T) {
 		WHERE m.chat_session_id = $1 AND m.content = 'ANSWER-BEHIND-COMPACT' AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)`, dm.sessionID); n != 1 {
 		t.Fatalf("answer above the floor: %d rows, want 1", n)
 	}
-	wantIn(t, dm.claim(t, "NEXT-QUESTION").ChatMessage, "ANSWER-BEHIND-COMPACT")
+	wantInClaim(t, dm.claim(t, "NEXT-QUESTION").ChatMessage, "ANSWER-BEHIND-COMPACT")
 }

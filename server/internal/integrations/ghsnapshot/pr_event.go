@@ -64,6 +64,11 @@ func CapturePREvent(ctx context.Context, q *db.Queries, in PREventInput) ([]PREv
 	if err != nil {
 		return nil, err
 	}
+	// A PR whose head is not the base repository can be linked (same-owner fork,
+	// CHE-4300) but must never wake an agent: its events are contributor-controlled.
+	if !pr.HeadRepoSame {
+		return nil, nil
+	}
 	issueIDs, err := q.ListIssueIDsForPR(ctx, in.PRID)
 	if err != nil {
 		return nil, err

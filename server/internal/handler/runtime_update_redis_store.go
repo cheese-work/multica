@@ -261,6 +261,54 @@ func (s *RedisUpdateStore) Fail(ctx context.Context, id string, errMsg string) e
 	return nil
 }
 
+// setIfUnchangedScript writes ARGV[2] to KEYS[1] only while the stored value
+// still equals ARGV[1], keeping the key's TTL. Returns 1 on write, 0 when
+// another node changed the record first.
+var setIfUnchangedScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+    return 1
+end
+return 0
+`)
+
+// SetProgress read-modify-writes the record under compare-and-set, so a
+// concurrent Complete/Fail/timeout from another node is never overwritten
+// with a stale "running" snapshot. On a lost race it reloads and re-checks
+// the status.
+func (s *RedisUpdateStore) SetProgress(ctx context.Context, id string, progress UpdateProgress) error {
+	for attempt := 0; attempt < updateRedisPopMaxRetries; attempt++ {
+		raw, err := s.rdb.Get(ctx, updateKey(id)).Bytes()
+		if errors.Is(err, redis.Nil) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get update request: %w", err)
+		}
+		req, err := s.unmarshalRequest(raw)
+		if err != nil {
+			return err
+		}
+		if req.Status != UpdateRunning {
+			return nil
+		}
+		req.Progress = &progress
+		req.UpdatedAt = time.Now()
+		data, err := s.marshalRequest(req)
+		if err != nil {
+			return err
+		}
+		swapped, err := setIfUnchangedScript.Run(ctx, s.rdb, []string{updateKey(id)}, raw, data).Int64()
+		if err != nil {
+			return fmt.Errorf("persist update progress: %w", err)
+		}
+		if swapped == 1 {
+			return nil
+		}
+	}
+	return fmt.Errorf("persist update progress: record kept changing")
+}
+
 func (s *RedisUpdateStore) clearActiveIfMatches(ctx context.Context, runtimeID, id string) error {
 	if runtimeID == "" || id == "" {
 		return nil

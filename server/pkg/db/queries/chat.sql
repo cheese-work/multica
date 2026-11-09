@@ -33,6 +33,7 @@ SET continued_from_session_id = $2,
         SELECT s.taint_verified OR (s.forked_from_session_id IS NULL AND s.continued_from_session_id IS NULL)
         FROM chat_session s WHERE s.id = $2
     ), false),
+    chain_root_session_id = COALESCE((SELECT p.chain_root_session_id FROM chat_session p WHERE p.id = $2), chat_session.chain_root_session_id),
     last_read_at = sqlc.arg('summary_created_at')::timestamptz - interval '1 microsecond',
     pinned_at = sqlc.narg('pinned_at')
 WHERE chat_session.id = $1
@@ -250,14 +251,16 @@ ORDER BY message.created_at ASC, message.id ASC;
 -- Copies source rows as history: original role, time, elapsed time and failure
 -- text; no task, no quick actions, no channel fields. The caller supplies new
 -- ids in source order and the (possibly link-rewritten) content and kind.
+-- reanchored_at is copied with the restamped created_at: a copy of a restamped
+-- message must stay refused as a decision source (CHE-2895).
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids, reanchored_at
 )
 SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
        (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
        source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
-       source.lineage_message_ids || source.id
+       source.lineage_message_ids || source.id, source.reanchored_at
 FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
@@ -907,7 +910,7 @@ WHERE id = $1;
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id, created_at
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id, created_at
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -927,6 +930,7 @@ VALUES (
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
     sqlc.narg(decision_answer_id),
+    sqlc.narg(client_message_id),
     GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now()))
 )
 RETURNING *;
@@ -1481,6 +1485,9 @@ WHERE claimed_input.id = latest_visible.claimed_input_id
 -- input past a later card would let it pass as a fresh answer. The card may sit
 -- in any DM the same human owns in the workspace, because a decision accepts a
 -- source DM other than the ask's DM. Caller runs it in the claim transaction.
+-- The card check cannot see an ask still uncommitted in a sibling DM, so each
+-- moved row is also stamped reanchored_at; a decision record refuses it as a
+-- source (CHE-2895).
 WITH batch AS (
     SELECT m.id, row_number() OVER (ORDER BY m.created_at, m.id) AS n
     FROM chat_message m
@@ -1514,7 +1521,8 @@ WITH batch AS (
     FROM chat_message WHERE chat_session_id = sqlc.arg('chat_session_id')
 )
 UPDATE chat_message m
-SET created_at = base.at + (batch.n - 1) * interval '1 microsecond'
+SET created_at = base.at + (batch.n - 1) * interval '1 microsecond',
+    reanchored_at = now()
 FROM batch, base
 WHERE m.id = batch.id;
 
@@ -1642,6 +1650,11 @@ WHERE message.chat_session_id = $1
   AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
+
+-- name: GetChatMessageByClientID :one
+-- Replay lookup for an idempotent send (CHE-4146); served by chat_message_client_message_id_idx.
+SELECT * FROM chat_message
+WHERE chat_session_id = $1 AND client_message_id = $2;
 
 -- name: GetChatMessage :one
 SELECT * FROM chat_message
@@ -2148,6 +2161,34 @@ JOIN chat_session cs ON cs.id = t.chat_session_id
 WHERE t.id = $1
 FOR UPDATE OF cs;
 
+-- name: LockChatSessionsByIDs :many
+-- Batch terminators lock the sessions of the chat tasks they are about to end.
+-- ORDER BY id keeps two batches from deadlocking against each other.
+SELECT id FROM chat_session
+WHERE id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockChatSessionsForRuntimes :many
+-- Session half of every runtime-wide teardown (member revocation, runtime
+-- delete). The one lock order is chat_session -> agent -> agent_task_queue:
+-- chat enqueue takes the session then the agent, so a teardown that archives or
+-- locks the runtime's agents must already hold the sessions of those agents,
+-- or the two deadlock. Covers sessions of agents bound to the runtimes and
+-- sessions of any active task pinned to them. ORDER BY id keeps two
+-- teardowns from deadlocking against each other.
+SELECT cs.id FROM chat_session cs
+WHERE cs.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[]))
+   OR EXISTS (
+        SELECT 1 FROM agent_task_queue task
+        WHERE task.chat_session_id = cs.id
+          AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND (task.runtime_id = ANY(@runtime_ids::uuid[])
+               OR task.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = ANY(@runtime_ids::uuid[])))
+   )
+ORDER BY cs.id
+FOR UPDATE OF cs;
+
 -- name: LockChatSessionsByWorkspace :many
 -- ORDER BY id: a stable lock order keeps two concurrent deleters from
 -- deadlocking against each other.
@@ -2387,7 +2428,9 @@ CROSS JOIN messages;
 -- name: MarkChatTaskCompact :one
 -- CHE-1807: flags a chat task as a compaction run. An automatic compaction
 -- carries the server-built reason and the prompt size that triggered it; a
--- manual /compact carries neither.
+-- manual /compact carries neither. It does not set purpose: both flows still run
+-- as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+-- purpose='compaction'.
 UPDATE agent_task_queue
 SET task_kind = 'compact',
     compact_reason = sqlc.narg('compact_reason'),
@@ -2439,6 +2482,45 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND t.status = 'completed'
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
+
+-- name: CancelCompactionTasksByWorkspace :many
+-- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
+-- task of the workspace, whichever agent it was queued for, so a task queued
+-- under the old value never delivers the transcript. The chat resume pointer is
+-- not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+-- so match either marker or it would survive A->B->A with DM access.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
+RETURNING *;
+
+-- name: LockChatSessionShared :one
+-- CHE-2909: retry admission takes the same chat_session lock a compact chain
+-- change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+-- reads the committed outcome of any change in flight.
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE;
+
+-- name: LockedClockTimestamp :one
+-- CHE-2909: wall-clock time read while a settings write holds its locks. The
+-- activity row is stamped with it because now() is the transaction start, which
+-- can predate a task created and failed while the write waited for its locks.
+SELECT clock_timestamp()::timestamptz AS at;
+
+-- name: CompactChainChangedSince :one
+-- CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+-- changed after a task was created. The change sweep cancels only live tasks,
+-- so a task that had already failed would otherwise retry into the new chain
+-- (A -> B -> A included).
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed;
 
 -- name: GetLatestCompactionSummary :one
 -- The newest in-place compaction summary of a DM: the seed of its next turn

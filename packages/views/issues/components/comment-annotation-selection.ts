@@ -32,12 +32,30 @@ function contentRoot(node: Node): HTMLElement | null {
   return (node instanceof Element ? node : node.parentElement)?.closest<HTMLElement>("[data-comment-content]") ?? null;
 }
 
+/** The single commentable root a selection belongs to, with its range clamped inside that root.
+ * Browsers end a triple-click on the next block and a drag in padding or a gutter, so an endpoint
+ * outside every root is clamped to the root edge; a selection touching two roots has no owner.
+ */
+function clampToRoot(card: HTMLElement, range: Range): { root: HTMLElement; range: Range } | null {
+  const roots = Array.from(card.querySelectorAll<HTMLElement>("[data-comment-content]"))
+    .filter((node) => node.closest("[data-annotation-thread]") === card && range.intersectsNode(node));
+  const startRoot = contentRoot(range.startContainer);
+  const endRoot = contentRoot(range.endContainer);
+  const root = startRoot ?? endRoot ?? (roots.length === 1 ? roots[0]! : null);
+  // An endpoint inside another comment, in this card or any other, has no single owner.
+  if (!root || (startRoot && startRoot !== root) || (endRoot && endRoot !== root) ||
+    roots.some((node) => node !== root) || root.closest("[data-annotation-thread]") !== card) return null;
+  const clamped = range.cloneRange();
+  if (!startRoot) clamped.setStart(root, 0);
+  if (!endRoot) clamped.setEnd(root, root.childNodes.length);
+  return { root, range: clamped };
+}
+
 export function captureCommentSelection(card: HTMLElement, selection: Selection | null, editable = false) {
   if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
-  const range = selection.getRangeAt(0);
-  const root = contentRoot(range.startContainer);
-  if (!root || root !== contentRoot(range.endContainer) || !card.contains(root) ||
-    root.closest("[data-annotation-thread]") !== card) return null;
+  const owned = clampToRoot(card, selection.getRangeAt(0));
+  if (!owned) return null;
+  const { root, range } = owned;
   const { text, nodes } = indexCommentText(root, editable);
   const selected = nodes.filter(({ node }) => range.intersectsNode(node));
   const first = selected[0];

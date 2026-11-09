@@ -551,6 +551,8 @@ vi.mock("@multica/core/issues/stores", async () => ({
       return selector ? selector(state) : state;
     },
     {
+      // useClearOnDraftConsumed (CHE-4288) subscribes to draft transitions; this file never drives it.
+      subscribe: () => () => {},
       getState: () => ({
         drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,

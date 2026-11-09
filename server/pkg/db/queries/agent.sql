@@ -38,6 +38,18 @@ FOR UPDATE;
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 
+-- name: LockAgentForSkillWrite :one
+-- Serializes every writer of agent_skill rows on an existing agent with an
+-- approved decision action. The action transaction holds FOR UPDATE on this
+-- agent row (LockDecisionAgentsNowait), which conflicts with FOR NO KEY UPDATE:
+-- the ordinary writer waits under the transaction lock timeout and commits after
+-- the action; if the writer holds the lock first, the action's NOWAIT lock
+-- answers busy_retry. The agent row is the only lock taken. Returns the locked
+-- row so the caller checks manager state against it.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
+
 -- name: LockAgentForAutopilotAssignment :one
 -- Serializes creating, retargeting, or resuming an active Autopilot with
 -- Runtime teardown. Teardown takes FOR UPDATE on this same Agent row before it
@@ -48,6 +60,15 @@ WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 --   * assignment commits first, then teardown sees and pauses it; or
 --   * teardown commits first, then assignment re-reads runtime_id=NULL and
 --     rejects the active Autopilot.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
+FOR SHARE;
+
+-- name: LockAgentInWorkspaceShared :one
+-- Pins an agent's visibility, runtime and archived_at for the rest of the
+-- transaction: a concurrent archive or update waits for the commit. Used by the
+-- background-agents write so its eligibility check and its settings write
+-- commit together.
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 FOR SHARE;
@@ -507,6 +528,46 @@ WHERE lock_task_owner_rows($1, NULL, $2)
   AND lock_active_project(NULLIF($4::jsonb->>'project_id','')::uuid, (SELECT a.workspace_id FROM agent a WHERE a.id=$1))
 RETURNING *;
 
+-- name: CreateBackgroundTask :one
+-- Output-only background job (CHE-4099). Like CreateQuickCreateTask: no issue,
+-- chat or autopilot link, fenced against workspace teardown by
+-- lock_task_owner_rows. The input, chain_source, member_id, slot and deadlines
+-- live in context; purpose ('bg:<job>') selects the completion writer.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, context, purpose,
+    originator_user_id, accountable_user_id,
+    originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
+    id
+)
+SELECT
+    $1, $2, NULL, 'queued', $3, $4, $5,
+    sqlc.narg(originator_user_id),
+    sqlc.narg(accountable_user_id),
+    sqlc.narg(originator_source),
+    sqlc.narg(trigger_evidence_kind),
+    sqlc.narg(trigger_evidence_ref_id),
+    COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
+WHERE lock_task_owner_rows($1, NULL, $2)
+RETURNING *;
+
+-- name: CancelBackgroundTasksByPurposeAndSource :many
+-- A workspace-scope change to one job cancels that job's non-terminal tasks
+-- whose chain came from the workspace setting. User-sourced tasks are left alone.
+-- Runs in the same transaction as the settings write (CHE-4098); returns the
+-- rows so the caller can settle and broadcast.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id IN (
+    SELECT atq.id FROM agent_task_queue atq
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = @workspace_id
+      AND atq.purpose = @purpose
+      AND atq.context->>'chain_source' = 'workspace'
+      AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+RETURNING *;
+
 -- name: LinkTaskToIssue :exec
 -- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
 -- locks the owners' workspace rows in the writer's own transaction and returns
@@ -548,7 +609,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id,
     trigger_evidence_kind, trigger_evidence_ref_id, retry_of_task_id,
     chat_input_task_id, fire_at,
-    channel_context_revision, handoff_note, workflow_step, id
+    channel_context_revision, handoff_note, workflow_step, purpose, id
 )
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -574,16 +635,28 @@ SELECT
     CASE WHEN p.context->>'wakeup_id' IS NOT NULL OR p.workflow_step IS NOT NULL THEN p.handoff_note END,
     -- A retry continues its parent's work, so it keeps the parent's step (MUL-7420).
     p.workflow_step,
+    -- A retry is for what its parent was for (CHE-2894 ENG-3).
+    p.purpose,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- One successor per failed task (CHE-4581). A pending slot only dedupes
+  -- queued/dispatched children, so a replay after the child started, finished,
+  -- or was deferred would otherwise mint a second one. Callers other than
+  -- FailTask lock the parent row first so a concurrent replay sees the child.
+  AND NOT EXISTS (SELECT 1 FROM agent_task_queue prior WHERE prior.retry_of_task_id = p.id)
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
   AND lock_active_project(CASE WHEN p.issue_id IS NULL THEN NULLIF(p.context->>'project_id','')::uuid END, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
 ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
        OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
 DO NOTHING
 RETURNING *;
+
+-- name: LockAgentTaskForRetry :one
+-- Serializes retry writers on one failed task (CHE-4581): the next statement of
+-- a waiting writer takes a fresh snapshot and sees the committed successor.
+SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE;
 
 -- name: SetTaskWorkflowStep :exec
 -- Moves a run's workflow step along with a status change the run itself made
@@ -605,14 +678,14 @@ INSERT INTO agent_task_queue (
     force_fresh_session, is_leader_task, squad_id,
     originator_user_id, accountable_user_id,
     runtime_mcp_overlay, runtime_connected_apps,
-    originator_source, rerun_of_task_id, id
+    originator_source, rerun_of_task_id, purpose, id
 )
 SELECT
     p.agent_id, p.runtime_id, 'queued', p.priority, p.context,
     TRUE, p.is_leader_task, p.squad_id,
     sqlc.arg(actor_user_id), sqlc.arg(actor_user_id),
     sqlc.narg(runtime_mcp_overlay), sqlc.narg(runtime_connected_apps),
-    'direct_human', p.id, sqlc.arg(new_task_id)
+    'direct_human', p.id, p.purpose, sqlc.arg(new_task_id)
 FROM agent_task_queue p
 WHERE p.id = sqlc.arg(source_task_id)
   AND p.status = 'failed'
@@ -967,6 +1040,13 @@ ev AS (
     INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
     SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
     FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+),
+-- A provider breaker canary that goes back to queued can no longer start while
+-- the breaker holds claims: release it so the next claim re-elects a canary.
+rel AS (
+    UPDATE provider_breaker
+    SET state = 'open', canary_task_id = NULL, next_probe_at = now(), version = version + 1
+    WHERE state = 'half_open' AND canary_task_id IN (SELECT id FROM upd)
 )
 SELECT * FROM upd;
 

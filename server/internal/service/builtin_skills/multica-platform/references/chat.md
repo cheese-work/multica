@@ -44,6 +44,21 @@ Sets the DM title and posts a message announcing the new title and who
 changed it, without reading the DM's contents. JSON carries `id`, `title`,
 `previous_title` and `message_id`.
 
+## Declare the turn outcome
+
+```bash
+multica chat reply-state question --ask <ask-id>   # this turn answers/keeps one open ask
+multica chat reply-state question --new            # this turn opens a new ask
+multica chat reply-state done --ask <ask-id> [--ask <ask-id> ...]   # these asks are resolved
+multica chat reply-state info                      # nothing is owed to you
+```
+
+Runs from a DM task and tells the server what the turn leaves the human
+owing. The chat prompt lists the DM's open ask ids, oldest first, or says
+"no open asks". `done` needs at least one `--ask`; without it the CLI refuses
+and sends no request. `question` with two open asks needs `--ask <id>` or
+`--new`; otherwise the server answers 400 and the CLI prints that text.
+
 ## Unseen DMs
 
 ```bash

@@ -165,6 +165,13 @@ func TestReanchorChatInputAcrossFloor(t *testing.T) {
 	if len(got) != 3 || got[0] != dividerID || got[1] != u1 || got[2] != u2 {
 		t.Fatalf("order after reanchor = %v, want [divider %s, %s, %s]", got, dividerID, u1, u2)
 	}
+	var marked int
+	if err := testPool.QueryRow(ctx(), `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND reanchored_at IS NOT NULL`, fx.sessionID).Scan(&marked); err != nil {
+		t.Fatal(err)
+	}
+	if marked != 2 {
+		t.Errorf("reanchored_at set on %d rows, want exactly the 2 moved input rows", marked)
+	}
 	floorAt, _, _ := segmentFloor(t, fx.sessionID)
 	var minBatch time.Time
 	if err := testPool.QueryRow(ctx(), `SELECT min(created_at) FROM chat_message WHERE id = ANY($1::uuid[])`, []string{u1, u2}).Scan(&minBatch); err != nil {
