@@ -34,6 +34,12 @@ func Derive(body string) string {
 	if line == "" {
 		return ""
 	}
+	return Cut(line)
+}
+
+// Cut limits an already cleaned single-line title to 80 code points at a word
+// boundary when one exists, without an ellipsis.
+func Cut(line string) string {
 	runes := []rune(line)
 	if len(runes) <= deterministicTitleLimit {
 		return line

@@ -801,6 +801,17 @@ func TestForkChatSessionRejectsBodyPaddedPastTheCap(test *testing.T) {
 	}
 }
 
+func TestForkTitleLongMessageHasNoEllipsis(test *testing.T) {
+	got := forkTitle("Src", strings.Repeat("word ", 40))
+	if strings.Contains(got, "…") {
+		test.Fatalf("fork title carries an ellipsis: %q", got)
+	}
+	want := "Src (fork: " + strings.TrimSpace(strings.Repeat("word ", 16)) + ")"
+	if got != want {
+		test.Fatalf("forkTitle = %q, want %q", got, want)
+	}
+}
+
 func TestForkTitleStripsMarkdown(test *testing.T) {
 	cases := map[string]string{
 		"[/office-hours](slash://skill/x) try":    "Src (fork: /office-hours try)",
