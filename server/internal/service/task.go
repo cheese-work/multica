@@ -5979,8 +5979,9 @@ type chatInterimMessage struct {
 // finalBody is matched as a suffix of the last block that ends with it, which
 // keeps the text before it — a provider that reports only its last message as
 // Output (Codex) leaves earlier text after the last tool step. With no match
-// only sealed blocks are written, and an empty finalBody (attachment-only or
-// no_response turn) writes every block.
+// (an empty finalBody, or an Output that differs from the streamed text) every
+// block is written, so trailing text is never dropped; the cost is a repeat
+// only when the Output restates a block in different words.
 func selectChatInterimMessages(blocks []chatInterimBlock, finalBody string, completing bool) []chatInterimMessage {
 	finalBody = strings.TrimSpace(finalBody)
 	var out []chatInterimMessage
@@ -6002,7 +6003,7 @@ func selectChatInterimMessages(blocks []chatInterimBlock, finalBody string, comp
 		switch {
 		case i == final:
 			add(b.seq, strings.TrimSuffix(chatInterimBody(b.text), finalBody))
-		case completing && (finalBody == "" || final >= 0 && i < final || b.sealed):
+		case completing && (final < 0 || i < final || b.sealed):
 			add(b.seq, b.text)
 		case !completing && b.sealed:
 			add(b.seq, b.text)

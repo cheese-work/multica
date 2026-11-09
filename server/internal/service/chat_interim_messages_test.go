@@ -156,6 +156,20 @@ func TestWriteChatCompletionOutcomeKeepsTextBeforeFinalAfterLastTool(t *testing.
 	f.wantRows(t, "Checked the log.", "All done.")
 }
 
+// A provider can end its stream with text that is not part of the terminal
+// result (Claude: streamed text, then a separate result). The unmatched
+// trailing text is still a message for the human (CHE-4704 re-review P1).
+func TestWriteChatCompletionOutcomeKeepsTrailingTextWhenOutputDiffers(t *testing.T) {
+	f := newInterimFixture(t)
+	f.addSteps(t,
+		interimStep{"tool_use", ""},
+		interimStep{"tool_result", ""},
+		interimStep{"text", "Checking the result"},
+	)
+	f.complete(t, "Done")
+	f.wantRows(t, "Checking the result", "Done")
+}
+
 // The daemon seals a text row every 500 ms, mid-sentence. Contiguous text rows
 // are one message, whitespace-only chunks included (CHE-4704 review P1).
 func TestWriteChatCompletionOutcomeJoinsStreamedTextChunks(t *testing.T) {
