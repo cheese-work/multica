@@ -312,6 +312,22 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` désigne l'agent qui prend les étapes de workflow de simple routage (par défaut `todo`, `blocked`, `merged`, `need_decision` ; modifiable avec `--routing-statuses`, et `--routing-overrides todo=<agent-id>` envoie un statut à un autre agent). L'agent de repli prend le relais quand cet agent est archivé ou quand son exécution échoue à cause du fournisseur. Une clé de remplacement `<workflow-id>:<status>` limite ce remplacement à un seul workflow. `none` désactive un champ. Seul un propriétaire ou administrateur humain peut le modifier, et chaque changement est consigné dans le journal d'activité.
 - `--issue-title-template` ne remplace que `{{date}}` (UTC, `YYYY-MM-DD`) et refuse tout autre `{{...}}`. Le `--timezone` d'un déclencheur planifié vaut UTC par défaut.
 
+### Propositions de changement de configuration
+
+`multica config propose` construit le fichier d'action pour un changement de configuration de l'espace de travail. Il lit la valeur en vigueur, calcule `before_sha256` et `after_sha256` avec les mêmes recettes que le serveur, et écrit le fichier que prend `multica decision request --action-file`. Il n'envoie rien et n'écrit aucun secret. Une personne approuve toujours avec une passkey.
+
+Champs : `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>` et `workspace.settings --set clé=valeur|clé:=<json>`. Les champs texte prennent `--file` (UTF-8, sans octet NUL). `workflow.steps` prend le tableau d'étapes tel que le renvoie le GET du workflow ; modifiez cette sortie, car le serveur refuse la demande (`after_digest_mismatch`) s'il normalise vos étapes autrement. Pour `workflow.step.instructions`, le serveur calcule l'empreinte « after » : le fichier n'a pas de `after_sha256`, et l'empreinte affichée sert seulement de comparaison. `--out <chemin>` écrit le fichier ; `--dry-run` affiche les deux empreintes et l'action sans rien écrire. `--expires-in <secondes>` fixe l'expiration.
+
+Tout autre champ est refusé avec `denylisted` avant toute lecture : `project.description`, passkeys et porte de décision, membres et rôles, transfert de propriété, secrets d'authentification et d'intégration, suppression de l'espace de travail, registre des actions et `delegated_governed_writes`. Une clé de réglages hors de la table autorisée du serveur est refusée de la même façon, et un patch qui mêle clés autorisées et refusées est refusé en entier. Le serveur revérifie à la demande et à l'approbation.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
 ## Vue d'ensemble des commandes
 
 | Commande | Rôle |

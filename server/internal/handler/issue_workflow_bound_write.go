@@ -1,15 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,21 +57,9 @@ const (
 
 // workflowStepsHash is the recipe above for steps of the workflow with id.
 func workflowStepsHash(id pgtype.UUID, steps []issueworkflow.Step) string {
-	payload := make([]IssueWorkflowStepPayload, len(steps))
-	for i, s := range steps {
-		payload[i] = stepToPayload(s)
-	}
-	raw, _ := json.Marshal(map[string]any{"steps": payload, "workflow_id": uuidToString(id)}) // a plain struct tree always marshals
-	var generic any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	_ = dec.Decode(&generic)
-	var canonical bytes.Buffer
-	enc := json.NewEncoder(&canonical) // a map encodes with its keys sorted
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(generic)
-	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
-	return hex.EncodeToString(sum[:])
+	raw, _ := json.Marshal(stepsPayload(steps)) // a plain struct tree always marshals
+	digest, _ := decisionaction.WorkflowDigest(uuidToString(id), raw)
+	return digest
 }
 
 // workflowWriteField names the governed field a change from before to after
