@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+A comment from an agent task that mentions a member (`[@Name](mention://member/<id>)`) is accepted only as a decision request, a `--decision-intent`, `--decision-record` or `--decision-veto` comment, or a comment with `--notify-only`. Use `--notify-only` for an FYI that needs no answer. It never opens a wait and never counts as a decision request. It cannot combine with the decision flags. The check reads the mention link, not the wording, and a link inside code counts. The workspace setting `ask_guard_mode` (`off`, `warn`, `block`) decides whether a refused comment is only logged or returns 422. Chat tasks and calls without a task only log. An edit that adds a member mention follows the same rule.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 ## Forking a web DM
 
 From the source DM's running chat task, copy the DM into a new child DM:
@@ -450,6 +456,18 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+
+### Shadow report
+
+Any workspace member reads the System 1 shadow report:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+The `decision` and `routing` blocks cover all time. The `route` block covers the window `[since, until)`: `--since` and `--until` take RFC 3339 times, `--until` defaults to now and `--since` to 24 hours before `--until`. The server refuses a bad time or a `--since` after `--until` with 400.
+
+The `route` block counts one population of events: agent status changes marked as leaving a routing step (`eligible_exits`) and the route labels that carry the same event id (`matched_labels`). `label_coverage` is `matched_labels / eligible_exits` and never exceeds 1. `via_route_share` is the part of matched events whose first label came from `issue route`, not from the status fallback. `duplicate_labels` counts labels that share an event with an earlier label (target 0). `labels_total`, `owner_only_labels` (a route that kept the status, so it has no event) and `non_routing_labels` (a route from a step with no routing agent) sit outside coverage. `overridden` counts agent labels a person reversed within 1 hour, and `override_rate` is `overridden / labels_total`. The block also carries the per-class `decided`, `predicted`, `agreed`, `coverage` and `precision`.
 
 ## IDs and output formats
 

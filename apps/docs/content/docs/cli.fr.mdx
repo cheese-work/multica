@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+Un commentaire d'une tâche d'agent qui mentionne un membre (`[@Nom](mention://member/<id>)`) n'est accepté que comme demande de décision, comme commentaire `--decision-intent`, `--decision-record` ou `--decision-veto`, ou avec `--notify-only`. Utilisez `--notify-only` pour une simple information qui n'attend pas de réponse. Il n'ouvre jamais d'attente et ne compte jamais comme demande de décision. Il ne se combine pas avec les options de décision. Le contrôle lit le lien de mention, pas le texte, et un lien dans du code compte. Le réglage d'espace de travail `ask_guard_mode` (`off`, `warn`, `block`) décide si un commentaire refusé est seulement journalisé ou renvoie 422. Les tâches de chat et les appels sans tâche sont seulement journalisés. Une modification qui ajoute une mention de membre suit la même règle.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 Si une tâche ouverte portant le même titre (sans tenir compte de la casse ni des espaces en trop) existe déjà sous le même projet et le même parent, `issue create` refuse et indique cette tâche. Pour en créer une autre malgré tout, ajoutez `--allow-duplicate`. Pour marquer une tâche comme doublon d'une autre, utilisez `multica issue status MUL-124 cancelled --duplicate-of MUL-123`.
 
 ### Chronologie
@@ -317,6 +323,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 | `update`, `version` | Mettre à jour le CLI ou afficher la version |
 
 `multica chat` lit **la session de messagerie externe qu'un agent traite actuellement** ; elle sert surtout aux agents des intégrations de messagerie et n'est pas une commande générale pour parcourir n'importe quelle discussion de l'espace de travail.
+
+### Rapport shadow
+
+Tout membre de l'espace de travail lit le rapport shadow de System 1 :
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+Les blocs `decision` et `routing` couvrent toute la période. Le bloc `route` couvre la fenêtre `[since, until)` : `--since` et `--until` prennent des dates RFC 3339, `--until` vaut par défaut maintenant et `--since` 24 heures avant `--until`. Le serveur refuse une date invalide ou un `--since` postérieur à `--until` avec un 400.
+
+Le bloc `route` compte une seule population d'événements : les changements de statut d'un agent marqués comme sortie d'une étape de routage (`eligible_exits`) et les étiquettes de route qui portent le même identifiant d'événement (`matched_labels`). `label_coverage` vaut `matched_labels / eligible_exits` et ne dépasse jamais 1. `via_route_share` est la part des événements appariés dont la première étiquette vient de `issue route`, et non du repli sur le statut. `duplicate_labels` compte les étiquettes qui partagent un événement avec une étiquette plus ancienne (cible 0). `labels_total`, `owner_only_labels` (une route qui a gardé le statut, donc sans événement) et `non_routing_labels` (une route depuis une étape sans agent de routage) restent hors de la couverture. `overridden` compte les étiquettes d'agent qu'une personne a inversées en moins d'une heure, et `override_rate` vaut `overridden / labels_total`. Le bloc contient aussi `decided`, `predicted`, `agreed`, `coverage` et `precision` par classe.
 
 ## ID et formats de sortie
 

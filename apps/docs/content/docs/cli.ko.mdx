@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+에이전트 작업에서 멤버를 멘션(`[@이름](mention://member/<id>)`)하는 댓글은 결정 요청, `--decision-intent`·`--decision-record`·`--decision-veto` 댓글, 또는 `--notify-only` 댓글일 때만 허용됩니다. 답이 필요 없는 알림에는 `--notify-only`를 사용합니다. 대기를 시작하지 않으며 결정 요청으로도 계산되지 않습니다. 결정 관련 플래그와 함께 쓸 수 없습니다. 검사는 문구가 아니라 멘션 링크를 읽으며, 코드 안의 링크도 포함됩니다. 워크스페이스 설정 `ask_guard_mode`(`off`, `warn`, `block`)가 거부될 댓글을 기록만 할지 422를 반환할지 정합니다. 채팅 작업과 작업이 없는 호출은 기록만 합니다. 멤버 멘션을 추가하는 수정에도 같은 규칙이 적용됩니다.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
 
 ### 타임라인
@@ -317,6 +323,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `update`, `version` | CLI 업데이트 또는 버전 확인 |
 
 `multica chat`은 **에이전트가 현재 처리 중인 외부 채팅 대화**를 읽으며 주로 채팅 연동의 에이전트가 사용합니다. 워크스페이스의 임의 대화를 탐색하는 일반 명령이 아닙니다.
+
+### 섀도 리포트
+
+워크스페이스 멤버는 누구나 System 1 섀도 리포트를 읽을 수 있습니다:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` 블록과 `routing` 블록은 전체 기간을 다룹니다. `route` 블록은 `[since, until)` 구간을 다룹니다. `--since`와 `--until`은 RFC 3339 시각을 받고, `--until`의 기본값은 현재, `--since`의 기본값은 `--until` 24시간 전입니다. 잘못된 시각이나 `--until`보다 늦은 `--since`는 서버가 400으로 거부합니다.
+
+`route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
 
 ## ID와 출력 형식
 

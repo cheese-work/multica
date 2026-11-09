@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+エージェントのタスクから、メンバーへのメンション（`[@名前](mention://member/<id>)`）を含むコメントを送るには、決定リクエスト、`--decision-intent`・`--decision-record`・`--decision-veto` のコメント、または `--notify-only` のいずれかが必要です。返答が要らない通知には `--notify-only` を使います。待機を開始せず、決定リクエストとしても数えません。決定系のフラグとは併用できません。判定は文面ではなくメンションのリンクで行い、コード内のリンクも対象です。ワークスペース設定 `ask_guard_mode`（`off`、`warn`、`block`）で、拒否されるコメントを記録だけにするか 422 を返すかを決めます。チャットのタスクとタスクなしの呼び出しは記録のみです。メンバーへのメンションを追加する編集にも同じルールが適用されます。
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
 ### タイムライン
@@ -317,6 +323,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `update`、`version` | CLI の更新とバージョンの表示 |
 
 `multica chat` が読み取るのは、**エージェントが現在処理している外部チャットセッション**です。主にチャット統合の中のエージェントが使うもので、任意のワークスペースの会話を閲覧するための汎用コマンドではありません。
+
+### シャドウレポート
+
+ワークスペースのメンバーは誰でも System 1 のシャドウレポートを読めます:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` ブロックと `routing` ブロックは全期間を対象にします。`route` ブロックは `[since, until)` の期間を対象にします。`--since` と `--until` は RFC 3339 の時刻を取り、`--until` の既定値は現在、`--since` の既定値は `--until` の 24 時間前です。不正な時刻や `--until` より後の `--since` は、サーバーが 400 で拒否します。
+
+`route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
 
 ## ID と出力形式
 

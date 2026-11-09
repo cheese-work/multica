@@ -866,6 +866,8 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 		dispatch = s.dispatchWorkflowEdges
 	}
 	if err := dispatch(ctx, w); err != nil {
+		// The refusal rolled the dispatch back, and its deferral record with it.
+		err = s.Tasks.recordStageRefusal(ctx, err)
 		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		reason := err.Error()
