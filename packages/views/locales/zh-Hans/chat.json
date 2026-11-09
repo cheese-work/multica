@@ -11,7 +11,33 @@
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",
     "retry": "重试",
-    "empty": "没有待处理请求。"
+    "empty": "没有待处理请求。",
+    "decisions": "待决定事项",
+    "show_all": "显示全部（{{count}}）",
+    "show_less": "收起",
+    "count": "{{shown}} / {{total}}",
+    "kind": {
+      "ask": "提问",
+      "later": "提醒",
+      "unseen": "未读",
+      "decision": "决定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黄色",
+      "red": "红色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分钟",
+      "hours_other": "{{count}} 小时",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_aria": "{{kind}}：{{title}}。{{level}}，已等待 {{age}}",
+    "unclassified": {
+      "title": "未分类",
+      "replies_other": "{{count}} 条回复"
+    }
   },
   "page": {
     "interactive_login_required": "请重新登录以使用聊天。",
@@ -408,6 +434,9 @@
   "decision": {
     "request_title": "决策请求",
     "asked_by": "来自 {{agent}}",
+    "answered_by_batch": "{{issue}}:已由批量卡片回答",
+    "covers_batch": "此回答关闭的卡片:{{count}}",
+    "covers_unavailable": "无法加载此回答将关闭的决定。请刷新后再回答。",
     "request_label": "决策请求：{{state}}",
     "request_state": { "open": "待答复", "answered": "已答复", "withdrawn": "已撤回", "recorded": "已记录", "delivered": "已送达", "picked_up": "已接手", "not_picked_up": "未接手", "disclaimed": "已撤销" },
     "picked_up_by": "{{agent}} 已接手",

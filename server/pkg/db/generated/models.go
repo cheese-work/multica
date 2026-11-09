@@ -1152,42 +1152,44 @@ type DecisionIntentTarget struct {
 }
 
 type DecisionRequest struct {
-	ID                    pgtype.UUID        `json:"id"`
-	WorkspaceID           pgtype.UUID        `json:"workspace_id"`
-	IssueID               pgtype.UUID        `json:"issue_id"`
-	AskingAgentID         pgtype.UUID        `json:"asking_agent_id"`
-	HumanUserID           pgtype.UUID        `json:"human_user_id"`
-	ChatSessionID         pgtype.UUID        `json:"chat_session_id"`
-	PingMessageID         pgtype.UUID        `json:"ping_message_id"`
-	IssueCommentID        pgtype.UUID        `json:"issue_comment_id"`
-	Ask                   string             `json:"ask"`
-	EscalationClass       string             `json:"escalation_class"`
-	Status                string             `json:"status"`
-	Origin                string             `json:"origin"`
-	DecisionIntentID      pgtype.UUID        `json:"decision_intent_id"`
-	CancelReason          pgtype.Text        `json:"cancel_reason"`
-	CancelNoticePostedAt  pgtype.Timestamptz `json:"cancel_notice_posted_at"`
-	PingNotifiedAt        pgtype.Timestamptz `json:"ping_notified_at"`
-	ReaskDeliveredAt      pgtype.Timestamptz `json:"reask_delivered_at"`
-	ReaskOutcome          pgtype.Text        `json:"reask_outcome"`
-	CreatedAt             pgtype.Timestamptz `json:"created_at"`
-	SourceCommentID       pgtype.UUID        `json:"source_comment_id"`
-	SourceContentSnapshot string             `json:"source_content_snapshot"`
-	RequestFingerprint    string             `json:"request_fingerprint"`
-	WithdrawReason        string             `json:"withdraw_reason"`
-	WithdrawnAt           pgtype.Timestamptz `json:"withdrawn_at"`
-	WithdrawnByTaskID     pgtype.UUID        `json:"withdrawn_by_task_id"`
-	WithdrawnByUserID     pgtype.UUID        `json:"withdrawn_by_user_id"`
-	Options               []byte             `json:"options"`
-	AskIdentity           string             `json:"ask_identity"`
-	AskJson               []byte             `json:"ask_json"`
-	Authority             string             `json:"authority"`
-	ProjectID             pgtype.UUID        `json:"project_id"`
-	Kind                  string             `json:"kind"`
-	ExpiresAt             pgtype.Timestamptz `json:"expires_at"`
-	ProposalFingerprint   pgtype.Text        `json:"proposal_fingerprint"`
-	AnswerRevision        int32              `json:"answer_revision"`
-	WakeSeq               int64              `json:"wake_seq"`
+	ID                       pgtype.UUID        `json:"id"`
+	WorkspaceID              pgtype.UUID        `json:"workspace_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	AskingAgentID            pgtype.UUID        `json:"asking_agent_id"`
+	HumanUserID              pgtype.UUID        `json:"human_user_id"`
+	ChatSessionID            pgtype.UUID        `json:"chat_session_id"`
+	PingMessageID            pgtype.UUID        `json:"ping_message_id"`
+	IssueCommentID           pgtype.UUID        `json:"issue_comment_id"`
+	Ask                      string             `json:"ask"`
+	EscalationClass          string             `json:"escalation_class"`
+	Status                   string             `json:"status"`
+	Origin                   string             `json:"origin"`
+	DecisionIntentID         pgtype.UUID        `json:"decision_intent_id"`
+	CancelReason             pgtype.Text        `json:"cancel_reason"`
+	CancelNoticePostedAt     pgtype.Timestamptz `json:"cancel_notice_posted_at"`
+	PingNotifiedAt           pgtype.Timestamptz `json:"ping_notified_at"`
+	ReaskDeliveredAt         pgtype.Timestamptz `json:"reask_delivered_at"`
+	ReaskOutcome             pgtype.Text        `json:"reask_outcome"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	SourceCommentID          pgtype.UUID        `json:"source_comment_id"`
+	SourceContentSnapshot    string             `json:"source_content_snapshot"`
+	RequestFingerprint       string             `json:"request_fingerprint"`
+	WithdrawReason           string             `json:"withdraw_reason"`
+	WithdrawnAt              pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnByTaskID        pgtype.UUID        `json:"withdrawn_by_task_id"`
+	WithdrawnByUserID        pgtype.UUID        `json:"withdrawn_by_user_id"`
+	Options                  []byte             `json:"options"`
+	AskIdentity              string             `json:"ask_identity"`
+	AskJson                  []byte             `json:"ask_json"`
+	Authority                string             `json:"authority"`
+	ProjectID                pgtype.UUID        `json:"project_id"`
+	Kind                     string             `json:"kind"`
+	ExpiresAt                pgtype.Timestamptz `json:"expires_at"`
+	ProposalFingerprint      pgtype.Text        `json:"proposal_fingerprint"`
+	AnswerRevision           int32              `json:"answer_revision"`
+	WakeSeq                  int64              `json:"wake_seq"`
+	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
+	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }
 
 type DecisionWait struct {
@@ -1331,6 +1333,16 @@ type DmProgressLaneEvent struct {
 	Kind           string             `json:"kind"`
 	RelatedIssueID pgtype.UUID        `json:"related_issue_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type DmProgressPending struct {
+	LineageID   pgtype.UUID        `json:"lineage_id"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	EventKind   string             `json:"event_kind"`
+	Immediate   bool               `json:"immediate"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type ElevatedOp struct {
@@ -2329,6 +2341,8 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	Purpose                   pgtype.Text        `json:"purpose"`
+	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
@@ -2922,6 +2936,16 @@ type RecoveryClaim struct {
 	SettledAt         pgtype.Timestamptz `json:"settled_at"`
 }
 
+type ReviewAdmissionDeferral struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	Trigger   string             `json:"trigger"`
+	HeadSha   string             `json:"head_sha"`
+	Reasons   []string           `json:"reasons"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
 type RunBudgetNotice struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -3158,6 +3182,18 @@ type SysCronExecution struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type System1Label struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ObservationID pgtype.UUID        `json:"observation_id"`
+	Scope         string             `json:"scope"`
+	Kind          string             `json:"kind"`
+	Source        string             `json:"source"`
+	Label         string             `json:"label"`
+	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type System1Observation struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
@@ -3180,6 +3216,7 @@ type System1Observation struct {
 	Outcome             pgtype.Text        `json:"outcome"`
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	EventID             pgtype.UUID        `json:"event_id"`
 }
 
 type TaskElevation struct {
