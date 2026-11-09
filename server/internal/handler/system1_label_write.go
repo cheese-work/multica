@@ -157,6 +157,17 @@ func (h *Handler) WriteSystem1Label(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]any{"id": uuidToString(id), "label": req.Label})
 }
 
+const system1LabellersKey = "system1_labellers"
+
+// reconcileSystem1Labellers makes a generic settings save keep the stored
+// assignment: only SetSystem1Labeller (owner, human) changes it.
+func reconcileSystem1Labellers(stored, incoming map[string]any) {
+	delete(incoming, system1LabellersKey)
+	if v, ok := stored[system1LabellersKey]; ok {
+		incoming[system1LabellersKey] = v
+	}
+}
+
 // SetSystem1Labeller assigns the labeller agent for one scope (owner, human
 // only). An empty agent_id clears the assignment.
 func (h *Handler) SetSystem1Labeller(w http.ResponseWriter, r *http.Request) {

@@ -173,3 +173,71 @@ func TestSystem1LabelWriteRoute(t *testing.T) {
 		t.Fatalf("cleared assignment status=%d, want 403", code)
 	}
 }
+
+// CHE-4472 security finding: the generic workspace settings save must never change
+// system1_labellers. Only PUT /api/system1/labellers (owner, human) assigns a labeller.
+func TestSystem1LabellersNotWritableThroughWorkspaceSettings(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+	ctx := context.Background()
+	var previous []byte
+	if err := testPool.QueryRow(ctx, `SELECT coalesce(settings,'{}'::jsonb) FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&previous); err != nil {
+		t.Fatal(err)
+	}
+	var labeller, runtime string
+	if err := testPool.QueryRow(ctx, `SELECT id::text, runtime_id::text FROM agent WHERE workspace_id=$1 ORDER BY created_at LIMIT 1`, testWorkspaceID).Scan(&labeller, &runtime); err != nil {
+		t.Fatal(err)
+	}
+	var task string
+	if err := testPool.QueryRow(ctx, `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority) VALUES ($1,$2,'running',0) RETURNING id::text`, labeller, runtime).Scan(&task); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE workspace SET settings=$2::jsonb WHERE id=$1`, testWorkspaceID, string(previous))
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id=$1`, task)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE workspace SET settings=jsonb_set(coalesce(settings,'{}'::jsonb),'{system1_labellers}','{"test_first_waiver":"keep"}'::jsonb) WHERE id=$1`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	taskToken := mintAgentTaskToken(t, labeller, task, testUserID)
+
+	patch := func(bearer string, settings any) int {
+		body, _ := json.Marshal(map[string]any{"settings": settings})
+		req, err := http.NewRequest(http.MethodPatch, testServer.URL+"/api/workspaces/"+testWorkspaceID, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Workspace-ID", testWorkspaceID)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	stored := func() string {
+		var v string
+		if err := testPool.QueryRow(ctx, `SELECT coalesce(settings->'system1_labellers','null'::jsonb)::text FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	const want = `{"test_first_waiver": "keep"}`
+	for name, tc := range map[string]struct {
+		bearer   string
+		settings any
+	}{
+		"task token replaces the map":      {taskToken, map[string]any{"system1_labellers": map[string]any{"test_first_waiver": labeller}}},
+		"admin session replaces the map":   {testToken, map[string]any{"system1_labellers": map[string]any{"test_first_waiver": labeller}}},
+		"admin session omits the key":      {testToken, map[string]any{"other": 1}},
+		"admin session sends a non-object": {testToken, "x"},
+	} {
+		patch(tc.bearer, tc.settings)
+		if got := stored(); got != want {
+			t.Fatalf("%s: system1_labellers=%s, want %s unchanged", name, got, want)
+		}
+	}
+}

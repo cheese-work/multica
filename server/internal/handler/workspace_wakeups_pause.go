@@ -120,6 +120,7 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 			reconcileDelegatedWrites(stored, incoming)
 			reconcileAgentDecisionJev(stored, incoming)
 			reconcileRoutingAgent(stored, incoming)
+			reconcileSystem1Labellers(stored, incoming)
 			if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
 				return db.Workspace{}, "", activity, err
 			}
@@ -129,7 +130,7 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 		} else if machine && stored[backgroundAgentsKey] != nil {
 			// A non-object body would clear the key: a key-omitting replacement.
 			return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
-		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
+		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil || stored[system1LabellersKey] != nil {
 			// A non-object body would replace the whole blob and clear the pause, the
 			// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
 			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}

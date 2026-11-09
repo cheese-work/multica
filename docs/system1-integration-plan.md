@@ -113,7 +113,10 @@ Migrations `99967_system1_label_writes` (`source` gains `labeller`; columns
   live agent of the workspace. Member sessions and PATs get 403.
 - **Who is assigned:** workspace setting `system1_labellers`, a map from scope
   to agent id, set with `PUT /api/system1/labellers` `{scope, agent_id}`
-  (owner only, human only; empty `agent_id` clears). An agent that is not
+  (owner only, human only; empty `agent_id` clears). This route is the only
+  writer: a generic workspace settings save (`PUT`/`PATCH /api/workspaces/{id}`)
+  keeps the stored map whatever the body says, so an admin session or a task
+  token cannot assign a labeller that way. An agent that is not
   assigned for the observation's scope gets 403. An observation of another
   workspace gets 404.
 - **Closed values:** `test_first_waiver` takes `waive` or `refuse`; any other
