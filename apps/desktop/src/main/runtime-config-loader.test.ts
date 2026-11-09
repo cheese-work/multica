@@ -4,11 +4,11 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { describe, expect, it, vi } from "vitest";
 
-// Importing the real `electron` package resolves the binary and downloads it
-// when absent (CHE-4820); the loader only needs app.getPath.
-vi.mock("electron", () => ({ app: { getPath: () => "/tmp/multica-test" } }));
+// The loader only needs app.getPath. Importing the real `electron` package
+// downloads its binary at import time when it is missing, which flakes in CI.
+vi.mock("electron", () => ({ app: { getPath: vi.fn(() => "/home/test") } }));
 
-import { loadRuntimeConfig } from "./runtime-config-loader";
+import { desktopConfigPath, loadRuntimeConfig } from "./runtime-config-loader";
 
 describe("loadRuntimeConfig", () => {
   it("uses dev env and ignores desktop.json during electron-vite dev", async () => {
@@ -92,5 +92,9 @@ describe("loadRuntimeConfig", () => {
       expect(result.error.message).toContain(configPath);
       expect(result.error.message).toContain("Invalid desktop runtime config JSON");
     }
+  });
+
+  it("resolves the packaged config path under the home directory", () => {
+    expect(desktopConfigPath()).toBe(join("/home/test", ".multica", "desktop.json"));
   });
 });

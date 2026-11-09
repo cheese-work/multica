@@ -155,6 +155,18 @@
       "other": "실패: {{code}}",
       "stale_base": "요청 이후 대상이 변경되었습니다. 다시 요청하세요."
     },
+    "refusal": {
+      "class_needs_owner": "이 변경은 워크스페이스 소유자만 승인할 수 있습니다.",
+      "payload_mismatch": "승인한 변경이 요청된 변경과 다릅니다. 다시 요청하세요.",
+      "preview_required": "표시된 미리보기를 기준으로 승인하세요. 카드를 새로 고치세요.",
+      "precondition_drift": "요청 이후 대상이 변경되었습니다. 다시 요청하세요.",
+      "busy_retry": "다른 변경이 진행 중입니다. 다시 시도하세요.",
+      "not_permitted": "이 변경을 할 권한이 없습니다.",
+      "action_not_executable": "이런 종류의 변경은 아직 승인할 수 없습니다.",
+      "approval_proof_unavailable": "이 서버는 아직 패스키 승인을 확인할 수 없습니다.",
+      "other": "거부됨: {{code}}"
+    },
+    "owner_only": "이 변경은 워크스페이스 소유자만 승인할 수 있습니다.",
     "no_passkey": "승인하기 전에 패스키를 추가하세요.",
     "add_passkey": "패스키 추가",
     "error": "패스키 승인이 완료되지 않았습니다. 다시 시도하세요.",
