@@ -16,6 +16,15 @@ func TestWillEnqueueRunSkipsNeedDecisionStepWithOpenDecisionRequest(t *testing.T
 	ctx := context.Background()
 	workspaceID, userID, agentID, issueID := seedAttributionFixture(t, pool)
 	queries := db.New(pool)
+	var otherAgentID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args)
+		SELECT workspace_id, 'other-agent', runtime_mode, runtime_config, runtime_id, visibility,
+			max_concurrent_tasks, owner_id, instructions, custom_env, custom_args FROM agent WHERE id = $1
+		RETURNING id`, agentID).Scan(&otherAgentID); err != nil {
+		t.Fatal(err)
+	}
 	svc := &IssueService{Queries: queries, TaskService: &TaskService{Queries: queries}}
 
 	setIssue := func(status string) db.Issue {
@@ -44,17 +53,45 @@ func TestWillEnqueueRunSkipsNeedDecisionStepWithOpenDecisionRequest(t *testing.T
 		}
 	}
 
+	routingOn := func(agent string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE workspace SET settings = jsonb_build_object('routing_agent', jsonb_build_object('agent_id', $2::text)) WHERE id = $1`,
+			workspaceID, agent); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	need := setIssue("need_decision")
-	if !enters(need) {
-		t.Fatal("need_decision with no decision request must still start the step's run")
-	}
-	insertRequest("answered")
-	if !enters(need) {
-		t.Fatal("an answered request waits on nobody; the step's run must start")
-	}
 	insertRequest("open")
+	// No routing agent is configured: the step keeps its own handler, which may
+	// have entry work to do. The open request must not swallow that run.
+	if !enters(need) {
+		t.Fatal("a configured handler's need_decision step must still start its run")
+	}
+
+	routingOn(agentID)
 	if enters(need) {
-		t.Fatal("need_decision with an open decision request must start no run")
+		t.Fatal("the routing agent's need_decision step with an open decision request must start no run")
+	}
+
+	// The answer goes to the asking agent, not the routing agent; the routing
+	// step is still a no-op.
+	if _, err := pool.Exec(ctx, `UPDATE decision_request SET asking_agent_id = $2 WHERE issue_id = $1`,
+		util.MustParseUUID(issueID), util.MustParseUUID(otherAgentID)); err != nil {
+		t.Fatal(err)
+	}
+	if enters(need) {
+		t.Fatal("a different asking agent leaves the routing step a no-op: no run")
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE decision_request SET status = 'answered' WHERE issue_id = $1`, util.MustParseUUID(issueID)); err != nil {
+		t.Fatal(err)
+	}
+	if !enters(need) {
+		t.Fatal("an answered request waits on nobody; the routing step's run must start")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE decision_request SET status = 'open' WHERE issue_id = $1`, util.MustParseUUID(issueID)); err != nil {
+		t.Fatal(err)
 	}
 	if !enters(setIssue("blocked")) {
 		t.Fatal("only need_decision is covered: blocked must still start its run")
