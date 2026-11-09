@@ -2341,6 +2341,8 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	Purpose                   pgtype.Text        `json:"purpose"`
+	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
@@ -2932,6 +2934,16 @@ type RecoveryClaim struct {
 	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
 	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
 	SettledAt         pgtype.Timestamptz `json:"settled_at"`
+}
+
+type ReviewAdmissionDeferral struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	Trigger   string             `json:"trigger"`
+	HeadSha   string             `json:"head_sha"`
+	Reasons   []string           `json:"reasons"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type RunBudgetNotice struct {
