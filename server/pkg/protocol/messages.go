@@ -105,6 +105,11 @@ const (
 	// launch selection it passed to the CLI (model, thinking level, service
 	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
 	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
+	// DaemonCapabilityRuntimeProfileV1 advertises that the daemon honors the
+	// claim's harness_profile (personal | managed). A daemon without it would
+	// drop the field and launch the user's personal config, so the server never
+	// hands a managed task to a claimer that lacks it.
+	DaemonCapabilityRuntimeProfileV1 = "runtime-profile-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"

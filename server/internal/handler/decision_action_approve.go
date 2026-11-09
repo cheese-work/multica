@@ -59,16 +59,19 @@ type decisionActionExecution struct {
 	// CredentialID is the passkey credential that signed this approval and
 	// IssueID the issue the request sits on; both go into a config-change audit.
 	CredentialID, IssueID pgtype.UUID
+	// Tx is the approval transaction Queries runs in, for a write that needs
+	// the transaction itself.
+	Tx pgx.Tx
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
 
 // decisionActionExecutors maps an allowlisted action type to its core.
 var decisionActionExecutors = map[string]decisionActionExecutor{
-	"agent.env.patch":         executeEnvPatchAction,
-	"agent.copy":              executeAgentCopyAction,
-	"issue.run_budget.raise":  executeRunBudgetRaiseAction,
-	"issue.run_budget.top_up": executeRunBudgetTopUpAction,
+	"agent.env.patch":        executeEnvPatchAction,
+	"agent.copy":             executeAgentCopyAction,
+	"issue.run_budget.raise": executeRunBudgetRaiseAction,
+	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -150,10 +153,22 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 		return empty, err
 	}
 	var queueKey string
-	if change, queued := configChanges[preview.ActionType]; queued && change.QueueField != "" && target.Valid {
+	change, configured := configChanges[preview.ActionType]
+	if configured && change.QueueField != "" && target.Valid {
 		queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey)
+	// A top-up opens a run-budget window, so it takes its turn behind any move
+	// that holds the issue's boundary, waiting before it holds a connection.
+	var boundaryIssue pgtype.UUID
+	if preview.ActionType == runBudgetTopUpType {
+		boundaryIssue = located.IssueID
+		leave, err := handler.enterRunBudgetBoundary(ctx, boundaryIssue)
+		if err != nil {
+			return empty, errBusyRetry
+		}
+		defer leave()
+	}
+	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -164,7 +179,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string, catalogLock bool, boundaryIssue pgtype.UUID) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
@@ -173,12 +188,26 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	defer transaction.Rollback(context.WithoutCancel(ctx))
 	// Before any other lock, so the wait cannot sit in a lock cycle; the
 	// config change's own try-lock later in this transaction is re-entrant.
+	// The catalog lock is first of all, the order a workflow save takes.
+	if catalogLock {
+		if err := handler.Queries.WithTx(transaction).LockIssueStatusCatalog(ctx, caller.workspaceID); err != nil {
+			return empty, err
+		}
+	}
 	if queueKey != "" {
 		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, queueKey); err != nil {
 			return empty, err
 		}
 	}
 	queries := handler.Queries.WithTx(transaction)
+	// The boundary lock comes before every row lock, the order a status move
+	// uses: it holds the boundary across its status write and its activity, so a
+	// top-up that took the issue row first could read the window between them.
+	if boundaryIssue.Valid {
+		if err := queries.LockIssueRunBudgetBoundary(ctx, boundaryIssue); err != nil {
+			return empty, err
+		}
+	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return empty, err
 	}
@@ -341,7 +370,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
-		CredentialID: credential, IssueID: current.IssueID,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
 	})
 	if err != nil {
 		return empty, err
@@ -400,6 +429,9 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery
 // worker and stamps the row. It is idempotent: a repeat only re-sends events.
 func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, action db.DecisionAction) error {
+	if err := handler.publishDecisionActionCardUpdated(ctx, action); err != nil {
+		return err
+	}
 	if action.State == "executed" {
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
@@ -407,6 +439,23 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
+}
+
+// publishDecisionActionCardUpdated tells open clients the action left pending:
+// the DM card re-reads its action state on this event, so every client drops
+// the approve and reject buttons and shows the outcome. The click recorded a
+// card answer in the same transaction as the state change.
+func (handler *Handler) publishDecisionActionCardUpdated(ctx context.Context, action db.DecisionAction) error {
+	request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+	if err != nil {
+		return err
+	}
+	answer, err := handler.Queries.GetDecisionCardAnswer(ctx, action.DecisionRequestID)
+	if err != nil {
+		return err
+	}
+	handler.publishDecisionAnswerUpdated(uuidToString(action.WorkspaceID), "member", uuidToString(answer.AnsweredByUserID), answer.ID, request.IssueID, decisionAnswerState(answer.WokenAt, answer.DisclaimedAt))
+	return nil
 }
 
 // decisionActionTarget is the one existing agent an action reads or changes.

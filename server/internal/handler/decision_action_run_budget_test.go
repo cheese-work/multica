@@ -1,13 +1,16 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 const topUpAction = "issue.run_budget.top_up"
@@ -128,5 +131,38 @@ func TestRequestRunBudgetTopUpRefusesAnotherIssueTarget(test *testing.T) {
 	}), http.StatusBadRequest, nil)
 	if !strings.Contains(body, "target_issue_mismatch") {
 		test.Fatalf("body %q; want target_issue_mismatch", body)
+	}
+}
+
+// A person's status move holds the boundary lock from before its status commit
+// to after its activity write. An approval that read the window in that gap
+// would top up the old window and then be followed by the move's own window.
+func TestApproveRunBudgetTopUpWaitsForAMoveInFlight(test *testing.T) {
+	action, _ := newPendingTopUp(test, true)
+	release := holdRunBudgetBoundary(test, action.issueID)
+	defer release()
+
+	done := make(chan struct{})
+	var body string
+	go func() {
+		defer close(done)
+		raw, _ := json.Marshal(action.claim(test, nil))
+		request := action.decide("approve", action.humanID, "interactive_jwt")
+		request.Body = readerCloser{bytes.NewReader(raw)}
+		body = testutil.Call(test, withVerifier(acceptingVerifier).ApproveDecisionAction, request).Want(http.StatusOK).Text()
+	}()
+	if !stillRunning(done) {
+		test.Fatalf("the approval finished while a window boundary was in flight: %s", body)
+	}
+	// The move's activity write, which starts the next window.
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`,
+		testWorkspaceID, action.issueID, action.humanID)
+	release()
+	<-done
+	if state, code := action.state(test), action.failureCode(test); state != "failed" || code != "stale_window" {
+		test.Fatalf("action state = %s code = %s, want failed / stale_window", state, code)
+	}
+	if rows := action.topUpRows(test); rows != 0 {
+		test.Fatalf("a stale top-up wrote %d run_budget_top_up rows, want 0", rows)
 	}
 }

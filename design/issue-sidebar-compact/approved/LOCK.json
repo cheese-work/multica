@@ -1,0 +1,25 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:page1",
+  "screens": [
+    {
+      "screen": "issue-sidebar-compact v2 (Pull requests above Wakeups; one Defaults button in the Wakeups header that opens an inline panel of default rules; row menu Override / Reset; warm paused state; desktop 320 px column and 390 px)",
+      "frame_id": "UVi0hFp3L_",
+      "updatedAt": "2026-11-05T10:56:09.927Z",
+      "content_sha256": "da0aa9c0288a4f024809810173075b50b348e03e3185ee4411cd2d04470cd31f"
+    }
+  ],
+  "export_sha256": "5556dde622d08b19b97ec6aab793a6685f0bbdab1d0d6550cd0f8491becad2f8",
+  "export_sha256_method": "sha256 of the line '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "issue-sidebar-compact-v2.html": "da0aa9c0288a4f024809810173075b50b348e03e3185ee4411cd2d04470cd31f"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; length 17882 characters equals htmlBytes from get_frame",
+  "exported_at": "2026-11-05 18:00 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-3986",
+  "selection_id": "01a1ab4e-d139-78ee-a909-d1cb43492c25",
+  "ux_verdict_id": "01a1ab5b-be84-74f7-9cfe-5098833dfa85"
+}

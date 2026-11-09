@@ -935,6 +935,19 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	subscriberKeys := make([]string, len(subscribers))
+	for i, subscriber := range subscribers {
+		subscriberKeys[i] = "member:" + uuidToString(subscriber.UserID)
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.create",
+		WorkspaceID: wsUUID,
+		TargetID:    autopilot.ID,
+		After:       autopilotAuditFields(autopilot, subscriberKeys),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.create")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
 		return
@@ -1211,6 +1224,17 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The subscriber set only enters the audit diff when this request replaces it.
+	var prevSubscriberKeys []string
+	if replaceSubscribers {
+		prevSubs, err := qtx.ListAutopilotSubscribers(r.Context(), prev.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
+		prevSubscriberKeys = autopilotSubscriberKeys(prevSubs)
+	}
+
 	autopilot, err := qtx.UpdateAutopilot(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update autopilot")
@@ -1258,6 +1282,24 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+
+	nextSubscriberKeys := prevSubscriberKeys
+	if replaceSubscribers {
+		nextSubscriberKeys = make([]string, len(subscribers))
+		for i, subscriber := range subscribers {
+			nextSubscriberKeys[i] = "member:" + uuidToString(subscriber.UserID)
+		}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.update",
+		WorkspaceID: prev.WorkspaceID,
+		TargetID:    autopilot.ID,
+		Before:      autopilotAuditFields(lockedPrev, prevSubscriberKeys),
+		After:       autopilotAuditFields(autopilot, nextSubscriberKeys),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.update")
+		return
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1380,9 +1422,20 @@ func (h *Handler) DeleteAutopilot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete autopilot")
 		return
 	}
+	deleted := autopilotAuditFields(ap, nil)
+	delete(deleted, "subscribers")
 	ap.Status = "archived" // reflect the post-archive state in the version snapshot
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", actor.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete autopilot")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.delete",
+		WorkspaceID: wsUUID,
+		TargetID:    idUUID,
+		Before:      deleted,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1637,7 +1690,9 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		}
 		trigger, err := h.createWebhookTriggerWithMintedToken(r, ap, ptrToText(req.Label), provider, eventFiltersBytes, publisherID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create trigger")
+			if !failedAudit(w, r, err, "autopilot.trigger.create") {
+				writeError(w, http.StatusInternalServerError, "failed to create trigger")
+			}
 			return
 		}
 		resp := h.triggerToResponse(trigger)
@@ -1685,6 +1740,15 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 	}
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", publisherID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create trigger")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.create",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    trigger.ID,
+		After:       autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.create")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1760,6 +1824,15 @@ func (h *Handler) createWebhookTriggerWithMintedToken(
 		if err := h.recordAutopilotRuleVersion(ctx, qtx, ap, "member", publisherID); err != nil {
 			tx.Rollback(ctx)
 			return db.AutopilotTrigger{}, err
+		}
+		if err := h.writeAudit(ctx, qtx, r, auditInput{
+			Kind:        "autopilot.trigger.create",
+			WorkspaceID: ap.WorkspaceID,
+			TargetID:    trigger.ID,
+			After:       autopilotTriggerAuditFields(trigger),
+		}); err != nil {
+			tx.Rollback(ctx)
+			return db.AutopilotTrigger{}, auditWriteError{err}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return db.AutopilotTrigger{}, err
@@ -2032,6 +2105,16 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.update",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    trigger.ID,
+		Before:      autopilotTriggerAuditFields(prev),
+		After:       autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update trigger")
 		return
@@ -2101,6 +2184,15 @@ func (h *Handler) DeleteAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 	}
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", actor.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete trigger")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.delete",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    triggerUUID,
+		Before:      autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

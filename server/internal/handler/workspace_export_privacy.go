@@ -156,8 +156,11 @@ func (h *Handler) UpdateWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	updated, changed, err := h.updateExportPrivacyAtomically(r.Context(), idUUID, actorUUID, requestedMode, req.ManifestRetentionDays)
+	updated, changed, err := h.updateExportPrivacyAtomically(r.Context(), r, idUUID, actorUUID, requestedMode, req.ManifestRetentionDays)
 	if err != nil {
+		if failedAudit(w, r, err, "workspace.export_privacy.update") {
+			return
+		}
 		slog.Error("update workspace export privacy failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update export privacy settings")
 		return
@@ -187,7 +190,7 @@ func (h *Handler) UpdateWorkspaceExportPrivacy(w http.ResponseWriter, r *http.Re
 // changed reports whether anything actually differed from the stored row,
 // so a no-op PATCH (both fields resent unchanged) does not manufacture a
 // misleading audit entry.
-func (h *Handler) updateExportPrivacyAtomically(ctx context.Context, workspaceID, actorID pgtype.UUID, requestedMode *string, requestedRetentionDays *int32) (db.UpdateWorkspaceExportPrivacyRow, bool, error) {
+func (h *Handler) updateExportPrivacyAtomically(ctx context.Context, r *http.Request, workspaceID, actorID pgtype.UUID, requestedMode *string, requestedRetentionDays *int32) (db.UpdateWorkspaceExportPrivacyRow, bool, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("begin: %w", err)
@@ -240,6 +243,13 @@ func (h *Handler) updateExportPrivacyAtomically(ctx context.Context, workspaceID
 			// record is exactly the gap this handler exists to close, so the
 			// change itself must not persist if the record of it cannot.
 			return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("insert audit record: %w", err)
+		}
+		if err := h.writeAudit(ctx, q, r, auditInput{
+			Kind: "workspace.export_privacy.update", WorkspaceID: workspaceID, TargetID: workspaceID,
+			Before: exportPrivacyAuditFields(current.ExportRedactionMode, current.ExportManifestRetentionDays),
+			After:  exportPrivacyAuditFields(updated.ExportRedactionMode, updated.ExportManifestRetentionDays),
+		}); err != nil {
+			return db.UpdateWorkspaceExportPrivacyRow{}, false, fmt.Errorf("write audit event: %w", auditWriteError{err})
 		}
 	}
 

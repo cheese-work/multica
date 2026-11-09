@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteProviderBreakerAuditForWorkspace = `-- name: DeleteProviderBreakerAuditForWorkspace :exec
+DELETE FROM provider_breaker_audit WHERE workspace_id = $1
+`
+
+func (q *Queries) DeleteProviderBreakerAuditForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteProviderBreakerAuditForWorkspace, workspaceID)
+	return err
+}
+
 const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
 
 DELETE FROM provider_breaker WHERE workspace_id = $1
@@ -226,6 +235,18 @@ func (q *Queries) DeleteWorkspaceComments(ctx context.Context, workspaceID pgtyp
 
 const deleteWorkspaceCommunicationRoots = `-- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
+deleted_turn_outcomes AS (
+    DELETE FROM chat_turn_outcome WHERE workspace_id = $1
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -242,6 +263,8 @@ deleted_channel_installations AS (
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1
 `
 
+// No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+// their chain root is one of this workspace's sessions.
 func (q *Queries) DeleteWorkspaceCommunicationRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceCommunicationRoots, workspaceID)
 	return err
@@ -413,6 +436,24 @@ deleted_ask_guard_events AS (
 deleted_system1_observations AS (
     DELETE FROM system1_observation WHERE workspace_id = $1
 ),
+deleted_system1_labels AS (
+    DELETE FROM system1_label WHERE workspace_id = $1
+),
+deleted_ci_watch_configs AS (
+    DELETE FROM ci_watch_config WHERE workspace_id = $1
+),
+deleted_ci_watch_config_audits AS (
+    DELETE FROM ci_watch_config_audit WHERE workspace_id = $1
+),
+deleted_ci_failure_events AS (
+    DELETE FROM ci_failure_event WHERE workspace_id = $1
+),
+deleted_ci_watch_actions AS (
+    DELETE FROM ci_watch_action WHERE workspace_id = $1
+),
+deleted_ci_signature_owners AS (
+    DELETE FROM ci_signature_owner WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
@@ -469,6 +510,9 @@ deleted_issue_checkpoints AS (
 ),
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
 ),
 deleted_run_gate_events AS (
     DELETE FROM run_gate_event WHERE workspace_id = $1
@@ -731,6 +775,9 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 // CHE-3345 ask guard events: workspace-owned leaf, no FK.
 // CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
+// CHE-4470 System 1 labels: workspace-owned leaf, no FK.
+// CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
+// budget tables are per App installation, have no workspace_id, and stay.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
 // stage_completion_wake). Deleted before the parent issues below so neither
 // statement depends on FK cascade ordering.
@@ -745,6 +792,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
 // CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
 // CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
+// CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
 // CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 // and no FK. Outlives issues and receipts; goes with the workspace.
 // CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves

@@ -160,7 +160,7 @@ func (h *Handler) withIssueWriteExternalRead(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to update issue")
 		return ctx, false
 	}
-	if !ok || !actor.ExternalRead {
+	if !ok || !(actor.ExternalRead || len(actor.TaintIds) > 0) {
 		return ctx, true
 	}
 	return context.WithValue(ctx, issueWriteExternalReadKey{}, true), true

@@ -76,6 +76,13 @@ func ValidateRuntimeAgentWorkspaces(runtime db.AgentRuntime, agents []db.Agent) 
 func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID, opts RuntimeTeardownOptions) (RuntimeTeardownResult, error) {
 	var out RuntimeTeardownResult
 
+	// chat_session -> runtime -> agent -> task, the one lock order: chat enqueue holds a session
+	// while it takes KEY SHARE on the runtime and locks the agent, so the runtime and its agents
+	// are locked only after the sessions that point at them. Callers that already hold the
+	// sessions make this a no-op.
+	if _, err := qtx.LockChatSessionsForRuntimes(ctx, []pgtype.UUID{runtimeID}); err != nil {
+		return out, fmt.Errorf("lock chat sessions: %w", err)
+	}
 	runtime, err := qtx.LockAgentRuntime(ctx, runtimeID)
 	if err != nil {
 		return out, fmt.Errorf("load runtime: %w", err)

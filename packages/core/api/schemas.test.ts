@@ -51,6 +51,8 @@ import {
   ListPropertiesResponseSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SearchProjectsResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
@@ -120,6 +122,36 @@ describe("ChatSessionSchema", () => {
     expect(parsed).not.toHaveProperty("lane_summary");
     expect(parsed).not.toHaveProperty("lane_summary_updated_at");
     expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
+  });
+
+  it("reads the DM attention projection and tolerates older or newer servers", () => {
+    const attention = {
+      attention_source: "ask",
+      attention_since: "2026-11-05T01:00:00Z",
+      stale_level: "yellow",
+      next_change_at: "2026-11-06T01:00:00Z",
+    };
+    expect(ChatSessionSchema.parse({ ...baseSession, ...attention })).toMatchObject(attention);
+
+    // Older server: fields absent.
+    const old = ChatSessionSchema.parse(baseSession);
+    expect(old.stale_level).toBeUndefined();
+    expect(old.attention_source).toBeUndefined();
+
+    // Newer server: unknown enum values fall back instead of dropping the session.
+    const newer = ChatSessionListSchema.parse([
+      { ...baseSession, ...attention, stale_level: "purple", attention_source: "turn", next_change_at: 7 },
+    ]);
+    expect(newer).toHaveLength(1);
+    expect(newer[0]?.stale_level).toBe("none");
+    expect(newer[0]?.attention_source).toBeNull();
+    expect(newer[0]?.next_change_at).toBeUndefined();
+
+    // Untyped turns ride along as subject keys; a malformed value is dropped.
+    const keys = ["turn:t1", "turn:t2"];
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
+    expect(old.attention_unclassified_keys).toBeUndefined();
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
   });
 
   it("keeps sessions readable when older servers send lane-summary data", () => {
@@ -2592,6 +2624,46 @@ describe("CommentPreviewSchema", () => {
     expect(ok.author_name).toBe("");
     expect(ok.preview).toBe("");
     expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("RuntimeUpdateSchema", () => {
+  const running = {
+    id: "u-1",
+    runtime_id: "rt-1",
+    status: "running",
+    target_version: "v1.2.3",
+    created_at: "2026-11-04T00:00:00Z",
+    updated_at: "2026-11-04T00:00:01Z",
+  };
+  const parse = (data: unknown) =>
+    parseWithFallback(data, RuntimeUpdateSchema, MALFORMED_RUNTIME_UPDATE, {
+      endpoint: "test",
+    });
+
+  it("keeps a well-formed progress", () => {
+    const progress = { phase: "download", bytes_done: 512, bytes_total: 2048 };
+    expect(parse({ ...running, progress }).progress).toEqual(progress);
+  });
+
+  it("parses a response without progress (older server)", () => {
+    const parsed = parse(running);
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "50%"],
+    ["wrong field types", { phase: "download", bytes_done: "x", bytes_total: 1 }],
+    ["missing fields", { phase: "download" }],
+  ])("drops a malformed progress (%s) and keeps the rest", (_name, progress) => {
+    const parsed = parse({ ...running, progress });
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it("falls back to failed when the body is not an update", () => {
+    expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
   });
 });
 
