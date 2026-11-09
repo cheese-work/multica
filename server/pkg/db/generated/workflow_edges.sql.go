@@ -97,6 +97,24 @@ func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.U
 	return created_at, err
 }
 
+const latestMemberStatusMove = `-- name: LatestMemberStatusMove :one
+SELECT created_at FROM activity_log
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+ORDER BY created_at DESC LIMIT 1
+`
+
+// When a person last moved the issue's status or topped up its run budget,
+// whatever session made the move. A refused dispatch resumes on any such move
+// (decision_wait.sql selects on the same rows); only the run-budget window is
+// limited to interactive sessions (LatestMemberStatusChange).
+func (q *Queries) LatestMemberStatusMove(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, latestMemberStatusMove, issueID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
 const listEdgePullRequests = `-- name: ListEdgePullRequests :many
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,

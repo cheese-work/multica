@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -73,5 +75,51 @@ func TestRunBudgetCutoverRecordedOnce(t *testing.T) {
 	var n int
 	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM run_budget_window_cutover`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("cutover rows = %d (err %v), want 1", n, err)
+	}
+}
+
+// A refused dispatch resumes on any person's status move, so candidate
+// selection and delivery must agree: a PAT move selects the episode and
+// resumes it; a remap row does neither. A selected episode that delivery
+// leaves suspended would hold a batch slot for every tenant (CWE-400).
+func TestRefusedDispatchSelectionMatchesDelivery(t *testing.T) {
+	for name, tc := range map[string]struct {
+		trigger string
+		resumes bool
+	}{
+		"pat move":   {`{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"pat"}}`, true},
+		"remap move": {`{"trigger":{"cause":{"kind":"workflow_remap"},"auth_source":"interactive_jwt"}}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newEpisodeFixture(t, false)
+			f.enter(t)
+			f.answerRequest(t, f.requestID, -time.Minute, false)
+			f.conflictingTask(t)
+			f.deliverEpisodeOnly(t)
+			dbfx.Exec(t, `UPDATE decision_wait SET dispatch_refused_since = now() - interval '16 minutes' WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID)
+			f.deliverEpisodeOnly(t)
+			before := f.suspension(t)
+			if before.phase != "suspended" || before.reason != "dispatch_refused" {
+				t.Fatalf("episode = %+v, want suspended dispatch_refused", before)
+			}
+			dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+				VALUES ($1, $2, 'member', $3, 'status_changed', $4::jsonb, now() + interval '1 second')`, testWorkspaceID, f.issueID, testUserID, tc.trigger)
+
+			waitID := f.onlyEpisode(t).id
+			selected := slices.Contains(episodeCandidateIDs(t, 0), waitID)
+			if selected != tc.resumes {
+				t.Fatalf("selected = %v, want %v", selected, tc.resumes)
+			}
+			if !selected {
+				return
+			}
+			// The refused task is still active, so a resumed episode is refused
+			// again and suspends again: a later suspended_at proves delivery let it
+			// resume instead of holding it.
+			f.deliverEpisodeOnly(t)
+			if after := f.suspension(t); !after.suspendedAt.After(before.suspendedAt) {
+				t.Fatalf("episode = %+v: selected but delivery held it suspended", after)
+			}
+		})
 	}
 }

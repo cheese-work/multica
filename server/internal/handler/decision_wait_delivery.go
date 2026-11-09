@@ -95,9 +95,22 @@ type episodeVerdict struct {
 	unauthorized bool
 }
 
-// memberMovedAfter reports whether a person changed the issue's status after t.
+// memberMovedAfter reports whether a person's move opened a run-budget window
+// after t: only an interactive session's move does (CHE-2798 S1d).
 func memberMovedAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
 	moved, err := queries.LatestMemberStatusChange(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+// memberMovedStatusAfter reports whether a person moved the issue's status
+// after t, whatever session made the move. A refused dispatch resumes on it, so
+// it must match the dispatch_refused branch of ListDecisionEpisodeCandidates.
+func memberMovedStatusAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
+	moved, err := queries.LatestMemberStatusMove(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+func movedAfter(moved pgtype.Timestamptz, err error, t time.Time) (bool, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -131,7 +144,7 @@ func (handler *Handler) episodeResumeHolds(ctx context.Context, queries *db.Quer
 			}
 			switch task.Status {
 			case "queued", "dispatched", "running", "waiting_local_directory":
-				return memberMovedAfter(ctx, queries, issue.ID, suspendedAt)
+				return memberMovedStatusAfter(ctx, queries, issue.ID, suspendedAt)
 			}
 		}
 		return true, nil

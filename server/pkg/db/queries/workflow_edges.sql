@@ -86,6 +86,16 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'ru
   )
 ORDER BY created_at DESC LIMIT 1;
 
+-- name: LatestMemberStatusMove :one
+-- When a person last moved the issue's status or topped up its run budget,
+-- whatever session made the move. A refused dispatch resumes on any such move
+-- (decision_wait.sql selects on the same rows); only the run-budget window is
+-- limited to interactive sessions (LatestMemberStatusChange).
+SELECT created_at FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+ORDER BY created_at DESC LIMIT 1;
+
 -- name: HasIssueReviewAdmission :one
 -- Whether the issue's first review of this PR head was already admitted. The
 -- row is written with the task row (CreateAgentTask), so it exists exactly when

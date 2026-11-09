@@ -201,6 +201,7 @@ WHERE wait.closed_at IS NULL
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
                    AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
              )
          )))
   )
