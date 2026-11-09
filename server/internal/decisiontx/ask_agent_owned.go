@@ -26,5 +26,5 @@ func agentOwned(text string) bool {
 		return true
 	}
 	into := mergeTarget.FindStringSubmatch(text)
-	return into != nil && !strings.EqualFold(into[1], "default")
+	return len(into) > 1 && !strings.EqualFold(into[1], "default")
 }
