@@ -31,6 +31,19 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// TestGitBackgroundMaintenanceIsOff pins the TestMain env: a git the broker
+// spawns must see gc.auto=0 and maintenance.auto=false (CHE-4873).
+func TestGitBackgroundMaintenanceIsOff(t *testing.T) {
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		cmd := exec.Command("git", "config", "--get", key)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		out, err := cmd.Output()
+		if got := strings.TrimSpace(string(out)); err != nil || got != want {
+			t.Errorf("git config --get %s = %q (err %v), want %q", key, got, err, want)
+		}
+	}
+}
+
 func git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
