@@ -327,6 +327,44 @@ test.describe("DM reading point inside one tall message (CHE-4638 design)", () =
       expect(Math.max(...result.samples.map((s) => Math.abs(s - result.before)))).toBeLessThanOrEqual(2);
     });
   });
+
+  test("plain text below the reader grows before a later inline element: no frame moves the text", async ({ page }) => {
+    await withScrolledDm(page, async () => {
+      // Make the second paragraph plain text followed by <strong>. Park the
+      // viewport top inside the plain text; the text then grows. Only the
+      // <strong> moves, so the reader's text must stay where it is.
+      const result = await page.evaluate(async () => {
+        const root = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        const row = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find((n) =>
+          n.textContent?.includes("Target message 40"),
+        )!;
+        const paragraph = row.querySelectorAll("p")[1]!;
+        const text = paragraph.firstChild as Text;
+        if (text.nodeType !== Node.TEXT_NODE) throw new Error("paragraph must start with plain text");
+        paragraph.append(Object.assign(document.createElement("strong"), { textContent: "late emphasis" }));
+        const rootTop = root.getBoundingClientRect().top;
+        root.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, bubbles: true }));
+        root.scrollTop += paragraph.getBoundingClientRect().top - rootTop + 8;
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        // The first line of the plain text, measured without adding an element.
+        const textTop = () => {
+          const range = document.createRange();
+          range.setStart(text, 0);
+          range.setEnd(text, 1);
+          return range.getBoundingClientRect().top - rootTop;
+        };
+        const before = textTop();
+        text.data += " more words".repeat(120);
+        const samples: number[] = [];
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => requestAnimationFrame(r));
+          samples.push(textTop());
+        }
+        return { before, samples };
+      });
+      expect(Math.max(...result.samples.map((s) => Math.abs(s - result.before)))).toBeLessThanOrEqual(2);
+    });
+  });
 });
 
 // A late height change, as an image or a code block finishing layout does.

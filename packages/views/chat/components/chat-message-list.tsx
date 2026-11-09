@@ -384,11 +384,24 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Footer: ChatListFooter,
 };
 
-// First child whose box still reaches below the viewport top: the element the
-// reader is looking at inside its parent.
-function firstReaching(parent: Element, viewportTop: number): Element | undefined {
-  for (const child of parent.children) {
-    if (child.getBoundingClientRect().bottom > viewportTop) return child;
+// Box of a node: an element's own box, a text node's line boxes (measured with
+// a Range, so no marker element is added to the message).
+function rectOf(node: Node): DOMRect {
+  if (node.nodeType === Node.ELEMENT_NODE) return (node as Element).getBoundingClientRect();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  return range.getBoundingClientRect();
+}
+
+// First child (element or visible text) whose box still reaches below the
+// viewport top: the content the reader is looking at inside its parent. Text
+// nodes count: a paragraph's plain text must win over a later `<strong>`.
+function firstReaching(parent: Node, viewportTop: number): Node | undefined {
+  for (const child of parent.childNodes) {
+    const isText = child.nodeType === Node.TEXT_NODE;
+    if (!isText && child.nodeType !== Node.ELEMENT_NODE) continue;
+    if (isText && !child.textContent?.trim()) continue;
+    if (rectOf(child).bottom > viewportTop) return child;
   }
   return undefined;
 }
@@ -444,7 +457,7 @@ export function ChatMessageList({
   // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
   // a row that starts above the viewport and grows late (image, embed, expanded
   // block) pushes the reader's message down. The reader's reading anchor is the
-  // message row at the viewport top, narrowed to the deepest element still
+  // message row at the viewport top, narrowed to the deepest element or text still
   // reaching below that edge (the visible content point inside a tall message),
   // and where it sits from the edge; after any resize batch it is put back
   // there. It is a measured position, not a sum of deltas: growth below the
@@ -453,7 +466,7 @@ export function ChatMessageList({
   // baseline; the live-end follow owns its own pin (CHE-4638).
   const isFollowingRef = useRef(isFollowing);
   isFollowingRef.current = isFollowing;
-  const readingAnchor = useRef<{ id: string; top: number; point: Element; pointTop: number } | null>(
+  const readingAnchor = useRef<{ id: string; top: number; point: Node; pointTop: number } | null>(
     null,
   );
   // A restored list holds its saved position (a fixed target) until the reader
@@ -469,7 +482,7 @@ export function ChatMessageList({
     for (const row of scroller.querySelectorAll("[data-message-id]")) {
       const { top, bottom } = row.getBoundingClientRect();
       if (bottom <= viewportTop) continue;
-      let point = row;
+      let point: Node = row;
       for (let next = firstReaching(point, viewportTop); next; next = firstReaching(point, viewportTop)) {
         point = next;
       }
@@ -477,7 +490,7 @@ export function ChatMessageList({
         id: row.getAttribute("data-message-id")!,
         top: top - viewportTop,
         point,
-        pointTop: point.getBoundingClientRect().top - viewportTop,
+        pointTop: rectOf(point).top - viewportTop,
       };
       return;
     }
@@ -502,12 +515,12 @@ export function ChatMessageList({
     if (!scroller || !anchor) return;
     // The content point can be re-rendered away; the row is then the anchor.
     const live = anchor.point.isConnected;
-    const el = live
+    const el: Node | null = live
       ? anchor.point
       : scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
     if (!el) return;
     const delta =
-      el.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (live ? anchor.pointTop : anchor.top);
+      rectOf(el).top - scroller.getBoundingClientRect().top - (live ? anchor.pointTop : anchor.top);
     if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
   }, []);
   useEffect(() => {

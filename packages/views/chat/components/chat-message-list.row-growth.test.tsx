@@ -78,6 +78,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect;
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -113,10 +114,25 @@ function setup() {
   });
   // m3 holds two blocks: `above` is wholly above the viewport top, `marker` is
   // the visible text the reader is on. Row geometry stays in `heights`.
+  // `marker` is a paragraph: plain `text` (what the reader sees) followed by a
+  // `<strong>` that sits far below the viewport (what a descent must not pick).
   let aboveH = 30;
+  let textH = heights[2]! - aboveH;
   const above = document.createElement("div");
   const marker = document.createElement("div");
+  const text = document.createTextNode("visible text");
+  const strong = document.createElement("strong");
+  marker.append(text, strong);
   rows[2]!.append(above, marker);
+  // jsdom has no Range geometry: the text node's box starts at the marker top.
+  (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect = function (this: Range) {
+    const top = rowTop(2) + aboveH;
+    return this.startContainer === text
+      ? { top, bottom: top + textH, height: textH }
+      : { top: 0, bottom: 0, height: 0 };
+  };
+  strong.getBoundingClientRect = () =>
+    ({ top: rowTop(2) + aboveH + textH, bottom: rowTop(2) + aboveH + textH + 20, height: 20 }) as DOMRect;
   above.getBoundingClientRect = () =>
     ({ top: rowTop(2), bottom: rowTop(2) + aboveH, height: aboveH }) as DOMRect;
   marker.getBoundingClientRect = () =>
@@ -125,6 +141,14 @@ function setup() {
   const growAbove = (px: number) =>
     act(() => {
       aboveH += px;
+      heights[2]! += px;
+      for (const cb of callbacks)
+        cb([{ target: rows[2]!, borderBoxSize: [{ blockSize: heights[2]! }] }]);
+    });
+  // Plain text below the reader grows: the later `<strong>` moves, the text not.
+  const growText = (px: number) =>
+    act(() => {
+      textH += px;
       heights[2]! += px;
       for (const cb of callbacks)
         cb([{ target: rows[2]!, borderBoxSize: [{ blockSize: heights[2]! }] }]);
@@ -144,7 +168,7 @@ function setup() {
   });
   // Distance of m3, the row at the viewport top, from the viewport top.
   const readingOffset = () => rowTop(2) - VIEWPORT_TOP;
-  return { root, grow, growAbove, markerOffset, readingOffset };
+  return { root, grow, growAbove, growText, markerOffset, readingOffset };
 }
 
 describe("ChatMessageList holds the reading point as rows resize", () => {
@@ -175,6 +199,13 @@ describe("ChatMessageList holds the reading point as rows resize", () => {
     growAbove(60);
     expect(markerOffset()).toBe(-20);
     expect(root.scrollTop).toBe(START + 60);
+  });
+
+  it("ignores growth of the visible text when a later inline element sits below the viewport", () => {
+    const { root, growText, markerOffset } = setup();
+    growText(400); // the `<strong>` moves down 400 px; the text the reader reads does not
+    expect(markerOffset()).toBe(-20);
+    expect(root.scrollTop).toBe(START);
   });
 
   it("corrects several rows resized in one batch once", () => {
