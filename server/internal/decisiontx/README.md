@@ -464,3 +464,16 @@ locks the request, then the answer, in the same order as a withdrawal.
 Each decision is usable once: its row in `decision_bound_write` is the lock and the audit record.
 Orphan cleanup deletes a request's `decision_bound_write` row before the request,
 because the table has no foreign key to cascade from.
+
+## Ping coalescing (CHE-2689)
+
+While one agent has an open, pinged ask to a person in a DM, a new ask from
+that agent posts its card but creates no inbox item. `NotifyPingTx` locks the
+(agent, person, session) group, finds the live head item, rewrites its body to
+"N open asks from <agent>" and sets `ping_notified_at` with
+`ping_outcome = 'coalesced'`. The worker retry selects only NULL
+`ping_notified_at`, so it never creates the suppressed ping. When the head ask
+is answered or cancelled and coalesced asks stay open, the worker calls
+`RepingCoalesced` once: it flips the oldest coalesced ask to `notified` and
+creates one item for the remaining list. A read head item means the next ask
+pings normally. Each ask keeps its own answer, quote, hold, wake and Disclaim.

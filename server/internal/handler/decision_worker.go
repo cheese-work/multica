@@ -210,6 +210,20 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return err
 		}))
 	}
+	// CHE-2689: the pinged ask of a coalesced group was answered or cancelled.
+	repings, err := handler.Queries.ListDecisionPingRepings(ctx, decisionBatchSize)
+	if err != nil {
+		return errors.Join(failures, err)
+	}
+	for _, request := range repings {
+		failures = errors.Join(failures, decisionAttempt(ctx, func() error {
+			item, err := decisiontx.RepingCoalesced(ctx, handler.TxStarter, handler.Queries, request.WorkspaceID, request.ID)
+			if err == nil && item != nil {
+				handler.publish(protocol.EventInboxNew, uuidToString(request.WorkspaceID), "agent", uuidToString(request.AskingAgentID), map[string]any{"item": inboxToResponse(*item)})
+			}
+			return err
+		}))
+	}
 	orphans, err := handler.Queries.ListDecisionActionsAwaitingPostCommit(ctx, decisionBatchSize)
 	if err != nil {
 		return errors.Join(failures, err)
