@@ -465,6 +465,8 @@
     "action_preview": "승인 시 변경되는 내용",
     "action_diff": "이 단계 지침의 변경 사항",
     "action_diff_open": "변경 사항 검토",
+    "action_diff_workflow": "워크플로:",
+    "action_diff_status": "상태 키:",
     "agent_note": "에이전트 메모(확인되지 않음)",
     "answer_send_passkey": "패스키로 보내기",
     "answer_open_browser": "브라우저에서 열기",

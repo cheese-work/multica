@@ -214,12 +214,20 @@ describe("issue quote card fields", () => {
 
 describe("action diff", () => {
   const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
-  const diff = { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }], sha256: "e".repeat(64) };
+  const target = { workflow_id: "wf", workflow_name: "Production flow", status_key: "todo" };
+  const diff = { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }], sha256: "e".repeat(64), target };
   const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", diff };
   const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
 
   it("keeps a well-formed diff of a type this client knows", () => {
     expect(parse(action)?.diff).toEqual(diff);
+  });
+
+  it("keeps the server-resolved target and drops one that is malformed", () => {
+    expect(parse(action)?.diff?.target).toEqual(target);
+    for (const bad of ["todo", { ...target, status_key: 1 }, { workflow_id: "wf" }]) {
+      expect(parse({ ...action, diff: { ...diff, target: bad } })?.diff?.target).toBeUndefined();
+    }
   });
 
   it("drops a malformed diff or one of an unknown action type, keeping the action", () => {

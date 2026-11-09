@@ -32,3 +32,34 @@ func TestCardDiffIsGoneOnceTheActionIsDecided(test *testing.T) {
 		test.Fatalf("a decided action still carries a diff: %+v", card)
 	}
 }
+
+// Two workflows can hold identical step text, so the diff alone cannot say
+// which one an approval changes. The card names the target from the live
+// workflow row, never from the agent's ask text (CHE-2962 security finding).
+func TestCardDiffNamesTheServerResolvedWorkflowAndStatusKey(test *testing.T) {
+	first := newStepInstructionsRequest(test)
+	second := newStepInstructionsRequest(test)
+	dbfx.Exec(test, `UPDATE issue_workflow SET name = 'Sandbox flow' WHERE id = $1`, first.workflowID)
+	dbfx.Exec(test, `UPDATE issue_workflow SET name = 'Production flow' WHERE id = $1`, second.workflowID)
+	firstCard, secondCard := first.action.cardAction(test), second.action.cardAction(test)
+	if firstCard == nil || firstCard.Diff == nil || firstCard.Diff.Target == nil || secondCard == nil || secondCard.Diff == nil || secondCard.Diff.Target == nil {
+		test.Fatalf("cards lack a diff target: %+v / %+v", firstCard, secondCard)
+	}
+	if got := *firstCard.Diff.Target; got.WorkflowID != first.workflowID || got.WorkflowName != "Sandbox flow" || got.StatusKey != "todo" {
+		test.Fatalf("first target %+v; want the live workflow %s, name and status key", got, first.workflowID)
+	}
+	if got := *secondCard.Diff.Target; got.WorkflowID != second.workflowID || got.WorkflowName != "Production flow" || got.StatusKey != "todo" {
+		test.Fatalf("second target %+v; want the live workflow %s, name and status key", got, second.workflowID)
+	}
+	if firstCard.Diff.Hunks[0].Lines[0] != secondCard.Diff.Hunks[0].Lines[0] {
+		test.Fatal("fixture drift: the two diffs must be identical for this regression")
+	}
+}
+
+func TestCardDiffIsWithheldWhenItsTargetCannotBeResolved(test *testing.T) {
+	request := newStepInstructionsRequest(test)
+	dbfx.Exec(test, `UPDATE issue_workflow SET steps = '[]'::jsonb WHERE id = $1`, request.workflowID)
+	if card := request.action.cardAction(test); card == nil || card.Diff != nil {
+		test.Fatalf("an unresolvable target still carries a diff: %+v", card)
+	}
+}

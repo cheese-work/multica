@@ -93,6 +93,14 @@ export interface DecisionActionDiff {
   kind: "text";
   hunks: { old_start: number; new_start: number; lines: string[] }[];
   sha256: string;
+  /** The workflow step the diff edits, resolved by the server; without it the card offers no approval. */
+  target?: DecisionActionDiffTarget;
+}
+
+export interface DecisionActionDiffTarget {
+  workflow_id: string;
+  workflow_name: string;
+  status_key: string;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

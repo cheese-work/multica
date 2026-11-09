@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -42,6 +45,16 @@ type ActionDiff struct {
 	Kind   string                `json:"kind"`
 	Hunks  []decisiontx.DiffHunk `json:"hunks"`
 	SHA256 string                `json:"sha256"`
+	// Target is the workflow step the diff applies to, resolved by the server
+	// from the live workflow, never from the agent's ask text.
+	Target *ActionDiffTarget `json:"target,omitempty"`
+}
+
+// ActionDiffTarget names the workflow and status key an approval would change.
+type ActionDiffTarget struct {
+	WorkflowID   string `json:"workflow_id"`
+	WorkflowName string `json:"workflow_name"`
+	StatusKey    string `json:"status_key"`
 }
 
 // DecisionRequestCardAction is the action a request asks to approve. It stays on
@@ -101,7 +114,36 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		card.Preview = nil
 	}
 	card.Diff = storedActionDiff(action.Preconditions)
+	if card.Diff != nil && action.ActionType == decisionaction.WorkflowStepInstructionsSet {
+		// The diff alone does not say which step it edits, so the card names the
+		// target from live state. A target that cannot be resolved withholds the
+		// diff and with it the approve button.
+		card.Diff.Target = handler.stepInstructionsDiffTarget(ctx, action)
+		if card.Diff.Target == nil {
+			card.Diff = nil
+		}
+	}
 	return card
+}
+
+// stepInstructionsDiffTarget resolves the workflow and status key a pending
+// workflow.step.instructions.set action would change, from the live workflow
+// and the action's validated params, never from the request's ask text. It is
+// nil when the workflow or its step is gone.
+func (handler *Handler) stepInstructionsDiffTarget(ctx context.Context, action db.DecisionAction) *ActionDiffTarget {
+	var wanted decisionaction.WorkflowStepInstructionsSetParams
+	if json.Unmarshal(action.Params, &wanted) != nil {
+		return nil
+	}
+	workflow, err := loadWorkflowTarget(ctx, handler.Queries, action.WorkspaceID, action.Params, http.StatusConflict, false)
+	if err != nil {
+		return nil
+	}
+	steps, err := issueworkflow.DecodeSteps(workflow.Steps)
+	if err != nil || !slices.ContainsFunc(steps, func(step issueworkflow.Step) bool { return step.StatusKey == wanted.StatusKey }) {
+		return nil
+	}
+	return &ActionDiffTarget{WorkflowID: uuidToString(workflow.ID), WorkflowName: workflow.Name, StatusKey: wanted.StatusKey}
 }
 
 // storedActionDiff reads the text diff a config-change action stored with its

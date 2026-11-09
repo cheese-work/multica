@@ -1064,6 +1064,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
     kind: z.literal("text"),
     hunks: z.array(z.object({ old_start: z.number().int(), new_start: z.number().int(), lines: z.array(z.string().regex(/^[ +-]/)) }).loose()),
     sha256: z.string().regex(SHA256_HEX),
+    target: z.object({ workflow_id: z.string(), workflow_name: z.string(), status_key: z.string() }).loose().optional().catch(undefined),
   }).loose().optional().catch(undefined),
 }).loose().transform((action) => ({
   ...action,

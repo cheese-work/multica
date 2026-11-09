@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -676,6 +676,7 @@ describe("DecisionRequestCard answering", () => {
       kind: "text",
       hunks: [{ old_start: 1, new_start: 1, lines: ["-do A", "+do A better"] }],
       sha256: "e".repeat(64),
+      target: { workflow_id: "wf-prod", workflow_name: "Production flow", status_key: "todo" },
     };
     const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", state: "pending", diff };
     const show = (value: unknown) => renderCard({ ...card, action: value as RequestCard["action"] });
@@ -689,6 +690,38 @@ describe("DecisionRequestCard answering", () => {
       expect(region).toHaveTextContent("do A better");
       expect(region).toHaveTextContent("1 lines added, 1 removed.");
       expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
+    });
+
+    it("names the server-resolved workflow and status key, not the ask text", async () => {
+      renderCard({ ...card, ask: "Tweak the SANDBOX flow's todo step", action: action as RequestCard["action"] });
+      const region = await screen.findByTestId("decision-request-action-diff");
+      const target = within(region).getByTestId("decision-request-action-diff-target");
+      expect(target).toHaveTextContent("Production flow");
+      expect(target).toHaveTextContent("todo");
+      expect(target).not.toHaveTextContent(/sandbox/i);
+    });
+
+    it("shows two identical diffs on different targets apart", async () => {
+      const other = { ...diff, target: { workflow_id: "wf-sandbox", workflow_name: "Sandbox flow", status_key: "in_review" } };
+      const { unmount } = show(action);
+      expect(await screen.findByTestId("decision-request-action-diff-target")).toHaveTextContent("Production flow");
+      unmount();
+      show({ ...action, diff: other });
+      const target = await screen.findByTestId("decision-request-action-diff-target");
+      expect(target).toHaveTextContent("Sandbox flow");
+      expect(target).toHaveTextContent("in_review");
+    });
+
+    it.each([
+      ["absent", undefined],
+      ["without a workflow name", { workflow_id: "wf", workflow_name: "", status_key: "todo" }],
+      ["without a status key", { workflow_id: "wf", workflow_name: "Flow", status_key: "" }],
+      ["malformed", "todo"],
+    ])("keeps Approve disabled when the target is %s", (_name, bad) => {
+      show({ ...action, diff: { ...diff, target: bad } });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-request-action-diff")).toBeNull();
+      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
     });
 
     it("opens the changes in the fullscreen viewer", async () => {

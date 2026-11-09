@@ -478,6 +478,8 @@
     "action_preview": "What approving changes",
     "action_diff": "Changes to this step's instructions",
     "action_diff_open": "Review changes",
+    "action_diff_workflow": "Workflow:",
+    "action_diff_status": "Status key:",
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",
     "answer_open_browser": "Open in browser",

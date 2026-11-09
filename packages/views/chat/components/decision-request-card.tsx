@@ -241,6 +241,13 @@ function ActionDiff({ diff }: { diff: DecisionActionDiff }) {
   return (
     <div data-testid="decision-request-action-diff" className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
       <p className="font-medium">{t(($) => $.decision.action_diff)}</p>
+      {diff.target && (
+        <p data-testid="decision-request-action-diff-target" className="text-muted-foreground">
+          {t(($) => $.decision.action_diff_workflow)} <span className="text-foreground">{diff.target.workflow_name}</span>
+          {" · "}
+          {t(($) => $.decision.action_diff_status)} <code className="text-foreground">{diff.target.status_key}</code>
+        </p>
+      )}
       <p className="text-muted-foreground">{t(($) => $.decision.artifacts.changes_summary, { added, removed })}</p>
       <div className="flex max-h-48 flex-col">
         <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.action_diff)} />

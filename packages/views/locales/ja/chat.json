@@ -465,6 +465,8 @@
     "action_preview": "承認で変更される内容",
     "action_diff": "このステップの指示の変更",
     "action_diff_open": "変更を確認",
+    "action_diff_workflow": "ワークフロー:",
+    "action_diff_status": "ステータスキー:",
     "agent_note": "エージェントのメモ（未検証）",
     "answer_send_passkey": "パスキーで送信",
     "answer_open_browser": "ブラウザで開く",

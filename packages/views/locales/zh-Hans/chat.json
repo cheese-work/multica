@@ -465,6 +465,8 @@
     "action_preview": "批准后将更改的内容",
     "action_diff": "此步骤说明的更改",
     "action_diff_open": "查看更改",
+    "action_diff_workflow": "工作流：",
+    "action_diff_status": "状态键：",
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",
     "answer_open_browser": "在浏览器中打开",

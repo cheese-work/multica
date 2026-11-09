@@ -38,5 +38,7 @@ export function approvableDiff(action: Pick<DecisionRequestAction, "action_type"
   const wellFormed = Array.isArray(diff.hunks) && diff.hunks.every((h) =>
     Number.isInteger(h.old_start) && Number.isInteger(h.new_start) && Array.isArray(h.lines)
     && h.lines.every((line) => typeof line === "string" && /^[ +-]/.test(line)));
-  return wellFormed ? diff : undefined;
+  // The diff does not say which step it edits: without a named workflow and status key there is nothing to approve.
+  const named = !!diff.target?.workflow_name && !!diff.target.status_key;
+  return wellFormed && named ? diff : undefined;
 }
