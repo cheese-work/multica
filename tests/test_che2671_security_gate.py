@@ -283,7 +283,7 @@ class MergeGroupStepTest(unittest.TestCase):
                    "STATE": state, "STATES": states, "FAIL_AT": str(fail_at), "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
                    "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
                    "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7",
-                   "WATCH_SECONDS": "60", "WATCH_INTERVAL": "0"}  # CHE-4655 watch: the stub lists no live queue ref, so it ends at once
+                   "WATCH_SECONDS": "60", "WATCH_INTERVAL": "0"}  # CHE-4655 queue gate: the stub lists no live queue ref, so it ends at once
             done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
             log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
         return done, log

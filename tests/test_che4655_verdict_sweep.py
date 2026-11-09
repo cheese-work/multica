@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
+import subprocess
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -122,53 +125,125 @@ class WorkflowShape(unittest.TestCase):
         self.assertEqual(self.sweep["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
 
 
-class QueueWatch(unittest.TestCase):
-    """Sol FAIL on df9a311f1 (CWE-841): with no comment run, a FAIL posted after a queue entry went green reached it only at
-    the next sweep, so another required check could merge the rejected PR first. Both queue evaluators keep reading the
-    verdict while the queue entry exists and overwrite the success at once."""
+class QueueGate(unittest.TestCase):
+    """Sol FAILs on df9a311f1 and 463bca589 (CWE-841): with no comment run, a FAIL posted after a queue entry went green
+    reached it only at the next poll or sweep, so another required check could merge the rejected PR first. Both queue
+    evaluators now post the green LAST: they hold it until every other required check on the queue commit is done, read the
+    verdict again right before the post, and keep watching (cheap comment digest, full read on change) while the entry
+    lives. A watch that expires, or a read that errors, fails closed."""
 
     FILES = [".github/workflows/security-gate.yml", ".github/workflows/security-gate-queue.yml"]
 
     def _step(self, rel):
         wf = yaml.safe_load((ROOT / rel).read_text())
         job = next(j for j in wf["jobs"].values() if "WATCH_SECONDS" in j.get("env", {}))
-        run = next(s["run"] for s in job["steps"] if "watch:begin" in s.get("run", ""))
+        run = next(s["run"] for s in job["steps"] if "queue-gate:begin" in s.get("run", ""))
         return job, run
 
-    def _loop(self, rel):
+    def _block(self, rel):
         run = self._step(rel)[1]
-        return run[run.index("# watch:begin"):run.index("# watch:end")]
+        return run[run.index("# queue-gate:begin"):run.index("# queue-gate:end")]
 
-    def _drive(self, rel, verdicts, live="refs/heads/q\n"):
-        """Run the watch loop with stubbed `gh`, `sleep`, `read_verdict` and `post`; return the posts."""
-        import subprocess
-
+    def _drive(self, rel, verdicts, settled=("yes",), live=("refs/heads/q",), digests=("d",), required="backend\nsecurity-gate",
+               watch=300, interval=15):
+        """Run the gate block with stubbed `gh`, `sleep`, `read_verdict`, `post`; return the log. `settled` answers the
+        required-check query per call (yes/no/err), `digests` the comment digest per call, `live` the queue ref list."""
         script = (
-            "set -euo pipefail\nSECONDS=0\nWATCH_SECONDS=300 WATCH_INTERVAL=1\nGITHUB_REPOSITORY=o/r MERGE_GROUP_REF=refs/heads/q\n"
-            "state=success desc=ok n=0\nsleep() { SECONDS=$((SECONDS + 60)); }\n"
-            f"gh() {{ printf '{live}'; }}\n"
+            "set -euo pipefail\nSECONDS=0\n"
+            f"WATCH_SECONDS={watch} WATCH_INTERVAL={interval}\nGITHUB_REPOSITORY=o/r MERGE_GROUP_REF=refs/heads/q MERGE_GROUP_SHA=sha DEFAULT_BRANCH=main pr=1\n"
+            "state=success desc=ok n=0\ncnt=$(mktemp -d)\n"
+            # gh runs in a command substitution: a per-call answer needs a counter that survives the subshell
+            'next() { local f="$cnt/$1" i=0; [ -f "$f" ] && i=$(<"$f"); echo $((i + 1)) > "$f"; echo "$i"; }\n'
+            'sleep() { echo "SLEEP $1"; SECONDS=$((SECONDS + $1)); }\n'
+            f"settled=({' '.join(settled)}) digests=({' '.join(digests)})\n"
+            "gh() {\n"
+            '  case "$*" in\n'
+            f"    *rules/branches*) printf '{required}\\n' ;;\n"
+            '    *check-runs*) i=$(next c); a="${settled[i]:-${settled[-1]}}"; [ "$a" = err ] && exit 1\n'
+            '      [ "$a" = yes ] && printf "backend\\tdone\\n" || printf "backend\\topen\\n" ;;\n'
+            "    *commits/*/status*) : ;;\n"
+            f"    *matching-refs*) l=({' '.join(repr(x) for x in live)}); i=$(next l); a=\"${{l[i]:-${{l[-1]}}}}\"; [ \"$a\" = err ] && exit 1; printf '%s' \"$a\" ;;\n"
+            '    *issues/*/comments*) i=$(next d); a="${digests[i]:-${digests[-1]}}"; [ "$a" = err ] && exit 1; echo "$a" ;;\n'
+            "  esac\n}\n"
             f"vs=({' '.join(verdicts)})\n"
-            'read_verdict() { state="${vs[n]:-success}"; desc="d$n"; n=$((n + 1)); }\n'
-            'post() { echo "POST $1 $2"; }\n' + self._loop(rel)
+            'read_verdict() { state="${vs[n]:-success}"; desc="d$n"; echo "READ $state"; n=$((n + 1)); }\n'
+            'post() { echo "POST $1 $2"; }\n' + self._block(rel) + "\nqueue_gate\n"
         )
-        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout.splitlines()
 
-    def test_both_evaluators_watch_the_queue_entry_within_the_job_timeout(self):
+    @staticmethod
+    def _posts(log):
+        return [l for l in log if l.startswith("POST")]
+
+    def test_both_evaluators_carry_the_same_gate_block(self):
+        a, b = (self._block(f) for f in self.FILES)
+        self.assertEqual(a.split(), b.split())
+
+    def test_the_watch_fits_the_job_timeout_and_a_pr_evaluation_stays_below_the_sweep_margin(self):
         for rel in self.FILES:
             job, _ = self._step(rel)
-            self.assertLess(int(job["env"]["WATCH_SECONDS"]) + 300, job["timeout-minutes"] * 60, rel)
+            self.assertLess(int(job["env"]["WATCH_SECONDS"]) + 300, 3600, rel)
+        gate = yaml.safe_load((ROOT / self.FILES[0]).read_text())["jobs"]["security-gate"]
+        timeout = gate["timeout-minutes"]
+        self.assertIn("merge_group", str(timeout))
+        pr_minutes = int(re.search(r"\|\|\s*(\d+)\s*\}\}", str(timeout)).group(1))
+        self.assertLess(timedelta(minutes=pr_minutes), st.MARGIN)
+        queue = yaml.safe_load((ROOT / self.FILES[1]).read_text())["jobs"]["security-gate-queue"]
+        self.assertGreaterEqual(queue["timeout-minutes"] * 60, int(queue["env"]["WATCH_SECONDS"]) + 300)
 
-    def test_a_fail_after_the_green_post_overwrites_it_at_once(self):
+    def test_green_is_held_until_every_other_required_check_is_done(self):
+        log = self._drive(self.FILES[0], [], settled=["no", "no", "yes"], live=("refs/heads/q", "refs/heads/q", ""))
+        self.assertEqual(self._posts(log), ["POST success d1"])
+        self.assertEqual(log[:log.index("POST success d1")].count("SLEEP 15"), 2)
+
+    def test_a_fail_while_the_green_is_held_is_posted_and_green_never_is(self):
         for rel in self.FILES:
-            self.assertEqual(self._drive(rel, ["success", "failure"]), "POST failure d1\n", rel)
+            log = self._drive(rel, ["success", "failure"], settled=["no", "no"], digests=["a", "b"])
+            self.assertEqual(self._posts(log), ["POST failure d1"], rel)
+
+    def test_the_verdict_is_read_right_before_the_green_post_and_once_after(self):
+        log = self._drive(self.FILES[0], [], settled=["yes"], live=("",))
+        self.assertEqual(log[:4], ["READ success", "READ success", "POST success d1", "READ success"])
+
+    def test_a_fail_between_the_last_read_and_the_post_is_not_published_as_green(self):
+        for rel in self.FILES:
+            log = self._drive(rel, ["success", "failure"], settled=["yes"])
+            self.assertEqual(self._posts(log), ["POST failure d1"], rel)
+
+    def test_a_fail_after_the_green_post_overwrites_it_within_one_poll_interval(self):
+        for rel in self.FILES:
+            log = self._drive(rel, ["success", "success", "success", "failure"], digests=["a", "a", "a", "b"],
+                              live=("refs/heads/q", "refs/heads/q", "refs/heads/q", ""))
+            self.assertEqual(self._posts(log), ["POST success d1", "POST failure d3"], rel)
+            self.assertLessEqual(max(int(l.split()[1]) for l in log if l.startswith("SLEEP")), 15, rel)
+
+    def test_an_unchanged_comment_digest_costs_no_verdict_read(self):
+        log = self._drive(self.FILES[0], [], digests=["a"], live=("refs/heads/q",), watch=60)
+        self.assertEqual(len([l for l in log if l.startswith("READ")]), 3, log)
+
+    def test_a_digest_read_error_forces_a_verdict_read(self):
+        log = self._drive(self.FILES[0], ["success", "success", "success", "failure"], digests=["a", "err"], watch=60)
+        self.assertEqual(self._posts(log)[-1], "POST failure d3", log)
+
+    def test_a_ref_listing_error_does_not_skip_the_evaluation(self):
+        for rel in self.FILES:
+            log = self._drive(rel, ["success", "success", "success", "failure"], digests=["a", "a", "a", "b"], live=("err",))
+            self.assertEqual(self._posts(log), ["POST success d1", "POST failure d3"], rel)
 
     def test_the_watch_ends_when_the_queue_entry_is_gone(self):
         for rel in self.FILES:
-            self.assertEqual(self._drive(rel, ["failure"], live=""), "", rel)
+            log = self._drive(rel, [], settled=["no"], live=("",))
+            self.assertEqual(self._posts(log), [], rel)
 
-    def test_the_watch_posts_nothing_while_the_verdict_stays_green(self):
+    def test_a_required_check_query_error_holds_the_green_and_expiry_fails_closed(self):
         for rel in self.FILES:
-            self.assertEqual(self._drive(rel, []), "", rel)
+            log = self._drive(rel, [], settled=["err"], watch=60)
+            self.assertEqual([l.split(" ", 2)[1] for l in self._posts(log)], ["failure"], rel)
+
+    def test_expiry_with_a_live_entry_revokes_the_green(self):
+        for rel in self.FILES:
+            log = self._drive(rel, [], settled=["yes"], watch=60)
+            self.assertEqual([l.split(" ", 2)[1] for l in self._posts(log)], ["success", "failure"], rel)
 
 
 if __name__ == "__main__":

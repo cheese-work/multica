@@ -34,7 +34,7 @@ jobs:
       vars.SECURITY_GATE_QUEUE_TRUSTED == 'true' && github.event.workflow_run.event == 'merge_group' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     environment: ci-app-token
     env:
       GH_TOKEN: ${{ github.token }}
@@ -42,8 +42,8 @@ jobs:
       MERGE_GROUP_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
       MERGE_GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
       PR_NUMBER: ""
-      WATCH_SECONDS: 1500
-      WATCH_INTERVAL: 60
+      WATCH_SECONDS: 2700
+      WATCH_INTERVAL: 15
     steps:
       - name: Discard a reused workspace
         run: |
@@ -123,28 +123,60 @@ jobs:
           }
           # An unreadable verdict is a failure on the queue commit, never a stalled entry or a cached success.
           read_verdict() { evaluate || { state=failure desc="#$pr: cannot read the verdict"; }; }
-          # A success is read again right before it is published and once more after (CHE-3240): a verdict revoked in
-          # between is overwritten by the failure instead of the cached success. The revoke path (PR events) covers the rest.
-          read_verdict
-          if [ "$state" = success ]; then read_verdict; fi
-          post "$state" "$desc"
-          if [ "$state" = success ]; then
-            read_verdict
-            if [ "$state" != success ]; then post "$state" "$desc"; fi
-          fi
-          # CHE-4655: no comment run exists any more, so a FAIL posted after this success would reach the queue entry only at
-          # the next sweep, and another required check could merge the rejected PR first (CWE-841). Keep reading while the
-          # queue entry exists and overwrite the success at once. A merge group that outlives WATCH_SECONDS is left to the
-          # 30 minute sweep. An unreadable verdict fails closed here too.
-          # watch:begin
-          if [ "$state" = success ]; then
-            deadline=$((SECONDS + WATCH_SECONDS))
-            while [ "$SECONDS" -lt "$deadline" ]; do
+          # CHE-4655 (CWE-841): a new verdict starts no run, so a FAIL could land after a green post and before the merge. The green
+          # is therefore posted LAST: it is held until every other required check on the queue commit is done, so the merge
+          # follows the post and the only gap left is read -> merge (the CHE-3240 residual). While the entry lives, a cheap
+          # digest of the verdict comments is read every WATCH_INTERVAL and any change starts a full read. A read or listing
+          # error is a change (fail closed). A watch that outlives WATCH_SECONDS revokes the green: re-enqueue.
+          # queue-gate:begin
+          verdict_digest() {
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments?per_page=100" \
+              --jq '.[] | select((.body // "") | contains("Security-Gate-Verdict:")) | "\(.id) \(.updated_at)"' | sha256sum
+          }
+          # Settled = every required context except security-gate has a finished check run or status on the queue commit.
+          # A context that has not appeared yet is not settled.
+          required_checks_settled() {
+            local runs sts c
+            if [ -z "${required_loaded:-}" ]; then
+              required="$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/$DEFAULT_BRANCH" --jq \
+                '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context' | sort -u)" || return 1
+              required_loaded=1
+            fi
+            runs="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/check-runs?per_page=100" \
+              --jq '.check_runs[] | "\(.name)\t\(if .status == "completed" then "done" else "open" end)"')" || return 1
+            sts="$(gh api "repos/$GITHUB_REPOSITORY/commits/$MERGE_GROUP_SHA/status?per_page=100" \
+              --jq '.statuses[] | "\(.context)\t\(if .state == "pending" then "open" else "done" end)"')" || return 1
+            while IFS= read -r c; do
+              if [ -z "$c" ] || [ "$c" = security-gate ]; then continue; fi
+              printf '%s\n%s\n' "$runs" "$sts" |
+                awk -F'\t' -v c="$c" '$1 == c { n++; if ($2 == "open") o++ } END { exit !(n > 0 && o == 0) }' || return 1
+            done <<<"$required"
+          }
+          # The digest is taken before the read: a verdict that lands during a read changes it and is read again.
+          refresh() { seen="$(verdict_digest)" || seen="unreadable-$SECONDS"; read_verdict; }
+          queue_gate() {
+            local deadline=$((SECONDS + WATCH_SECONDS)) green=0 now live
+            refresh
+            while [ "$state" = success ]; do
+              if [ "$green" = 0 ] && required_checks_settled; then
+                refresh
+                if [ "$state" != success ]; then break; fi
+                post success "$desc"
+                green=1
+                refresh
+                continue
+              fi
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                state=failure desc="#$pr: no merge within $((WATCH_SECONDS / 60)) min of the queue run; re-enqueue"
+                break
+              fi
               sleep "$WATCH_INTERVAL"
-              live="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/${MERGE_GROUP_REF#refs/heads/}" --jq '.[].ref')" || continue
-              [ -n "$live" ] || break
-              read_verdict
-              if [ "$state" != success ]; then post "$state" "$desc"; break; fi
+              live="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/${MERGE_GROUP_REF#refs/heads/}" --jq '.[].ref')" || live=unknown
+              if [ -z "$live" ]; then return 0; fi
+              now="$(verdict_digest)" || now="unreadable-$SECONDS"
+              if [ "$now" != "$seen" ]; then refresh; fi
             done
-          fi
-          # watch:end
+            post "$state" "$desc"
+          }
+          # queue-gate:end
+          queue_gate
