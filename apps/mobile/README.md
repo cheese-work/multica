@@ -14,6 +14,8 @@ This connects to the same backend as `multica.ai`, so your existing account just
 
 **Prerequisites**: Mac with Xcode, a free Apple ID added under Xcode → Settings → Accounts, iPhone connected via USB with [Developer Mode enabled](https://docs.expo.dev/guides/ios-developer-mode/). Walk through Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) if any of that is missing.
 
+**Xcode / CocoaPods**: verified on Xcode 26.2 (Swift 6.2.3) with Homebrew CocoaPods. Xcode 26 builds need the `expo-modules-jsi` 57.1.2+ and the `EventEmitter.swift` hunk in `patches/expo-modules-core@*.patch`; drop that hunk once Expo ships the fix in SDK 57. If `pod install` fails with `Unable to resolve dependency ... benchmark`/`logger`, an RVM `GEM_HOME`/`GEM_PATH` is leaking into Homebrew Ruby: run in a shell without RVM (`unset GEM_HOME GEM_PATH`, drop `~/.rvm` from `PATH`).
+
 Xcode signs the build with the "Personal Team" your Apple ID automatically owns — created silently the first time you signed into Xcode, no setup needed. The first build downloads CocoaPods + compiles React Native from source — expect 10–20 minutes. Subsequent builds reuse Xcode's cache.
 
 **If Xcode rejects signing with "No matching provisioning profiles found"** — rare, happens if someone has claimed the default bundle id `ai.multica.mobile` on Apple's developer portal. Pick any reverse-domain you own and re-run:
@@ -65,7 +67,7 @@ See [Expo's migration guidance](https://github.com/expo/fyi/blob/main/ios-scene-
 
 SDK 57's scene backport does not include the later scene-aware presenter lookup
 used by native modules such as `expo-image-picker`. The workspace applies
-`apps/mobile/patches/expo-modules-core@57.0.21.patch`, a direct backport of Expo's
+`apps/mobile/patches/expo-modules-core@57.0.24.patch`, a direct backport of Expo's
 [#46956](https://github.com/expo/expo/pull/46956) and
 [#48319](https://github.com/expo/expo/pull/48319), so avatar, chat, and issue
 image pickers and document attachments resolve their presenting window from the

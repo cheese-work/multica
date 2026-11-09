@@ -81,10 +81,11 @@
       "source-map-js@<1.2.2": "^1.2.2",
       "tmp@<0.2.6": "^0.2.7",
       "undici@>=7.0.0 <7.30.1": "^7.30.2",
-      "vite@>=8.0.0 <8.1.6": "^8.3.6"
+      "vite@>=8.0.0 <8.1.6": "^8.3.6",
+      "expo-modules-core": "57.0.24"
     },
     "patchedDependencies": {
-      "expo-modules-core@57.0.21": "apps/mobile/patches/expo-modules-core@57.0.21.patch"
+      "expo-modules-core@57.0.24": "apps/mobile/patches/expo-modules-core@57.0.24.patch"
     }
   },
   "devDependencies": {
