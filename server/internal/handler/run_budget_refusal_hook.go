@@ -213,33 +213,13 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 	if row.State != "open" && row.StateReason.String != stateReasonUnknownOrigin {
 		return row.State, nil
 	}
-	issue, err := q.GetIssue(ctx, row.IssueID)
-	if err != nil {
-		return "", err
+	_, reason, err := refusalMoved(ctx, q, row)
+	if reason != "" || err != nil {
+		return reason, err
 	}
 	since, err := refusalSince(row)
 	if err != nil {
 		return "", err
-	}
-	want := row.Status.String
-	if row.Blocked {
-		want = issuestatus.Blocked
-	}
-	if issue.Status != want {
-		return "status_moved", nil
-	}
-	if service.IsReviewStatus(want) && issue.AssigneeID != row.AgentID {
-		return "assignee_changed", nil
-	}
-	var occurrence pgtype.UUID
-	switch newest, err := q.NewestIssueStatusChange(ctx, row.IssueID); {
-	case err == nil:
-		occurrence = newest.ID
-	case !errors.Is(err, pgx.ErrNoRows):
-		return "", err
-	}
-	if occurrence != row.OccurrenceActivityID {
-		return "status_moved", nil
 	}
 	// Last: a status move also changes the window, and the move is the better reason.
 	if still, err := service.RunBudgetStillRefuses(ctx, q, row.IssueID, since); err != nil {
@@ -248,6 +228,37 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 		return "budget_restored", nil
 	}
 	return "", nil
+}
+
+// refusalMoved reports whether the issue left the status occurrence the
+// refusal was recorded in ("status_moved", or "assignee_changed" for a review).
+// It returns the issue it read.
+func refusalMoved(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal) (db.Issue, string, error) {
+	issue, err := q.GetIssue(ctx, row.IssueID)
+	if err != nil {
+		return issue, "", err
+	}
+	want := row.Status.String
+	if row.Blocked {
+		want = issuestatus.Blocked
+	}
+	if issue.Status != want {
+		return issue, "status_moved", nil
+	}
+	if service.IsReviewStatus(want) && issue.AssigneeID != row.AgentID {
+		return issue, "assignee_changed", nil
+	}
+	var occurrence pgtype.UUID
+	switch newest, err := q.NewestIssueStatusChange(ctx, row.IssueID); {
+	case err == nil:
+		occurrence = newest.ID
+	case !errors.Is(err, pgx.ErrNoRows):
+		return issue, "", err
+	}
+	if occurrence != row.OccurrenceActivityID {
+		return issue, "status_moved", nil
+	}
+	return issue, "", nil
 }
 
 // lockHookStep locks the refusal and checks that its hook is in phase and still
@@ -483,6 +494,7 @@ func (h *Handler) RunRunBudgetHookSweeper(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.sweepRunBudgetHooks(ctx, time.Now().Add(-runBudgetHookStale))
+			h.sweepRunBudgetResumes(ctx, time.Now().Add(-runBudgetHookStale))
 		}
 	}
 }

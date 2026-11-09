@@ -40,6 +40,10 @@ WHERE id = @id::uuid AND NOT taint_ids @> @taint::text[];
 -- name: GetRunBudgetRefusalByWindow :one
 SELECT * FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2;
 
+-- name: GetRunBudgetRefusalByAction :one
+-- The refusal a budget approval linked (CHE-2860): the post-commit notify finds it by action.
+SELECT * FROM run_budget_refusal WHERE action_id = $1;
+
 -- name: LockRunBudgetRefusal :one
 SELECT * FROM run_budget_refusal WHERE id = $1 FOR UPDATE;
 
@@ -114,3 +118,48 @@ WHERE id = @id::uuid AND hook_phase = 'intent';
 UPDATE agent_task_queue SET taint_ids = @taint::text[]
 WHERE issue_id = @issue_id::uuid AND task_kind = 'budget_recovery'
   AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running');
+
+-- name: LinkRunBudgetRefusal :one
+-- Link (CHE-2798 P2r, CHE-2860): a budget approval claims the refusal it answers.
+-- An unfinished intent hook is retired in the same statement, so the block is
+-- cancelled and the worker admits the run directly. No row back: the refusal is
+-- superseded, already linked by another approval, or already resumed.
+UPDATE run_budget_refusal
+SET state = 'resume_pending', state_reason = NULL, action_id = @action_id::uuid, resume_window_id = @resume_window_id::text,
+    hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
+    updated_at = now()
+WHERE id = @id::uuid AND issue_id = @issue_id::uuid AND state IN ('open', 'still_blocked')
+RETURNING *;
+
+-- name: ListResumePendingRunBudgetRefusals :many
+-- Linked refusals a crashed or missed notify left unresumed: the sweep resumes them.
+SELECT id FROM run_budget_refusal
+WHERE state = 'resume_pending' AND updated_at < @before::timestamptz
+ORDER BY updated_at
+LIMIT 50;
+
+-- name: FinishRunBudgetRefusalResume :exec
+-- The worker's terminal write, in its own transaction: run_queued (with the task)
+-- or status_restored.
+UPDATE run_budget_refusal
+SET state = @state::text, state_reason = NULL, task_id = sqlc.narg('task_id')::uuid, updated_at = now()
+WHERE id = @id::uuid AND state = 'resume_pending';
+
+-- name: FailRunBudgetRefusalResume :exec
+-- The second transaction after a rolled-back resume: still_blocked (retryable) or
+-- superseded, with the reason. Only a row still waiting for the worker changes.
+UPDATE run_budget_refusal
+SET state = @state::text, state_reason = @reason::text,
+    hook_phase = CASE WHEN @state::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN @state::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN @reason::text ELSE hook_reason END,
+    updated_at = now()
+WHERE id = @id::uuid AND state = 'resume_pending';
+
+-- name: NewestRunBudgetTaskSince :one
+-- The task id the worker's admission just inserted: the newest agent task of the
+-- issue created at or after the transaction's start (now() is the tx start).
+SELECT id FROM agent_task_queue
+WHERE issue_id = @issue_id::uuid AND created_at >= now()
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

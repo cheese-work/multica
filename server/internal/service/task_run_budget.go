@@ -263,7 +263,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	if head != "" && !admitted {
 		return ReviewGate{Head: head, Required: true}, nil
 	}
-	if hook := onRunBudgetExhausted.Load(); hook != nil {
+	if hook := onRunBudgetExhausted.Load(); hook != nil && !hookSuppressed(ctx) {
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
 		exhausted := RunBudgetExhausted{
@@ -273,6 +273,34 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), exhausted) })
 	}
 	return ReviewGate{}, ErrRunBudgetExhausted
+}
+
+type suppressRunBudgetHookKey struct{}
+
+// WithoutRunBudgetHook stops the guard from firing the exhaustion hook for an
+// admission inside ctx. A resume attempt that the budget refuses again rolls
+// back, so the refusal it would record belongs to a transaction that never
+// happened; the attempt records its own outcome on the refusal row.
+func WithoutRunBudgetHook(ctx context.Context) context.Context {
+	return context.WithValue(ctx, suppressRunBudgetHookKey{}, true)
+}
+
+func hookSuppressed(ctx context.Context) bool {
+	suppressed, _ := ctx.Value(suppressRunBudgetHookKey{}).(bool)
+	return suppressed
+}
+
+// RunBudgetRefusalKind names what refuses a run for the issue now: "runs" when
+// the run balance is spent, else "tokens".
+func RunBudgetRefusalKind(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	_, balance, err := CurrentRunBudget(ctx, q, issueID)
+	if err != nil {
+		return "", err
+	}
+	if balance < 1 {
+		return "runs", nil
+	}
+	return "tokens", nil
 }
 
 // RunBudgetStillRefuses reports whether the window a refusal was for is still

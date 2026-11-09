@@ -69,6 +69,10 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	if id, ok := extra["refusal_id"].(string); ok && source == "run_budget" {
 		rec.trigger.Cause.Ref = map[string]string{"refusal_id": id}
 	}
+	// An approved action's restore names the action that paid for it.
+	if id, ok := extra["action_id"].(string); ok && source == "run_budget" {
+		rec.trigger.Cause.Ref = map[string]string{"action_id": id}
+	}
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
