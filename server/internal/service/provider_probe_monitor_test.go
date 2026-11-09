@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -427,6 +428,7 @@ func TestProviderProbeMonitorFromEnvAlertsOnGatewayFailureThroughWebhook(t *test
 		"MULTICA_PROVIDER_PROBE_CREDENTIAL":  "env-token",
 		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": hook.URL,
 		"MULTICA_PROVIDER_PROBE_NAME":        "c00",
+		"MULTICA_PROVIDER_HEARTBEAT_URL":     "http://127.0.0.1:1/ping/synthetic",
 	}))
 	if err != nil || m == nil {
 		t.Fatalf("monitor=%v err=%v", m, err)
@@ -511,5 +513,75 @@ func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t
 		if strings.Contains(logs.String(), secret) {
 			t.Fatalf("log leaks %q: %s", secret, logs.String())
 		}
+	}
+}
+
+func TestProviderProbeMonitorFromEnvRequiresExternalHeartbeat(t *testing.T) {
+	// The in-process watchdog dies with the process, so an enabled monitor must
+	// have an independently observed heartbeat.
+	m, err := NewProviderProbeMonitorFromEnv(envMap(map[string]string{
+		"MULTICA_PROVIDER_RECOVERY_BASE_URL": "http://127.0.0.1:1",
+		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook",
+	}))
+	if err == nil || m != nil {
+		t.Fatalf("monitor=%v err=%v, want an error naming MULTICA_PROVIDER_HEARTBEAT_URL", m, err)
+	}
+	if !strings.Contains(err.Error(), "MULTICA_PROVIDER_HEARTBEAT_URL") {
+		t.Fatalf("err = %v, want it to name MULTICA_PROVIDER_HEARTBEAT_URL", err)
+	}
+}
+
+func startMonitorEnv(gateway, hook, beat string) map[string]string {
+	env := map[string]string{
+		"MULTICA_PROVIDER_RECOVERY_BASE_URL": gateway,
+		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": hook,
+		"MULTICA_PROVIDER_PROBE_INTERVAL":    "40ms",
+	}
+	if beat != "" {
+		env["MULTICA_PROVIDER_HEARTBEAT_URL"] = beat
+	}
+	return env
+}
+
+func TestStartProviderProbeMonitorFromEnvProbesAndPingsHeartbeat(t *testing.T) {
+	var probes, beats atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { probes.Add(1) }))
+	defer gateway.Close()
+	beat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { beats.Add(1) }))
+	defer beat.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if !StartProviderProbeMonitorFromEnv(ctx, envMap(startMonitorEnv(gateway.URL, "http://127.0.0.1:1/hook", beat.URL+"/ping/synthetic"))) {
+		t.Fatal("monitor did not start for a complete configuration")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for (probes.Load() == 0 || beats.Load() == 0) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if probes.Load() == 0 || beats.Load() == 0 {
+		t.Fatalf("probes=%d heartbeats=%d, want both > 0", probes.Load(), beats.Load())
+	}
+}
+
+func TestStartProviderProbeMonitorFromEnvStaysOffWithoutHeartbeat(t *testing.T) {
+	var probes atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { probes.Add(1) }))
+	defer gateway.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if StartProviderProbeMonitorFromEnv(ctx, envMap(startMonitorEnv(gateway.URL, "http://127.0.0.1:1/hook", ""))) {
+		t.Fatal("monitor started without an external heartbeat")
+	}
+	time.Sleep(200 * time.Millisecond)
+	if probes.Load() != 0 {
+		t.Fatalf("probes = %d, want 0 when the monitor is off", probes.Load())
+	}
+}
+
+func TestStartProviderProbeMonitorFromEnvStaysOffWhenUnconfigured(t *testing.T) {
+	if StartProviderProbeMonitorFromEnv(context.Background(), envMap(nil)) {
+		t.Fatal("monitor started with no configuration")
 	}
 }

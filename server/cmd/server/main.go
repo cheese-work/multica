@@ -760,12 +760,9 @@ func main() {
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
 	// Provider gateway health probe: read-only, alerts through a webhook, and
-	// runs only when both the gateway and the webhook are configured (CHE-4580).
-	if probeMonitor, err := service.NewProviderProbeMonitorFromEnv(os.Getenv); err != nil {
-		slog.Error("provider probe monitor configuration is invalid", "error", err)
-	} else if probeMonitor != nil {
-		go probeMonitor.Run(sweepCtx)
-	}
+	// runs only when the gateway and the webhook are configured, and then needs an
+	// external heartbeat URL too (CHE-4580).
+	service.StartProviderProbeMonitorFromEnv(sweepCtx, os.Getenv)
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.

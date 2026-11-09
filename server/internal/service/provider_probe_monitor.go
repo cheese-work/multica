@@ -306,8 +306,8 @@ func tokenSafeURL(u *url.URL) bool {
 // (nil, nil) unless both the gateway (MULTICA_PROVIDER_RECOVERY_BASE_URL) and
 // the alert webhook (MULTICA_PROVIDER_ALERT_WEBHOOK_URL) are set. Credential:
 // MULTICA_PROVIDER_PROBE_CREDENTIAL or MULTICA_PROVIDER_PROBE_CREDENTIAL_FILE
-// (read-only scope). Optional: MULTICA_PROVIDER_HEARTBEAT_URL (external
-// dead-man's-switch), MULTICA_PROVIDER_PROBE_NAME, MULTICA_PROVIDER_PROBE_INTERVAL.
+// (read-only scope). Required once enabled: MULTICA_PROVIDER_HEARTBEAT_URL
+// (external dead-man's-switch). Optional: MULTICA_PROVIDER_PROBE_NAME, MULTICA_PROVIDER_PROBE_INTERVAL.
 func NewProviderProbeMonitorFromEnv(getenv func(string) string) (*ProviderProbeMonitor, error) {
 	baseURL, hook := strings.TrimSpace(getenv("MULTICA_PROVIDER_RECOVERY_BASE_URL")), strings.TrimSpace(getenv("MULTICA_PROVIDER_ALERT_WEBHOOK_URL"))
 	if baseURL == "" || hook == "" {
@@ -336,10 +336,31 @@ func NewProviderProbeMonitorFromEnv(getenv func(string) string) (*ProviderProbeM
 		}
 	}
 	m := NewProviderProbeMonitor(name, probe.WithBearerToken(token), sink, time.Now, time.Hour, interval)
-	if beat := strings.TrimSpace(getenv("MULTICA_PROVIDER_HEARTBEAT_URL")); beat != "" {
-		if err := m.WithExternalHeartbeat(beat); err != nil {
-			return nil, err
-		}
+	// The in-process watchdog dies with the process, so an enabled monitor needs
+	// an independently observed heartbeat (a dead-man's-switch service).
+	beat := strings.TrimSpace(getenv("MULTICA_PROVIDER_HEARTBEAT_URL"))
+	if beat == "" {
+		return nil, errors.New("MULTICA_PROVIDER_HEARTBEAT_URL is required when the provider probe monitor is enabled")
+	}
+	if err := m.WithExternalHeartbeat(beat); err != nil {
+		return nil, err
 	}
 	return m, nil
+}
+
+// StartProviderProbeMonitorFromEnv builds the monitor from env and runs it on
+// its own goroutine until ctx ends. It reports whether a monitor started. A bad
+// configuration, including a missing external heartbeat, logs an error and
+// starts nothing.
+func StartProviderProbeMonitorFromEnv(ctx context.Context, getenv func(string) string) bool {
+	m, err := NewProviderProbeMonitorFromEnv(getenv)
+	if err != nil {
+		slog.Error("provider probe monitor configuration is invalid", "error", err)
+		return false
+	}
+	if m == nil {
+		return false
+	}
+	go m.Run(ctx)
+	return true
 }
