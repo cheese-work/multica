@@ -50,6 +50,8 @@ Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quan
 
 Chaque événement garde le mode dans lequel il a été créé : passer de `warn` à `block` ne transforme pas les événements antérieurs en travail de reprise. Si l'événement ne peut pas être écrit, l'opération échoue avec `503` et un en-tête `Retry-After`, et rien n'est écrit.
 
+Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
+
 ## Changer d'espace de travail et le quitter
 
 Un même compte peut rejoindre plusieurs espaces de travail. Changer d'espace de travail change seulement ce que vous consultez ; les données ne bougent pas.

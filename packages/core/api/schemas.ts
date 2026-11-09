@@ -1060,6 +1060,20 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
+  config_change: z.object({
+    field: z.string(),
+    target_id: z.string(),
+    keys: z.array(z.string()),
+    diff_kind: z.enum(["json", "text", "lines"]),
+    diff: z.array(z.object({ old_start: z.number(), new_start: z.number(), lines: z.array(z.string()) }).loose()),
+    after: z.unknown(),
+    before_sha256: z.string().regex(SHA256_HEX),
+    after_sha256: z.string().regex(SHA256_HEX),
+    meta: z.record(z.string(), z.unknown()).optional().catch(undefined),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+  owner_only: z.boolean().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -1092,6 +1106,19 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
   action: DecisionActionSchema.optional().catch(undefined),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
+  answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
@@ -1138,6 +1165,18 @@ export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
     label: z.string(),
     what_happens: z.string().optional().catch(undefined),
   }).loose()).catch([]),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
 }).loose()));
 
 // An unknown status degrades to `uncertain`: it never claims the agent read the
@@ -2547,6 +2586,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   attention_since: z.string().nullable().optional().catch(undefined),
   stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
   next_change_at: z.string().nullable().optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());

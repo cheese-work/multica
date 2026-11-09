@@ -6,9 +6,10 @@ import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft } from "@multica/core/drafts";
-import { approvablePreview } from "@multica/core/issues/decision-action-preview";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -25,6 +26,7 @@ import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
+import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
@@ -193,25 +195,40 @@ function DecisionAnswerForm({
   );
 }
 
+type CardAction = NonNullable<RequestCard["action"]>;
+
+// Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
+// member list yet or any other role the button is absent. The server still refuses a non-owner.
+function OwnerGatedApproval({ action, previewSha256, approveDisabled }: { action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+  const workspace = useCurrentWorkspace();
+  return workspace
+    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} approveDisabled={approveDisabled} />
+    : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} />;
+}
+
+function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: { wsId: string; action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+  const { role } = useCurrentMember(wsId);
+  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} approveDisabled={approveDisabled} state={action.state} />;
+}
+
 // What the approval would change, shown before Approve exists. No usable preview
 // (missing, empty, malformed, bad digest, unknown action type) means the server
-// could not vouch for the action: say so and keep Approve disabled.
-function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
+// could not vouch for the action: say so, keep Approve disabled for who may approve,
+// show it to nobody else, and leave Reject to everyone.
+function ActionPreview({ action }: { action: CardAction }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
-  const fields = pending ? approvablePreview(action)?.fields : undefined;
-  if (pending && !fields) {
-    return (
-      <div className="space-y-1">
-        <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
-        <Button size="sm" disabled>{t(($) => $.decision.action_approve)}</Button>
-      </div>
-    );
-  }
+  const configAction = isConfigChangeActionType(action.action_type);
+  const ownerOnly = configAction || action.owner_only === true;
+  const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
+  const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
+  const unavailable = pending && !fields && !configChange;
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
+      {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
+      {configChange && <ConfigChangeViewer change={configChange} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -222,7 +239,9 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
           ))}
         </dl>
       )}
-      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} state={action.state} />
+      {ownerOnly
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} />
+        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} />}
     </div>
   );
 }
@@ -325,6 +344,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const paths = useWorkspacePaths();
   const { facts, note } = splitAgentNote(card.ask);
   const shown = displayState(card, useNow(card));
+  // A batch answer must not be sent blind: with any covered decision unloaded the form stays away.
+  const coveredCardsMissing = (card.covers_request_ids?.length ?? 0) > (card.covered_cards?.length ?? 0);
   const state = t(($) => $.decision.request_state[shown]);
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
@@ -342,7 +363,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
     patchDraft({ option, text });
     answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey },
+      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids },
       {
         onSuccess: () => {
           setNeedsPasskey(false);
@@ -361,6 +382,17 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     clearDraft();
     setRefused(false);
   };
+
+  if (card.answered_by_batch_request_id && !inIssue) {
+    return (
+      <p data-testid="decision-request-folded" className="flex min-w-0 flex-wrap items-center gap-x-2 rounded-xl border border-surface-border bg-surface px-3 py-2 text-label text-muted-foreground">
+        <span>{t(($) => $.decision.answered_by_batch, { issue: card.issue_identifier || card.issue_id })}</span>
+        <AppLink href={issueHref} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+          {card.issue_title}
+        </AppLink>
+      </p>
+    );
+  }
 
   return (
     <section
@@ -398,6 +430,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
+        {card.covers_request_ids && card.covers_request_ids.length > 0 && (
+          <span className="text-muted-foreground" data-testid="decision-request-covers">
+            {t(($) => $.decision.covers_batch, { count: card.covers_request_ids.length })}
+          </span>
+        )}
         {card.issue_title && (
           <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
             {card.issue_title}
@@ -422,6 +459,26 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AppLink>
         )}
       </div>
+      {card.covered_cards && card.covered_cards.length > 0 && (
+        <ul className="min-w-0 space-y-1 break-words border-b px-3 py-2 text-xs" data-testid="decision-request-covered-list">
+          {card.covered_cards.map((covered) => (
+            <li key={covered.id} data-testid="decision-request-covered-item">
+              <AppLink href={paths.issueDetail(covered.issue_id)} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+                {covered.issue_identifier || covered.issue_id}
+              </AppLink>
+              {covered.issue_title && <span className="text-muted-foreground">{` ${covered.issue_title}`}</span>}
+              {covered.decision && <span>{`: ${covered.decision}`}</span>}
+              {covered.options && covered.options.length > 0 && (
+                <ul className="ml-4 list-disc text-muted-foreground">
+                  {covered.options.map((option, index) => (
+                    <li key={`${index}:${option.label}`}>{option.what_happens ? `${option.label}: ${option.what_happens}` : option.label}</li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="min-w-0 space-y-3 break-words px-3 py-3">
         {card.state === "withdrawn" && card.reason && (
           <p className="whitespace-pre-wrap text-muted-foreground" data-testid="decision-request-reason">{card.reason}</p>
@@ -439,9 +496,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
-          card.state === "open" && (
+          card.state === "open" && (coveredCardsMissing ? (
+            <p role="alert" className="text-destructive" data-testid="decision-request-covers-unavailable">{t(($) => $.decision.covers_unavailable)}</p>
+          ) : (
             <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={patchDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
-          )
+          ))
         )}
         {shown === "picked_up" && card.answer?.run && (
           <AppLink href={`${issueHref}?run=${encodeURIComponent(card.answer.run.id)}`} data-testid="decision-request-run" className="inline-flex min-h-9 items-center text-label hover:underline focus-visible:outline-2 focus-visible:outline-ring">

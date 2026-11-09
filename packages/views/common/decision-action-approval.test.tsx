@@ -191,4 +191,73 @@ describe("DecisionActionApproval", () => {
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
     expect(api.approveDecisionAction).toHaveBeenCalledOnce();
   });
+
+  it("approves with the digest of the preview the person was shown", async () => {
+    api.approveDecisionAction.mockResolvedValue(outcome("executed"));
+    renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256="def" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" }));
+    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", assertion: envelope, preview_sha256: "def" });
+  });
+
+  it("offers no approve button when the person may not approve, and still allows reject", async () => {
+    api.rejectDecisionAction.mockResolvedValue(outcome("rejected"));
+    renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" canApprove={false} />);
+    expect(await screen.findByRole("button", { name: "Reject" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+    expect(screen.getByText("Only the workspace owner can approve this change.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+    expect(await screen.findByText("Rejected")).toBeTruthy();
+    expect(api.challengeDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["class_needs_owner", "Only the workspace owner can approve this change."],
+    ["payload_mismatch", "The approved change is not the change that was requested. Ask again."],
+    ["preview_required", "Approve against the preview you were shown. Reload the card."],
+    ["precondition_drift", "The target changed since the request. Ask again."],
+    ["busy_retry", "Another change is in progress. Try again."],
+    ["not_permitted", "You may not make this change."],
+    ["action_not_executable", "This kind of change cannot be approved yet."],
+    ["approval_proof_unavailable", "This server cannot verify a passkey approval yet."],
+  ])("shows the refusal %s with its code", async (code, text) => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError(`${code}: refused by the server`, 409, "Conflict"));
+    await renderApproval().approve();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(text);
+    expect(alert.textContent).toContain(code);
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
+  });
+
+  it("shows action_not_executable with its code when the server answers 501", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("action_not_executable: this action type cannot be approved yet", 501, "Not Implemented"));
+    await renderApproval().approve();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("This kind of change cannot be approved yet.");
+    expect(alert.textContent).toContain("action_not_executable");
+    expect(screen.queryByTestId("decision-action-approve")).toBeNull();
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
+  });
+
+  it("shows an unknown refusal code verbatim", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("future_code: a newer refusal", 409, "Conflict"));
+    await renderApproval().approve();
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("future_code");
+  });
+
+  it("shows a refusal of the challenge too", async () => {
+    api.challengeDecisionAction.mockRejectedValue(new ApiError("class_needs_owner: this action needs the workspace owner", 403, "Forbidden"));
+    await renderApproval().approve();
+    expect((await screen.findByRole("alert")).textContent).toContain("class_needs_owner");
+    expect(api.approveDecisionAction).not.toHaveBeenCalled();
+  });
+
+  it("removes the approve button after an owner refusal", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("class_needs_owner: this action needs the workspace owner", 403, "Forbidden"));
+    await renderApproval().approve();
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+  });
 });

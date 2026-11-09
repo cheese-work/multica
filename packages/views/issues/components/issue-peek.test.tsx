@@ -120,14 +120,17 @@ const openCard = async (id: string) => {
 describe("IssuePeekHost", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("does not load the issue detail until the page is idle or a card is peeked", async () => {
+  // The detail chunk is ~800 KiB (editor, markdown, shiki, katex). Warming it when
+  // the page goes idle competes with the list's own first paint on a slow link.
+  it("does not load the issue detail on idle, only once a card is pointed at", async () => {
     const idle: Array<() => void> = [];
     vi.stubGlobal("requestIdleCallback", (cb: () => void) => idle.push(cb));
     vi.stubGlobal("cancelIdleCallback", () => {});
     renderHost();
+    await act(async () => idle.forEach((run) => run()));
     expect(detailLoads.count).toBe(0);
 
-    await act(async () => idle.forEach((run) => run()));
+    fireEvent.pointerOver(screen.getByText("card i-1"));
 
     await waitFor(() => expect(detailLoads.count).toBe(1));
     cleanup();

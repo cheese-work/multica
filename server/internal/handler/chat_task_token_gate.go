@@ -43,6 +43,7 @@ var chatRouteClasses = map[string]chatRouteClass{
 	"GET /api/chat/search":                              chatRouteDeny,
 
 	// DM attention (CHE-4147): human-only; the routes also sit behind humanOnly.
+	"GET /api/chat/sessions/{sessionId}/attention":        chatRouteDeny,
 	"POST /api/chat/sessions/{sessionId}/attention/xong":  chatRouteDeny,
 	"POST /api/chat/sessions/{sessionId}/attention/later": chatRouteDeny,
 	"POST /api/chat/attention/xong-all":                   chatRouteDeny,
