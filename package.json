@@ -89,10 +89,11 @@
       "protobufjs@<7.6.1": "^7.6.1",
       "ws@>=7.0.0 <7.5.11": "^7.5.11",
       "ws@>=8.0.0 <8.21.0": "^8.21.0",
-      "zod@>=4.0.0 <4.6.6": "^4.6.6"
+      "zod@>=4.0.0 <4.6.6": "^4.6.6",
+      "expo-modules-core": "57.0.24"
     },
     "patchedDependencies": {
-      "expo-modules-core@57.0.21": "apps/mobile/patches/expo-modules-core@57.0.21.patch"
+      "expo-modules-core@57.0.24": "apps/mobile/patches/expo-modules-core@57.0.24.patch"
     }
   },
   "devDependencies": {
