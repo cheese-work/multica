@@ -377,6 +377,70 @@ test.describe("DM reading point inside one tall message (CHE-4638 design)", () =
   });
 });
 
+// One long plain text node that straddles the viewport top. The reader's
+// character is the first one whose line starts below the viewport top. `mutate`
+// changes the layout before that character, inside the same text node; the
+// character's top is then sampled on every frame. Returns drift in px per frame.
+async function characterDriftAfter(page: Page, mutate: "reflow" | "prepend") {
+  return page.evaluate(async (mode) => {
+    const root = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+    const row = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].find((n) =>
+      n.textContent?.includes("Target message 40"),
+    )!;
+    const paragraph = row.querySelectorAll("p")[1]!;
+    const text = paragraph.firstChild as Text;
+    if (text.nodeType !== Node.TEXT_NODE) throw new Error("paragraph must start with plain text");
+    const frame = () => new Promise((r) => requestAnimationFrame(r));
+    text.data = "reflow words ".repeat(160);
+    await frame();
+    await frame();
+    const rootTop = root.getBoundingClientRect().top;
+    root.dispatchEvent(new WheelEvent("wheel", { deltaY: 1, bubbles: true }));
+    root.scrollTop += paragraph.getBoundingClientRect().top - rootTop + 120;
+    await frame();
+    await frame();
+    const charTop = (i: number) => {
+      const range = document.createRange();
+      range.setStart(text, i);
+      range.setEnd(text, i + 1);
+      return range.getBoundingClientRect().top - rootTop;
+    };
+    let at = 0;
+    while (at < text.data.length && (text.data[at] === " " || charTop(at) < 10)) at++;
+    const before = charTop(at);
+    if (mode === "reflow") {
+      paragraph.style.fontSize = "22px";
+    } else {
+      const added = "prepended words ".repeat(120);
+      text.insertData(0, added);
+      at += added.length;
+    }
+    const drift: number[] = [];
+    for (let i = 0; i < 20; i++) {
+      await frame();
+      drift.push(Math.abs(charTop(at) - before));
+    }
+    return { before, drift };
+  }, mutate);
+}
+
+test.describe("DM reading character inside one long text node (CHE-4638 design)", () => {
+  for (const [name, mutate] of [
+    ["the text reflows", "reflow"],
+    ["text is prepended before the character", "prepend"],
+  ] as const) {
+    test(`${name}: no frame moves the visible character`, async ({ page }, testInfo) => {
+      await withScrolledDm(page, async () => {
+        const { before, drift } = await characterDriftAfter(page, mutate);
+        await testInfo.attach("drift-px-per-frame", { body: JSON.stringify(drift), contentType: "application/json" });
+        console.log(`${name}: character at ${before.toFixed(1)} px; drift per frame ${drift.map((d) => d.toFixed(1)).join(" ")}`);
+        expect(before).toBeGreaterThanOrEqual(10);
+        expect(Math.max(...drift)).toBeLessThanOrEqual(2);
+      });
+    });
+  }
+});
+
 // A late height change, as an image or a code block finishing layout does.
 // `offset` is the row's distance from the target message (negative = above).
 async function growRow(page: Page, offset: number) {

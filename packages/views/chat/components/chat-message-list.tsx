@@ -406,6 +406,57 @@ function firstReaching(parent: Node, viewportTop: number): Node | undefined {
   return undefined;
 }
 
+// Index of the first character at or after `from` whose line reaches below
+// `edge`, or -1. The box of [0, n) only grows with n, so it is bisected.
+function charReaching(node: Text, from: number, edge: number): number {
+  const prefix = document.createRange();
+  prefix.setStart(node, 0);
+  let lo = from + 1;
+  let hi = node.data.length;
+  prefix.setEnd(node, hi);
+  if (hi < lo || prefix.getBoundingClientRect().bottom <= edge) return -1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    prefix.setEnd(node, mid);
+    if (prefix.getBoundingClientRect().bottom > edge) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo - 1;
+}
+
+// The visible character the reader is on: the first non-blank character at or
+// below the viewport top (the last visible line when none starts there), as a
+// live Range. It follows text inserted before it, and reflow inside the node
+// moves it where the node's own box would not.
+function firstVisibleChar(node: Text, viewportTop: number): Range | undefined {
+  const text = node.data;
+  let at = charReaching(node, 0, viewportTop);
+  if (at < 0) return undefined;
+  const probe = document.createRange();
+  probe.setStart(node, at);
+  probe.setEnd(node, at + 1);
+  const line = probe.getBoundingClientRect();
+  if (line.top < viewportTop) {
+    const next = charReaching(node, at + 1, line.bottom + 0.5);
+    if (next >= 0) at = next;
+  }
+  while (at < text.length && !text[at]!.trim()) at++;
+  if (at >= text.length) return undefined;
+  const char = document.createRange();
+  char.setStart(node, at);
+  char.setEnd(node, at + 1);
+  return char;
+}
+
+// Box of the reading point. A character Range that was replaced under us (the
+// node's data was rewritten, the character is gone) has no position: undefined.
+function pointRect(point: Node, char: Range | undefined): DOMRect | undefined {
+  if (!point.isConnected) return undefined;
+  if (!char) return rectOf(point);
+  if (char.collapsed || char.startContainer !== point) return undefined;
+  return char.getBoundingClientRect();
+}
+
 export function ChatMessageList({
   active = true,
   revealKey = null,
@@ -466,9 +517,13 @@ export function ChatMessageList({
   // baseline; the live-end follow owns its own pin (CHE-4638).
   const isFollowingRef = useRef(isFollowing);
   isFollowingRef.current = isFollowing;
-  const readingAnchor = useRef<{ id: string; top: number; point: Node; pointTop: number } | null>(
-    null,
-  );
+  const readingAnchor = useRef<{
+    id: string;
+    top: number;
+    point: Node;
+    char: Range | undefined;
+    pointTop: number;
+  } | null>(null);
   // A restored list holds its saved position (a fixed target) until the reader
   // moves or the list has had RESTORE_SETTLE_MS to land; before then a scroll
   // event is Virtuoso landing it, not the reader. Other lists anchor on input.
@@ -486,11 +541,13 @@ export function ChatMessageList({
       for (let next = firstReaching(point, viewportTop); next; next = firstReaching(point, viewportTop)) {
         point = next;
       }
+      const char = point.nodeType === Node.TEXT_NODE ? firstVisibleChar(point as Text, viewportTop) : undefined;
       readingAnchor.current = {
         id: row.getAttribute("data-message-id")!,
         top: top - viewportTop,
         point,
-        pointTop: rectOf(point).top - viewportTop,
+        char,
+        pointTop: (char ? char.getBoundingClientRect() : rectOf(point)).top - viewportTop,
       };
       return;
     }
@@ -514,13 +571,15 @@ export function ChatMessageList({
     const anchor = readingAnchor.current;
     if (!scroller || !anchor) return;
     // The content point can be re-rendered away; the row is then the anchor.
-    const live = anchor.point.isConnected;
-    const el: Node | null = live
-      ? anchor.point
+    const pointBox = pointRect(anchor.point, anchor.char);
+    const row = pointBox
+      ? undefined
       : scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
-    if (!el) return;
+    if (!pointBox && !row) return;
     const delta =
-      rectOf(el).top - scroller.getBoundingClientRect().top - (live ? anchor.pointTop : anchor.top);
+      (pointBox ?? row!.getBoundingClientRect()).top -
+      scroller.getBoundingClientRect().top -
+      (pointBox ? anchor.pointTop : anchor.top);
     if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
   }, []);
   useEffect(() => {
