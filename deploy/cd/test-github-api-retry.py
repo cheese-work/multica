@@ -15,6 +15,9 @@ SCRIPT = Path(__file__).resolve().parent / "github-api-retry.py"
 STUB = r'''#!/usr/bin/env python3
 import os, sys, time
 token = os.environ.get("GH_TOKEN", "")
+if "rate_limit" in sys.argv:
+    print(os.environ.get("STUB_APP_BUDGET", "5000"))
+    sys.exit(0)
 limited = os.environ.get("STUB_LIMITED", "").split(",")
 once = os.environ.get("STUB_ONCE")
 if once and os.path.exists(once):
@@ -90,6 +93,19 @@ class GithubApiRetryTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertLess(elapsed, 10)
         self.assertNotIn("retrying", result.stderr)
+
+    def test_throttled_fallback_does_not_spend_the_app_reserve(self):
+        # pick-api-token.sh chose the fallback because the App budget is below floor + headroom (1600).
+        result, elapsed = self.run_retry(limited="FALLBACK", tokens=("FALLBACK",), extra={"STUB_APP_BUDGET": "1000"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("ok-APP", result.stdout)
+        self.assertLess(elapsed, 10)
+        self.assertIn("below", result.stderr)
+
+    def test_throttled_fallback_fails_over_to_the_app_token_while_its_budget_is_above_the_floor(self):
+        result, _ = self.run_retry(limited="FALLBACK", tokens=("FALLBACK",), extra={"STUB_APP_BUDGET": "1600"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "ok-APP")
 
 
 if __name__ == "__main__":

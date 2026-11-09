@@ -66,6 +66,33 @@ def describe(status, headers, body, stderr):
             f"retry-after={headers.get('retry-after', '-')} message={(message[0] if message else '')[:160]!r}")
 
 
+def app_budget_allows(token):
+    # Same rule as pick-api-token.sh: the App token is only for use while it keeps the server's reserve.
+    # /rate_limit does not count against the limit it reports.
+    needed = int(os.environ.get("APP_TOKEN_FLOOR", "1500")) + int(os.environ.get("APP_TOKEN_HEADROOM", "100"))
+    env = dict(os.environ, GH_TOKEN=token)
+    try:
+        out = subprocess.run(["gh", "api", "rate_limit", "--jq", ".resources.core.remaining"], env=env,
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        remaining = int(out)
+    except (subprocess.TimeoutExpired, ValueError):
+        remaining = None
+    if remaining is not None and remaining >= needed:
+        return True
+    print(f"Not failing over to the app token: its budget {remaining if remaining is not None else 'unreadable'} "
+          f"is below {needed} (floor plus headroom)", file=sys.stderr)
+    return False
+
+
+def next_token(tokens, untried):
+    while untried:
+        candidate = min(untried)
+        untried.discard(candidate)
+        if token_label(tokens[candidate]) != "app" or app_budget_allows(tokens[candidate]):
+            return candidate
+    return None
+
+
 def main():
     deadline = int(sys.argv[1])
     max_sleep = int(os.environ.get("GITHUB_API_MAX_SLEEP", "60"))
@@ -100,9 +127,9 @@ def main():
         label = token_label(tokens[current]) if tokens else "env"
         print(f"GitHub API rate limited on the {label} token: {describe(status, headers, body, result.stderr)}",
               file=sys.stderr)
-        if untried:
-            current = min(untried)
-            untried.discard(current)
+        failover = next_token(tokens, untried)
+        if failover is not None:
+            current = failover
             print(f"Retrying now with the {token_label(tokens[current])} token", file=sys.stderr)
             continue
         if delay > max_sleep or now + delay >= deadline:
