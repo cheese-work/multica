@@ -292,6 +292,20 @@ With the setting off and nothing to show (no record, no stop, no failed notice)
 the command prints nothing, so the brief omits the section. Records made
 earlier stay vetoable, so with any of them the section still prints.
 
+Waiver and Jev metrics (CHE-3262, slice 6 of CHE-3239): the feed adds `waivers`
+(live `test_first_red` records per agent; a waiver is WAIVED, never PASS), `jev`
+(`decisions`, `vetoed`, `veto_rate`, `excluded_class_decisions`; the last must be 0
+because an excluded class is refused at propose time) and `jev_asks`. The server
+cannot read the Jev shadow log, so `multica decision brief --jev-shadow-log
+<jsonl>` reads it, sends the Jev-routed ask ids as repeated `jev_ask` query
+parameters (at most 1000) and gets back each ask's `created_at` and Cheese's
+chosen option label (empty while open). The CLI then prints shadow agreement with
+Cheese (answered Jev-routed asks where `pick` equals Cheese's choice), the share
+of in-scope asks (any row whose reason is not `excluded`) that Jev decided within
+10 minutes of the ask, and whether the live-mode gate holds: agreement of at
+least 90% on at least 20 asks. Without the flag the section says the log was not
+given. With `--format json` the same figures are under `jev_shadow`.
+
 The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
 prompt change, "run `multica decision brief --format markdown` and paste its
 output after `## Cần anh`", is a standing-instruction change and goes through

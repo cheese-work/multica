@@ -1060,6 +1060,20 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
+  config_change: z.object({
+    field: z.string(),
+    target_id: z.string(),
+    keys: z.array(z.string()),
+    diff_kind: z.enum(["json", "text", "lines"]),
+    diff: z.array(z.object({ old_start: z.number(), new_start: z.number(), lines: z.array(z.string()) }).loose()),
+    after: z.unknown(),
+    before_sha256: z.string().regex(SHA256_HEX),
+    after_sha256: z.string().regex(SHA256_HEX),
+    meta: z.record(z.string(), z.unknown()).optional().catch(undefined),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+  owner_only: z.boolean().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -2572,6 +2586,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   attention_since: z.string().nullable().optional().catch(undefined),
   stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
   next_change_at: z.string().nullable().optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());

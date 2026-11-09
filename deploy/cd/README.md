@@ -17,9 +17,12 @@ against C00, gated on its own separate approval.
 
 `cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
 Each image gets its own runner/DinD budget, rather than sharing one DinD's
-4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
-name and assembles the same `cd-build-evidence-<sha>` artifact after both
-images succeed. The web job supplies the exact optional fork entries used
+4 GiB and 3 CPUs. The D1 fixture suites run once in the hosted `d1-fixtures`
+job, and the final `cd-qualification` job also runs on a hosted runner, so
+neither takes an X99 queue slot (CHE-3983). `cd-qualification` keeps the
+existing check name and assembles the same `cd-build-evidence-<sha>`
+artifact after both images and `d1-fixtures` succeed. Images can push before
+the fixtures finish, but no evidence manifest exists unless they pass. The web job supplies the exact optional fork entries used
 in its image, so manifest assembly cannot hash a different download.
 
 Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
@@ -33,7 +36,10 @@ No registry cache or untrusted PR cache is imported.
 Go compilation uses `/root/.cache/go-build` cache mounts, including the
 four daemon targets. Unversioned utilities compile before the release
 arguments; server and daemon linking still consume the exact release
-version and commit. Web builds retain `/app/apps/web/.next/cache`.
+version and commit. Web builds retain `/app/apps/web/.next/cache`. The web
+`builder` stage extends `deps` instead of copying `node_modules` into a second
+layer, and sets `NEXT_SKIP_TYPECHECK=true` because `pnpm typecheck` already
+gates every PR in `ci.yml`.
 `NEXT_PUBLIC_*` stays after dependency installation but before compilation:
 Next.js embeds those values in client bundles, so moving them after the
 build would ship stale release metadata.
@@ -928,3 +934,53 @@ GHCR is still pending the runner above).
 `deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
 on-disk credentials, cleanup after successful and failed login, and restoration
 of the caller's environment without contacting a registry.
+
+## Rollback-drill candidate evidence and readiness fault (CHE-4664)
+
+`cd-evidence.yml` (owner dispatch only) issues `cd-release-candidate-<sha>`
+for an already-qualified `main` commit and stops. It has no admission, deploy
+or cutover job and never builds. Its steps are those of `cd-deploy.yml`'s
+`prepare-release-candidate`, so its one C00 access is the read-only
+`capture-remote-baseline.sh`. The `c00-runtime` environment allows only
+`main`, so the workflow must be on `main` and dispatched with `--ref main`:
+
+```
+gh workflow run cd-evidence.yml --repo cheese-work/multica --ref main -f candidate_sha=<40-hex sha>
+```
+
+`docker-compose.fault-readyz.yml` points the candidate backend at
+`fault-db.invalid` (reserved TLD, never resolves). `cutover.sh` loads a fixed
+overlay list (ab, flags, jev) and has no hook for it, so `deploy/cd/drill/docker`
+carries it in: a `docker` shim that appends the overlay to one call, the
+candidate start (`compose ... up` with `MULTICA_SKIP_MIGRATIONS=1`). The
+migrator (`run`), the incumbent recovery (`start`) and everything else pass
+through, so the migration reaches the real database. A bad URL at the migrator
+would fail the migration after the incumbent was drained, and `cutover.sh`
+treats that as an outage with neither colour running. `cutover.sh` is not edited.
+
+Drill procedure (the operator runs the real cutover; this shim changes nothing
+else):
+
+```
+export DRILL_FAULT_READYZ=1
+PATH="<repo>/deploy/cd/drill:$PATH" deploy/cd/cutover.sh cutover <the usual arguments>
+```
+
+The shim is inert without `DRILL_FAULT_READYZ=1` and refuses (exit 2) if the
+candidate start carries no `-f` files. It prints `drill shim: layering ...` on
+stderr once, at the candidate start: that line is the proof it fired. Unset the
+variable and the PATH prefix afterwards.
+
+Expected `cutover.sh cutover` outcome with the overlay applied: final gate and
+migration pass; the candidate container starts, then exits with `unable to
+connect to database` / `unable to ping database` (the service restarts under
+`unless-stopped`); `/readyz` never answers; `wait_ready_on_port` gives up
+after 180 s (an earlier bindings check may fire first); `recover_incumbent`
+restarts the incumbent; the router generation never switches. This exercises
+`recover_incumbent`, not the `rollback` subcommand.
+
+`test-evidence-fault.py` checks the workflow shape, renders the overlay, and
+drives `deploy-lib.sh`'s real `compose()` function through the shim against a
+stand-in `docker`: the candidate start renders the fault, the migrator, the
+recovery start and a run without the switch render the real database. It does
+not run `cutover.sh` or touch C00.
