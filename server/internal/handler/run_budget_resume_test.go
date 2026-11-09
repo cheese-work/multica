@@ -496,7 +496,7 @@ func queuedAgents(t *testing.T, c budgetCase) []string {
 }
 
 func TestRunBudgetResumeQueuesTheStoredTargetNotTheAssignee(t *testing.T) {
-	for _, trigger := range []string{"mention", "wakeup"} {
+	for _, trigger := range []string{"mention"} {
 		t.Run(trigger, func(t *testing.T) {
 			c, id := intentCase(t, 2860120)
 			other := secondAgent(t)
@@ -654,5 +654,148 @@ func TestRunBudgetResumeWorkerThatReadTheOldLinkResumesTheNewerOne(t *testing.T)
 	wantResume(t, id, "run_queued", "")
 	if a, b, n := restoreRows(t, c, first), restoreRows(t, c, second), resumeQueued(t, c); a != 0 || b != 1 || n != 1 {
 		t.Fatalf("restore rows: first %d, second %d, queued %d, want 0, 1, 1", a, b, n)
+	}
+}
+
+// refusedRun is what the resume queued for the issue, as the run will read it.
+type refusedRun struct {
+	Taint                       []string
+	Comment, Originator, Review pgtype.UUID
+}
+
+func refusedRunOf(t *testing.T, c budgetCase) refusedRun {
+	t.Helper()
+	var r refusedRun
+	if err := testPool.QueryRow(context.Background(), `SELECT taint_ids, trigger_comment_id, originator_user_id, id FROM agent_task_queue
+		WHERE issue_id=$1 AND status='queued' AND task_kind IS DISTINCT FROM 'budget_recovery'`, c.issueID).Scan(&r.Taint, &r.Comment, &r.Originator, &r.Review); err != nil {
+		t.Fatalf("the resume queued no single run: %v", err)
+	}
+	return r
+}
+
+func wantTaint(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) || (len(want) > 0 && got[0] != want[0]) {
+		t.Fatalf("run taint = %v, want exactly %v", got, want)
+	}
+}
+
+func TestRunBudgetResumeQueuedRunCarriesTheRefusalsTaint(t *testing.T) {
+	const taint = "untrusted:web"
+	t.Run("approval, direct", func(t *testing.T) {
+		c, id := intentCase(t, 2860130)
+		dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, id, taint)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		resume(t, id)
+		resume(t, id) // deduplicated: still one run, still the one taint
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, taint)
+	})
+	t.Run("sweep, direct", func(t *testing.T) {
+		c, id := intentCase(t, 2860131)
+		dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, id, taint)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
+		testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, taint)
+	})
+	t.Run("approval, blocked restore", func(t *testing.T) {
+		c, id := reviewBlockedCase(t, 2860132)
+		dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, id, taint)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		resume(t, id)
+		resume(t, id)
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, taint)
+	})
+	t.Run("sweep, blocked restore", func(t *testing.T) {
+		c, id := reviewBlockedCase(t, 2860133)
+		dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, id, taint)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, taint)
+	})
+}
+
+func TestRunBudgetResumeRestoresTheCommentAndActorOfTheRefusedRun(t *testing.T) {
+	for _, trigger := range []string{"comment", "mention"} {
+		t.Run(trigger, func(t *testing.T) {
+			c, id := intentCase(t, 2860140)
+			agent := c.agentID
+			if trigger == "mention" {
+				agent = secondAgent(t)
+			}
+			var comment pgtype.UUID
+			if err := testPool.QueryRow(context.Background(), `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+				VALUES ($1,$2,'member',$3,'please look') RETURNING id`, testWorkspaceID, c.issueID, testUserID).Scan(&comment); err != nil {
+				t.Fatal(err)
+			}
+			dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger=$3, trigger_comment_id=$4, actor_user_id=$5 WHERE id=$1`, id, agent, trigger, comment, testUserID)
+			linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			resume(t, id)
+			wantResume(t, id, "run_queued", "")
+			r := refusedRunOf(t, c)
+			if r.Comment != comment || uuidToString(r.Originator) != testUserID {
+				t.Fatalf("queued run comment %s originator %s, want %s and %s", uuidToString(r.Comment), uuidToString(r.Originator), uuidToString(comment), testUserID)
+			}
+		})
+	}
+}
+
+func TestRunBudgetRefusalRecordsTheTriggerCommentAndActor(t *testing.T) {
+	c, e := hookCase(t, 2860141)
+	var comment pgtype.UUID
+	if err := testPool.QueryRow(context.Background(), `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+		VALUES ($1,$2,'member',$3,'please look') RETURNING id`, testWorkspaceID, c.issueID, testUserID).Scan(&comment); err != nil {
+		t.Fatal(err)
+	}
+	e.Target.TriggerCommentID, e.Target.ActorUserID = comment, parseUUID(testUserID)
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	var gotComment, gotActor pgtype.UUID
+	if err := testPool.QueryRow(context.Background(), `SELECT trigger_comment_id, actor_user_id FROM run_budget_refusal WHERE issue_id=$1`, c.issueID).Scan(&gotComment, &gotActor); err != nil {
+		t.Fatal(err)
+	}
+	if gotComment != comment || uuidToString(gotActor) != testUserID {
+		t.Fatalf("refusal stored comment %s actor %s, want %s and %s", uuidToString(gotComment), uuidToString(gotActor), uuidToString(comment), testUserID)
+	}
+}
+
+func TestRunBudgetResumeDoesNotRestoreAWakeupOrRetryByHand(t *testing.T) {
+	for _, trigger := range []string{"wakeup", "system wakeup", "retry"} {
+		t.Run(trigger, func(t *testing.T) {
+			c, id := intentCase(t, 2860150)
+			dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger=$3 WHERE id=$1`, id, secondAgent(t), trigger)
+			linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			resume(t, id)
+			wantResume(t, id, "superseded", "trigger_not_resumable")
+			if got := queuedAgents(t, c); len(got) != 0 {
+				t.Fatalf("queued runs for %v, want none: a %s is not a mention", got, trigger)
+			}
+		})
+	}
+}
+
+func TestRunBudgetResumeBlockedRestoreToAnArchivedHandlerSupersedesIt(t *testing.T) {
+	c, id := reviewBlockedCase(t, 2860160)
+	linkRefusal(t, id, resumeRowOf(t, id).Window)
+	raiseCap(t, c)
+	handler := seededReadyAgentID(t)
+	dbfx.Exec(t, `UPDATE agent SET archived_at=now() WHERE id=$1`, handler)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `UPDATE agent SET archived_at=NULL WHERE id=$1`, handler)
+	})
+	resume(t, id)
+	wantResume(t, id, "superseded", "agent_archived")
+	if got, n := c.status(t), resumeQueued(t, c); got != "blocked" || n != 0 {
+		t.Fatalf("issue %s with %d queued runs, want blocked and none", got, n)
 	}
 }

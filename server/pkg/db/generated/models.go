@@ -2983,6 +2983,8 @@ type RunBudgetRefusal struct {
 	HookGeneration       int32              `json:"hook_generation"`
 	TaintIds             []string           `json:"taint_ids"`
 	TaskID               pgtype.UUID        `json:"task_id"`
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID     pgtype.UUID        `json:"trigger_comment_id"`
 }
 
 type RunCapabilityGrant struct {

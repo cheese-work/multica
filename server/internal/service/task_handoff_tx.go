@@ -105,7 +105,7 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 // returned func publishes the run after commit. overlay is the run's Composio
 // overlay, built before the transaction opened (PrepareIssueRunOverlay); a run
 // inserted without one has none.
-func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (afterCommit func(), err error) {
+func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (afterCommit func(), err error) {
 	pending, err := q.HasPendingAssignmentTaskForAgent(ctx, db.HasPendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
 	if err != nil {
 		return nil, fmt.Errorf("check pending run: %w", err)
@@ -114,7 +114,7 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 		return nil, ErrDuplicatePendingTask
 	}
 	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
-	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
+	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, triggerCommentID, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +131,7 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 // reviewed head is ErrDuplicatePendingTask, checked under the caller's issue
 // row lock so the insert never trips the unique index. The returned func
 // publishes the run after commit.
-func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, actorUserID pgtype.UUID) (afterCommit func(), err error) {
+func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, triggerCommentID, actorUserID pgtype.UUID) (afterCommit func(), err error) {
 	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
 		IssueID: issue.ID,
 		AgentID: leaderID,
@@ -143,7 +143,7 @@ func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queri
 	if pending {
 		return nil, ErrDuplicatePendingTask
 	}
-	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
+	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, triggerCommentID, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
 	if err != nil {
 		return nil, err
 	}

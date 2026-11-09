@@ -209,15 +209,23 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 	}
 	extra := map[string]any{"reason": "budget_approved", "action_id": uuidToString(row.ActionID)}
 	var edge edgeMove
+	// The run the move admits carries the taint the refusal recorded.
+	moveCtx := withIssueMoveGuard(service.WithTaint(ctx, row.TaintIds), guard)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		var err error
-		edge, err = h.moveIssueOnEdgeTx(withIssueMoveGuard(ctx, guard), q, issue, to, "run_budget", extra, true, overlay)
+		edge, err = h.moveIssueOnEdgeTx(moveCtx, q, issue, to, "run_budget", extra, true, overlay)
+		if errors.Is(err, service.ErrAgentArchived) {
+			return &resumeSuperseded{reason: "agent_archived"}
+		}
 		if isPermanentRestoreError(err) {
 			return &resumeSuperseded{reason: "restore_refused"}
 		}
 		if err != nil {
 			return err
+		}
+		if errors.Is(edge.RunRefused, service.ErrAgentArchived) {
+			return &resumeSuperseded{reason: "agent_archived"}
 		}
 		if edge.RunRefused != nil && !errors.Is(edge.RunRefused, service.ErrDuplicatePendingTask) {
 			return &resumeRefused{cause: edge.RunRefused}
@@ -264,7 +272,8 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		if err != nil {
 			return err
 		}
-		after, err = h.enqueueRefusedRun(ctx, q, row, locked, overlay)
+		// The run carries the taint the refusal recorded.
+		after, err = h.enqueueRefusedRun(service.WithTaint(ctx, row.TaintIds), q, row, locked, overlay)
 		switch {
 		case err == nil, errors.Is(err, service.ErrDuplicatePendingTask):
 		case isRunRefusal(err):
@@ -289,6 +298,13 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 // without a valid agent falls back to the assignee.
 func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, issue db.Issue, overlay *service.PreparedRuntimeMCPOverlay) (func(), error) {
 	th := h.onQueries(q)
+	// A wakeup or a retry keeps its evidence in the wakeup rule or the failed
+	// task, not in the refusal: restoring it here would re-admit it as a mention.
+	// Its own tick or retry runs it again.
+	switch row.Trigger {
+	case "wakeup", "system wakeup", "retry":
+		return nil, &resumeSuperseded{reason: "trigger_not_resumable"}
+	}
 	agentID, viaSquad := row.AgentID, row.Trigger == "squad leader callback"
 	switch {
 	case !agentID.Valid && issue.AssigneeType.String == "agent":
@@ -316,12 +332,16 @@ func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.R
 	}
 	switch {
 	case viaSquad:
-		return th.enqueueSquadLeaderRunInTx(ctx, q, issue)
+		actorType, actorID := "system", ""
+		if row.ActorUserID.Valid {
+			actorType, actorID = "member", uuidToString(row.ActorUserID)
+		}
+		return th.enqueueSquadLeaderRunAsInTx(ctx, q, issue, row.TriggerCommentID, actorType, actorID)
 	case row.Trigger == "assignment or status handoff" || row.Trigger == "comment":
 		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
 			return nil, &resumeSuperseded{reason: "assignee_changed"}
 		}
-		return th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, pgtype.UUID{}, overlay)
+		return th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, row.TriggerCommentID, row.ActorUserID, overlay)
 	}
 	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
 		IssueID: issue.ID,
@@ -334,7 +354,7 @@ func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.R
 	if pending {
 		return nil, service.ErrDuplicatePendingTask
 	}
-	params, err := th.TaskService.PrepareTaskForMention(ctx, q, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
+	params, err := th.TaskService.PrepareTaskForMention(ctx, q, issue, agentID, row.TriggerCommentID, row.ActorUserID, service.OriginDerived)
 	if err != nil {
 		return nil, err
 	}

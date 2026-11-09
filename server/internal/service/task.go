@@ -1630,7 +1630,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
@@ -1823,8 +1823,11 @@ func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queri
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
 	}
-	if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived or has no runtime")
+	if agent.ArchivedAt.Valid {
+		return db.AgentTaskQueue{}, ErrAgentArchived
+	}
+	if !agent.RuntimeID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 	params.RuntimeID = agent.RuntimeID
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
@@ -1962,7 +1965,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))

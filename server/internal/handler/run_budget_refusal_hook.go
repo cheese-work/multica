@@ -130,6 +130,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			ID:       dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window,
 			Status:  pgtype.Text{String: e.Status, Valid: true},
 			AgentID: e.Target.AgentID, Trigger: e.Target.Trigger, State: "open",
+			ActorUserID: e.Target.ActorUserID, TriggerCommentID: e.Target.TriggerCommentID,
 		}
 		newest, err := q.NewestIssueStatusChange(ctx, issue.ID)
 		switch {
@@ -145,6 +146,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		if issue.Status == issuestatus.Blocked {
 			if prev, ok := h.blockingRefusal(ctx, q, newest); ok {
 				in.Status, in.AgentID, in.Trigger, in.Blocked = prev.Status, prev.AgentID, prev.Trigger, true
+				in.ActorUserID, in.TriggerCommentID = prev.ActorUserID, prev.TriggerCommentID
 			} else {
 				in.Status, in.Blocked = pgtype.Text{}, true
 				in.State, in.StateReason = "superseded", pgtype.Text{String: stateReasonUnknownOrigin, Valid: true}
@@ -154,6 +156,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			row, err := q.ReviveRunBudgetRefusal(ctx, db.ReviveRunBudgetRefusalParams{
 				ID: existing.ID, Status: in.Status, OccurrenceActivityID: in.OccurrenceActivityID, Blocked: in.Blocked,
 				AgentID: in.AgentID, Trigger: in.Trigger, StateReason: in.StateReason, State: in.State, TaintIds: in.TaintIds,
+				ActorUserID: in.ActorUserID, TriggerCommentID: in.TriggerCommentID,
 			})
 			if err != nil {
 				return fmt.Errorf("revive refusal: %w", err)

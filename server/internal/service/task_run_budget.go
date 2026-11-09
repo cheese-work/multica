@@ -23,6 +23,10 @@ import (
 // A person naming an agent by hand (OriginNamed) is not counted against the
 // door: that run is a conversation the person chose to pay for.
 
+// ErrAgentArchived is returned by an enqueue whose agent is archived: no retry
+// can change it.
+var ErrAgentArchived = errors.New("agent is archived")
+
 // ErrRunBudgetExhausted is returned by a derived enqueue path when the issue
 // already used its workflow's run budget. Handlers render it as 403
 // run_budget_exhausted; background callers log it and drop the trigger.
