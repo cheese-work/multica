@@ -81,7 +81,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 	var handoffDetails map[string]string
 	if handoff != nil {
-		handoffDetails = workflowHandoffPayload(updated, handoff, th.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
+		handoffDetails = workflowHandoffPayload(updated, handoff, th.workflowHandoffBrief(ctx, updated, handoff), willRun)
 	}
 	// The block an exhausted budget causes is a consequence of exhaustion, and
 	// it lands before the window's exhaustion claim: it must not grant. The

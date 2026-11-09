@@ -37,7 +37,6 @@ type routeIssueRequest struct {
 type routeRunOutcome struct {
 	Started bool   `json:"started"`
 	Refused string `json:"refused,omitempty"`
-	Reason  string `json:"reason,omitempty"`
 }
 
 // routeRefusal names the enqueue errors that leave the move and its label
@@ -150,7 +149,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	suppress, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prev, params, handoff, req.SuppressRun)
+	suppress := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(h.actingTaskContext(r), h.handedToAgentIfRun(r, actorType, actorID, prev, params, false, handoff != nil, suppress))
 	writeCtx = withBudgetActor(writeCtx, r)
 	if handoff != nil {
@@ -280,7 +279,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	h.broadcastCancelledWakeups(r.Context(), prev.WorkspaceID, cancelledWakeups)
 	var handoffDetails map[string]string
 	if handoff != nil {
-		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil, runReason)
+		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil)
 		h.finishRecordedHandoff(r.Context(), rec, handoffDetails)
 	}
 	payload := map[string]any{
@@ -310,7 +309,6 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		outcome.Started = h.queuedRunCarriesWrite(r.Context(), updated, runTrigger.AgentID)
 	}
 	if outcome.Started {
-		outcome.Reason = runReason
 		h.consumeHandedWakeups(r.Context(), updated.ID, handed)
 	}
 	if actorType == "member" {
