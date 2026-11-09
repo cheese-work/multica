@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -9330,7 +9331,7 @@ func commentEventFields(c db.Comment) map[string]any {
 // notice never points a wake or a notification at anyone. Issue links stay.
 // Pass 1 flattens links to plain @labels. Labels may hold brackets, so that pass
 // can assemble a new link from the leftovers; pass 2 then renames the scheme of
-// whatever is left. Two passes, never a loop: a loop is quadratic on deep nesting.
+// every non-issue link left. Two passes, never a loop: a loop is quadratic on deep nesting.
 func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID, text string) string {
 	if !strings.Contains(text, "mention://") {
 		return text
@@ -9344,11 +9345,11 @@ func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID
 		}
 		return m
 	})
-	if util.MentionRe.MatchString(text) {
-		text = strings.ReplaceAll(text, "](mention://", "](mention-removed://")
-	}
-	return text
+	// Pass 2: rename every non-issue scheme left, assembled link or not.
+	return nonIssueMentionScheme.ReplaceAllString(text, "](mention-removed://$1/")
 }
+
+var nonIssueMentionScheme = regexp.MustCompile(`\]\(mention://(member|agent|squad|all)/`)
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
 	if content == "" {

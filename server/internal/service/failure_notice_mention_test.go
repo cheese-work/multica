@@ -23,6 +23,7 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 		nestedAgent = "[@[@A](mention://agent/11111111-2222-3333-4444-555555555555)](mention://agent/66666666-7777-8888-9999-000000000000)"
 		nestedAll   = "[@[@all](mention://agent/11111111-2222-3333-4444-555555555555)](mention://all/all)"
 		nestedOpen  = "[@[@all](mention://all/all)](mention://agent/11111111-2222-3333-4444-555555555555)"
+		issueLink   = "see [CHE-1](mention://issue/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee) and [@Other](mention://agent/11111111-2222-3333-4444-555555555555)"
 	)
 	cases := []struct {
 		name  string
@@ -34,6 +35,7 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 		{"agent can act keeps nested links as is", "", nestedAll, nestedAll},
 		{"archived agent loses the mention", archived, rawError, plain},
 		{"agent without a runtime loses the mention", "UPDATE agent SET runtime_id = NULL WHERE id = $1", rawError, plain},
+		{"standalone issue link stays live when the agent cannot act", archived, issueLink, "see [CHE-1](mention://issue/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee) and @Other"},
 		{"nested agent labels do not rebuild a mention", archived, nestedAgent, "@[@A](mention-removed://agent/66666666-7777-8888-9999-000000000000)"},
 		{"nested label does not rebuild an @all mention", archived, nestedAll, "@[@all](mention-removed://all/all)"},
 		{"nested @all label inside an agent link is made inert", archived, nestedOpen, "@[@all](mention-removed://agent/11111111-2222-3333-4444-555555555555)"},
@@ -66,6 +68,9 @@ func TestFailureNoticeAgentMention(t *testing.T) {
 			}
 			if tc.setup != "" {
 				for _, m := range util.ParseMentions(got) {
+					if m.Type == "issue" {
+						continue
+					}
 					t.Fatalf("failure comment %q still mentions %s/%s", got, m.Type, m.ID)
 				}
 			}
