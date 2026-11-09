@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { preprocessLinks } from "@multica/ui/markdown/linkify";
+import { preprocessLinks, trimTrailingPunctuation } from "@multica/ui/markdown/linkify";
 
 // The bug: linkify-it does not treat CJK full-width punctuation as a URL
 // boundary, so the href can swallow trailing punctuation and the Chinese
@@ -183,5 +183,60 @@ describe("preprocessLinks — trailing markdown delimiter is not part of the URL
     expect(preprocessLinks("https://example.com/a*b/c")).toBe(
       "[https://example.com/a*b/c](https://example.com/a*b/c)",
     );
+  });
+});
+
+// GFM extended autolink: trailing `? ! . , : ; * _ ~` are not part of the URL,
+// and a trailing `)` is dropped only when unbalanced (CHE-4660).
+describe("preprocessLinks — trailing punctuation is not part of the URL (GFM)", () => {
+  const link = (u: string) => `[${u}](${u})`;
+  const U = "https://github.com/cheese-work/multica-dotfiles/pull/591";
+
+  it("excludes the ':' in the original bug shape", () => {
+    expect(preprocessLinks(`${U}: sửa ready sweep`)).toBe(`${link(U)}: sửa ready sweep`);
+  });
+
+  it.each([".", ",", ";", "!", "?", ":", "_"])("excludes a trailing %s", (p) => {
+    expect(preprocessLinks(`see ${U}${p} next`)).toBe(`see ${link(U)}${p} next`);
+  });
+
+  it("excludes a trailing run of punctuation", () => {
+    expect(preprocessLinks(`see ${U}?!. next`)).toBe(`see ${link(U)}?!. next`);
+  });
+
+  it("excludes an unbalanced trailing )", () => {
+    expect(preprocessLinks(`(see ${U})`)).toBe(`(see ${link(U)})`);
+    expect(preprocessLinks(`(see ${U}).`)).toBe(`(see ${link(U)}).`);
+  });
+
+  it("keeps balanced parentheses and interior punctuation", () => {
+    const w = "https://en.wikipedia.org/wiki/A_(b)";
+    expect(preprocessLinks(`see ${w}`)).toBe(`see ${link(w)}`);
+    expect(preprocessLinks(`see ${w}.`)).toBe(`see ${link(w)}.`);
+    expect(preprocessLinks(`(${w})`)).toBe(`(${link(w)})`);
+    const q = "https://x.com/a_b.c,d?e=1&f=2";
+    expect(preprocessLinks(q)).toBe(link(q));
+  });
+
+  it("applies to www. URLs", () => {
+    expect(preprocessLinks("go www.example.com/x.")).toBe(
+      "go [www.example.com/x](https://www.example.com/x).",
+    );
+  });
+
+  // CWE-407: the trim must stay linear for a long run of trailing `)` mixed with
+  // other trailing punctuation (CHE-4660). linkify-it caps what reaches the trim
+  // through preprocessLinks, so exercise the helper directly.
+  it("trimTrailingPunctuation is linear on a long ')'-and-punctuation run", () => {
+    const run = ")_".repeat(40_000);
+    const start = performance.now();
+    const out = trimTrailingPunctuation(`https://example.com/x${run}`);
+    expect(performance.now() - start).toBeLessThan(500);
+    expect(out).toBe("https://example.com/x");
+  });
+
+  it("trimTrailingPunctuation keeps balanced ) inside a trailing run", () => {
+    expect(trimTrailingPunctuation("https://x/a_(b)_)")).toBe("https://x/a_(b)");
+    expect(trimTrailingPunctuation("https://x/a_(b)")).toBe("https://x/a_(b)");
   });
 });
