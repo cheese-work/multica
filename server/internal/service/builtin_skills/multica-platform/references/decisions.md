@@ -197,3 +197,25 @@ multica decision propose <action-type> --version 1 --issue <issue> --params-file
 - `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
   `issue.run_budget.top_up` takes `issue_id`, `window_id`. Prefer
   `multica issue budget raise|top-up`, which fills these for you.
+
+## Proposing a config change
+
+`multica config propose` writes the action file for a workspace config change:
+it reads the live value, computes `before_sha256` and `after_sha256`, and the
+file goes to `multica decision request --action-file`. It sends nothing.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --dry-run
+multica config propose workspace.settings --set compact_prompt="..." --out ./action.json
+```
+
+- Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`,
+  `workspace.context`, `workflow.steps <workflow-id>`,
+  `workflow.step.instructions <workflow-id> --status-key <key>`,
+  `workspace.settings --set key=value|key:=<json>`.
+- `--dry-run` prints both digests and the action and writes nothing.
+  `--out` is required otherwise.
+- Any other field or settings key is refused as `denylisted` before a read.
+- `workflow.steps` takes the steps array as the workflow GET returns it; the
+  server refuses a differently normalized array (`after_digest_mismatch`).

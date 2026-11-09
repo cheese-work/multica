@@ -1,18 +1,17 @@
-import { Suspense, useCallback, useEffect, useId, useRef, useState } from "react";
+import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@multica/ui/components/ui/dialog";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft } from "@multica/core/drafts";
-import { approvableDiff, approvablePreview } from "@multica/core/issues/decision-action-preview";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, useShortcut } from "@multica/core/shortcuts";
-import { countDiffLines } from "@multica/core/issues/decision-artifacts";
-import type { DecisionActionDiff, DecisionRequestCard as RequestCard } from "@multica/core/types";
+import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
 import { useEditorUpload } from "../../editor/use-editor-upload";
@@ -27,7 +26,8 @@ import { openExternal } from "../../platform";
 import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
-import { DecisionArtifacts, DiffHunks, useBackToClose } from "./decision-artifacts";
+import { ConfigChangeViewer } from "./config-change-viewer";
+import { DecisionArtifacts } from "./decision-artifacts";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 interface AnswerDraft {
@@ -195,26 +195,40 @@ function DecisionAnswerForm({
   );
 }
 
+type CardAction = NonNullable<RequestCard["action"]>;
+
+// Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
+// member list yet or any other role the button is absent. The server still refuses a non-owner.
+function OwnerGatedApproval({ action, previewSha256, approveDisabled }: { action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+  const workspace = useCurrentWorkspace();
+  return workspace
+    ? <MemberGatedApproval wsId={workspace.id} action={action} previewSha256={previewSha256} approveDisabled={approveDisabled} />
+    : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={false} state={action.state} />;
+}
+
+function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: { wsId: string; action: CardAction; previewSha256?: string; approveDisabled: boolean }) {
+  const { role } = useCurrentMember(wsId);
+  return <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={previewSha256} canApprove={role === "owner"} approveDisabled={approveDisabled} state={action.state} />;
+}
+
 // What the approval would change, shown before Approve exists. No usable preview
 // (missing, empty, malformed, bad digest, unknown action type) means the server
-// could not vouch for the action: say so and keep Approve disabled.
-function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> }) {
+// could not vouch for the action: say so, keep Approve disabled for who may approve,
+// show it to nobody else, and leave Reject to everyone.
+function ActionPreview({ action }: { action: CardAction }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
-  const fields = pending ? approvablePreview(action)?.fields : undefined;
-  const diff = pending ? approvableDiff(action) : undefined;
-  if (pending && !fields && !diff) {
-    return (
-      <div className="space-y-1">
-        <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>
-        <Button size="sm" disabled>{t(($) => $.decision.action_approve)}</Button>
-      </div>
-    );
-  }
+  const configAction = isConfigChangeActionType(action.action_type);
+  const ownerOnly = configAction || action.owner_only === true;
+  const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
+  const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
+  const unavailable = pending && !fields && !configChange;
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
+      {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
+      {configChange && <ConfigChangeViewer change={configChange} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -225,37 +239,9 @@ function ActionPreview({ action }: { action: NonNullable<RequestCard["action"]> 
           ))}
         </dl>
       )}
-      {diff && <ActionDiff diff={diff} />}
-      <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} previewSha256={diff?.sha256} state={action.state} />
-    </div>
-  );
-}
-
-// The step's before/after text with the same fullscreen viewer as a decision's files (CHE-2810).
-function ActionDiff({ diff }: { diff: DecisionActionDiff }) {
-  const { t } = useT("chat");
-  const [open, setOpen] = useState(false);
-  const close = useCallback(() => setOpen(false), []);
-  useBackToClose(open, close);
-  const { added, removed } = countDiffLines(diff.hunks);
-  return (
-    <div data-testid="decision-request-action-diff" className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
-      <p className="font-medium">{t(($) => $.decision.action_diff)}</p>
-      <p className="text-muted-foreground">{t(($) => $.decision.artifacts.changes_summary, { added, removed })}</p>
-      <div className="flex max-h-48 flex-col">
-        <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.action_diff)} />
-      </div>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger render={<Button size="sm" variant="outline" />}>{t(($) => $.decision.action_diff_open)}</DialogTrigger>
-        <DialogContent data-testid="decision-action-diff-dialog" className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:rounded-xl">
-          <DialogHeader className="p-4 pr-12">
-            <DialogTitle>{t(($) => $.decision.action_diff)}</DialogTitle>
-          </DialogHeader>
-          <div className="flex min-h-0 flex-col border-t border-surface-border p-4">
-            <DiffHunks hunks={diff.hunks} label={t(($) => $.decision.action_diff)} />
-          </div>
-        </DialogContent>
-      </Dialog>
+      {ownerOnly
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} />
+        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} />}
     </div>
   );
 }

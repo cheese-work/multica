@@ -76,6 +76,29 @@ export interface DecisionActionPreview {
   sha256: string;
 }
 
+/** One hunk of a config-change diff; every line starts with `+`, `-` or a space. */
+export interface DecisionConfigDiffHunk {
+  old_start: number;
+  new_start: number;
+  lines: string[];
+}
+
+/** The stored server preview of a config-change action: what the approver is shown and approves against. */
+export interface DecisionConfigChange {
+  field: string;
+  target_id: string;
+  keys: string[];
+  diff_kind: "json" | "text" | "lines";
+  diff: DecisionConfigDiffHunk[];
+  /** The value the change writes. A string for text, an array of lines for lines, JSON otherwise. */
+  after: unknown;
+  before_sha256: string;
+  after_sha256: string;
+  meta?: Record<string, unknown>;
+  /** Digest of the stored preview; sent back as `preview_sha256` on approval. */
+  sha256: string;
+}
+
 export interface DecisionRequestAction {
   id: string;
   action_type: string;
@@ -84,15 +107,10 @@ export interface DecisionRequestAction {
   state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
-  /** The text diff of a config-change action with its digest, which approval sends back as `preview_sha256`. */
-  diff?: DecisionActionDiff;
-}
-
-/** Changed hunks of one text field; lines start with " ", "-" or "+". */
-export interface DecisionActionDiff {
-  kind: "text";
-  hunks: { old_start: number; new_start: number; lines: string[] }[];
-  sha256: string;
+  /** Set for a config-change action; absent when the preview is malformed, so the card offers no approval. */
+  config_change?: DecisionConfigChange;
+  /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
+  owner_only?: boolean;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

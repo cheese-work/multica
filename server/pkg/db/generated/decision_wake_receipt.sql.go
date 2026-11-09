@@ -24,6 +24,30 @@ func (q *Queries) AllocateDecisionWakeSeq(ctx context.Context, id pgtype.UUID) (
 	return wake_seq, err
 }
 
+const getDecisionAnswerWakeState = `-- name: GetDecisionAnswerWakeState :one
+SELECT (answer.disclaimed_at IS NOT NULL)::boolean AS disclaimed,
+       (answer.wake_at IS NULL OR answer.wake_at > clock_timestamp())::boolean AS held,
+       coalesce(answer.id = (
+           SELECT live.id FROM decision_answer live
+           WHERE live.decision_request_id = answer.decision_request_id AND live.disclaimed_at IS NULL
+           ORDER BY live.created_at DESC, live.id DESC LIMIT 1), false)::boolean AS latest_live
+FROM decision_answer answer WHERE answer.id = $1
+`
+
+type GetDecisionAnswerWakeStateRow struct {
+	Disclaimed bool `json:"disclaimed"`
+	Held       bool `json:"held"`
+	LatestLive bool `json:"latest_live"`
+}
+
+// What delivery-time check 3 and the wake_at gate read, under the answer lock.
+func (q *Queries) GetDecisionAnswerWakeState(ctx context.Context, id pgtype.UUID) (GetDecisionAnswerWakeStateRow, error) {
+	row := q.db.QueryRow(ctx, getDecisionAnswerWakeState, id)
+	var i GetDecisionAnswerWakeStateRow
+	err := row.Scan(&i.Disclaimed, &i.Held, &i.LatestLive)
+	return i, err
+}
+
 const getDecisionRequestForWake = `-- name: GetDecisionRequestForWake :one
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request WHERE authority = 'human' AND id = $1
 `
@@ -120,6 +144,30 @@ func (q *Queries) GetDecisionWakeReceipt(ctx context.Context, id pgtype.UUID) (D
 	return i, err
 }
 
+const hasOlderPendingDecisionWakeReceipt = `-- name: HasOlderPendingDecisionWakeReceipt :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_wake_receipt older
+    JOIN decision_wake_event older_event ON older_event.id = older.event_id
+    WHERE older_event.request_id = $1 AND older.recipient_agent_id = $2
+      AND older.status = 'pending' AND older.event_seq < $3)::boolean
+`
+
+type HasOlderPendingDecisionWakeReceiptParams struct {
+	RequestID        pgtype.UUID `json:"request_id"`
+	RecipientAgentID pgtype.UUID `json:"recipient_agent_id"`
+	EventSeq         int64       `json:"event_seq"`
+}
+
+// True while another receipt of the same request and recipient with a lower
+// event_seq is pending, whatever its next_attempt_at: a retraction that backs
+// off still holds back the corrected answer.
+func (q *Queries) HasOlderPendingDecisionWakeReceipt(ctx context.Context, arg HasOlderPendingDecisionWakeReceiptParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOlderPendingDecisionWakeReceipt, arg.RequestID, arg.RecipientAgentID, arg.EventSeq)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const insertDecisionWakeEvent = `-- name: InsertDecisionWakeEvent :one
 INSERT INTO decision_wake_event (id, request_id, seq, type, answer_id, source_comment_id)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -203,14 +251,27 @@ func (q *Queries) InsertDecisionWakeReceipt(ctx context.Context, arg InsertDecis
 }
 
 const listDecisionWakeReceiptCandidates = `-- name: ListDecisionWakeReceiptCandidates :many
-SELECT id FROM decision_wake_receipt
-WHERE status = 'pending' AND next_attempt_at <= clock_timestamp()
-ORDER BY next_attempt_at, id
+SELECT receipt.id FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+LEFT JOIN decision_answer answer ON answer.id = event.answer_id
+WHERE receipt.status = 'pending' AND receipt.next_attempt_at <= clock_timestamp()
+  AND (event.answer_id IS NULL OR answer.disclaimed_at IS NOT NULL OR answer.wake_at <= clock_timestamp())
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_wake_receipt older
+      JOIN decision_wake_event older_event ON older_event.id = older.event_id
+      WHERE older_event.request_id = event.request_id AND older.recipient_agent_id = receipt.recipient_agent_id
+        AND older.status = 'pending' AND older.event_seq < receipt.event_seq)
+ORDER BY receipt.next_attempt_at, receipt.id
 LIMIT $1
 `
 
 // Due pending receipts, oldest due first: a failed receipt moves its own
-// next_attempt_at, so it never holds back the others.
+// next_attempt_at, so it never holds back the others. A receipt is not due
+// while its answer's wake_at is NULL (the answering task has not finished) or
+// in the future, or while an older receipt of the same request and recipient
+// is still pending. A withdrawn answer is always selectable: withdrawal clears
+// its wake_at, and delivery must settle its receipts so they stop blocking
+// later ones. Delivery repeats these checks under the locks.
 func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSize int32) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDecisionWakeReceiptCandidates, batchSize)
 	if err != nil {
@@ -263,6 +324,18 @@ func (q *Queries) LockDecisionReceiptRecipient(ctx context.Context, arg LockDeci
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockDecisionWakeEvent = `-- name: LockDecisionWakeEvent :one
+SELECT id FROM decision_wake_event WHERE id = $1 FOR UPDATE
+`
+
+// Last in the lock order before the receipt.
+func (q *Queries) LockDecisionWakeEvent(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWakeEvent, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const lockDecisionWakeReceipt = `-- name: LockDecisionWakeReceipt :one

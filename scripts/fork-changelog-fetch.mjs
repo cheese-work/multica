@@ -122,7 +122,7 @@ export async function fetchChangelog({
       checkDeadline();
       writeAtomically(out, serializeEntries(result));
       checkDeadline();
-      // Merged PRs were already warned at PR time (pr-changelog-check); a plain log keeps every build free of annotations nobody can act on.
+      // Merged PRs were already warned at PR time (pr-guards); a plain log keeps every build free of annotations nobody can act on.
       for (const { number, message } of result.warnings) note(`PR #${number}: ${message}`);
       if (dividerWarning) warning(dividerWarning);
       if (summaryPath) {

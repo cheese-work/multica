@@ -1,5 +1,5 @@
 import "./e2e/env";
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -18,6 +18,13 @@ export default defineConfig({
     {
       name: "chromium",
       use: { browserName: "chromium" },
+      testIgnore: ["**/perf/**", "**/*.iphone.spec.ts"],
+    },
+    {
+      // WebKit on an iPhone 15 viewport: the engine and touch surface Cheese reads on.
+      name: "webkit-iphone",
+      use: { ...devices["iPhone 15"] },
+      testMatch: "**/*.iphone.spec.ts",
     },
   ],
   // Don't auto-start servers — they must be running already

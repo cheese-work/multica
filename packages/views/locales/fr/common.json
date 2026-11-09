@@ -140,7 +140,6 @@
     "approve": "Approuver avec une clé d'accès",
     "reject": "Refuser",
     "reject_error": "Le refus n'a pas abouti. Réessayez.",
-    "preview_required": "Les modifications affichées ne correspondent plus à la demande. Rechargez la carte et examinez à nouveau.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
       "executed": "Exécutée",
@@ -156,6 +155,18 @@
       "other": "Échec : {{code}}",
       "stale_base": "La cible a changé après la demande. Redemandez."
     },
+    "refusal": {
+      "class_needs_owner": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
+      "payload_mismatch": "Le changement approuvé n’est pas celui qui a été demandé. Demandez à nouveau.",
+      "preview_required": "Approuvez l’aperçu qui vous a été montré. Rechargez la carte.",
+      "precondition_drift": "La cible a changé depuis la demande. Demandez à nouveau.",
+      "busy_retry": "Un autre changement est en cours. Réessayez.",
+      "not_permitted": "Vous n’avez pas le droit de faire ce changement.",
+      "action_not_executable": "Ce type de changement ne peut pas encore être approuvé.",
+      "approval_proof_unavailable": "Ce serveur ne peut pas encore vérifier une approbation par clé d’accès.",
+      "other": "Refusé : {{code}}"
+    },
+    "owner_only": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
     "no_passkey": "Ajoutez une clé d'accès avant d'approuver.",
     "add_passkey": "Ajouter une clé d'accès",
     "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",

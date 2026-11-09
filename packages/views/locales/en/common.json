@@ -140,7 +140,6 @@
     "approve": "Approve with passkey",
     "reject": "Reject",
     "reject_error": "Rejecting did not complete. Try again.",
-    "preview_required": "The changes shown no longer match the request. Reload the card and review again.",
     "waiting": "Waiting for your passkey…",
     "state": {
       "executed": "Executed",
@@ -156,6 +155,18 @@
       "other": "Failed: {{code}}",
       "stale_base": "The target changed after the request. Ask again."
     },
+    "refusal": {
+      "class_needs_owner": "Only the workspace owner can approve this change.",
+      "payload_mismatch": "The approved change is not the change that was requested. Ask again.",
+      "preview_required": "Approve against the preview you were shown. Reload the card.",
+      "precondition_drift": "The target changed since the request. Ask again.",
+      "busy_retry": "Another change is in progress. Try again.",
+      "not_permitted": "You may not make this change.",
+      "action_not_executable": "This kind of change cannot be approved yet.",
+      "approval_proof_unavailable": "This server cannot verify a passkey approval yet.",
+      "other": "Refused: {{code}}"
+    },
+    "owner_only": "Only the workspace owner can approve this change.",
     "no_passkey": "Add a passkey before you approve.",
     "add_passkey": "Add a passkey",
     "error": "Passkey approval did not complete. Try again.",
