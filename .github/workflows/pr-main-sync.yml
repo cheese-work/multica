@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   sync:
-    # Off until C3 (diff-keyed evidence, CHE-3610) ships: a merge of main voids head-keyed PASS evidence.
+    # C3 (diff-keyed evidence, CHE-3610) shipped, so a merge of main no longer voids PASS evidence. Draft PRs are skipped (CHE-4963).
     # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch runs without it,
     # but only as a forced dry run: no live merge happens while the switch is off.
     if: github.event_name == 'workflow_dispatch' || vars.PR_MAIN_SYNC_ENABLED == 'true'

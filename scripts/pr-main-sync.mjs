@@ -31,7 +31,8 @@ export async function syncPrs({ gh, multica, repo, base, only, print = console.l
   for (const pr of (await gh.openPrs()).filter((p) => !only || only.includes(p.number))) {
     try {
       // Fork branches are not ours to push to; a PR with no linked issue cannot be checked for an active run.
-      if (pr.base.ref !== base || pr.head.repo?.full_name !== repo) continue;
+      // A draft is synced on the first main push after it is marked ready (CHE-4963): keeps PR CI load down.
+      if (pr.draft || pr.base.ref !== base || pr.head.repo?.full_name !== repo) continue;
       if (!(await gh.behindBy(pr.head.sha))) continue;
       const id = issueIdOf(pr);
       if (!id) {

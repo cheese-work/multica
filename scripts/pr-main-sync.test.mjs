@@ -135,3 +135,9 @@ test("workflow: every live path (Main Build call or dispatch with dry_run=false)
   // Forced dry-run whenever the switch is off, regardless of the dispatch input.
   assert.match(dryRun, /PR_MAIN_SYNC_ENABLED != 'true'/);
 });
+
+test("a draft PR behind main is skipped; a ready PR is synced (CHE-4963)", async () => {
+  const f = fakes({ prs: [pr(7, { draft: true }), pr(8, { draft: false })] });
+  await run(f);
+  assert.deepEqual(f.log.updates, [[8, "sha8"]]);
+});
