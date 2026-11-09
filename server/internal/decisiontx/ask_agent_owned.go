@@ -3,6 +3,7 @@ package decisiontx
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // agentOwnedStep matches a step an agent owns under Standing Delivery
@@ -21,21 +22,55 @@ var agentOwnedStep = regexp.MustCompile(`(?i)` +
 	`|\bre-?run\b` + stepGap + `{0,40}\b(?:CI|checks?|workflow|jobs?|runs?)\b|\bgh run rerun\b` +
 	`|\b(?:close|link)\b` + stepGap + `{0,30}(?:\b(?:issue|PR|pull request)\b|\b[A-Za-z][A-Za-z0-9]*-\d+\b|#\d+)`)
 
-var mergeTarget = regexp.MustCompile(`(?i)\bmerge\b` + stepGap + `*?\binto\s+(?:the\s+)?(\S+)(\s+branch\b)?`)
+var (
+	mergeVerb  = regexp.MustCompile(`(?i)\b(?:merge|gộp)\b`)
+	ghPRMerge  = regexp.MustCompile(`(?i)\bgh pr merge\b`)
+	intoClause = regexp.MustCompile(`(?i)\binto\s+(?:the\s+)?(\S+)(\s+branch\b)?`)
+)
 
 // branchEdge holds the quotes, brackets and sentence punctuation around a target.
 const branchEdge = "`'\"()[].,;:!?"
 
 const agentOwnedMessage = "is an agent-owned step; do it yourself and ask a human only for spend, production deploy or release, public publication, an irreversible action or an open product choice"
 
-// agentOwned reports whether text hands a human an agent-owned action.
+// mergeClauses splits text at each merge verb. A clause ends at the next merge
+// verb, a ";" or a period followed by whitespace or the end. "gh pr merge" is a
+// command, not a verb, so it is blanked first.
+func mergeClauses(text string) []string {
+	text = ghPRMerge.ReplaceAllString(text, " ")
+	starts := mergeVerb.FindAllStringIndex(text, -1)
+	clauses := make([]string, 0, len(starts))
+	for i, start := range starts {
+		end := len(text)
+		if i+1 < len(starts) {
+			end = starts[i+1][0]
+		}
+		clauses = append(clauses, text[start[0]:clauseEnd(text, start[0], end)])
+	}
+	return clauses
+}
+
+func clauseEnd(text string, from, to int) int {
+	for i := from; i < to; i++ {
+		if text[i] == ';' || text[i] == '.' && (i+1 == len(text) || unicode.IsSpace(rune(text[i+1]))) {
+			return i
+		}
+	}
+	return to
+}
+
+// agentOwned reports whether text hands a human an agent-owned action. Every
+// merge clause needs its own "into the default branch": a missing target or a
+// second merge after an allowed first one is refused.
 func agentOwned(text string) bool {
 	if agentOwnedStep.MatchString(text) {
 		return true
 	}
-	into := mergeTarget.FindStringSubmatch(text)
-	if len(into) < 3 {
-		return false
+	for _, clause := range mergeClauses(text) {
+		into := intoClause.FindStringSubmatch(clause)
+		if len(into) < 3 || into[2] == "" || !strings.EqualFold(strings.Trim(into[1], branchEdge), "default") {
+			return true
+		}
 	}
-	return !(strings.EqualFold(strings.Trim(into[1], branchEdge), "default") && into[2] != "")
+	return false
 }
