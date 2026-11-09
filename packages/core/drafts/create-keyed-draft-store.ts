@@ -8,6 +8,7 @@ import {
 import { defaultStorage } from "../platform/storage";
 import type { StorageAdapter } from "../types/storage";
 import {
+  currentDraftOrigin,
   draftSessionToken,
   NO_DRAFT_SESSION,
   registerDraftCleanup,
@@ -57,11 +58,17 @@ export interface KeyedDraftStore<TData> {
   clearDraft: (key: string) => void;
   hasDraft: (key: string) => boolean;
   /**
+   * Origin for a delayed write, captured when it is scheduled: the workspace and
+   * the session token then. Pass it to {@link KeyedDraftStore.setDraftIn} later.
+   */
+  originFor: (slug: string | null) => DraftOrigin;
+  /**
    * `setDraft` for a delayed write that belongs to `origin` (an editor flushing
    * on unmount, an upload settling). After a workspace switch it writes into the
    * origin workspace's persisted namespace and never touches the current
-   * workspace's drafts. After logout or workspace delete cleared the origin
-   * (stale session) it is dropped.
+   * workspace's drafts. After logout or workspace delete ended the origin's
+   * session it is dropped. The storage key comes from `origin`, never from the
+   * current session.
    */
   setDraftIn: (origin: DraftOrigin, key: string, patch: Partial<TData>) => void;
   /** `clearDraft` for a delayed clear; see {@link KeyedDraftStore.setDraftIn}. */
@@ -106,8 +113,8 @@ export function createKeyedDraftStore<TData extends object>(
 
   // Read-modify-write one other workspace's persisted namespace directly. The
   // in-memory map belongs to the current workspace and is left alone.
-  const updateOtherWorkspace = (slug: string, update: (d: Drafts) => Drafts) => {
-    const name = `${config.storageKey}:${slug}${sessionKeySuffix(draftSessionToken(slug))}`;
+  const updateOtherWorkspace = (slug: string, token: string, update: (d: Drafts) => Drafts) => {
+    const name = `${config.storageKey}:${slug}${sessionKeySuffix(token)}`;
     let persisted: { state?: { drafts?: Drafts }; version?: number } | null = null;
     try {
       const raw = backing.getItem(name);
@@ -132,10 +139,10 @@ export function createKeyedDraftStore<TData extends object>(
   // session's. Reads treat it as empty and the next write reloads first.
   //
   // Storage keys carry the session token (`<name>#<token>`). A load reads only
-  // the current token's key. A write re-checks staleness in the same tick as
-  // its `setItem` and is skipped when stale, so a late write cannot restore
-  // old data or replace the new session's key. A write that still races
-  // across processes lands under a dead key, which `sweepDeadDrafts` removes.
+  // the current token's key. Every write goes through `applyIn`, which reads the
+  // token once, checks it and writes under that same token's key: the key is
+  // never recomputed from the live session. A write that races a logout in
+  // another process lands under a dead key, which `sweepDeadDrafts` removes.
   let loadedSlug: string | null = null;
   let loadedToken = NO_DRAFT_SESSION;
   const tokenNow = () => draftSessionToken(workspaceScoped ? loadedSlug : null);
@@ -150,45 +157,53 @@ export function createKeyedDraftStore<TData extends object>(
       readToken = draftSessionToken(workspaceScoped ? getCurrentSlug() : null);
       return backing.getItem(name + sessionKeySuffix(readToken));
     },
+    // `loadedToken` is the token the in-memory map was loaded under, so the map
+    // is always written back to its own key. No live token read here.
     setItem: (name, value) => {
-      if (!isStale()) backing.setItem(name + sessionKeySuffix(loadedToken), value);
+      if (!workspaceScoped || getCurrentSlug() === loadedSlug) {
+        backing.setItem(name + sessionKeySuffix(loadedToken), value);
+      }
     },
     removeItem: (name) => backing.removeItem(name + sessionKeySuffix(loadedToken)),
   };
-  const syncToWorkspace = () => {
-    if (isStale()) useStore.persist.rehydrate();
+  const tokenSlug = (slug: string | null) => (workspaceScoped ? slug : null);
+
+  // The only write path: one synchronous step that checks the session and
+  // writes. It reads the token once (`token`) and uses it for the check, the
+  // reload decision and the storage key. `expected` is the token a delayed write
+  // was scheduled under; null for a write that belongs to the live session.
+  const applyIn = (slug: string | null, expected: string | null, update: (d: Drafts) => Drafts) => {
+    const token = draftSessionToken(tokenSlug(slug));
+    if (expected !== null && expected !== token) return;
+    if (inOtherWorkspace(slug)) {
+      if (slug) updateOtherWorkspace(slug, token, update);
+      return;
+    }
+    if ((workspaceScoped && getCurrentSlug() !== loadedSlug) || token !== loadedToken) {
+      useStore.persist.rehydrate();
+      // The reload read its own token: a delayed write must still match it.
+      if (expected !== null && expected !== loadedToken) return;
+    }
+    useStore.setState((s) => {
+      const drafts = update(s.drafts);
+      return drafts === s.drafts ? s : { drafts };
+    });
   };
+  const liveSlug = () => (workspaceScoped ? getCurrentSlug() : null);
 
   const useStore = create<KeyedDraftStore<TData>>()(
     persist(
-      (set, get) => ({
+      (_set, get) => ({
         drafts: {},
         getDraft: (key) => (isStale() ? undefined : get().drafts[key]?.data),
-        setDraft: (key, patch) => {
-          syncToWorkspace();
-          set((s) => {
-            const drafts = withPatch(s.drafts, key, patch);
-            return drafts === s.drafts ? s : { drafts };
-          });
-        },
-        clearDraft: (key) => {
-          syncToWorkspace();
-          set((s) => {
-            const drafts = withoutKey(s.drafts, key);
-            return drafts === s.drafts ? s : { drafts };
-          });
-        },
+        setDraft: (key, patch) => applyIn(liveSlug(), null, (d) => withPatch(d, key, patch)),
+        clearDraft: (key) => applyIn(liveSlug(), null, (d) => withoutKey(d, key)),
         hasDraft: (key) => !isStale() && key in get().drafts,
-        setDraftIn: ({ slug, session }, key, patch) => {
-          if (session !== draftSessionToken(slug)) return;
-          if (!inOtherWorkspace(slug)) return get().setDraft(key, patch);
-          if (slug) updateOtherWorkspace(slug, (d) => withPatch(d, key, patch));
-        },
-        clearDraftIn: ({ slug, session }, key) => {
-          if (session !== draftSessionToken(slug)) return;
-          if (!inOtherWorkspace(slug)) return get().clearDraft(key);
-          if (slug) updateOtherWorkspace(slug, (d) => withoutKey(d, key));
-        },
+        originFor: (slug) => currentDraftOrigin(tokenSlug(slug)),
+        setDraftIn: ({ slug, session }, key, patch) =>
+          applyIn(slug, session, (d) => withPatch(d, key, patch)),
+        clearDraftIn: ({ slug, session }, key) =>
+          applyIn(slug, session, (d) => withoutKey(d, key)),
       }),
       {
         name: config.storageKey,
