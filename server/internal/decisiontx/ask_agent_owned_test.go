@@ -1,0 +1,76 @@
+package decisiontx
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+// CHE-4869: an ask may not hand a human a step an agent owns under Standing
+// Delivery Authorization. The five escalation classes stay askable.
+var agentOwnedActions = []struct{ name, text string }{
+	{"click ready for review", "Click Ready for review on PR #7"},
+	{"mark ready", "Mark the PR ready"},
+	{"undraft", "Undraft the PR"},
+	{"gh pr ready", "Run `gh pr ready 7`"},
+	{"retarget", "Retarget PR #7 to the parent branch"},
+	{"retarget by command", "Run `gh pr edit 7 --base develop`"},
+	{"rebase", "Rebase the branch onto the parent"},
+	{"rerun ci", "Re-run the failed checks"},
+	{"rerun by command", "Run `gh run rerun 123`"},
+	{"close issue", "Close CHE-4869"},
+	{"link issue", "Link PR #7 to the issue"},
+	{"merge into develop", "Merge PR #7 into develop"},
+	{"merge into a named branch", "Merge PR #7 into `release/1.2`"},
+}
+
+func TestHumanStepsRefuseAgentOwnedActions(test *testing.T) {
+	for _, tc := range agentOwnedActions {
+		for _, field := range []string{"action", "command"} {
+			test.Run(tc.name+" in "+field, func(test *testing.T) {
+				ask := stepsAsk(test, "pass")
+				step := firstStep(ask)
+				step["action"] = "Set the secret"
+				step["command"] = "echo MULTICA_SERVER_URL"
+				step[field] = tc.text + " MULTICA_SERVER_URL"
+				_, err := decodeMap(ask)
+				if got := errString(err); got != "ask.human_steps[0]."+field+" is an agent-owned step; do it yourself and ask a human only for spend, production deploy or release, public publication, an irreversible action or an open product choice" {
+					test.Fatalf("error = %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestActionStepsRefuseAgentOwnedActions(test *testing.T) {
+	for _, tc := range agentOwnedActions {
+		test.Run(tc.name, func(test *testing.T) {
+			ask := validActionAskMap()
+			ask["steps"] = []any{"Open the dashboard.", tc.text}
+			raw, _ := json.Marshal(ask)
+			_, err := DecodeAskKind(raw, KindAction)
+			if got := errString(err); got != "ask.steps[1] is an agent-owned step; do it yourself and ask a human only for spend, production deploy or release, public publication, an irreversible action or an open product choice" {
+				test.Fatalf("error = %q", got)
+			}
+		})
+	}
+}
+
+func TestAgentOwnedAcceptsEscalationClassSteps(test *testing.T) {
+	for _, text := range []string{
+		"Merge PR #7 into the default branch",
+		"Approve the production deploy of the multica fork",
+		"Publish the release notes to the public site",
+		"Run `multica property create --name Readiness`",
+		"Close the browser tab",
+		"Pay the invoice",
+	} {
+		test.Run(text, func(test *testing.T) {
+			ask := validActionAskMap()
+			ask["steps"] = []any{text}
+			raw, _ := json.Marshal(ask)
+			if _, err := DecodeAskKind(raw, KindAction); err != nil {
+				test.Fatal(err)
+			}
+		})
+	}
+}
