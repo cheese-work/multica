@@ -1335,6 +1335,16 @@ type DmProgressLaneEvent struct {
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
+type DmProgressPending struct {
+	LineageID   pgtype.UUID        `json:"lineage_id"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	EventKind   string             `json:"event_kind"`
+	Immediate   bool               `json:"immediate"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ElevatedOp struct {
 	OpID        pgtype.UUID        `json:"op_id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -2331,6 +2341,8 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	Purpose                   pgtype.Text        `json:"purpose"`
+	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
@@ -2922,6 +2934,16 @@ type RecoveryClaim struct {
 	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
 	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
 	SettledAt         pgtype.Timestamptz `json:"settled_at"`
+}
+
+type ReviewAdmissionDeferral struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	Trigger   string             `json:"trigger"`
+	HeadSha   string             `json:"head_sha"`
+	Reasons   []string           `json:"reasons"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type RunBudgetNotice struct {
