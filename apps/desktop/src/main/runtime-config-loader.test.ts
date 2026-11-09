@@ -2,7 +2,12 @@
 import { mkdtemp, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// Importing the real `electron` package resolves the binary and downloads it
+// when absent (CHE-4820); the loader only needs app.getPath.
+vi.mock("electron", () => ({ app: { getPath: () => "/tmp/multica-test" } }));
+
 import { loadRuntimeConfig } from "./runtime-config-loader";
 
 describe("loadRuntimeConfig", () => {

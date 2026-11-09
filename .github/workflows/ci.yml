@@ -324,6 +324,9 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        # Desktop unit tests mock `electron`; skip its binary download (CHE-4820).
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: pnpm install
 
       - name: Resolve runtime for cache key
