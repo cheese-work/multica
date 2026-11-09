@@ -465,6 +465,22 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
+### Config change proposals
+
+`multica config propose` builds the action file for a workspace config change. It reads the live value, computes `before_sha256` and `after_sha256` with the recipes the server recomputes, and writes the file that `multica decision request --action-file` takes. It sends nothing and writes no secret. A person still approves with a passkey.
+
+Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>` and `workspace.settings --set key=value|key:=<json>`. Text fields take `--file` (UTF-8, no NUL byte). `workflow.steps` takes the steps array as the workflow GET returns it; edit that output, because the server refuses the request (`after_digest_mismatch`) if it normalizes your steps differently. For `workflow.step.instructions` the server computes the after digest, so the file carries no `after_sha256` and the printed digest is for comparison only. Pass `--out <path>` to write the file or `--dry-run` to print both digests and the action without writing. `--expires-in <seconds>` sets the request expiry.
+
+Any other field is refused with `denylisted` before the CLI reads anything: `project.description`, passkeys and the decision gate, members and roles, owner transfer, auth and integration secrets, workspace deletion, the action registry, and `delegated_governed_writes`. A settings key off the server allow table is refused the same way, and a patch that mixes allowed and refused keys is refused whole. The server checks again at request and at approval.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
 ### Shadow report
 
 Any workspace member reads the System 1 shadow report:
