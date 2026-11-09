@@ -71,7 +71,7 @@ func (m *ProviderProbeMonitor) WithExternalHeartbeat(rawURL string) error {
 	}
 	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
 	if err != nil {
-		return err
+		return errors.New("build heartbeat request") // never wrap err: it can embed the secret URL
 	}
 	m.beat = req
 	return nil
@@ -143,16 +143,26 @@ func (m *ProviderProbeMonitor) pingExternalHeartbeat(ctx context.Context) {
 	defer cancel()
 	resp, err := http.DefaultClient.Do(m.beat.Clone(ctx))
 	if err != nil {
-		// The heartbeat URL is a secret and *url.Error embeds it: log only the cause.
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		slog.Warn("provider probe external heartbeat failed", "cause", err)
+		// The heartbeat URL is a secret. *url.Error embeds it and the cause can
+		// embed a redirect Location, so log a fixed category, never the error text.
+		slog.Warn("provider probe external heartbeat failed", "category", heartbeatFailureCategory(err))
 		return
 	}
 	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
 	resp.Body.Close()
+}
+
+// heartbeatFailureCategory maps a heartbeat transport error to a fixed label
+// that carries nothing from the secret URL or a server-controlled Location.
+func heartbeatFailureCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "transport"
+	}
 }
 
 // CheckHeartbeat alerts when no probe result was recorded within staleAfter.

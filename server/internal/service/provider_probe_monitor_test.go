@@ -485,3 +485,31 @@ func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.
 		}
 	}
 }
+
+func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t *testing.T) {
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	// Go embeds the full Location in the transport error for a malformed redirect.
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/ping/synthetic-path%zz?key=synthetic-query")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer redirecting.Close()
+	m, _, _ := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	if err := m.WithExternalHeartbeat(redirecting.URL + "/ping/s3cr3t-token?key=q-secret"); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick(context.Background())
+
+	if !strings.Contains(logs.String(), "heartbeat") {
+		t.Fatalf("expected a heartbeat failure log, got %q", logs.String())
+	}
+	for _, secret := range []string{"s3cr3t-token", "q-secret", "synthetic-path", "synthetic-query"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("log leaks %q: %s", secret, logs.String())
+		}
+	}
+}
