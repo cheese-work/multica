@@ -196,6 +196,14 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 터미널에서 멤버로 만들 때는 `--agent-id`가 필요합니다. 에이전트가 자기 실행 안에서 만들면 기본적으로 자기 자신을 깨웁니다.
 
+사람이 트리거할 수 있는 규칙은 댓글, 이슈, 반응, 첨부 변경에 대한 이벤트 규칙 중 행위자 필터가 멤버를 제외하지 않는 것입니다. 워크스페이스 설정 `ask_guard_mode`가 `warn` 또는 `block`이면, 에이전트는 다음 중 하나가 없는 한 이런 규칙을 스스로 등록할 수 없습니다.
+
+- `--decision <request-id>`는 규칙을 이 이슈의 결정 요청에 묶습니다. 요청은 질문됨 또는 응답됨 상태여야 하고, `--filter-actor-id`를 지정했다면 그 멤버의 요청이어야 합니다. 요청 하나는 활성 웨이크업 하나에만 묶입니다.
+- `--purpose observe`는 사람을 기다리지 않는 규칙을 나타냅니다. 멤버가 일으킨 실행마다 감사 이벤트가 기록됩니다.
+- `--filter-actor-id` 없는 `--filter-actor-type agent`는 모든 에이전트와 일치하고 멤버와는 일치하지 않습니다.
+
+`block` 모드에서는 수정 명령이 담긴 메시지와 함께 422로 거부됩니다. `warn` 모드에서는 규칙이 만들어지고 이벤트만 기록됩니다.
+
 ### DM에서 진행 상황 팔로우
 
 DM은 에이전트가 사용자를 위해 만든 이슈를 팔로우합니다. 멤버는 자신이 만든 DM에서만 `--chat`으로 팔로우를 관리할 수 있습니다. 에이전트는 `--chat` 없이 `multica issue follow <issue>`를 실행합니다. DM은 자신의 작업에서 정해지며, DM이 없는 작업은 거부됩니다. 하위 이슈는 부모의 활성 팔로우를 상속합니다.
@@ -323,6 +331,18 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `update`, `version` | CLI 업데이트 또는 버전 확인 |
 
 `multica chat`은 **에이전트가 현재 처리 중인 외부 채팅 대화**를 읽으며 주로 채팅 연동의 에이전트가 사용합니다. 워크스페이스의 임의 대화를 탐색하는 일반 명령이 아닙니다.
+
+### 섀도 리포트
+
+워크스페이스 멤버는 누구나 System 1 섀도 리포트를 읽을 수 있습니다:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` 블록과 `routing` 블록은 전체 기간을 다룹니다. `route` 블록은 `[since, until)` 구간을 다룹니다. `--since`와 `--until`은 RFC 3339 시각을 받고, `--until`의 기본값은 현재, `--since`의 기본값은 `--until` 24시간 전입니다. 잘못된 시각이나 `--until`보다 늦은 `--since`는 서버가 400으로 거부합니다.
+
+`route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
 
 ## ID와 출력 형식
 
