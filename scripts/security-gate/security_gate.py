@@ -407,11 +407,11 @@ def evaluate(pr: dict, comments: list[dict], trusted_ids: set[int], diff_text: s
         role, lab = signer_role(agent), lab_of(agent)
         if lab is None or lab_of(v["model"]) not in (None, lab) or (role == "opus" and "opus" not in v["model"].casefold()):
             why.append(f"reviewer {agent}: lab unknown or model mismatch")
-        elif role is None and not (v["result"] == "FAIL" and agent != author and lab != author_lab):
-            # A PASS is limited to the signer roles. A non-signer FAIL still blocks when its reviewer is not the author
-            # and comes from another lab than the author (base RGS-1 behaviour); any other non-signer verdict is ignored.
+        elif role is None:
+            # Only a named signer (Opus or Sol) can PASS or FAIL. Any other reviewer's verdict is ignored (CHE-4596 D8 = A,
+            # multica-dotfiles main; Cheese chose this over an independent non-signer FAIL blocking, CHE-4568).
             why.append(f"reviewer {agent}: not an allowed signer (Opus or Sol)")
-        elif agent == author or (role and role == author_role):
+        elif agent == author or role == author_role:
             why.append(f"reviewer {agent} cannot sign its own PR (author {author})")
             latest[agent] = {**v, "rgs1": True}
         elif v["result"] == "FAIL":
