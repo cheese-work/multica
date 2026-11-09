@@ -33,6 +33,7 @@ Run the regression checks from the repository root:
 ```sh
 node --test scripts/ci-scope.test.mjs scripts/ci-runners.test.mjs scripts/warning-budget.test.mjs scripts/main-build.test.mjs
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-github-api-retry.py
 bash deploy/cd/test-admission.sh
 ```
 
