@@ -931,9 +931,11 @@ jobs:
       - name: Run golangci-lint
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
         working-directory: server
+        env:
+          BASE_REF: ${{ github.base_ref }}
         # Diff-only against the already-fetched local merge base: the action's only-new-issues reads the PR diff
         # through GitHub's API, which rejects the upstream-sync PR at 300 files.
-        run: golangci-lint run --new-from-merge-base=origin/${{ github.base_ref }}
+        run: golangci-lint run --new-from-merge-base="origin/$BASE_REF"
 
   # CHE-4666: fails a PR that adds a high or critical vulnerable dependency; findings already on the base never fail it.
   # Always runs so the `backend` gate can expect success on every event; the action itself needs a pull_request diff.

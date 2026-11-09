@@ -20,7 +20,7 @@ test("go-lint installs a pinned, checksum-verified, cached golangci-lint instead
   assert.match(goLint, /scripts\/fetch-verified\.sh/);
   assert.match(goLint, /GOLANGCI_LINT_VERSION: "?2\.13\.2"?/);
   assert.match(goLint, /GOLANGCI_LINT_SHA256: "?2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6"?/);
-  assert.match(goLint, /--new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
+  assert.match(goLint, /--new-from-merge-base="origin\/\$BASE_REF"/);
 });
 
 for (const [file, name] of [[".github/workflows/ci.yml", "gitleaks"], [".github/workflows/secret-scan.yml", "gitleaks"]]) {
