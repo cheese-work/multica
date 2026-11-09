@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/ghrun"
+	"github.com/multica-ai/multica/server/internal/service"
 )
 
 // workflowWriter applies one workflow delivery to one workspace's mirror.
@@ -32,14 +33,34 @@ func (h *Handler) handleWorkflowRunEvent(ctx context.Context, body []byte) error
 	})
 }
 
+// handleWorkflowJobEvent mirrors a workflow_job delivery and, when it is a
+// completed C00 deploy carrying a release receipt, opens the release issue in
+// each bound workspace. Both writes are idempotent, so a failed delivery can be
+// redelivered whole.
 func (h *Handler) handleWorkflowJobEvent(ctx context.Context, body []byte) error {
+	receipt, deployed := ghrun.ParseReleaseReceipt(body)
 	event, ok := ghrun.ParseJobEvent(body)
-	if !ok {
+	if !ok && !deployed {
 		return nil
 	}
 	writer := h.defaultWorkflowWriter()
-	return h.fanOutWorkflowEvent(ctx, event.InstallationID, func(workspaceID pgtype.UUID) error {
-		return writer.ApplyJobEvent(ctx, workspaceID, event)
+	installationID := event.InstallationID
+	if deployed {
+		installationID = receipt.InstallationID
+	}
+	return h.fanOutWorkflowEvent(ctx, installationID, func(workspaceID pgtype.UUID) error {
+		var errs []error
+		if ok {
+			errs = append(errs, writer.ApplyJobEvent(ctx, workspaceID, event))
+		}
+		if deployed {
+			_, _, err := h.IssueService.CreateRelease(ctx, service.ReleaseDeploy{
+				WorkspaceID: workspaceID, RepoOwner: receipt.RepoOwner, RepoName: receipt.RepoName,
+				RunID: receipt.RunID, OldSHA: receipt.OldSHA, NewSHA: receipt.NewSHA, Digest: receipt.Digest,
+			})
+			errs = append(errs, err)
+		}
+		return errors.Join(errs...)
 	})
 }
 

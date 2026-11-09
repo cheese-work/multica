@@ -634,6 +634,29 @@ jobs:
 
           exit "$deploy_status"
 
+      # Release receipt: the signed workflow_job webhook opens the release issue
+      # from the name of the step below (parsed in ghrun.ParseReleaseReceipt).
+      # It runs only after a real deploy (not a skip) whose readback passed, so
+      # no new secret or C00 change is needed.
+      - name: Compute release receipt
+        id: receipt
+        if: success() && steps.deploy.outputs.decision == 'deploy'
+        continue-on-error: true
+        shell: bash
+        env:
+          NEW_SHA: ${{ needs.admission.outputs.source_sha }}
+        run: |
+          old="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("live-baseline-tuple.json","utf8")).application_sha)')"
+          digest="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync("cutover-input/manifest.json","utf8")).image_digests.backend)')"
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_SHA" >> "$GITHUB_OUTPUT"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: release-receipt old=${{ steps.receipt.outputs.old }} new=${{ steps.receipt.outputs.new }} digest=${{ steps.receipt.outputs.digest }}
+        if: success() && steps.deploy.outputs.decision == 'deploy' && steps.receipt.outcome == 'success'
+        shell: bash
+        run: "true"
+
       - name: Record outcome
         if: always() && steps.deploy.outputs.decision != 'skip'
         shell: bash

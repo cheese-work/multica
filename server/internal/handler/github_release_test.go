@@ -1,0 +1,168 @@
+package handler
+
+import (
+	"context"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+const (
+	relOld    = "1111111111111111111111111111111111111111"
+	relNew    = "2222222222222222222222222222222222222222"
+	relDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+// releaseDeliveryBody is a completed, successful cd-deploy `deploy` job whose
+// receipt step names the deployed tuple.
+func releaseDeliveryBody(installationID, jobID int64, attempt int, mutate func(job map[string]any)) map[string]any {
+	job := map[string]any{
+		"id": jobID, "run_id": 880001, "run_attempt": attempt, "name": "deploy", "head_sha": relNew,
+		"workflow_name": "CD deploy to C00", "head_branch": "main", "conclusion": "success",
+		"steps": []any{
+			map[string]any{"name": "Deploy to C00 on local runner", "conclusion": "success"},
+			map[string]any{"name": "release-receipt old=" + relOld + " new=" + relNew + " digest=" + relDigest, "conclusion": "success"},
+		},
+	}
+	if mutate != nil {
+		mutate(job)
+	}
+	return map[string]any{
+		"action": "completed", "workflow_job": job,
+		"repository":   map[string]any{"name": "multica", "owner": map[string]any{"login": "cheese-work"}},
+		"installation": map[string]any{"id": installationID},
+	}
+}
+
+// releaseIntakeFixture binds one workspace (the fixture workspace has an owner)
+// and cleans up everything a delivery can create.
+func releaseIntakeFixture(t *testing.T, installationID int64) pgtype.UUID {
+	t.Helper()
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	t.Setenv("GITHUB_WEBHOOK_SECRET", workflowSecret)
+	ws := parseUUID(testWorkspaceID)
+	if _, err := testHandler.Queries.CreateGitHubInstallation(context.Background(), db.CreateGitHubInstallationParams{
+		WorkspaceID: ws, InstallationID: installationID, AccountLogin: "cheese-work", AccountType: "Organization",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx := context.Background()
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2)`, ws, relNew)
+		testPool.Exec(ctx, `DELETE FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
+		for _, table := range []string{"github_workflow_run", "github_workflow_job"} {
+			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001)`, cdDeployRunID)
+		}
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
+	})
+	return ws
+}
+
+func releaseIssues(t *testing.T, ws pgtype.UUID) []db.Issue {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(), `SELECT id, title, description FROM issue WHERE workspace_id = $1 AND title LIKE 'release(multica): %'`, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []db.Issue
+	for rows.Next() {
+		var i db.Issue
+		if err := rows.Scan(&i.ID, &i.Title, &i.Description); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, i)
+	}
+	return out
+}
+
+func wantReleaseIssues(t *testing.T, ws pgtype.UUID, before, want int) []db.Issue {
+	t.Helper()
+	got := releaseIssues(t, ws)
+	if len(got)-before != want {
+		t.Fatalf("release issues created = %d, want %d", len(got)-before, want)
+	}
+	return got
+}
+
+func TestReleaseIntakeVerifiedDeployCreatesOneLabeledIssue(t *testing.T) {
+	const inst = 880101
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 1, 1, nil)); code != http.StatusAccepted {
+		t.Fatalf("status = %d", code)
+	}
+	issue := wantReleaseIssues(t, ws, before, 1)[before]
+	if want := "release(multica): 1111111..2222222"; issue.Title != want {
+		t.Errorf("title = %q, want %q", issue.Title, want)
+	}
+	for _, want := range []string{relNew, relDigest} {
+		if !strings.Contains(issue.Description.String, want) {
+			t.Errorf("description lacks %s", want)
+		}
+	}
+	var labels int
+	testPool.QueryRow(context.Background(), `SELECT count(*) FROM issue_to_label il JOIN issue_label l ON l.id = il.label_id WHERE il.issue_id = $1 AND LOWER(l.name) = 'release'`, issue.ID).Scan(&labels)
+	if labels != 1 {
+		t.Errorf("release label rows = %d, want 1", labels)
+	}
+}
+
+func TestReleaseIntakeRefusesWhatIsNotAVerifiedDeploy(t *testing.T) {
+	const inst = 880102
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	skipped := func(job map[string]any) {
+		job["steps"].([]any)[1].(map[string]any)["conclusion"] = "skipped"
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"deploy skipped (receipt step skipped)": skipped,
+		"job failed":                            func(j map[string]any) { j["conclusion"] = "failure" },
+		"not main":                              func(j map[string]any) { j["head_branch"] = "feature" },
+		"other workflow":                        func(j map[string]any) { j["workflow_name"] = "CI" },
+	} {
+		if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 2, 1, mutate)); code != http.StatusAccepted {
+			t.Fatalf("%s: status = %d", name, code)
+		}
+	}
+	// The raw captured successful run whose deploy was skipped carries no receipt.
+	if code := postWorkflowEvent(t, "workflow_job", workflowJobEnvelope(t, inst, "completed")); code != http.StatusAccepted {
+		t.Fatalf("raw skipped deploy: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+}
+
+func TestReleaseIntakeRefusesBadSignatureAndUnboundInstallation(t *testing.T) {
+	const inst = 880103
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "a-different-secret")
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 3, 1, nil)); code == http.StatusAccepted {
+		t.Fatalf("bad signature accepted (status %d)", code)
+	}
+	t.Setenv("GITHUB_WEBHOOK_SECRET", workflowSecret)
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst+1, 3, 1, nil)); code != http.StatusAccepted {
+		t.Fatalf("unbound installation: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+}
+
+func TestReleaseIntakeDeduplicatesRedeliveryAndRerun(t *testing.T) {
+	const inst = 880104
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	for _, d := range []struct {
+		job     int64
+		attempt int
+	}{{4, 1}, {4, 1}, {5, 2}} { // first delivery, redelivery, rerun with a new job id
+		if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, d.job, d.attempt, nil)); code != http.StatusAccepted {
+			t.Fatalf("status = %d", code)
+		}
+	}
+	wantReleaseIssues(t, ws, before, 1)
+}
