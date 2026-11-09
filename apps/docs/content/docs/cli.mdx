@@ -141,6 +141,12 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+A comment from an agent task that mentions a member (`[@Name](mention://member/<id>)`) is accepted only as a decision request, a `--decision-intent`, `--decision-record` or `--decision-veto` comment, or a comment with `--notify-only`. Use `--notify-only` for an FYI that needs no answer. It never opens a wait and never counts as a decision request. It cannot combine with the decision flags. The check reads the mention link, not the wording, and a link inside code counts. The workspace setting `ask_guard_mode` (`off`, `warn`, `block`) decides whether a refused comment is only logged or returns 422. Chat tasks and calls without a task only log. An edit that adds a member mention follows the same rule.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
 ## Forking a web DM
 
 From the source DM's running chat task, copy the DM into a new child DM:
@@ -214,6 +220,14 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 ```
 
 Creating one from a terminal as a member requires `--agent-id`; an agent creating one inside its own run wakes itself by default.
+
+A rule a person can trigger is an event rule on a comment, issue, reaction or attachment change whose actor filter does not exclude members. When the workspace `ask_guard_mode` is `warn` or `block`, an agent cannot register such a rule on its own unless it has one of these:
+
+- `--decision <request-id>` binds the rule to a decision request on this issue. The request must be asked or answered, and for the member in `--filter-actor-id` if you set one. One request binds one enabled wakeup at a time.
+- `--purpose observe` marks a rule that does not wait for a person. Each fire caused by a member is recorded as an audit event.
+- `--filter-actor-type agent` with no `--filter-actor-id` matches any agent and no member.
+
+In `block` mode the refusal is a 422 whose message gives the fix command. In `warn` mode the rule is created and an event is recorded.
 
 ### Following progress in a DM
 
@@ -450,6 +464,34 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+
+### Config change proposals
+
+`multica config propose` builds the action file for a workspace config change. It reads the live value, computes `before_sha256` and `after_sha256` with the recipes the server recomputes, and writes the file that `multica decision request --action-file` takes. It sends nothing and writes no secret. A person still approves with a passkey.
+
+Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>` and `workspace.settings --set key=value|key:=<json>`. Text fields take `--file` (UTF-8, no NUL byte). `workflow.steps` takes the steps array as the workflow GET returns it; edit that output, because the server refuses the request (`after_digest_mismatch`) if it normalizes your steps differently. For `workflow.step.instructions` the server computes the after digest, so the file carries no `after_sha256` and the printed digest is for comparison only. Pass `--out <path>` to write the file or `--dry-run` to print both digests and the action without writing. `--expires-in <seconds>` sets the request expiry.
+
+Any other field is refused with `denylisted` before the CLI reads anything: `project.description`, passkeys and the decision gate, members and roles, owner transfer, auth and integration secrets, workspace deletion, the action registry, and `delegated_governed_writes`. A settings key off the server allow table is refused the same way, and a patch that mixes allowed and refused keys is refused whole. The server checks again at request and at approval.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
+### Shadow report
+
+Any workspace member reads the System 1 shadow report:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+The `decision` and `routing` blocks cover all time. The `route` block covers the window `[since, until)`: `--since` and `--until` take RFC 3339 times, `--until` defaults to now and `--since` to 24 hours before `--until`. The server refuses a bad time or a `--since` after `--until` with 400.
+
+The `route` block counts one population of events: agent status changes marked as leaving a routing step (`eligible_exits`) and the route labels that carry the same event id (`matched_labels`). `label_coverage` is `matched_labels / eligible_exits` and never exceeds 1. `via_route_share` is the part of matched events whose first label came from `issue route`, not from the status fallback. `duplicate_labels` counts labels that share an event with an earlier label (target 0). `labels_total`, `owner_only_labels` (a route that kept the status, so it has no event) and `non_routing_labels` (a route from a step with no routing agent) sit outside coverage. `overridden` counts agent labels a person reversed within 1 hour, and `override_rate` is `overridden / labels_total`. The block also carries the per-class `decided`, `predicted`, `agreed`, `coverage` and `precision`.
 
 ## IDs and output formats
 

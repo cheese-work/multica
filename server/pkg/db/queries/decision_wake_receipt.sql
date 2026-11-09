@@ -33,12 +33,35 @@ WHERE id = sqlc.arg('id') AND status = 'pending';
 SELECT * FROM decision_request WHERE authority = 'human' AND id = sqlc.arg('id');
 
 -- Due pending receipts, oldest due first: a failed receipt moves its own
--- next_attempt_at, so it never holds back the others.
+-- next_attempt_at, so it never holds back the others. A receipt is not due
+-- while its answer's wake_at is NULL (the answering task has not finished) or
+-- in the future, or while an older receipt of the same request and recipient
+-- is still pending. A withdrawn answer is always selectable: withdrawal clears
+-- its wake_at, and delivery must settle its receipts so they stop blocking
+-- later ones. Delivery repeats these checks under the locks.
 -- name: ListDecisionWakeReceiptCandidates :many
-SELECT id FROM decision_wake_receipt
-WHERE status = 'pending' AND next_attempt_at <= clock_timestamp()
-ORDER BY next_attempt_at, id
+SELECT receipt.id FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+LEFT JOIN decision_answer answer ON answer.id = event.answer_id
+WHERE receipt.status = 'pending' AND receipt.next_attempt_at <= clock_timestamp()
+  AND (event.answer_id IS NULL OR answer.disclaimed_at IS NOT NULL OR answer.wake_at <= clock_timestamp())
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_wake_receipt older
+      JOIN decision_wake_event older_event ON older_event.id = older.event_id
+      WHERE older_event.request_id = event.request_id AND older.recipient_agent_id = receipt.recipient_agent_id
+        AND older.status = 'pending' AND older.event_seq < receipt.event_seq)
+ORDER BY receipt.next_attempt_at, receipt.id
 LIMIT sqlc.arg('batch_size');
+
+-- True while another receipt of the same request and recipient with a lower
+-- event_seq is pending, whatever its next_attempt_at: a retraction that backs
+-- off still holds back the corrected answer.
+-- name: HasOlderPendingDecisionWakeReceipt :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_wake_receipt older
+    JOIN decision_wake_event older_event ON older_event.id = older.event_id
+    WHERE older_event.request_id = sqlc.arg('request_id') AND older.recipient_agent_id = sqlc.arg('recipient_agent_id')
+      AND older.status = 'pending' AND older.event_seq < sqlc.arg('event_seq'))::boolean;
 
 -- Exponential backoff per receipt: 30 s doubling, capped at one hour.
 -- name: RecordDecisionWakeReceiptFailure :execrows
@@ -59,6 +82,20 @@ FOR SHARE;
 -- Serializes the receipts of one answer so the last one to settle sees the others.
 -- name: LockDecisionAnswerForWake :one
 SELECT id FROM decision_answer WHERE id = sqlc.arg('id') FOR UPDATE;
+
+-- Last in the lock order before the receipt.
+-- name: LockDecisionWakeEvent :one
+SELECT id FROM decision_wake_event WHERE id = sqlc.arg('id') FOR UPDATE;
+
+-- What delivery-time check 3 and the wake_at gate read, under the answer lock.
+-- name: GetDecisionAnswerWakeState :one
+SELECT (answer.disclaimed_at IS NOT NULL)::boolean AS disclaimed,
+       (answer.wake_at IS NULL OR answer.wake_at > clock_timestamp())::boolean AS held,
+       coalesce(answer.id = (
+           SELECT live.id FROM decision_answer live
+           WHERE live.decision_request_id = answer.decision_request_id AND live.disclaimed_at IS NULL
+           ORDER BY live.created_at DESC, live.id DESC LIMIT 1), false)::boolean AS latest_live
+FROM decision_answer answer WHERE answer.id = sqlc.arg('id');
 
 -- The answer's wake outcome once no receipt of the event is pending: the first
 -- delivered receipt's outcome (requester before assignee), else skipped.

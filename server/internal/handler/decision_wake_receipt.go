@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -116,7 +117,7 @@ func (handler *Handler) loadDecisionReceiptState(ctx context.Context, queries *d
 // deliverDecisionWakeReceipt delivers one pending receipt in one transaction:
 // the dispatch and the receipt's terminal status commit together. Locks follow
 // the order of deliverDecisionWake (runtime, recipient, asking agent, issue,
-// task, request), then the receipt.
+// task, request), then the answer, the event and the receipt.
 func (handler *Handler) deliverDecisionWakeReceipt(ctx context.Context, receiptID pgtype.UUID) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		restart, err := handler.tryDeliverDecisionWakeReceipt(ctx, receiptID)
@@ -176,6 +177,9 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 			return false, err
 		}
 	}
+	if _, err := queries.LockDecisionWakeEvent(ctx, state.event.ID); err != nil {
+		return false, err
+	}
 	if _, err := queries.LockDecisionWakeReceipt(ctx, receiptID); err != nil {
 		return false, err
 	}
@@ -186,9 +190,21 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if !reflect.DeepEqual(current, state) {
 		return true, nil
 	}
+	// The request lock is held, so no event can be written while these checks run.
+	blocked, err := queries.HasOlderPendingDecisionWakeReceipt(ctx, db.HasOlderPendingDecisionWakeReceiptParams{RequestID: state.request.ID, RecipientAgentID: state.recipient.ID, EventSeq: state.receipt.EventSeq})
+	if err != nil || blocked {
+		return false, err
+	}
+	verdict, held, err := decisionReceiptVerdict(ctx, queries, state)
+	if err != nil || held {
+		return false, err
+	}
 	status, outcome := "skipped_ineligible", pgtype.Text{}
+	if verdict != "" {
+		status = verdict
+	}
 	var enqueued db.AgentTaskQueue
-	if !state.recipient.ArchivedAt.Valid && state.recipient.RuntimeID.Valid && state.recipient.Kind != "system" {
+	if verdict == "" && !state.recipient.ArchivedAt.Valid && state.recipient.RuntimeID.Valid && state.recipient.Kind != "system" {
 		trigger, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: state.event.SourceCommentID})
 		if err != nil {
 			return false, err
@@ -223,6 +239,50 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 		handler.TaskService.PublishTaskEnqueued(ctx, enqueued)
 	}
 	return false, nil
+}
+
+// decisionEventCancelReasons are the cancel reasons that make a non-answer
+// event valid: a cancelled request is the expected state for these events.
+var decisionEventCancelReasons = map[string][]string{
+	"expired":            {"expired"},
+	"withdrawn_human":    {"agent_withdrawn"},
+	"withdrawn_agent":    {"agent_withdrawn"},
+	"reask":              {"human_removed", "lane_archived"},
+	"requester_archived": {"agent_archived"},
+}
+
+// decisionReceiptVerdict runs delivery-time checks 1 to 3 on a state reloaded
+// under the locks. A non-empty verdict is the receipt's terminal status and
+// nothing dispatches; held means the answer's wake_at is still ahead, so the
+// receipt stays pending without an attempt.
+func decisionReceiptVerdict(ctx context.Context, queries *db.Queries, state decisionReceiptState) (verdict string, held bool, err error) {
+	switch state.issue.Status {
+	case "done", "cancelled", "agent_accepted", "approved":
+		return "suppressed_issue_closed", false, nil
+	}
+	if state.event.SupersededAt.Valid {
+		return "superseded", false, nil
+	}
+	if !state.event.AnswerID.Valid {
+		if slices.Contains(decisionEventCancelReasons[state.event.Type], state.request.CancelReason.String) && state.request.Status == "cancelled" {
+			return "", false, nil
+		}
+		return "superseded", false, nil
+	}
+	answer, err := queries.GetDecisionAnswerWakeState(ctx, state.event.AnswerID)
+	if err != nil {
+		return "", false, err
+	}
+	if state.event.Type == "retracted" {
+		if answer.Disclaimed {
+			return "", false, nil
+		}
+		return "superseded", false, nil
+	}
+	if state.request.Status != "answered" || answer.Disclaimed || !answer.LatestLive {
+		return "superseded", false, nil
+	}
+	return "", answer.Held, nil
 }
 
 // acknowledgeDecisionWakeEvent sets the answer's woken_at and wake_outcome once

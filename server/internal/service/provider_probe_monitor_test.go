@@ -38,12 +38,12 @@ func (s *recordingAlertSink) Alert(_ context.Context, key, _ string) error {
 	return nil
 }
 
-type scriptedProbe struct {
+type monitorScriptedProbe struct {
 	status int
 	err    error
 }
 
-func (p *scriptedProbe) Probe(context.Context) (ProviderFailureProbeEvidence, error) {
+func (p *monitorScriptedProbe) Probe(context.Context) (ProviderFailureProbeEvidence, error) {
 	return ProviderFailureProbeEvidence{CheckedAt: time.Unix(0, 0), StatusCode: p.status}, p.err
 }
 
@@ -61,7 +61,7 @@ func newTestMonitor(probe ProviderFailureProbe) (*ProviderProbeMonitor, *recordi
 }
 
 func TestProviderProbeMonitorAlertsOncePerIncident(t *testing.T) {
-	probe := &scriptedProbe{status: http.StatusBadGateway}
+	probe := &monitorScriptedProbe{status: http.StatusBadGateway}
 	m, sink, clock := newTestMonitor(probe)
 
 	m.Tick(context.Background())
@@ -76,7 +76,7 @@ func TestProviderProbeMonitorAlertsOncePerIncident(t *testing.T) {
 }
 
 func TestProviderProbeMonitorRetriesAlertWhenSinkFails(t *testing.T) {
-	m, sink, _ := newTestMonitor(&scriptedProbe{err: errors.New("boom")})
+	m, sink, _ := newTestMonitor(&monitorScriptedProbe{err: errors.New("boom")})
 	sink.err = errors.New("sink down")
 	m.Tick(context.Background())
 	sink.err = nil
@@ -88,7 +88,7 @@ func TestProviderProbeMonitorRetriesAlertWhenSinkFails(t *testing.T) {
 
 func TestProviderProbeMonitorHealthyProbeDoesNotAlert(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
-		m, sink, clock := newTestMonitor(&scriptedProbe{status: status})
+		m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: status})
 		clock.now = monitorT0.Add(4 * time.Minute)
 		m.Tick(context.Background())
 		if len(sink.keys) != 0 {
@@ -98,7 +98,7 @@ func TestProviderProbeMonitorHealthyProbeDoesNotAlert(t *testing.T) {
 }
 
 func TestProviderProbeMonitorHeartbeatAlertsOnSilenceOnce(t *testing.T) {
-	m, sink, clock := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 
 	clock.now = monitorT0.Add(4 * time.Minute)
 	m.CheckHeartbeat(context.Background())
@@ -116,7 +116,7 @@ func TestProviderProbeMonitorHeartbeatAlertsOnSilenceOnce(t *testing.T) {
 }
 
 func TestProviderProbeMonitorResultResetsHeartbeat(t *testing.T) {
-	m, sink, clock := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 	clock.now = monitorT0.Add(4 * time.Minute)
 	m.Tick(context.Background())
 	clock.now = monitorT0.Add(8 * time.Minute)
@@ -247,7 +247,7 @@ func TestHTTPProviderFailureProbeRefusesBearerTokenOverPlainHTTP(t *testing.T) {
 }
 
 func TestProviderProbeMonitorAlertsAgainForNewEpisodeInSameWindow(t *testing.T) {
-	probe := &scriptedProbe{status: http.StatusBadGateway}
+	probe := &monitorScriptedProbe{status: http.StatusBadGateway}
 	m, sink, clock := newTestMonitor(probe)
 
 	m.Tick(context.Background()) // episode 1 at 10:00
@@ -265,7 +265,7 @@ func TestProviderProbeMonitorAlertsAgainForNewEpisodeInSameWindow(t *testing.T) 
 }
 
 func TestProviderProbeMonitorHeartbeatAlertsAgainAfterInterveningResult(t *testing.T) {
-	m, sink, clock := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 
 	clock.now = monitorT0.Add(6 * time.Minute)
 	m.CheckHeartbeat(context.Background()) // silence 1
@@ -279,9 +279,9 @@ func TestProviderProbeMonitorHeartbeatAlertsAgainAfterInterveningResult(t *testi
 	}
 }
 
-type blockingProbe struct{ release chan struct{} }
+type monitorBlockingProbe struct{ release chan struct{} }
 
-func (p *blockingProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence, error) {
+func (p *monitorBlockingProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence, error) {
 	select {
 	case <-p.release:
 	case <-ctx.Done():
@@ -290,7 +290,7 @@ func (p *blockingProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence
 }
 
 func TestProviderProbeMonitorHeartbeatFiresWhileProbeIsStalled(t *testing.T) {
-	probe := &blockingProbe{release: make(chan struct{})}
+	probe := &monitorBlockingProbe{release: make(chan struct{})}
 	defer close(probe.release)
 	sink := &recordingAlertSink{}
 	m := NewProviderProbeMonitor("openai", probe, sink, time.Now, time.Hour, 80*time.Millisecond)
@@ -318,7 +318,7 @@ func (blockingSink) Alert(ctx context.Context, _, _ string) error {
 }
 
 func TestProviderProbeMonitorBoundsStalledAlertSink(t *testing.T) {
-	m := NewProviderProbeMonitor("openai", &scriptedProbe{status: http.StatusBadGateway}, blockingSink{}, time.Now, time.Hour, time.Minute)
+	m := NewProviderProbeMonitor("openai", &monitorScriptedProbe{status: http.StatusBadGateway}, blockingSink{}, time.Now, time.Hour, time.Minute)
 	m.alertTimeout = 50 * time.Millisecond
 	done := make(chan struct{})
 	go func() { m.Tick(context.Background()); close(done) }()
@@ -374,13 +374,13 @@ func TestProviderProbeMonitorPingsExternalHeartbeatOnEachResult(t *testing.T) {
 		mu.Unlock()
 	}))
 	defer server.Close()
-	m, _, _ := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 	if err := m.WithExternalHeartbeat(server.URL); err != nil {
 		t.Fatal(err)
 	}
 	m.Tick(context.Background())
 	m.Tick(context.Background())
-	probeFails, _, _ := newTestMonitor(&scriptedProbe{err: errors.New("boom")})
+	probeFails, _, _ := newTestMonitor(&monitorScriptedProbe{err: errors.New("boom")})
 	if err := probeFails.WithExternalHeartbeat(server.URL); err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	secretURL := dead.URL + "/ping/s3cr3t-token?key=q-secret"
 	dead.Close() // transport error that embeds the full URL
-	m, _, _ := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 	if err := m.WithExternalHeartbeat(secretURL); err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +500,7 @@ func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer redirecting.Close()
-	m, _, _ := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
 	if err := m.WithExternalHeartbeat(redirecting.URL + "/ping/s3cr3t-token?key=q-secret"); err != nil {
 		t.Fatal(err)
 	}

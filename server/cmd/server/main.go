@@ -763,6 +763,11 @@ func main() {
 	// runs only when the gateway and the webhook are configured, and then needs an
 	// external heartbeat URL too (CHE-4580).
 	service.StartProviderProbeMonitorFromEnv(sweepCtx, os.Getenv)
+	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset.
+	if taskSvc.ProviderFailureProbe != nil {
+		go service.NewProbeHeartbeatMonitor(taskSvc.ProviderFailureProbe, service.SlogProbeAlertSink{}, time.Now, 10*time.Minute).Run(sweepCtx)
+	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
