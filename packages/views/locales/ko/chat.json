@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "결정이 필요합니다",
+    "title_used": "결정",
+    "answered_count": "{{number}}개 답변함",
     "waiting": "에이전트가 아직 결정 카드를 보내지 않았습니다.",
     "queued_since": "{{time}}부터 대기 중",
     "running_since": "{{time}}부터 실행 중",

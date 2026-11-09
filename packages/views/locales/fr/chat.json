@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "Décision requise",
+    "title_used": "Décisions",
+    "answered_count": "{{number}} répondu(s)",
     "waiting": "L’agent n’a pas encore envoyé la carte de décision.",
     "queued_since": "En file depuis {{time}}",
     "running_since": "En cours depuis {{time}}",

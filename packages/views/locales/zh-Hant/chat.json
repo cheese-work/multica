@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "需要你做決定",
+    "title_used": "決定",
+    "answered_count": "已回答 {{number}} 項",
     "waiting": "代理尚未傳送決策卡片。",
     "queued_since": "自 {{time}} 起排隊中",
     "running_since": "自 {{time}} 起執行中",

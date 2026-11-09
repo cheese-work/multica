@@ -70,6 +70,16 @@ describe("DecisionRequestCard fold", () => {
     expect(body()).toHaveAttribute("data-folded", "true");
   });
 
+  it.each([
+    ["picked_up", answered("picked_up"), "icon-check"],
+    ["withdrawn", { ...base, state: "withdrawn", withdrawn_at: "2026-11-07T07:10:00Z" } as RequestCard, "icon-undo2"],
+    ["disclaimed", answered("disclaimed"), "icon-ban"],
+  ])("marks a %s folded row with its own state icon", (_, card, icon) => {
+    vi.useFakeTimers({ now: new Date("2026-11-07T07:03:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
+    view(card);
+    expect(toggle()!.querySelector("svg.icon")).toHaveClass(icon);
+  });
+
   it("shows the state word, option chip and time in the folded row", () => {
     vi.useFakeTimers({ now: new Date("2026-11-07T07:03:00Z"), toFake: ["Date", "setTimeout", "clearTimeout"] });
     view(answered("picked_up"));

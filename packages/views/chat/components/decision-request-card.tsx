@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, Loader2, MessageSquareQuote } from "@multica/ui/icons";
+import { Ban, Check, ChevronDown, Loader2, MessageSquareQuote, Undo2 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
@@ -321,6 +321,7 @@ function useNow(card: RequestCard) {
 
 // An answer nobody needs to act on any more: the card folds to one row (design `decision-card-fold`, direction A).
 const FOLDS = new Set(["picked_up", "withdrawn", "disclaimed"]);
+const FOLD_ICONS = { picked_up: Check, withdrawn: Undo2, disclaimed: Ban } as const;
 
 // The folded row names the question: the first line of the ask, markdown marks dropped.
 const questionOf = (ask: string, fallback: string) => {
@@ -400,6 +401,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     );
   }
 
+  const StateIcon = FOLD_ICONS[shown as keyof typeof FOLD_ICONS] ?? MessageSquareQuote;
   return (
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
@@ -416,7 +418,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           data-testid="decision-request-fold-toggle"
           className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-label focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
         >
-          <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <StateIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           <span className="sr-only">{state}: </span>
           <span className="min-w-0 flex-1 truncate font-medium">{questionOf(facts, card.issue_title || card.issue_identifier || card.issue_id)}</span>
           {card.answer?.chosen_option_index !== undefined && shown !== "disclaimed" && (

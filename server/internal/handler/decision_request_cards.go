@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -218,4 +219,40 @@ func (handler *Handler) coveredCardSummaries(ctx context.Context, workspaceUUID 
 		covered = append(covered, summary)
 	}
 	return covered, nil
+}
+
+// ListIssueDecisionCards returns the viewer's used (answered or withdrawn)
+// request cards on one issue, oldest first. The issue page folds them; the open
+// ones come from ListOpenDecisions. Only the viewer's own requests are listed,
+// as in the DM.
+func (handler *Handler) ListIssueDecisionCards(writer http.ResponseWriter, request *http.Request) {
+	issue, ok := handler.loadIssueForUser(writer, request, request.URL.Query().Get("issue"))
+	if !ok {
+		return
+	}
+	member, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found")
+	if !ok {
+		return
+	}
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list decision requests")
+		return
+	}
+	var messages []db.ChatMessage
+	for _, stored := range requests {
+		if stored.Status != "open" && stored.HumanUserID == member.UserID && stored.PingMessageID.Valid {
+			messages = append(messages, db.ChatMessage{ID: stored.PingMessageID})
+		}
+	}
+	cards := []DecisionRequestCard{}
+	byMessage := handler.decisionRequestsForMessages(request.Context(), uuidToString(issue.WorkspaceID), messages)
+	for _, stored := range requests {
+		for _, card := range byMessage[uuidToString(stored.PingMessageID)] {
+			if card.ID == uuidToString(stored.ID) && stored.Status != "open" && stored.HumanUserID == member.UserID {
+				cards = append(cards, card)
+			}
+		}
+	}
+	writeJSON(writer, http.StatusOK, cards)
 }
