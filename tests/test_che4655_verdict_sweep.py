@@ -52,6 +52,12 @@ class SweepTargets(unittest.TestCase):
                          {1: [{"body": VERDICT, "updated_at": "2026-11-09T01:00:00Z"}]})
         self.assertEqual(got, [1])
 
+    def test_verdict_posted_during_a_whole_20_minute_evaluation_is_still_selected(self):
+        # Sol advisory on df9a311f1: the gate timeout is 20 min, so the margin must exceed it.
+        got = st.targets([pr(1, H1)], {H1: {"state": "pending", "updated_at": "2026-11-09T01:25:00Z"}},
+                         {1: [{"body": VERDICT, "updated_at": "2026-11-09T01:01:00Z"}]})
+        self.assertEqual(got, [1])
+
     def test_comment_without_the_verdict_header_is_ignored(self):
         got = st.targets([pr(1, H1)], {}, {1: [{"body": "looks fine", "updated_at": "2026-11-09T02:00:00Z"}]})
         self.assertEqual(got, [])
@@ -114,6 +120,55 @@ class WorkflowShape(unittest.TestCase):
         self.assertNotIn("pull_request.head", self.sweep_text)
         self.assertNotIn("secrets.", self.sweep_text)
         self.assertEqual(self.sweep["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
+
+
+class QueueWatch(unittest.TestCase):
+    """Sol FAIL on df9a311f1 (CWE-841): with no comment run, a FAIL posted after a queue entry went green reached it only at
+    the next sweep, so another required check could merge the rejected PR first. Both queue evaluators keep reading the
+    verdict while the queue entry exists and overwrite the success at once."""
+
+    FILES = [".github/workflows/security-gate.yml", ".github/workflows/security-gate-queue.yml"]
+
+    def _step(self, rel):
+        wf = yaml.safe_load((ROOT / rel).read_text())
+        job = next(j for j in wf["jobs"].values() if "WATCH_SECONDS" in j.get("env", {}))
+        run = next(s["run"] for s in job["steps"] if "watch:begin" in s.get("run", ""))
+        return job, run
+
+    def _loop(self, rel):
+        run = self._step(rel)[1]
+        return run[run.index("# watch:begin"):run.index("# watch:end")]
+
+    def _drive(self, rel, verdicts, live="refs/heads/q\n"):
+        """Run the watch loop with stubbed `gh`, `sleep`, `read_verdict` and `post`; return the posts."""
+        import subprocess
+
+        script = (
+            "set -euo pipefail\nSECONDS=0\nWATCH_SECONDS=300 WATCH_INTERVAL=1\nGITHUB_REPOSITORY=o/r MERGE_GROUP_REF=refs/heads/q\n"
+            "state=success desc=ok n=0\nsleep() { SECONDS=$((SECONDS + 60)); }\n"
+            f"gh() {{ printf '{live}'; }}\n"
+            f"vs=({' '.join(verdicts)})\n"
+            'read_verdict() { state="${vs[n]:-success}"; desc="d$n"; n=$((n + 1)); }\n'
+            'post() { echo "POST $1 $2"; }\n' + self._loop(rel)
+        )
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True).stdout
+
+    def test_both_evaluators_watch_the_queue_entry_within_the_job_timeout(self):
+        for rel in self.FILES:
+            job, _ = self._step(rel)
+            self.assertLess(int(job["env"]["WATCH_SECONDS"]) + 300, job["timeout-minutes"] * 60, rel)
+
+    def test_a_fail_after_the_green_post_overwrites_it_at_once(self):
+        for rel in self.FILES:
+            self.assertEqual(self._drive(rel, ["success", "failure"]), "POST failure d1\n", rel)
+
+    def test_the_watch_ends_when_the_queue_entry_is_gone(self):
+        for rel in self.FILES:
+            self.assertEqual(self._drive(rel, ["failure"], live=""), "", rel)
+
+    def test_the_watch_posts_nothing_while_the_verdict_stays_green(self):
+        for rel in self.FILES:
+            self.assertEqual(self._drive(rel, []), "", rel)
 
 
 if __name__ == "__main__":

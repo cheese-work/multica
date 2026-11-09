@@ -219,8 +219,10 @@ class GateBackoffDeferred(unittest.TestCase):
             self.assertNotIn(needle, gate)
         for name in ("security-gate.yml", "security-gate-queue.yml"):
             text = (WORKFLOWS / name).read_text()
-            for needle in ("gh_retry", "sleep ", "rate limit", "return 75"):
+            for needle in ("gh_retry", "rate limit", "return 75"):
                 self.assertNotIn(needle, text, f"{name}: {needle}")
+            # CHE-4655: the one sleep is the queue-entry watch poll, not a rate-limit backoff.
+            self.assertEqual(text.replace('sleep "$WATCH_INTERVAL"', "").count("sleep "), 0, name)
 
 
 if __name__ == "__main__":

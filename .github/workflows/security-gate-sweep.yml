@@ -1,11 +1,11 @@
 # Verdict sweep for security-gate (CHE-4385, CHE-4655). A new `Security-Gate-Verdict:` comment no longer starts
 # security-gate (a created comment cost about 96 of 800 sampled runs), so this sweep reads it instead.
 # This run, every 30 minutes (48 runs a day), re-reads the verdicts of every open PR whose `security-gate` status is
-# `success`, or whose newest verdict comment is newer than its head's status (`sweep_targets.py`, with a 10 minute margin
+# `success`, or whose newest verdict comment is newer than its head's status (`sweep_targets.py`, with a 30 minute margin
 # for the CHE-4389 race), and posts the result again through the same script: a status that is no longer `success` flips
 # the PR and every merge-queue head carrying it (`revoke_queue`, CHE-3240). A new verdict therefore lands within 30
-# minutes. A merge that happens inside that window is caught by the `merge_group` re-read when the PR enters the queue;
-# the verdict poster dispatching security-gate.yml removes the window.
+# minutes. A queue entry that is already green is not left to the sweep: the queue evaluators keep re-reading the verdict while
+# the entry exists (25 min) and overwrite the success at once. The sweep covers a merge group older than that.
 # The script writes the PR status before it flips queue heads, so a flip that failed leaves a non-success PR that the
 # list above no longer selects. While any merge-queue branch exists, the `revoke` job therefore repeats only the flip
 # (`--revoke-only`, no scan) for every open PR whose status is not `success`.

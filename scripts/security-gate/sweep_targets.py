@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 
 HEADER = "Security-Gate-Verdict:"
 CONTEXT = "security-gate"
-MARGIN = timedelta(minutes=10)
+MARGIN = timedelta(minutes=30)  # gate timeout is 20 min: a verdict can land during a whole evaluation
 
 
 def _instant(ts: str) -> datetime:

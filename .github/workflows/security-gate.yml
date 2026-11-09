@@ -14,7 +14,8 @@
 #   - `workflow_dispatch` (input `pr`): an optional extra for the verdict poster, no longer needed for correctness:
 #       gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
 #     The dispatched run re-reads every verdict comment, posts the status, then refreshes the mechanical-tier receipt.
-#   - `merge_group`: see below. It re-reads every verdict, so a new FAIL is caught when the PR enters the queue.
+#   - `merge_group`: see below. It re-reads every verdict when the PR enters the queue, then keeps re-reading (`watch:begin`, 25 min) while
+#     the queue entry exists, so a FAIL posted after the green post overwrites it within a minute (CHE-4655).
 #   - security-gate-sweep.yml: every 30 minutes it re-runs this script for each open PR whose status is `success` and for
 #     each open PR with a verdict comment newer than its head's status. A new verdict therefore takes effect within 30 minutes.
 # SECURITY — same boundary as mechanical-tier.yml: a call from `pull_request_target`, a dispatch and `issue_comment` all run this
@@ -74,13 +75,15 @@ jobs:
       cancel-in-progress: true
     # CHE-3604: GitHub-hosted runner.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr || github.event.issue.number }}
       GH_TOKEN: ${{ github.token }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
       MERGE_GROUP_SHA: ${{ github.event.merge_group.head_sha }}
+      WATCH_SECONDS: 1500
+      WATCH_INTERVAL: 60
     steps:
       - name: Discard a reused workspace
         run: |
@@ -155,6 +158,22 @@ jobs:
             read_verdict
             if [ "$state" != success ]; then post "$state" "$desc"; fi
           fi
+          # CHE-4655: no comment run exists any more, so a FAIL posted after this success would reach the queue entry only at
+          # the next sweep, and another required check could merge the rejected PR first (CWE-841). Keep reading while the
+          # queue entry exists and overwrite the success at once. A merge group that outlives WATCH_SECONDS is left to the
+          # 30 minute sweep. An unreadable verdict fails closed here too.
+          # watch:begin
+          if [ "$state" = success ]; then
+            deadline=$((SECONDS + WATCH_SECONDS))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              sleep "$WATCH_INTERVAL"
+              live="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/${MERGE_GROUP_REF#refs/heads/}" --jq '.[].ref')" || continue
+              [ -n "$live" ] || break
+              read_verdict
+              if [ "$state" != success ]; then post "$state" "$desc"; break; fi
+            done
+          fi
+          # watch:end
 
   # CHE-4251: a queue run that holds no secret. Its completion triggers security-gate-queue.yml, which runs from the
   # default branch. This definition comes from the queue commit, so it must never name an environment or a secret.

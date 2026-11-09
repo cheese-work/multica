@@ -34,7 +34,7 @@ jobs:
       vars.SECURITY_GATE_QUEUE_TRUSTED == 'true' && github.event.workflow_run.event == 'merge_group' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: ci-app-token
     env:
       GH_TOKEN: ${{ github.token }}
@@ -42,6 +42,8 @@ jobs:
       MERGE_GROUP_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
       MERGE_GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
       PR_NUMBER: ""
+      WATCH_SECONDS: 1500
+      WATCH_INTERVAL: 60
     steps:
       - name: Discard a reused workspace
         run: |
@@ -130,3 +132,19 @@ jobs:
             read_verdict
             if [ "$state" != success ]; then post "$state" "$desc"; fi
           fi
+          # CHE-4655: no comment run exists any more, so a FAIL posted after this success would reach the queue entry only at
+          # the next sweep, and another required check could merge the rejected PR first (CWE-841). Keep reading while the
+          # queue entry exists and overwrite the success at once. A merge group that outlives WATCH_SECONDS is left to the
+          # 30 minute sweep. An unreadable verdict fails closed here too.
+          # watch:begin
+          if [ "$state" = success ]; then
+            deadline=$((SECONDS + WATCH_SECONDS))
+            while [ "$SECONDS" -lt "$deadline" ]; do
+              sleep "$WATCH_INTERVAL"
+              live="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/${MERGE_GROUP_REF#refs/heads/}" --jq '.[].ref')" || continue
+              [ -n "$live" ] || break
+              read_verdict
+              if [ "$state" != success ]; then post "$state" "$desc"; break; fi
+            done
+          fi
+          # watch:end
