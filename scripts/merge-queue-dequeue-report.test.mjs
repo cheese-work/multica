@@ -306,7 +306,7 @@ if (mode === "500") { console.error("gh: Server Error (HTTP 500)"); process.exit
 if (mode === "rl" || (mode === "rl2" && n < 2)) { console.error(${JSON.stringify(RATE_LIMIT_ERR)}); process.exit(1); }
 const path = args[1];
 if (path === "graphql") console.log(JSON.stringify({ data: { repository: { pullRequest: { headRefOid: "h".repeat(40), timelineItems: { nodes: [{ __typename: "RemovedFromMergeQueueEvent", reason: "failed_checks", createdAt: "2026-11-06T00:00:00Z", beforeCommit: { oid: "q".repeat(40) } }] } } } } }));
-else if (path.includes("/actions/runs?")) console.log(JSON.stringify({ workflow_runs: [] }));
+else if (path.includes("/actions/runs?")) console.log(JSON.stringify({ workflow_runs: [{ id: 1, status: "completed", conclusion: "success", html_url: "https://example.test/run/1", head_branch: "gh-readonly-queue/main/pr-918-" + "b".repeat(40) }] })); // settled: no 10 min poll
 else if (path.includes("/comments")) console.log("[]");
 else console.log("{}");
 `);
@@ -355,9 +355,41 @@ test("callName names the endpoint of a read, a write and a GraphQL call", async 
   assert.equal(callName(["api", "-X", "POST", "/repos/o/r/issues/1/comments", "--input", "-"]), "/repos/o/r/issues/1/comments");
 });
 
-test("workflow timeout outlasts every rate-limit wait plus 5 min of work, so the warning can print", async () => {
-  const { ATTEMPTS, MAX_WAIT_MS } = await load();
+test("workflow timeout outlasts the shared rate-limit wait, the 10 min queue-run poll and 5 min of work, so the warning can print", async () => {
+  const { MAX_WAIT_MS } = await load();
   const yml = readFileSync(new URL("../.github/workflows/merge-queue-dequeue-report.yml", import.meta.url), "utf8");
   const minutes = Number(yml.match(/timeout-minutes:\s*(\d+)/)?.[1]);
-  assert.ok(minutes >= ((ATTEMPTS - 1) * MAX_WAIT_MS) / 60_000 + 5, `timeout-minutes ${minutes}`);
+  assert.ok(minutes >= MAX_WAIT_MS / 60_000 + 10 + 5, `timeout-minutes ${minutes}`);
+});
+
+// One shared wait allowance for the whole run: several rate-limited endpoints must not each wait the full cap.
+test("makeGh: the rate-limit wait budget is shared across endpoints, total sleep stays within MAX_WAIT_MS", async () => {
+  const { makeGh, MAX_WAIT_MS, RateLimitError } = await load();
+  const reset = String(Date.now() / 1000 + 3600);
+  const slept = [];
+  const called = [];
+  const spawn = (cmd, args) => {
+    called.push(args.join(" "));
+    if (args[1] === "rate_limit") return { status: 0, stdout: reset, stderr: "" };
+    return { status: 1, stdout: "", stderr: "gh: API rate limit exceeded for installation. (HTTP 403)" };
+  };
+  const gh = makeGh({ spawn, sleep: (ms) => slept.push(ms) });
+  for (const path of ["/repos/o/r/actions/runs?a", "/repos/o/r/actions/runs/1/jobs", "/repos/o/r/issues/1/comments"]) {
+    assert.throws(() => gh(["api", path]), (e) => e instanceof RateLimitError && e.call === path);
+  }
+  assert.ok(slept.reduce((a, b) => a + b, 0) <= MAX_WAIT_MS, `slept ${slept}`);
+  // Budget gone: later endpoints fail fast, with one try and no wait.
+  const before = called.length;
+  assert.throws(() => gh(["api", "/repos/o/r/issues/2/comments"]), RateLimitError);
+  assert.equal(called.length - before, 1);
+});
+
+test("makeGh: a short rate limit within budget still retries to success", async () => {
+  const { makeGh } = await load();
+  let n = 0;
+  const spawn = (cmd, args) => {
+    if (args[1] === "rate_limit") return { status: 0, stdout: "0", stderr: "" };
+    return ++n < 3 ? { status: 1, stdout: "", stderr: "API rate limit exceeded (HTTP 403)" } : { status: 0, stdout: "ok", stderr: "" };
+  };
+  assert.equal(makeGh({ spawn, sleep: () => {} })(["api", "/x"]), "ok");
 });

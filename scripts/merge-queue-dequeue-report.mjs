@@ -156,23 +156,29 @@ export const waitMs = (resetEpoch, now = Date.now()) => {
 };
 export const callName = (args) => args.find((a) => a === "graphql" || a.startsWith("/")) ?? args.join(" ");
 
-// GraphQL has its own limit bucket; every REST call shares `core`.
-const waitForReset = (call) => {
-  const resource = call === "graphql" ? "graphql" : "core";
-  const r = spawnSync("gh", ["api", "rate_limit", "-q", `.resources.${resource}.reset`], { encoding: "utf8" });
-  sleep(waitMs(r.status === 0 ? r.stdout : ""));
+// One wait allowance (MAX_WAIT_MS) for the whole run, shared by every API call, so the job always ends inside its timeout.
+// GraphQL has its own limit bucket; every REST call shares `core`. Once the allowance is spent, a rate-limited call fails fast.
+export const makeGh = ({ spawn = spawnSync, sleep: nap = sleep } = {}) => {
+  let left = MAX_WAIT_MS;
+  const waitForReset = (call) => {
+    const resource = call === "graphql" ? "graphql" : "core";
+    const r = spawn("gh", ["api", "rate_limit", "-q", `.resources.${resource}.reset`], { encoding: "utf8" });
+    const ms = Math.min(waitMs(r.status === 0 ? r.stdout : ""), left);
+    left -= ms;
+    nap(ms);
+  };
+  return (args, input) => {
+    for (let attempt = 1; ; attempt++) {
+      const r = spawn("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
+      if (r.status === 0) return r.stdout;
+      const message = `gh ${args.join(" ")} failed: ${r.stderr}`;
+      if (!isRateLimit(r.stderr)) throw new Error(message);
+      if (attempt === ATTEMPTS || left <= 0) throw Object.assign(new RateLimitError(message), { call: callName(args) });
+      waitForReset(callName(args));
+    }
+  };
 };
-
-const gh = (args, input) => {
-  for (let attempt = 1; ; attempt++) {
-    const r = spawnSync("gh", args, { input, encoding: "utf8", maxBuffer: 1 << 28 });
-    if (r.status === 0) return r.stdout;
-    const message = `gh ${args.join(" ")} failed: ${r.stderr}`;
-    if (!isRateLimit(r.stderr)) throw new Error(message);
-    if (attempt === ATTEMPTS) throw Object.assign(new RateLimitError(message), { call: callName(args) });
-    waitForReset(callName(args));
-  }
-};
+const gh = makeGh();
 
 // Newer gh (runner) refuses output with terminal escape sequences; job logs carry ANSI colour, clean() strips it.
 export const logArgs = (path) => ["api", "--allow-escape-sequences", path];
