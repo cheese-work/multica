@@ -685,9 +685,13 @@ Deploy is dispatch-only (CHE-4495). A push to `main` builds, runs
 job runs. The notice links to the workflow's dispatch page with the full
 `candidate_sha`. The notice goes by `C00_APPROVAL_WEBHOOK_URL` and/or a Multica
 comment (secrets `C00_APPROVAL_MULTICA_{SERVER_URL,TOKEN,WORKSPACE_ID,ISSUE,MEMBER_ID}`:
-a comment on that issue mentions the member with the dispatch one-liner and
-supersedes the older open ask). With no route configured or delivered the job
-fails (CHE-4879). The `approve-c00` environment approval was removed: required
+a comment on that issue mentions the member with the dispatch one-liner, the
+run link and supersedes the older open ask). Only asks written by the token's
+own user count; a marker pasted by anyone else is ignored. A late older
+candidate never replaces a newer ask (checked with `gh api compare` at the
+write), and the job runs in the `c00-approval-notice` concurrency group so
+notices do not overlap. With no route configured or delivered the job fails
+(CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
 
 The gate is `authorize-c00`, a job that runs only on `workflow_dispatch` and

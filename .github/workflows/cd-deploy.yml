@@ -105,6 +105,11 @@ jobs:
     if: always() && github.event_name == 'workflow_run' && needs.candidate-preflight.outputs.eligible == 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
+    # One notice at a time, so two candidates cannot both read "no open ask" and
+    # post. The script also checks freshness at the write.
+    concurrency:
+      group: c00-approval-notice
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -114,6 +119,8 @@ jobs:
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
+          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
           MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
           MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}

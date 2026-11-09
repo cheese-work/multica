@@ -43,33 +43,51 @@ print(json.dumps({"title": "C00 candidate ready to deploy",
 }
 
 notify_multica() {
-  local headers api list payload ok=0
-  headers="$(mktemp)"
+  local headers api base list me asks id ask_sha status payload
+  local -a supersede=()
+  headers="$(mktemp)" list="$(mktemp)"
+  trap 'rm -f "$headers" "$list"' RETURN
   # The token goes through a header file, not argv.
   printf 'Authorization: Bearer %s\nX-Workspace-ID: %s\n' "$MULTICA_TOKEN" "$MULTICA_WORKSPACE_ID" >"$headers"
-  api="${MULTICA_SERVER_URL%/}/api/issues/$MULTICA_NOTIFY_ISSUE/comments"
-  list="$(mktemp)"
-  if curl_json -H "@$headers" "$api?roots_only=true" >"$list" \
-     && payload="$(python3 -c '
+  base="${MULTICA_SERVER_URL%/}/api"
+  api="$base/issues/$MULTICA_NOTIFY_ISSUE/comments"
+  # Only asks written by this token's own user count: anyone else can paste the
+  # marker, which must neither hide a candidate nor get a real ask superseded.
+  me="$(curl_json -H "@$headers" "$base/me" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')" || return 1
+  curl_json -H "@$headers" "$api?roots_only=true" >"$list" || return 1
+  asks="$(python3 -c '
 import json, sys
-list_file, sha, version, url, member, repo = sys.argv[1:7]
+list_file, me = sys.argv[1:3]
 marker = "<!-- cd-deploy-candidate -->"
-asks = [c for c in json.load(open(list_file))
-        if marker in (c.get("content") or "") and not c.get("resolved_at") and not c.get("superseded_by_id")]
-if any(sha in c["content"] for c in asks):
-    sys.exit(0)  # this SHA is already asked
+for c in json.load(open(list_file)):
+    text = c.get("content") or ""
+    if marker in text and c.get("author_id") == me and not c.get("resolved_at") and not c.get("superseded_by_id"):
+        sha = text.split("candidate_sha=")[-1].split()[0].strip("`")
+        print(c["id"], sha)' "$list" "$me")" || return 1
+  # This SHA is already asked: nothing to send.
+  while read -r id ask_sha; do
+    [ "$ask_sha" != "$SOURCE_SHA" ] || return 0
+  done <<<"$asks"
+  # Freshness is decided at the write: an older candidate that finishes late must
+  # not replace the ask for a newer one. A lookup failure or a diverged SHA fails.
+  while read -r id ask_sha; do
+    [ -n "$id" ] || continue
+    status="$(gh api "repos/${GITHUB_REPOSITORY:-cheese-work/multica}/compare/$ask_sha...$SOURCE_SHA" -q .status)" || return 1
+    case "$status" in
+      ahead) supersede+=("$id") ;;
+      behind|identical) return 0 ;; # a newer (or the same) candidate is already asked
+      *) echo "::warning title=C00 approval notice::cannot order $ask_sha against $SOURCE_SHA ($status)"; return 1 ;;
+    esac
+  done <<<"$asks"
+  payload="$(python3 -c '
+import json, sys
+sha, version, url, member, repo, *ids = sys.argv[1:]
 cmd = f"gh workflow run cd-deploy.yml --repo {repo} --ref main -f candidate_sha={sha}"
 content = (f"[@Cheese](mention://member/{member}) C00 candidate `{version}` is qualified and waiting for your deploy.\n\n"
-           f"Dispatch it:\n\n```bash\n{cmd}\n```\n\nRun: {url}\n\n{marker}")
-print(json.dumps({"content": content, "supersedes": [c["id"] for c in asks]}))' \
-        "$list" "$SOURCE_SHA" "$version" "$RUN_URL" "$MULTICA_NOTIFY_MEMBER_ID" "${GITHUB_REPOSITORY:-cheese-work/multica}")"; then
-    ok=1
-    if [ -n "$payload" ]; then
-      printf '%s' "$payload" | curl_json -H "@$headers" -d @- "$api" >/dev/null || ok=0
-    fi
-  fi
-  rm -f "$headers" "$list"
-  [ "$ok" = 1 ]
+           f"Dispatch it:\n\n```bash\n{cmd}\n```\n\nRun: {url}\n\n<!-- cd-deploy-candidate -->")
+print(json.dumps({"content": content, "supersedes": ids}))' \
+    "$SOURCE_SHA" "$version" "${RUN_LINK:-$RUN_URL}" "$MULTICA_NOTIFY_MEMBER_ID" "${GITHUB_REPOSITORY:-cheese-work/multica}" "${supersede[@]}")" || return 1
+  printf '%s' "$payload" | curl_json -H "@$headers" -d @- "$api" >/dev/null
 }
 
 routes=0 delivered=0

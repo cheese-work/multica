@@ -17,10 +17,19 @@ printf '%s\n' "$*" >>"$NOTIFY_TEST_DIR/curl-args"
 [ ! -f "$NOTIFY_TEST_DIR/curl-fails" ] || exit 22
 case "$*" in
   *"-d @-"*) cat >"$NOTIFY_TEST_DIR/curl-body"; printf '{"id":"new"}' ;;
+  *"/api/me"*) printf '{"id":"bot-1"}' ;;
   *) cat "$NOTIFY_TEST_DIR/list.json" 2>/dev/null || echo '[]' ;;
 esac
 MOCK
 chmod +x "$work_dir/bin/curl"
+# gh mock: `gh api repos/R/compare/<ask>...<ours> -q .status` answers from $NOTIFY_TEST_DIR/gh-status.
+cat >"$work_dir/bin/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NOTIFY_TEST_DIR/gh-args"
+[ ! -f "$NOTIFY_TEST_DIR/gh-fails" ] || exit 1
+cat "$NOTIFY_TEST_DIR/gh-status" 2>/dev/null || echo ahead
+MOCK
+chmod +x "$work_dir/bin/gh"
 export PATH="$work_dir/bin:$PATH" NOTIFY_TEST_DIR="$work_dir"
 export SOURCE_SHA=0123456789abcdef0123456789abcdef01234567
 export RUN_URL=https://github.com/cheese-work/multica/actions/runs/42
@@ -70,29 +79,62 @@ assert f"gh workflow run cd-deploy.yml --repo cheese-work/multica --ref main -f 
 assert not b.get("supersedes")
 PY
 
-# A newer SHA supersedes the older open ask; the same SHA is not asked twice.
-cat >"$work_dir/list.json" <<JSON
-[{"id":"old-ask","content":"x candidate_sha=ffffffffffffffffffffffffffffffffffffffff <!-- cd-deploy-candidate -->","created_at":"2026-11-09T01:00:00Z","resolved_at":null,"superseded_by_id":null},
- {"id":"done-ask","content":"<!-- cd-deploy-candidate -->","created_at":"2026-11-09T02:00:00Z","resolved_at":"2026-11-09T03:00:00Z","superseded_by_id":null},
- {"id":"chatter","content":"hello","created_at":"2026-11-09T04:00:00Z","resolved_at":null,"superseded_by_id":null}]
-JSON
-rm -f "$work_dir/curl-args" "$work_dir/curl-body"
-WEBHOOK_URL= run >/dev/null
+# Asks are authenticated by author: a marker comment from anyone but the token's own
+# user is ignored, so it can neither suppress the notice nor be superseded.
+OLD=ffffffffffffffffffffffffffffffffffffffff
+ask() { # id author_id sha [resolved_at]
+  printf '{"id":"%s","author_type":"member","author_id":"%s","content":"candidate_sha=%s <!-- cd-deploy-candidate -->","created_at":"2026-11-09T01:00:00Z","resolved_at":%s,"superseded_by_id":null}' \
+    "$1" "$2" "$3" "${4:-null}"
+}
+list() { printf '[%s]' "$(IFS=,; echo "$*")" >"$work_dir/list.json"; }
+post() { rm -f "$work_dir/curl-args" "$work_dir/curl-body"; WEBHOOK_URL= run >/dev/null; }
+
+# Forged marker for our own SHA from another author: the real notice is still sent.
+list "$(ask forged someone-else "$SOURCE_SHA")"
+post
+[ -e "$work_dir/curl-body" ] || { echo "forged marker suppressed the notice" >&2; exit 1; }
+
+# A newer SHA supersedes the older open ask of ours (gh compare says ahead);
+# a resolved ask and a forged ask are not superseded.
+list "$(ask old-ask bot-1 "$OLD")" "$(ask done-ask bot-1 "$OLD" '"2026-11-09T03:00:00Z"')" "$(ask forged someone-else "$OLD")"
+echo ahead >"$work_dir/gh-status"
+post
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["supersedes"]==["old-ask"]' "$work_dir/curl-body" \
-  || { echo "newer SHA must supersede old-ask: $(cat "$work_dir/curl-body")" >&2; exit 1; }
-cat >"$work_dir/list.json" <<JSON
-[{"id":"same","content":"candidate_sha=$SOURCE_SHA <!-- cd-deploy-candidate -->","created_at":"2026-11-09T01:00:00Z","resolved_at":null,"superseded_by_id":null}]
-JSON
-rm -f "$work_dir/curl-body"
-WEBHOOK_URL= run >/dev/null
+  || { echo "newer SHA must supersede only old-ask: $(cat "$work_dir/curl-body")" >&2; exit 1; }
+
+# An older candidate finishing after a newer one must not replace the newer ask.
+for status in behind identical; do
+  list "$(ask newer-ask bot-1 "$OLD")"
+  echo "$status" >"$work_dir/gh-status"
+  post
+  [ ! -e "$work_dir/curl-body" ] || { echo "$status: stale candidate posted over the newer ask" >&2; exit 1; }
+done
+
+# The same SHA is not asked twice; no ancestry lookup is needed for it.
+list "$(ask same bot-1 "$SOURCE_SHA")"
+rm -f "$work_dir/gh-args"
+post
 [ ! -e "$work_dir/curl-body" ] || { echo "same SHA asked twice" >&2; exit 1; }
-rm -f "$work_dir/list.json"
+
+# An ancestry lookup that fails or answers diverged fails the job; nothing is posted.
+list "$(ask old-ask bot-1 "$OLD")"
+echo diverged >"$work_dir/gh-status"
+rm -f "$work_dir/curl-body"
+if WEBHOOK_URL= run >/dev/null; then echo "diverged: want non-zero exit" >&2; exit 1; fi
+[ ! -e "$work_dir/curl-body" ] || { echo "diverged: comment posted" >&2; exit 1; }
+touch "$work_dir/gh-fails"
+if WEBHOOK_URL= run >/dev/null; then echo "gh failure: want non-zero exit" >&2; exit 1; fi
+rm -f "$work_dir/gh-fails" "$work_dir/list.json" "$work_dir/gh-status"
+
+# RUN_LINK, when set, is the run link in the Multica comment.
+RUN_LINK=https://github.com/cheese-work/multica/actions/runs/777 post
+grep -q 'actions/runs/777' "$work_dir/curl-body" || { echo "RUN_LINK missing from comment" >&2; exit 1; }
 
 # Both routes configured: both fire. A failing Multica route alone fails the job
 # even though the webhook delivered nothing it could report.
 rm -f "$work_dir/curl-args"
 run >/dev/null
-[ "$(wc -l <"$work_dir/curl-args")" -eq 3 ] || { echo "both routes: want webhook POST + list + comment" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
+[ "$(wc -l <"$work_dir/curl-args")" -eq 4 ] || { echo "both routes: want webhook POST + me + list + comment" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
 touch "$work_dir/curl-fails"
 if run >/dev/null; then echo "both routes failing: want non-zero exit" >&2; exit 1; fi
 rm "$work_dir/curl-fails"
