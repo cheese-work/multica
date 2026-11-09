@@ -12,13 +12,16 @@ import (
 // branch" stays askable: the server does not know a repo's default, so a named
 // target is refused and the asker says "the default branch" when it is one.
 //
+// "-B" is the short form of "--base"; lowercase "-b" is "--body", so that letter
+// stays case-sensitive.
+//
 // A period ends a sentence only when whitespace follows it, so a dotted branch
 // such as release/1.2 or v1.2.3-rc.1 stays inside the step.
 const stepGap = `(?:[^.\n]|\.\S)`
 
 var agentOwnedStep = regexp.MustCompile(`(?i)` +
 	`\bready for review\b|\bmark(?:ed|ing)?\b` + stepGap + `{0,30}\bready\b|\bundraft\b|\bgh pr ready\b` +
-	`|\bretarget\b|\bgh pr edit\b[^\n]*--base\b|\brebase\b` +
+	`|\bretarget\b|\bgh pr edit\b[^\n]*(?:--base\b|\s(?-i:-B))|\brebase\b` +
 	`|\bre-?run\b` + stepGap + `{0,40}\b(?:CI|checks?|workflow|jobs?|runs?)\b|\bgh run rerun\b` +
 	`|\b(?:close|link)\b` + stepGap + `{0,30}(?:\b(?:issue|PR|pull request)\b|\b[A-Za-z][A-Za-z0-9]*-\d+\b|#\d+)`)
 
@@ -60,15 +63,19 @@ func clauseEnd(text string, from, to int) int {
 }
 
 // agentOwned reports whether text hands a human an agent-owned action. Every
-// merge clause needs its own "into the default branch": a missing target or a
-// second merge after an allowed first one is refused.
+// merge clause needs exactly one "into the default branch": a missing target, a
+// second merge after an allowed first one or a second "into" in the clause is refused.
 func agentOwned(text string) bool {
 	if agentOwnedStep.MatchString(text) {
 		return true
 	}
 	for _, clause := range mergeClauses(text) {
-		into := intoClause.FindStringSubmatch(clause)
-		if len(into) < 3 || into[2] == "" || !strings.EqualFold(strings.Trim(into[1], branchEdge), "default") {
+		intos := intoClause.FindAllStringSubmatch(clause, -1)
+		if len(intos) != 1 {
+			return true
+		}
+		into := intos[0]
+		if into[2] == "" || !strings.EqualFold(strings.Trim(into[1], branchEdge), "default") {
 			return true
 		}
 	}

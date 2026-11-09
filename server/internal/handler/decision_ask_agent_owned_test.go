@@ -14,6 +14,8 @@ func TestDecisionAskRefusesAgentOwnedStepsWithoutWrites(test *testing.T) {
 	actions := map[string]string{
 		"merge without a destination":    "Merge PR #7",
 		"second merge to another branch": "Merge PR #7 into the default branch; merge PR #8 into develop",
+		"retarget by short flag":         "Run gh pr edit 7 -B develop",
+		"parenthetical default branch":   "Merge PR #7 (originally meant to go into the default branch) into develop",
 		"mark the PR ready":              "Mark PR #7 ready for review",
 	}
 	for name, action := range actions {
