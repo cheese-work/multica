@@ -127,3 +127,19 @@ func TestThinkingLevelWarningRedactsBeforeReporting(t *testing.T) {
 		t.Fatalf("warning must be redacted before leaving the daemon: %+v", rows)
 	}
 }
+
+// A Codex model the runtime accepts but discovery omits has unknown capabilities,
+// so its saved effort reaches the CLI instead of being dropped.
+func TestResolveTaskModelSelectionCodexUnlistedEffort(t *testing.T) {
+	stubModelDiscovery(t, map[string]agent.Catalog{
+		"codex": {Models: []agent.Model{{ID: "gpt-5.6-sol", Thinking: &agent.ModelThinking{
+			SupportedLevels: []agent.ThinkingLevel{{Value: "high"}},
+		}}}},
+	})
+	selection := resolveTaskModelSelection(context.Background(), "codex", agent.Command{}, taskModelSelection{
+		Model: "gpt-6.1-sol", ThinkingLevel: "high",
+	}, quietTaskLog())
+	if selection.Model != "gpt-6.1-sol" || selection.ThinkingLevel != "high" || selection.ThinkingLevelWarning != "" {
+		t.Fatalf("unlisted Codex model must keep its saved effort: %+v", selection)
+	}
+}

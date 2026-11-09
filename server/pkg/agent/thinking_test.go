@@ -556,12 +556,21 @@ func TestValidateCapabilitiesPassThroughUnverifiedCatalog(t *testing.T) {
 		}
 	}
 
-	// A verified catalog still decides: a listed model without the value, or a
-	// model it does not list, drops the value without an error.
+	// A verified catalog still decides: a listed model without the value drops
+	// it without an error. A model it does not list has unknown capabilities, so
+	// its saved effort passes through; its service tier is still dropped.
 	verified := func() (Catalog, error) { return Catalog{Models: []Model{listed}}, nil }
+	if ok, err := ValidateThinkingLevelWith(verified, "codex", "unlisted", "high"); ok || !errors.Is(err, errUnverifiedCatalog) {
+		t.Errorf("verified catalog, unlisted codex model thinking: got (%v, %v), want errUnverifiedCatalog", ok, err)
+	}
+	if ok, err := ValidateThinkingLevelWith(verified, "opencode", "unlisted", "high"); ok || err != nil {
+		t.Errorf("verified catalog, unlisted opencode model thinking: got (%v, %v), want (false, nil)", ok, err)
+	}
 	for _, model := range []string{"listed", "unlisted"} {
-		if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || err != nil {
-			t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, nil)", model, ok, err)
+		if model == "listed" {
+			if ok, err := ValidateThinkingLevelWith(verified, "codex", model, "high"); ok || err != nil {
+				t.Errorf("verified catalog, model %q thinking: got (%v, %v), want (false, nil)", model, ok, err)
+			}
 		}
 		if ok, err := ValidateServiceTierWith(verified, "codex", model, "priority"); ok || err != nil {
 			t.Errorf("verified catalog, model %q tier: got (%v, %v), want (false, nil)", model, ok, err)
