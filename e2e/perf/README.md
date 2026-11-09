@@ -128,6 +128,25 @@ not until the CHE-2986 gating PR.
 against a synthetic list that does or does not insert content above the anchor.
 That self-test needs no server.
 
+## Long DM under live DMs (CHE-4808)
+
+`chat-multi-dm-lag.spec.ts` opens a 220-message DM (markdown, code, a table and
+issue chips per reply). Three other DMs stream and issue-run starts arrive
+while the spec scrolls and types, at 4x CPU throttle. Same build and start
+commands as above.
+
+```bash
+PLAYWRIGHT_BASE_URL=http://127.0.0.1:3931 pnpm exec playwright test \
+  --config=playwright.perf.config.ts chat-multi-dm-lag
+```
+
+Prints `CHAT_LAG_REPORT {json}`: long tasks over 50 ms (count, max, total),
+`inp_ms`, `event_max_ms`, `commits_per_sec` and the `/api/chat` request counts.
+`CHAT_LAG_ASSERT=1` asserts max long task and max event <= 200 ms. Knobs:
+`CHAT_LAG_MESSAGES`, `CHAT_LAG_SECONDS`, `CHAT_LAG_RUNS_PER_SEC`,
+`CHAT_LAG_DM_EVENTS_PER_SEC`, `CHAT_LAG_ONLY=scroll|type`, `CHAT_LAG_NOINPUT=1`,
+`CHAT_LAG_PROFILE=1` (top self-time functions), `CHAT_LAG_TIMEOUT` (ms).
+
 ## When to run it
 
 Nothing runs this automatically. The routine guard is the component test from
