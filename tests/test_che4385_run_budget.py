@@ -233,7 +233,11 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 chains[p.name] = on["workflow_run"]["workflows"]
         self.assertEqual(
             chains,
-            {"cd-deploy.yml": ["CD qualification build"], "security-gate-queue.yml": ["security-gate"]},
+            {
+                "cd-deploy.yml": ["CD qualification build"],
+                "security-gate-queue.yml": ["security-gate"],
+                "pr-main-sync.yml": ["Main Build"],  # CHE-4963: one run per main push, as its old Main Build job was
+            },
         )
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
@@ -246,11 +250,15 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(job["if"].strip(), "${{ always() }}")  # it ran after every completed Main Build before
         self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
 
-    def test_pr_main_sync_runs_hourly_not_per_push_and_main_build_does_not_call_it(self):
+    def test_pr_main_sync_follows_a_main_build_push_run_and_main_build_does_not_call_it(self):
         # CHE-4963: it holds the App key, so the repo guard (CHE-4251) requires a schedule or workflow_run definition.
         doc = load("pr-main-sync.yml")
-        self.assertEqual(triggers(doc), {"schedule", "workflow_dispatch"})
-        self.assertEqual([c["cron"] for c in doc["on"]["schedule"]], ["17 * * * *"])  # 24 runs a day
+        self.assertEqual(triggers(doc), {"workflow_run", "workflow_dispatch"})
+        run = doc["on"]["workflow_run"]
+        self.assertEqual((run["workflows"], run["types"], run["branches"]), (["Main Build"], ["completed"], ["main"]))
+        gate = doc["jobs"]["sync"]["if"]
+        self.assertIn("github.event.workflow_run.event == 'push'", gate)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", gate)
         self.assertNotIn("pr-main-sync", load("main-build.yml")["jobs"])
 
     def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):
