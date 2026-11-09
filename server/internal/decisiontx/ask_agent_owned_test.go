@@ -26,6 +26,10 @@ var agentOwnedActions = []struct{ name, text string }{
 	{"version tag target", "Merge PR #7 into v1.2.3-rc.1"},
 	{"sentence-ending target", "Merge PR #7 into develop."},
 	{"dotted branch between branches", "Merge release/1.2 into release/1.3."},
+	{"named default without repository context", "Merge PR #7 into main"},
+	{"capitalised default name", "Merge PR #7 into Main."},
+	{"default name with suffix", "Merge PR #7 into main.release."},
+	{"bare default word", "Merge PR #7 into default."},
 	{"mark dotted branch ready", "Mark release/1.2 ready"},
 	{"rerun on dotted branch", "Re-run the checks on release/1.2"},
 }
