@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -456,6 +457,31 @@ func TestProviderProbeMonitorFromEnvRejectsBadConfig(t *testing.T) {
 		}
 		if m, err := NewProviderProbeMonitorFromEnv(envMap(env)); err == nil || m != nil {
 			t.Fatalf("%s: got monitor=%v err=%v, want error", name, m, err)
+		}
+	}
+}
+
+func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.T) {
+	var logs strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	secretURL := dead.URL + "/ping/s3cr3t-token?key=q-secret"
+	dead.Close() // transport error that embeds the full URL
+	m, _, _ := newTestMonitor(&scriptedProbe{status: http.StatusOK})
+	if err := m.WithExternalHeartbeat(secretURL); err != nil {
+		t.Fatal(err)
+	}
+	m.Tick(context.Background())
+
+	if !strings.Contains(logs.String(), "heartbeat") {
+		t.Fatalf("expected a heartbeat failure log, got %q", logs.String())
+	}
+	for _, secret := range []string{"s3cr3t-token", "q-secret"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Fatalf("log leaks %q: %s", secret, logs.String())
 		}
 	}
 }

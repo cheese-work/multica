@@ -143,7 +143,12 @@ func (m *ProviderProbeMonitor) pingExternalHeartbeat(ctx context.Context) {
 	defer cancel()
 	resp, err := http.DefaultClient.Do(m.beat.Clone(ctx))
 	if err != nil {
-		slog.Warn("provider probe external heartbeat failed", "error", err)
+		// The heartbeat URL is a secret and *url.Error embeds it: log only the cause.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		slog.Warn("provider probe external heartbeat failed", "cause", err)
 		return
 	}
 	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
