@@ -160,6 +160,7 @@ var concurrentIndexCleanups = map[string]string{
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
+	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -582,6 +583,12 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		TableRegclass: "system1_observation",
 		Columns:       []string{"workspace_id", "event_id"},
 		Predicate:     "kind = 'route'::text",
+	},
+	"99957_review_admission_deferral_key": {
+		IndexRegclass: "review_admission_deferral_issue_agent_idx",
+		TableRegclass: "review_admission_deferral",
+		Unique:        true,
+		Columns:       []string{"issue_id", "agent_id"},
 	},
 	"971_dm_progress_data_incident_follow_kind_idx": {
 		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",

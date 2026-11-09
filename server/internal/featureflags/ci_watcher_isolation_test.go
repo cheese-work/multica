@@ -22,7 +22,8 @@ func ciWatcherStorageAllowed(rel string) bool {
 	case strings.HasSuffix(rel, "_test.go"),
 		strings.HasPrefix(rel, "migrations/"),
 		strings.HasPrefix(rel, "pkg/db/generated/"),
-		rel == "cmd/migrate/main.go", // index registry: names, not access
+		rel == "cmd/migrate/main.go",           // index registry: names, not access
+		rel == "internal/ghbudget/ghbudget.go", // the budget ledger over gh_installation_budget
 		rel == "pkg/db/queries/ci_watch.sql",
 		rel == "pkg/db/queries/workspace_delete.sql":
 		return true

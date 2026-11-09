@@ -219,3 +219,12 @@ multica config propose workspace.settings --set compact_prompt="..." --out ./act
 - Any other field or settings key is refused as `denylisted` before a read.
 - `workflow.steps` takes the steps array as the workflow GET returns it; the
   server refuses a differently normalized array (`after_digest_mismatch`).
+
+## Shadow predictor report
+
+```bash
+multica decision shadow-report [--since <RFC3339>] [--until <RFC3339>]
+```
+
+Reads the System 1 shadow predictor report (JSON only). The window defaults to
+the 24 hours before `--until`; `--until` defaults to now.
