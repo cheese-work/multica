@@ -6561,6 +6561,8 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	// gatewayFailureCooldown holds every new claim of an agent after a provider 5xx
+	// or 429 failure, so queued work does not burn a run into the same saturated route.
 	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
