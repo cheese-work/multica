@@ -106,6 +106,48 @@ func TestSteelBrowserShipsItsAgentSkill(t *testing.T) {
 	}
 }
 
+// Interim gate (CHE-4730 review): until W2-14 and W2-16 pass, no agent may sign
+// in to a Steel account or do logged-in work on Steel, and none may ask a human
+// to log in. The lease CLI can ship before those suites, so the installed skill
+// must carry the gate itself and must not invite a login request.
+func TestSteelBrowserSkillCarriesInterimLoginGate(t *testing.T) {
+	bundle := loadSteelBrowserBundle(t)
+	content, ok := bundle.File(bundle.Manifest.Contributes.Resources[0].Entry)
+	if !ok {
+		t.Fatal("skill file missing from bundle")
+	}
+	text := string(content)
+	for _, must := range []string{"W2-14", "W2-16", "No account login", "logged-in work"} {
+		if !strings.Contains(text, must) {
+			t.Errorf("SKILL.md does not contain the interim gate text %q", must)
+		}
+	}
+	for _, banned := range []string{"you stop and ask", "Cheese logs in by hand"} {
+		if strings.Contains(text, banned) {
+			t.Errorf("SKILL.md still invites a login request: %q", banned)
+		}
+	}
+}
+
+// The runbook must not promise a listener boundary the public Plugin API does
+// not enforce, and flag changes load only at startup, so enabling and rolling
+// back both need a restart or approved rollout.
+func TestSteelBrowserRunbookTokenBoundaryAndReload(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join(steelBrowserDir(), "RUNBOOK.md"))
+	if err != nil {
+		t.Fatalf("runbook missing: %v", err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "valid only on Multica's internal listener") {
+		t.Error("runbook claims the token is valid only on the internal listener; the public Plugin API also accepts mpi_ tokens")
+	}
+	for _, must := range []string{"public Plugin API", "restart", "loaded once at startup"} {
+		if !strings.Contains(text, must) {
+			t.Errorf("RUNBOOK.md does not contain %q", must)
+		}
+	}
+}
+
 // The provisioning runbook is part of the deliverable (F0): it must cover the
 // admin install, the token-to-secret step and the approval-gated flag change.
 func TestSteelBrowserRunbookCoversProvisioning(t *testing.T) {

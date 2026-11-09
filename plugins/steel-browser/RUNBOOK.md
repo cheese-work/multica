@@ -5,7 +5,7 @@ This runbook records the steps. It applies nothing.
 
 ## What this plugin is
 
-The Steel gateway's identity in Multica. Its install token (`mpi_…`) is the gateway credential, valid only on Multica's internal listener. The manifest asks for one scope, `tasks:read`, no hooks, no `net:` scope and no config field. Multica never calls the gateway; the gateway pulls.
+The Steel gateway's identity in Multica. Its install token (`mpi_…`) is the gateway credential, meant for the gateway on Multica's internal listener. The public Plugin API (`/v1`) also accepts `mpi_` tokens, so the listener split is not a token boundary: a stolen token can be replayed there to read workspace metadata. Whether C00 ingress blocks that path is NOT-VERIFIED. Keep the protections below (hash-only storage, secret-store handoff, rotation after any suspected leak). The manifest asks for one scope, `tasks:read`, no hooks, no `net:` scope and no config field. Multica never calls the gateway; the gateway pulls.
 
 ## 1. Read `plugins_v1` (read-only)
 
@@ -38,8 +38,9 @@ It is off today (step 1). Turning it on is a configuration change on C00 Multica
 
 - Needs **Cheese's approval**, per item. Recorded in plan section "Approvals Cheese gives per item", item 2. **Do not apply** it from this run or from this PR.
 - Where: the flag file that `MULTICA_FEATURE_FLAGS_FILE` (or the fallback `MULTICA_JEV_FLAGS_FILE`) points at in the C00 compose `.env`. Set `plugins_v1` `default: true`. Edit the file in place; see `deploy/cd/README.md`. The exact C00 path is NOT-VERIFIED here.
+- Reload: flags are loaded once at startup (`server/cmd/server/main.go`). The edit takes effect only after a Multica server restart or an approved rollout, which is a further C00 change that needs Cheese's approval.
 - Check: `flagfile-check.mjs` admits the file, and `GET /api/config` shows `plugins_v1: true`.
-- Rollback: set it back to `false` in the same file.
+- Rollback: set it back to `false` in the same file, then restart or roll out again so the server reloads it.
 - Also read the plan's other C00 gates: no build on C00; every C00 change needs Cheese's per-item approval.
 
 ## Do not
