@@ -5,6 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 // CHE-3482 (CHE-3348 step 9): an agent identity never writes a covered field
@@ -265,6 +269,53 @@ func TestPasskeyRequired_ChildDoneDefaultWriterRefusesMachineCredentials(t *test
 	}
 	t.Run("human control", func(t *testing.T) {
 		if w := put(func(r *http.Request) *http.Request { return r }); w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// Archiving an unused custom status removes its step, with any handoff and
+// instructions, from the Default workflow. A machine credential is refused
+// before persistence; the human owner still archives.
+func TestPasskeyRequired_ArchiveStatusRefusesMachineCredentials(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
+	entry := createTestCustomStatus(t, "che3482_arc_"+workflowTestSuffix()[10:], "started")
+	var list struct {
+		Workflows []IssueWorkflowResponse `json:"workflows"`
+	}
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK).JSON(&list)
+	def := list.Workflows[0]
+	patch := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
+		"steps": statusSteps("in_progress", entry.Key),
+	}), "id", def.ID)
+	testutil.Call(t, testHandler.UpdateIssueWorkflow, patch).Want(http.StatusOK)
+	var seeded string
+	dbfx.QueryRow(t, `SELECT steps::text FROM issue_workflow WHERE id = $1`, def.ID).Scan(&seeded)
+
+	id := util.UUIDToString(entry.ID)
+	archive := func(decorate func(*http.Request) *http.Request) *httptest.ResponseRecorder {
+		req := withURLParam(newRequest(http.MethodDelete, "/api/issue-statuses/"+id, nil), "id", id)
+		w := httptest.NewRecorder()
+		testHandler.ArchiveIssueStatus(w, decorate(req))
+		return w
+	}
+	for name, decorate := range map[string]func(*http.Request) *http.Request{
+		"task token": func(r *http.Request) *http.Request { r.Header.Set("X-Actor-Source", "task_token"); return r },
+		"cloud node": asCloudNodeActor,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wantPasskeyRequired(t, archive(decorate), "workflow.steps.set")
+			var after string
+			dbfx.QueryRow(t, `SELECT steps::text FROM issue_workflow WHERE id = $1`, def.ID).Scan(&after)
+			if after != seeded {
+				t.Fatalf("Default steps moved: %s -> %s", seeded, after)
+			}
+		})
+	}
+	t.Run("human control", func(t *testing.T) {
+		if w := archive(func(r *http.Request) *http.Request { return r }); w.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
 	})
