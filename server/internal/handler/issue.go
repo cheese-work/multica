@@ -4821,7 +4821,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
+		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 		updatedPayload["workflow_handoff"] = handoffPayload
 		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
@@ -5748,7 +5749,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun)
+			ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 			batchPayload["workflow_handoff"] = handoffPayload
 			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 		}

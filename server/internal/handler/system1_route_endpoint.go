@@ -279,7 +279,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	h.broadcastCancelledWakeups(r.Context(), prev.WorkspaceID, cancelledWakeups)
 	var handoffDetails map[string]string
 	if handoff != nil {
-		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil)
+		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil, "")
 		h.finishRecordedHandoff(r.Context(), rec, handoffDetails)
 	}
 	payload := map[string]any{
