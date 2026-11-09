@@ -181,7 +181,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
 		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
@@ -309,4 +309,19 @@ func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) 
 	}
 	last, err := s.Queries.LastVerdictHeadSHA(ctx, issue.ID)
 	return err == nil && last == head
+}
+
+// waitingOnOpenDecision reports whether the issue entered need_decision with a
+// decision request still open (CHE-4976). The step has nothing to route: the
+// answer wakes the issue, so a run now would only end and leave the status.
+// Errors read as "not waiting": a lookup failure must not swallow a run.
+func (s *IssueService) waitingOnOpenDecision(ctx context.Context, issue db.Issue) bool {
+	if issue.Status != statusNeedDecision {
+		return false
+	}
+	open, err := s.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+	})
+	return err == nil && open
 }
