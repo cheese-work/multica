@@ -182,7 +182,7 @@ Companion to [FORK-FEATURES.md](FORK-FEATURES.md) (CHE-2792). Re-check of every 
 | O21 | fork-only | - | no | high | Upstream has no deploy/cd directory and no cd-*.yml workflows. |
 | O22 | fork-only | - | no | high | ci.yml:48-67 migration-prefix-check job and scripts/migration-prefix-check.mjs; no upstream equivalent. |
 | O23 | fork-only | - | no | high | No fork-sync-guard script or workflow upstream. |
-| O24 | fork-only | - | no | high | Upstream only has the 'Closes #' PR template line; no security-gate or pr-close-target-check. |
+| O24 | fork-only | - | no | high | Upstream only has the 'Closes #' PR template line; no security-gate or pr-guards. |
 | O25 | fork-only | - | no | high | warning-budget job (ci.yml:19-45) and scripts/warning-budget.mjs have no upstream equivalent. |
 | O26 | fork-only | 6af2268bd9 | no | medium | Upstream has playwright.perf.config.ts, a typing perf scenario (6af2268bd9, MUL-7227) and ui-performance.yml but no page-load baseline; fork adds desktop/phone projects and page-load-report. |
 | O27 | overlaps | f0c361ebca; 7c186016a5; 354243b459; bb3747186e | yes | medium | Upstream has the multica-platform skill (8 references) and a static changelog page with hardcoded CHANGELOG_URL in help-links.ts; no FORK-FEATURES.md ledger. |
