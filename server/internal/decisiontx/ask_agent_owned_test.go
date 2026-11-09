@@ -21,6 +21,13 @@ var agentOwnedActions = []struct{ name, text string }{
 	{"link issue", "Link PR #7 to the issue"},
 	{"merge into develop", "Merge PR #7 into develop"},
 	{"merge into a named branch", "Merge PR #7 into `release/1.2`"},
+	{"dotted source branch", "Merge PR #7 from release/1.2 into develop"},
+	{"dotted target branch", "Merge PR #7 into feature/foo.bar"},
+	{"version tag target", "Merge PR #7 into v1.2.3-rc.1"},
+	{"sentence-ending target", "Merge PR #7 into develop."},
+	{"dotted branch between branches", "Merge release/1.2 into release/1.3."},
+	{"mark dotted branch ready", "Mark release/1.2 ready"},
+	{"rerun on dotted branch", "Re-run the checks on release/1.2"},
 }
 
 func TestHumanStepsRefuseAgentOwnedActions(test *testing.T) {
@@ -58,6 +65,8 @@ func TestActionStepsRefuseAgentOwnedActions(test *testing.T) {
 func TestAgentOwnedAcceptsEscalationClassSteps(test *testing.T) {
 	for _, text := range []string{
 		"Merge PR #7 into the default branch",
+		"Merge PR #7 from release/1.2 into the default branch",
+		"Merge PR #7 from feature/foo.bar into the default branch.",
 		"Approve the production deploy of the multica fork",
 		"Publish the release notes to the public site",
 		"Run `multica property create --name Readiness`",
