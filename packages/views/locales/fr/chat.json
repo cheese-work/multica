@@ -485,6 +485,8 @@
       "no_changes": "Aucune ligne modifiée.",
       "whitespace_only": "Seuls les espaces ou les fins de ligne changent.",
       "target": "Cible",
+      "workflow": "Workflow",
+      "step_status": "Étape",
       "keys": "Clés",
       "field_agent_instructions": "Instructions de l’agent",
       "field_squad_instructions": "Instructions de l’équipe",

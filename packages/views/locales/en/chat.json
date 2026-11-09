@@ -485,6 +485,8 @@
       "no_changes": "No line changes.",
       "whitespace_only": "Only whitespace or line endings change.",
       "target": "Target",
+      "workflow": "Workflow",
+      "step_status": "Step",
       "keys": "Keys",
       "field_agent_instructions": "Agent instructions",
       "field_squad_instructions": "Squad instructions",
