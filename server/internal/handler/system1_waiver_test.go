@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -121,4 +122,104 @@ func TestSystem1WaiverFieldsRefusedOutsideTopic(t *testing.T) {
 	ask := waiverAsk(t, fixture, func(a map[string]any) { delete(a, "topic") })
 	delete(ask, "waiver")
 	postRawAsk(t, fixture, ask).Want(http.StatusBadRequest) // option_key without a topic
+}
+
+type labelRow struct {
+	label, scope, kind, source string
+	superseded                 bool
+}
+
+func loadLabels(t *testing.T, requestID string) []labelRow {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(), `SELECT l.label, l.scope, l.kind, l.source, l.superseded_at IS NOT NULL
+		FROM system1_label l JOIN system1_observation o ON o.id = l.observation_id
+		WHERE o.kind = 'decision' AND o.subject_id = $1 ORDER BY l.created_at`, requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []labelRow
+	for rows.Next() {
+		var r labelRow
+		if err := rows.Scan(&r.label, &r.scope, &r.kind, &r.source, &r.superseded); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func askWaiver(t *testing.T) string {
+	t.Helper()
+	fixture := newRequestCoreFixture(t, false)
+	var created map[string]any
+	postRawAsk(t, fixture, waiverAsk(t, fixture, nil)).Want(http.StatusCreated).JSON(&created)
+	return created["id"].(string)
+}
+
+// The waiver ask is stored [refuse, waive] (recommended first). Answering index 1 is `waive`, not the positional `other`.
+func TestSystem1WaiverAnswerWritesMappedLabel(t *testing.T) {
+	requestID := askWaiver(t)
+	one := 1
+	answerOnCardRow(t, requestID, &one)
+	got := loadLabels(t, requestID)
+	want := labelRow{label: "waive", scope: "test_first_waiver", kind: "burn_in", source: "human_answer"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("labels = %+v, want [%+v]", got, want)
+	}
+}
+
+func TestSystem1WaiverFreeTextAnswerIsUnmapped(t *testing.T) {
+	requestID := askWaiver(t)
+	answerOnCardRow(t, requestID, nil)
+	if got := loadLabels(t, requestID); len(got) != 1 || got[0].label != "unmapped" {
+		t.Fatalf("labels = %+v, want one unmapped", got)
+	}
+}
+
+func TestSystem1WaiverDisclaimSupersedesLabel(t *testing.T) {
+	requestID := askWaiver(t)
+	zero := 0
+	answerOnCardRow(t, requestID, &zero)
+	dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE decision_request_id = $1`, requestID)
+	got := loadLabels(t, requestID)
+	if len(got) != 1 || got[0].label != "refuse" || !got[0].superseded {
+		t.Fatalf("labels = %+v, want one superseded refuse", got)
+	}
+}
+
+// Only a topic with a stored key mapping gets a label; an ordinary ask stays positional.
+func TestSystem1OrdinaryAnswerWritesNoLabel(t *testing.T) {
+	fixture := newRequestCoreFixture(t, false)
+	var created map[string]any
+	postRawAsk(t, fixture, waiverAsk(t, fixture, func(ask map[string]any) {
+		delete(ask, "topic")
+		delete(ask, "waiver")
+		for _, o := range ask["options"].([]map[string]any) {
+			delete(o, "option_key")
+		}
+	})).Want(http.StatusCreated).JSON(&created)
+	requestID := created["id"].(string)
+	zero := 0
+	answerOnCardRow(t, requestID, &zero)
+	if got := loadLabels(t, requestID); len(got) != 0 {
+		t.Fatalf("labels = %+v, want none", got)
+	}
+}
+
+// Withdraw (disclaim) then answer again: the old label stays superseded and the replacement answer gets its own mapped label of record.
+func TestSystem1WaiverReanswerAfterDisclaimWritesNewLabel(t *testing.T) {
+	requestID := askWaiver(t)
+	zero, one := 0, 1
+	answerOnCardRow(t, requestID, &zero)
+	dbfx.Exec(t, `UPDATE decision_answer SET disclaimed_at = clock_timestamp() WHERE decision_request_id = $1`, requestID)
+	answerOnCardRow(t, requestID, &one)
+	got := loadLabels(t, requestID)
+	want := []labelRow{
+		{label: "refuse", scope: "test_first_waiver", kind: "burn_in", source: "human_answer", superseded: true},
+		{label: "waive", scope: "test_first_waiver", kind: "burn_in", source: "human_answer"},
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("labels = %+v, want %+v", got, want)
+	}
 }

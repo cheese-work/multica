@@ -297,7 +297,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -329,6 +329,12 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 		if err := moveGuard(ctx, q, &params); err != nil {
 			return db.Issue{}, nil, err
 		}
+	}
+	if err := markMemberRouteOverride(ctx, q, workspaceID, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if err := captureRouteLabel(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
 	}
 	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, nil, err
@@ -379,11 +385,12 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
+		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
@@ -4315,6 +4322,12 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := markMemberRouteOverride(ctx, qtx, workspaceID, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
+	if err := captureRouteLabel(ctx, qtx, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, current, false, err
 	}
@@ -4686,6 +4699,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
+	}
+	if actorType == "member" {
+		writeCtx = withMemberRouteOverride(writeCtx)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
