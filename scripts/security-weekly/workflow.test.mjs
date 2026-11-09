@@ -7,8 +7,9 @@ import test from "node:test";
 const read = (path) => (existsSync(new URL(`../../${path}`, import.meta.url)) ? readFileSync(new URL(`../../${path}`, import.meta.url), "utf8") : "");
 const wf = read(".github/workflows/security-weekly.yml");
 
-test("runs Sunday 23:00 ICT (16:00 UTC)", () => {
-  assert.match(wf, /cron: "0 16 \* \* 0"/);
+// CHE-4691: minute 0 is the busiest slot on GitHub, and the first 23:00 run never started. 23:23 ICT is 16:23 UTC.
+test("runs Sunday 23:23 ICT (16:23 UTC), off the top of the hour", () => {
+  assert.match(wf, /cron: "23 16 \* \* 0" # Sunday 23:23 ICT/);
 });
 
 test("token stays read-only: no write permission anywhere, no secrets", () => {
@@ -48,13 +49,18 @@ test("downloaded scanner binaries are checksum-pinned", () => {
 });
 
 // Luna FAIL on 7adaba3d6: Go autobuild runs the root Makefile, which CODEOWNERS does not cover, before the SARIF is sealed.
-// Both languages analyze from source (build-mode none), so no checkout-controlled build step runs.
-test("CodeQL runs build-mode none for every language: no autobuild, no setup-go, no checkout build step", () => {
+// CHE-4691: the first scheduled run failed because CodeQL does not support build-mode none for Go (JavaScript/TypeScript does).
+// Go uses build-mode manual with one explicit `go build ./...` in server/, so no Makefile runs.
+test("CodeQL: Go builds manually with one explicit go build (CodeQL rejects none for Go); no autobuild, no setup-go, no make", () => {
   const job = wf.slice(wf.indexOf("  codeql:"), wf.indexOf("  image-scan:"));
-  assert.match(job, /language: go\s+build-mode: none/);
+  assert.match(job, /language: go\s+build-mode: manual/);
+  assert.doesNotMatch(job, /language: go\s+build-mode: none/);
   assert.match(job, /language: javascript-typescript\s+build-mode: none/);
   assert.match(job, /build-mode: \$\{\{ matrix\.build-mode \}\}/);
+  assert.match(job, /if: matrix\.language == 'go'\n\s+working-directory: server\n\s+run: go build \.\/\.\.\.\n/);
   assert.doesNotMatch(job, /autobuild|setup-go|\bmake\b/);
+  // the build step sits between init and analyze, or CodeQL traces nothing
+  assert.ok(job.indexOf("codeql-action/init@") < job.indexOf("go build ./...") && job.indexOf("go build ./...") < job.indexOf("codeql-action/analyze@"));
 });
 
 // Luna's FAIL on b7242fd47: this repo is public, so every artifact and step summary is world-readable. Finding detail
@@ -88,7 +94,7 @@ test("filing issues needs credentials the scan must not hold: no apply step in t
 });
 
 test("every job that seals checks out the repo first (seal.sh lives in the tree)", () => {
-  const jobs = wf.split(/^  (?=[a-z-]+:\n    runs-on:)/m).slice(1);
+  const jobs = wf.split(/^  (?=[a-z-]+:\n    (?:if: [^\n]*\n    )?runs-on:)/m).slice(1);
   assert.ok(jobs.length >= 6);
   for (const j of jobs) {
     if (j.includes("seal.sh")) assert.match(j, /uses: actions\/checkout@/, j.split("\n")[0]);
@@ -100,12 +106,18 @@ test("never runs on a pull request: a PR could swap recipient.asc and read the s
   assert.match(wf, /^on:\n  schedule:/m);
 });
 
-// Terra and luna FAIL on f3b0150f8: workflow_dispatch lets a writer pick a branch (gh workflow run --ref). The run then
-// uses that branch's workflow file, checkout and recipient.asc, so an in-file guard cannot stop it. Only `schedule`
-// is pinned by GitHub to the default branch, so it is the sole trigger.
-test("schedule is the only trigger: GitHub runs it on the default branch only", () => {
-  assert.match(wf, /^on:\n  schedule:\n    - cron: "[^"]+"[^\n]*\n\n/m);
-  assert.doesNotMatch(wf, /^\s*(workflow_dispatch|workflow_call|push|repository_dispatch|workflow_run):/m);
+// Terra and luna FAIL on f3b0150f8: workflow_dispatch lets a writer pick a branch (gh workflow run --ref), and the run uses that
+// branch's own file and recipient.asc. CHE-4691 re-adds it behind a per-job guard so the baseline run can be started: the guard
+// stops a mistaken dispatch, not an author who edits the file. CODEOWNERS on this file, seal.sh and the key is the real control.
+test("triggers are schedule and workflow_dispatch only", () => {
+  assert.match(wf, /^on:\n  schedule:\n    - cron: "[^"]+"[^\n]*\n  workflow_dispatch:\n\n/m);
+  assert.doesNotMatch(wf, /^\s*(workflow_call|push|repository_dispatch|workflow_run):/m);
+});
+
+test("every job runs on main only: a dispatch from another ref skips them all", () => {
+  const jobs = wf.split(/^  (?=[a-z-]+:\n    (?:if: [^\n]*\n    )?runs-on:)/m).slice(1);
+  assert.equal(jobs.length, 6, "semgrep, govulncheck, pnpm-audit, gitleaks, codeql, image-scan");
+  for (const j of jobs) assert.match(j, /^[a-z-]+:\n    if: github\.ref == 'refs\/heads\/main'\n    runs-on:/, j.split("\n")[0]);
 });
 
 test("nothing is written to a step summary", () => {

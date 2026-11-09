@@ -13,6 +13,13 @@ import (
 
 // squadActionFixture is an answered kind=action request on a squad-assigned
 // issue: a requester receipt and a leader (assignee) receipt, no active tasks.
+// finalizeAnswerWake mirrors the answering task's finalization: wake_at is set.
+// A NULL wake_at is not due.
+func finalizeAnswerWake(test *testing.T, fixture askedRecordFixture) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = GREATEST(effective_at, clock_timestamp()) WHERE decision_request_id = $1 AND wake_at IS NULL`, fixture.decision.ID)
+}
+
 func squadActionFixture(test *testing.T) (fixture askedRecordFixture, recorded decisionRecordResult, leader string) {
 	test.Helper()
 	fixture = newAskedRecordFixture(test)
@@ -25,6 +32,7 @@ func squadActionFixture(test *testing.T) (fixture askedRecordFixture, recorded d
 		test.Fatal(err)
 	}
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
 	return fixture, recorded, leader
 }
 
