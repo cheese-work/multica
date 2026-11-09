@@ -34,7 +34,7 @@ Delivery: one `multica issue wakeup create --kind at --mode once --agent-id <ass
 
 | PR | Issue | Head SHA | State | Watermark | Convergence PR | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| multica-ai/multica#10111 | CHE-3959 | 5ab8141e454acd77bfa494ab80202af1f1232752 | merged upstream | - | - | merge `64e62a1253`; maintainer added 404 guard |
+| multica-ai/multica#10111 | CHE-3959 | 5ab8141e454acd77bfa494ab80202af1f1232752 | merged upstream | - | cheese-work/multica#1311 | merge `64e62a1253`; maintainer added 404 guard |
 
 ## Upstream PR tracking (multica-ai/multica, author congvc-dev)
 
