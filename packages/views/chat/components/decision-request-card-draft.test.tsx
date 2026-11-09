@@ -167,6 +167,19 @@ describe("decision card draft survives remount", () => {
     expect(note()).toHaveValue("typed in chat");
   });
 
+  it("a draft written by the previous version under the bare request id still shows after upgrade and remount", async () => {
+    useDecisionAnswerDraftStore.getState().setDraft("upgraded", { option: "Option B", text: "written before the upgrade" });
+    const user = userEvent.setup();
+    const first = renderWithI18n(chat(card("upgraded")));
+    expect(note()).toHaveValue("written before the upgrade");
+    first.unmount();
+
+    renderWithI18n(chat(card("upgraded")));
+    expect(note()).toHaveValue("written before the upgrade");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(api.answerDecisionRequest).toHaveBeenLastCalledWith("upgraded", { option: "Option B", text: "written before the upgrade" }));
+  });
+
   it("a refused send keeps the draft across remount", async () => {
     refuseSends();
     const user = userEvent.setup();
@@ -189,7 +202,7 @@ describe("decision card draft survives remount", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
     first.unmount();
     resolve();
-    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("decision:sent")).toBe(false));
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft("sent")).toBe(false));
   });
 
   it("Discard draft clears it for good", async () => {
@@ -229,7 +242,7 @@ describe("decision card draft survives remount", () => {
     const first = renderWithI18n(chat(card(id)));
     await user.click(optionButton(/Option B/));
     await user.type(note(), "see");
-    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(`decision:${id}`)).toBe(true), { timeout: 2000 });
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().hasDraft(id)).toBe(true), { timeout: 2000 });
     act(() => editorHandle.current?.uploadFile(new File(["x"], "shot.png", { type: "image/png" })));
     return {
       user,
@@ -241,7 +254,7 @@ describe("decision card draft survives remount", () => {
       },
     };
   };
-  const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(`decision:${id}`);
+  const stored = (id: string) => useDecisionAnswerDraftStore.getState().getDraft(id);
 
   it("leaving the card aborts the upload and shows the notice on return, with text and option kept", async () => {
     const { first, signal, settle } = await startUpload("left");

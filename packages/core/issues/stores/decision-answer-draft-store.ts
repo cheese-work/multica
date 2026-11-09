@@ -3,8 +3,8 @@ import { createKeyedDraftStore } from "../../drafts/create-keyed-draft-store";
 /**
  * Unsent answer to an open decision card: the chosen option and the note. The
  * note is markdown, so images uploaded into it travel as links inside `text`.
- * Keyed `decision:<requestId>`, so the chat card and the issue banner share one
- * draft per request.
+ * Keyed by the bare request id, the key older versions wrote, so unsent drafts
+ * survive an upgrade. The chat card and the issue banner share one draft per request.
  */
 export interface DecisionAnswerDraft {
   option: string;
@@ -13,7 +13,7 @@ export interface DecisionAnswerDraft {
 
 export const EMPTY_DECISION_ANSWER_DRAFT: DecisionAnswerDraft = { option: "", text: "" };
 
-export const decisionAnswerDraftKey = (requestId: string) => `decision:${requestId}`;
+export const decisionAnswerDraftKey = (requestId: string) => requestId;
 
 export const useDecisionAnswerDraftStore = createKeyedDraftStore<DecisionAnswerDraft>({
   storageKey: "multica_decision_answer_drafts",
