@@ -32,6 +32,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || vars.PR_MAIN_SYNC_ENABLED == 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
+    # The App key lives in this environment (branch policy: main only), so a dry run needs the default branch: dispatch with --ref main.
+    environment: ci-app-token
     steps:
       - uses: actions/checkout@v6
         with:
@@ -46,15 +48,6 @@ jobs:
           repositories: multica
           permission-contents: write
           permission-pull-requests: write
-      - name: Probe runner tools (CHE-4963, temporary)
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: |
-          command -v gh multica node || true
-          node --version
-          multica version 2>&1 | head -2 || true
-          multica auth status 2>&1 | head -3 || true
-          gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=1" --jq length
       - name: Merge main into behind PR branches
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}

@@ -4,7 +4,7 @@
 // Safety: an issue with an active author run is skipped; every push is pinned to the PR head
 // we read (`expected_head_sha`), so an author commit made in between is never overwritten and
 // the call is rejected instead. A conflict pushes nothing and opens one task for the PR author.
-// Needs a token that can push to PR branches (gh login on the runner, not the Actions token,
+// Needs a token that can push to PR branches (GH_TOKEN = the ci-app-token App token, not the Actions token,
 // or the new head would not start CI).
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
