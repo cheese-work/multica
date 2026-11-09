@@ -240,6 +240,9 @@ func (h *Handler) listChatMessagesAround(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// An agent anchor at or before the floor falls out of the newer page below
+	// and is a 404.
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
 	// Newer half includes the anchor; the extra row only detects has_newer.
 	olderLimit := limit / 2
 	newerLimit := limit - olderLimit
@@ -248,6 +251,8 @@ func (h *Handler) listChatMessagesAround(w http.ResponseWriter, r *http.Request,
 		Limit:          int32(newerLimit + 1),
 		AfterCreatedAt: anchor.CreatedAt,
 		AfterID:        anchor.ID,
+		FloorCreatedAt: floorAt,
+		FloorID:        floorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
@@ -268,6 +273,8 @@ func (h *Handler) listChatMessagesAround(w http.ResponseWriter, r *http.Request,
 		Limit:           int32(olderLimit + 2),
 		BeforeCreatedAt: anchor.CreatedAt,
 		BeforeID:        anchor.ID,
+		FloorCreatedAt:  floorAt,
+		FloorID:         floorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
