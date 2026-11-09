@@ -122,14 +122,16 @@ WHERE issue_id = @issue_id::uuid AND task_kind = 'budget_recovery'
 -- name: LinkRunBudgetRefusal :one
 -- Link (CHE-2798 P2r, CHE-2860): a budget approval claims the refusal it answers.
 -- An unfinished intent hook is retired in the same statement, so the block is
--- cancelled and the worker admits the run directly. No row back: the refusal is
--- superseded, already linked by another approval, or already resumed.
+-- cancelled and the worker admits the run directly. A refusal still waiting for
+-- its worker is linked again: the latest approval's action and window win, so a
+-- top-up that commits while the worker is rolling back is not lost. No row back:
+-- the refusal is superseded or already resumed.
 UPDATE run_budget_refusal
 SET state = 'resume_pending', state_reason = NULL, action_id = @action_id::uuid, resume_window_id = @resume_window_id::text,
     hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
     updated_at = now()
-WHERE id = @id::uuid AND issue_id = @issue_id::uuid AND state IN ('open', 'still_blocked')
+WHERE id = @id::uuid AND issue_id = @issue_id::uuid AND state IN ('open', 'still_blocked', 'resume_pending')
 RETURNING *;
 
 -- name: ListResumePendingRunBudgetRefusals :many
@@ -148,13 +150,14 @@ WHERE id = @id::uuid AND state = 'resume_pending';
 
 -- name: FailRunBudgetRefusalResume :exec
 -- The second transaction after a rolled-back resume: still_blocked (retryable) or
--- superseded, with the reason. Only a row still waiting for the worker changes.
+-- superseded, with the reason. Only a row still waiting for the worker, and still
+-- linked to the action the worker resumed, changes: a newer approval's link stays.
 UPDATE run_budget_refusal
 SET state = @state::text, state_reason = @reason::text,
     hook_phase = CASE WHEN @state::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN @state::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN @reason::text ELSE hook_reason END,
     updated_at = now()
-WHERE id = @id::uuid AND state = 'resume_pending';
+WHERE id = @id::uuid AND state = 'resume_pending' AND action_id = @action_id::uuid;
 
 -- name: NewestRunBudgetTaskSince :one
 -- The task id the worker's admission just inserted: the newest agent task of the

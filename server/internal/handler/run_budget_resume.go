@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -27,6 +28,8 @@ var runBudgetResumeAt = func(stage string) bool { return false }
 var (
 	errResumeDone    = errors.New("run budget: the refusal is not waiting for a resume")
 	errResumeCrashed = errors.New("run budget: resume stopped before commit")
+	// errResumeRelinked: a newer approval linked the refusal after the worker read it.
+	errResumeRelinked = errors.New("run budget: the refusal was linked by a newer approval")
 )
 
 // resumeSuperseded ends the refusal: it no longer applies.
@@ -42,9 +45,10 @@ func (e *resumeRefused) Error() string { return "run budget: resume refused: " +
 func (e *resumeRefused) Unwrap() error { return e.cause }
 
 // linkRunBudgetRefusal is the Link step: the approval claims the refusal it
-// answers, under the issue lock it already holds. A refusal that is superseded,
-// already linked or already resumed stays as it is; a refusal of another issue
-// and an approval without a refusal link nothing.
+// answers, under the issue lock it already holds. A refusal still waiting (open,
+// still_blocked or resume_pending) takes the latest approval's action and
+// window; a superseded or resumed refusal stays as it is; a refusal of another
+// issue and an approval without a refusal link nothing.
 func linkRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, actionID pgtype.UUID, window string) error {
 	id, err := util.ParseUUID(refusalID)
 	if err != nil {
@@ -84,7 +88,7 @@ func resumeIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefusa
 
 // lockResume takes the locks in lock order E23 (the issue, then the refusal)
 // and checks the refusal is still waiting and eligible.
-func lockResume(ctx context.Context, q *db.Queries, id, issueID pgtype.UUID) error {
+func lockResume(ctx context.Context, q *db.Queries, id, issueID, actionID pgtype.UUID) error {
 	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
 		return err
 	}
@@ -94,6 +98,9 @@ func lockResume(ctx context.Context, q *db.Queries, id, issueID pgtype.UUID) err
 	}
 	if row.State != "resume_pending" {
 		return errResumeDone
+	}
+	if row.ActionID != actionID {
+		return errResumeRelinked
 	}
 	reason, err := resumeIneligible(ctx, q, row)
 	if err != nil {
@@ -152,6 +159,8 @@ func (h *Handler) resumeRefusal(ctx context.Context, id pgtype.UUID) {
 			return
 		case errors.Is(err, errResumeDone):
 			return
+		case errors.Is(err, errResumeRelinked):
+			continue
 		case errors.As(err, &superseded):
 			h.failResume(ctx, row, "superseded", superseded.reason)
 			return
@@ -172,6 +181,7 @@ func (h *Handler) resumeRefusal(ctx context.Context, id pgtype.UUID) {
 
 // resumeOnce is the worker's transaction. It returns what runs after the commit.
 func (h *Handler) resumeOnce(ctx context.Context, row db.RunBudgetRefusal) (func(context.Context), error) {
+	runBudgetResumeAt("before_resume")
 	// The same check the transaction repeats under the locks: a refusal that
 	// already moved on needs no overlay and no workflow decision.
 	if reason, err := resumeIneligible(ctx, h.Queries, row); err != nil {
@@ -195,7 +205,7 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 	to := row.Status.String
 	overlay := h.prepareEdgeRunOverlay(ctx, issue, to, true)
 	guard := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
-		return lockResume(ctx, q, row.ID, issue.ID)
+		return lockResume(ctx, q, row.ID, issue.ID, row.ActionID)
 	}
 	extra := map[string]any{"reason": "budget_approved", "action_id": uuidToString(row.ActionID)}
 	var edge edgeMove
@@ -203,6 +213,9 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 		q := h.Queries.WithTx(tx)
 		var err error
 		edge, err = h.moveIssueOnEdgeTx(withIssueMoveGuard(ctx, guard), q, issue, to, "run_budget", extra, true, overlay)
+		if isPermanentRestoreError(err) {
+			return &resumeSuperseded{reason: "restore_refused"}
+		}
 		if err != nil {
 			return err
 		}
@@ -217,7 +230,24 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 	return func(ctx context.Context) { edge.AfterCommit(ctx) }, nil
 }
 
-// resumeDirect admits the run the budget refused, for an issue the hook never blocked.
+// isPermanentRestoreError reports whether the move that restores the hidden
+// status was refused for a reason a retry cannot change: the workflow or a gate
+// says no. A lost race and an infrastructure failure are not permanent.
+func isPermanentRestoreError(err error) bool {
+	var notInWorkflow *issueworkflow.NotInWorkflowError
+	var notAllowed *issueworkflow.MoveNotAllowedError
+	var stepMoved *issueworkflow.StepMovedError
+	var staleVerdict *issueworkflow.StaleVerdictError
+	var entryGate *EntryGateError
+	var notConfirmed *service.StopNotConfirmedError
+	return errors.Is(err, issueworkflow.ErrOverrideMissing) || errors.Is(err, errFindingsRequired) ||
+		errors.Is(err, errVerdictNeedsRun) || errors.Is(err, errIssueStatusArchivedRace) ||
+		errors.As(err, &notInWorkflow) || errors.As(err, &notAllowed) || errors.As(err, &stepMoved) ||
+		errors.As(err, &staleVerdict) || errors.As(err, &entryGate) || errors.As(err, &notConfirmed)
+}
+
+// resumeDirect admits the run the budget refused, for an issue the hook never
+// blocked. The run is the one the refusal stored: its agent and trigger.
 func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, issue db.Issue) (func(context.Context), error) {
 	var overlay *service.PreparedRuntimeMCPOverlay
 	if issue.AssigneeType.String == "agent" {
@@ -226,7 +256,7 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 	var after func()
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
-		if err := lockResume(ctx, q, row.ID, issue.ID); err != nil {
+		if err := lockResume(ctx, q, row.ID, issue.ID, row.ActionID); err != nil {
 			return err
 		}
 		// Read under the lock: the run is admitted for the issue as it is now.
@@ -234,15 +264,7 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		if err != nil {
 			return err
 		}
-		th := h.onQueries(q)
-		switch locked.AssigneeType.String {
-		case "agent":
-			after, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, locked, pgtype.UUID{}, overlay)
-		case "squad":
-			after, err = th.enqueueSquadLeaderRunInTx(ctx, q, locked)
-		default:
-			return &resumeSuperseded{reason: "assignee_changed"}
-		}
+		after, err = h.enqueueRefusedRun(ctx, q, row, locked, overlay)
 		switch {
 		case err == nil, errors.Is(err, service.ErrDuplicatePendingTask):
 		case isRunRefusal(err):
@@ -261,6 +283,68 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 	return func(context.Context) { after() }, nil
 }
 
+// enqueueRefusedRun queues the run the refusal stored. An assignment-level or
+// squad-leader run needs the assignee it was refused for; any other trigger (a
+// mention, a wakeup) runs its own agent whoever the assignee is. A refusal
+// without a valid agent falls back to the assignee.
+func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, issue db.Issue, overlay *service.PreparedRuntimeMCPOverlay) (func(), error) {
+	th := h.onQueries(q)
+	agentID, viaSquad := row.AgentID, row.Trigger == "squad leader callback"
+	switch {
+	case !agentID.Valid && issue.AssigneeType.String == "agent":
+		agentID = issue.AssigneeID
+	case !agentID.Valid && issue.AssigneeType.String == "squad":
+		viaSquad = true
+		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return nil, &resumeSuperseded{reason: "assignee_changed"}
+		}
+		agentID = squad.LeaderID
+	case !agentID.Valid:
+		return nil, &resumeSuperseded{reason: "assignee_changed"}
+	}
+	if viaSquad {
+		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+		if issue.AssigneeType.String != "squad" || err != nil || squad.LeaderID != agentID {
+			return nil, &resumeSuperseded{reason: "assignee_changed"}
+		}
+	}
+	if agent, err := q.GetAgent(ctx, agentID); errors.Is(err, pgx.ErrNoRows) || (err == nil && agent.ArchivedAt.Valid) {
+		return nil, &resumeSuperseded{reason: "agent_archived"}
+	} else if err != nil {
+		return nil, err
+	}
+	switch {
+	case viaSquad:
+		return th.enqueueSquadLeaderRunInTx(ctx, q, issue)
+	case row.Trigger == "assignment or status handoff" || row.Trigger == "comment":
+		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+			return nil, &resumeSuperseded{reason: "assignee_changed"}
+		}
+		return th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, pgtype.UUID{}, overlay)
+	}
+	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+		IssueID: issue.ID,
+		AgentID: agentID,
+		HeadSha: th.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if pending {
+		return nil, service.ErrDuplicatePendingTask
+	}
+	params, err := th.TaskService.PrepareTaskForMention(ctx, q, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, service.OriginDerived)
+	if err != nil {
+		return nil, err
+	}
+	task, err := th.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, q, issue, params, service.OriginDerived)
+	if err != nil {
+		return nil, err
+	}
+	return func() { h.TaskService.PublishTaskEnqueued(ctx, task) }, nil
+}
+
 // refuseResume records why a rolled-back resume was refused: still_blocked
 // while the budget refuses (a later approval links it again), else the restore
 // itself was refused and the refusal ends.
@@ -277,8 +361,12 @@ func (h *Handler) refuseResume(ctx context.Context, row db.RunBudgetRefusal, cau
 	h.failResume(ctx, row, "still_blocked", kind)
 }
 
+// failResume records the outcome of the approval the worker resumed. A newer
+// approval that linked the refusal meanwhile keeps its link: the statement is
+// conditioned on the action the worker read.
 func (h *Handler) failResume(ctx context.Context, row db.RunBudgetRefusal, state, reason string) {
-	if err := h.Queries.FailRunBudgetRefusalResume(ctx, db.FailRunBudgetRefusalResumeParams{ID: row.ID, State: state, Reason: reason}); err != nil {
+	runBudgetResumeAt("before_outcome")
+	if err := h.Queries.FailRunBudgetRefusalResume(ctx, db.FailRunBudgetRefusalResumeParams{ID: row.ID, ActionID: row.ActionID, State: state, Reason: reason}); err != nil {
 		slog.Warn("run budget: record resume outcome failed", "err", err, "refusal_id", uuidToString(row.ID))
 	}
 }

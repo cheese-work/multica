@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -168,17 +170,22 @@ func TestRunBudgetResumeApprovalBeforeBlockAdmitsTheRunDirectly(t *testing.T) {
 
 func TestRunBudgetResumeApprovalInTheGapAfterIntentCancelsTheBlock(t *testing.T) {
 	c, e := hookCase(t, 2860102)
+	var id pgtype.UUID
 	atStage(t, "after_intent", func() bool {
-		id := refusalIDs(t, c)[0]
+		// The whole approval runs between R and B: link, raise, resume.
+		id = refusalIDs(t, c)[0]
 		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		resume(t, id)
 		return false
 	})
 	testHandler.onRunBudgetExhausted(context.Background(), e)
-	if r := onlyRefusal(t, c); r.State != "resume_pending" || r.Phase != "retired" {
-		t.Fatalf("refusal = %+v, want resume_pending with the hook retired", r)
-	}
+	wantResume(t, id, "run_queued", "")
 	if got := c.status(t); got != "in_progress" || blockRows(t, c) != 0 || recoveryRuns(t, c.edgeCase) != 0 {
 		t.Fatalf("issue %s, block rows %d: B must retire instead of blocking", got, blockRows(t, c))
+	}
+	if n := resumeQueued(t, c); n != 1 {
+		t.Fatalf("queued runs = %d, want 1", n)
 	}
 }
 
@@ -206,22 +213,22 @@ func TestRunBudgetResumeApprovalAfterBlockRestoresTheStatusOnce(t *testing.T) {
 
 func TestRunBudgetResumeApprovalInTheGapAfterBlockSendsNoNotice(t *testing.T) {
 	c, e := hookCase(t, 2860104)
+	var id pgtype.UUID
 	atStage(t, "after_block", func() bool {
-		id := refusalIDs(t, c)[0]
+		// The whole approval runs between B and N: link, raise, resume.
+		id = refusalIDs(t, c)[0]
 		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		resume(t, id)
 		return false
 	})
 	testHandler.onRunBudgetExhausted(context.Background(), e)
-	if comments, _ := c.notices(t, service.RunBudgetKindExhausted); comments != 0 || recoveryRuns(t, c.edgeCase) != 0 {
-		t.Fatalf("N wrote a notice or recovery run for a linked refusal")
-	}
-	if r := onlyRefusal(t, c); r.State != "resume_pending" || !r.Blocked {
-		t.Fatalf("refusal = %+v, want resume_pending and blocked", r)
-	}
-	raiseCap(t, c)
-	resume(t, refusalIDs(t, c)[0])
+	wantResume(t, id, "status_restored", "")
 	if got := c.status(t); got != "in_progress" {
 		t.Fatalf("issue is %s, want in_progress restored", got)
+	}
+	if comments, _ := c.notices(t, service.RunBudgetKindExhausted); comments != 0 || recoveryRuns(t, c.edgeCase) != 0 {
+		t.Fatalf("N wrote a notice or recovery run for a resumed refusal")
 	}
 }
 
@@ -287,9 +294,9 @@ func TestRunBudgetResumeSecondApprovalAndTwoOwnersQueueOneRun(t *testing.T) {
 	c, id := intentCase(t, 2860108)
 	window := resumeRowOf(t, id).Window
 	first := linkRefusal(t, id, window)
-	linkRefusal(t, id, window) // a second owner's approval of the same refused work
-	if r := resumeRowOf(t, id); r.ActionID != first || r.State != "resume_pending" {
-		t.Fatalf("refusal = %+v, want the first approval's link kept", r)
+	second := linkRefusal(t, id, window) // a second owner's approval of the same refused work
+	if r := resumeRowOf(t, id); r.ActionID != second || r.ActionID == first || r.State != "resume_pending" {
+		t.Fatalf("refusal = %+v, want the latest approval's link", r)
 	}
 	raiseCap(t, c)
 	var wg sync.WaitGroup
@@ -391,8 +398,11 @@ func TestRunBudgetResumeCrashBeforeCommitIsRetriedByTheSweepOnce(t *testing.T) {
 	linkRefusal(t, id, resumeRowOf(t, id).Window)
 	raiseCap(t, c)
 	runBudgetResumeAt = func(stage string) bool {
+		if stage != "before_commit" {
+			return false
+		}
 		runBudgetResumeAt = func(string) bool { return false }
-		return stage == "before_commit"
+		return true
 	}
 	t.Cleanup(func() { runBudgetResumeAt = func(string) bool { return false } })
 	resume(t, id)
@@ -434,5 +444,215 @@ func TestRunBudgetResumeApprovalExecutorsLinkTheirRefusal(t *testing.T) {
 			}
 			_ = issueID
 		})
+	}
+}
+
+// atResume runs fn once at a stage of the resume worker.
+func atResume(t *testing.T, stage string, fn func()) {
+	t.Helper()
+	runBudgetResumeAt = func(s string) bool {
+		if s != stage {
+			return false
+		}
+		runBudgetResumeAt = func(string) bool { return false }
+		fn()
+		return false
+	}
+	t.Cleanup(func() { runBudgetResumeAt = func(string) bool { return false } })
+}
+
+// secondAgent is a ready agent on the seeded agent's runtime.
+func secondAgent(t *testing.T) string {
+	t.Helper()
+	var id string
+	if err := testPool.QueryRow(context.Background(), `INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id, instructions, custom_env, custom_args)
+		SELECT workspace_id, 'resume-target-' || gen_random_uuid()::text, description, runtime_mode, runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id, instructions, custom_env, custom_args
+		FROM agent WHERE id=$1 RETURNING id`, seededReadyAgentID(t)).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE agent_id=$1`, id)
+		testPool.Exec(context.Background(), `DELETE FROM agent WHERE id=$1`, id)
+	})
+	return id
+}
+
+func queuedAgents(t *testing.T, c budgetCase) []string {
+	t.Helper()
+	rows, err := testPool.Query(context.Background(), `SELECT agent_id::text FROM agent_task_queue WHERE issue_id=$1 AND status='queued' AND task_kind IS DISTINCT FROM 'budget_recovery'`, c.issueID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func TestRunBudgetResumeQueuesTheStoredTargetNotTheAssignee(t *testing.T) {
+	for _, trigger := range []string{"mention", "wakeup"} {
+		t.Run(trigger, func(t *testing.T) {
+			c, id := intentCase(t, 2860120)
+			other := secondAgent(t)
+			dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger=$3 WHERE id=$1`, id, other, trigger)
+			linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			resume(t, id)
+			wantResume(t, id, "run_queued", "")
+			if got := queuedAgents(t, c); len(got) != 1 || got[0] != other {
+				t.Fatalf("queued runs for agents %v, want only the refused target %s (assignee %s)", got, other, c.agentID)
+			}
+			resume(t, id)
+			if got := queuedAgents(t, c); len(got) != 1 {
+				t.Fatalf("queued runs = %v after a duplicate resume, want 1", got)
+			}
+		})
+	}
+}
+
+func TestRunBudgetResumeAssigneeChangedSinceAnAssignmentRefusalSupersedesIt(t *testing.T) {
+	c, id := intentCase(t, 2860121)
+	dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger='assignment or status handoff' WHERE id=$1`, id, secondAgent(t))
+	linkRefusal(t, id, resumeRowOf(t, id).Window)
+	raiseCap(t, c)
+	resume(t, id)
+	wantResume(t, id, "superseded", "assignee_changed")
+	if got := queuedAgents(t, c); len(got) != 0 {
+		t.Fatalf("queued runs for %v, want none", got)
+	}
+}
+
+func TestRunBudgetResumeArchivedAgentSupersedesInsteadOfRetryingForever(t *testing.T) {
+	t.Run("stored target", func(t *testing.T) {
+		c, id := intentCase(t, 2860122)
+		other := secondAgent(t)
+		dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger='mention' WHERE id=$1`, id, other)
+		dbfx.Exec(t, `UPDATE agent SET archived_at=now() WHERE id=$1`, other)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		resume(t, id)
+		wantResume(t, id, "superseded", "agent_archived")
+		if got := queuedAgents(t, c); len(got) != 0 {
+			t.Fatalf("queued runs for %v, want none", got)
+		}
+	})
+	t.Run("assignee", func(t *testing.T) {
+		c, id := intentCase(t, 2860123)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		dbfx.Exec(t, `UPDATE agent SET archived_at=now() WHERE id=$1`, c.agentID)
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `UPDATE agent SET archived_at=NULL WHERE id=$1`, c.agentID)
+		})
+		resume(t, id)
+		wantResume(t, id, "superseded", "agent_archived")
+	})
+}
+
+func TestRunBudgetResumeWorkflowRefusingTheRestoreSupersedesIt(t *testing.T) {
+	c, id := reviewBlockedCase(t, 2860124)
+	linkRefusal(t, id, resumeRowOf(t, id).Window)
+	raiseCap(t, c)
+	// The workflow no longer has the step the hook blocked the issue from.
+	dbfx.Exec(t, `UPDATE issue_workflow SET steps=(SELECT jsonb_agg(s) FROM jsonb_array_elements(steps) s WHERE s->>'status_key' <> 'in_review') WHERE id=$1`, c.workflowID)
+	resume(t, id)
+	wantResume(t, id, "superseded", "restore_refused")
+	if got, n := c.status(t), resumeQueued(t, c); got != "blocked" || n != 0 {
+		t.Fatalf("issue %s with %d queued runs, want blocked and none", got, n)
+	}
+}
+
+func TestRunBudgetResumeStillBlockedByTokensThenAFreshWindowQueuesIt(t *testing.T) {
+	c, id := tokenRefusal(t, 2860125)
+	linkRefusal(t, id, resumeRowOf(t, id).Window)
+	resume(t, id)
+	wantResume(t, id, "still_blocked", "tokens")
+	if n := resumeQueued(t, c); n != 0 {
+		t.Fatalf("queued runs = %d, want 0", n)
+	}
+	window := topUp(t, c) // a top-up opens a window with a new allowance
+	ctx := context.Background()
+	err := testHandler.withTx(ctx, func(q *db.Queries) error {
+		if _, err := q.LockIssueRunBudget(ctx, parseUUID(c.issueID)); err != nil {
+			return err
+		}
+		issue, err := q.GetIssue(ctx, parseUUID(c.issueID))
+		if err != nil {
+			return err
+		}
+		return service.ClaimRunBudgetAllowance(ctx, q, issue, window)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	linkRefusal(t, id, window)
+	resume(t, id)
+	wantResume(t, id, "run_queued", "")
+	if n := resumeQueued(t, c); n != 1 {
+		t.Fatalf("queued runs = %d, want 1", n)
+	}
+}
+
+// tokenRefusal leaves a refusal at tx R whose budget refuses for tokens: the
+// runs are not spent, the allowance is.
+func tokenRefusal(t *testing.T, installationID int64) (budgetCase, pgtype.UUID) {
+	t.Helper()
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c := newBudgetCase(t, installationID, recoverySteps(seededReadyAgentID(t)), 40)
+	storeTokenValues(t, c.edgeCase)
+	recordOccurrence(t, c, "in_progress")
+	events := make(chan service.RunBudgetExhausted, 1)
+	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
+	t.Cleanup(func() { service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted) })
+	task := admitRun(t, c.edgeCase)
+	reportUsage(t, task, usageRow{Model: "m1", In: 12000, Out: 1000})
+	testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, c.issueID)
+	if err := c.admit(t); !errors.Is(err, service.ErrRunBudgetExhausted) {
+		t.Fatalf("admission = %v, want ErrRunBudgetExhausted for tokens", err)
+	}
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(context.Background(), <-events)
+	return c, refusalIDs(t, c)[0]
+}
+
+func TestRunBudgetResumeApprovalLinkedWhileTheWorkerRollsBackKeepsTheNewerApproval(t *testing.T) {
+	c, id := intentCase(t, 2860126)
+	linkRefusal(t, id, resumeRowOf(t, id).Window) // the cap is unchanged: admission refuses
+	var second pgtype.UUID
+	var window string
+	atResume(t, "before_outcome", func() {
+		window = topUp(t, c)
+		second = linkRefusal(t, id, window)
+	})
+	resume(t, id)
+	if r := resumeRowOf(t, id); r.State != "resume_pending" || r.ActionID != second || r.Window != window {
+		t.Fatalf("refusal = %+v, want the newer approval kept and still waiting", r)
+	}
+	resume(t, id)
+	wantResume(t, id, "run_queued", "")
+	if n := resumeQueued(t, c); n != 1 {
+		t.Fatalf("queued runs = %d, want 1", n)
+	}
+}
+
+func TestRunBudgetResumeWorkerThatReadTheOldLinkResumesTheNewerOne(t *testing.T) {
+	c, id := reviewBlockedCase(t, 2860127)
+	window := resumeRowOf(t, id).Window
+	first := linkRefusal(t, id, window)
+	raiseCap(t, c)
+	var second pgtype.UUID
+	atResume(t, "before_resume", func() { second = linkRefusal(t, id, window) })
+	resume(t, id)
+	wantResume(t, id, "run_queued", "")
+	if a, b, n := restoreRows(t, c, first), restoreRows(t, c, second), resumeQueued(t, c); a != 0 || b != 1 || n != 1 {
+		t.Fatalf("restore rows: first %d, second %d, queued %d, want 0, 1, 1", a, b, n)
 	}
 }

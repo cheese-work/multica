@@ -17,19 +17,26 @@ SET state = $1::text, state_reason = $2::text,
     hook_phase = CASE WHEN $1::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN $1::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN $2::text ELSE hook_reason END,
     updated_at = now()
-WHERE id = $3::uuid AND state = 'resume_pending'
+WHERE id = $3::uuid AND state = 'resume_pending' AND action_id = $4::uuid
 `
 
 type FailRunBudgetRefusalResumeParams struct {
-	State  string      `json:"state"`
-	Reason string      `json:"reason"`
-	ID     pgtype.UUID `json:"id"`
+	State    string      `json:"state"`
+	Reason   string      `json:"reason"`
+	ID       pgtype.UUID `json:"id"`
+	ActionID pgtype.UUID `json:"action_id"`
 }
 
 // The second transaction after a rolled-back resume: still_blocked (retryable) or
-// superseded, with the reason. Only a row still waiting for the worker changes.
+// superseded, with the reason. Only a row still waiting for the worker, and still
+// linked to the action the worker resumed, changes: a newer approval's link stays.
 func (q *Queries) FailRunBudgetRefusalResume(ctx context.Context, arg FailRunBudgetRefusalResumeParams) error {
-	_, err := q.db.Exec(ctx, failRunBudgetRefusalResume, arg.State, arg.Reason, arg.ID)
+	_, err := q.db.Exec(ctx, failRunBudgetRefusalResume,
+		arg.State,
+		arg.Reason,
+		arg.ID,
+		arg.ActionID,
+	)
 	return err
 }
 
@@ -267,7 +274,7 @@ SET state = 'resume_pending', state_reason = NULL, action_id = $1::uuid, resume_
     hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
     updated_at = now()
-WHERE id = $3::uuid AND issue_id = $4::uuid AND state IN ('open', 'still_blocked')
+WHERE id = $3::uuid AND issue_id = $4::uuid AND state IN ('open', 'still_blocked', 'resume_pending')
 RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id
 `
 
@@ -280,8 +287,10 @@ type LinkRunBudgetRefusalParams struct {
 
 // Link (CHE-2798 P2r, CHE-2860): a budget approval claims the refusal it answers.
 // An unfinished intent hook is retired in the same statement, so the block is
-// cancelled and the worker admits the run directly. No row back: the refusal is
-// superseded, already linked by another approval, or already resumed.
+// cancelled and the worker admits the run directly. A refusal still waiting for
+// its worker is linked again: the latest approval's action and window win, so a
+// top-up that commits while the worker is rolling back is not lost. No row back:
+// the refusal is superseded or already resumed.
 func (q *Queries) LinkRunBudgetRefusal(ctx context.Context, arg LinkRunBudgetRefusalParams) (RunBudgetRefusal, error) {
 	row := q.db.QueryRow(ctx, linkRunBudgetRefusal,
 		arg.ActionID,
