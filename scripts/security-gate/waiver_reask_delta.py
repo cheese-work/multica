@@ -54,8 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         if not (sep and name.strip() and path.strip()):
             ap.error(f"--case needs NAME=PATH, got {c!r}")
         cases[name.strip()] = path.strip()
-    compare = _gh(f"repos/{a.github}/compare/{a.old}...{a.new}", "--paginate", "--jq", ".files[]?.filename").split()
-    pr_files = _gh(f"repos/{a.github}/pulls/{a.pr}/files", "--paginate", "--jq", ".[].filename").split()
+    compare = _gh(f"repos/{a.github}/compare/{a.old}...{a.new}", "--paginate", "--jq", ".files[]?.filename").splitlines()
+    pr_files = _gh(f"repos/{a.github}/pulls/{a.pr}/files", "--paginate", "--jq", ".[].filename").splitlines()
     changed, marks = delta(compare, pr_files, cases)
     capped, how = len(compare) >= COMPARE_FILE_CAP, "compare"
     if capped:
