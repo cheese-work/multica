@@ -223,3 +223,49 @@ func TestPasskeyRequired_WorkflowRoutesRefuseMachineCredentials(t *testing.T) {
 		t.Fatalf("workflow was created: %d", n)
 	}
 }
+
+// The legacy child-done default writer sets two allow-table keys. A machine
+// credential (task token or cloud-node PAT) is refused before persistence; the
+// human owner still writes it.
+func TestPasskeyRequired_ChildDoneDefaultWriterRefusesMachineCredentials(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newVoteFixture(t)
+	var previous []byte
+	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('system_wakeup_child_done', true) WHERE id = $1`, testWorkspaceID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID, string(previous))
+	})
+	var seeded []byte
+	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&seeded)
+
+	put := func(decorate func(*http.Request) *http.Request) *httptest.ResponseRecorder {
+		req := withURLParam(newRequestAs(testUserID, http.MethodPut, "/api/system-wakeups/child_done", map[string]any{
+			"enabled": false, "instruction": "machine text",
+		}), "rule", "child_done")
+		w := httptest.NewRecorder()
+		testHandler.UpdateWorkspaceSystemWakeup(w, decorate(req))
+		return w
+	}
+	for name, decorate := range map[string]func(*http.Request) *http.Request{
+		"agent":      func(r *http.Request) *http.Request { return asAgentActor(r, f.writerID, f.taskID) },
+		"task token": func(r *http.Request) *http.Request { r.Header.Set("X-Actor-Source", "task_token"); return r },
+		"cloud node": asCloudNodeActor,
+	} {
+		t.Run(name, func(t *testing.T) {
+			wantPasskeyRequired(t, put(decorate), "workspace.settings.patch")
+			var after []byte
+			dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&after)
+			if string(after) != string(seeded) {
+				t.Fatalf("settings moved: %s -> %s", seeded, after)
+			}
+		})
+	}
+	t.Run("human control", func(t *testing.T) {
+		if w := put(func(r *http.Request) *http.Request { return r }); w.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+}
