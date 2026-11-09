@@ -4210,7 +4210,7 @@ export class ApiClient {
   }
 
   // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
-  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; tag?: string; expires_at: string }> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
   }
 
