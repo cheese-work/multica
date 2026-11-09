@@ -37,7 +37,26 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+      - name: Mint the c00-multicado write token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Probe runner tools (CHE-4963, temporary)
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          command -v gh multica node || true
+          node --version
+          multica version 2>&1 | head -2 || true
+          multica auth status 2>&1 | head -3 || true
+          gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=1" --jq length
       - name: Merge main into behind PR branches
         env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           DRY_RUN: ${{ (vars.PR_MAIN_SYNC_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)) && '--dry-run' || '' }}
         run: node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN
