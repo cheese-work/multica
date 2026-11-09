@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -63,11 +62,6 @@ func liveSkillFilesDigest(test *testing.T, skillID string) string {
 	var digest string
 	dbfx.QueryRow(test, skillFilesDigestSQL, skillID).Scan(&digest)
 	return digest
-}
-
-func isLockNotAvailable(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
 }
 
 // skillWriterFixture is a skill with one supporting file, optionally assigned
@@ -219,7 +213,7 @@ func skillParentRowWriters() []skillWriter {
 	}
 }
 
-func waitForLockWaiter(test *testing.T) {
+func waitForSkillFileLockWaiter(test *testing.T) {
 	test.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -291,7 +285,7 @@ func testSkillApprovalBusyWhileWriterHolds(test *testing.T, writers []skillWrite
 		before := liveSkillFilesDigest(test, f.skillID)
 		release := writer.blockOn(test, f)
 		done := runAsync(test, writer, f)
-		waitForLockWaiter(test)
+		waitForSkillFileLockWaiter(test)
 		if _, err := lockSkillSnapshot(test, f.skillID); !isLockNotAvailable(err) {
 			test.Fatalf("approval lock while %s is in flight: err = %v, want 55P03", writer.name, err)
 		}
