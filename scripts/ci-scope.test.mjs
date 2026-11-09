@@ -439,7 +439,7 @@ test("installer does not advertise PowerShell coverage without Windows runners",
 });
 
 test("go-lint filters findings from the locally fetched merge base", () => {
-  assert.match(jobs["go-lint"], /args: --new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
+  assert.match(jobs["go-lint"], /run: golangci-lint run --new-from-merge-base=origin\/\$\{\{ github\.base_ref \}\}/);
   assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);
 });
 
