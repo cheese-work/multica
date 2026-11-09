@@ -17,9 +17,12 @@ against C00, gated on its own separate approval.
 
 `cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
 Each image gets its own runner/DinD budget, rather than sharing one DinD's
-4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
-name and assembles the same `cd-build-evidence-<sha>` artifact after both
-images succeed. The web job supplies the exact optional fork entries used
+4 GiB and 3 CPUs. The D1 fixture suites run once in the hosted `d1-fixtures`
+job, and the final `cd-qualification` job also runs on a hosted runner, so
+neither takes an X99 queue slot (CHE-3983). `cd-qualification` keeps the
+existing check name and assembles the same `cd-build-evidence-<sha>`
+artifact after both images and `d1-fixtures` succeed. Images can push before
+the fixtures finish, but no evidence manifest exists unless they pass. The web job supplies the exact optional fork entries used
 in its image, so manifest assembly cannot hash a different download.
 
 Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
@@ -33,7 +36,10 @@ No registry cache or untrusted PR cache is imported.
 Go compilation uses `/root/.cache/go-build` cache mounts, including the
 four daemon targets. Unversioned utilities compile before the release
 arguments; server and daemon linking still consume the exact release
-version and commit. Web builds retain `/app/apps/web/.next/cache`.
+version and commit. Web builds retain `/app/apps/web/.next/cache`. The web
+`builder` stage extends `deps` instead of copying `node_modules` into a second
+layer, and sets `NEXT_SKIP_TYPECHECK=true` because `pnpm typecheck` already
+gates every PR in `ci.yml`.
 `NEXT_PUBLIC_*` stays after dependency installation but before compilation:
 Next.js embeds those values in client bundles, so moving them after the
 build would ship stale release metadata.
