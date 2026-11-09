@@ -210,12 +210,12 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 ```bash
 multica wakeup-definition list [--project <project>] [--output json|table]
-multica wakeup-definition preview [--project <project>] [--rule <rule>] --config-file rule.json
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
 multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
 multica wakeup-definition delete <rule> [--project <project>] --revision <n>
 ```
 
-`--revision` 是你最近用 `list` 或 `get` 读到的修订号；`update` 传 `--revision 0` 会创建覆盖。`preview` 不保存任何内容，只输出解析后的规则；对条件规则，`already_satisfied` 统计会立即匹配的 issue 数。只有所有者或管理员可以编辑、删除或预览；智能体会收到 `403`，其创建的规则在人启用之前保持禁用。
+`--revision` 是 `list` 显示的修订号；`update` 传 `--revision 0` 会创建覆盖。`preview` 不保存任何内容，只输出解析后的规则。对条件规则，`already_satisfied` 统计会立即匹配的 issue 数，`issues` 列出这些 issue（`--output table` 以列表形式输出）。预览只查看范围内的前 200 个 issue，并评估其中未关闭且不在 backlog 的 issue；范围更大时 `truncated` 为 `true`，可能还有更多 issue 匹配。事件规则没有条件，其预览没有 `already_satisfied`，也不匹配任何已有 issue。只有所有者或管理员可以编辑或删除规则；任何人类成员都可以预览，智能体等机器凭据会收到 `403`，智能体创建的规则在人启用之前保持禁用。
 
 ### 在 DM 中关注进度
 

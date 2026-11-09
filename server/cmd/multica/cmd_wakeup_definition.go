@@ -55,14 +55,14 @@ func newWakeupDefinitionCommand() *cobra.Command {
 	update := &cobra.Command{
 		Use:   "update <rule>",
 		Short: "Replace a wakeup rule's definition at a scope",
-		Long:  "Replace the definition of a rule at workspace scope, or project scope with --project. --revision is the revision you last read (0 creates an override). Only an owner or admin may edit; an agent gets 403 from the server, so a rule it proposes stays disabled until a human enables it.",
+		Long:  "Replace the definition of a rule at workspace scope, or project scope with --project. --revision is the revision `list` shows (0 creates an override). Only an owner or admin may edit; an agent gets 403 from the server, so a rule it proposes stays disabled until a human enables it.",
 		Args:  cobra.ExactArgs(1),
 		RunE:  runWakeupDefinitionUpdate,
 	}
 	update.Flags().String("project", "", "Update the rule at this project (default: workspace scope)")
 	update.Flags().String("config", "", "Rule config as JSON")
 	update.Flags().String("config-file", "", "Read the rule config from a UTF-8 JSON file")
-	update.Flags().Int64("revision", 0, "Revision observed by `list` or `get` (required)")
+	update.Flags().Int64("revision", 0, "Revision shown by `list` (required)")
 	root.AddCommand(update)
 
 	del := &cobra.Command{
@@ -72,13 +72,13 @@ func newWakeupDefinitionCommand() *cobra.Command {
 		RunE:  runWakeupDefinitionDelete,
 	}
 	del.Flags().String("project", "", "Delete the rule at this project (default: workspace scope)")
-	del.Flags().Int64("revision", 0, "Revision observed by `list` or `get` (required)")
+	del.Flags().Int64("revision", 0, "Revision shown by `list` (required)")
 	root.AddCommand(del)
 
 	preview := &cobra.Command{
 		Use:   "preview",
 		Short: "Show what a rule would do, without saving it",
-		Long:  "Resolve a proposed definition and print the effective result. For a condition rule, already_satisfied counts the issues that would match at once. Nothing is stored. Use --rule to preview a change to an existing rule; omit it to preview a new custom rule.",
+		Long:  "Resolve a proposed definition and print the effective result. For a condition rule, already_satisfied counts the issues that would match at once and lists them (issues); it looks at the first 200 issues of the scope, evaluates the open, non-backlog ones, and sets truncated when the scope has more. An event rule has no predicate, so it has no already_satisfied. Nothing is stored. Use --rule to preview a change to an existing rule; omit it to preview a new custom rule. Use --output table for a readable summary.",
 		Args:  cobra.NoArgs,
 		RunE:  runWakeupDefinitionPreview,
 	}
@@ -86,6 +86,7 @@ func newWakeupDefinitionCommand() *cobra.Command {
 	preview.Flags().String("rule", "", "Existing rule key (default: a new custom rule)")
 	preview.Flags().String("config", "", "Rule config as JSON")
 	preview.Flags().String("config-file", "", "Read the rule config from a UTF-8 JSON file")
+	preview.Flags().String("output", "json", "Output format (json or table)")
 	root.AddCommand(preview)
 	return root
 }
@@ -233,7 +234,41 @@ func runWakeupDefinitionPreview(cmd *cobra.Command, _ []string) error {
 	if err := client.PostJSON(ctx, path+"/preview", body, &raw); err != nil {
 		return err
 	}
-	return cli.PrintJSON(cmd.OutOrStdout(), raw)
+	if output, _ := cmd.Flags().GetString("output"); output != "table" {
+		return cli.PrintJSON(cmd.OutOrStdout(), raw)
+	}
+	var preview struct {
+		AlreadySatisfied *struct {
+			Satisfied int  `json:"satisfied"`
+			Examined  int  `json:"examined"`
+			Truncated bool `json:"truncated"`
+			Issues    []struct {
+				Identifier string `json:"identifier"`
+				Title      string `json:"title"`
+			} `json:"issues"`
+		} `json:"already_satisfied"`
+	}
+	if err := json.Unmarshal(raw, &preview); err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	sat := preview.AlreadySatisfied
+	if sat == nil {
+		fmt.Fprintln(out, "No condition to evaluate: an event rule fires on future events and matches no existing issue.")
+		return nil
+	}
+	fmt.Fprintf(out, "%d of %d examined issues already match.\n", sat.Satisfied, sat.Examined)
+	if sat.Truncated {
+		fmt.Fprintln(out, "Preview is incomplete: the scope has more issues than the preview looks at (the first 200), so more issues may match.")
+	}
+	rows := make([][]string, 0, len(sat.Issues))
+	for _, i := range sat.Issues {
+		rows = append(rows, []string{i.Identifier, i.Title})
+	}
+	if len(rows) > 0 {
+		cli.PrintTable(out, []string{"ISSUE", "TITLE"}, rows)
+	}
+	return nil
 }
 
 func runWakeupDefinitionCreate(cmd *cobra.Command, _ []string) error {

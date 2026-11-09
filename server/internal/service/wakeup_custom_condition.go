@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -82,6 +83,16 @@ const wakeupPreviewExamineLimit = 200
 type WakeupSatisfiedPreview struct {
 	Satisfied, Examined int
 	Truncated           bool
+	// Issues names the satisfied issues, one per Satisfied, in scope order.
+	Issues []WakeupMatchedIssue
+}
+
+// WakeupMatchedIssue identifies one issue a previewed condition already meets.
+// Number lets the HTTP layer render the workspace's identifier.
+type WakeupMatchedIssue struct {
+	ID     string
+	Number int32
+	Title  string
 }
 
 // previewSatisfied counts the already-satisfied issues of a proposed condition
@@ -132,6 +143,7 @@ func (s *IssueWakeupService) previewSatisfied(ctx context.Context, ref WakeupSco
 		}
 		if met {
 			out.Satisfied++
+			out.Issues = append(out.Issues, WakeupMatchedIssue{ID: util.UUIDToString(issue.ID), Number: issue.Number, Title: issue.Title})
 		}
 	}
 	return out, nil

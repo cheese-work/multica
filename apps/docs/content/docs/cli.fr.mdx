@@ -210,12 +210,12 @@ Les règles de réveil d'espace de travail et de projet (voir [Réveils de ticke
 
 ```bash
 multica wakeup-definition list [--project <project>] [--output json|table]
-multica wakeup-definition preview [--project <project>] [--rule <rule>] --config-file rule.json
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
 multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
 multica wakeup-definition delete <rule> [--project <project>] --revision <n>
 ```
 
-`--revision` est la révision lue en dernier avec `list` ou `get` ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue et, pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement. Seul un propriétaire ou un administrateur peut modifier, supprimer ou prévisualiser ; un agent reçoit `403`, et une règle qu'il crée reste désactivée jusqu'à ce qu'un humain l'active.
+`--revision` est la révision que `list` affiche ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue. Pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement et `issues` les nomme (`--output table` les affiche en liste). L'aperçu examine les 200 premiers tickets du périmètre et évalue ceux qui sont ouverts et hors backlog ; si le périmètre en contient davantage, `truncated` vaut `true` et d'autres tickets peuvent correspondre. Une règle d'événement n'a pas de prédicat : son aperçu n'a pas de `already_satisfied` et ne correspond à aucun ticket existant. Seul un propriétaire ou un administrateur peut modifier ou supprimer une règle. Tout membre humain peut la prévisualiser ; un agent ou une autre identité machine reçoit `403`, et une règle créée par un agent reste désactivée jusqu'à ce qu'un humain l'active.
 
 ### Suivre la progression dans un DM
 

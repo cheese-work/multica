@@ -247,6 +247,43 @@ func TestWakeupDefinitionPreviewCLI(t *testing.T) {
 	}
 }
 
+// --output table names the issues a condition rule would already match, says
+// when the preview saw only the first part of the scope, and says plainly that
+// an event rule has nothing to match.
+func TestWakeupDefinitionPreviewTableNamesTheMatchingIssues(t *testing.T) {
+	cfg := []string{"preview", "--config", `{"v":1}`, "--output", "table"}
+	reply := map[string]any{"already_satisfied": map[string]any{
+		"satisfied": 2, "examined": 5, "truncated": false,
+		"issues": []map[string]any{
+			{"id": "i1", "identifier": "CHE-12", "title": "Fix login"},
+			{"id": "i2", "identifier": "CHE-15", "title": "Add export"},
+		},
+	}}
+	_, _, _, _, out, err := runWakeupDefinition(t, 200, reply, cfg...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"CHE-12", "Fix login", "CHE-15", "Add export", "2 of 5"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "first") {
+		t.Fatalf("a complete preview must not claim truncation:\n%s", out)
+	}
+
+	reply["already_satisfied"] = map[string]any{"satisfied": 1, "examined": 200, "truncated": true, "issues": []map[string]any{{"id": "i1", "identifier": "CHE-12", "title": "Fix login"}}}
+	_, _, _, _, out, err = runWakeupDefinition(t, 200, reply, cfg...)
+	if err != nil || !strings.Contains(out, "first 200") || !strings.Contains(out, "incomplete") || !strings.Contains(out, "CHE-12") {
+		t.Fatalf("a truncated preview must say it is incomplete (err %v):\n%s", err, out)
+	}
+
+	_, _, _, _, out, err = runWakeupDefinition(t, 200, map[string]any{"rule_key": "x"}, cfg...)
+	if err != nil || !strings.Contains(out, "event") || !strings.Contains(out, "no existing issue") {
+		t.Fatalf("an event rule must be reported as matching no existing issue (err %v):\n%s", err, out)
+	}
+}
+
 // The commands add no bypass: a server 403 (an agent may only create a rule)
 // reaches the caller as an error.
 func TestWakeupDefinitionWriteCommandsSurfaceServerGate(t *testing.T) {
