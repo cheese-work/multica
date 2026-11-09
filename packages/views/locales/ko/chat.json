@@ -472,6 +472,8 @@
       "no_changes": "변경된 줄이 없습니다.",
       "whitespace_only": "공백 또는 줄바꿈만 변경됩니다.",
       "target": "대상",
+      "workflow": "워크플로",
+      "step_status": "단계",
       "keys": "키",
       "field_agent_instructions": "에이전트 지침",
       "field_squad_instructions": "스쿼드 지침",

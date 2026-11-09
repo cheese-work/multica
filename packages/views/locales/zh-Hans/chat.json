@@ -472,6 +472,8 @@
       "no_changes": "没有行更改。",
       "whitespace_only": "只有空白或行尾符发生变化。",
       "target": "目标",
+      "workflow": "工作流",
+      "step_status": "步骤",
       "keys": "键",
       "field_agent_instructions": "智能体指令",
       "field_squad_instructions": "小队指令",
