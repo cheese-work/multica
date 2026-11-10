@@ -16,6 +16,11 @@ export const OTHER_STEP_TEXT = "Hand back to the author.";
 /** What a person saves between the proposal and the approval. */
 export const HUMAN_EDIT_TEXT = "Read the diff.\nAsk the author.\nPost the verdict.";
 
+/** The value the journey installs for `delegated_governed_writes`, for the agent given. */
+function delegationFor(agentId: string) {
+  return { allowed_agents: [agentId], allowed_fields: ["workflow.instructions"], requires_human_decision: false };
+}
+
 export interface DmWorkflowSeed extends DmBudgetSeed {
   workflowId: string;
   /** The `delegated_governed_writes` setting before the journey (JSON text, or null when unset); restored by `removeWorkflowSeed`. */
@@ -29,7 +34,7 @@ export async function seedDmWorkflow(api: TestApiClient, label: string): Promise
     { status_key: STATUS_KEY, handler: { type: "member", id: seed.userId }, instructions: BEFORE_TEXT, next_status_key: OTHER_STATUS_KEY },
     { status_key: OTHER_STATUS_KEY, handler: { type: "member", id: seed.userId }, instructions: OTHER_STEP_TEXT },
   ];
-  const delegated = { allowed_agents: [seed.agentId], allowed_fields: ["workflow.instructions"], requires_human_decision: false };
+  const delegated = delegationFor(seed.agentId);
   try {
     const { workflowId, originalDelegation } = await withDb(async (db) => {
       // The D8a seed already linked the anchor issue to a workflow with no steps; give it the two steps.
@@ -139,16 +144,21 @@ export async function readActionState(seed: DmWorkflowSeed, actionId: string) {
 
 /** Test-created rows, removed in dependency order; the issue goes with `api.cleanup()`. */
 export async function removeWorkflowSeed(seed: DmWorkflowSeed, removeBase: (seed: DmBudgetSeed) => Promise<void>) {
-  await removeBase(seed);
-  await withDb(async (db) => {
-    await db.query(`UPDATE issue SET workflow_id = NULL WHERE id = $1`, [seed.issueId]);
-    await db.query(`DELETE FROM issue_workflow WHERE id = $1`, [seed.workflowId]);
-    // Put back only the key this journey set; other workspace settings are left as they are.
-    await db.query(
-      `UPDATE workspace SET settings = CASE WHEN $2::jsonb IS NULL THEN COALESCE(settings, '{}'::jsonb) - 'delegated_governed_writes'
-                                            ELSE COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) END
-        WHERE id = $1`,
-      [seed.workspaceId, seed.originalDelegation],
-    );
-  });
+  try {
+    await removeBase(seed);
+  } finally {
+    // Runs even when the base cleanup fails, so the delegated setting is never left installed.
+    await withDb(async (db) => {
+      await db.query(`UPDATE issue SET workflow_id = NULL WHERE id = $1`, [seed.issueId]);
+      await db.query(`DELETE FROM issue_workflow WHERE id = $1`, [seed.workflowId]);
+      // Put back only the key this journey set, and only while it still holds the value this journey installed;
+      // a concurrent change to that key, or to any other setting, is left as it is.
+      await db.query(
+        `UPDATE workspace SET settings = CASE WHEN $2::jsonb IS NULL THEN COALESCE(settings, '{}'::jsonb) - 'delegated_governed_writes'
+                                              ELSE COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) END
+          WHERE id = $1 AND settings -> 'delegated_governed_writes' = $3::jsonb`,
+        [seed.workspaceId, seed.originalDelegation, JSON.stringify(delegationFor(seed.agentId))],
+      );
+    });
+  }
 }
