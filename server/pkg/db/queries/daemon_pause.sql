@@ -60,6 +60,8 @@ SELECT id FROM workspace WHERE id = $1 FOR SHARE;
 -- no online runtime. all_projects is the workspace owner's view; otherwise only
 -- tasks of projects led by user_id count. A machine with only running tasks, or
 -- none, is not affected: nothing waits for it.
+-- The machine can span workspaces: the device label comes only from this
+-- workspace's runtimes; online state and last_seen_at are machine-wide.
 WITH waiting AS (
     SELECT COALESCE(rt.owner_id, rt.workspace_id)::uuid AS machine_owner_id, rt.daemon_id::text AS daemon_id, COUNT(*)::int AS waiting_tasks
     FROM agent_task_queue t
@@ -77,7 +79,8 @@ SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
        m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
 FROM waiting w
 JOIN LATERAL (
-    SELECT COALESCE(MIN(NULLIF(o.device_info, '')), MIN(o.name)) AS device_name,
+    SELECT COALESCE(MIN(NULLIF(o.device_info, '')) FILTER (WHERE o.workspace_id = @workspace_id::uuid),
+                    MIN(o.name) FILTER (WHERE o.workspace_id = @workspace_id::uuid)) AS device_name,
            MAX(o.last_seen_at) AS last_seen_at,
            COALESCE(bool_or(o.status = 'online'), false) AS any_online
     FROM agent_runtime o

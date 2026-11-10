@@ -161,3 +161,30 @@ func TestAffectedMachines_ProjectLeadSeesOnlyTheirProjects(t *testing.T) {
 		}
 	}
 }
+
+// The machine identity (owner_id + daemon_id) can span workspaces. The viewer
+// of workspace A must get A's device label, never a runtime name or device
+// string that belongs to workspace B, which they cannot read.
+func TestAffectedMachines_DeviceLabelDoesNotLeakAcrossWorkspaces(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	const daemonID = "affected-leak"
+	seedPausableRuntime(t, context.Background(), daemonID, "Leak A runtime")
+	pauseDaemonForTest(t, daemonID)
+	otherWS := dbfx.Workspace(t, "Leak other", "affected-leak-other")
+	dbfx.Runtime(t, "Leak B runtime", testutil.Cols{
+		"workspace_id": otherWS, "daemon_id": daemonID, "device_info": "AAA-secret-device-of-B",
+	})
+
+	got := affectedFor(affectedAs(t, testUserID), daemonID)
+	if got == nil {
+		t.Fatal("paused machine missing from the list")
+	}
+	if strings.Contains(got.DeviceName, "secret") || strings.Contains(got.DeviceName, "Leak B") {
+		t.Fatalf("device name %q leaks workspace B metadata", got.DeviceName)
+	}
+	if got.DeviceName != "Leak A runtime" {
+		t.Fatalf("device name = %q, want workspace A's runtime name", got.DeviceName)
+	}
+}
