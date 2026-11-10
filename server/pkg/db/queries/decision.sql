@@ -195,6 +195,12 @@ SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND status = 'open'
+)::boolean;
+
 -- name: ListDecisionPingRetries :many
 SELECT * FROM decision_request
 WHERE authority = 'human' AND origin = 'asked' AND ping_notified_at IS NULL
