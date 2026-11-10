@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -55,6 +56,29 @@ func (h *Handler) supersedeStaleReviews(ctx context.Context, prID pgtype.UUID) {
 	}
 	for _, id := range issueIDs {
 		h.grantRunBudgetHead(ctx, id, prID, pr.HeadSha)
+		h.releaseSupersededReviewReplacement(ctx, id)
+	}
+}
+
+// reconcileStopsFromHeartbeat opens the stop gate for cancelled runs the
+// heartbeating daemon no longer holds (CHE-3114 part 2), then releases the
+// replacement reviews those gates were holding. A daemon that does not report a
+// live set (nil) attests nothing. Best effort: a failure keeps the gate closed
+// and the next heartbeat retries, so it never fails the heartbeat.
+func (h *Handler) reconcileStopsFromHeartbeat(ctx context.Context, runtimeID string, live *[]string) {
+	if live == nil {
+		return
+	}
+	runtimeUUID, err := util.ParseUUID(runtimeID)
+	if err != nil {
+		return
+	}
+	issueIDs, err := service.ReleaseStopsAttestedByDaemon(ctx, h.Queries, runtimeUUID, *live)
+	if err != nil {
+		slog.Warn("daemon stop reconcile failed; stop gate stays closed", "runtime_id", runtimeID, "error", err)
+		return
+	}
+	for _, id := range issueIDs {
 		h.releaseSupersededReviewReplacement(ctx, id)
 	}
 }

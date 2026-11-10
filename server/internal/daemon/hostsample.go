@@ -191,6 +191,13 @@ func (s *hostSampler) Run(ctx context.Context, warmup, interval time.Duration, l
 func (d *Daemon) heartbeatRequest(rid string) protocol.DaemonHeartbeatRequestPayload {
 	inFlight := int(d.activeTasks.Load())
 	req := protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true, InFlightTasks: &inFlight}
+	// The live task set lets the server treat a cancelled run absent from it as
+	// stopped (CHE-3114 part 2). After an unconfirmed process cleanup this daemon
+	// cannot vouch for what is missing, so it reports nothing.
+	if !d.cleanupUnconfirmed.Load() {
+		live := d.inflight.ids()
+		req.LiveTaskIDs = &live
+	}
 	if d.hostSampler != nil {
 		req.HostSample = d.hostSampler.Latest()
 	}
