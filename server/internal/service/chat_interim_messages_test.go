@@ -170,6 +170,20 @@ func TestWriteChatCompletionOutcomeKeepsTrailingTextWhenOutputDiffers(t *testing
 	f.wantRows(t, "Checking the result", "Done")
 }
 
+// The Output can match an earlier block while a later, still unsealed block
+// holds more text; that trailing text is still a message (CHE-4704 third review P1).
+func TestWriteChatCompletionOutcomeKeepsTrailingTextAfterEarlierMatch(t *testing.T) {
+	f := newInterimFixture(t)
+	f.addSteps(t,
+		interimStep{"text", "Done"},
+		interimStep{"tool_use", ""},
+		interimStep{"tool_result", ""},
+		interimStep{"text", "Checking the result"},
+	)
+	f.complete(t, "Done")
+	f.wantRows(t, "Checking the result", "Done")
+}
+
 // The daemon seals a text row every 500 ms, mid-sentence. Contiguous text rows
 // are one message, whitespace-only chunks included (CHE-4704 review P1).
 func TestWriteChatCompletionOutcomeJoinsStreamedTextChunks(t *testing.T) {
