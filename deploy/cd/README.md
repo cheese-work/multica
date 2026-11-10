@@ -310,6 +310,7 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-github-api-retry.py
 python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 python3 deploy/cd/test-authorize-c00.py
@@ -734,6 +735,11 @@ run stays red, so the suspension holds. A rollback refused by the controller
 person. Merge-queue merges report the enqueuer or merger as
 `merged_by`; a merge by a bot not on the list builds and stops.
 
+An empty dispatch (no `candidate_sha`, no evidence path) deploys the newest
+`main` commit with a successful qualification push run: `resolve-candidate`
+picks it after `authorize-c00` and prints it in the job summary (CHE-4998); with
+none it fails. An authorized qualification passes its own head SHA through the
+same job, so every job behind it reads one `sha` output.
 A dispatch with
 `candidate_sha` looks up the successful `main` push qualification run and issues
 the release candidate itself; manual evidence paths remain for explicit

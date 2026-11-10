@@ -155,6 +155,18 @@
       "other": "失敗：{{code}}",
       "stale_base": "請求之後目標已變更。請重新請求。"
     },
+    "refusal": {
+      "class_needs_owner": "只有工作區擁有者可以核准此變更。",
+      "payload_mismatch": "核准的變更與所要求的變更不一致。請重新要求。",
+      "preview_required": "請針對所顯示的預覽進行核准。請重新載入卡片。",
+      "precondition_drift": "自要求以來目標已變更。請重新要求。",
+      "busy_retry": "另一項變更正在進行。請重試。",
+      "not_permitted": "你無權進行此變更。",
+      "action_not_executable": "此類變更暫時無法核准。",
+      "approval_proof_unavailable": "此伺服器暫時無法驗證通行金鑰核准。",
+      "other": "已拒絕：{{code}}"
+    },
+    "owner_only": "只有工作區擁有者可以核准此變更。",
     "no_passkey": "核准前請先新增通行金鑰。",
     "add_passkey": "新增通行金鑰",
     "error": "通行金鑰核准未完成。請重試。",

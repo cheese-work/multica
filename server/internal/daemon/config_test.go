@@ -1952,3 +1952,52 @@ func TestApplyOpenclawOverride_CLITimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfig_CodexAgentTimeout(t *testing.T) {
+	stageFakeAgent(t)
+	load := func() Config {
+		t.Helper()
+		cfg, err := LoadConfig(Overrides{ServerURL: "http://localhost:8080", WorkspacesRoot: t.TempDir()})
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		return cfg
+	}
+
+	t.Setenv("MULTICA_AGENT_TIMEOUT", "")
+	t.Setenv("MULTICA_CODEX_AGENT_TIMEOUT", "")
+	if got := load().CodexAgentTimeout; got != 0 {
+		t.Fatalf("default CodexAgentTimeout = %s, want 0 (off)", got)
+	}
+
+	t.Setenv("MULTICA_CODEX_AGENT_TIMEOUT", "60m")
+	cfg := load()
+	if cfg.CodexAgentTimeout != 60*time.Minute {
+		t.Fatalf("CodexAgentTimeout = %s, want 60m", cfg.CodexAgentTimeout)
+	}
+	if got := cfg.agentTimeoutFor("codex"); got != 60*time.Minute {
+		t.Fatalf("agentTimeoutFor(codex) = %s, want 60m", got)
+	}
+	if got := cfg.agentTimeoutFor("claude"); got != 0 {
+		t.Fatalf("agentTimeoutFor(claude) = %s, want 0 (uncapped)", got)
+	}
+
+	t.Setenv("MULTICA_CODEX_AGENT_TIMEOUT", "bogus")
+	if _, err := LoadConfig(Overrides{ServerURL: "http://localhost:8080", WorkspacesRoot: t.TempDir()}); err == nil {
+		t.Fatal("invalid MULTICA_CODEX_AGENT_TIMEOUT must fail LoadConfig")
+	}
+}
+
+func TestAgentTimeoutFor_GlobalFallback(t *testing.T) {
+	cfg := Config{AgentTimeout: 2 * time.Hour}
+	if got := cfg.agentTimeoutFor("codex"); got != 2*time.Hour {
+		t.Fatalf("codex without its own cap = %s, want global 2h", got)
+	}
+	cfg.CodexAgentTimeout = 60 * time.Minute
+	if got := cfg.agentTimeoutFor("codex"); got != 60*time.Minute {
+		t.Fatalf("codex = %s, want 60m override", got)
+	}
+	if got := cfg.agentTimeoutFor("claude"); got != 2*time.Hour {
+		t.Fatalf("claude = %s, want global 2h", got)
+	}
+}

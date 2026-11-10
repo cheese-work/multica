@@ -123,10 +123,12 @@ class DeployApprovalTests(unittest.TestCase):
 
     def test_dispatch_with_candidate_sha_issues_the_candidate_itself(self):
         prepare = self.jobs["prepare-release-candidate"]
-        self.assertIn("needs.authorize-c00.outputs.candidate_sha != ''", prepare["if"])
+        self.assertIn("needs.resolve-candidate.outputs.sha != ''", prepare["if"])
         self.assertIn(GATE, needs(prepare))
-        self.assertNotIn("inputs.candidate_sha", json.dumps(self.jobs["admission"]))  # one source: the gate output
-        self.assertIn("candidate_sha == ''", self.jobs["admission"]["if"])  # evidence-path dispatch skips prepare
+        self.assertIn("resolve-candidate", needs(prepare))
+        self.assertIn(GATE, needs(self.jobs["resolve-candidate"]))
+        self.assertNotIn("inputs.candidate_sha", json.dumps(self.jobs["admission"]))  # one source: the resolved sha
+        self.assertIn("resolve-candidate.outputs.sha == ''", self.jobs["admission"]["if"])  # evidence-path dispatch skips prepare
         self.assertNotIn("github.event.workflow_run", json.dumps(prepare))
         self.assertIn("candidate_sha", self.workflow[True]["workflow_dispatch"]["inputs"])
         resolve = prepare["steps"][0]
@@ -154,10 +156,10 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertNotIn("Deploy to C00 over SSH", step_names)
 
     def test_every_c00_job_runs_only_after_the_approval(self):
-        for name in ["prepare-release-candidate", "admission", "deploy"]:
+        for name in ["resolve-candidate", "prepare-release-candidate", "admission", "deploy"]:
             with self.subTest(job=name):
                 self.assertIn(GATE, self.ancestors(name))
-        self.assertIn(GATE, needs(self.jobs["prepare-release-candidate"]))
+        self.assertIn(GATE, needs(self.jobs["resolve-candidate"]))
         self.assertIn(GATE, needs(self.jobs["admission"]))
 
     def test_secret_jobs_do_not_ask_again(self):

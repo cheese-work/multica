@@ -46,7 +46,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: "Full SHA of a qualified main commit to deploy; leave empty to supply the evidence paths below instead"
+        description: "Full SHA of a qualified main commit to deploy; leave empty (with the paths below empty too) to deploy the newest qualified main commit"
         required: false
       manifest_path:
         description: "Path (relative to repo root, at the checked-out ref) to the release-candidate manifest JSON"
@@ -207,6 +207,37 @@ jobs:
           CHECKS_WAIT_SECONDS: "3600"
         run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
 
+  # CHE-4998: an empty dispatch (no candidate_sha, no evidence path) deploys the
+  # newest qualified main commit. Resolved after the actor check; a typed SHA or
+  # an evidence-path dispatch passes through (see deploy/cd/resolve-candidate.sh).
+  # CHE-4582: an authorized qualification passes its own head SHA through the
+  # same step, so every job behind it reads one `sha` output.
+  resolve-candidate:
+    needs: authorize-c00
+    if: needs.authorize-c00.outputs.authorized == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Resolve the candidate commit
+        id: resolve
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize-c00.outputs.candidate_sha }}
+          INPUT_MANIFEST: ${{ inputs.manifest_path }}
+          INPUT_BASELINE: ${{ inputs.baseline_tuple_path }}
+          INPUT_EVENT: ${{ inputs.event_path }}
+          INPUT_CHECKS: ${{ inputs.checks_path }}
+          INPUT_PROVENANCE: ${{ inputs.provenance_path }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/resolve-candidate.sh
+
   # ---------------------------------------------------------------------------
   # Dispatch with candidate_sha only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
@@ -219,9 +250,9 @@ jobs:
   # and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    needs: [authorize-c00, candidate-preflight]
+    needs: [authorize-c00, candidate-preflight, resolve-candidate]
     # A dispatch names its candidate; an authorized merge needs the eligible preflight first.
-    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.authorize-c00.outputs.candidate_sha != '' && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
@@ -239,7 +270,7 @@ jobs:
         id: q
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ needs.authorize-c00.outputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -370,11 +401,11 @@ jobs:
     # Admission is a read-only evidence check — it never touches C00 — so it
     # can run on a regular GitHub-hosted runner. Only the deploy job below
     # needs the dedicated C00-reachable runner and secrets.
-    needs: [authorize-c00, prepare-release-candidate]
+    needs: [authorize-c00, resolve-candidate, prepare-release-candidate]
     # A dispatch with evidence paths skips prepare-release-candidate entirely
     # (its caller supplies an already-issued manifest), so this must not be
     # skipped just because that job did not run. Nothing runs without the gate.
-    if: always() && needs.authorize-c00.outputs.authorized == 'true' && (needs.authorize-c00.outputs.candidate_sha == '' || needs.prepare-release-candidate.result == 'success')
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && (needs.resolve-candidate.outputs.sha == '' || needs.prepare-release-candidate.result == 'success')
     runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
@@ -386,7 +417,7 @@ jobs:
         id: paths
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ needs.authorize-c00.outputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
           INPUT_REF: ${{ inputs.ref }}
           INPUT_MANIFEST: ${{ inputs.manifest_path }}
           INPUT_BASELINE: ${{ inputs.baseline_tuple_path }}
@@ -431,10 +462,10 @@ jobs:
           package-manager-cache: false
 
       - name: Download the prepared evidence set
-        if: needs.authorize-c00.outputs.candidate_sha != ''
+        if: needs.resolve-candidate.outputs.sha != ''
         uses: actions/download-artifact@v8
         with:
-          name: cd-release-candidate-${{ needs.authorize-c00.outputs.candidate_sha }}
+          name: cd-release-candidate-${{ needs.resolve-candidate.outputs.sha }}
           path: cd-evidence
 
       - name: Verify admission

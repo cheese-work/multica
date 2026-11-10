@@ -769,6 +769,7 @@
     "add": "Add passkey",
     "code_hint": "We emailed you a code. Enter it, then follow your browser's prompt to create the passkey.",
     "code_label": "Email code",
+    "attempt_tag": "Attempt {{tag}}: use the email whose subject ends with [{{tag}}].",
     "confirm": "Confirm",
     "cancel": "Cancel",
     "empty": "No passkeys yet.",
