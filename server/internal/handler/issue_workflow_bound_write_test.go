@@ -84,14 +84,7 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 	before := canonicalStepsHash(t, wf.ID, liveSteps(t, wf.ID))
 	after := editedSteps(t, wf.ID, "in_progress", edit)
 
-	fixture := newCardFixture(t)
-	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
-	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, before, canonicalStepsHash(t, wf.ID, after)))
-	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
-	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
-		t.Fatal(err)
-	}
+	fixture := approvedBoundWriteCard(t, field, before, canonicalStepsHash(t, wf.ID, after))
 
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
@@ -102,6 +95,21 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 		dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = $1`, fixture.decision.ID)
 	})
 	return boundWorkflowWrite{askedRecordFixture: fixture, workflowID: wf.ID, before: before}
+}
+
+// approvedBoundWriteCard answers an approval card, as a workspace owner, for
+// the change field from beforeSHA to afterSHA.
+func approvedBoundWriteCard(t *testing.T, field, beforeSHA, afterSHA string) askedRecordFixture {
+	t.Helper()
+	fixture := newCardFixture(t)
+	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
+	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, beforeSHA, afterSHA))
+	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
 }
 
 // steps are the live steps with edit applied to in_progress.
@@ -406,4 +414,41 @@ func TestBoundWorkflowApprovalDoesNotCarryToAnotherWorkflow(t *testing.T) {
 	}
 
 	write.patch(t, body).Want(http.StatusOK)
+}
+
+// CHE-5106 (spike for CHE-5067 plan 4e): a rollback is a new write, so the
+// decision that approved the forward write cannot authorize it. Each approval
+// names one before/after pair; the rollback pair is the forward pair swapped.
+func TestBoundWorkflowRollbackNeedsItsOwnDecision(t *testing.T) {
+	edit := setInstructions("forward")
+	forward := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
+	forwardSteps := forward.steps(t, edit)
+	original := liveSteps(t, forward.workflowID)
+	forward.patch(t, forward.body(t, forwardSteps)).Want(http.StatusOK)
+
+	afterForward := canonicalStepsHash(t, forward.workflowID, forwardSteps)
+	rollbackBody := func(decisionID string) map[string]any {
+		return map[string]any{
+			"steps": original, "decision_id": decisionID,
+			"before_sha256": afterForward, "after_sha256": canonicalStepsHash(t, forward.workflowID, original),
+		}
+	}
+
+	// The spent forward decision is refused (the ask names the forward pair).
+	forward.patch(t, rollbackBody(uuidToString(forward.decision.ID))).Want(http.StatusForbidden)
+
+	// A fresh, unused decision for the forward pair is refused too: the ask does not name the rollback pair.
+	otherForward := approvedBoundWriteCard(t, "workflow.instructions", forward.before, afterForward)
+	forward.patch(t, rollbackBody(uuidToString(otherForward.decision.ID))).Want(http.StatusForbidden)
+	if got := forward.storedInstructions(t, "in_progress"); got != "forward" {
+		t.Fatalf("refused rollback changed the instructions to %q", got)
+	}
+
+	// A decision that names the rollback pair authorizes it, once.
+	rollback := approvedBoundWriteCard(t, "workflow.instructions", afterForward, canonicalStepsHash(t, forward.workflowID, original))
+	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = ANY($1)`, []any{rollback.decision.ID, otherForward.decision.ID}) })
+	forward.patch(t, rollbackBody(uuidToString(rollback.decision.ID))).Want(http.StatusOK)
+	if got := forward.storedInstructions(t, "in_progress"); got != "" {
+		t.Fatalf("rollback left instructions %q", got)
+	}
 }
