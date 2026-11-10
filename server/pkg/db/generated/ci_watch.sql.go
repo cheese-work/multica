@@ -25,3 +25,58 @@ func (q *Queries) DeleteExpiredCIFailureEvents(ctx context.Context, createdAt pg
 	}
 	return result.RowsAffected(), nil
 }
+
+const insertCIFailureEvent = `-- name: InsertCIFailureEvent :execrows
+INSERT INTO ci_failure_event (
+    workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, event,
+    head_branch, head_sha, conclusion, signature_hash, evidence, partial_reason,
+    failed_job_count, excerpts
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+)
+ON CONFLICT (workspace_id, repo_owner, repo_name, run_id, run_attempt) DO NOTHING
+`
+
+type InsertCIFailureEventParams struct {
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	RunID          int64       `json:"run_id"`
+	RunAttempt     int32       `json:"run_attempt"`
+	WorkflowName   string      `json:"workflow_name"`
+	Event          string      `json:"event"`
+	HeadBranch     string      `json:"head_branch"`
+	HeadSha        string      `json:"head_sha"`
+	Conclusion     string      `json:"conclusion"`
+	SignatureHash  string      `json:"signature_hash"`
+	Evidence       string      `json:"evidence"`
+	PartialReason  string      `json:"partial_reason"`
+	FailedJobCount int32       `json:"failed_job_count"`
+	Excerpts       []byte      `json:"excerpts"`
+}
+
+// CHE-4274: idempotent on (workspace, repo, run id, attempt); a redelivered
+// run changes nothing.
+func (q *Queries) InsertCIFailureEvent(ctx context.Context, arg InsertCIFailureEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertCIFailureEvent,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+		arg.RunAttempt,
+		arg.WorkflowName,
+		arg.Event,
+		arg.HeadBranch,
+		arg.HeadSha,
+		arg.Conclusion,
+		arg.SignatureHash,
+		arg.Evidence,
+		arg.PartialReason,
+		arg.FailedJobCount,
+		arg.Excerpts,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
