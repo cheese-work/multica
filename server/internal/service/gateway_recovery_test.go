@@ -169,6 +169,37 @@ func TestGatewayFailureCooldownDoesNotBlockOtherAgent(t *testing.T) {
 	}
 }
 
+// CHE-4965: a 429 on one run must hold every other queued claim of the agent for the
+// cooldown, not only the failed run's own deferred retry. Otherwise each newer queued
+// message is claimed straight into the saturated route and burns a full failing run.
+func TestRateLimitFailureCooldownHoldsQueuedClaim(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	workspaceID, userID, agentID, issueID := seedAttributionFixture(t, pool)
+	fixture := dbfx.New(pool, workspaceID, userID)
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Task(t, agentID, dbfx.Cols{
+		"runtime_id": runtimeID, "status": "failed", "failure_reason": "agent_error.provider_capacity_or_rate_limit",
+		"error": "API Error: Request rejected (429) · Upstream rate limit exceeded", "completed_at": dbfx.Raw("now()"),
+	})
+	queuedID := fixture.Task(t, agentID, dbfx.Cols{"runtime_id": runtimeID, "issue_id": issueID})
+	svc := &TaskService{Queries: db.New(pool), TxStarter: pool, Bus: events.New()}
+	claimed, err := svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil || claimed != nil {
+		t.Fatalf("a 429 within the cooldown must hold the claim: task=%+v err=%v", claimed, err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE agent_task_queue SET completed_at = now() - interval '11 minutes' WHERE agent_id = $1 AND status = 'failed'`, agentID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = svc.ClaimTask(ctx, util.MustParseUUID(agentID))
+	if err != nil || claimed == nil || claimed.ID != util.MustParseUUID(queuedID) {
+		t.Fatalf("claim must resume after the cooldown: task=%+v err=%v", claimed, err)
+	}
+}
+
 func TestResponseProtectionLegacyChatSessionSelection(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
 	ctx := context.Background()

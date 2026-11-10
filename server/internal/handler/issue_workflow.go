@@ -94,6 +94,9 @@ type IssueWorkflowStepPayload struct {
 	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
 	// keeps the stored gates, [] clears them.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// WaitsOnOpenDecision: see issueworkflow.Step. A write that omits it keeps
+	// the stored value; false clears it. A response carries it only when set.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -145,7 +148,7 @@ type workflowMappingPlan struct {
 }
 
 func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
-	return IssueWorkflowStepPayload{
+	p := IssueWorkflowStepPayload{
 		StatusKey:     s.StatusKey,
 		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Preset: s.Handler.Preset},
 		Instructions:  s.Instructions,
@@ -157,6 +160,11 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		SubWorkflow:      s.SubWorkflow,
 		Entry:            s.Entry,
 	}
+	if s.WaitsOnOpenDecision {
+		set := true
+		p.WaitsOnOpenDecision = &set
+	}
+	return p
 }
 
 func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.Step {
@@ -171,6 +179,8 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
 		Entry:            in.Entry,
+
+		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 	}
 }
 
@@ -392,6 +402,8 @@ type IssueWorkflowStepInput struct {
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 	// Entry: see IssueWorkflowStepPayload.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// WaitsOnOpenDecision: see IssueWorkflowStepPayload.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -459,6 +471,8 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
 			Entry:            in.Entry,
+
+			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -489,6 +503,24 @@ func keepStoredEntry(steps, stored []issueworkflow.Step) {
 		for _, old := range stored {
 			if old.StatusKey == steps[i].StatusKey {
 				steps[i].Entry = old.Entry
+				break
+			}
+		}
+	}
+}
+
+// keepStoredWaits gives a step whose input omits waits_on_open_decision the
+// value stored for its status, so a client that predates the field cannot drop
+// it by saving. An explicit false clears. steps and inputs are index-aligned,
+// as resolveStepInputs returns one step per input.
+func keepStoredWaits(steps []issueworkflow.Step, inputs []IssueWorkflowStepInput, stored []issueworkflow.Step) {
+	for i := range steps {
+		if i >= len(inputs) || inputs[i].WaitsOnOpenDecision != nil {
+			continue
+		}
+		for _, old := range stored {
+			if old.StatusKey == steps[i].StatusKey {
+				steps[i].WaitsOnOpenDecision = old.WaitsOnOpenDecision
 				break
 			}
 		}
@@ -907,6 +939,9 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	keepStoredEntry(steps, currentSteps)
+	if req.Steps != nil {
+		keepStoredWaits(steps, *req.Steps, currentSteps)
+	}
 	name, description, steps = issueworkflow.Normalize(name, description, steps)
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
 	if err != nil {
@@ -1436,6 +1471,9 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 		if step.Entry == nil {
 			step.Entry = stored.Entry
+		}
+		if req.WaitsOnOpenDecision == nil {
+			step.WaitsOnOpenDecision = stored.WaitsOnOpenDecision
 		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {

@@ -7150,13 +7150,13 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 	}
 }
 
-// A workflow handoff to someone other than the caller keeps its run even with
-// --no-start (server: suppressRunForWrite). The help must say so (CHE-4613).
-func TestNoStartHelpNamesWorkflowHandoffRun(t *testing.T) {
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
 	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
 		usage := cmd.Flags().Lookup("no-start").Usage
-		if !strings.Contains(usage, "workflow handoff") {
-			t.Errorf("issue %s --no-start help = %q, want it to mention the workflow handoff run", name, usage)
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
 		}
 	}
 }

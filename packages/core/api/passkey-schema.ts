@@ -12,7 +12,7 @@ export const PasskeyAnswerChallengeSchema = PasskeyChallengeSchema.extend({
   answer_revision: z.number().int(), policy_revision: z.number().int(),
 });
 export const PasskeyEnrollStartSchema = z.object({
-  ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
+  ceremony_id: z.string(), tag: z.string().optional(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
 });
 export const PasskeyListSchema = z.object({
   passkeys: z.array(z.object({
@@ -21,7 +21,7 @@ export const PasskeyListSchema = z.object({
   })),
 });
 export const PasskeyEnrolledSchema = z.object({ enrolled: z.literal(true) });
-export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), expires_at: z.string() });
+export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), tag: z.string().optional(), expires_at: z.string() });
 export const PasskeyRevokedSchema = z.object({ revoked: z.literal(true) });
 /** The non-secret card view of one action; `payload_sha256` is what an approve must repeat. */
 export const DecisionActionViewSchema = z.object({
