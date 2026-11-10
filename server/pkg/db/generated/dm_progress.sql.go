@@ -29,25 +29,6 @@ func (q *Queries) AdvanceDMProgressLane(ctx context.Context, arg AdvanceDMProgre
 	return err
 }
 
-const compactDMProgressPending = `-- name: CompactDMProgressPending :exec
-DELETE FROM dm_progress_pending p
-USING (
-    SELECT event_id FROM (
-        SELECT event_id, row_number() OVER (PARTITION BY issue_id, event_kind, immediate ORDER BY created_at, event_id) AS rn
-        FROM dm_progress_pending AS k WHERE k.lineage_id = $1
-    ) ranked WHERE rn > 1
-) dup
-WHERE p.lineage_id = $1 AND p.event_id = dup.event_id
-`
-
-// Keeps the oldest row of each (issue, kind, immediate) group. The card, the
-// batch window and the immediate jump read only those, so a backlog cannot
-// grow the work of later passes.
-func (q *Queries) CompactDMProgressPending(ctx context.Context, lineageID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, compactDMProgressPending, lineageID)
-	return err
-}
-
 const countDMProgressDescendants = `-- name: CountDMProgressDescendants :one
 SELECT count(*) FROM dm_progress_follow
 WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
@@ -239,6 +220,35 @@ func (q *Queries) GetActiveDMProgressFollow(ctx context.Context, arg GetActiveDM
 		&i.Reasons,
 		&i.ReportingRootID,
 	)
+	return i, err
+}
+
+const getDMProgressLaneWindow = `-- name: GetDMProgressLaneWindow :one
+SELECT min(p.created_at)::timestamptz AS oldest_at,
+       min(p.created_at) FILTER (WHERE p.immediate AND (f.last_immediate_at IS NULL OR f.last_immediate_at <= $2::timestamptz - interval '60 minutes'))::timestamptz AS immediate_at
+FROM dm_progress_pending p
+LEFT JOIN dm_progress_follow f ON f.issue_id = p.issue_id AND f.lineage_id = p.lineage_id AND f.state = 'active'
+WHERE p.lineage_id = $1
+`
+
+type GetDMProgressLaneWindowParams struct {
+	LineageID pgtype.UUID        `json:"lineage_id"`
+	Now       pgtype.Timestamptz `json:"now"`
+}
+
+type GetDMProgressLaneWindowRow struct {
+	OldestAt    pgtype.Timestamptz `json:"oldest_at"`
+	ImmediateAt pgtype.Timestamptz `json:"immediate_at"`
+}
+
+// The dispatcher's due-ness gate: the oldest pending row and the oldest row
+// that may jump the batch wait (its follow has not spent the hourly allowance),
+// from the pending rows and follows alone. No issue or member lookup. Denied
+// rows count here, so the gate is never later than the exact due time.
+func (q *Queries) GetDMProgressLaneWindow(ctx context.Context, arg GetDMProgressLaneWindowParams) (GetDMProgressLaneWindowRow, error) {
+	row := q.db.QueryRow(ctx, getDMProgressLaneWindow, arg.LineageID, arg.Now)
+	var i GetDMProgressLaneWindowRow
+	err := row.Scan(&i.OldestAt, &i.ImmediateAt)
 	return i, err
 }
 
@@ -564,27 +574,75 @@ func (q *Queries) ListDMProgressFollowsByLineage(ctx context.Context, lineageID 
 	return items, nil
 }
 
-const listDMProgressPending = `-- name: ListDMProgressPending :many
-SELECT lineage_id, event_id, workspace_id, issue_id, event_kind, immediate, created_at FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id
+const listDMProgressLaneIssues = `-- name: ListDMProgressLaneIssues :many
+SELECT g.issue_id,
+       g.first_at::timestamptz AS first_at,
+       g.kinds::text[] AS kinds,
+       g.event_ids::uuid[] AS event_ids,
+       (CASE WHEN f.last_immediate_at IS NULL OR f.last_immediate_at <= $2::timestamptz - interval '60 minutes' THEN g.immediate_at END)::timestamptz AS immediate_at,
+       COALESCE(CASE WHEN f.issue_id IS NULL THEN 'not_following'
+                     WHEN f.muted_at IS NOT NULL THEN 'muted'
+                     WHEN i.id IS NULL THEN 'issue_gone'
+                     WHEN m.id IS NULL THEN 'not_visible' END, '')::text AS deny_reason,
+       COALESCE(i.status, '')::text AS status,
+       COALESCE(f.last_rendered_status, '')::text AS last_rendered_status
+FROM (
+    SELECT p.issue_id,
+           min(p.created_at) AS first_at,
+           array_agg(DISTINCT p.event_kind) AS kinds,
+           array_agg(p.event_id) AS event_ids,
+           min(p.created_at) FILTER (WHERE p.immediate) AS immediate_at
+    FROM dm_progress_pending p
+    WHERE p.lineage_id = $1
+    GROUP BY p.issue_id
+) g
+JOIN dm_progress_lane l ON l.lineage_id = $1
+LEFT JOIN dm_progress_follow f ON f.issue_id = g.issue_id AND f.lineage_id = $1 AND f.state = 'active'
+LEFT JOIN issue i ON i.id = g.issue_id
+LEFT JOIN member m ON m.user_id = l.owner_user_id AND m.workspace_id = i.workspace_id
+ORDER BY g.first_at, g.issue_id
 `
 
-func (q *Queries) ListDMProgressPending(ctx context.Context, lineageID pgtype.UUID) ([]DmProgressPending, error) {
-	rows, err := q.db.Query(ctx, listDMProgressPending, lineageID)
+type ListDMProgressLaneIssuesParams struct {
+	LineageID pgtype.UUID        `json:"lineage_id"`
+	Now       pgtype.Timestamptz `json:"now"`
+}
+
+type ListDMProgressLaneIssuesRow struct {
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	FirstAt            pgtype.Timestamptz `json:"first_at"`
+	Kinds              []string           `json:"kinds"`
+	EventIds           []pgtype.UUID      `json:"event_ids"`
+	ImmediateAt        pgtype.Timestamptz `json:"immediate_at"`
+	DenyReason         string             `json:"deny_reason"`
+	Status             string             `json:"status"`
+	LastRenderedStatus string             `json:"last_rendered_status"`
+}
+
+// One row per distinct issue with pending rows in a lane, oldest first, in one
+// statement: the denial verdict (follow gone or muted, issue gone, owner not a
+// member of the issue's workspace), the current status and what the DM was last
+// told. The member join mirrors service.ProgressVisible; change both together.
+// event_ids name exactly the rows this read saw, so a row committed later
+// survives the delete.
+func (q *Queries) ListDMProgressLaneIssues(ctx context.Context, arg ListDMProgressLaneIssuesParams) ([]ListDMProgressLaneIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listDMProgressLaneIssues, arg.LineageID, arg.Now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []DmProgressPending{}
+	items := []ListDMProgressLaneIssuesRow{}
 	for rows.Next() {
-		var i DmProgressPending
+		var i ListDMProgressLaneIssuesRow
 		if err := rows.Scan(
-			&i.LineageID,
-			&i.EventID,
-			&i.WorkspaceID,
 			&i.IssueID,
-			&i.EventKind,
-			&i.Immediate,
-			&i.CreatedAt,
+			&i.FirstAt,
+			&i.Kinds,
+			&i.EventIds,
+			&i.ImmediateAt,
+			&i.DenyReason,
+			&i.Status,
+			&i.LastRenderedStatus,
 		); err != nil {
 			return nil, err
 		}

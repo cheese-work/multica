@@ -21,11 +21,14 @@ import (
 
 // I2 timing (CHE-3369): a batch goes out 15 min after its oldest row (later
 // rows never push it back); cards of one lane are 5 min apart; a root's
-// immediate change may jump the batch wait once per 60 min.
+// immediate change may jump the batch wait once per 60 min (the 60 is in
+// GetDMProgressLaneWindow and ListDMProgressLaneIssues).
 const (
-	progressBatchWindow  = 15 * time.Minute
-	progressLaneGap      = 5 * time.Minute
-	progressImmediateCap = 60 * time.Minute
+	progressBatchWindow = 15 * time.Minute
+	progressLaneGap     = 5 * time.Minute
+	// A card lists at most this many issues; the flush of the lane's rows is
+	// never capped.
+	progressCardMaxItems = 100
 	// Set while the lane's DM has no native, active, single-session route. The
 	// successor router (C8) replaces this check; until then nothing is sent to
 	// a session other than the lineage root.
@@ -59,20 +62,14 @@ func (d *DMProgressDispatcher) Run(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
-// tracked is one issue with rows in the lane. deny is a reason code when the
-// rows must not become a card.
-type tracked struct {
-	issue  db.Issue
-	follow db.DmProgressFollow
-	deny   string
-	kinds  []string
-	// immediate: a row of this issue may jump the batch wait now.
-	immediate bool
-}
-
 // dispatchLane handles one lane in one transaction: the card, its delivery
 // row, the lane and follow stamps and the deleted pending rows commit together
 // or not at all (I1.3-I1.5). The websocket event follows the commit.
+//
+// The work a pass does is bounded by what it may skip (CHE-3369 review of
+// 27e44a0): a lane with no route does nothing, a lane not yet due does one
+// aggregate over its pending rows, and a due lane reads its issues, access and
+// follows in one statement however many issues it holds.
 func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.UUID, now time.Time) error {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {
@@ -91,50 +88,11 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 	if lane.SuspendedReason.Valid && lane.SuspendedReason.String != progressRoutePending {
 		return nil
 	}
-	if err := q.CompactDMProgressPending(ctx, lineage); err != nil {
-		return err
-	}
-	rows, err := q.ListDMProgressPending(ctx, lineage)
-	if err != nil {
-		return err
-	}
 
-	// Rows of a denied issue are deleted, never replayed (I3.3); the log holds
-	// IDs and a reason code only.
-	byIssue := map[pgtype.UUID]*tracked{}
-	var order []*tracked
-	var kept, dropped []db.DmProgressPending
-	for _, r := range rows {
-		tr, ok := byIssue[r.IssueID]
-		if !ok {
-			if tr, err = trackIssue(ctx, q, lane, r.IssueID); err != nil {
-				return err
-			}
-			byIssue[r.IssueID] = tr
-			order = append(order, tr)
-		}
-		if tr.deny != "" {
-			slog.Info("dm progress rows dropped", "lineage_id", util.UUIDToString(lineage), "issue_id", util.UUIDToString(r.IssueID), "reason", tr.deny)
-			dropped = append(dropped, r)
-			continue
-		}
-		kept = append(kept, r)
-		if !slices.Contains(tr.kinds, r.EventKind) {
-			tr.kinds = append(tr.kinds, r.EventKind)
-		}
-		// An immediate row jumps the batch wait unless the follow already spent
-		// its allowance this hour; then it waits like any other row.
-		if r.Immediate && (!tr.follow.LastImmediateAt.Valid || now.Sub(tr.follow.LastImmediateAt.Time) >= progressImmediateCap) {
-			tr.immediate = true
-		}
-	}
-	if err := deletePending(ctx, q, lineage, dropped); err != nil {
-		return err
-	}
-
-	// The route is read under a share lock held to commit: an archive or a
-	// continuation cannot slip in between this read and the card. A lane with
-	// no route keeps its rows (C8 routes them) and is held.
+	// The route is read first, under a share lock held to commit: an archive or
+	// a continuation cannot slip in between this read and the card. A lane with
+	// no route keeps its rows untouched (C8 routes them) and is held; the denial
+	// sweep runs when the route returns, before any card (I3.3).
 	routed, err := d.routable(ctx, q, lane)
 	if err != nil {
 		return err
@@ -147,10 +105,49 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 		}
 		return tx.Commit(ctx)
 	}
+
+	at := pgtype.Timestamptz{Time: now, Valid: true}
+	win, err := q.GetDMProgressLaneWindow(ctx, db.GetDMProgressLaneWindowParams{LineageID: lineage, Now: at})
+	if err != nil {
+		return err
+	}
+	if !win.OldestAt.Valid || now.Before(dueAt(lane, win.OldestAt, win.ImmediateAt)) {
+		return nil
+	}
+
+	issues, err := q.ListDMProgressLaneIssues(ctx, db.ListDMProgressLaneIssuesParams{LineageID: lineage, Now: at})
+	if err != nil {
+		return err
+	}
+	// Rows of a denied issue are deleted, never replayed (I3.3); the log holds
+	// IDs and a reason code only.
+	var kept []db.ListDMProgressLaneIssuesRow
+	var droppedIDs []pgtype.UUID
+	for _, it := range issues {
+		if it.DenyReason == "" {
+			kept = append(kept, it)
+			continue
+		}
+		slog.Info("dm progress rows dropped", "lineage_id", util.UUIDToString(lineage), "issue_id", util.UUIDToString(it.IssueID), "reason", it.DenyReason)
+		droppedIDs = append(droppedIDs, it.EventIds...)
+	}
+	if err := deletePending(ctx, q, lineage, droppedIDs); err != nil {
+		return err
+	}
+
 	var msg *db.ChatMessage
-	if sendAt, ok := dueAt(lane, kept, byIssue, now); ok && !now.Before(sendAt) {
-		if msg, err = d.deliver(ctx, q, lane, kept, order, now); err != nil {
-			return err
+	if len(kept) > 0 {
+		// kept is oldest first, so kept[0] holds the oldest row.
+		immediate := pgtype.Timestamptz{}
+		for _, it := range kept {
+			if it.ImmediateAt.Valid && (!immediate.Valid || it.ImmediateAt.Time.Before(immediate.Time)) {
+				immediate = it.ImmediateAt
+			}
+		}
+		if !now.Before(dueAt(lane, kept[0].FirstAt, immediate)) {
+			if msg, err = d.deliver(ctx, q, lane, kept, now); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -162,84 +159,48 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 	return nil
 }
 
-// trackIssue loads an issue and its follow, and says why a card must not
-// mention them: the follow is gone or muted, the issue is gone, or the owner
-// can no longer read the issue.
-func trackIssue(ctx context.Context, q *db.Queries, lane db.DmProgressLane, issueID pgtype.UUID) (*tracked, error) {
-	tr := &tracked{}
-	follow, err := q.GetActiveDMProgressFollow(ctx, db.GetActiveDMProgressFollowParams{IssueID: issueID, LineageID: lane.LineageID})
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		tr.deny = "not_following"
-		return tr, nil
-	case err != nil:
-		return nil, err
-	}
-	tr.follow = follow
-	if follow.MutedAt.Valid {
-		tr.deny = "muted"
-		return tr, nil
-	}
-	issue, err := q.GetIssue(ctx, issueID)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		tr.deny = "issue_gone"
-		return tr, nil
-	case err != nil:
-		return nil, err
-	}
-	tr.issue = issue
-	if !ProgressVisible(ctx, q, lane.OwnerUserID, issue) {
-		tr.deny = "not_visible"
-	}
-	return tr, nil
-}
-
 // dueAt is the time the next card may go out (I2): 15 min after the oldest
-// kept row, or at the first row that may jump the wait, and never inside the
-// lane's 5 min gap. ok is false when nothing is kept.
-func dueAt(lane db.DmProgressLane, kept []db.DmProgressPending, byIssue map[pgtype.UUID]*tracked, now time.Time) (time.Time, bool) {
-	if len(kept) == 0 {
-		return time.Time{}, false
-	}
-	due := kept[0].CreatedAt.Time.Add(progressBatchWindow)
-	for _, r := range kept {
-		if r.Immediate && byIssue[r.IssueID].immediate && r.CreatedAt.Time.Before(due) {
-			due = r.CreatedAt.Time
-		}
+// row, or at the first row that may jump the wait, and never inside the lane's
+// 5 min gap.
+func dueAt(lane db.DmProgressLane, oldest, immediate pgtype.Timestamptz) time.Time {
+	due := oldest.Time.Add(progressBatchWindow)
+	if immediate.Valid && immediate.Time.Before(due) {
+		due = immediate.Time
 	}
 	if lane.LastCardAt.Valid {
 		if gap := lane.LastCardAt.Time.Add(progressLaneGap); gap.After(due) {
 			due = gap
 		}
 	}
-	return due, true
+	return due
 }
 
-// deliver writes the card for every kept row of the lane and clears them. It
-// returns nil when nothing is left to say. The caller has checked the route.
-func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane db.DmProgressLane, kept []db.DmProgressPending, order []*tracked, now time.Time) (*db.ChatMessage, error) {
+// deliver writes one card for the kept issues and flushes every row it read
+// (I2.4). The card lists at most progressCardMaxItems issues, oldest first; the
+// cap shapes the card, never the flush. It returns nil when nothing is left to
+// say. The caller has checked the route.
+func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane db.DmProgressLane, kept []db.ListDMProgressLaneIssuesRow, now time.Time) (*db.ChatMessage, error) {
 	var payload protocol.ProgressCardPayload
-	var sent []*tracked
-	for _, tr := range order {
-		if tr.deny != "" {
-			continue
-		}
+	var sent []db.ListDMProgressLaneIssuesRow
+	var flushed []pgtype.UUID
+	for _, it := range kept {
+		flushed = append(flushed, it.EventIds...)
 		// The card shows the issue as it is now, against what the DM was last
 		// told, so a late older event never overwrites a newer state. Status
 		// events that net out to the same status say nothing.
-		if tr.issue.Status == tr.follow.LastRenderedStatus {
-			tr.kinds = slices.DeleteFunc(tr.kinds, func(k string) bool { return k == "status" })
+		kinds := it.Kinds
+		if it.Status == it.LastRenderedStatus {
+			kinds = slices.DeleteFunc(slices.Clone(kinds), func(k string) bool { return k == "status" })
 		}
-		if len(tr.kinds) == 0 {
+		if len(kinds) == 0 || len(sent) == progressCardMaxItems {
 			continue
 		}
 		payload.Items = append(payload.Items, protocol.ProgressCardItem{
-			IssueID: util.UUIDToString(tr.issue.ID), Status: tr.issue.Status, FromStatus: tr.follow.LastRenderedStatus, Kinds: tr.kinds,
+			IssueID: util.UUIDToString(it.IssueID), Status: it.Status, FromStatus: it.LastRenderedStatus, Kinds: kinds,
 		})
-		sent = append(sent, tr)
+		sent = append(sent, it)
 	}
-	if err := deletePending(ctx, q, lane.LineageID, kept); err != nil {
+	if err := deletePending(ctx, q, lane.LineageID, flushed); err != nil {
 		return nil, err
 	}
 	if len(sent) == 0 {
@@ -275,9 +236,9 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 	if err := q.AdvanceDMProgressLane(ctx, db.AdvanceDMProgressLaneParams{LineageID: lane.LineageID, LastCardAt: at}); err != nil {
 		return nil, err
 	}
-	for _, tr := range sent {
+	for _, it := range sent {
 		if err := q.MarkDMProgressFollowRendered(ctx, db.MarkDMProgressFollowRenderedParams{
-			IssueID: tr.issue.ID, LineageID: lane.LineageID, LastRenderedStatus: tr.issue.Status, Immediate: tr.immediate, At: at,
+			IssueID: it.IssueID, LineageID: lane.LineageID, LastRenderedStatus: it.Status, Immediate: it.ImmediateAt.Valid, At: at,
 		}); err != nil {
 			return nil, err
 		}
@@ -320,13 +281,9 @@ func (d *DMProgressDispatcher) publish(lane db.DmProgressLane, msg db.ChatMessag
 	})
 }
 
-func deletePending(ctx context.Context, q *db.Queries, lineage pgtype.UUID, rows []db.DmProgressPending) error {
-	if len(rows) == 0 {
+func deletePending(ctx context.Context, q *db.Queries, lineage pgtype.UUID, eventIDs []pgtype.UUID) error {
+	if len(eventIDs) == 0 {
 		return nil
 	}
-	ids := make([]pgtype.UUID, len(rows))
-	for i, r := range rows {
-		ids[i] = r.EventID
-	}
-	return q.DeleteDMProgressPendingEvents(ctx, db.DeleteDMProgressPendingEventsParams{LineageID: lineage, EventIds: ids})
+	return q.DeleteDMProgressPendingEvents(ctx, db.DeleteDMProgressPendingEventsParams{LineageID: lineage, EventIds: eventIDs})
 }

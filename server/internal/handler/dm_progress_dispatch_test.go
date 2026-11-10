@@ -401,44 +401,75 @@ func TestDMProgressDispatch_ArchiveRacingDispatchKeepsRows(t *testing.T) {
 	}
 }
 
-// A lane with no route still drops the rows of an issue its owner can no
-// longer follow, so they are never replayed when the route returns (I3.7); the
-// rows it may still send are kept and the lane is held (review of 9d4b740, P2).
-func TestDMProgressDispatch_UnroutableLaneStillDropsDeniedRows(t *testing.T) {
+// A lane with no route does no backlog work: no compaction, no issue lookup,
+// no denial sweep. Rows wait as they are. When the route returns, the sweep
+// runs before the card, so a denied row is deleted and never replayed (review
+// of 27e44a0, design decision: bound the backlog in place).
+func TestDMProgressDispatch_UnroutableLaneBypassesBacklogWorkThenSweepsOnReturn(t *testing.T) {
 	e := newDispatchEnv(t)
 	e.status(t, e.issue, "in_progress", 0)
 	dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane)
 	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
 		VALUES ($1, $2, gen_random_uuid(), 'status', $3)`, testWorkspaceID, e.lane, e.at(0))
+	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
+		SELECT $1, $2, $3, 'status', $4::timestamptz + n * interval '1 second' FROM generate_series(1, 599) n`, testWorkspaceID, e.lane, e.issue, e.at(1))
+	before := e.pending(t)
 	e.run(t, 15)
 	e.wantCards(t, 0)
-	if n := e.pending(t); n != 1 {
-		t.Errorf("pending = %d, want 1 (the unfollowed issue's row dropped, the followed row held)", n)
+	if n := e.pending(t); n != before {
+		t.Errorf("pending = %d, want %d untouched while the lane has no route", n, before)
 	}
 	var reason pgtype.Text
 	dbfx.QueryRow(t, `SELECT suspended_reason FROM dm_progress_lane WHERE lineage_id = $1`, e.lane).Scan(&reason)
 	if !reason.Valid {
 		t.Error("lane not held, want route_pending")
 	}
+
+	dbfx.Exec(t, `UPDATE chat_session SET status = 'active' WHERE id = $1`, e.lane)
+	e.run(t, 16)
+	cards := e.wantCards(t, 1)
+	if len(cards[0].Payload.Items) != 1 || cards[0].Payload.Items[0].IssueID != e.issue {
+		t.Errorf("card items = %+v, want only the followed issue", cards[0].Payload.Items)
+	}
+	if n := e.pending(t); n != 0 {
+		t.Errorf("pending = %d, want 0 (denied row swept, backlog flushed)", n)
+	}
 }
 
-// A lane's pending rows are compacted to one per (issue, kind, immediate) on
-// every pass, so a backlog cannot grow the work of later passes (review of
-// 9d4b740, security finding).
-func TestDMProgressDispatch_UnroutableBacklogIsCompacted(t *testing.T) {
+// A lane that is not due does no issue work: the denied row stays until the
+// window ends, then the sweep and the card go in one pass.
+func TestDMProgressDispatch_LaneNotDueSkipsIssueWork(t *testing.T) {
 	e := newDispatchEnv(t)
 	e.status(t, e.issue, "in_progress", 0)
-	dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane)
 	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
-		SELECT $1, $2, $3, 'status', $4::timestamptz + n * interval '1 second' FROM generate_series(1, 599) n`, testWorkspaceID, e.lane, e.issue, e.at(1))
-	e.run(t, 15)
-	if n := e.pending(t); n != 1 {
-		t.Errorf("pending = %d, want 1 (the oldest row of the group)", n)
+		VALUES ($1, $2, gen_random_uuid(), 'status', $3)`, testWorkspaceID, e.lane, e.at(1))
+	e.run(t, 5)
+	if n := e.pending(t); n != 2 {
+		t.Errorf("pending = %d, want 2: nothing is looked up before the 15 min window ends", n)
 	}
-	var oldest time.Time
-	dbfx.QueryRow(t, `SELECT created_at FROM dm_progress_pending WHERE lineage_id = $1`, e.lane).Scan(&oldest)
-	if !oldest.Equal(e.at(0)) {
-		t.Errorf("kept row at %v, want the oldest at %v so the batch window is unchanged", oldest, e.at(0))
+	e.run(t, 15)
+	e.wantCards(t, 1)
+	if n := e.pending(t); n != 0 {
+		t.Errorf("pending = %d, want 0", n)
+	}
+}
+
+// Rows of many distinct issues flush in one card; the card lists at most 100
+// issues, the oldest first, and every row is deleted (I2.4).
+func TestDMProgressDispatch_ManyIssuesFlushInOneCardWithCappedItems(t *testing.T) {
+	e := newDispatchEnv(t)
+	for i := 0; i < 120; i++ {
+		c := e.child(t)
+		dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
+			VALUES ($1, $2, $3, 'assignee', $4)`, testWorkspaceID, e.lane, c, e.at(0).Add(time.Duration(i)*time.Second))
+	}
+	e.run(t, 20)
+	cards := e.wantCards(t, 1)
+	if n := len(cards[0].Payload.Items); n != 100 {
+		t.Errorf("items = %d, want 100 (cap)", n)
+	}
+	if n := e.pending(t); n != 0 {
+		t.Errorf("pending = %d, want 0: the cap limits the card, not the flush", n)
 	}
 }
 
