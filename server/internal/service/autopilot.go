@@ -229,7 +229,7 @@ func (s *AutopilotService) AdmitAutopilotWebhookDelivery(
 	}
 
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 	run, _, err := s.createAutopilotRunWithQuota(ctx, autopilot.WorkspaceID, "webhook", "webhook:"+util.UUIDToString(deliveryID), db.CreateAutopilotRunParams{
@@ -302,7 +302,7 @@ func (s *AutopilotService) DispatchAutopilotForWebhookDelivery(
 	// A run_only task may have committed immediately before the process died
 	// while linking task_id back to the run. Repair that linkage and wake the
 	// daemon; otherwise continue the same partial run below.
-	if autopilot.ExecutionMode == "run_only" && !run.TaskID.Valid {
+	if isTaskOnlyMode(autopilot.ExecutionMode) && !run.TaskID.Valid {
 		repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, *run)
 		if repairErr != nil {
 			return run, fmt.Errorf("dispatch for webhook delivery: %w", repairErr)
@@ -480,7 +480,7 @@ func (s *AutopilotService) DispatchAutopilotForPlan(
 		return &existing, nil
 
 	case err == nil:
-		if autopilot.ExecutionMode == "run_only" && !existing.TaskID.Valid {
+		if isTaskOnlyMode(autopilot.ExecutionMode) && !existing.TaskID.Valid {
 			repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, existing)
 			if repairErr != nil {
 				return nil, fmt.Errorf("dispatch for plan: %w", repairErr)
@@ -610,7 +610,7 @@ func (s *AutopilotService) dispatchAutopilot(
 
 	// Determine initial status based on execution mode.
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 
@@ -667,7 +667,7 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
 			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch create_issue: %w", err)
 		}
-	case "run_only":
+	case "run_only", "script":
 		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				// The dispatch transaction is rolled back by now; a cap notice written
@@ -677,7 +677,7 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			}
 			s.failRun(ctx, run.ID, err.Error())
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
-			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch run_only: %w", err)
+			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch %s: %w", autopilot.ExecutionMode, err)
 		}
 	default:
 		s.failRun(ctx, run.ID, "unknown execution_mode: "+autopilot.ExecutionMode)
@@ -1072,7 +1072,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		}
 		return fmt.Errorf("resolve leader: %w", err)
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
@@ -1693,7 +1693,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// chance to succeed.
 		return "", "", false
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		slog.Warn("autopilot admission: failed to load runtime",
 			"autopilot_id", util.UUIDToString(ap.ID),
@@ -1743,6 +1743,19 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// isTaskOnlyMode reports modes that dispatch a bare agent task with no issue.
+func isTaskOnlyMode(mode string) bool { return mode == "run_only" || mode == "script" }
+
+// agentReadinessFor picks the readiness check for the autopilot's mode. Script
+// mode runs no model, so it skips the model-only gates (provider hold, provider
+// breaker); every other mode keeps all of them (CHE-5092).
+func (s *AutopilotService) agentReadinessFor(ctx context.Context, ap db.Autopilot, agent db.Agent) (AgentVerdict, error) {
+	if ap.ExecutionMode == "script" {
+		return ScriptAgentReadiness(ctx, s.runtimeLookup(), agent)
+	}
+	return AgentReadiness(ctx, s.runtimeLookup(), agent)
 }
 
 // supersedeBreakerHeldRun retires a run_only run whose task is still queued
