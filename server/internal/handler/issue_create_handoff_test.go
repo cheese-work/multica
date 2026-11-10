@@ -173,3 +173,58 @@ func TestCommentSubIssueResolvesTheStepHandlerUnderTheProjectLocks(t *testing.T)
 		t.Fatalf("assignee = %q, want none: the new workflow's step hands off to nobody", got)
 	}
 }
+
+// A create that names its own assignee enters the step like any other create:
+// the step's handler gets the issue and its run, as a status change into the
+// step gives it to an issue that already has an assignee (CHE-4992). A step
+// that hands off to nobody leaves the named assignee alone.
+func TestCreateIssueWithAssigneeEntersTheStepHandler(t *testing.T) {
+	seedTestCatalog(t)
+	syncIssueCounter(t)
+	handler := seededReadyAgentID(t)
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, handler).Scan(&runtimeID)
+	named := dbfx.Agent(t, "Create named assignee "+workflowTestSuffix(), runtimeID)
+	projectID := deliveryProject(t, "Create with assignee handoff project", handler)
+
+	cases := []struct {
+		name   string
+		status string
+		want   string
+	}{
+		{"a handing-off step replaces the named assignee", "in_progress", handler},
+		{"a step with no handler keeps the named assignee", "todo", named},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"title":         "created with assignee " + workflowTestSuffix(),
+				"status":        tc.status,
+				"project_id":    projectID,
+				"assignee_type": "agent",
+				"assignee_id":   named,
+			}
+			resp := testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body))
+			resp.Want(http.StatusCreated)
+			var created struct {
+				ID string `json:"id"`
+			}
+			resp.JSON(&created)
+			t.Cleanup(func() {
+				testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(created.ID))
+			})
+
+			if got := createdIssueAssignee(t, created.ID); got != tc.want {
+				t.Fatalf("assignee = %q, want %q", got, tc.want)
+			}
+			if tc.want == handler {
+				if steps := pendingStepRuns(t, created.ID, handler); len(steps) != 1 {
+					t.Fatalf("pending runs for the handler = %v, want one", steps)
+				}
+				if steps := pendingStepRuns(t, created.ID, named); len(steps) != 0 {
+					t.Fatalf("pending runs for the named assignee = %v, want none", steps)
+				}
+			}
+		})
+	}
+}
