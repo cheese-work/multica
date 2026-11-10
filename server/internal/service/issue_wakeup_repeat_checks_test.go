@@ -28,15 +28,15 @@ func TestWakeupChecksFinishedRepeatOnUnchangedHeadIsRefused(t *testing.T) {
 	sourceTask := func(agentID string) string {
 		return f.Task(t, agentID, testutil.Cols{"issue_id": issue, "status": "running", "runtime_id": runtime})
 	}
-	rule := func(agentID string) (error, string) {
+	rule := func(agentID string) (string, error) {
 		src := sourceTask(agentID)
 		w, err := s.Create(ctx, issue, member, parseTestUUID(t, src), WakeupInput{AgentID: agentID, Kind: "event", Instruction: "Look at CI",
 			Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})})
-		return err, util.UUIDToString(w.ID)
+		return util.UUIDToString(w.ID), err
 	}
 
 	// A first create is accepted, and it fires: checks finished on head aaa.
-	err, first := rule(agent)
+	first, err := rule(agent)
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
@@ -47,12 +47,12 @@ func TestWakeupChecksFinishedRepeatOnUnchangedHeadIsRefused(t *testing.T) {
 
 	// Another agent's rule is not affected.
 	other := f.privateAgentOwnedBy(t, f.UserID, "other")
-	if err, _ := rule(other); err != nil {
+	if _, err := rule(other); err != nil {
 		t.Fatalf("another agent's create refused: %v", err)
 	}
 
 	// The second create on the same head is refused with the exact text.
-	err, _ = rule(agent)
+	_, err = rule(agent)
 	want := "head aaa unchanged since the last checks_finished fire; wait for a new head or use --until-status"
 	if !errors.Is(err, ErrWakeupHeadUnchanged) || err.Error() != want {
 		t.Fatalf("repeat create err = %v, want %q", err, want)
@@ -63,7 +63,7 @@ func TestWakeupChecksFinishedRepeatOnUnchangedHeadIsRefused(t *testing.T) {
 
 	// A new head is accepted.
 	f.Exec(t, "UPDATE github_pull_request SET head_sha='bbb',snapshot_head_sha='bbb' WHERE id=$1", pr)
-	if err, _ := rule(agent); err != nil {
+	if _, err := rule(agent); err != nil {
 		t.Fatalf("create after a new head: %v", err)
 	}
 }
