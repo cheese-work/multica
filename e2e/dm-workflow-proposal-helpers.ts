@@ -6,7 +6,7 @@
  */
 import { createHash } from "node:crypto";
 import type { TestApiClient } from "./fixtures";
-import { API_BASE, seedDmBudgetIssue, withDb, type DmBudgetSeed } from "./dm-budget-proposal-helpers";
+import { API_BASE, removeSeed, seedDmBudgetIssue, withDb, type DmBudgetSeed } from "./dm-budget-proposal-helpers";
 
 export const STATUS_KEY = "todo";
 export const OTHER_STATUS_KEY = "in_review";
@@ -18,8 +18,8 @@ export const HUMAN_EDIT_TEXT = "Read the diff.\nAsk the author.\nPost the verdic
 
 export interface DmWorkflowSeed extends DmBudgetSeed {
   workflowId: string;
-  /** The workspace settings before the journey; restored by `removeWorkflowSeed`. */
-  originalSettings: string;
+  /** The `delegated_governed_writes` setting before the journey (JSON text, or null when unset); restored by `removeWorkflowSeed`. */
+  originalDelegation: string | null;
 }
 
 /** The agent, its DM and chat task, an anchor issue, a two-step workflow, and the setting that lets the agent propose step instructions. */
@@ -30,22 +30,31 @@ export async function seedDmWorkflow(api: TestApiClient, label: string): Promise
     { status_key: OTHER_STATUS_KEY, handler: { type: "member", id: seed.userId }, instructions: OTHER_STEP_TEXT },
   ];
   const delegated = { allowed_agents: [seed.agentId], allowed_fields: ["workflow.instructions"], requires_human_decision: false };
-  const { workflowId, originalSettings } = await withDb(async (db) => {
-    const settings = (await db.query<{ settings: string }>(`SELECT COALESCE(settings, '{}'::jsonb)::text AS settings FROM workspace WHERE id = $1`, [seed.workspaceId])).rows[0]!.settings;
-    await db.query(
-      `UPDATE workspace SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) WHERE id = $1`,
-      [seed.workspaceId, JSON.stringify(delegated)],
-    );
-    // The D8a seed already linked the anchor issue to a workflow with no steps; give it the two steps.
-    const id = (
-      await db.query<{ id: string }>(
-        `UPDATE issue_workflow SET steps = $2::jsonb WHERE id = (SELECT workflow_id FROM issue WHERE id = $1) RETURNING id::text`,
-        [seed.issueId, JSON.stringify(steps)],
-      )
-    ).rows[0]!.id;
-    return { workflowId: id, originalSettings: settings };
-  });
-  return { ...seed, workflowId, originalSettings };
+  try {
+    const { workflowId, originalDelegation } = await withDb(async (db) => {
+      // The D8a seed already linked the anchor issue to a workflow with no steps; give it the two steps.
+      const id = (
+        await db.query<{ id: string }>(
+          `UPDATE issue_workflow SET steps = $2::jsonb WHERE id = (SELECT workflow_id FROM issue WHERE id = $1) RETURNING id::text`,
+          [seed.issueId, JSON.stringify(steps)],
+        )
+      ).rows[0]!.id;
+      // Last write, and one statement: the previous value of this one key is read and replaced atomically, so a failure above leaves the setting untouched.
+      const original = (
+        await db.query<{ original: string | null }>(
+          `WITH old AS (SELECT (settings -> 'delegated_governed_writes')::text AS v FROM workspace WHERE id = $1 FOR UPDATE),
+                set_ AS (UPDATE workspace SET settings = COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) WHERE id = $1)
+           SELECT v AS original FROM old`,
+          [seed.workspaceId, JSON.stringify(delegated)],
+        )
+      ).rows[0]!.original;
+      return { workflowId: id, originalDelegation: original };
+    });
+    return { ...seed, workflowId, originalDelegation };
+  } catch (error) {
+    await removeSeed(seed);
+    throw error;
+  }
 }
 
 interface WorkflowStep {
@@ -134,6 +143,12 @@ export async function removeWorkflowSeed(seed: DmWorkflowSeed, removeBase: (seed
   await withDb(async (db) => {
     await db.query(`UPDATE issue SET workflow_id = NULL WHERE id = $1`, [seed.issueId]);
     await db.query(`DELETE FROM issue_workflow WHERE id = $1`, [seed.workflowId]);
-    await db.query(`UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, [seed.workspaceId, seed.originalSettings]);
+    // Put back only the key this journey set; other workspace settings are left as they are.
+    await db.query(
+      `UPDATE workspace SET settings = CASE WHEN $2::jsonb IS NULL THEN COALESCE(settings, '{}'::jsonb) - 'delegated_governed_writes'
+                                            ELSE COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) END
+        WHERE id = $1`,
+      [seed.workspaceId, seed.originalDelegation],
+    );
   });
 }

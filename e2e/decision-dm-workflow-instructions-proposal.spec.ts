@@ -70,8 +70,10 @@ test.describe("D8b: DM workflow instructions proposal on a phone viewport", () =
     expect(instructionsOf(await readWorkflow(api, seed), STATUS_KEY)).toBe(BEFORE_TEXT);
 
     await openDm(page);
-    const diff = page.getByTestId("decision-request-action-diff");
-    await expect(diff).toBeVisible({ timeout: 30_000 });
+    // The viewer is collapsed until a tab opens; the Changes tab shows the diff the server stored.
+    await page.getByTestId("config-change-tab-changes").click({ timeout: 30_000 });
+    const diff = page.getByTestId("config-change-panel");
+    await expect(diff).toBeVisible();
     await expect(diff).toContainText("Run the tests.");
 
     await page.getByRole("button", { name: "Approve with passkey" }).click();

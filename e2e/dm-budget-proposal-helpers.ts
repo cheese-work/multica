@@ -44,6 +44,9 @@ export interface TestPasskey {
   privateKeyPkcs8: Buffer;
 }
 
+/** Credential ids this process inserted, so cleanup removes only those and never a user's pre-existing passkeys. */
+const seededCredentials = new Map<string, Buffer[]>();
+
 export async function seedPasskey(userId: string): Promise<TestPasskey> {
   const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
   const jwk = publicKey.export({ format: "jwk" });
@@ -59,6 +62,7 @@ export async function seedPasskey(userId: string): Promise<TestPasskey> {
       [userId, credentialId, cose],
     ),
   );
+  seededCredentials.set(userId, [...(seededCredentials.get(userId) ?? []), credentialId]);
   return { credentialId, privateKeyPkcs8: privateKey.export({ format: "der", type: "pkcs8" }) };
 }
 
@@ -271,7 +275,8 @@ export async function removeSeed(seed: DmBudgetSeed) {
     await db.query(`DELETE FROM task_token WHERE task_id = $1`, [seed.chatTaskId]);
     await db.query(`DELETE FROM agent_task_queue WHERE id = $1`, [seed.chatTaskId]);
     await db.query(`DELETE FROM chat_session WHERE id = $1`, [seed.chatSessionId]);
-    await db.query(`DELETE FROM user_passkey WHERE user_id = $1`, [seed.userId]);
+    await db.query(`DELETE FROM user_passkey WHERE user_id = $1 AND credential_id = ANY($2::bytea[])`, [seed.userId, seededCredentials.get(seed.userId) ?? []]);
+    seededCredentials.delete(seed.userId);
   });
 }
 
