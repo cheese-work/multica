@@ -144,26 +144,33 @@ class SolAuthorTest(unittest.TestCase):
         self.assertEqual(run(SOL_PR, SENSITIVE, OPUS), "success")
 
 
-class IndependentFailTest(unittest.TestCase):
-    """A trusted reviewer from another lab blocks with a FAIL even when its role never signs a PASS (RGS-1 base behaviour)."""
+class NonSignerVerdictTest(unittest.TestCase):
+    """CHE-4568 / Cheese decision ef13afdd (Path 2): a verdict from a reviewer that is not a named signer is ignored,
+    PASS or FAIL, as in multica-dotfiles main and D8 = A. Only an Opus or Sol FAIL blocks."""
 
-    def test_non_signer_fail_from_another_lab_blocks_an_opus_pass(self):
-        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (LUNA, "FAIL")), "failure")
-        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL"), OPUS), "failure")
-        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "failure")
+    def test_non_signer_fail_from_another_lab_is_ignored(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (LUNA, "FAIL")), "success")
+        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL"), OPUS), "success")
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "success")
 
-    def test_non_signer_fail_blocks_with_no_pass_yet(self):
-        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL")), "failure")
+    def test_non_signer_fail_alone_leaves_the_gate_pending(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, (LUNA, "FAIL")), "pending")
 
-    def test_non_signer_fail_blocks_a_sensitive_pr(self):
-        self.assertEqual(run(SONNET_PR, SENSITIVE, OPUS, SOL, (LUNA, "FAIL")), "failure")
+    def test_non_signer_fail_does_not_block_a_sensitive_pr(self):
+        self.assertEqual(run(SONNET_PR, SENSITIVE, OPUS, SOL, (LUNA, "FAIL")), "success")
 
-    def test_same_lab_non_signer_fail_does_not_block(self):
-        sonnet2 = "x99-claude-sonnet-200k (claude-sonnet-5-5)"
-        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (sonnet2, "FAIL")), "success")
+    def test_signer_fail_still_blocks(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (SOL, "FAIL")), "failure")
+        self.assertEqual(run(SONNET_PR, PLAIN, (OPUS, "FAIL")), "failure")
 
-    def test_the_author_own_fail_does_not_block(self):
-        self.assertEqual(run(LUNA_PR, PLAIN, OPUS, (LUNA, "FAIL")), "success")
+    def test_digestless_non_signer_fail_on_an_old_sha_is_ignored(self):
+        # the #1230 shape: Terra FAIL on a prior head, no Diff-Digest, then Opus and Sol PASS on the current head
+        terra = "x99-codex-terra (gpt-6.1-terra)"
+        old = verdict((terra), "FAIL").replace(f"SHA: {HEAD}", f"SHA: {'b' * 40}")
+        comments = [{"id": 1, "author_id": BOT, "body": old, "updated_at": "2026-11-08T05:00:00Z"},
+                    {"id": 2, "author_id": BOT, "body": verdict(OPUS), "updated_at": "2026-11-09T05:00:00Z"},
+                    {"id": 3, "author_id": BOT, "body": verdict(SOL), "updated_at": "2026-11-09T05:00:01Z"}]
+        self.assertEqual(sg.evaluate(SONNET_PR, comments, {BOT}, diff_of(SENSITIVE), {HUMAN})[0], "success")
 
     def test_non_signer_pass_still_never_counts(self):
         self.assertEqual(run(SONNET_PR, PLAIN, OPUS, LUNA), "success")
