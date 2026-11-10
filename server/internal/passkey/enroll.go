@@ -50,7 +50,21 @@ type Started struct {
 	CeremonyID pgtype.UUID
 	Options    json.RawMessage
 	ExpiresAt  time.Time
+	// Assertion is set when the decision gate blocks and the user already has a
+	// passkey: an existing one must sign the finish.
+	Assertion *Issued
+	// Tag names this attempt: the same value is in the email and beside the code field.
+	Tag string
 }
+
+// AttemptTag is the last 4 characters of the ceremony ID.
+func AttemptTag(id pgtype.UUID) string {
+	text := uuid.UUID(id.Bytes).String()
+	return text[len(text)-4:]
+}
+
+// ict is the zone of the send time shown in the email.
+var ict = time.FixedZone("ICT", 7*3600)
 
 func (service *Service) deliverable() bool {
 	return service.Mail != nil && len(service.CodeKey) >= minCodeKeyLen
@@ -95,6 +109,10 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
+	needsAssertion, err := service.enrollNeedsAssertion(ctx, userID, rows)
+	if err != nil {
+		return Started{}, err
+	}
 	excluded := make([]protocol.CredentialDescriptor, len(rows))
 	for i, row := range rows {
 		excluded[i] = protocol.CredentialDescriptor{Type: protocol.PublicKeyCredentialType, CredentialID: row.CredentialID}
@@ -122,7 +140,13 @@ func (service *Service) StartEnrollment(ctx context.Context, userID pgtype.UUID,
 	if err != nil {
 		return Started{}, err
 	}
-	return Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time}, nil
+	started := Started{CeremonyID: row.ID, Options: options, ExpiresAt: row.ExpiresAt.Time, Tag: AttemptTag(row.ID)}
+	if needsAssertion {
+		if started.Assertion, err = service.issueEnrollAssertion(ctx, userID, row.ID, rows); err != nil {
+			return Started{}, err
+		}
+	}
+	return started, nil
 }
 
 const (
@@ -170,8 +194,12 @@ func (service *Service) mailCeremony(ctx context.Context, userID pgtype.UUID, em
 	if err := queries.CountPasskeyEnrollStart(ctx, userID); err != nil {
 		return row, err
 	}
-	body := fmt.Sprintf("<p>%s</p><p><b>%s</b></p><p>It expires in 10 minutes. If you did not ask for it, ignore this email.</p>", kind.Lead, code)
-	if err := service.Mail.SendPrivileged(email, kind.Subject, body); err != nil {
+	// The tag and send time let the user match the newest email to the open attempt.
+	tag := AttemptTag(row.ID)
+	subject := fmt.Sprintf("%s [%s]", kind.Subject, tag)
+	body := fmt.Sprintf("<p>%s</p><p><b>%s</b></p><p>Attempt %s, sent %s ICT. Use only the newest email: the code field shows the same attempt tag.</p><p>It expires in 10 minutes. If you did not ask for it, ignore this email.</p>",
+		kind.Lead, code, tag, time.Now().In(ict).Format("2006-01-02 15:04"))
+	if err := service.Mail.SendPrivileged(email, subject, body); err != nil {
 		if errors.Is(err, ErrDeliveryUnavailable) {
 			return row, err
 		}
@@ -206,7 +234,7 @@ func conflict(message string) Refusal { return Refusal{Status: http.StatusConfli
 // both hold, stores the credential for the ceremony's user. A wrong code or a
 // rejected attestation spends one of the ceremony's five attempts, and that
 // spend commits even though the call fails.
-func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, email string) error {
+func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID pgtype.UUID, code string, attestation []byte, assertion json.RawMessage, email string) error {
 	if !service.deliverable() {
 		return ErrDeliveryUnavailable
 	}
@@ -240,7 +268,7 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	}
 
 	if !hmac.Equal(ceremony.CodeHmac, codeMAC(service.CodeKey, userID, code)) {
-		return reject(forbidden("invalid_code: the code does not match"))
+		return reject(service.wrongCode(ctx, queries, ceremony.UserID, ceremony.Purpose, ceremony.ID, code))
 	}
 	var session webauthn.SessionData
 	if err := json.Unmarshal(ceremony.SessionData, &session); err != nil {
@@ -253,6 +281,10 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	credential, err := service.WebAuthn.CreateCredential(newWebAuthnUser(userID, nil), session, parsed)
 	if err != nil {
 		return reject(forbidden("attestation_rejected: the passkey response was refused"))
+	}
+
+	if err := service.requireEnrollAssertion(ctx, tx, queries, userID, ceremony.ID, assertion); err != nil {
+		return err
 	}
 
 	transports := make([]string, len(credential.Transport))
@@ -275,11 +307,27 @@ func (service *Service) FinishEnrollment(ctx context.Context, userID, ceremonyID
 	if err := writeEvent(ctx, queries, userID, eventEnrolled, map[string]any{"passkey_id": uuid.UUID(stored.ID.Bytes).String()}); err != nil {
 		return err
 	}
+	if err := queries.LeavePasskeyRecovery(ctx, userID); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	service.notify(email, enrolledSubject, "<p>A passkey was added to your Multica account. If this was not you, contact support now.</p>")
 	return nil
+}
+
+// wrongCode names a typed code that belongs to an earlier consumed ceremony of
+// the same user, so the user knows to read the newest email. It reveals
+// nothing about the code itself.
+func (service *Service) wrongCode(ctx context.Context, queries *db.Queries, userID pgtype.UUID, purpose string, ceremonyID pgtype.UUID, code string) Refusal {
+	superseded, err := queries.PasskeyEnrollCodeIsSuperseded(ctx, db.PasskeyEnrollCodeIsSupersededParams{
+		UserID: userID, Purpose: purpose, CodeHmac: codeMAC(service.CodeKey, userID, code), ID: ceremonyID,
+	})
+	if err == nil && superseded {
+		return forbidden("ceremony_superseded: use the newest email")
+	}
+	return forbidden("invalid_code: the code does not match")
 }
 
 // spendAttempt records one failed try on the ceremony and commits that spend

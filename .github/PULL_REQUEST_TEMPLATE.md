@@ -19,9 +19,10 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
 ## Changelog
 
 <!-- Replace the line below with one sentence a user notices, in English, plain text,
-     at most 140 characters. It publishes as this PR's entry on /changelog. Keep the
-     line verbatim, like Closes/Refs. A PR without a valid line is hidden from
-     /changelog; the placeholder below counts as missing.
+     at most 140 characters (a longer line fails the PR check). It publishes as this
+     PR's entry on /changelog. Keep the line verbatim, like Closes/Refs. A PR
+     without a valid line is hidden from /changelog; the placeholder below counts
+     as missing.
      The section follows the title type (feat, fix, perf); override it with
      Changelog(feat|fix|perf): <sentence>.
      Good:
@@ -32,6 +33,9 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
        Changelog: Refactor X store
        Changelog: CHE-123 add Y
      In a stack, only the PR that lands on `main` carries the line, for the whole stack.
+     `Changelog: none` is only for internal-only changes (CI, scripts, docs, tests). A
+     feat, fix or perf PR that changes user-facing code fails the check with `none`:
+     write the sentence, or use a non-user-facing type (ci, test, chore).
      Upstream-sync PRs use `Changelog: none`. -->
 
 Changelog: <one user-facing sentence, or none>
@@ -59,13 +63,21 @@ Changelog: <one user-facing sentence, or none>
 2.
 3.
 
+## Cost delta
+
+<!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->
+
+- C1 Cost delta: <vs today, per day or per run: tokens (which model), agent runs, Actions runs/minutes, API calls, USD>
+- C2 Optimality check: <cheaper or simpler alternative considered, why rejected>
+- C3 Watch: <how observed after rollout (daily usage report, CHE-4324); rollback threshold>
+
 ## Checklist
 
 - [ ] I have included a thinking path that traces from project context to this change
 - [ ] I have run tests locally and they pass
 - [ ] I have added or updated tests where applicable
 - [ ] If this change affects the UI, I have included before/after screenshots
-- [ ] I have updated relevant documentation to reflect my changes
+- [ ] Docs updated (page path under `apps/docs/content/docs/`, all locales) / not user-facing (reason): <path or reason>
 - [ ] If I added a new runtime / coding tool / UI tab, I synced the change to **landing copy** (`apps/web/features/landing/i18n/`) and **relevant docs** (`apps/docs/content/docs/`)
 - [ ] If this PR touches Chinese product copy, I checked it against `apps/docs/content/docs/developers/conventions.zh.mdx` (terminology, mixed-rule for `task` / `issue` / `skill`)
 - [ ] I have considered and documented any risks above

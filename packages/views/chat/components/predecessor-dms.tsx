@@ -16,6 +16,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { RichContent } from "../../rich-content";
 import { useT } from "../../i18n";
+import { plainPreview } from "../lib/plain-preview";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { useChatAnnotationScope } from "./chat-annotation-context";
 
@@ -69,8 +70,8 @@ function PredecessorDm({
         {label}
       </CollapsibleTrigger>
       {!open && last && (
-        <p data-testid="predecessor-preview" data-speaker={last.role} className="truncate pl-4 text-caption text-faint-foreground">
-          {last.role === "user" ? t(($) => $.message_list.speaker_you) : agentName}: {last.content}
+        <p data-testid="predecessor-preview" data-speaker={last.role} className="line-clamp-2 pl-4 text-caption text-faint-foreground">
+          {last.role === "user" ? t(($) => $.message_list.speaker_you) : agentName}: {plainPreview(last.content)}
         </p>
       )}
       <CollapsibleContent>

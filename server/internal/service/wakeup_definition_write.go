@@ -70,6 +70,8 @@ type WakeupDefinitionWrite struct {
 	RuleKey  string
 	Revision int64
 	Patch    WakeupConfigPatch
+	// Pending: an agent proposes this definition; it waits for a human admin.
+	Pending bool
 }
 
 // WakeupEffectiveRule is a resolved rule plus the fields the viewed scope sets
@@ -77,6 +79,9 @@ type WakeupDefinitionWrite struct {
 type WakeupEffectiveRule struct {
 	EffectiveWakeupConfig
 	Overrides []string
+	// AlreadySatisfied is set on the preview of a condition rule: what enabling
+	// it would meet at once.
+	AlreadySatisfied *WakeupSatisfiedPreview
 }
 
 func wakeupDefinitionView(row db.IssueWakeupDefinition) (WakeupDefinitionView, error) {
@@ -160,9 +165,10 @@ func loadWakeupChain(ctx context.Context, q *db.Queries, ref WakeupScopeRef, key
 // resolves to. A sparse patch (an instruction, a mode, a filter) inherits its
 // target from an ancestor, and its text would run on that agent, so naming no
 // target does not make it the writer's to steer. A rule the proposal leaves
-// disabled runs nothing and needs no proof. An unreadable target fails closed.
+// disabled runs nothing and needs no proof, but one held only by a pending root
+// does: the admin's approval would start it. An unreadable target fails closed.
 func (s *IssueWakeupService) authorizeResolvedTarget(ctx context.Context, q *db.Queries, ws, member pgtype.UUID, eff EffectiveWakeupConfig) error {
-	if !eff.Enabled() {
+	if !eff.Enabled() && !eff.Held {
 		return nil
 	}
 	kind, id := WakeupPatchTarget(eff.Config)
@@ -221,6 +227,7 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	normalizeWakeupPatch(&patch)
 	if create {
 		withRootAggregateDefault(&patch)
+		withRootFireDefault(&patch)
 	}
 	if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 		return WakeupDefinitionView{}, err
@@ -239,6 +246,9 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	if err := q.LockWakeupDefinitionScope(ctx, ref.lockKey()); err != nil {
+		return WakeupDefinitionView{}, err
+	}
+	if err := normalizeWakeupConditionTrigger(ctx, tx, ref.WorkspaceID, &patch); err != nil {
 		return WakeupDefinitionView{}, err
 	}
 	if aliased {
@@ -282,13 +292,15 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
 		return WakeupDefinitionView{}, err
 	}
+	// A human admin lifts the hold by writing the definition enabled.
+	pending := w.Pending || existing.PendingApproval && !(patch.Enabled.Set && patch.Enabled.Value)
 	candidate := patch
 	if aliased {
 		if candidate, err = workspaceAliasReadback(in.settings, w.RuleKey, patch); err != nil {
 			return WakeupDefinitionView{}, err
 		}
 	}
-	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Patch: candidate})
+	eff, err := resolveWakeupProposal(in, ref, &WakeupDefinition{Scope: ref.Kind, ScopeID: ref.ID, Root: root, Pending: pending, Patch: candidate})
 	if err != nil {
 		return WakeupDefinitionView{}, err
 	}
@@ -322,11 +334,11 @@ func (s *IssueWakeupService) SaveWakeupDefinition(ctx context.Context, ref Wakeu
 	switch {
 	case keep && !found:
 		row, err = q.InsertWakeupDefinition(ctx, db.InsertWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, Root: root, Config: raw, EventTypes: WakeupEventSelector(rest), PendingApproval: pending, Actor: member,
 		})
 	case keep:
 		row, err = q.UpdateWakeupDefinition(ctx, db.UpdateWakeupDefinitionParams{
-			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, EventTypes: WakeupEventSelector(rest), Actor: member,
+			WorkspaceID: ref.WorkspaceID, ScopeKind: string(ref.Kind), ScopeID: ref.ID, RuleKey: w.RuleKey, ExpectedRevision: existing.Revision, Config: raw, EventTypes: WakeupEventSelector(rest), PendingApproval: pending, Actor: member,
 		})
 	case found:
 		var n int64
@@ -440,12 +452,31 @@ func (s *IssueWakeupService) DeleteWakeupDefinition(ctx context.Context, ref Wak
 	} else if n == 0 {
 		return ErrWakeupConflict
 	}
+	if err := reopenBroaderSweepsOfPendingOverride(ctx, q, row); err != nil {
+		return err
+	}
 	if _, builtin := WakeupBuiltinBaseline(ruleKey); builtin && ref.Kind == WakeupScopeIssue {
 		if err := retireLegacyIssueOverride(ctx, tx, q, ref, ruleKey); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// reopenBroaderSweepsOfPendingOverride keeps activation from being lost when an
+// override is deleted before its own sweep ran. The broader sweeps left the
+// issues it covered to that sweep and moved on, finished or not, so they restart
+// from the beginning of their scope to reach those issues under the inherited rule.
+func reopenBroaderSweepsOfPendingOverride(ctx context.Context, q *db.Queries, deleted db.IssueWakeupDefinition) error {
+	if deleted.Root || deleted.SweepDone && deleted.SweepRevision == deleted.Revision {
+		return nil
+	}
+	broader := []string{string(WakeupScopeWorkspace)}
+	if WakeupScope(deleted.ScopeKind) == WakeupScopeIssue {
+		broader = append(broader, string(WakeupScopeProject))
+	}
+	_, err := q.ReopenBroaderWakeupSweeps(ctx, db.ReopenBroaderWakeupSweepsParams{WorkspaceID: deleted.WorkspaceID, RuleKey: deleted.RuleKey, ScopeKinds: broader})
+	return err
 }
 
 // retireLegacyIssueOverride resets an issue's customized legacy row to
@@ -593,12 +624,16 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		normalizeWakeupPatch(&patch)
 		if newRoot {
 			withRootAggregateDefault(&patch)
+			withRootFireDefault(&patch)
 		}
 		if err := checkWakeupAggregateScope(ref.Kind, patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		refs, err := validateWakeupPatch(ruleKey, patch, time.Now())
 		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		if err := s.normalizeConditionTriggerReadOnly(ctx, ref.WorkspaceID, &patch); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
 		if err := s.authorizeWakeupRefs(ctx, q, ref.WorkspaceID, member, refs); err != nil {
@@ -622,7 +657,11 @@ func (s *IssueWakeupService) EffectiveWakeupRule(ctx context.Context, ref Wakeup
 		if err := s.authorizeResolvedTarget(ctx, q, ref.WorkspaceID, member, eff); err != nil {
 			return WakeupEffectiveRule{}, err
 		}
-		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate)}, nil
+		satisfied, err := s.previewSatisfied(ctx, ref, eff.Config.Trigger)
+		if err != nil {
+			return WakeupEffectiveRule{}, err
+		}
+		return WakeupEffectiveRule{EffectiveWakeupConfig: eff, Overrides: overriddenWakeupFields(in, ref, candidate), AlreadySatisfied: satisfied}, nil
 	}
 	eff, err := ResolveWakeupConfig(in)
 	if err != nil {

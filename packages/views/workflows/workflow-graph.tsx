@@ -116,6 +116,7 @@ export function WorkflowGraph({
   className,
   onChange,
   onSelectStep,
+  highlightEdge,
 }: {
   workflow: Pick<IssueWorkflow, "steps">;
   /** The status the issue sits on, or the step being edited; highlighted. */
@@ -125,11 +126,18 @@ export function WorkflowGraph({
   /** Makes the graph editable; receives the steps with the new exit. */
   onChange?: (steps: IssueWorkflowStep[]) => void;
   onSelectStep?: (statusKey: string) => void;
+  /** Emphasises the listed exits from `from` to `to`; nothing is drawn if none matches. */
+  highlightEdge?: { from: string; to: string } | null;
 }) {
   const { t } = useT("issues");
   const labelOf = useStatusLabel(useWorkspaceId());
   const handlerLabel = useStepHandlerLabel(project);
   const edges = useMemo(() => workflowEdges(workflow), [workflow]);
+
+  const isHighlighted = useCallback(
+    (e: { from: string; to: string }) => e.from === highlightEdge?.from && e.to === highlightEdge.to,
+    [highlightEdge],
+  );
 
   const editable = !!onChange;
   const [moved, setMoved] = useState<Record<string, XYPosition>>({});
@@ -180,6 +188,11 @@ export function WorkflowGraph({
     () =>
       edges.map((e) => ({
         id: e.id,
+        ...(isHighlighted(e) && {
+          animated: true,
+          zIndex: 1,
+          style: { stroke: "var(--color-primary)", strokeWidth: 3 },
+        }),
         source: e.from,
         target: e.to,
         label: e.timeout ? `${e.guard} · ${e.timeout}` : e.guard,
@@ -188,7 +201,7 @@ export function WorkflowGraph({
         labelStyle: { fill: "var(--color-foreground)", fontSize: 11 },
         labelBgStyle: { fill: "var(--color-card)" },
       })),
-    [edges],
+    [edges, isHighlighted],
   );
 
   return (
@@ -225,7 +238,7 @@ export function WorkflowGraph({
         className="sr-only"
       >
         {edges.map((e) => (
-          <li key={e.id}>
+          <li key={e.id} aria-current={isHighlighted(e) ? "true" : undefined}>
             {t(($) => $.workflows.flow.exit_item, {
               from: labelOf(e.from),
               to: labelOf(e.to),

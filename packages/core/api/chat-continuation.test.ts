@@ -107,6 +107,17 @@ describe("chat continuation contracts", () => {
     expect(ChatMessageSchema.parse({ ...message, message_kind: "future-kind" }).message_kind).toBe("message");
   });
 
+  it("keeps a valid carried_from_session_id and drops absent, null and malformed values", () => {
+    const message = { id: "message", chat_session_id: "chat", role: "assistant" };
+    const origin = "11111111-1111-4111-8111-111111111111";
+    expect(ChatMessageSchema.parse({ ...message, carried_from_session_id: origin }).carried_from_session_id).toBe(origin);
+    expect(ChatMessageSchema.parse(message).carried_from_session_id).toBeUndefined();
+    expect(ChatMessageSchema.parse({ ...message, carried_from_session_id: null }).carried_from_session_id).toBeNull();
+    for (const value of [{}, 42, [], true]) {
+      expect(ChatMessageSchema.parse({ ...message, carried_from_session_id: value }).carried_from_session_id).toBeUndefined();
+    }
+  });
+
   it("retains a valid successor and drops a malformed successor", () => {
     const nextSessionId = "11111111-1111-4111-8111-111111111111";
     expect(ChatSessionSchema.parse({ id: "old", continued_into_session_id: nextSessionId }).continued_into_session_id).toBe(nextSessionId);

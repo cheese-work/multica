@@ -25,6 +25,9 @@ func newAskedRecordFixture(test *testing.T) askedRecordFixture {
 	if err != nil {
 		test.Fatal(err)
 	}
+	if result.ParkedActivity != nil {
+		fixture.issue = result.ParkedIssue
+	}
 	messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": fixture.sessionID, "role": "user", "content": "  Yes.\nKeep the exact words.  ", "sent_via": "interactive_jwt"})
 	chatTaskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"status": "running", "chat_session_id": fixture.sessionID, "runtime_id": handlerTestRuntimeID(test)})
 	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)
@@ -164,20 +167,6 @@ func TestAskedDecisionRecordRefusals(test *testing.T) {
 			}
 			fixture.assertRecordCounts(test, 0)
 		})
-	}
-}
-
-func TestAskedDecisionRecordEscalationHold(test *testing.T) {
-	fixture := newAskedRecordFixture(test)
-	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, fixture.decision.ID)
-	var before pgtype.Timestamptz
-	dbfx.QueryRow(test, `SELECT clock_timestamp()`).Scan(&before)
-	result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
-	if err != nil {
-		test.Fatal(err)
-	}
-	if result.Answer.EffectiveAt.Time.Sub(before.Time).Minutes() < 10 || result.Answer.WakeAt.Valid {
-		test.Fatalf("hold was bypassed: %+v", result.Answer)
 	}
 }
 

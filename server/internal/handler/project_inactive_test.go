@@ -264,8 +264,8 @@ func TestInactiveProjectCloseSerializesMoveOut(test *testing.T) {
 					test.Fatal(err)
 				}
 			}, func() *testutil.Response {
-				return testutil.Call(test, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID,
-					map[string]any{"project_id": projectValue, "suppress_run": true}), "id", issueID))
+				return testutil.Call(test, testHandler.UpdateIssue, withURLParam(withActorSource(newRequest(http.MethodPut, "/api/issues/"+issueID,
+					map[string]any{"project_id": projectValue, "suppress_run": true}), "interactive_jwt"), "id", issueID))
 			})
 			response.Want(http.StatusOK)
 			if got := issueProject(test, issueID); got != target {

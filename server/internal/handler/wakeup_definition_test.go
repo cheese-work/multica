@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,11 +25,13 @@ type wdKit struct {
 	issueID   string
 }
 
-// newWakeupDefinitionKit opens the activation gate, which is closed unless a
-// test asks, and removes every definition the test wrote.
+// newWakeupDefinitionKit completes the test's own activation, which opens the
+// gate, and removes every definition the test wrote.
 func newWakeupDefinitionKit(t *testing.T) *wdKit {
 	t.Helper()
-	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, true)
+	s := useWakeupActivation(t)
+	wipeWakeupDefinitions(t)
+	completeActivation(t, s)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
@@ -128,6 +131,18 @@ func asUser(userID string) wdAs {
 
 // asAgentRun speaks as an agent from inside one of its live runs, which the
 // owner's session header still backs: the actor is the agent.
+// asTaskTokenRun is a real agent run: the auth middleware stamps the task-token
+// source, agent, task and bound workspace from the token row.
+func (k *wdKit) asTaskTokenRun() wdAs {
+	agentID := dbfx.Agent(k.t, "wd token agent", handlerTestRuntimeID(k.t))
+	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
+	return func(r *http.Request) *http.Request {
+		r.Header.Set("X-Actor-Source", "task_token")
+		r.Header.Set("X-Workspace-ID", testWorkspaceID)
+		return asRun(r, agentID, taskID)
+	}
+}
+
 func (k *wdKit) asAgentRun() wdAs {
 	agentID := dbfx.Agent(k.t, "wd actor agent", handlerTestRuntimeID(k.t))
 	taskID := dbfx.Task(k.t, agentID, testutil.Cols{"status": "running", "runtime_id": handlerTestRuntimeID(k.t), "originator_user_id": testUserID, "accountable_user_id": testUserID})
@@ -162,6 +177,7 @@ func configKeys(t *testing.T, raw json.RawMessage) map[string]json.RawMessage {
 // ---- activation gate -------------------------------------------------------
 
 func TestWakeupDefinitionWritesClosedByDefault(t *testing.T) {
+	useWakeupActivation(t)
 	k := &wdKit{t: t, projectID: dbfx.Project(t, "wd project")}
 	k.issueID = dbfx.Issue(t, "wd issue", testutil.Cols{"project_id": k.projectID, "number": nextWorkspaceIssueNumber(t)})
 	wipeWakeupDefinitions(t)
@@ -224,8 +240,8 @@ func TestWakeupDefinitionAccessMatrix(t *testing.T) {
 			}
 		}
 	}
-	// An agent can read what it may see but cannot create a root default.
-	k.workspace().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), agentRun).Want(http.StatusForbidden)
+	// An agent can read what it may see; its disabled-only create is covered by
+	// TestWakeupDefinitionAgentCreatesDisabledRule.
 	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), asUser(member)).Want(http.StatusForbidden)
 	k.workspace().list(agentRun)
 }
@@ -1153,4 +1169,172 @@ func TestWakeupDefinitionAliasOnlyWritesWorkAtTheCeiling(t *testing.T) {
 		}
 	}
 	k.workspace().put(first.RuleKey, strconv.FormatInt(int64(first.Revision), 10), cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "edited"})).Want(http.StatusOK)
+}
+
+// ---- custom event and condition triggers (L10) -----------------------------
+
+func TestWakeupDefinitionCustomTriggersAreAcceptedBehindTheGate(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	caps := k.workspace().list().Capabilities
+	for _, kind := range []string{"event", "condition"} {
+		if !slices.Contains(caps.TriggerKinds, kind) {
+			t.Fatalf("trigger kinds %v lack %q", caps.TriggerKinds, kind)
+		}
+	}
+	condition := map[string]any{"kind": "condition", "condition": map[string]any{"type": "issue_field", "field": "status", "value": "todo"}}
+	body := cfg(map[string]any{"enabled": true, "trigger": condition, "instruction": "it is ready"})
+
+	// The preview says how many issues already satisfy the predicate, and persists nothing.
+	var preview wakeupEffectiveResponse
+	k.project().preview("", body).Want(http.StatusOK).JSON(&preview)
+	if preview.AlreadySatisfied == nil || preview.AlreadySatisfied.Satisfied != 1 || preview.AlreadySatisfied.Examined != 1 || preview.AlreadySatisfied.Truncated {
+		t.Fatalf("already satisfied = %+v, want the project's one todo issue", preview.AlreadySatisfied)
+	}
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("a preview persisted %d definitions", n)
+	}
+	var event wakeupEffectiveResponse
+	k.project().preview("", cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "event", "events": []string{"comment.created"}}, "instruction": "x"})).Want(http.StatusOK).JSON(&event)
+	if event.AlreadySatisfied != nil {
+		t.Fatalf("an event rule has no predicate to count, got %+v", event.AlreadySatisfied)
+	}
+
+	k.project().create(body).Want(http.StatusCreated)
+	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "event", "events": []string{"not.an.event"}}, "instruction": "x"})).Want(http.StatusBadRequest)
+	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "condition", "condition": map[string]any{"type": "nonsense"}}, "instruction": "x"})).Want(http.StatusBadRequest)
+	if n := wdCount(t); n != 1 {
+		t.Fatalf("%d definitions stored, want only the valid one", n)
+	}
+
+	// Behind the closed gate none of this is writable.
+	withFeatureFlag(t, testHandler, featureflags.WakeupDefinitionWrites, false)
+	k.project().create(body).Want(http.StatusForbidden)
+}
+
+// ---- default-derived instances in the wakeup lists (L10 UI guard) ----------
+
+// The issue and workspace lists return every non-system instance, so a client
+// has to be able to tell a default-derived one from a local rule: the server
+// refuses to save or enable it as a local wakeup.
+func TestWakeupListsExposeTheOriginOfADefaultDerivedInstance(t *testing.T) {
+	issue := dbfx.Issue(t, "origin issue", testutil.Cols{"number": nextWorkspaceIssueNumber(t)})
+	agent := dbfx.Agent(t, "origin agent", testRuntimeID)
+	dbfx.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", issue)
+	const ruleKey = "9c2d7a4e-5b61-4f08-8d3a-1e7f6b2c0a01"
+	dbfx.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,enabled,disabled_at,default_rule_key,default_scope_kind,default_scope_id)
+ VALUES(gen_random_uuid(),$1,$2,$3,$4,'derived','event','continuous','{comment.created}',false,now(),$5,'workspace',$1)`, testWorkspaceID, issue, agent, testUserID, ruleKey)
+	dbfx.Exec(t, `INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instruction,kind,mode,event_types,enabled)
+ VALUES(gen_random_uuid(),$1,$2,$3,$4,'local','event','continuous','{comment.created}',true)`, testWorkspaceID, issue, agent, testUserID)
+
+	origin := func(items []map[string]any, instruction string) any {
+		t.Helper()
+		for _, it := range items {
+			if it["agent_id"] == agent && (it["instruction"] == instruction || instruction == "") {
+				return it["default_rule_key"]
+			}
+		}
+		return "absent"
+	}
+	list := httptest.NewRecorder()
+	testHandler.ListIssueWakeups(list, withURLParam(newRequest("GET", "/", nil), "id", issue))
+	var issueItems []map[string]any
+	if list.Code != 200 || json.Unmarshal(list.Body.Bytes(), &issueItems) != nil || len(issueItems) != 2 {
+		t.Fatalf("issue list: %d %s", list.Code, list.Body.String())
+	}
+	if got := origin(issueItems, "derived"); got != ruleKey {
+		t.Fatalf("issue list: default-derived instance default_rule_key = %v, want %q", got, ruleKey)
+	}
+	if got := origin(issueItems, "local"); got != nil {
+		t.Fatalf("issue list: local rule default_rule_key = %v, want null", got)
+	}
+
+	ws := httptest.NewRecorder()
+	testHandler.ListWorkspaceWakeups(ws, newRequest("GET", "/api/issue-wakeups?scope=all", nil))
+	var page struct {
+		Items []map[string]any `json:"items"`
+	}
+	if ws.Code != 200 || json.Unmarshal(ws.Body.Bytes(), &page) != nil {
+		t.Fatalf("workspace list: %d %s", ws.Code, ws.Body.String())
+	}
+	var derived, local bool
+	for _, it := range page.Items {
+		if it["issue_id"] != issue {
+			continue
+		}
+		if key, present := it["default_rule_key"]; present && key == ruleKey {
+			derived = true
+		} else if present && key == nil {
+			local = true
+		}
+	}
+	if !derived || !local {
+		t.Fatalf("workspace list: derived=%v local=%v, want the origin on the derived row and null on the local one: %s", derived, local, ws.Body.String())
+	}
+}
+
+// ---- agent-created rules are stored disabled -------------------------------
+
+// An agent may propose a workspace or project rule, but it is stored disabled
+// until a human admin enables it. The agent cannot enable, edit or delete any
+// rule, and issue scope stays human-only.
+func TestWakeupDefinitionAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	agentRun := k.asAgentRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		// The agent asks for an enabled rule; the server stores it disabled.
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: agent-created rule enabled = %s, want false: %s", s.kind, enabled, created.Config)
+		}
+		var stored bool
+		dbfx.QueryRow(t, `SELECT (config->>'enabled')::boolean FROM issue_wakeup_definition WHERE workspace_id = $1 AND rule_key = $2`, testWorkspaceID, created.RuleKey).Scan(&stored)
+		if stored {
+			t.Fatalf("%s: stored rule is enabled", s.kind)
+		}
+		if eff := s.effective(created.RuleKey); eff.Enabled {
+			t.Fatalf("%s: effective rule is enabled", s.kind)
+		}
+		// The agent cannot enable, edit or delete it.
+		enable := cfg(map[string]any{"enabled": true})
+		s.put(created.RuleKey, created.Revision, enable, agentRun).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), agentRun).Want(http.StatusForbidden)
+		// A human admin still enables it.
+		enabled := decodeDefinition(t, s.put(created.RuleKey, created.Revision, body).Want(http.StatusOK))
+		if got := string(configKeys(t, enabled.Config)["enabled"]); got != "true" {
+			t.Fatalf("%s: human enable left enabled = %s", s.kind, got)
+		}
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), agentRun).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by an agent at issue scope", n)
+	}
+}
+
+// A real agent run (task token) can create a disabled workspace or project
+// rule, and nothing else. A cloud-node PAT still cannot.
+func TestWakeupDefinitionTaskTokenAgentCreatesDisabledRule(t *testing.T) {
+	k := newWakeupDefinitionKit(t)
+	run := k.asTaskTokenRun()
+	own := handlerTestAgentID(t)
+	for _, s := range []wdScope{k.workspace(), k.project()} {
+		wipeWakeupDefinitions(t)
+		body := cfg(map[string]any{"enabled": true, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": own}})
+		created := decodeDefinition(t, s.create(body, run).Want(http.StatusCreated))
+		if enabled := string(configKeys(t, created.Config)["enabled"]); enabled != "false" {
+			t.Fatalf("%s: task-token rule enabled = %s, want false", s.kind, enabled)
+		}
+		s.put(created.RuleKey, created.Revision, body, run).Want(http.StatusForbidden)
+		s.del(created.RuleKey, strconv.FormatInt(int64(created.Revision), 10), run).Want(http.StatusForbidden)
+		s.preview("", body, run).Want(http.StatusForbidden)
+		s.create(body, asActorSource("cloud_pat")).Want(http.StatusForbidden)
+	}
+	wipeWakeupDefinitions(t)
+	k.issue().put("child_done", 0, cfg(map[string]any{"name": "x"}), run).Want(http.StatusForbidden)
+	if n := wdCount(t); n != 0 {
+		t.Fatalf("%d definitions persisted by a task-token agent outside create", n)
+	}
 }

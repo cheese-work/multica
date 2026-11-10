@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { codeToHtml, bundledLanguages, type BundledLanguage } from 'shiki'
+import type { BundledLanguage } from 'shiki'
 import { Copy, Check } from "@multica/ui/icons"
 import { useTranslation } from "react-i18next"
 import { Button } from "@multica/ui/components/ui/button"
@@ -47,10 +47,8 @@ function getCacheKey(code: string, lang: string): string {
   return `${lang}:${code}`
 }
 
-function isValidLanguage(lang: string): lang is BundledLanguage {
-  const normalized = LANGUAGE_ALIASES[lang] || lang
-  return normalized in bundledLanguages
-}
+// Shiki is large; it loads when the first code block renders, not with the page.
+const loadShiki = () => import('shiki')
 
 /**
  * CodeBlock - Syntax highlighted code block using Shiki
@@ -92,8 +90,9 @@ export function CodeBlock({
       }
 
       try {
+        const { codeToHtml, bundledLanguages } = await loadShiki()
         // Use valid language or fallback to plaintext
-        const lang = isValidLanguage(resolvedLang) ? resolvedLang : 'text'
+        const lang = resolvedLang in bundledLanguages ? (resolvedLang as BundledLanguage) : 'text'
 
         // Dual themes: Shiki outputs CSS variables for both themes in one pass.
         // CSS handles switching via .dark selector (see globals.css).
@@ -193,7 +192,7 @@ export function CodeBlock({
                 variant="ghost"
                 size="icon-xs"
                 onClick={handleCopy}
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
+                className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
                 aria-label={t(($) => $.copy_code)}
               >
                 {copied ? (

@@ -8,7 +8,7 @@ import test from "node:test";
 const load = () => import("./pr-close-target-check.mjs");
 const script = new URL("./pr-close-target-check.mjs", import.meta.url).pathname;
 const fixtures = new URL("./fixtures/pr-close-target/", import.meta.url).pathname;
-const workflow = new URL("../.github/workflows/pr-close-target-check.yml", import.meta.url).pathname;
+const workflow = new URL("../.github/workflows/pr-guards.yml", import.meta.url).pathname;
 
 const pullRequest = (overrides = {}) => ({
   title: "fix(x): change (CHE-1926) [squash]",
@@ -28,6 +28,28 @@ test("a branch that names the operational parent fails", async () => {
   assert.deepEqual(
     await strayKeys(pullRequest({ headRef: "fix/che-1911-schedule-cooldown-lookup" })),
     ["CHE-1911@branch"],
+  );
+});
+
+test("an agent name token in the branch prefix is not an issue key", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-3025) [squash]",
+      body: "Closes CHE-3025",
+      headRef: "agent/x99-codex-luna-2/che-3025-change",
+    })),
+    [],
+  );
+});
+
+test("an issue key inside the agent segment of the branch still counts", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): change (CHE-2) [squash]",
+      body: "Closes CHE-2",
+      headRef: "agent/che-1/che-2-fix",
+    })),
+    ["CHE-1@branch"],
   );
 });
 
@@ -201,6 +223,21 @@ test("the CLI rejects the operational-parent fixture and accepts the child fixtu
   assert.match(correctTarget.stdout, /CHE-1926/);
 });
 
+test("the CLI output lists a CHE key held in the agent segment as the effective target", () => {
+  const dir = mkdtempSync(join(tmpdir(), "close-target-"));
+  try {
+    const event = join(dir, "event.json");
+    writeFileSync(event, JSON.stringify({
+      pull_request: { title: "fix", body: "Refs CHE-1", head: { ref: "agent/che-1/task" } },
+    }));
+    const result = spawnSync("node", [script, "--event", event], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /effective target\(s\): CHE-1 from title\/branch/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the CLI skips upstream-sync heads", () => {
   const result = spawnSync(
     "node",
@@ -214,7 +251,7 @@ test("the CLI skips upstream-sync heads", () => {
 test("the workflow runs the trusted workflow checker on a hosted runner without PR code", () => {
   const content = readFileSync(workflow, "utf8");
   assert.match(content, /pull_request_target:/);
-  assert.match(content, /runs-on: ubuntu-24\.04/);
+  assert.match(content, /runs-on: \$\{\{ vars\.RUNNER_PR_CLOSE_TARGET_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);

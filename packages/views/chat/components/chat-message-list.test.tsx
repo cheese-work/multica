@@ -86,14 +86,14 @@ describe("ChatMessageList continuation announcements", () => {
     );
   }
 
-  it("puts the metadata-driven source announcement before a collapsed, separate summary and opens at the newest item", () => {
+  it("puts the metadata-driven source announcement and a collapsed summary in one block and opens at the newest item", () => {
     const { container } = renderContinuation({ continuedFromSessionId: previousSessionId });
     const link = screen.getByRole("link", { name: "previous DM" });
     expect(link).toHaveAttribute("href", `/acme/chat?session=${previousSessionId}`);
     expect(link.parentElement).toHaveClass("text-muted-foreground");
     expect(link.parentElement).toHaveTextContent("Continued from previous DM");
-    const disclosure = screen.getByRole("button", { name: "Conversation summary" });
-    expect(link.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const disclosure = screen.getByRole("button", { name: "Show earlier context" });
+    expect(screen.queryByRole("button", { name: "Conversation summary" })).not.toBeInTheDocument();
     expect(disclosure).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText(/Retained context/)).not.toBeInTheDocument();
     expect(container.querySelector("[data-initial-position]")).toHaveAttribute("data-initial-position", JSON.stringify({ index: "LAST", align: "end" }));
@@ -107,13 +107,14 @@ describe("ChatMessageList continuation announcements", () => {
     const link = screen.getByRole("link", { name: "Continued in →" });
     expect(link).toHaveAttribute("href", `/acme/chat?session=${nextSessionId}`);
     expect(link.parentElement).toHaveClass("text-muted-foreground");
-    expect(screen.getByRole("button", { name: "Conversation summary" }).compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Show earlier context" }).compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("keeps legacy summaries readable without inventing a continuation link", () => {
     renderContinuation();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Conversation summary" }));
+    expect(screen.getByText("Conversation summary")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show earlier context" }));
     expect(screen.getByText(/Retained context/)).toBeInTheDocument();
   });
 
@@ -147,6 +148,8 @@ describe("ChatMessageList predecessor DMs", () => {
     message_kind: "continuation_summary", task_id: null, created_at: "2026-10-13T00:00:00Z",
   };
 
+  const expandContext = () => fireEvent.click(screen.getByRole("button", { name: "Show earlier context" }));
+
   function renderChain({ onQuoteMessage, sessions = chain }: { onQuoteMessage?: (content: string) => void; sessions?: ChatSession[] | null } = {}) {
     const qc = new QueryClient();
     const seed = (id: string, messages: ChatMessage[]) =>
@@ -171,17 +174,20 @@ describe("ChatMessageList predecessor DMs", () => {
 
   it("shows one collapsed section per earlier DM of a 3-DM chain, oldest first", () => {
     renderChain();
+    expandContext();
     const sections = screen.getAllByRole("button", { name: /^Earlier DM/ });
     expect(sections.map((b) => b.textContent)).toEqual(["Earlier DM · DM 1", "Earlier DM · DM 2"]);
     for (const section of sections) expect(section).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Oldest question")).not.toBeInTheDocument();
     expect(screen.queryByText("Middle question")).not.toBeInTheDocument();
     // Above the new DM's own messages.
-    expect(sections[1]!.compareDocumentPosition(screen.getByRole("button", { name: "Conversation summary" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The summary shares the one expand with them.
+    expect(screen.getByText("Summary of the past")).toBeInTheDocument();
   });
 
   it("expands a section to its messages, read-only", () => {
     renderChain();
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 1" }));
     expect(screen.getByText("Oldest question")).toBeInTheDocument();
     expect(screen.getByText("Oldest answer")).toBeInTheDocument();
@@ -192,6 +198,7 @@ describe("ChatMessageList predecessor DMs", () => {
   it("quotes the exact text of a predecessor message", () => {
     const onQuoteMessage = vi.fn();
     renderChain({ onQuoteMessage });
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
     const quotes = screen.getAllByRole("button", { name: "Quote" });
     expect(quotes).toHaveLength(2);
@@ -201,6 +208,7 @@ describe("ChatMessageList predecessor DMs", () => {
 
   it("offers no quote action when the host cannot take one", () => {
     renderChain();
+    expandContext();
     fireEvent.click(screen.getByRole("button", { name: "Earlier DM · DM 2" }));
     expect(screen.getByText("Middle question")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Quote" })).not.toBeInTheDocument();
@@ -219,6 +227,7 @@ describe("ChatMessageList predecessor DMs", () => {
       session(third, { status: "active", continued_from_session_id: second }),
     ];
     renderChain({ sessions: loop });
+    expandContext();
     expect(screen.getAllByRole("button", { name: /^Earlier DM/ })).toHaveLength(2);
   });
 });
@@ -1352,7 +1361,7 @@ describe("ChatMessageList onboarding starter cards", () => {
 describe("ChatMessageList compact notice", () => {
   const notice = {
     id: "notice", chat_session_id: "44444444-4444-4444-8444-444444444444", role: "assistant" as const,
-    content: "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.",
+    content: "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.",
     message_kind: "compact_notice", task_id: null, created_at: "2026-10-16T00:00:00Z",
   } as unknown as ChatMessage;
 
@@ -1370,8 +1379,84 @@ describe("ChatMessageList compact notice", () => {
     );
 
     const note = screen.getByRole("note");
-    expect(note).toHaveTextContent("Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.");
+    expect(note).toHaveTextContent("Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.");
     expect(note).toHaveClass("text-muted-foreground");
+  });
+
+  // CHE-4438: a full-width divider marks the compaction point; above it is the
+  // old session, below it the new one.
+  it("draws a divider labelled with time and tokens at the compaction point", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[notice]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const divider = screen.getByRole("separator");
+    expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
+    expect(divider).toHaveClass("w-full");
+  });
+
+  it.each([
+    "Preset set to fast for the next run.",
+    "Auto-compact failed (failed). Type /compact to retry.",
+  ])("draws no divider on a notice that is not a compaction: %s", (content) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent(content);
+  });
+});
+
+describe("ChatMessageList row keys (CHE-3329)", () => {
+  // A compact turn persists two assistant messages under one task_id: the
+  // compaction summary and the reply.
+  const pair = [
+    {
+      id: "summary", chat_session_id: "s", role: "assistant" as const, content: "SUMMARY-TEXT",
+      message_kind: "compaction_summary", task_id: TASK_ID, created_at: "2026-10-16T00:00:00Z",
+    },
+    {
+      id: "reply", chat_session_id: "s", role: "assistant" as const, content: "REPLY-TEXT",
+      message_kind: "message", task_id: TASK_ID, created_at: "2026-10-16T00:00:01Z",
+    },
+  ] as unknown as ChatMessage[];
+
+  it("gives two assistant messages sharing a task_id distinct row keys", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(new Set(keys).size).toBe(keys.length);
+    // CHE-4438: the summary is folded behind a row; the reply stays visible.
+    expect(screen.queryByText("SUMMARY-TEXT")).toBeNull();
+    expect(screen.getByRole("button", { name: /Summary for the agent/ })).toBeInTheDocument();
+    expect(screen.getByText("REPLY-TEXT")).toBeInTheDocument();
+    expect(error.mock.calls.filter(([m]) => String(m).includes("same key"))).toHaveLength(0);
+    error.mockRestore();
+  });
+
+  it("keeps the task key on the one reply that inherits the live row", () => {
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(keys).toEqual(["summary", `task:${TASK_ID}`]);
   });
 });
 

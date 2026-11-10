@@ -84,6 +84,12 @@ UPDATE issue_workflow SET
         ELSE NULLIF(sqlc.narg('max_runs_per_issue')::int, 0)
     END,
     include_child_prs = COALESCE(sqlc.narg('include_child_prs')::boolean, include_child_prs),
+    -- A start status left out of the write keeps its value; '' clears it back
+    -- to todo.
+    start_status_key = CASE
+        WHEN sqlc.narg('start_status_key')::text IS NULL THEN start_status_key
+        ELSE NULLIF(sqlc.narg('start_status_key')::text, '')
+    END,
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid
@@ -204,6 +210,15 @@ SELECT EXISTS (
 SELECT COUNT(*)::bigint FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND workflow_id = sqlc.arg('workflow_id')::uuid;
+
+-- name: MinInheritedRunsOverrideForProject :one
+-- The smallest run override among a project's issues that follow its workflow
+-- (0 when one has none, or there are none). A workflow switch widens the budget
+-- of the issue with the smallest override first.
+SELECT COALESCE(MIN(COALESCE(max_runs_override, 0)), 0)::int FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id = sqlc.arg('project_id')::uuid
+  AND workflow_id IS NULL;
 
 -- name: ListOverrideIssueStatusesForWorkflow :many
 -- Statuses held by issues that follow this workflow by override, for an edit

@@ -24,6 +24,9 @@ func recordMemberMovesOf(t *testing.T, issueID string) {
 		if changed, _ := payload["status_changed"].(bool); !changed || issue.ID != issueID {
 			return
 		}
+		if recorded, _ := payload["activity_id"].(string); recorded != "" {
+			return
+		}
 		prev, _ := payload["prev_status"].(string)
 		details, _ := json.Marshal(map[string]string{"from": prev, "to": issue.Status})
 		if _, err := testHandler.Queries.CreateActivity(context.Background(), db.CreateActivityParams{

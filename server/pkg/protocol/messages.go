@@ -1,6 +1,9 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
@@ -74,6 +77,11 @@ const (
 	// coexist on one task and a daemon with only the old capability never
 	// receives a PR event through the mid-run channel.
 	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
+	// DaemonCapabilityTaskSupplementChatV1 extends task-supplement-v1 to a DM
+	// chat run: a steered follow-up is claimed through the same supplement
+	// endpoints. Offered only for chat tasks, so an old daemon's chat run has
+	// no capability row and its follow-ups stay queued.
+	DaemonCapabilityTaskSupplementChatV1 = "task-supplement-chat-v1"
 	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
 	// descendant cleanup and explicitly confirms its cancellation outcome.
 	// Persist only at start; old daemons must retain their cancellation contract.
@@ -93,6 +101,15 @@ const (
 	// daemon puts on the agent's PATH has `issue comment add --steer`. The
 	// server tells a squad leader about steering only then.
 	DaemonCapabilityCLICommentSteerV1 = "cli-comment-steer-v1"
+	// DaemonCapabilityAppliedSettingsV1 advertises that the daemon reports the
+	// launch selection it passed to the CLI (model, thinking level, service
+	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
+	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
+	// DaemonCapabilityRuntimeProfileV1 advertises that the daemon honors the
+	// claim's harness_profile (personal | managed). A daemon without it would
+	// drop the field and launch the user's personal config, so the server never
+	// hands a managed task to a claimer that lacks it.
+	DaemonCapabilityRuntimeProfileV1 = "runtime-profile-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -444,6 +461,38 @@ type DaemonHeartbeatRequestPayload struct {
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
 	// not report it; zero is a real "idle".
 	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
+	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
+	// not per runtime), repeated on every runtime heartbeat until the next
+	// sample. Nil from a daemon that does not sample (older, macOS, Windows).
+	HostSample *DaemonHostSample `json:"host_sample,omitempty"`
+}
+
+// HostSampleInterval is how often a daemon takes a host sample.
+const HostSampleInterval = time.Minute
+
+// HostSampleStaleAfter is three sample intervals: a sample older than this is
+// unknown, never the last value.
+const HostSampleStaleAfter = 3 * HostSampleInterval
+
+// MaxHostSampleDisks bounds the mounts in one sample.
+const MaxHostSampleDisks = 8
+
+// DaemonHostSample is one host reading. SampledAt is truncated to the minute.
+type DaemonHostSample struct {
+	SampledAt  time.Time        `json:"sampled_at"`
+	CPUPercent float64          `json:"cpu_percent"`
+	RAMPercent float64          `json:"ram_percent"`
+	Disks      []DaemonHostDisk `json:"disks,omitempty"`
+}
+
+type DaemonHostDisk struct {
+	MountPath string  `json:"mount_path"`
+	Percent   float64 `json:"percent"`
+}
+
+// HostSampleStale reports whether a sample taken at sampledAt is stale at now.
+func HostSampleStale(sampledAt, now time.Time) bool {
+	return now.Sub(sampledAt) > HostSampleStaleAfter
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.

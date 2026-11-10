@@ -22,6 +22,10 @@ import (
 // them, not just queued and running (CHE-1804 P1).
 var activeTaskStates = []string{"queued", "dispatched", "running", "waiting_local_directory", "deferred"}
 
+// legacyPct80 pins the pre-CHE-4331 rule (80% of the window) for tests whose
+// numbers predate the per-window token defaults.
+const legacyPct80 = `{"auto_compact":{"threshold_pct":80}}`
+
 type compactionTask struct {
 	ID             string
 	Status         string
@@ -133,6 +137,33 @@ func (dm autoCompactDM) userMessageCount(t *testing.T) int {
 	return dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND role = 'user'`, dm.sessionID)
 }
 
+// CHE-4331: with nothing saved, the trigger is 190k tokens for a 200k window
+// and 200k tokens for a 1M window.
+func TestAutoCompactDefaultsFireAtPerWindowTokens(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, tc := range []struct {
+		name           string
+		tokens, window int64
+		want           bool
+	}{
+		{"200k below", 189_999, 200_000, false},
+		{"200k at", 190_000, 200_000, true},
+		{"1M below", 199_999, 1_000_000, false},
+		{"1M at", 200_000, 1_000_000, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm.complete(t, dm.sendRunning(t, "hello"), tc.tokens, tc.window)
+			got := len(dm.compactionTasks(t))
+			if (got == 1) != tc.want || got > 1 {
+				t.Fatalf("%d compaction tasks, want fire=%v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAutoCompactFiresOnlyAtThePercentThreshold(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
@@ -151,7 +182,7 @@ func TestAutoCompactFiresOnlyAtThePercentThreshold(t *testing.T) {
 		{"unknown window", 164_000, 0, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			dm.complete(t, dm.sendRunning(t, "hello"), tc.tokens, tc.window)
 			got := len(dm.compactionTasks(t))
 			if (got == 1) != tc.want || got > 1 {
@@ -165,7 +196,7 @@ func TestAutoCompactEnqueuesATaskWithAServerBuiltReason(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	dm.complete(t, dm.sendRunning(t, "hello"), 164_000, 200_000)
 
 	tasks := dm.compactionTasks(t)
@@ -188,8 +219,9 @@ func TestAutoCompactEnqueuesATaskWithAServerBuiltReason(t *testing.T) {
 		t.Fatalf("compaction task owns %d user messages, want 0", n)
 	}
 	notices := dm.messages(t, "compact_notice")
-	if len(notices) != 1 || notices[0] != wantReason+" Continuing in a new DM." {
-		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantReason+" Continuing in a new DM.")
+	wantNotice := "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below."
+	if len(notices) != 1 || notices[0] != wantNotice {
+		t.Fatalf("compact_notice rows = %q, want one %q", notices, wantNotice)
 	}
 	if role := dbfx.Count(t, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compact_notice' AND role = 'assistant'`, dm.sessionID); role != 1 {
 		t.Fatalf("the notice must be an assistant message")
@@ -227,14 +259,14 @@ func TestAutoCompactIgnoresRunsThatCannotTrigger(t *testing.T) {
 		t.Skip("database not available")
 	}
 	t.Run("a failed run", func(t *testing.T) {
-		dm := newAutoCompactDM(t, `{}`, `{}`)
+		dm := newAutoCompactDM(t, legacyPct80, `{}`)
 		dm.fail(t, dm.sendRunning(t, "hello"))
 		if n := len(dm.compactionTasks(t)); n != 0 {
 			t.Fatalf("%d compaction tasks after a failed run, want 0", n)
 		}
 	})
 	t.Run("an already continued DM", func(t *testing.T) {
-		dm := newAutoCompactDM(t, `{}`, `{}`)
+		dm := newAutoCompactDM(t, legacyPct80, `{}`)
 		taskID := dm.sendRunning(t, "hello")
 		next := dbfx.ChatSession(t, dm.agentID, testutil.Cols{})
 		dbfx.Exec(t, `UPDATE chat_session SET continued_into_session_id = $1 WHERE id = $2`, next, dm.sessionID)
@@ -244,7 +276,7 @@ func TestAutoCompactIgnoresRunsThatCannotTrigger(t *testing.T) {
 		}
 	})
 	t.Run("a compaction task itself", func(t *testing.T) {
-		dm := newAutoCompactDM(t, `{}`, `{}`)
+		dm := newAutoCompactDM(t, legacyPct80, `{}`)
 		dm.complete(t, dm.sendRunning(t, "/compact"), 190_000, 200_000)
 		for _, c := range dm.compactionTasks(t) {
 			dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, c.ID)
@@ -262,7 +294,7 @@ func TestAutoCompactQueuesAtMostOneCompactionInEveryActiveState(t *testing.T) {
 	}
 	for _, state := range activeTaskStates {
 		t.Run(state, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			first := dm.sendRunning(t, "one")
 			second := dm.sendRunning(t, "two")
 			dm.complete(t, first, 170_000, 200_000)
@@ -285,7 +317,7 @@ func TestSendIsRefusedWhileACompactionIsActiveInEveryActiveState(t *testing.T) {
 	}
 	for _, state := range activeTaskStates {
 		t.Run(state, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			dm.complete(t, dm.sendRunning(t, "hello"), 170_000, 200_000)
 			tasks := dm.compactionTasks(t)
 			if len(tasks) != 1 {
@@ -313,7 +345,7 @@ func TestCancellingTheCompactionUnlocksSends(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	dm.complete(t, dm.sendRunning(t, "hello"), 170_000, 200_000)
 	tasks := dm.compactionTasks(t)
 	if len(tasks) != 1 {
@@ -334,7 +366,7 @@ func TestManualCompactIsMarkedAtEnqueueAndLocksSends(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	manual := sendDirectChat(t, context.Background(), dm.agentID, dm.sessionID, "/compact keep SHAs")
 	tasks := dm.compactionTasks(t)
 	if len(tasks) != 1 || tasks[0].ID != manual {
@@ -348,7 +380,7 @@ func TestManualCompactIsMarkedAtEnqueueAndLocksSends(t *testing.T) {
 	}
 	// Not a compaction: the command word must be the first word of the message.
 	t.Run("a message that only mentions /compact", func(t *testing.T) {
-		other := newAutoCompactDM(t, `{}`, `{}`)
+		other := newAutoCompactDM(t, legacyPct80, `{}`)
 		sendDirectChat(t, context.Background(), other.agentID, other.sessionID, "please /compact later")
 		if n := len(other.compactionTasks(t)); n != 0 {
 			t.Fatalf("a message that only mentions /compact created %d compaction tasks", n)
@@ -360,7 +392,7 @@ func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T)
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{"compact_prompt":"Keep exact candidate SHAs."}`, `{}`)
+	dm := newAutoCompactDM(t, `{"compact_prompt":"Keep exact candidate SHAs.","auto_compact":{"threshold_pct":80}}`, `{}`)
 	dm.complete(t, dm.sendRunning(t, "hello"), 170_000, 200_000)
 	tasks := dm.compactionTasks(t)
 	if len(tasks) != 1 {
@@ -387,11 +419,11 @@ func TestClaimedAutoCompactionRunsTheCompactPromptWithoutUserInput(t *testing.T)
 	}
 }
 
-func TestAutoCompactReasonLeadsTheNewDMSummary(t *testing.T) {
+func TestAutoCompactSuccessKeepsTheReasonNoticeAndPostsNoFailure(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	dm.complete(t, dm.sendRunning(t, "hello"), 164_000, 200_000)
 	tasks := dm.compactionTasks(t)
 	if len(tasks) != 1 {
@@ -400,24 +432,17 @@ func TestAutoCompactReasonLeadsTheNewDMSummary(t *testing.T) {
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, tasks[0].ID)
 
 	response := continueChatRequest(t, dm.sessionID, "Retained goal.", tasks[0].ID)
-	if response.Code != http.StatusCreated {
+	if response.Code != http.StatusOK {
 		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
 	}
-	var result ChatContinueResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
-	dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
-
 	var summary string
-	dbfx.QueryRow(t, `SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'continuation_summary'`, result.Session.ID).Scan(&summary)
-	wantFirstLine := "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold."
-	if first, _, _ := strings.Cut(summary, "\n"); first != wantFirstLine {
-		t.Fatalf("first line of the new DM summary = %q, want %q", first, wantFirstLine)
-	}
+	dbfx.QueryRow(t, `SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'`, dm.sessionID).Scan(&summary)
 	if !strings.Contains(summary, "Retained goal.") {
 		t.Fatalf("the agent's summary is missing from %q", summary)
+	}
+	wantNotice := "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below."
+	if notices := dm.messages(t, "compact_notice"); len(notices) != 1 || notices[0] != wantNotice {
+		t.Fatalf("compact notices = %q, want one %q", notices, wantNotice)
 	}
 
 	// The compaction succeeded: finishing it must not post a failure notice.
@@ -446,7 +471,7 @@ func TestAutoCompactFailureNoticeOnEveryTerminalPath(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			dm.complete(t, dm.sendRunning(t, "hello"), 170_000, 200_000)
 			tasks := dm.compactionTasks(t)
 			if len(tasks) != 1 {
@@ -467,7 +492,7 @@ func TestAutoCompactFailureNoticeOnEveryTerminalPath(t *testing.T) {
 	}
 
 	t.Run("a failed manual compaction posts no notice", func(t *testing.T) {
-		dm := newAutoCompactDM(t, `{}`, `{}`)
+		dm := newAutoCompactDM(t, legacyPct80, `{}`)
 		manual := sendDirectChat(t, context.Background(), dm.agentID, dm.sessionID, "/compact")
 		markTaskRunning(t, context.Background(), manual)
 		dm.fail(t, manual)
@@ -481,7 +506,7 @@ func TestAutoCompactDoesNotLoopAfterAFailureUntilTheContextGrows(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	dm.complete(t, dm.sendRunning(t, "one"), 170_000, 200_000)
 	failed := dm.compactionTasks(t)[0]
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, failed.ID)
@@ -502,7 +527,7 @@ func TestFailedManualCompactionDoesNotSuppressAutoCompact(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	manual := sendDirectChat(t, context.Background(), dm.agentID, dm.sessionID, "/compact")
 	markTaskRunning(t, context.Background(), manual)
 	dm.fail(t, manual)
@@ -516,7 +541,7 @@ func TestChatSessionReportsCompacting(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
-	dm := newAutoCompactDM(t, `{}`, `{}`)
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
 	compacting := func() bool {
 		t.Helper()
 		request := withChatTestWorkspaceCtx(t, withURLParam(newRequest(http.MethodGet, "/api/chat/sessions/"+dm.sessionID, nil), "sessionId", dm.sessionID))
@@ -591,7 +616,7 @@ func TestCancellingTheCompactionUnlocksSendsInEveryActiveState(t *testing.T) {
 	}
 	for _, state := range activeTaskStates {
 		t.Run(state, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			task := dm.startAutoCompaction(t, state)
 			if w := dm.send(t, "blocked"); w.Code != http.StatusConflict {
 				t.Fatalf("send while compaction is %q: %d, want 409", state, w.Code)
@@ -621,7 +646,7 @@ func TestSweptStaleCompactionRunsTheFailureGuard(t *testing.T) {
 	}
 	for _, state := range []string{"queued", "dispatched", "running"} {
 		t.Run(state, func(t *testing.T) {
-			dm := newAutoCompactDM(t, `{}`, `{}`)
+			dm := newAutoCompactDM(t, legacyPct80, `{}`)
 			task := dm.startAutoCompaction(t, state)
 			if state != "dispatched" {
 				// A running or queued task is only swept once its runtime's heartbeat
@@ -676,5 +701,34 @@ func TestSweptStaleCompactionRunsTheFailureGuard(t *testing.T) {
 				t.Fatalf("%d compaction tasks at the re-arm point, want 2", n)
 			}
 		})
+	}
+}
+
+// (k): a success bumps the epoch, so the next segment compacts again at the
+// threshold even though the last attempt triggered at the same size; a failure
+// inside one epoch still backs off (TestAutoCompactDoesNotLoopAfterAFailureUntilTheContextGrows).
+func TestAutoCompactRearmsAfterASuccessfulCompaction(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	dm := newAutoCompactDM(t, legacyPct80, `{}`)
+	dm.complete(t, dm.sendRunning(t, "one"), 170_000, 200_000)
+	first := dm.compactionTasks(t)[0]
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, first.ID)
+	if response := continueChatRequest(t, dm.sessionID, "Retained goal.", first.ID); response.Code != http.StatusOK {
+		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
+	}
+	dm.complete(t, first.ID, 0, 0)
+	for _, content := range dm.messages(t, "compact_notice") {
+		if strings.Contains(content, "failed") {
+			t.Fatalf("a successful compaction posted %q", content)
+		}
+	}
+
+	next := dm.sendRunning(t, "two")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET chat_compaction_epoch = 1 WHERE id = $1`, next)
+	dm.complete(t, next, 170_000, 200_000)
+	if n := len(dm.compactionTasks(t)); n != 2 {
+		t.Fatalf("%d compaction tasks after a success and a new threshold run, want 2", n)
 	}
 }

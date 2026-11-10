@@ -34,6 +34,25 @@ message. It compares after collapsing runs of whitespace, and it quotes the
 person's original text, not the agent's copy. Without an excerpt, the record
 quotes the whole message, as before.
 
+### Which messages can be a source
+
+The server accepts a DM message as a source when all of these hold:
+
+- It is in the same DM, written by the person in the interactive web app, and
+  not ingested from a channel.
+- It came after the request ping.
+- It was sent before the agent's answering turn started, **or** the person
+  steered it into that same turn and the provider confirmed delivery.
+
+A steered message is one the person sent while the turn ran. The server keeps
+a receipt for it, with a status. Only the `delivered` status makes the message
+a source, and only for the turn it was steered into. The server refuses
+`pending`, `delivering`, `uncertain` and `failed` receipts, and a message steered
+into a different turn.
+
+The next turn lists delivered steered messages next to the other message ids,
+marked `(steered)`, until a record quotes them.
+
 ## States
 
 ```mermaid
@@ -70,8 +89,8 @@ What happens to the request depends on where the answer came from:
 
 | Answer came from | Disclaim result |
 | --- | --- |
-| A live asked request | The request reopens and the agent can be answered again. |
-| An unprompted record (no request) | The request is cancelled. The agent must ask again. |
+| A live asked request | The request reopens and the agent can be answered again. A `card_required` withdrawal links the card. |
+| An unprompted record (no request) | The request is cancelled. The agent must ask again. A `card_required` withdrawal (a non-reversible class) says so: the comment links the lane, and the agent posts a new decision request that the person answers on its card. |
 | A request whose DM is archived | The request is cancelled and a cancel note is posted. The agent must ask again. |
 
 If the agent was not woken yet, nothing is delivered. If the agent was already
@@ -84,3 +103,27 @@ retraction is sent.
 - Issue timeline: the record card, shown under the person's name.
 - DM: the request card and the answer.
 - Agent runs: the agent receives the answer when the record turns effective.
+
+## Waiver scope line (CHE-4326)
+
+A human test-first waiver is a decision record. Put the PR's diff digest in the ask's option and repeat it in the
+agent's note of the record as its own line:
+
+```text
+Waiver-Diff-Digest: <64 lowercase hex>
+```
+
+Print the digest with this command, then check a record against a PR with the same command plus `--waiver-record`:
+
+```sh
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest --waiver-record <record.md>
+```
+
+The second command prints `waiver_applies` and exits 3 when the record does not apply. A main-only merge (no change to
+any PR file) keeps the digest, so the waiver still applies. Any change to a PR file voids it. The command fails
+closed (exit 3, `waiver_applies=false`) when the record has no such line, has more than one line that names the key, or
+has one that is not exact (case, indent, trailing text, bad hex). A head SHA in prose is never a scope, so a waiver
+recorded before this line existed stays bound to the head a human reads in it. To carry it across a main-only merge,
+re-record it once with the `Waiver-Diff-Digest:` line for the digest of that head. The command checks scope only. Read the record against
+`multica decision get <id>` first: it must be the answered decision (`authority: human`) of the same issue.

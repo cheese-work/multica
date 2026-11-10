@@ -8,6 +8,7 @@ import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
+import { DecisionActionPanel } from "./decision-action-panel";
 import { TranscriptButton } from "../../common/task-transcript";
 import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
 import { IssuePeekHost } from "./issue-peek";
@@ -103,13 +104,18 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  */
 export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound } = useCanonicalIssue(wsId, routeId);
+  const { canonicalId, issue, isResolving, notFound, loadError, dataError, retry, authoritative } = useCanonicalIssue(wsId, routeId);
   const highlight = useCommentHighlightHash();
   const { searchParams } = useNavigation();
   const paths = useWorkspacePaths();
   const runId = searchParams.get("run");
+  // The approve URL a run-budget request prints names the action to approve.
+  const approveId = searchParams.get("approve");
+  const keep = new URLSearchParams();
+  if (runId) keep.set("run", runId);
+  if (approveId) keep.set("approve", approveId);
 
-  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, runId ? `?run=${encodeURIComponent(runId)}` : "");
+  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, keep.size ? `?${keep.toString()}` : "");
 
   if (isResolving) return <IssueDetailSkeleton />;
 
@@ -117,6 +123,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
+  if (loadError) return <IssueNotFound showBackLink={!onDelete} onRetry={retry} dataError={dataError} issueKey={routeId} />;
   if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
 
   // The page hosts a side peek so Shift+Click on an issue mention in the
@@ -128,7 +135,9 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
         issueId={canonicalId}
         onDelete={onDelete}
         highlightCommentId={highlight.commentId}
+        authoritative={authoritative}
       />
+      {approveId && <DecisionActionPanel key={approveId} actionId={approveId} issueId={canonicalId} issueLabel={issue?.identifier ?? routeId} />}
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}
     </IssuePeekHost>
   );

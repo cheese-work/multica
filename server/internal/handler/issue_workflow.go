@@ -71,8 +71,9 @@ func canManageProjectWorkflow(member db.Member, project db.Project) bool {
 }
 
 type IssueWorkflowHandlerPayload struct {
-	Type string `json:"type"`
-	ID   string `json:"id,omitempty"`
+	Type   string `json:"type"`
+	ID     string `json:"id,omitempty"`
+	Preset string `json:"preset,omitempty"`
 }
 
 // IssueWorkflowStepPayload is one status of a workflow, in board order, with
@@ -90,6 +91,12 @@ type IssueWorkflowStepPayload struct {
 	Edges []issueworkflow.Edge `json:"edges,omitempty"`
 	// SubWorkflow makes the step a sub-workflow node; see issueworkflow.SubWorkflow.
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
+	// keeps the stored gates, [] clears them.
+	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// WaitsOnOpenDecision: see issueworkflow.Step. A write that omits it keeps
+	// the stored value; false clears it. A response carries it only when set.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -113,6 +120,9 @@ type IssueWorkflowResponse struct {
 	// IncludeChildPRs says whether a parent's PR guards also read the PRs of
 	// its direct children.
 	IncludeChildPRs bool `json:"include_child_prs"`
+	// StartStatusKey is where new issues of the workflow start; empty means
+	// todo (CHE-3113).
+	StartStatusKey string `json:"start_status_key"`
 }
 
 // StatusMappingRequirement names a status some issues are on that the target
@@ -138,9 +148,9 @@ type workflowMappingPlan struct {
 }
 
 func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
-	return IssueWorkflowStepPayload{
+	p := IssueWorkflowStepPayload{
 		StatusKey:     s.StatusKey,
-		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID},
+		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Preset: s.Handler.Preset},
 		Instructions:  s.Instructions,
 		NextStatusKey: s.NextStatusKey,
 		BackStatusKey: s.BackStatusKey,
@@ -148,13 +158,19 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		AdvanceOnCIGreen: s.AdvanceOnCIGreen,
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
+		Entry:            s.Entry,
 	}
+	if s.WaitsOnOpenDecision {
+		set := true
+		p.WaitsOnOpenDecision = &set
+	}
+	return p
 }
 
 func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.Step {
 	return issueworkflow.Step{
 		StatusKey:     statusKey,
-		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID},
+		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID, Preset: in.Handler.Preset},
 		Instructions:  in.Instructions,
 		NextStatusKey: in.NextStatusKey,
 		BackStatusKey: in.BackStatusKey,
@@ -162,6 +178,9 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
+		Entry:            in.Entry,
+
+		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 	}
 }
 
@@ -188,6 +207,7 @@ func issueWorkflowToResponse(row db.IssueWorkflow, def issueworkflow.Definition,
 
 		MaxRunsPerIssue: maxRunsPtr(row.MaxRunsPerIssue),
 		IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey:  row.StartStatusKey.String,
 	}
 }
 
@@ -380,6 +400,10 @@ type IssueWorkflowStepInput struct {
 	Edges            []issueworkflow.Edge `json:"edges,omitempty"`
 	// SubWorkflow: see IssueWorkflowStepPayload.
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
+	// Entry: see IssueWorkflowStepPayload.
+	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// WaitsOnOpenDecision: see IssueWorkflowStepPayload.
+	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -410,6 +434,10 @@ type IssueWorkflowWriteRequest struct {
 	// IncludeChildPRs sets whether a parent's PR guards read its children's
 	// PRs. Omitted keeps the stored value (true for a new workflow).
 	IncludeChildPRs *bool `json:"include_child_prs,omitempty"`
+	// StartStatusKey names the status where new issues of the workflow start
+	// (CHE-3113). Omitted keeps the stored value; "" clears it back to todo.
+	// It must be an unstarted or started step of the workflow.
+	StartStatusKey *string `json:"start_status_key,omitempty"`
 }
 
 var newStatusDefaultColor = map[string]string{
@@ -442,6 +470,9 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			AdvanceOnCIGreen: in.AdvanceOnCIGreen,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
+			Entry:            in.Entry,
+
+			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
@@ -459,6 +490,41 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 		steps = append(steps, step)
 	}
 	return steps, created, "", nil
+}
+
+// keepStoredEntry gives a step that omits entry the gates stored for its
+// status, so a client that predates the field cannot drop them by saving. An
+// explicit empty list clears.
+func keepStoredEntry(steps, stored []issueworkflow.Step) {
+	for i := range steps {
+		if steps[i].Entry != nil {
+			continue
+		}
+		for _, old := range stored {
+			if old.StatusKey == steps[i].StatusKey {
+				steps[i].Entry = old.Entry
+				break
+			}
+		}
+	}
+}
+
+// keepStoredWaits gives a step whose input omits waits_on_open_decision the
+// value stored for its status, so a client that predates the field cannot drop
+// it by saving. An explicit false clears. steps and inputs are index-aligned,
+// as resolveStepInputs returns one step per input.
+func keepStoredWaits(steps []issueworkflow.Step, inputs []IssueWorkflowStepInput, stored []issueworkflow.Step) {
+	for i := range steps {
+		if i >= len(inputs) || inputs[i].WaitsOnOpenDecision != nil {
+			continue
+		}
+		for _, old := range stored {
+			if old.StatusKey == steps[i].StatusKey {
+				steps[i].WaitsOnOpenDecision = old.WaitsOnOpenDecision
+				break
+			}
+		}
+	}
 }
 
 func createWorkflowStatus(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, in NewWorkflowStatus, allowCreate bool) (db.IssueStatus, bool, string, error) {
@@ -723,8 +789,13 @@ func writeMappingRequired(w http.ResponseWriter, plan workflowMappingPlan, msg s
 // remapIssues applies a validated mapping inside the caller's transaction.
 // An issue it moves into a done or closed status ends its wakeups, as any
 // status write does; the returned runs are for the caller's post-commit
-// broadcast.
-func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, projectIDs []pgtype.UUID, plan workflowMappingPlan, mapping map[string]string) ([]db.Issue, []db.AgentTaskQueue, error) {
+// broadcast. Each moved issue gets its status_changed row in the same
+// transaction, attributed to the member who made the workflow change.
+func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, projectIDs []pgtype.UUID, plan workflowMappingPlan, mapping map[string]string, actorID string) ([]db.Issue, []db.AgentTaskQueue, error) {
+	trigger := service.StatusTrigger{
+		Cause:   service.StatusCause{Kind: service.StatusCauseWorkflowRemap, By: service.StatusCauseActor{Type: "member", ID: actorID}},
+		Channel: "unknown",
+	}
 	var changed []db.Issue
 	var cancelled []db.AgentTaskQueue
 	for _, req := range plan.Required {
@@ -738,6 +809,9 @@ func remapIssues(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID, proje
 			return nil, nil, err
 		}
 		for _, issue := range rows {
+			if _, err := service.RecordStatusChange(ctx, qtx, issue, req.StatusKey, issue.Status, trigger, nil); err != nil {
+				return nil, nil, fmt.Errorf("record status change: %w", err)
+			}
 			stopped, err := service.StopClosedIssueWakeups(ctx, qtx, issue)
 			if err != nil {
 				return nil, nil, err
@@ -777,7 +851,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -805,6 +879,17 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	// A bound agent write is authorized by its decision, checked below.
 	if !machine && !canEditIssueWorkflow(member, current) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
+		return
+	}
+	// The run cap is budget authority (CHE-2798 S1b): only an interactive
+	// session changes it. A write that leaves it as stored keeps its usual
+	// authorization. The budget start has no write path here.
+	if req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32 && r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+		writeErrorCode(w, http.StatusForbidden, "budget_requires_interactive", "changing a workflow's run budget needs an interactive web or desktop session")
+		return
+	}
+	if machine && req.MaxRunsPerIssue != nil {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
 	// Read under the exclusive catalog lock, so no other save can slip between
@@ -853,6 +938,10 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	keepStoredEntry(steps, currentSteps)
+	if req.Steps != nil {
+		keepStoredWaits(steps, *req.Steps, currentSteps)
+	}
 	name, description, steps = issueworkflow.Normalize(name, description, steps)
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
 	if err != nil {
@@ -860,6 +949,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := issueworkflow.Validate(name, description, steps, current.IsDefault, catalog); err != nil {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
+		return
+	}
+	// The start status is checked against the steps this save leaves, so a
+	// step edit cannot strand it.
+	startStatus := pgtype.Text{}
+	startKey := current.StartStatusKey.String
+	if req.StartStatusKey != nil {
+		startKey = strings.TrimSpace(*req.StartStatusKey)
+		startStatus = pgtype.Text{String: startKey, Valid: true}
+	}
+	if err := issueworkflow.ValidateStartStatus(startKey, steps, catalog); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", err.Error())
 		return
 	}
@@ -928,7 +1029,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, current.ID, req.DecisionBindingFields, currentSteps, steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}
@@ -947,6 +1048,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		Steps:            raw,
 		MaxRunsPerIssue:  maxRuns,
 		IncludeChildPrs:  includeChildPRs,
+		StartStatusKey:   startStatus,
 	})
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -957,7 +1059,7 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save workflow")
 		return
 	}
-	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping)
+	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, projectIDs, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
 		slog.Warn("UpdateIssueWorkflow remap failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
@@ -1021,6 +1123,17 @@ func (h *Handler) DeleteIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete workflow")
 		return
+	}
+	if !isInteractiveRequest(r) {
+		widens, err := workflowDeleteWidensBudget(ctx, qtx, row, len(projects) > 0)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to delete workflow")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
 	}
 	if len(projects) > 0 {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -1180,6 +1293,17 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 			target = &def
 		}
 	}
+	if !isInteractiveRequest(r) {
+		widens, err := projectSwitchWidensBudget(ctx, qtx, project, target)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to change workflow")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
+	}
 	catalog, err := h.workflowStatusCatalog(ctx, qtx, wsUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load issue statuses")
@@ -1226,10 +1350,20 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to change workflow")
 		return
 	}
-	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, []pgtype.UUID{project.ID}, plan, req.StatusMapping)
+	changed, cancelledWakeups, err := remapIssues(ctx, qtx, wsUUID, []pgtype.UUID{project.ID}, plan, req.StatusMapping, uuidToString(member.UserID))
 	if err != nil {
 		slog.Warn("SetProjectWorkflow remap failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to move issues to the new statuses")
+		return
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind:        "project.workflow.update",
+		WorkspaceID: wsUUID,
+		TargetID:    project.ID,
+		Before:      map[string]any{"workflow_id": optionalUUIDString(project.WorkflowID)},
+		After:       map[string]any{"workflow_id": optionalUUIDString(updated.WorkflowID), "issues_remapped": len(changed)},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.workflow.update")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1335,6 +1469,12 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		if step.SubWorkflow == nil {
 			step.SubWorkflow = stored.SubWorkflow
 		}
+		if step.Entry == nil {
+			step.Entry = stored.Entry
+		}
+		if req.WaitsOnOpenDecision == nil {
+			step.WaitsOnOpenDecision = stored.WaitsOnOpenDecision
+		}
 	}
 	if err := issueworkflow.ValidateHandoff(step, def); err != nil {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_handoff", err.Error())
@@ -1351,7 +1491,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if machine {
-		if err := h.verifyWorkflowWrite(ctx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
+		if err := h.verifyWorkflowWrite(ctx, tx, qtx, r, wsUUID, def.ID, req.DecisionBindingFields, previous, def.Steps); err != nil {
 			writeDecisionError(w, err, "workflow write")
 			return
 		}
@@ -1448,6 +1588,22 @@ func (h *Handler) saveHandoffOnProjectCopy(w http.ResponseWriter, r *http.Reques
 		slog.Warn("SetIssueWorkflowHandoff copy failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to save handoff")
 		return
+	}
+	if !isInteractiveRequest(r) {
+		def, err := issueworkflow.Decode(row)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		widens, err := projectSwitchWidensBudget(ctx, qtx, project, &def)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save handoff")
+			return
+		}
+		if widens {
+			writeBudgetRebindingRefused(w)
+			return
+		}
 	}
 	updated, err := qtx.SetProjectWorkflow(ctx, db.SetProjectWorkflowParams{ID: project.ID, WorkspaceID: source.WorkspaceID, WorkflowID: row.ID})
 	if err != nil {

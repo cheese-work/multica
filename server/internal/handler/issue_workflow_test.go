@@ -25,8 +25,11 @@ func workflowTestSuffix() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano())
 }
 
+// workflowRequest is a person's request from the app (interactive sign-in).
 func workflowRequest(method, path string, body any) *http.Request {
-	return newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
+	req := newRequest(method, path+"?workspace_id="+testWorkspaceID, body)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	return req
 }
 
 // statusSteps names a workflow's own steps by status key.
@@ -69,6 +72,14 @@ func resetDefaultWorkflow(t *testing.T) {
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM issue_workflow WHERE workspace_id = $1 AND is_default`, testWorkspaceID)
 	})
+}
+
+// dropStoredDefaultWorkflow removes a Default an earlier test left stored, for
+// a test that needs to snapshot its own (a leftover carries that test's
+// handoffs, or predates the statuses this one creates).
+func dropStoredDefaultWorkflow(t *testing.T) {
+	t.Helper()
+	dbfx.Exec(t, `DELETE FROM issue_workflow WHERE workspace_id = $1 AND is_default`, testWorkspaceID)
 }
 
 func createWorkflowTestProject(t *testing.T, title string) string {
@@ -781,6 +792,7 @@ func TestArchiveStatusGuardsNamedWorkflowsOnly(t *testing.T) {
 
 func TestClaimCarriesProjectWorkflow(t *testing.T) {
 	seedTestCatalog(t)
+	dropStoredDefaultWorkflow(t)
 	resetDefaultWorkflow(t)
 	agentID := seededReadyAgentID(t)
 	quietProject := createWorkflowTestProject(t, "Workflow quiet project")
