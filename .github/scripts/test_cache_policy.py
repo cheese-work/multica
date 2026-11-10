@@ -94,5 +94,15 @@ class CachePolicyTests(unittest.TestCase):
         self.assertEqual(policy.plan_deletions(caches), [])
 
 
+class PullRequestOnlySetupGoTests(unittest.TestCase):
+    def test_go_lint_does_not_save_a_setup_go_cache_per_pull_request(self):
+        # CHE-5128: go-lint runs on pull requests only, so main never holds the
+        # 1.26.x setup-go entry and every PR ref saved its own ~397 MB copy.
+        ci = Path(__file__).parents[1].joinpath('workflows', 'ci.yml').read_text()
+        job = ci.split('\n  go-lint:\n', 1)[1].split('\n  # ', 1)[0]
+        step = job.split('uses: actions/setup-go@v7', 1)[1].split('- name:', 1)[0]
+        self.assertRegex(step, r'(?m)^\s+cache: false\s*$')
+
+
 if __name__ == '__main__':
     unittest.main()

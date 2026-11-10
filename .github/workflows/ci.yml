@@ -910,7 +910,9 @@ jobs:
           # job builds no shipped binary. Raise with a golangci-lint built on 1.27.
           go-version: "~1.26.10"
           check-latest: true
-          cache-dependency-path: server/go.sum
+          # CHE-5128: this job runs on pull requests only, so main never holds a 1.26.x
+          # entry and each PR ref would save its own ~397 MB copy. Modules re-download.
+          cache: false
 
       # CHE-4877: golangci-lint-action downloads the binary on every run and failed on HTTP 504. Fetch the pinned
       # tarball ourselves (5xx retry, sha256 check on every run, so a restored cache is never trusted unverified).
