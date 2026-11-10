@@ -18,6 +18,7 @@ import {
   serveOverHttps,
   withDb,
   type DmBudgetSeed,
+  type TestPasskey,
 } from "./dm-budget-proposal-helpers";
 
 // D8a: an agent's chat task proposes `issue.run_budget.raise` in a DM; the owner
@@ -30,12 +31,13 @@ const approveUrl = /\/api\/decision-actions\/[0-9a-f-]+\/approve$/;
 
 let api: TestApiClient;
 let seed: DmBudgetSeed;
+let passkey: TestPasskey | undefined;
 let actionId: string;
 let approveRequests: number;
 let loseNextApproveResponse: boolean;
 
 async function enrollPasskey(page: Page) {
-  const passkey = await seedPasskey(seed.userId);
+  passkey = await seedPasskey(seed.userId);
   await addVirtualAuthenticator(page, passkey);
 }
 
@@ -61,12 +63,13 @@ async function openDm(page: Page) {
 test.beforeEach(async ({}, testInfo) => {
   api = await createTestApi();
   seed = await seedDmBudgetIssue(api, `${testInfo.workerIndex}-${Date.now().toString(36)}`);
+  passkey = undefined;
   approveRequests = 0;
   loseNextApproveResponse = false;
 });
 
 test.afterEach(async () => {
-  await removeSeed(seed);
+  await removeSeed(seed, passkey);
   await api.cleanup();
 });
 

@@ -262,7 +262,7 @@ export async function countRaisedRows(issueId: string) {
 }
 
 /** Test-created rows, removed in dependency order; the issue goes with `api.cleanup()`. */
-export async function removeSeed(seed: DmBudgetSeed) {
+export async function removeSeed(seed: DmBudgetSeed, passkey?: TestPasskey) {
   await withDb(async (db) => {
     await db.query(`DELETE FROM activity_log WHERE issue_id = $1`, [seed.issueId]);
     await db.query(`DELETE FROM issue_run_budget_entry WHERE issue_id = $1`, [seed.issueId]);
@@ -271,7 +271,8 @@ export async function removeSeed(seed: DmBudgetSeed) {
     await db.query(`DELETE FROM task_token WHERE task_id = $1`, [seed.chatTaskId]);
     await db.query(`DELETE FROM agent_task_queue WHERE id = $1`, [seed.chatTaskId]);
     await db.query(`DELETE FROM chat_session WHERE id = $1`, [seed.chatSessionId]);
-    await db.query(`DELETE FROM user_passkey WHERE user_id = $1`, [seed.userId]);
+    // Only the credential this test created; the E2E user's other passkeys are not ours to delete.
+    if (passkey) await db.query(`DELETE FROM user_passkey WHERE user_id = $1 AND credential_id = $2`, [seed.userId, passkey.credentialId]);
   });
 }
 
