@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -82,6 +83,21 @@ func TestPRWatchdogSkipsWhenPRStateUnchangedSinceLastRun(t *testing.T) {
 	}
 	if got := e.skipped(t); got != 1 {
 		t.Fatalf("skip activities = %d, want 1", got)
+	}
+	var details []byte
+	e.f.QueryRow(t, `SELECT details FROM activity_log WHERE issue_id=$1 AND action='wakeup_skipped' ORDER BY created_at DESC LIMIT 1`, e.issue).Scan(&details)
+	var audit struct {
+		PullRequests []struct {
+			HeadSHA      string `json:"head_sha"`
+			ChecksRollup string `json:"checks_rollup_state"`
+			ReviewState  string `json:"review_state"`
+		} `json:"pull_requests"`
+	}
+	if err := json.Unmarshal(details, &audit); err != nil {
+		t.Fatal(err)
+	}
+	if len(audit.PullRequests) != 1 || audit.PullRequests[0].HeadSHA != "h1" || audit.PullRequests[0].ChecksRollup != "FAILURE" {
+		t.Fatalf("skip audit PR state = %+v, want head h1 and FAILURE rollup", audit.PullRequests)
 	}
 	var pending int
 	e.f.QueryRow(t, `SELECT count(*) FROM issue_wakeup_receipt r JOIN issue_wakeup w ON w.id=r.wakeup_id WHERE w.issue_id=$1 AND r.processed_at IS NULL`, e.issue).Scan(&pending)
@@ -173,6 +189,17 @@ func TestPRWatchdogStillRunsWhenSomethingChanged(t *testing.T) {
 		}, true},
 		{"check rollup changed", func(t *testing.T, e skipEnv) {
 			e.f.Exec(t, `UPDATE github_pull_request SET checks_rollup_state='PENDING' WHERE id=$1`, e.prID)
+		}, true},
+		{"review state changed", func(t *testing.T, e skipEnv) {
+			e.f.Exec(t, `UPDATE github_pull_request SET review_state='changes_requested', review_head_sha='h1', review_id=42, review_at=clock_timestamp() WHERE id=$1`, e.prID)
+		}, true},
+		{"comment added", func(t *testing.T, e skipEnv) {
+			e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1, $2, 'member', gen_random_uuid(), 'Please check the PR')`, e.f.WorkspaceID, e.issue)
+		}, true},
+		{"comment edited", func(t *testing.T, e skipEnv) {
+			var commentID string
+			e.f.QueryRow(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content) VALUES ($1, $2, 'member', gen_random_uuid(), 'Please check the PR') RETURNING id`, e.f.WorkspaceID, e.issue).Scan(&commentID)
+			e.f.Exec(t, `UPDATE comment SET content='The PR is ready now', revision=revision+1 WHERE id=$1`, commentID)
 		}, true},
 		{"merge state changed", func(t *testing.T, e skipEnv) {
 			e.f.Exec(t, `UPDATE github_pull_request SET api_merge_state_status='DIRTY' WHERE id=$1`, e.prID)
