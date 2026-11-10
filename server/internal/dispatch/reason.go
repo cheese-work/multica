@@ -100,6 +100,11 @@ const (
 	// is listed as queued and runs when a slot frees; nothing is lost. A property
 	// of the stage, not of the target, so it is enumeration-safe.
 	ReasonStageQueueFull ReasonCode = "stage_queue_full"
+	// ReasonAdmissionDeferred: the reviewer run was held back because the PR
+	// head is not admissible (CHE-4650): an admission check is failing, pending
+	// or missing, or the PR has a merge conflict. The deferral is on record for
+	// 24 h. A property of the PR, not of the target, so it is enumeration-safe.
+	ReasonAdmissionDeferred ReasonCode = "admission_deferred"
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
@@ -132,5 +137,6 @@ const (
 	// is indistinguishable from a live provider outage until someone reads the
 	// hold text by hand — see taskfailure.ReasonDispatchBlockedProviderHold for
 	// the matching failure_reason story once dispatch has already happened.
-	ReasonProviderHold ReasonCode = "provider_hold"
+	ReasonProviderHold    ReasonCode = "provider_hold"
+	ReasonProviderBreaker ReasonCode = "provider_breaker"
 )

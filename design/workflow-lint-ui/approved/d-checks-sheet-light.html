@@ -1,0 +1,70 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--bg:oklch(.988 0 0);--shell:oklch(.964 .0013 286.4);--fg:oklch(.141 .005 285.8);--card:#fff;--mut:oklch(.967 .001 286.4);--mfg:oklch(.505 .016 285.9);--bd:oklch(.92 .004 286.3);--sel:oklch(.95 .002 286.4);--err:oklch(.577 .245 27.3);--warn:oklch(.52 .12 75);--info:oklch(.55 .18 250);--pri:oklch(.21 .006 285.9);--prifg:oklch(.985 0 0);--scrim:rgb(15 23 42/.16);--float:0 16px 40px rgb(15 23 42/.14),0 3px 10px rgb(15 23 42/.08)}
+.dark{--bg:oklch(.18 .005 285.8);--shell:oklch(.155 .005 285.8);--fg:oklch(.985 0 0);--card:oklch(.21 .006 285.9);--mut:oklch(.274 .006 286);--mfg:oklch(.705 .015 286.1);--bd:oklch(1 0 0/10%);--sel:oklch(.3 .006 286);--err:oklch(.704 .191 22.2);--warn:oklch(.78 .14 85);--info:oklch(.7 .15 250);--pri:oklch(.92 .004 286.3);--prifg:oklch(.21 .006 285.9);--scrim:rgb(0 0 0/.45);--float:0 16px 40px rgb(0 0 0/.5)}
+*{box-sizing:border-box;margin:0;font-family:Inter,"DejaVu Sans",Arial,sans-serif!important}body{position:relative;font-size:13px;line-height:1.45;background:var(--shell);color:var(--fg);width:1280px;height:860px;overflow:hidden;display:flex}
+svg{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+nav{width:208px;padding:14px 10px;color:var(--mfg)}nav b{display:block;color:var(--fg);padding:4px 8px 14px;font-size:14px}nav p{padding:5px 8px;border-radius:6px}nav h6{font-size:11px;font-weight:500;padding:16px 8px 6px}nav .on{background:var(--sel);color:var(--fg)}
+main{flex:1;background:var(--bg);border-left:1px solid var(--bd);padding:20px 32px;overflow:hidden}
+.top{display:flex;align-items:center;height:32px}.crumb{color:var(--mfg)}.crumb i{margin:0 6px;opacity:.5;font-style:normal}.crumb b{color:var(--fg);font-weight:500}.sp{flex:1}
+.btn{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:500;height:30px;padding:0 12px;border-radius:6px;border:1px solid var(--bd);background:var(--card);color:var(--fg);margin-left:8px}.pri{background:var(--pri);color:var(--prifg);border-color:var(--pri);opacity:.55}.btn.on{background:var(--sel)}
+.cn{display:flex;gap:8px;font-size:12px}.cn span{display:flex;gap:3px;align-items:center}.mono,.id,.cn b,.mk b{font-family:ui-monospace,"DejaVu Sans Mono",monospace!important;font-weight:500}
+h1{font-size:22px;font-weight:600;line-height:1.2;letter-spacing:-.01em;margin:18px 0 4px}.sub{color:var(--mfg);margin-bottom:22px}
+.e{color:var(--err)}.w{color:var(--warn)}.n{color:var(--info)}
+.grid{display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start}
+ol{list-style:none;padding:0;display:grid;gap:8px}li{display:flex;gap:8px;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--card)}li.s{background:var(--sel);border-color:color-mix(in oklch,var(--fg) 20%,transparent)}li .g{color:var(--mfg);opacity:.6;margin-top:2px}li .t{flex:1;min-width:0}li .l{display:flex;align-items:center;gap:7px;font-weight:500}li .h{color:var(--mfg);font-size:12px;margin-top:2px}li .mk{display:flex;align-items:center;gap:4px;font-size:12px}
+.st{width:14px;height:14px;border-radius:50%;border:1.6px solid var(--mfg);flex:none}.st.d{border-style:dotted}.st.h{border-color:#d9a400;background:conic-gradient(#d9a400 0 50%,transparent 0)}.st.r{border-color:#8b5cf6;background:radial-gradient(#8b5cf6 38%,transparent 40%)}.st.k{border-color:#e5484d}.st.ok{border-color:#30a46c;background:#30a46c}
+.bd2{font-size:10.5px;font-weight:500;padding:1px 6px;border-radius:4px;background:var(--mut);color:var(--mfg)}
+.av{display:inline-grid;place-items:center;width:15px;height:15px;border-radius:50%;background:var(--mut);font-size:8px;font-weight:600;vertical-align:-3px;color:var(--fg)}
+.pan{border:1px solid var(--bd);border-radius:12px;background:var(--card);padding:20px 22px}.pan h2{font-size:16px;font-weight:600;display:flex;align-items:center;gap:8px;margin-bottom:16px}
+.f{margin-bottom:16px}.f label{display:block;font-weight:500;margin-bottom:6px}.in{height:34px;border:1px solid var(--bd);border-radius:6px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;background:var(--bg)}.in.bad{border-color:var(--err)}.ta{min-height:64px;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;background:var(--bg)}
+.seg{display:inline-flex;border:1px solid var(--bd);border-radius:6px;padding:2px;margin-bottom:8px}.seg span{padding:3px 12px;border-radius:4px;color:var(--mfg)}.seg .on{background:var(--sel);color:var(--fg);font-weight:500}
+.scrim{position:absolute;inset:0;background:var(--scrim)}
+.sheet{position:absolute;right:0;top:0;bottom:0;width:440px;background:var(--card);border-left:1px solid var(--bd);box-shadow:var(--float);display:flex;flex-direction:column}
+.sh{padding:18px 22px 0}.sh .r{display:flex;align-items:center}.sh h3{font-size:16px;font-weight:600}.sh .m{color:var(--mfg);margin-top:2px}.sh .m u{color:var(--fg);text-underline-offset:3px;text-decoration-color:var(--mfg)}
+.tabs{display:flex;gap:20px;margin-top:14px;border-bottom:1px solid var(--bd)}.tabs span{padding:6px 0 8px;color:var(--mfg);border-bottom:2px solid transparent;margin-bottom:-1px}.tabs span b{font-family:ui-monospace,"DejaVu Sans Mono",monospace!important;font-weight:400;font-size:12px;margin-left:4px}.tabs .on{color:var(--fg);font-weight:500;border-color:var(--fg)}
+.body{flex:1;overflow:hidden;padding:6px 22px}
+.grp{padding:14px 0 4px;display:flex;align-items:center;gap:8px;font-weight:600}.grp small{margin-left:auto;font-weight:400;font-size:12px;color:var(--mfg);text-decoration:underline;text-underline-offset:3px}
+.it{display:grid;grid-template-columns:14px 1fr;gap:2px 10px;padding:9px 0;border-top:1px solid var(--bd)}.it svg{margin-top:3px}.it .msg{font-weight:500}.it .fx{color:var(--mfg)}.it .fx b{color:var(--fg);font-weight:500}.it .mt{display:flex;gap:12px;align-items:center;color:var(--mfg);font-size:12px;margin-top:2px}.it .id{font-size:11px}.it .mt u{text-underline-offset:3px;color:var(--fg)}
+.it.wv .msg,.it.wv svg{color:var(--mfg)}.it.wv .msg{font-weight:400}
+.ft{padding:14px 22px;border-top:1px solid var(--bd);color:var(--mfg);font-size:12px}
+</style></head><body class="">
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="e" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.8v3.6M8 11h.01"/></symbol>
+<symbol id="w" viewBox="0 0 16 16"><path d="M8 2.2 14.5 13.5h-13z"/><path d="M8 6.8v3M8 11.8h.01"/></symbol>
+<symbol id="i" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="M8 7.4v3.6M8 5h.01"/></symbol>
+<symbol id="c" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5"/><path d="m5.4 8.2 1.8 1.8 3.4-3.6"/></symbol>
+<symbol id="g" viewBox="0 0 16 16"><path d="M6 4h.01M10 4h.01M6 8h.01M10 8h.01M6 12h.01M10 12h.01"/></symbol>
+<symbol id="x" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></symbol>
+<symbol id="v" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></symbol></defs></svg>
+<nav><b>Cheese Work</b><p>Inbox</p><p>My issues</p><p>Projects</p><p>Agents</p><h6>Settings</h6><p>General</p><p>Members</p><p>Statuses</p><p class="on">Workflows</p><p>Integrations</p></nav>
+<main>
+<div class="top"><div class="crumb">Settings<i>/</i>Workflows<i>/</i><b>Delivery</b></div><span class="sp"></span><button class="btn on">Checks<span class="cn"><span class="e"><svg><use href="#e"/></svg><b>2</b></span><span class="w"><svg><use href="#w"/></svg><b>1</b></span><span class="n"><svg><use href="#i"/></svg><b>1</b></span></span></button><button class="btn">Discard</button><button class="btn pri">Save</button></div>
+<h1>Delivery</h1><p class="sub">Used by 3 projects: Multica, Doop, Dotfiles. Saved changes apply to them right away.</p>
+<div class="grid"><ol>
+<li><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st d"></span>Backlog</div><div class="h">Keeps assignee</div></div></li>
+<li><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st"></span>Todo<span class="bd2">Start</span></div><div class="h">Hand to <span class="av">XC</span> x99-codex · then → In progress</div></div><span class="mk w"><svg><use href="#w"/></svg><b>1</b></span></li>
+<li><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st h"></span>In progress</div><div class="h">Hand to <span class="av">XC</span> x99-codex · then → In review</div></div><span class="mk e"><svg><use href="#e"/></svg><b>1</b></span></li>
+<li class="s"><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st r"></span>In review</div><div class="h">Hand to Reviewers (squad) · then → Done</div></div><span class="mk e"><svg><use href="#e"/></svg><b>1</b><span class="n" style="display:flex;gap:3px;align-items:center;margin-left:4px"><svg><use href="#i"/></svg><b>1</b></span></span></li>
+<li><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st k"></span>Blocked</div><div class="h">Keeps assignee</div></div></li>
+<li><svg class="g"><use href="#g"/></svg><div class="t"><div class="l"><span class="st ok"></span>Done</div><div class="h">Keeps assignee</div></div><span class="mk" style="color:var(--mfg)">waived</span></li>
+</ol>
+<div class="pan"><h2><span class="st r"></span>In review</h2>
+<div class="f"><label>On entering, hand to</label><div class="seg"><span>Agent</span><span class="on">Squad</span><span>Member</span></div><div class="in bad"><span>Reviewers</span><svg><use href="#v"/></svg></div></div>
+<div class="f"><label>Handoff instructions</label><div class="ta">Review the linked PR against the acceptance criteria. Post the verdict as a signed comment.</div></div>
+</div></div></main>
+<div class="scrim"></div>
+<aside class="sheet"><div class="sh"><div class="r"><h3>Checks</h3><span class="sp" style="flex:1"></span><svg><use href="#x"/></svg></div><p class="m">Delivery · checked 14:02 ICT · <u>Re-run</u></p>
+<div class="tabs"><span class="on">All<b>5</b></span><span>Errors<b>2</b></span><span>Warnings<b>1</b></span><span>Notes<b>1</b></span></div></div>
+<div class="body">
+<div class="grp"><span class="st"></span>Todo<small>Go to step</small></div>
+<div class="it w"><svg><use href="#w"/></svg><div><div class="msg" style="color:var(--fg)">Handoff instructions are empty.</div><div class="fx"><b>Fix:</b> tell x99-codex what to do when an issue enters Todo.</div><div class="mt"><span class="id">WF-INSTR-002</span><u>Waive…</u></div></div></div>
+<div class="grp"><span class="st h"></span>In progress<small>Go to step</small></div>
+<div class="it e"><svg><use href="#e"/></svg><div><div class="msg" style="color:var(--fg)">“If rejected” sends back to this same step, so a rejection loops with no exit.</div><div class="fx"><b>Fix:</b> pick an earlier step, such as Todo.</div><div class="mt"><span class="id">WF-LOOP-001</span><u>Waive…</u></div></div></div>
+<div class="grp"><span class="st r"></span>In review<small>Go to step</small></div>
+<div class="it e"><svg><use href="#e"/></svg><div><div class="msg" style="color:var(--fg)">Squad “Reviewers” has no leader, so nobody can dispatch the run.</div><div class="fx"><b>Fix:</b> pick a squad that has a leader, or hand to a member.</div><div class="mt"><span class="id">WF-STEP-003</span><u>Waive…</u></div></div></div>
+<div class="it n"><svg><use href="#i"/></svg><div><div class="msg" style="color:var(--fg)">Auto-advance is on, but no check is marked required in the 3 projects.</div><div class="fx"><b>Fix:</b> mark a check as required in project settings, or turn this off.</div><div class="mt"><span class="id">WF-CI-004</span><u>Waive…</u></div></div></div>
+<div class="grp"><span class="st ok"></span>Done<small>Go to step</small></div>
+<div class="it wv"><svg><use href="#c"/></svg><div><div class="msg">No handler is set on a terminal step.</div><div class="fx">Waived: “Terminal step on purpose.” Cheese, 2 Nov 2026 ICT</div><div class="mt"><span class="id">WF-HANDLER-007</span><u>Undo waive</u></div></div></div>
+</div>
+<div class="ft">Saving is refused while errors are unwaived. You can override with a written reason.</div></aside>
+</body></html>

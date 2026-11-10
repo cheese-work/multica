@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -778,6 +779,10 @@ type Daemon struct {
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
 	runUpdateFn func(targetVersion string) (string, error)
+
+	// updateProgress is set while a server-triggered update runs, so the fork
+	// download can report its progress. Nil for auto-updates.
+	updateProgress atomic.Pointer[updateProgressReporter]
 }
 
 type profileLaunchSpec struct {
@@ -2147,6 +2152,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"ws_claim_poll_interval", d.cfg.WSClaimPollInterval,
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
+		"codex_agent_timeout", d.cfg.CodexAgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
 		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
 		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
@@ -5064,7 +5070,13 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 		"status": "running",
 	})
 
+	rep := newUpdateProgressReporter(func(ctx context.Context, payload map[string]any) error {
+		return d.client.ReportUpdateResult(ctx, runtimeID, update.ID, payload)
+	})
+	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
+	d.updateProgress.Store(nil)
+	rep.wait() // a late progress report must not land after the terminal one
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
@@ -7936,6 +7948,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Prepare isolated execution environment.
 	// Repos are passed as metadata only — the agent checks them out on demand
 	// via `multica repo checkout <url>`.
+	harnessProfile, err := managedHarnessProfile(task.Agent, provider)
+	if err != nil {
+		return TaskResult{}, err
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
 		TriggerCommentID:    task.TriggerCommentID,
@@ -8139,7 +8155,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.Agent != nil {
 		agentMcpConfig = task.Agent.McpConfig
 		effectiveMcpConfig = agentMcpConfig
-		if merged, mergeErr := mergeRuntimeAndAgentMcpConfig(provider, agentMcpConfig); mergeErr != nil {
+		if merged, mergeErr := agentMcpConfigForProfile(provider, harnessProfile, agentMcpConfig); mergeErr != nil {
 			taskLog.Warn("mcp_config: runtime merge failed; using agent configuration only",
 				"provider", provider,
 				"error", mergeErr,
@@ -8301,6 +8317,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// locked and the directory we use could differ.
 			WorkDir:               priorWorkDir,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			ResumeSessionID:       task.PriorSessionID,
@@ -8353,6 +8370,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			// it implies; preparation must not try to take it again.
 			EnvRootPreclaimed:     true,
 			Provider:              provider,
+			HarnessProfile:        harnessProfile,
 			CodexVersion:          codexVersion,
 			CodexBinaryPath:       codexBinaryPath,
 			OpenclawBin:           openclawBin,
@@ -8657,7 +8675,27 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
-	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+	var managedClaude execenv.ManagedClaudeHome
+	isManagedClaude := harnessProfile == execenv.HarnessProfileManaged && provider == "claude"
+	// injectBrief writes the runtime brief. Managed Claude delivers it through
+	// --append-system-prompt-file (no workdir CLAUDE.md); everything else is
+	// unchanged.
+	injectBrief := func() (string, error) {
+		if !isManagedClaude {
+			return execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		}
+		brief := execenv.RuntimeBrief(provider, taskCtx)
+		return brief, os.WriteFile(managedClaude.BriefPath, []byte(brief), 0o600)
+	}
+	var runtimeBrief string
+	if isManagedClaude {
+		// A managed failure must not fall back to the personal config.
+		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), execenv.RuntimeBrief(provider, taskCtx), taskCtx.AgentSkills, effectiveMcpConfig)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("prepare managed claude home: %w", err)
+		}
+	}
+	runtimeBrief, err = injectBrief()
 	if err != nil {
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
@@ -8776,6 +8814,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if isManagedClaude {
+		// Set after custom_env so a configured value cannot point the run back
+		// at the personal config home.
+		agentEnv["CLAUDE_CONFIG_DIR"] = managedClaude.ConfigDir
+	}
 	// CHE-2216 A2b: per-run HOME and read-only provider credential copy. Set
 	// after custom_env so a configured HOME cannot point the run back at the
 	// daemon user's home. A no-op unless MULTICA_SANDBOX_MODE is on or audit.
@@ -8862,7 +8905,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}()
 	retiredSessionID = gateOpenCodeResumeToSaneClock(ctx, &task, &taskCtx, provider, backendConfig, env.WorkDir, effectiveMcpConfig, taskLog)
 	if retiredSessionID != "" {
-		freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
+		freshBrief, briefErr := injectBrief()
 		if briefErr != nil {
 			return TaskResult{}, fmt.Errorf("prepare fresh OpenCode session after clock check: %w", briefErr)
 		}
@@ -8958,7 +9001,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    taskRunTimeout(d.cfg.AgentTimeout, task),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -8978,17 +9021,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// only the daemon knows — hence handing the backend finished text rather
 		// than a flag. Empty when the prompt already carries the notice, so a turn
 		// can never pay for it twice (MUL-5722).
-		ResumeExpected:         task.PriorSessionID != "",
-		ResumeContinuityNotice: backendResumeContinuityNotice(task),
-		ExtraArgs:              extraArgs,
-		CustomArgs:             customArgs,
-		McpConfig:              mcpConfig,
-		ThinkingLevel:          thinkingLevel,
-		ServiceTier:            serviceTier,
-		OpenclawMode:           openclawMode,
-		OpenclawModelOverride:  openclawModelOverride,
-		ClaudeSettingsPath:     env.ClaudeSettingsPath,
-		QwenpawWorkspace:       env.QwenpawWorkspace,
+		ResumeExpected:          task.PriorSessionID != "",
+		ResumeContinuityNotice:  backendResumeContinuityNotice(task),
+		ExtraArgs:               extraArgs,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		ThinkingLevel:           thinkingLevel,
+		ServiceTier:             serviceTier,
+		OpenclawMode:            openclawMode,
+		OpenclawModelOverride:   openclawModelOverride,
+		ClaudeSettingsPath:      env.ClaudeSettingsPath,
+		AppendSystemPromptFile:  managedClaude.BriefPath,
+		DisableProviderWebTools: task.DisableProviderWebTools(),
+		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -9106,7 +9151,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		task.PriorSessionResumeUnavailable = true
 		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
-		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
+		if freshBrief, briefErr := injectBrief(); briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
 		} else {
 			runtimeBrief = freshBrief
@@ -9281,7 +9326,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// goes through the FailTask path that forwards session info.
 		comment := result.Error
 		if comment == "" {
-			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.AgentTimeout)
+			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.agentTimeoutFor(provider))
 		}
 		failureReason := "timeout"
 		if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {
@@ -11120,4 +11165,43 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// agentMcpConfigForProfile merges the personal runtime MCP servers into the
+// agent config. A managed task gets only the servers assigned to the agent, so
+// an unassigned personal server and its credentials never reach it (CHE-3706).
+// Managed Claude with no saved config gets an explicit empty set: buildClaudeArgs
+// omits --strict-mcp-config for a null/absent config, which would let Claude
+// discover MCP servers from the user's own files.
+func agentMcpConfigForProfile(provider, profile string, agentConfig json.RawMessage) (json.RawMessage, error) {
+	if profile == execenv.HarnessProfileManaged {
+		if provider == "claude" {
+			if t := bytes.TrimSpace(agentConfig); len(t) == 0 || bytes.Equal(t, []byte("null")) {
+				return json.RawMessage(`{}`), nil
+			}
+		}
+		return agentConfig, nil
+	}
+	return mergeRuntimeAndAgentMcpConfig(provider, agentConfig)
+}
+
+// managedHarnessProfile returns the harness profile this task launches with:
+// "" for personal, "managed" for a provider with a managed adapter. Anything
+// else — managed on a provider without an adapter, or an unknown value — is an
+// error, never a silent personal launch (CHE-3706).
+func managedHarnessProfile(agentData *AgentData, provider string) (string, error) {
+	if agentData == nil {
+		return "", nil
+	}
+	switch agentData.HarnessProfile {
+	case "", execenv.HarnessProfilePersonal:
+		return "", nil
+	case execenv.HarnessProfileManaged:
+		switch provider {
+		case "claude", "codex":
+			return execenv.HarnessProfileManaged, nil
+		}
+		return "", fmt.Errorf("runtime profile %q is not implemented for provider %q; refusing to launch with the personal config", agentData.HarnessProfile, provider)
+	}
+	return "", fmt.Errorf("unknown runtime profile %q; refusing to launch with the personal config", agentData.HarnessProfile)
 }

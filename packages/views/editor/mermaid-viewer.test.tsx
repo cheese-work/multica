@@ -177,6 +177,31 @@ describe("MermaidViewer closing", () => {
     expect(frame?.srcdoc).toBe(VIEWER_DOC);
   });
 
+  it("loads a fresh iframe when the diagram is redrawn in the other direction", () => {
+    // Chrome drops a `srcdoc` change made while the first document is still
+    // loading, leaving the old drawing inside the new drawing's size (CHE-2750).
+    const props = {
+      open: true,
+      onOpenChange: () => {},
+      chart: CHART,
+      svg: SVG,
+      exportBackground: "rgb(240, 240, 240)",
+      exportFontFamily: "Inter, sans-serif",
+    };
+    const { rerender } = render(
+      <MermaidViewer {...props} viewerDocument="<p>vertical</p>" layout={{ width: 244, height: 809 }} />,
+    );
+    const before = document.querySelector(".mermaid-viewer-frame");
+
+    rerender(
+      <MermaidViewer {...props} viewerDocument="<p>horizontal</p>" layout={{ width: 2007, height: 76 }} />,
+    );
+
+    const after = document.querySelector<HTMLIFrameElement>(".mermaid-viewer-frame");
+    expect(after).not.toBe(before);
+    expect(after?.srcdoc).toBe("<p>horizontal</p>");
+  });
+
   it("returns focus to the element that opened it", async () => {
     function FocusHarness() {
       const [open, setOpen] = useState(false);
@@ -454,6 +479,19 @@ describe("MermaidViewer canvas interaction", () => {
     fireEvent.keyDown(canvas(), { key: "+" });
     fireEvent.keyDown(canvas(), { key: "0" });
     expect(currentScale()).toBeCloseTo(fitted, 5);
+  });
+
+  it("leaves browser-zoom shortcuts (Ctrl/Cmd + - = 0) to the browser", () => {
+    render(<Harness />);
+    const fitted = currentScale();
+
+    for (const key of ["+", "=", "-", "0"]) {
+      for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+        const notPrevented = fireEvent.keyDown(canvas(), { key, ...mod });
+        expect(notPrevented).toBe(true);
+        expect(currentScale()).toBeCloseTo(fitted, 5);
+      }
+    }
   });
 
   it("pans with the arrow keys", () => {

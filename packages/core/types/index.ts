@@ -94,6 +94,7 @@ export type {
   DashboardFailureDaily,
   DashboardFailureByAgent,
   RuntimeUpdate,
+  RuntimeUpdateProgress,
   RuntimeUpdateStatus,
   RuntimeModel,
   RuntimeModelServiceTier,
@@ -154,7 +155,7 @@ export type {
   NotificationPreferenceResponse,
   UpdateNotificationChannelRequest,
 } from "./notification-preference";
-export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
+export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionConfigChange, DecisionConfigDiffHunk, DecisionCard, DecisionCoveredCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
 export type { Comment, CommentType, CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, ListIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";
@@ -189,6 +190,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatStaleLevel,
+  ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -393,3 +396,5 @@ export type {
 export type { IssueWakeup, IssueWakeupInput, SystemWakeup, WorkspaceSystemWakeup, WakeupPreview, IssueWakeupSummaryRow, WakeupCondition, WakeupPausedReason, WakeupRun, PausedWakeup, WakeupSource, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupDefinitionScopeKind, WakeupCapabilities, WakeupEffectiveRule } from "./issue-wakeup";
 
 export type { WorkspaceWakeup, WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupScope } from "./issue-wakeup";
+
+export type { ProviderBreaker, ProviderBreakerState } from "./provider-breaker";
