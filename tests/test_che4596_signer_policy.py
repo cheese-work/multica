@@ -63,7 +63,7 @@ class PlainPathTest(unittest.TestCase):
         self.assertEqual(run(SONNET_PR, PLAIN, SOL), "pending")
 
     def test_non_signers_never_count(self):
-        for who in (LUNA, GEMINI, "x99-claude-sonnet-200k (claude-sonnet-5-5)"):
+        for who in (LUNA, "x99-claude-sonnet-200k (claude-sonnet-5-5)", "x99-agy-geminis (gemini-3)", "x99-agy-other (gemini-3)"):
             with self.subTest(who=who):
                 self.assertEqual(run(HUMAN_PR, PLAIN, who), "pending")
 
@@ -142,6 +142,38 @@ class SolAuthorTest(unittest.TestCase):
     def test_opus_signs_a_sol_pr_even_on_a_sensitive_path(self):
         # Sol cannot co-sign its own PR; Opus is the only signer left
         self.assertEqual(run(SOL_PR, SENSITIVE, OPUS), "success")
+
+
+class GeminiSolRoleTest(unittest.TestCase):
+    """CHE-5097: Cheese moved Sol's review work to Gemini, so a Gemini signer holds the `sol` role."""
+
+    def test_gemini_has_the_sol_role_by_whole_name_token(self):
+        for name in ("x99-agy-gemini", "x99-agy-gemini-ux", "x99-agy-gemini-200k", "x99-codex-sol"):
+            with self.subTest(name=name):
+                self.assertEqual(sg.signer_role(name), "sol")
+        for name in ("x99-agy-geminis", "x99-agy-gemini2", "x99-agy-other", "x99-codex-luna", None):
+            with self.subTest(name=name):
+                self.assertIsNone(sg.signer_role(name))
+
+    def test_gemini_pass_is_the_sol_signature_on_a_sensitive_path(self):
+        self.assertEqual(run(SONNET_PR, SENSITIVE, OPUS, GEMINI), "success")
+        self.assertEqual(run(SONNET_PR, SENSITIVE, GEMINI), "pending")
+
+    def test_gemini_alone_is_not_enough_on_a_plain_path(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, GEMINI), "pending")
+
+    def test_gemini_signs_an_opus_pr(self):
+        self.assertEqual(run(OPUS_PR, PLAIN, GEMINI), "success")
+
+    def test_gemini_never_signs_its_own_pr(self):
+        gemini_pr = {**SONNET_PR, "head_ref": "agent/x99-agy-gemini/che-5097-x"}
+        self.assertEqual(run(gemini_pr, PLAIN, GEMINI), "failure")
+        self.assertEqual(run(gemini_pr, SENSITIVE, GEMINI), "failure")
+        self.assertEqual(run(gemini_pr, SENSITIVE, GEMINI, OPUS), "success")  # Opus alone, as for a Sol PR
+        self.assertEqual(run(gemini_pr, SENSITIVE, OPUS), "success")
+
+    def test_a_gemini_fail_blocks(self):
+        self.assertEqual(run(SONNET_PR, PLAIN, OPUS, (GEMINI, "FAIL")), "failure")
 
 
 class IndependentFailTest(unittest.TestCase):
