@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -238,7 +239,18 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(ctx con
 // ReleaseStageQueues is the scheduler's tick.
 func (s *TaskService) ReleaseStageQueues(ctx context.Context) error {
 	return releaseStageQueues(ctx, s.Queries, func(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
-		_, err := s.enqueueIssueTask(ctx, issue, comment, false, "", actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+		// An admission deferral that expired while the run waited (CHE-4651)
+		// keeps its expiry: the run starts without the admission check and with
+		// the "deferral expired" reason, as the admission release would start it.
+		note := ""
+		expires, err := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
+		switch {
+		case err == nil && !expires.Time.After(time.Now()):
+			ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
+		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("read admission deferral: %w", err)
+		}
+		_, err = s.enqueueIssueTask(ctx, issue, comment, false, note, actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 		return err
 	})
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-4651: a deferred reviewer run starts when the head turns admissible, once
@@ -307,5 +308,64 @@ func TestAdmissionReleaseKeepsTaintWhenTheStageIsFull(t *testing.T) {
 	_, taint := f.releasedTask(t, f.issue)
 	if len(taint) != 1 || taint[0] != "ext-1" {
 		t.Fatalf("released run taint = %v, want [ext-1]", taint)
+	}
+}
+
+// An expired deferral that meets a full review stage keeps its expiry: when a
+// slot frees, the stage release starts the run with the "deferral expired"
+// reason even though CI is still red, instead of deferring it for another 24 h.
+func TestAdmissionReleaseKeepsExpiryThroughAFullStage(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	stageLimits = stagequeue.Limits{stagequeue.StageReview: 1}
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	f.Exec(t, `UPDATE review_admission_deferral SET created_at = now() - interval '25 hours', expires_at = now() - interval '1 hour' WHERE issue_id = $1`, f.issue)
+
+	holder := f.reviewIssue(t, "slot holder", 3*time.Hour)
+	holderRun := f.run(t, holder, "running")
+	f.release(t, svc)
+	f.wantTasks(t, 0, "expired, stage full")
+
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, holderRun)
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+		t.Fatalf("stage release: %v", err)
+	}
+	f.wantTasks(t, 1, "slot freed, CI still red")
+	var note string
+	f.QueryRow(t, `SELECT COALESCE(handoff_note, '') FROM agent_task_queue WHERE issue_id = $1`, f.issue).Scan(&note)
+	if note != "deferral expired" {
+		t.Fatalf("run reason = %q, want %q", note, "deferral expired")
+	}
+	// The next tick sees the started run and ends the record.
+	f.release(t, svc)
+	f.wantTasks(t, 1, "after the next tick")
+	f.wantRecord(t, false, "after the run started")
+}
+
+// An old evaluator that read the record of head A must not delete the
+// replacement the guard wrote for head B while it was enqueueing.
+func TestAdmissionReleaseDoesNotDeleteAReplacementRecord(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	before, _, _, _ := f.deferral(t)
+
+	enqueue := func(ctx context.Context, issue db.Issue, agentID, actor, comment pgtype.UUID, note string) error {
+		// A new head arrived and its run was deferred: the guard replaced the row.
+		err := f.q.MarkReviewAdmissionDeferred(ctx, db.MarkReviewAdmissionDeferredParams{
+			IssueID: issue.ID, AgentID: agentID, Trigger: "pull request", HeadSha: "newhead", Reasons: []string{"ci: failing"}, TaintIds: []string{},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return nil // the old evaluator's own enqueue succeeded
+	}
+	if err := releaseAdmissionDeferrals(context.Background(), f.q, nil, enqueue); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	head, _, _, ok := f.deferral(t)
+	if !ok || head != "newhead" || head == before {
+		t.Fatalf("replacement record: present = %v, head = %q, want newhead", ok, head)
 	}
 }

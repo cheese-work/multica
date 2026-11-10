@@ -62,7 +62,7 @@ func releaseAdmissionDeferrals(ctx context.Context, q *db.Queries, issueIDs []pg
 func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListReviewAdmissionDeferralsRow,
 	enqueue func(ctx context.Context, issue db.Issue, agentID, actor, comment pgtype.UUID, note string) error) error {
 	drop := func() error {
-		return q.DeleteReviewAdmissionDeferral(ctx, db.DeleteReviewAdmissionDeferralParams{IssueID: r.IssueID, AgentID: r.AgentID})
+		return q.DeleteReviewAdmissionDeferral(ctx, db.DeleteReviewAdmissionDeferralParams{IssueID: r.IssueID, AgentID: r.AgentID, HeadSha: r.HeadSha, ExpiresAt: r.ExpiresAt})
 	}
 	pr, err := q.GetIssueAdmissionPR(ctx, r.IssueID)
 	if err != nil {
@@ -100,9 +100,12 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		return nil // still not admissible; the guard kept or replaced the record
 	case errors.Is(err, ErrStageQueueFull):
 		// Admitted, but the stage is full: its waiting record now carries the
-		// request, and ReleaseStageQueues starts it when a slot frees.
+		// request, and ReleaseStageQueues starts it when a slot frees. This
+		// record stays: it holds the deadline, so an expired deferral still
+		// starts with its reason when CI is red at that point. The next tick
+		// ends it once the run has started.
 		slog.Info("admission release: admitted, queued behind a full stage", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha)
-		return drop()
+		return nil
 	}
 	return err
 }

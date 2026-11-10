@@ -14,15 +14,25 @@ import (
 const deleteReviewAdmissionDeferral = `-- name: DeleteReviewAdmissionDeferral :exec
 DELETE FROM review_admission_deferral
 WHERE issue_id = $1::uuid AND agent_id = $2::uuid
+  AND head_sha = $3::text AND expires_at = $4::timestamptz
 `
 
 type DeleteReviewAdmissionDeferralParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	HeadSha   string             `json:"head_sha"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
+// Deletes the exact record the caller read: a replacement the guard wrote for a
+// new head meanwhile has another head or deadline and stays.
 func (q *Queries) DeleteReviewAdmissionDeferral(ctx context.Context, arg DeleteReviewAdmissionDeferralParams) error {
-	_, err := q.db.Exec(ctx, deleteReviewAdmissionDeferral, arg.IssueID, arg.AgentID)
+	_, err := q.db.Exec(ctx, deleteReviewAdmissionDeferral,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.ExpiresAt,
+	)
 	return err
 }
 
@@ -81,6 +91,24 @@ func (q *Queries) GetIssueAdmissionPR(ctx context.Context, issueID pgtype.UUID) 
 		&i.ReviewAt,
 	)
 	return i, err
+}
+
+const getReviewAdmissionDeferralExpiry = `-- name: GetReviewAdmissionDeferralExpiry :one
+SELECT expires_at FROM review_admission_deferral
+WHERE issue_id = $1::uuid AND agent_id = $2::uuid
+`
+
+type GetReviewAdmissionDeferralExpiryParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// When the stored deferral of an issue and agent runs out. No row when there is none.
+func (q *Queries) GetReviewAdmissionDeferralExpiry(ctx context.Context, arg GetReviewAdmissionDeferralExpiryParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getReviewAdmissionDeferralExpiry, arg.IssueID, arg.AgentID)
+	var expires_at pgtype.Timestamptz
+	err := row.Scan(&expires_at)
+	return expires_at, err
 }
 
 const listAdmissionCheckRuns = `-- name: ListAdmissionCheckRuns :many
