@@ -243,3 +243,30 @@ func TestAnsweredDecisionRequestWritesNoEventAndKeepsLegacyWake(test *testing.T)
 		test.Fatal("kind=decision lost its legacy wake")
 	}
 }
+
+// A need_decision issue belongs to its assignee: an answered action card
+// writes one receipt, for the assignee, and no run goes to the requester.
+func TestAnsweredActionOnNeedDecisionIssueWakesOnlyTheAssignee(test *testing.T) {
+	runner := newDeliveryRunner(test)
+	fixture := newAskedRecordFixture(test)
+	assignee := dbfx.Agent(test, "need decision assignee", handlerTestRuntimeID(test))
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "assignee" || receipts[0].Agent != assignee {
+		test.Fatalf("receipts = %+v, want one assignee receipt for %s", receipts, assignee)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
+	decisionPass(test, runner)
+	decisionPass(test, runner)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`, fixture.issueID, assignee); n != 1 {
+		test.Fatalf("assignee runs = %d, want 1", n)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`, fixture.issueID, fixture.agentID); n != 0 {
+		test.Fatalf("requester runs = %d, want 0", n)
+	}
+}

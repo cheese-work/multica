@@ -41,6 +41,9 @@ func resolveDecisionWakeRecipients(ctx context.Context, queries *db.Queries, dec
 		assignee.agentID, assignee.squadID = squad.LeaderID, squad.ID
 	}
 	if assignee.agentID.Valid && assignee.agentID != decision.AskingAgentID {
+		if issue.Status == "need_decision" {
+			return []decisionWakeRecipient{assignee}, nil
+		}
 		recipients = append(recipients, assignee)
 	}
 	return recipients, nil

@@ -200,7 +200,7 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return verdict, err
 		}
-		if err == nil && task.Status == "running" && task.AgentID == snapshot.wait.AskingAgentID && task.IssueID == snapshot.issue.ID {
+		if err == nil && task.Status == "running" && task.AgentID == snapshot.recipient.ID && task.IssueID == snapshot.issue.ID {
 			verdict.running = task.ID
 		}
 	}
@@ -251,8 +251,51 @@ func (handler *Handler) loadDecisionEpisode(ctx context.Context, queries *db.Que
 			snapshot.squadID = squad.ID
 		}
 	}
-	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, wait.AskingAgentID)
+	recipientID, err := handler.episodeRecipient(ctx, queries, &snapshot)
+	if err != nil {
+		return snapshot, err
+	}
+	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, recipientID)
 	return snapshot, err
+}
+
+// episodeRecipient is the agent the continuation wakes: the issue's owner
+// (the placement the episode restores, or the current assignee when nothing is
+// restored) when that is an eligible agent, otherwise the asking agent. A squad
+// owner wakes its leader in the squad context.
+func (handler *Handler) episodeRecipient(ctx context.Context, queries *db.Queries, snapshot *decisionWakeSnapshot) (pgtype.UUID, error) {
+	wait, issue := snapshot.wait, snapshot.issue
+	ownerType, ownerID := issue.AssigneeType, issue.AssigneeID
+	if wait.RestoreOnResume {
+		ownerType, ownerID = wait.RestoreAssigneeType, wait.RestoreAssigneeID
+	}
+	agentID, squadID := pgtype.UUID{}, pgtype.UUID{}
+	switch ownerType.String {
+	case "agent":
+		agentID = ownerID
+	case "squad":
+		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: ownerID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return wait.AskingAgentID, nil
+		} else if err != nil {
+			return wait.AskingAgentID, err
+		}
+		agentID, squadID = squad.LeaderID, squad.ID
+	}
+	if !agentID.Valid || agentID == wait.AskingAgentID {
+		return wait.AskingAgentID, nil
+	}
+	owner, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return wait.AskingAgentID, nil
+	} else if err != nil {
+		return wait.AskingAgentID, err
+	}
+	if owner.ArchivedAt.Valid || !owner.RuntimeID.Valid || owner.Kind == "system" {
+		return wait.AskingAgentID, nil
+	}
+	snapshot.squadID = squadID
+	return owner.ID, nil
 }
 
 // episodeRestore is design §4.4.2 step 6: one explicit-assignee write of the

@@ -642,3 +642,49 @@ func TestDecisionEpisodeRevalidatesAuthorityUnderTheLocks(t *testing.T) {
 		})
 	}
 }
+
+// An episode wakes the issue's owner, not the agent that asked, when the two
+// differ: the continuation is the owner's run and the restore is unchanged.
+func TestDecisionEpisodeDeliveryWakesTheOwnerWhenTheAskerDiffers(t *testing.T) {
+	for _, withSquad := range []bool{false, true} {
+		name := "agent owner"
+		if withSquad {
+			name = "squad owner"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := newDeliveryRunner(t)
+			f := newEpisodeFixture(t, false)
+			f.enter(t)
+			ownerID := dbfx.Agent(t, "Episode owner", handlerTestRuntimeID(t))
+			ownerType, restoreID, squadID := "agent", ownerID, ""
+			if withSquad {
+				squadID = dbfx.Squad(t, "Episode owner squad", ownerID)
+				ownerType, restoreID = "squad", squadID
+			}
+			dbfx.Exec(t, `UPDATE decision_wait SET restore_assignee_type = $2, restore_assignee_id = $3 WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID, ownerType, restoreID)
+			answerID, _ := f.answerRequest(t, f.requestID, -time.Minute, false)
+
+			decisionPass(t, runner)
+			closed := f.closedEpisodes(t)
+			if len(closed) != 1 || closed[0].reason != "answered" || closed[0].outcome != "run_enqueued" {
+				t.Fatalf("closed episodes = %+v, want one closed answered with run_enqueued", closed)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND id <> $3`, f.issueID, ownerID, f.taskID); n != 1 {
+				t.Fatalf("owner runs = %d, want 1", n)
+			}
+			if got := f.continuations(t); got != 0 {
+				t.Fatalf("asker runs = %d, want 0 while the owner is eligible", got)
+			}
+			if status, assigneeType, assigneeID := issueStatusAndAssignee(t, f.issueID); status != "in_progress" || assigneeType != ownerType || assigneeID != restoreID {
+				t.Fatalf("issue = %s %s/%s, want the restore placement in_progress %s/%s", status, assigneeType, assigneeID, ownerType, restoreID)
+			}
+			if woken, outcome := f.answerState(t, answerID); !woken || outcome != "run_enqueued" {
+				t.Fatalf("answer woken=%v outcome=%q, want acknowledged run_enqueued", woken, outcome)
+			}
+			decisionPass(t, runner)
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND id <> $2`, f.issueID, f.taskID); n != 1 {
+				t.Fatalf("a second pass left %d runs on the issue, want 1", n)
+			}
+		})
+	}
+}
