@@ -20,6 +20,16 @@ WHERE session.id = $1
   AND session.channel_origin_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id);
 
+-- name: LockNativeChatSessionShare :one
+-- The dispatcher's route read: the share lock holds the DM open (no archive or
+-- continue can commit) until the card commits, so a batch never lands in a DM
+-- that closed meanwhile.
+SELECT session.* FROM chat_session session
+WHERE session.id = $1
+  AND session.channel_origin_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+FOR SHARE OF session;
+
 -- name: EnsureDMProgressLane :exec
 INSERT INTO dm_progress_lane (lineage_id, workspace_id, owner_user_id)
 VALUES ($1, $2, $3)
@@ -166,7 +176,9 @@ WITH gone_follows AS (
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
 
 -- name: ListDMProgressPendingLanes :many
-SELECT DISTINCT lineage_id FROM dm_progress_pending ORDER BY lineage_id;
+-- One run takes a bounded, random slice of lanes, so no lane (a held one
+-- included) starves the others and the run fits its deadline.
+SELECT lineage_id FROM (SELECT DISTINCT lineage_id FROM dm_progress_pending) lanes ORDER BY random() LIMIT 200;
 
 -- name: LockDMProgressLaneSkipLocked :one
 -- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
@@ -174,7 +186,8 @@ SELECT DISTINCT lineage_id FROM dm_progress_pending ORDER BY lineage_id;
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
 
 -- name: ListDMProgressPending :many
-SELECT * FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id;
+-- Oldest first, one bounded slice per run; the rest waits for the next run.
+SELECT * FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id LIMIT 500;
 
 -- name: DeleteDMProgressPendingEvents :exec
 DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);

@@ -91,6 +91,22 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 	if lane.SuspendedReason.Valid && lane.SuspendedReason.String != progressRoutePending {
 		return nil
 	}
+	// Route first, under a share lock held to commit: an archive or a
+	// continuation cannot slip in between this read and the card, and a lane
+	// with no route never loads its backlog.
+	ok, err := d.routable(ctx, q, lane)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if !lane.SuspendedReason.Valid {
+			if err := q.SuspendDMProgressLane(ctx, db.SuspendDMProgressLaneParams{LineageID: lineage, SuspendedReason: pgtype.Text{String: progressRoutePending, Valid: true}}); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}
+		return nil
+	}
 	rows, err := q.ListDMProgressPending(ctx, lineage)
 	if err != nil {
 		return err
@@ -199,7 +215,7 @@ func dueAt(lane db.DmProgressLane, kept []db.DmProgressPending, byIssue map[pgty
 }
 
 // deliver writes the card for every kept row of the lane and clears them. It
-// returns nil when nothing is left to say or the lane has no route yet.
+// returns nil when nothing is left to say. The caller has checked the route.
 func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane db.DmProgressLane, kept []db.DmProgressPending, order []*tracked, now time.Time) (*db.ChatMessage, error) {
 	var payload protocol.ProgressCardPayload
 	var sent []*tracked
@@ -220,11 +236,6 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 			IssueID: util.UUIDToString(tr.issue.ID), Status: tr.issue.Status, FromStatus: tr.follow.LastRenderedStatus, Kinds: tr.kinds,
 		})
 		sent = append(sent, tr)
-	}
-	if len(sent) > 0 {
-		if !d.routable(ctx, q, lane) {
-			return nil, q.SuspendDMProgressLane(ctx, db.SuspendDMProgressLaneParams{LineageID: lane.LineageID, SuspendedReason: pgtype.Text{String: progressRoutePending, Valid: true}})
-		}
 	}
 	if err := deletePending(ctx, q, lane.LineageID, kept); err != nil {
 		return nil, err
@@ -275,9 +286,15 @@ func (d *DMProgressDispatcher) deliver(ctx context.Context, q *db.Queries, lane 
 // routable: the card goes only to the lineage root, and only while it is a
 // native, active DM of the lane owner that nothing continues from. A moved DM
 // (successor) is C8's routing, so it is held, never sent to an ancestor.
-func (d *DMProgressDispatcher) routable(ctx context.Context, q *db.Queries, lane db.DmProgressLane) bool {
-	session, err := q.GetNativeChatSession(ctx, lane.LineageID)
-	return err == nil && session.Status == "active" && session.CreatorID == lane.OwnerUserID && !session.ContinuedIntoSessionID.Valid
+func (d *DMProgressDispatcher) routable(ctx context.Context, q *db.Queries, lane db.DmProgressLane) (bool, error) {
+	session, err := q.LockNativeChatSessionShare(ctx, lane.LineageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return session.Status == "active" && session.CreatorID == lane.OwnerUserID && !session.ContinuedIntoSessionID.Valid, nil
 }
 
 func (d *DMProgressDispatcher) publish(lane db.DmProgressLane, msg db.ChatMessage) {

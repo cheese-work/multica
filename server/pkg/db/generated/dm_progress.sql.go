@@ -546,9 +546,10 @@ func (q *Queries) ListDMProgressFollowsByLineage(ctx context.Context, lineageID 
 }
 
 const listDMProgressPending = `-- name: ListDMProgressPending :many
-SELECT lineage_id, event_id, workspace_id, issue_id, event_kind, immediate, created_at FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id
+SELECT lineage_id, event_id, workspace_id, issue_id, event_kind, immediate, created_at FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id LIMIT 500
 `
 
+// Oldest first, one bounded slice per run; the rest waits for the next run.
 func (q *Queries) ListDMProgressPending(ctx context.Context, lineageID pgtype.UUID) ([]DmProgressPending, error) {
 	rows, err := q.db.Query(ctx, listDMProgressPending, lineageID)
 	if err != nil {
@@ -578,9 +579,11 @@ func (q *Queries) ListDMProgressPending(ctx context.Context, lineageID pgtype.UU
 }
 
 const listDMProgressPendingLanes = `-- name: ListDMProgressPendingLanes :many
-SELECT DISTINCT lineage_id FROM dm_progress_pending ORDER BY lineage_id
+SELECT lineage_id FROM (SELECT DISTINCT lineage_id FROM dm_progress_pending) lanes ORDER BY random() LIMIT 200
 `
 
+// One run takes a bounded, random slice of lanes, so no lane (a held one
+// included) starves the others and the run fits its deadline.
 func (q *Queries) ListDMProgressPendingLanes(ctx context.Context) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDMProgressPendingLanes)
 	if err != nil {
@@ -637,6 +640,59 @@ func (q *Queries) LockDMProgressLaneSkipLocked(ctx context.Context, lineageID pg
 		&i.NextSeq,
 		&i.SuspendedReason,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const lockNativeChatSessionShare = `-- name: LockNativeChatSessionShare :one
+SELECT session.id, session.workspace_id, session.agent_id, session.creator_id, session.title, session.session_id, session.work_dir, session.status, session.created_at, session.updated_at, session.unread_since, session.runtime_id, session.last_read_at, session.is_agent_intro, session.pinned_at, session.project_id, session.explicitly_created_at, session.continued_from_session_id, session.continued_into_session_id, session.channel_origin_at, session.forked_from_session_id, session.fork_idempotency_key, session.fork_last_message_id, session.fork_message_count, session.fork_source_message_id, session.title_manually_set, session.compaction_epoch, session.preset_name, session.decision_topic_id, session.segment_floor_at, session.segment_floor_id, session.chain_root_session_id, session.taint_ids, session.taint_verified FROM chat_session session
+WHERE session.id = $1
+  AND session.channel_origin_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+FOR SHARE OF session
+`
+
+// The dispatcher's route read: the share lock holds the DM open (no archive or
+// continue can commit) until the card commits, so a batch never lands in a DM
+// that closed meanwhile.
+func (q *Queries) LockNativeChatSessionShare(ctx context.Context, id pgtype.UUID) (ChatSession, error) {
+	row := q.db.QueryRow(ctx, lockNativeChatSessionShare, id)
+	var i ChatSession
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.CreatorID,
+		&i.Title,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UnreadSince,
+		&i.RuntimeID,
+		&i.LastReadAt,
+		&i.IsAgentIntro,
+		&i.PinnedAt,
+		&i.ProjectID,
+		&i.ExplicitlyCreatedAt,
+		&i.ContinuedFromSessionID,
+		&i.ContinuedIntoSessionID,
+		&i.ChannelOriginAt,
+		&i.ForkedFromSessionID,
+		&i.ForkIdempotencyKey,
+		&i.ForkLastMessageID,
+		&i.ForkMessageCount,
+		&i.ForkSourceMessageID,
+		&i.TitleManuallySet,
+		&i.CompactionEpoch,
+		&i.PresetName,
+		&i.DecisionTopicID,
+		&i.SegmentFloorAt,
+		&i.SegmentFloorID,
+		&i.ChainRootSessionID,
+		&i.TaintIds,
+		&i.TaintVerified,
 	)
 	return i, err
 }

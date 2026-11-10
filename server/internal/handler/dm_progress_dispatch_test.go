@@ -367,3 +367,66 @@ func TestDMProgressDispatch_NoNativeRouteKeepsRowsAndSuspendsLane(t *testing.T) 
 		t.Error("lane not suspended, want a reason")
 	}
 }
+
+// An archive that commits between the dispatcher's route read and its commit
+// must not lose the batch: the dispatcher reads the DM under a lock, so it
+// waits for the archive and then sees the DM closed (review of d974a5e, P1).
+func TestDMProgressDispatch_ArchiveRacingDispatchKeepsRows(t *testing.T) {
+	e := newDispatchEnv(t)
+	e.status(t, e.issue, "in_progress", 0)
+	archive, err := testPool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Rollback(t.Context())
+	if _, err := archive.Exec(t.Context(), `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- e.d.Run(t.Context(), e.at(15)) }()
+	select {
+	case <-time.After(500 * time.Millisecond): // blocked on the archived row, as it must be
+	case err := <-done:
+		t.Fatalf("dispatcher finished while the archive was uncommitted (err=%v): it read the DM without a lock", err)
+	}
+	if err := archive.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	e.wantCards(t, 0)
+	if n := e.pending(t); n != 1 {
+		t.Errorf("pending = %d, want kept for when the DM reopens", n)
+	}
+}
+
+// A lane with no route does not load its backlog on every run (review of
+// d974a5e, security finding): its rows stay untouched until a route exists.
+func TestDMProgressDispatch_UnroutableLaneDoesNotScanItsBacklog(t *testing.T) {
+	e := newDispatchEnv(t)
+	e.status(t, e.issue, "in_progress", 0)
+	dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane)
+	// A row of an issue nobody follows: a scan would delete it as not_following.
+	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
+		VALUES ($1, $2, gen_random_uuid(), 'status', $3)`, testWorkspaceID, e.lane, e.at(0))
+	e.run(t, 15)
+	e.wantCards(t, 0)
+	if n := e.pending(t); n != 2 {
+		t.Errorf("pending = %d, want 2 (backlog untouched)", n)
+	}
+}
+
+// One run handles a bounded slice of a lane's backlog; the rest waits for the
+// next run, so a huge backlog cannot hold the job past its deadline.
+func TestDMProgressDispatch_BacklogIsReadInBoundedSlices(t *testing.T) {
+	e := newDispatchEnv(t)
+	e.status(t, e.issue, "in_progress", 0)
+	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
+		SELECT $1, $2, $3, 'status', $4 FROM generate_series(1, 599)`, testWorkspaceID, e.lane, e.issue, e.at(0))
+	e.run(t, 15)
+	e.wantCards(t, 1)
+	if n := e.pending(t); n != 100 {
+		t.Errorf("pending = %d, want 100 left after one slice of 500", n)
+	}
+}
