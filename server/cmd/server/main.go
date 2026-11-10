@@ -885,6 +885,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus})); err != nil {
+		slog.Error("scheduler: register dm progress dispatch", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
 	}

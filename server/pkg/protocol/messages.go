@@ -297,6 +297,22 @@ type ChatMessagePayload struct {
 	MessageKind   string `json:"message_kind,omitempty"`
 }
 
+// ProgressCardPayload is the typed content of a progress card
+// (dm_progress_delivery.payload). It holds IDs, statuses and change kinds only:
+// titles are resolved at read time under the access gate (CHE-3369 I6).
+type ProgressCardPayload struct {
+	Items []ProgressCardItem `json:"items"`
+}
+
+// ProgressCardItem is one issue's net change since the last card: FromStatus is
+// the status the DM was last told, Status the current one.
+type ProgressCardItem struct {
+	IssueID    string   `json:"issue_id"`
+	Status     string   `json:"status"`
+	FromStatus string   `json:"from_status"`
+	Kinds      []string `json:"kinds"`
+}
+
 // Chat message kinds (chat_message.message_kind). Additive: unknown values
 // degrade to ChatMessageKindMessage on older readers.
 const (
@@ -314,6 +330,10 @@ const (
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).
 	ChatMessageKindNoResponse = "no_response"
+	// ChatMessageKindProgressCard is the server-authored DM progress card
+	// (CHE-3369). Its content is a titleless fallback line; the typed payload
+	// lives in dm_progress_delivery.
+	ChatMessageKindProgressCard = "progress_card"
 	// ChatMessageKindOnboardingKickoff is the server-authored, hidden first
 	// turn used to start Mika's onboarding conversation. It is persisted so
 	// the runtime receives a normal immutable chat input batch. User-facing

@@ -1340,6 +1340,15 @@ type DmProgressDataIncident struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type DmProgressDelivery struct {
+	LineageID     pgtype.UUID        `json:"lineage_id"`
+	Seq           int64              `json:"seq"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	Payload       []byte             `json:"payload"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type DmProgressFollow struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

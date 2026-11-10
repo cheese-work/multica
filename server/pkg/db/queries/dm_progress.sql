@@ -137,7 +137,7 @@ WITH gone AS (
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2;
 
 -- name: DeleteDMProgressForLineage :exec
--- No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows and lane here.
+-- No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows, deliveries and lane here.
 -- Callers hold the chat_session lock, so a new follow cannot slip in between.
 WITH gone AS (
     DELETE FROM dm_progress_follow AS f WHERE f.lineage_id = $1 AND f.workspace_id = $2
@@ -145,18 +145,58 @@ WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.lineage_id = $1 AND d.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2;
 
 -- name: DeleteDMProgressByWorkspace :exec
--- No FKs (repo rule): workspace delete sweeps all five tables here.
+-- No FKs (repo rule): workspace delete sweeps all six tables here.
 WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
 ), gone_pending AS (
     DELETE FROM dm_progress_pending AS p WHERE p.workspace_id = $1
+), gone_deliveries AS (
+    DELETE FROM dm_progress_delivery AS d WHERE d.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
+
+-- name: ListDMProgressPendingLanes :many
+SELECT DISTINCT lineage_id FROM dm_progress_pending ORDER BY lineage_id;
+
+-- name: LockDMProgressLaneSkipLocked :one
+-- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
+-- skipped, not waited for (CHE-3369 I1.3).
+SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
+
+-- name: ListDMProgressPending :many
+SELECT * FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id;
+
+-- name: DeleteDMProgressPendingEvents :exec
+DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);
+
+-- name: InsertDMProgressDelivery :exec
+INSERT INTO dm_progress_delivery (lineage_id, seq, workspace_id, chat_message_id, payload)
+VALUES ($1, $2, $3, $4, $5);
+
+-- name: AdvanceDMProgressLane :exec
+-- A card went out: stamp the lane and take the next seq. A lane held back only
+-- for routing is released.
+UPDATE dm_progress_lane
+SET last_card_at = $2, next_seq = next_seq + 1, suspended_reason = NULL
+WHERE lineage_id = $1;
+
+-- name: SuspendDMProgressLane :exec
+UPDATE dm_progress_lane SET suspended_reason = $2 WHERE lineage_id = $1;
+
+-- name: MarkDMProgressFollowRendered :exec
+-- The card told the DM this issue's current status; an immediate card also
+-- spends the follow's hourly immediate allowance (I2.2).
+UPDATE dm_progress_follow
+SET last_rendered_status = $3,
+    last_immediate_at = CASE WHEN sqlc.arg('immediate')::boolean THEN sqlc.arg('at')::timestamptz ELSE last_immediate_at END
+WHERE issue_id = $1 AND lineage_id = $2 AND state = 'active';
