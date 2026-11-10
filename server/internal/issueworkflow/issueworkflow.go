@@ -197,6 +197,11 @@ type Step struct {
 	// DynamicAssignment says the step's assignee is chosen at run time, so it
 	// has no handler. Lint-only: the dispatcher ignores it.
 	DynamicAssignment bool `json:"dynamic_assignment,omitempty"`
+	// WaitsOnOpenDecision declares the step a no-op while a human decision
+	// request is open on the issue (CHE-4976): the answer wakes the issue, so
+	// entering the step starts no run. Only a step whose author set it is
+	// skipped; entry work in the instructions is never inferred away.
+	WaitsOnOpenDecision bool `json:"waits_on_open_decision,omitempty"`
 	// LintWaive silences lint rules on this step, each with its reason. A
 	// waived finding is still reported, marked waived.
 	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
@@ -294,8 +299,9 @@ type storedStep struct {
 	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 	Entry         []EntryGate  `json:"entry,omitempty"`
 
-	DynamicAssignment bool         `json:"dynamic_assignment,omitempty"`
-	LintWaive         []LintWaiver `json:"lint_waive,omitempty"`
+	DynamicAssignment   bool         `json:"dynamic_assignment,omitempty"`
+	WaitsOnOpenDecision bool         `json:"waits_on_open_decision,omitempty"`
+	LintWaive           []LintWaiver `json:"lint_waive,omitempty"`
 
 	// KeepOtherAssignee: see Step. TEMPORARY, CHE-5024.
 	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
@@ -345,9 +351,10 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			SubWorkflow:      s.SubWorkflow,
 			Entry:            s.Entry,
 
-			DynamicAssignment: s.DynamicAssignment,
-			LintWaive:         s.LintWaive,
-			KeepOtherAssignee: s.KeepOtherAssignee,
+			DynamicAssignment:   s.DynamicAssignment,
+			WaitsOnOpenDecision: s.WaitsOnOpenDecision,
+			LintWaive:           s.LintWaive,
+			KeepOtherAssignee:   s.KeepOtherAssignee,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -369,7 +376,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, WaitsOnOpenDecision: s.WaitsOnOpenDecision, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee}
 		// A human_in_charge step hands nothing off, but its handler is the entry
 		// rule of a decision episode and must survive storage.
 		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
