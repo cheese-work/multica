@@ -379,6 +379,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - A workspace's `--context` is provided to every agent in the workspace. `--slug` cannot be changed after creation. `--issue-prefix` is uppercased; changing it renumbers every existing issue, and old identifiers in external references stop resolving.
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` names the agent that takes routing-only workflow steps (`todo`, `blocked`, `merged`, `need_decision` by default; change with `--routing-statuses`, send one status elsewhere with `--routing-overrides todo=<agent-id>`). The fallback takes over when that agent is archived, or when its run fails on a provider error. An override key `<workflow-id>:<status>` limits that override to one workflow. `none` turns a field off. Only a human owner or admin can change it, and each change is recorded in the activity log.
 - `--issue-title-template` interpolates only `{{date}}` (UTC, `YYYY-MM-DD`) and rejects any other `{{...}}` token. A schedule trigger's `--timezone` defaults to UTC.
+- `--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` need `--mode script`, and `--mode script` needs `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script.
 
 ## Command overview
 
@@ -584,7 +585,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | | `env get/set <agent-id>` | Read and write custom environment variables (agent owner or workspace owner/admin; every read is recorded) | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`; replaces the whole set, and keys whose value is `****` keep their existing value |
 | | `skills list/set/add <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends) |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assign workspace MCP servers to this agent | Take the server id from `workspace mcp list`. A library entry does nothing until it is added here; `disable` stops sending it without dropping the assignment |
-| `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable) |
+| `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable), `--script`, `--arg` |
 | | `trigger <id>` | Trigger a run manually | |
 | | `runs <id>` | View run history | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | Manage schedule and webhook triggers | `trigger-add`: `--kind` (`schedule` or `webhook`), `--cron`, `--timezone` (default UTC), `--label` |

@@ -311,6 +311,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
+- `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。
 
 ### 設定変更の提案
 
@@ -440,7 +441,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `env get/set <agent-id>` | カスタム環境変数の読み書き（エージェントの所有者、またはワークスペースの owner/admin。読み取りはすべて記録される） | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
 | | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
-| `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可） |
+| `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
 | | `trigger <id>` | 手動で 1 回トリガー | |
 | | `runs <id>` | 実行履歴を表示 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | スケジュールと webhook のトリガーを管理 | `trigger-add`: `--kind`（`schedule` または `webhook`）、`--cron`、`--timezone`（既定は UTC）、`--label` |

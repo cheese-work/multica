@@ -311,6 +311,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - 워크스페이스의 `--context`는 워크스페이스의 모든 에이전트에게 제공됩니다. `--slug`는 만든 뒤 바꿀 수 없습니다. `--issue-prefix`는 대문자로 바뀌며, 변경하면 기존 태스크 번호가 모두 다시 매겨져 외부에서 참조하던 예전 번호는 더 이상 연결되지 않습니다.
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]`는 라우팅만 하는 워크플로 단계(기본값 `todo`, `blocked`, `merged`, `need_decision`; `--routing-statuses`로 변경하고, `--routing-overrides todo=<agent-id>`로 특정 상태를 다른 에이전트에 보냅니다)를 맡을 에이전트를 지정합니다. 이 에이전트가 보관 처리되거나 실행이 공급자 오류로 실패하면 대체 에이전트가 이어받습니다. 재정의 키를 `<workflow-id>:<status>`로 쓰면 해당 재정의는 한 워크플로로 한정됩니다. `none`은 해당 항목을 끕니다. 사람 소유자나 관리자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다.
 - `--issue-title-template`은 `{{date}}`(UTC, `YYYY-MM-DD`)만 치환하며 다른 `{{...}}`는 거부합니다. 일정 트리거의 `--timezone` 기본값은 UTC입니다.
+- `--mode script --script <name> [--arg <value>]...`은 모델 세션 없이 에이전트의 작업 토큰으로 허용 목록의 스크립트 하나를 실행합니다. `--script`와 `--arg`에는 `--mode script`가 필요하고, `--mode script`에는 `--script`가 필요합니다. `--description`은 실행되지 않습니다. 데몬에 허용 목록이 없으면 모든 스크립트 작업이 안전하게 실패합니다. `--output json`은 스크립트 이름과 인자를 `script_config`로 보여 줍니다. `autopilot update --mode <다른 모드>`는 스크립트를 지웁니다.
 
 ### 설정 변경 제안
 
@@ -440,7 +441,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `env get/set <agent-id>` | 사용자 지정 환경 변수 읽기/쓰기(에이전트 소유자 또는 워크스페이스 owner/admin. 읽을 때마다 기록됨) | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`. 전체를 교체하며 값이 `****`인 키는 기존 값 유지 |
 | | `skills list/set/add <agent-id>` | 연결된 스킬 관리 | `--skill-ids`(`set`은 전체 교체, `add`는 증분 추가) |
 | | `mcp list/add/enable/disable/remove <agent-id>` | 워크스페이스 MCP 서버를 이 에이전트에 할당 | server id는 `workspace mcp list`에서 확인. 라이브러리 항목은 여기서 추가하기 전까지 동작하지 않으며, `disable`은 할당을 유지한 채 전달만 중단합니다 |
-| `autopilot` | `list/get/create/update/delete` | 자동화 관리 | `create`: `--title`, `--agent`, `--mode`(모두 필수), `--description`, `--issue-title-template`, `--project`, `--subscriber`(반복 가능) |
+| `autopilot` | `list/get/create/update/delete` | 자동화 관리 | `create`: `--title`, `--agent`, `--mode`(모두 필수), `--description`, `--issue-title-template`, `--project`, `--subscriber`(반복 가능), `--script`, `--arg` |
 | | `trigger <id>` | 수동으로 한 번 트리거 | |
 | | `runs <id>` | 실행 기록 확인 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 일정 및 webhook 트리거 관리 | `trigger-add`: `--kind`(`schedule` 또는 `webhook`), `--cron`, `--timezone`(기본값 UTC), `--label` |
