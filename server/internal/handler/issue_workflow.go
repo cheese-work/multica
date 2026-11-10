@@ -94,6 +94,9 @@ type IssueWorkflowStepPayload struct {
 	// Entry are the step's entry gates; see issueworkflow.EntryGate. Omitted
 	// keeps the stored gates, [] clears them.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// KeepOtherAssignee: see issueworkflow.Step. TEMPORARY, replaced by
+	// per-issue workflows (CHE-5024).
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -156,6 +159,8 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
 		Entry:            s.Entry,
+
+		KeepOtherAssignee: s.KeepOtherAssignee,
 	}
 }
 
@@ -171,6 +176,8 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Edges:            in.Edges,
 		SubWorkflow:      in.SubWorkflow,
 		Entry:            in.Entry,
+
+		KeepOtherAssignee: in.KeepOtherAssignee,
 	}
 }
 
@@ -392,6 +399,8 @@ type IssueWorkflowStepInput struct {
 	SubWorkflow *issueworkflow.SubWorkflow `json:"sub_workflow,omitempty"`
 	// Entry: see IssueWorkflowStepPayload.
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
+	// KeepOtherAssignee: see IssueWorkflowStepPayload.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -459,6 +468,8 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Edges:            in.Edges,
 			SubWorkflow:      in.SubWorkflow,
 			Entry:            in.Entry,
+
+			KeepOtherAssignee: in.KeepOtherAssignee,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}

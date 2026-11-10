@@ -101,7 +101,7 @@ const NEW_WORKFLOW_MIDDLE = ["in_progress", "in_review"];
 type DraftColumn = { id: string; status_key: string } | { id: string; new_name: string; category?: "unstarted" | "started" };
 
 /** What entering a column does, keyed in the draft by column id. */
-type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "edges">;
+type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee" | "edges">;
 
 const NO_HANDOFF: Handoff = { handler: { type: "none" }, instructions: "" };
 
@@ -123,7 +123,7 @@ function columnKey(column: DraftColumn): string {
 }
 
 function hasHandoff(h: Handoff | undefined): h is Handoff {
-  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.edges?.length);
+  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.keep_other_assignee || !!h.edges?.length);
 }
 
 function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps">): Draft {
@@ -136,6 +136,7 @@ function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps
       next_status_key: s.next_status_key,
       back_status_key: s.back_status_key,
       advance_on_ci_green: s.advance_on_ci_green,
+      keep_other_assignee: s.keep_other_assignee,
       edges: s.edges,
     };
     if (hasHandoff(h)) handoffs[s.status_key] = h;
@@ -415,8 +416,8 @@ export function WorkflowEditorPage({
       const handoffs = { ...d.handoffs };
       for (const s of next) {
         if (s === before.get(s.status_key)) continue;
-        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges } = s;
-        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, edges };
+        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges } = s;
+        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges };
       }
       return { ...d, handoffs };
     });
@@ -458,6 +459,7 @@ export function WorkflowEditorPage({
             ...(h.next_status_key && listed.has(h.next_status_key) ? { next_status_key: h.next_status_key } : {}),
             ...(h.back_status_key && listed.has(h.back_status_key) ? { back_status_key: h.back_status_key } : {}),
             ...(h.advance_on_ci_green ? { advance_on_ci_green: true } : {}),
+            ...(h.keep_other_assignee ? { keep_other_assignee: true } : {}),
             ...(h.edges?.length ? { edges: h.edges } : {}),
           }
         : {};

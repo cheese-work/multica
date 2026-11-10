@@ -200,6 +200,13 @@ type Step struct {
 	// LintWaive silences lint rules on this step, each with its reason. A
 	// waived finding is still reported, marked waived.
 	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
+	// KeepOtherAssignee makes entering the step leave an assignee in place
+	// when that assignee is neither this step's handler nor the handler of the
+	// step the issue leaves (CHE-5013).
+	//
+	// TEMPORARY: CHE-5024 (per-issue workflows) replaces it; an issue's own
+	// workflow will then say who owns each step. Remove this flag with it.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 // LintWaiver waives one lint rule on a step.
@@ -289,6 +296,9 @@ type storedStep struct {
 
 	DynamicAssignment bool         `json:"dynamic_assignment,omitempty"`
 	LintWaive         []LintWaiver `json:"lint_waive,omitempty"`
+
+	// KeepOtherAssignee: see Step. TEMPORARY, CHE-5024.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -337,6 +347,7 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 
 			DynamicAssignment: s.DynamicAssignment,
 			LintWaive:         s.LintWaive,
+			KeepOtherAssignee: s.KeepOtherAssignee,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -358,7 +369,7 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee}
 		// A human_in_charge step hands nothing off, but its handler is the entry
 		// rule of a decision episode and must survive storage.
 		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {

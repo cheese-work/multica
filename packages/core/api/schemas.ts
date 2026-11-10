@@ -588,6 +588,7 @@ const IssueWorkflowStepSchema = z.lazy(() => z.object({
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
+  keep_other_assignee: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
   entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
