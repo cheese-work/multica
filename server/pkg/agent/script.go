@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,6 +71,20 @@ func ScriptFailureReason(errText string) string {
 		return reason
 	}
 	return ""
+}
+
+// scriptExitPattern reads the "script_failed: exit code N" line the backend writes.
+var scriptExitPattern = regexp.MustCompile(`^` + ScriptReasonFailed + `: exit code (\d+)`)
+
+// ScriptExitCode returns the exit code of a script_failed Result.Error. ok is
+// false when the script never started or was rejected, timed out or cancelled.
+func ScriptExitCode(errText string) (code int, ok bool) {
+	m := scriptExitPattern.FindStringSubmatch(errText)
+	if m == nil {
+		return 0, false
+	}
+	code, err := strconv.Atoi(m[1])
+	return code, err == nil
 }
 
 type scriptBackend struct{ cfg Config }

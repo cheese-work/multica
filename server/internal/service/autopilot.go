@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1317,6 +1320,7 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to complete autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run.ID, task)
 		s.captureAutopilotRunCompleted(autopilot, updatedRun)
 		s.publishRunDone(wsID, updatedRun, "completed")
 	case "failed", "cancelled":
@@ -1329,8 +1333,45 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to fail autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run.ID, task)
 		s.captureAutopilotRunFailed(autopilot, updatedRun, updatedRun.Source, reason)
 		s.publishRunDone(wsID, updatedRun, "failed")
+	}
+}
+
+// recordScriptAudit writes result.script for a settled script-mode run: the
+// script name, a SHA-256 of its argv (never the argv itself), the exit code and
+// the wall-clock duration. exit_code is null when no process exit was observed
+// (rejected, timed out, cancelled); duration_ms is null without both timestamps.
+// Best effort: a failed write is logged and never unsettles the run. CHE-5094.
+func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilot, runID pgtype.UUID, task db.AgentTaskQueue) {
+	if ap.ExecutionMode != "script" {
+		return
+	}
+	var cfg struct {
+		Name string   `json:"name"`
+		Args []string `json:"args"`
+	}
+	if err := json.Unmarshal(ap.ScriptConfig, &cfg); err != nil {
+		slog.Warn("script audit: unreadable script_config", "run_id", util.UUIDToString(runID), "error", err)
+		return
+	}
+	argv := sha256.Sum256([]byte(strings.Join(cfg.Args, "\x00")))
+	audit := map[string]any{"name": cfg.Name, "argv_sha256": hex.EncodeToString(argv[:]), "exit_code": nil, "duration_ms": nil}
+	if task.Status == "completed" {
+		audit["exit_code"] = 0
+	} else if code, ok := agent.ScriptExitCode(task.Error.String); ok {
+		audit["exit_code"] = code
+	}
+	if task.StartedAt.Valid && task.CompletedAt.Valid {
+		audit["duration_ms"] = task.CompletedAt.Time.Sub(task.StartedAt.Time).Milliseconds()
+	}
+	patch, err := json.Marshal(map[string]any{"script": audit})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: runID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record", "run_id", util.UUIDToString(runID), "error", err)
 	}
 }
 

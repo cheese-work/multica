@@ -974,16 +974,10 @@ func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTas
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
-	// Revoke any mat_ task tokens minted for this task. Cancellation is
-	// a terminal transition, so the running agent process no longer
-	// needs to call back; eagerly deleting the token closes the
-	// window where a compromised process could keep authenticating
-	// against the API until the 24h expiry. Failure is non-fatal — the
-	// expiry / FK cascade are the durable guards. MUL-2600.
-	if err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
-		slog.Warn("cancel task: failed to revoke task tokens",
-			"task_id", util.UUIDToString(task.ID), "error", err)
-	}
+	// Delete any mat_ task tokens minted for this task (MUL-2600). Best
+	// effort: a failed delete leaves the row valid until expiry; see
+	// RevokeTaskTokens.
+	s.RevokeTaskTokens(ctx, task)
 }
 
 // costUSDTicks is the provider's own price for this usage in 1e-10 USD, or 0
@@ -9975,5 +9969,29 @@ func agentToMap(a db.Agent) map[string]any {
 		"updated_at":           util.TimestampToString(a.UpdatedAt),
 		"archived_at":          util.TimestampToPtr(a.ArchivedAt),
 		"archived_by":          util.UUIDToPtr(a.ArchivedBy),
+	}
+}
+
+// RevokeTaskTokens deletes a task's mat_ tokens at task end. It is best effort
+// and is not an immediate revocation guarantee: if the delete fails, the row
+// stays valid until its expires_at (GetTaskTokenByHash filters on it), so the
+// failure is logged and, for an autopilot run, recorded as
+// result.token_revoke_failed. Neither the log nor the record carries a token.
+func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQueue) {
+	err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID)
+	if err == nil {
+		return
+	}
+	slog.Error("task end: failed to delete task tokens; they stay valid until expiry",
+		"task_id", util.UUIDToString(task.ID), "error", err)
+	if !task.AutopilotRunID.Valid {
+		return
+	}
+	// The caller's ctx may be the reason the delete failed (cancelled request).
+	if mergeErr := s.Queries.MergeAutopilotRunResult(context.WithoutCancel(ctx), db.MergeAutopilotRunResultParams{
+		ID: task.AutopilotRunID, Patch: []byte(`{"token_revoke_failed":true}`),
+	}); mergeErr != nil {
+		slog.Error("task end: failed to record token deletion failure",
+			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
 }
