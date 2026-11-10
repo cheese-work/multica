@@ -20,6 +20,8 @@ export interface WorkflowEditorDraft {
   blocked: boolean;
   middle: WorkflowDraftColumn[];
   handoffs: Record<string, WorkflowDraftHandoff>;
+  /** Absent in a draft held before the field existed. */
+  maxRuns?: string;
 }
 
 /**

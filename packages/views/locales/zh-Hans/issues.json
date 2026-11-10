@@ -1626,6 +1626,8 @@
       "name": "名称",
       "name_placeholder": "例如：研发流程",
       "description": "描述",
+      "max_runs": "每个 Issue 的最大运行次数",
+      "max_runs_invalid": "请输入 1 到 {{max}} 的整数，留空则使用默认值（{{default}}）。",
       "steps": "步骤",
       "add_step": "添加步骤",
       "start": "起始",
