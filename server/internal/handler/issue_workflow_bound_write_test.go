@@ -446,7 +446,9 @@ func TestBoundWorkflowRollbackNeedsItsOwnDecision(t *testing.T) {
 
 	// A decision that names the rollback pair authorizes it, once.
 	rollback := approvedBoundWriteCard(t, "workflow.instructions", afterForward, canonicalStepsHash(t, forward.workflowID, original))
-	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = ANY($1)`, []any{rollback.decision.ID, otherForward.decision.ID}) })
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = ANY($1)`, []any{rollback.decision.ID, otherForward.decision.ID})
+	})
 	forward.patch(t, rollbackBody(uuidToString(rollback.decision.ID))).Want(http.StatusOK)
 	if got := forward.storedInstructions(t, "in_progress"); got != "" {
 		t.Fatalf("rollback left instructions %q", got)
