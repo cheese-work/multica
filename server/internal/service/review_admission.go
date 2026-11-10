@@ -167,7 +167,7 @@ func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	if !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
 		return admissionDecision{}, nil
 	}
-	pr, err := q.GetIssueAdmissionPR(ctx, issueID)
+	pr, err := admissionPR(ctx, q, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return admissionDecision{}, nil
@@ -215,4 +215,23 @@ func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 	slog.Info("review admission: run deferred",
 		"issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(target.AgentID), "reasons", reasons)
 	return admissionDecision{}, deferral
+}
+
+// admissionPR is the PR whose head the review is judged on: the PR a
+// replacement review is pinned to, otherwise the issue's newest open PR. A
+// pinned PR that is no longer open or has no head is not judged (ErrNoRows),
+// as the issue-wide read skips it.
+func admissionPR(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (db.GithubPullRequest, error) {
+	prID := reviewPRPin(ctx)
+	if !prID.Valid {
+		return q.GetIssueAdmissionPR(ctx, issueID)
+	}
+	pr, err := q.GetGitHubPullRequestByID(ctx, prID)
+	if err != nil {
+		return db.GithubPullRequest{}, err
+	}
+	if (pr.State != "open" && pr.State != "draft") || pr.HeadSha == "" {
+		return db.GithubPullRequest{}, pgx.ErrNoRows
+	}
+	return pr, nil
 }

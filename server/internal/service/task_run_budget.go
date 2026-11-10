@@ -82,7 +82,12 @@ var ErrReviewHeadMoved = errors.New("review head moved during the enqueue")
 // withExpiryNote returns the handoff note with the deferral-expired reason set
 // or removed, whatever an earlier Apply left on it.
 func withExpiryNote(note pgtype.Text, expired bool) pgtype.Text {
-	base := strings.TrimSuffix(strings.TrimSuffix(note.String, deferralExpiredNote), "\n")
+	base := note.String
+	if base == deferralExpiredNote {
+		base = ""
+	} else {
+		base = strings.TrimSuffix(base, "\n"+deferralExpiredNote)
+	}
 	if expired {
 		if base != "" {
 			base += "\n"

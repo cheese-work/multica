@@ -164,22 +164,18 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 
 // admittedGate folds the admission decision into the gate the enqueue applies,
 // so the task row names the head the admission judged and carries the expiry
-// reason only for a validated expiry. A replacement review pinned to a PR keeps
-// that PR's head. The budget head stays the only budget-exception head.
+// reason only for a validated expiry. The budget and the admission must have
+// read one head: a gate that names another head means the PR moved between
+// the two reads, and the run is refused so the caller judges the new head.
 func admittedGate(ctx context.Context, gate ReviewGate, d admissionDecision) (ReviewGate, error) {
 	if d.Head == "" {
 		return gate, nil
 	}
 	if gate.Head != "" && gate.Head != d.Head {
-		if d.Expired {
-			return ReviewGate{}, ErrReviewHeadMoved
-		}
-		return gate, nil
+		return ReviewGate{}, ErrReviewHeadMoved
 	}
 	gate.Expired = d.Expired
-	if !reviewPRPin(ctx).Valid {
-		gate.Pin = d.Head
-	}
+	gate.Pin = d.Head
 	return gate, nil
 }
 

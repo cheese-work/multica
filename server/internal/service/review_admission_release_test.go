@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -525,10 +528,79 @@ func TestWithExpiryNoteSetsAndStripsOnlyItsOwnReason(t *testing.T) {
 		{"wake up\n" + deferralExpiredNote, true, "wake up\n" + deferralExpiredNote},
 		{"wake up\n" + deferralExpiredNote, false, "wake up"},
 		{deferralExpiredNote, false, ""},
+		{"Do not label this deferral expired", false, "Do not label this deferral expired"},
+		{"Do not label this deferral expired", true, "Do not label this deferral expired\n" + deferralExpiredNote},
+		{"Do not label this deferral expired\n" + deferralExpiredNote, false, "Do not label this deferral expired"},
 	}
 	for _, c := range cases {
 		if got := withExpiryNote(pgtype.Text{String: c.in, Valid: c.in != ""}, c.expired).String; got != c.want {
 			t.Errorf("withExpiryNote(%q, %v) = %q, want %q", c.in, c.expired, got, c.want)
 		}
 	}
+}
+
+// beforeQuery runs hook once, right before the query whose SQL names marker, so
+// a test can change the PR between two reads of one guard.
+type beforeQuery struct {
+	db.DBTX
+	marker string
+	hook   func()
+	once   sync.Once
+}
+
+func (b *beforeQuery) QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row {
+	if strings.Contains(sql, b.marker) {
+		b.once.Do(b.hook)
+	}
+	return b.DBTX.QueryRow(ctx, sql, args...)
+}
+
+// The budget guard reads head A; the PR moves to an admissible B before the
+// admission read. The two reads disagree, so the run starts on neither: a
+// task stamped A would review A and spend A's review credit for a run that
+// was judged on B.
+func TestGuardRefusesWhenTheHeadMovesBetweenTheBudgetAndAdmissionReads(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "success")
+	f.budgetIssue(t)
+	q := db.New(&beforeQuery{DBTX: f.Pool, marker: "name: GetIssueAdmissionPR", hook: func() { f.moveHead(t, "bbbb2222", "success") }})
+	gate, err := guardIssueRunGate(context.Background(), q, util.MustParseUUID(f.issue), OriginDerived,
+		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "mention", ReviewRun: true})
+	if !errors.Is(err, ErrReviewHeadMoved) {
+		t.Fatalf("budget read A, admission read B: gate %+v err %v, want ErrReviewHeadMoved", gate, err)
+	}
+}
+
+// A replacement review pinned to its own PR is admitted against that PR, not
+// against the issue's newest PR: the pinned PR's CI is green, the newest PR's
+// is not, and the task is stamped with the pinned head.
+func TestPinnedReviewIsJudgedOnItsOwnPR(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "success")
+	newest := f.addPR(t, f.issue)
+	f.Exec(t, `UPDATE github_pull_request SET head_sha = 'bbbb2222' WHERE id = $1`, newest)
+	ctx := WithReviewPR(context.Background(), util.MustParseUUID(f.pr))
+	gate, err := guardIssueRunGate(ctx, f.q, util.MustParseUUID(f.issue), OriginDerived,
+		RunTarget{AgentID: util.MustParseUUID(f.agentID), Trigger: "mention", ReviewRun: true})
+	if err != nil {
+		t.Fatalf("pinned PR is green: err = %v, want admitted", err)
+	}
+	var p db.CreateAgentTaskParams
+	gate.Apply(&p)
+	if p.HeadSha.String != admissionHead {
+		t.Fatalf("task head = %q, want the pinned PR's %q", p.HeadSha.String, admissionHead)
+	}
+	f.wantRecord(t, false, "the newest PR was not judged")
+}
+
+// budgetIssue puts the issue under a workflow with a stored run budget, so the
+// budget guard reads the review head (an unbudgeted issue reads none).
+func (f *admissionFixture) budgetIssue(t *testing.T) {
+	t.Helper()
+	var workflowID string
+	f.QueryRow(t, `INSERT INTO issue_workflow (workspace_id, name, initial_status_key, steps)
+		VALUES ($1, 'budgeted-review', 'agent_review', '[{"status_key":"agent_review","handler":{"type":"none"}}]'::jsonb) RETURNING id::text`,
+		f.WorkspaceID).Scan(&workflowID)
+	f.Cleanup(t, `DELETE FROM issue_workflow WHERE id = $1`, workflowID)
+	f.Exec(t, `UPDATE issue SET workflow_id = $2 WHERE id = $1`, f.issue, workflowID)
 }
