@@ -56,6 +56,18 @@ func (c *inflightClaims) end(taskID string, entry *inflightClaim) {
 	}
 }
 
+// ids returns every task id the daemon still holds, never nil: an empty set is
+// a real "none" the server may act on (CHE-3114).
+func (c *inflightClaims) ids() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ids := make([]string, 0, len(c.entries))
+	for id := range c.entries {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func (c *inflightClaims) generation(taskID, fallback string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

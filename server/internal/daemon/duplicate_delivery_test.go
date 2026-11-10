@@ -144,3 +144,20 @@ func TestRejectedStartReleasesTaskForRedelivery(t *testing.T) {
 		t.Fatal("redelivery after a rejected start was ignored; nothing would execute the task")
 	}
 }
+
+// The heartbeat reports the tasks the daemon still holds; an idle daemon
+// reports an empty, non-nil set (CHE-3114).
+func TestInflightClaimsIDsReportsLiveSet(t *testing.T) {
+	var c inflightClaims
+	if ids := c.ids(); ids == nil || len(ids) != 0 {
+		t.Fatalf("idle ids = %#v, want empty non-nil", ids)
+	}
+	claim := c.begin("t1", "gen-1")
+	if ids := c.ids(); len(ids) != 1 || ids[0] != "t1" {
+		t.Fatalf("ids = %#v, want [t1]", ids)
+	}
+	c.end("t1", claim)
+	if ids := c.ids(); len(ids) != 0 {
+		t.Fatalf("ids after end = %#v, want none", ids)
+	}
+}

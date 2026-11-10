@@ -461,6 +461,11 @@ type DaemonHeartbeatRequestPayload struct {
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
 	// not report it; zero is a real "idle".
 	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
+	// LiveTaskIDs is every task id the whole daemon still holds (CHE-3114). Nil
+	// from a daemon that does not report it, which proves nothing; an empty,
+	// non-nil set is a real "none". The server uses it to open the stop gate for
+	// cancelled runs of this runtime the daemon no longer holds.
+	LiveTaskIDs []string `json:"live_task_ids"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

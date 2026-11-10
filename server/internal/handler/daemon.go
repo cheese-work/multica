@@ -1566,7 +1566,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	updateMs = time.Since(updateStart).Milliseconds()
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
-	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks, req.LiveTaskIDs)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1635,7 +1635,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 		return nil, err
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
-	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks, req.LiveTaskIDs)
 	return ack, err
 }
 
@@ -1775,10 +1775,40 @@ type heartbeatMetrics struct {
 // heartbeats using only the runtime ID. Each transport records liveness first:
 // HTTP uses its stateless runtime row, while WebSocket uses the connection
 // lease. Auth and request decoding also remain transport-specific.
-func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, supportsBatchImport bool, inFlightTasks *int) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
+// reconcileStopGate opens the stop gate for cancelled runs of this runtime that
+// its daemon no longer holds (CHE-3114). A nil set is a daemon that does not
+// report one and proves nothing; an empty set is a daemon holding no task.
+func (h *Handler) reconcileStopGate(ctx context.Context, runtimeID string, liveTaskIDs []string) {
+	if liveTaskIDs == nil {
+		return
+	}
+	runtimeUUID, err := util.ParseUUID(runtimeID)
+	if err != nil {
+		return
+	}
+	issueIDs, err := h.Queries.ReleaseStopGateForRuntimeLiveSet(ctx, db.ReleaseStopGateForRuntimeLiveSetParams{
+		RuntimeID: runtimeUUID, LiveTaskIds: liveTaskIDs,
+	})
+	if err != nil {
+		slog.Warn("stop gate reconcile failed; gate stays closed", "runtime_id", runtimeID, "error", err)
+		return
+	}
+	seen := map[string]bool{}
+	for _, issueID := range issueIDs {
+		if !issueID.Valid || seen[uuidToString(issueID)] {
+			continue
+		}
+		seen[uuidToString(issueID)] = true
+		slog.Info("stop gate released by daemon live set", "runtime_id", runtimeID, "issue_id", uuidToString(issueID))
+		h.releaseSupersededReviewReplacement(ctx, issueID)
+	}
+}
+
+func (h *Handler) processHeartbeat(ctx context.Context, runtimeID string, supportsBatchImport bool, inFlightTasks *int, liveTaskIDs []string) (*protocol.DaemonHeartbeatAckPayload, heartbeatMetrics, error) {
 	var m heartbeatMetrics
 
 	slog.Debug("daemon heartbeat", "runtime_id", runtimeID)
+	h.reconcileStopGate(ctx, runtimeID, liveTaskIDs)
 
 	ack := &protocol.DaemonHeartbeatAckPayload{
 		RuntimeID:          runtimeID,

@@ -190,7 +190,7 @@ func (s *hostSampler) Run(ctx context.Context, warmup, interval time.Duration, l
 // latest host sample when a sampler runs.
 func (d *Daemon) heartbeatRequest(rid string) protocol.DaemonHeartbeatRequestPayload {
 	inFlight := int(d.activeTasks.Load())
-	req := protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true, InFlightTasks: &inFlight}
+	req := protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true, InFlightTasks: &inFlight, LiveTaskIDs: d.inflight.ids()}
 	if d.hostSampler != nil {
 		req.HostSample = d.hostSampler.Latest()
 	}

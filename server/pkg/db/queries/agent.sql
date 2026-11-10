@@ -1899,6 +1899,26 @@ SET cancel_acked_at = now()
 WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
   AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
 
+-- name: ReleaseStopGateForRuntimeLiveSet :many
+-- CHE-3114: the claiming runtime's daemon reported its live task set. A
+-- cancelled, unacked run of that runtime that is not in the set is proven
+-- stopped: set cancel_acked_at and record why. Scoped to one runtime (an offline
+-- runtime reports nothing, so proves nothing), to runs dispatched long enough
+-- ago that no claim is still travelling to the daemon, and to runs whose
+-- cleanup was not reported unconfirmed (a live set cannot prove child
+-- processes are gone). Returns the issues whose gate may have just opened.
+UPDATE agent_task_queue
+SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+WHERE runtime_id = sqlc.arg('runtime_id')
+  AND status = 'cancelled'
+  AND failure_reason IN ('superseded_head', 'pr_merged', 'pr_closed')
+  AND cancel_acked_at IS NULL
+  AND stop_unconfirmed_at IS NULL
+  AND dispatched_at < now() - interval '2 minutes'
+  AND COALESCE(result->>'process_cleanup_pending', '') <> 'true'
+  AND NOT (id::text = ANY(sqlc.arg('live_task_ids')::text[]))
+RETURNING issue_id;
+
 -- name: ListLiveReviewRunsForPR :many
 -- Live review runs of the PR stamped with a head other than the PR's current
 -- one, at the step their issue is still in. Author runs carry a different
