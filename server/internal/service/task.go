@@ -1735,7 +1735,6 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
 	if err == nil {
-		s.stampBlockedDispatchSnapshot(ctx, queries, issue, task)
 		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
@@ -5708,6 +5707,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					}
 				}
 			}
+		}
+		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
+			s.stampBlockedDispatchSnapshot(ctx, s.Queries, issue, task)
+		} else {
+			slog.Warn("blocked dispatch completion snapshot unavailable", "issue_id", util.UUIDToString(task.IssueID), "error", err)
 		}
 	}
 

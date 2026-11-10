@@ -98,7 +98,7 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		if err != nil {
 			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
 		} else if skip {
-			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask)
+			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
 			return false
 		}
 	}

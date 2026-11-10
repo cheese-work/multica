@@ -52,11 +52,38 @@ func (s *TaskService) stampBlockedDispatchSnapshot(ctx context.Context, q *db.Qu
 	}
 }
 
+func blockedDispatchMode(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID) string {
+	workspace, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "off"
+	}
+	var settings struct {
+		Dedup struct {
+			Mode string `json:"mode"`
+		} `json:"blocked_dispatch_dedup"`
+	}
+	if err := json.Unmarshal(workspace.Settings, &settings); err != nil {
+		return "off"
+	}
+	mode := settings.Dedup.Mode
+	if mode == "" {
+		return "block"
+	}
+	if mode != "off" && mode != "warn" && mode != "block" {
+		return "off"
+	}
+	return mode
+}
+
 // SkipBlockedDispatch reports a duplicate blocked-step dispatch only when the
 // latest completed run captured the exact current inputs. Member transitions
 // are explicit requests and always get their run.
 func (s *TaskService) SkipBlockedDispatch(ctx context.Context, issue db.Issue, tofuID pgtype.UUID, actorType string) (pgtype.UUID, bool, error) {
 	if actorType == "member" || issue.Status != "blocked" || !tofuID.Valid {
+		return pgtype.UUID{}, false, nil
+	}
+	mode := blockedDispatchMode(ctx, s.Queries, issue.WorkspaceID)
+	if mode == "off" {
 		return pgtype.UUID{}, false, nil
 	}
 	last, err := s.Queries.GetLatestCompletedBlockedDispatchTask(ctx, db.GetLatestCompletedBlockedDispatchTaskParams{IssueID: issue.ID, AgentID: tofuID})
@@ -74,16 +101,24 @@ func (s *TaskService) SkipBlockedDispatch(ctx context.Context, issue db.Issue, t
 	if err != nil {
 		return pgtype.UUID{}, false, err
 	}
-	return last.ID, blockedDispatchUnchanged(actorType, previous, blockedDispatchFingerprintRaw(inputs)), nil
+	unchanged := blockedDispatchUnchanged(actorType, previous, blockedDispatchFingerprintRaw(inputs))
+	if unchanged && mode == "warn" {
+		slog.Info("blocked dispatch dedup would skip run", "issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(last.ID))
+	}
+	return last.ID, unchanged && mode == "block", nil
 }
 
-func (s *TaskService) RecordBlockedDispatchSkipped(ctx context.Context, issue db.Issue, lastTask pgtype.UUID) {
-	details, _ := json.Marshal(map[string]string{
-		"rule": "blocked_status_dispatch", "reason": "unchanged_since_last_run", "last_task_id": util.UUIDToString(lastTask),
+func (s *TaskService) RecordBlockedDispatchSkipped(ctx context.Context, issue db.Issue, lastTask pgtype.UUID, actorType, actorID string) {
+	targetID := util.UUIDToString(issue.AssigneeID)
+	details, _ := json.Marshal(map[string]any{
+		"rule": "blocked_status_dispatch", "reason": "unchanged inputs", "last_task_id": util.UUIDToString(lastTask),
+		"events": []string{"issue.status_changed"}, "actor_type": actorType, "actor_id": actorID,
+		"target_type": issue.AssigneeType.String, "target_id": targetID,
 	})
+	actorUUID, _ := util.ParseUUID(actorID)
 	row, err := s.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-		ActorType: pgtype.Text{String: "system", Valid: true}, Action: "wakeup_skipped", Details: details,
+		ActorType: pgtype.Text{String: actorType, Valid: actorType != ""}, ActorID: actorUUID, Action: "wakeup_skipped", Details: details,
 	})
 	if err != nil {
 		slog.Warn("blocked dispatch skip timeline entry failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
@@ -92,7 +127,7 @@ func (s *TaskService) RecordBlockedDispatchSkipped(ctx context.Context, issue db
 	if s.Bus != nil {
 		s.Bus.Publish(events.Event{Type: protocol.EventActivityCreated, WorkspaceID: util.UUIDToString(issue.WorkspaceID), ActorType: "system", Payload: map[string]any{
 			"issue_id": util.UUIDToString(issue.ID),
-			"entry":    map[string]any{"type": "activity", "id": util.UUIDToString(row.ID), "actor_type": "system", "action": row.Action, "details": json.RawMessage(details), "created_at": row.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")},
+			"entry":    map[string]any{"type": "activity", "id": util.UUIDToString(row.ID), "actor_type": actorType, "action": row.Action, "details": json.RawMessage(details), "created_at": row.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05.999999999Z07:00")},
 		}})
 	}
 }
