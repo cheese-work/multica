@@ -310,6 +310,7 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-github-api-retry.py
 python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 bash deploy/cd/test-isolated-qualification.sh
@@ -690,7 +691,11 @@ exits 1 unless `github.triggering_actor` is `congvc-dev`. It has no environment
 and no secrets. Every C00-touching job (`prepare-release-candidate`,
 `admission`, `deploy`) depends on it, so a dispatch by anyone else fails before
 any C00 step. The `c00-runtime` deployment-branch policy allows `main` only, so
-a dispatch from another ref gets no `c00-runtime` secrets. A dispatch with
+a dispatch from another ref gets no `c00-runtime` secrets. An empty
+dispatch (no `candidate_sha`, no evidence path) deploys the newest `main` commit
+with a successful qualification push run: `resolve-candidate` picks it after
+`authorize-c00` and prints it in the job summary (CHE-4998); with none it fails.
+A dispatch with
 `candidate_sha` looks up the successful `main` push qualification run and issues
 the release candidate itself; manual evidence paths remain for explicit
 admitted manifests. The `c00-production` environment is no longer used by this

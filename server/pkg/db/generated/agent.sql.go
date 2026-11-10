@@ -6707,7 +6707,7 @@ SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
     WHERE agent_id = $1
       AND status = 'failed'
-      AND failure_reason = 'agent_error.provider_server_error'
+      AND failure_reason IN ('agent_error.provider_server_error', 'agent_error.provider_capacity_or_rate_limit')
       AND completed_at > $2::timestamptz
 )
 `

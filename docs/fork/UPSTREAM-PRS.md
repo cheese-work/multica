@@ -34,3 +34,21 @@ Delivery: one `multica issue wakeup create --kind at --mode once --agent-id <ass
 
 | PR | Issue | Head SHA | State | Watermark | Convergence PR | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
+
+## Upstream PR tracking (multica-ai/multica, author congvc-dev)
+
+Refreshed by CHE-4789. Public GitHub API read 2026-11-09 ICT (anonymous REST: pulls, issue comments, reviews, review comments, events). Each PR was opened by `congvc-dev`; it is not a bot comment. `first response` = the first comment or review from an account other than the author and other than `vercel[bot]`. `review rounds` = formal review submissions (a `CHANGES_REQUESTED` then `APPROVED` pair counts as 2). Times are ICT. A person-readable time carries `ICT`; the offset after it is time since opening.
+
+| Ledger ID | Upstream PR | Opened | First response | Merged/closed | Time to merge | Review rounds |
+| --- | --- | --- | --- | --- | --- | --- |
+| FX045 (fork #199) | [#10111](https://github.com/multica-ai/multica/pull/10111) refetch a failed issue mention on window focus | 2026-11-08 18:30 ICT | 2026-11-08 19:04 ICT (+34 min, `multica-eve` comment asking for screenshots) | open | - | 0 |
+| FX023 (fork #93) | [#8615](https://github.com/multica-ai/multica/pull/8615) narrow protocol-lint waiver-claim regex | 2026-09-21 10:15 ICT | none | closed unmerged by author 2026-09-21 17:26 ICT | - | 0 |
+| - | [#8093](https://github.com/multica-ai/multica/pull/8093) multiple GitHub app installations per workspace | 2026-09-07 10:24 ICT | none | closed unmerged by author 2026-09-07 23:28 ICT | - | 0 |
+| - | [#2090](https://github.com/multica-ai/multica/pull/2090) customizable workflow status substrate | 2026-05-05 17:04 ICT | none | closed unmerged by author 2026-05-05 17:22 ICT | - | 0 |
+| - | [#2089](https://github.com/multica-ai/multica/pull/2089) driver-plane verdict routing state machine | 2026-05-05 14:39 ICT | none | closed unmerged by author 2026-05-05 14:42 ICT | - | 0 |
+| - | [#2012](https://github.com/multica-ai/multica/pull/2012) desktop loads runtime self-host config | 2026-05-03 00:11 ICT | 2026-05-03 10:12 ICT (+10 h 1 min, `Bohan-J` review: changes requested) | merged 2026-05-06 10:39 ICT by `Bohan-J` | 3 d 10 h 28 min | 2 |
+| - | [#2003](https://github.com/multica-ai/multica/pull/2003) honor Hermes resume replacement session | 2026-05-02 22:00 ICT | 2026-07-17 14:14 ICT (+75 d 16 h, `Bohan-J` comment: superseded by upstream #2070 / #4015) | closed unmerged by maintainer `Bohan-J` 2026-07-17 14:14 ICT | - | 0 |
+
+Totals: 7 PRs. 1 merged (#2012). 5 closed unmerged (4 closed by the author, 1 by a maintainer as superseded). 1 open (#10111). Median first response over the 3 PRs that had one: 10 h 1 min. Median time to merge: 3 d 10 h 28 min (n=1).
+
+`-` in the ledger ID column = no ledger row verified from the PR body or code. Title similarity is not evidence, so #8093, #2090, #2089, #2012 and #2003 stay unmapped. FX045 and FX023 map because the fork fix PRs (#199 and #93) fix the same defect as the upstream PR: #10111's body describes the failed mention fetch that stays identifier-only (FX045), and #8615's title carries CHE-681, which #93 also carries (FX023). The Tracked table stays empty: `#10111` is not on it because no recorded Cheese approval of scope A for it exists in this repository.

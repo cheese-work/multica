@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -41,7 +42,7 @@ func TestMailedCodeRevokesTheLastUsablePasskey(test *testing.T) {
 	if got := f.count(`SELECT count(*) FROM passkey_event WHERE user_id = $1 AND action = 'passkey_revoked'`, f.user); got != 1 {
 		test.Errorf("passkey_revoked events = %d, want 1", got)
 	}
-	if subjects := f.mailer.subjects(); len(subjects) != 2 || subjects[0] != revokeCodeSubject || subjects[1] != revokedSubject {
+	if subjects := f.mailer.subjects(); len(subjects) != 2 || !strings.HasPrefix(subjects[0], revokeCodeSubject+" [") || subjects[1] != revokedSubject {
 		test.Errorf("mail = %v, want the code then a removal notice", subjects)
 	}
 	f.wantRefusal(f.revokeByCode(f.key, started, "000000"), http.StatusConflict, "ceremony_used")

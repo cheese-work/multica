@@ -84,14 +84,7 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 	before := canonicalStepsHash(t, wf.ID, liveSteps(t, wf.ID))
 	after := editedSteps(t, wf.ID, "in_progress", edit)
 
-	fixture := newCardFixture(t)
-	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
-	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
-	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, before, canonicalStepsHash(t, wf.ID, after)))
-	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
-	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
-		t.Fatal(err)
-	}
+	fixture := approvedBoundWriteCard(t, field, before, canonicalStepsHash(t, wf.ID, after))
 
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
@@ -102,6 +95,21 @@ func newBoundWorkflowWriteFrom(t *testing.T, initial, field string, edit func(ma
 		dbfx.Exec(t, `DELETE FROM decision_bound_write WHERE decision_id = $1`, fixture.decision.ID)
 	})
 	return boundWorkflowWrite{askedRecordFixture: fixture, workflowID: wf.ID, before: before}
+}
+
+// approvedBoundWriteCard answers an approval card, as a workspace owner, for
+// the change field from beforeSHA to afterSHA.
+func approvedBoundWriteCard(t *testing.T, field, beforeSHA, afterSHA string) askedRecordFixture {
+	t.Helper()
+	fixture := newCardFixture(t)
+	options := `[{"label":"` + decisiontx.ApproveWriteLabel + `","what_happens":"apply"},{"label":"Reject","what_happens":"drop"}]`
+	dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+	storeBoundWriteCard(t, fixture.decision.ID, decisiontx.BoundWriteDecision(field, beforeSHA, afterSHA))
+	dbfx.Exec(t, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, fixture.issue.WorkspaceID, parseUUID(fixture.humanID))
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: decisiontx.ApproveWriteLabel}); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
 }
 
 // steps are the live steps with edit applied to in_progress.
