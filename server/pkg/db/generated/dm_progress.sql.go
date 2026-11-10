@@ -29,6 +29,25 @@ func (q *Queries) AdvanceDMProgressLane(ctx context.Context, arg AdvanceDMProgre
 	return err
 }
 
+const compactDMProgressPending = `-- name: CompactDMProgressPending :exec
+DELETE FROM dm_progress_pending p
+USING (
+    SELECT event_id FROM (
+        SELECT event_id, row_number() OVER (PARTITION BY issue_id, event_kind, immediate ORDER BY created_at, event_id) AS rn
+        FROM dm_progress_pending AS k WHERE k.lineage_id = $1
+    ) ranked WHERE rn > 1
+) dup
+WHERE p.lineage_id = $1 AND p.event_id = dup.event_id
+`
+
+// Keeps the oldest row of each (issue, kind, immediate) group. The card, the
+// batch window and the immediate jump read only those, so a backlog cannot
+// grow the work of later passes.
+func (q *Queries) CompactDMProgressPending(ctx context.Context, lineageID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, compactDMProgressPending, lineageID)
+	return err
+}
+
 const countDMProgressDescendants = `-- name: CountDMProgressDescendants :one
 SELECT count(*) FROM dm_progress_follow
 WHERE lineage_id = $1 AND reporting_root_id = $2 AND state = 'active' AND issue_id <> $2
@@ -546,10 +565,9 @@ func (q *Queries) ListDMProgressFollowsByLineage(ctx context.Context, lineageID 
 }
 
 const listDMProgressPending = `-- name: ListDMProgressPending :many
-SELECT lineage_id, event_id, workspace_id, issue_id, event_kind, immediate, created_at FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id LIMIT 500
+SELECT lineage_id, event_id, workspace_id, issue_id, event_kind, immediate, created_at FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id
 `
 
-// Oldest first, one bounded slice per run; the rest waits for the next run.
 func (q *Queries) ListDMProgressPending(ctx context.Context, lineageID pgtype.UUID) ([]DmProgressPending, error) {
 	rows, err := q.db.Query(ctx, listDMProgressPending, lineageID)
 	if err != nil {
@@ -579,11 +597,16 @@ func (q *Queries) ListDMProgressPending(ctx context.Context, lineageID pgtype.UU
 }
 
 const listDMProgressPendingLanes = `-- name: ListDMProgressPendingLanes :many
-SELECT lineage_id FROM (SELECT DISTINCT lineage_id FROM dm_progress_pending) lanes ORDER BY random() LIMIT 200
+SELECT l.lineage_id FROM dm_progress_lane l
+WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
+  AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
+ORDER BY random() LIMIT 200
 `
 
-// One run takes a bounded, random slice of lanes, so no lane (a held one
-// included) starves the others and the run fits its deadline.
+// Driven by the lane table (one probe of the pending key per lane, never a scan
+// of the backlog). A lane held for any reason but routing is skipped. One run
+// takes a bounded random slice, so no lane starves the others and the run fits
+// its deadline.
 func (q *Queries) ListDMProgressPendingLanes(ctx context.Context) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDMProgressPendingLanes)
 	if err != nil {

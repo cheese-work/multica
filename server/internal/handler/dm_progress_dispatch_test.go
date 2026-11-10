@@ -401,32 +401,57 @@ func TestDMProgressDispatch_ArchiveRacingDispatchKeepsRows(t *testing.T) {
 	}
 }
 
-// A lane with no route does not load its backlog on every run (review of
-// d974a5e, security finding): its rows stay untouched until a route exists.
-func TestDMProgressDispatch_UnroutableLaneDoesNotScanItsBacklog(t *testing.T) {
+// A lane with no route still drops the rows of an issue its owner can no
+// longer follow, so they are never replayed when the route returns (I3.7); the
+// rows it may still send are kept and the lane is held (review of 9d4b740, P2).
+func TestDMProgressDispatch_UnroutableLaneStillDropsDeniedRows(t *testing.T) {
 	e := newDispatchEnv(t)
 	e.status(t, e.issue, "in_progress", 0)
 	dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane)
-	// A row of an issue nobody follows: a scan would delete it as not_following.
 	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
 		VALUES ($1, $2, gen_random_uuid(), 'status', $3)`, testWorkspaceID, e.lane, e.at(0))
 	e.run(t, 15)
 	e.wantCards(t, 0)
-	if n := e.pending(t); n != 2 {
-		t.Errorf("pending = %d, want 2 (backlog untouched)", n)
+	if n := e.pending(t); n != 1 {
+		t.Errorf("pending = %d, want 1 (the unfollowed issue's row dropped, the followed row held)", n)
+	}
+	var reason pgtype.Text
+	dbfx.QueryRow(t, `SELECT suspended_reason FROM dm_progress_lane WHERE lineage_id = $1`, e.lane).Scan(&reason)
+	if !reason.Valid {
+		t.Error("lane not held, want route_pending")
 	}
 }
 
-// One run handles a bounded slice of a lane's backlog; the rest waits for the
-// next run, so a huge backlog cannot hold the job past its deadline.
-func TestDMProgressDispatch_BacklogIsReadInBoundedSlices(t *testing.T) {
+// A lane's pending rows are compacted to one per (issue, kind, immediate) on
+// every pass, so a backlog cannot grow the work of later passes (review of
+// 9d4b740, security finding).
+func TestDMProgressDispatch_UnroutableBacklogIsCompacted(t *testing.T) {
 	e := newDispatchEnv(t)
 	e.status(t, e.issue, "in_progress", 0)
+	dbfx.Exec(t, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, e.lane)
 	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
-		SELECT $1, $2, $3, 'status', $4 FROM generate_series(1, 599)`, testWorkspaceID, e.lane, e.issue, e.at(0))
+		SELECT $1, $2, $3, 'status', $4::timestamptz + n * interval '1 second' FROM generate_series(1, 599) n`, testWorkspaceID, e.lane, e.issue, e.at(1))
 	e.run(t, 15)
+	if n := e.pending(t); n != 1 {
+		t.Errorf("pending = %d, want 1 (the oldest row of the group)", n)
+	}
+	var oldest time.Time
+	dbfx.QueryRow(t, `SELECT created_at FROM dm_progress_pending WHERE lineage_id = $1`, e.lane).Scan(&oldest)
+	if !oldest.Equal(e.at(0)) {
+		t.Errorf("kept row at %v, want the oldest at %v so the batch window is unchanged", oldest, e.at(0))
+	}
+}
+
+// A card flushes the whole backlog (I2.4), and an immediate change behind a
+// long run of ordinary rows still sets the due time.
+func TestDMProgressDispatch_LargeBacklogFlushesInOneCardAndSeesLateImmediate(t *testing.T) {
+	e := newDispatchEnv(t)
+	dbfx.Exec(t, `INSERT INTO dm_progress_pending (workspace_id, lineage_id, issue_id, event_kind, created_at)
+		SELECT $1, $2, $3, 'assignee', $4::timestamptz + n * interval '1 millisecond' FROM generate_series(1, 599) n`, testWorkspaceID, e.lane, e.issue, e.at(10))
+	e.status(t, e.issue, "blocked", 11)
+	e.run(t, 12) // the batch window of the oldest row ends at +25; the immediate row is due at +11
 	e.wantCards(t, 1)
-	if n := e.pending(t); n != 100 {
-		t.Errorf("pending = %d, want 100 left after one slice of 500", n)
+	if n := e.pending(t); n != 0 {
+		t.Errorf("pending = %d, want 0 after the card", n)
 	}
 }

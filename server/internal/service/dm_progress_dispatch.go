@@ -91,21 +91,8 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 	if lane.SuspendedReason.Valid && lane.SuspendedReason.String != progressRoutePending {
 		return nil
 	}
-	// Route first, under a share lock held to commit: an archive or a
-	// continuation cannot slip in between this read and the card, and a lane
-	// with no route never loads its backlog.
-	ok, err := d.routable(ctx, q, lane)
-	if err != nil {
+	if err := q.CompactDMProgressPending(ctx, lineage); err != nil {
 		return err
-	}
-	if !ok {
-		if !lane.SuspendedReason.Valid {
-			if err := q.SuspendDMProgressLane(ctx, db.SuspendDMProgressLaneParams{LineageID: lineage, SuspendedReason: pgtype.Text{String: progressRoutePending, Valid: true}}); err != nil {
-				return err
-			}
-			return tx.Commit(ctx)
-		}
-		return nil
 	}
 	rows, err := q.ListDMProgressPending(ctx, lineage)
 	if err != nil {
@@ -145,6 +132,21 @@ func (d *DMProgressDispatcher) dispatchLane(ctx context.Context, lineage pgtype.
 		return err
 	}
 
+	// The route is read under a share lock held to commit: an archive or a
+	// continuation cannot slip in between this read and the card. A lane with
+	// no route keeps its rows (C8 routes them) and is held.
+	routed, err := d.routable(ctx, q, lane)
+	if err != nil {
+		return err
+	}
+	if !routed {
+		if !lane.SuspendedReason.Valid {
+			if err := q.SuspendDMProgressLane(ctx, db.SuspendDMProgressLaneParams{LineageID: lineage, SuspendedReason: pgtype.Text{String: progressRoutePending, Valid: true}}); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	}
 	var msg *db.ChatMessage
 	if sendAt, ok := dueAt(lane, kept, byIssue, now); ok && !now.Before(sendAt) {
 		if msg, err = d.deliver(ctx, q, lane, kept, order, now); err != nil {

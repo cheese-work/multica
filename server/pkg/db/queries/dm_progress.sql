@@ -176,9 +176,14 @@ WITH gone_follows AS (
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1;
 
 -- name: ListDMProgressPendingLanes :many
--- One run takes a bounded, random slice of lanes, so no lane (a held one
--- included) starves the others and the run fits its deadline.
-SELECT lineage_id FROM (SELECT DISTINCT lineage_id FROM dm_progress_pending) lanes ORDER BY random() LIMIT 200;
+-- Driven by the lane table (one probe of the pending key per lane, never a scan
+-- of the backlog). A lane held for any reason but routing is skipped. One run
+-- takes a bounded random slice, so no lane starves the others and the run fits
+-- its deadline.
+SELECT l.lineage_id FROM dm_progress_lane l
+WHERE (l.suspended_reason IS NULL OR l.suspended_reason = 'route_pending')
+  AND EXISTS (SELECT 1 FROM dm_progress_pending p WHERE p.lineage_id = l.lineage_id)
+ORDER BY random() LIMIT 200;
 
 -- name: LockDMProgressLaneSkipLocked :one
 -- Dispatcher entry: a lane another dispatcher (or a follow write) holds is
@@ -186,8 +191,20 @@ SELECT lineage_id FROM (SELECT DISTINCT lineage_id FROM dm_progress_pending) lan
 SELECT * FROM dm_progress_lane WHERE lineage_id = $1 FOR UPDATE SKIP LOCKED;
 
 -- name: ListDMProgressPending :many
--- Oldest first, one bounded slice per run; the rest waits for the next run.
-SELECT * FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id LIMIT 500;
+SELECT * FROM dm_progress_pending WHERE lineage_id = $1 ORDER BY created_at, event_id;
+
+-- name: CompactDMProgressPending :exec
+-- Keeps the oldest row of each (issue, kind, immediate) group. The card, the
+-- batch window and the immediate jump read only those, so a backlog cannot
+-- grow the work of later passes.
+DELETE FROM dm_progress_pending p
+USING (
+    SELECT event_id FROM (
+        SELECT event_id, row_number() OVER (PARTITION BY issue_id, event_kind, immediate ORDER BY created_at, event_id) AS rn
+        FROM dm_progress_pending AS k WHERE k.lineage_id = $1
+    ) ranked WHERE rn > 1
+) dup
+WHERE p.lineage_id = $1 AND p.event_id = dup.event_id;
 
 -- name: DeleteDMProgressPendingEvents :exec
 DELETE FROM dm_progress_pending WHERE lineage_id = $1 AND event_id = ANY(sqlc.arg('event_ids')::uuid[]);
