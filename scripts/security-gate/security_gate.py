@@ -594,26 +594,46 @@ def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseli
     return head, state, desc
 
 
-def _decide(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
+class GateUnreadable(Exception):
+    """GitHub could not be read mid-decision. Carries the last known head and every PR seen on it, so the caller can
+    still write a non-success and revoke the queue (`head` is None when not even the first snapshot was readable)."""
+
+    def __init__(self, head: str | None, prs: set[int]):
+        super().__init__("cannot read GitHub state")
+        self.head, self.prs = head, prs
+
+
+def _decide(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str, set[int]]:
     """Snapshot, decide, snapshot (CHE-4415, .plans/CHE-4415-gate-freshness-design.md). A success leaves only if the
-    snapshot after the decision equals the one before it, whether it is printed or posted. When the PR keeps moving or
-    the second snapshot cannot be read, the answer is `pending`, never an exit that leaves an older success in place."""
-    for _ in range(FRESHNESS_TRIES):
-        before = _fingerprint(a.github, a.pr)
-        head, state, desc = _evaluate(a, trusted, humans, baseline)
-        if state != "success" or _unchanged(a.github, a.pr, before):
-            return head, state, desc
-    return (before[0], *_out("pending", "changed while it was evaluated; re-run"))
+    snapshot after the decision equals the one before it, whether it is printed or posted. When the PR keeps moving,
+    the answer is `pending` on the PR's current head, never an exit that leaves an older success in place. Returns the
+    PRs seen on the head too: a non-success covers them all. An unreadable snapshot raises GateUnreadable."""
+    head, prs = None, {a.pr}
+    try:
+        for _ in range(FRESHNESS_TRIES):
+            before = _fingerprint(a.github, a.pr)
+            head, prs = before[0], prs | {p[0] for p in before[1]}
+            head, state, desc = _evaluate(a, trusted, humans, baseline)
+            if state != "success" or _unchanged(a.github, a.pr, before):
+                return head, state, desc, prs
+        try:  # the PR may have moved to a head that already carries a success: bind pending to where it is now
+            head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
+        except subprocess.CalledProcessError:
+            pass  # keep the last head we read
+        return (head, *_out("pending", "changed while it was evaluated; re-run"), prs)
+    except subprocess.CalledProcessError as e:
+        raise GateUnreadable(head, prs) from e
 
 
-def _publish(a: argparse.Namespace, head: str, state: str, desc: str) -> None:
+def _publish(a: argparse.Namespace, head: str | None, state: str, desc: str, prs: set[int]) -> None:
     """A success is written once: a retry would send a decision older than the failure (it must re-enter _decide). A
-    non-success is retried, and the queue is revoked whether or not the write landed; the job fails if either failed."""
+    non-success is retried, and the queue is revoked for every PR on the head whether or not the write landed or an
+    earlier revocation failed; the job fails if any of it failed."""
     if state == "success":
         _post(a.github, head, state, desc, a.run_url)
         return
     errors: list[Exception] = []
-    for attempt in range(3):
+    for attempt in range(3 if head else 0):
         try:
             _post(a.github, head, state, desc, a.run_url)
             break
@@ -622,10 +642,11 @@ def _publish(a: argparse.Namespace, head: str, state: str, desc: str) -> None:
                 errors.append(e)
             else:
                 time.sleep(2 * (attempt + 1))
-    try:
-        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
-    except Exception as e:
-        errors.append(e)
+    for n in sorted(prs):
+        try:
+            revoke_queue(a.github, n, a.default_branch, a.run_url)
+        except Exception as e:
+            errors.append(e)
     if errors:
         raise errors[0]
 
@@ -680,11 +701,15 @@ def main() -> int:
         baseline = load_baseline(a.repo) if a.semgrep else None
     except SemgrepError as e:
         sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
-    head, state, desc = _decide(a, trusted, humans, baseline)
+    try:
+        head, state, desc, prs = _decide(a, trusted, humans, baseline)
+        unreadable = False
+    except GateUnreadable as e:  # fail closed: pending on the last known head, queue revoked, job red
+        head, (state, desc), prs, unreadable = e.head, _out("pending", "cannot read GitHub state; re-run"), e.prs, True
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _publish(a, head, state, desc)
-    return 0
+        _publish(a, head, state, desc, prs)
+    return 1 if unreadable else 0
 
 
 if __name__ == "__main__":

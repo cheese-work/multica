@@ -257,5 +257,61 @@ class SuccessWriteIsNotBlindlyRetried(unittest.TestCase):
         self.assertEqual(fake.code, 0)
 
 
+class ReviewRound1(unittest.TestCase):
+    """Terra's four P1 findings on head 05462c74 (CHANGES REQUESTED)."""
+
+    def test_two_unreadable_snapshots_in_a_row_still_end_non_success_and_revoke_the_queue(self):
+        # P1 1: the retry's own initial snapshot raised out of main() before _publish, leaving the old success and queue.
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        real, reads = fake._answer, []
+        def flaky(args, path):
+            if path.split()[0].endswith("/status"):
+                reads.append(path)
+                if len(reads) >= 2:  # the first snapshot is readable, every later one is not
+                    raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            return real(args, path)
+        fake._answer = flaky
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertNotIn("success", fake.states())
+        self.assertEqual(fake.states(), ["pending"])
+        revoke.assert_called_once_with(GH, 405, "main", "")
+        self.assertIsNotNone(fake.error or (fake.code if fake.code else None), "the job must go red")
+
+    def test_a_pr_that_never_settles_binds_pending_to_its_current_head(self):
+        # P1 2: pending went to the head of the last snapshot; a PR that moved to a new head kept that head's success.
+        new_head = "b" * 40
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        real = fake._answer
+        def moving(args, path):
+            if "/comments" in path and "author_id" not in path:
+                fake.add_comment(405, "tick")
+            return real(args, path)
+        fake._answer = moving
+        # the 6th status read is the last snapshot of the third (final) attempt
+        fake.after_read("/status --jq", 6, lambda: fake.pulls[405]["head"].update(sha=new_head))
+        fake.run()
+        self.assertEqual(fake.states(new_head), ["pending"])
+        self.assertNotIn("success", fake.states(new_head))
+
+    def test_every_pr_on_the_head_is_revoked_not_only_the_primary(self):
+        # P1 4: the decision covers the siblings, the queue revocation looked up the primary only.
+        fake = FakeGitHub(prs=(405, 406), fail_writes={HEAD})
+        fake.comments[406] = [{"id": 1, "author_id": BOT, "body": verdict("FAIL", pr=406), "updated_at": "2026-11-10T03:00:00Z"}]
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertEqual(sorted(c.args[1] for c in revoke.call_args_list), [405, 406])
+
+    def test_one_failing_revocation_does_not_skip_the_next_pr(self):
+        fake = FakeGitHub(prs=(405, 406))
+        fake.comments[406] = [{"id": 1, "author_id": BOT, "body": verdict("FAIL", pr=406), "updated_at": "2026-11-10T03:00:00Z"}]
+        with mock.patch.object(sg, "revoke_queue", side_effect=[RuntimeError("405"), None]) as revoke:
+            fake.run()
+        self.assertEqual(revoke.call_count, 2)
+        self.assertIsInstance(fake.error, RuntimeError)
+
+
 if __name__ == "__main__":
     unittest.main()
