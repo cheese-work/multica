@@ -8,11 +8,11 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 )
 
-// CHE-4972: merged and closed report PR state only. The pr_merged and pr_closed
-// rules already wake the issue for them, so the next-turn fallback must not start
-// a second pr_needs_attention run that ends with no change.
+// CHE-4972: merged reports PR state only. The pr_merged rule already wakes the
+// issue, so the next-turn fallback must not start a second pr_needs_attention
+// run that ends with no change. closed has no rule and stays selected.
 func TestLifecycleEventsDoNotQueuePRAttentionWake(t *testing.T) {
-	for _, kind := range []ghsnapshot.PREventKind{ghsnapshot.PREventMerged, ghsnapshot.PREventClosed} {
+	for _, kind := range []ghsnapshot.PREventKind{ghsnapshot.PREventMerged} {
 		t.Run(string(kind), func(t *testing.T) {
 			f := newLiveDeliveryFixture(t, "running", false)
 			tasks, receipts := f.taskCount(t), f.prEventReceipts(t)
