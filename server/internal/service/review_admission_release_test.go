@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -264,4 +265,47 @@ func TestAdmissionReleaseHonoursTheDispatchHalt(t *testing.T) {
 	f.Exec(t, `DELETE FROM github_dispatch_halt WHERE workspace_id = $1`, f.WorkspaceID)
 	f.release(t, svc)
 	f.wantTasks(t, 1, "after the resume")
+}
+
+// CHE-4651 security finding: the release runs with no acting task, so the
+// taint the deferral recorded travels only in the context (stageTaint). When
+// the stage is full at release time, the stage refusal must keep that taint on
+// its waiting record; otherwise the later stage release starts a clean task.
+func TestAdmissionReleaseKeepsTaintWhenTheStageIsFull(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	stageLimits = stagequeue.Limits{stagequeue.StageReview: 1}
+	svc := f.service(t)
+	f.check(t, "ci", "in_progress", "")
+	issue, err := f.q.GetIssue(context.Background(), util.MustParseUUID(f.issue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	taintedTask := f.run(t, f.Issue(t, "elsewhere", testutil.Cols{"status": "in_progress"}), "running")
+	f.Exec(t, `UPDATE agent_task_queue SET taint_ids = ARRAY['ext-1'] WHERE id = $1`, taintedTask)
+	ctx := WithActingTask(context.Background(), util.MustParseUUID(taintedTask))
+	if _, err := svc.EnqueueTaskForIssue(ctx, issue); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("enqueue on pending CI: err = %v, want ErrAdmissionDeferred", err)
+	}
+
+	// CI turns green while another PR holds the only review slot.
+	holder := f.reviewIssue(t, "slot holder", 3*time.Hour)
+	holderRun := f.run(t, holder, "running")
+	f.setCheck(t, "ci", "completed", "success")
+	f.release(t, svc)
+	f.wantTasks(t, 0, "stage full")
+
+	var waiting []string
+	f.QueryRow(t, `SELECT taint_ids FROM stage_queue_waiting WHERE issue_id = $1 AND agent_id = $2`, f.issue, f.agentID).Scan(&waiting)
+	if len(waiting) != 1 || waiting[0] != "ext-1" {
+		t.Fatalf("stage waiting record taint = %v, want [ext-1]", waiting)
+	}
+
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, holderRun)
+	if err := svc.ReleaseStageQueues(context.Background()); err != nil {
+		t.Fatalf("stage release: %v", err)
+	}
+	_, taint := f.releasedTask(t, f.issue)
+	if len(taint) != 1 || taint[0] != "ext-1" {
+		t.Fatalf("released run taint = %v, want [ext-1]", taint)
+	}
 }

@@ -130,7 +130,9 @@ func guardStageQueue(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	}
 	refusal := &stageFullError{
 		issueID: issueID, agentID: target.AgentID,
-		actor: target.ActorUserID, comment: target.TriggerCommentID, taint: taint,
+		actor: target.ActorUserID, comment: target.TriggerCommentID,
+		// Taint carried in the context (e.g. restored from an admission deferral) survives the refusal.
+		taint: append(append([]string(nil), taint...), stageTaint(ctx)...),
 	}
 	if err := markStageWaiting(ctx, q, refusal); err != nil {
 		return err

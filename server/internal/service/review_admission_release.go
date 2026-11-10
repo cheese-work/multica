@@ -98,6 +98,11 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		return drop()
 	case errors.Is(err, ErrAdmissionDeferred):
 		return nil // still not admissible; the guard kept or replaced the record
+	case errors.Is(err, ErrStageQueueFull):
+		// Admitted, but the stage is full: its waiting record now carries the
+		// request, and ReleaseStageQueues starts it when a slot frees.
+		slog.Info("admission release: admitted, queued behind a full stage", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha)
+		return drop()
 	}
 	return err
 }
