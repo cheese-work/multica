@@ -655,7 +655,7 @@ func TestDecisionEpisodeDeliveryWakesTheOwnerWhenTheAskerDiffers(t *testing.T) {
 			runner := newDeliveryRunner(t)
 			f := newEpisodeFixture(t, false)
 			f.enter(t)
-			ownerID := dbfx.Agent(t, "Episode owner", handlerTestRuntimeID(t))
+			ownerID := createHandlerTestAgent(t, "Episode owner", []byte("[]"))
 			ownerType, restoreID, squadID := "agent", ownerID, ""
 			if withSquad {
 				squadID = dbfx.Squad(t, "Episode owner squad", ownerID)
@@ -684,6 +684,38 @@ func TestDecisionEpisodeDeliveryWakesTheOwnerWhenTheAskerDiffers(t *testing.T) {
 			decisionPass(t, runner)
 			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND id <> $2`, f.issueID, f.taskID); n != 1 {
 				t.Fatalf("a second pass left %d runs on the issue, want 1", n)
+			}
+		})
+	}
+}
+
+// Negative control: an owner (or squad leader) the person cannot invoke is not
+// woken; the continuation stays with the asking agent and the restore is unchanged.
+func TestDecisionEpisodeDeliverySkipsAnOwnerThePersonCannotInvoke(t *testing.T) {
+	for _, withSquad := range []bool{false, true} {
+		name := "agent owner"
+		if withSquad {
+			name = "squad leader"
+		}
+		t.Run(name, func(t *testing.T) {
+			runner := newDeliveryRunner(t)
+			f := newEpisodeFixture(t, false)
+			f.enter(t)
+			ownerID := dbfx.Agent(t, "Restricted episode owner", handlerTestRuntimeID(t))
+			dbfx.Exec(t, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, ownerID, createEphemeralUser(t, "restricted"))
+			ownerType, restoreID := "agent", ownerID
+			if withSquad {
+				ownerType, restoreID = "squad", dbfx.Squad(t, "Restricted squad", ownerID)
+			}
+			dbfx.Exec(t, `UPDATE decision_wait SET restore_assignee_type = $2, restore_assignee_id = $3 WHERE issue_id = $1 AND closed_at IS NULL`, f.issueID, ownerType, restoreID)
+			f.answerRequest(t, f.requestID, -time.Minute, false)
+
+			decisionPass(t, runner)
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, f.issueID, ownerID); n != 0 {
+				t.Fatalf("restricted owner runs = %d, want 0", n)
+			}
+			if got := f.continuations(t); got != 1 {
+				t.Fatalf("asker runs = %d, want 1", got)
 			}
 		})
 	}

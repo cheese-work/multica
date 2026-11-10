@@ -216,7 +216,7 @@ func TestTwoAnswersOnOneActionRequestWriteTwoEventsWithoutKeyCollision(test *tes
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := recordDecisionWakeEvent(ctx, testHandler.Queries.WithTx(tx), request, "answered", second, pgtype.UUID{}); err != nil {
+	if err := testHandler.recordDecisionWakeEvent(ctx, testHandler.Queries.WithTx(tx), request, "answered", second, pgtype.UUID{}); err != nil {
 		test.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -249,7 +249,7 @@ func TestAnsweredDecisionRequestWritesNoEventAndKeepsLegacyWake(test *testing.T)
 func TestAnsweredActionOnNeedDecisionIssueWakesOnlyTheAssignee(test *testing.T) {
 	runner := newDeliveryRunner(test)
 	fixture := newAskedRecordFixture(test)
-	assignee := dbfx.Agent(test, "need decision assignee", handlerTestRuntimeID(test))
+	assignee := createHandlerTestAgent(test, "need decision assignee", []byte("[]"))
 	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
 	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
 	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
@@ -268,5 +268,22 @@ func TestAnsweredActionOnNeedDecisionIssueWakesOnlyTheAssignee(test *testing.T) 
 	}
 	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')`, fixture.issueID, fixture.agentID); n != 0 {
 		test.Fatalf("requester runs = %d, want 0", n)
+	}
+}
+
+// Negative control: an assignee the person cannot invoke gets no receipt; the
+// requester keeps the wake.
+func TestAnsweredActionOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(test *testing.T) {
+	fixture := newAskedRecordFixture(test)
+	assignee := dbfx.Agent(test, "restricted assignee", handlerTestRuntimeID(test))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = NULL WHERE id = $1`, assignee)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "requester" || receipts[0].Agent != fixture.agentID {
+		test.Fatalf("receipts = %+v, want one requester receipt", receipts)
 	}
 }

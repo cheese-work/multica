@@ -154,7 +154,12 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 		}
 		// A need_decision issue belongs to its assignee; the asking agent (often
 		// the routing agent that posted the card) must not take the wake.
-		ownedByAssignee := snapshot.issue.Status == "need_decision" && agentID.Valid
+		ownedByAssignee := false
+		if snapshot.issue.Status == "need_decision" && agentID.Valid {
+			if ownedByAssignee, err = handler.personMayInvoke(ctx, queries, agentID, request.HumanUserID, workspaceID); err != nil {
+				return snapshot, err
+			}
+		}
 		if askingID.Valid && !ownedByAssignee {
 			asking, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: askingID})
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -170,6 +175,20 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 	}
 	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, agentID)
 	return snapshot, err
+}
+
+// personMayInvoke reports whether the decision's person could run the agent
+// themselves. A wake that moves from the asking agent to the issue owner must
+// not give the person a run on an agent they cannot invoke. A missing agent is
+// not invocable.
+func (handler *Handler) personMayInvoke(ctx context.Context, queries *db.Queries, agentID, humanID, workspaceID pgtype.UUID) (bool, error) {
+	agent, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(workspaceID)), nil
 }
 
 // loadDecisionRecipient reads the recipient, its active task on the issue and

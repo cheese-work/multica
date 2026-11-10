@@ -294,6 +294,11 @@ func (handler *Handler) episodeRecipient(ctx context.Context, queries *db.Querie
 	if owner.ArchivedAt.Valid || !owner.RuntimeID.Valid || owner.Kind == "system" {
 		return wait.AskingAgentID, nil
 	}
+	if invocable, err := handler.personMayInvoke(ctx, queries, owner.ID, wait.HumanUserID, issue.WorkspaceID); err != nil {
+		return wait.AskingAgentID, err
+	} else if !invocable {
+		return wait.AskingAgentID, nil
+	}
 	snapshot.squadID = squadID
 	return owner.ID, nil
 }
