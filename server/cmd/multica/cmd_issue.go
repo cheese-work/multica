@@ -623,11 +623,6 @@ func validateIssueEnum(field, value string, allowed []string) error {
 	return fmt.Errorf("invalid %s %q; valid values: %s", field, value, strings.Join(allowed, ", "))
 }
 
-// noStartHandoffNote is the server's suppressRunForWrite rule: --no-start means
-// "my own work is already underway", so a workflow handoff to another handler
-// still queues that handler's run, or nobody would start it.
-const noStartHandoffNote = " Exception: a workflow handoff to a different agent still reassigns the issue and queues that handler's run (see `issue runs`)."
-
 func init() {
 	issueCmd.AddCommand(issueListCmd)
 	issueCmd.AddCommand(issueGetCmd)
@@ -732,13 +727,13 @@ func init() {
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run."+noStartHandoffNote)
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run, including a workflow step handler's run.")
 	issueUpdateCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID) and cancel it; --status, if given, must be cancelled, and description/attachment changes must go in a separate update")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run."+noStartHandoffNote)
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
