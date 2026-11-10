@@ -154,11 +154,12 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 		}
 		// A need_decision issue belongs to its assignee; the asking agent (often
 		// the routing agent that posted the card) must not take the wake.
-		ownedByAssignee := false
+		ownedByAssignee, assigneeDenied := false, false
 		if snapshot.issue.Status == "need_decision" && agentID.Valid {
 			if ownedByAssignee, err = handler.personMayInvoke(ctx, queries, agentID, request.HumanUserID, workspaceID); err != nil {
 				return snapshot, err
 			}
+			assigneeDenied = !ownedByAssignee
 		}
 		if askingID.Valid && !ownedByAssignee {
 			asking, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: askingID})
@@ -169,8 +170,12 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 				if asking.ID != agentID {
 					snapshot.squadID = pgtype.UUID{}
 				}
-				agentID = asking.ID
+				agentID, assigneeDenied = asking.ID, false
 			}
+		}
+		if assigneeDenied {
+			// Neither the owner nor the asker can take the wake: nobody runs.
+			agentID, snapshot.squadID = pgtype.UUID{}, pgtype.UUID{}
 		}
 	}
 	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, agentID)
@@ -180,7 +185,8 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 // personMayInvoke reports whether the decision's person could run the agent
 // themselves. A wake that moves from the asking agent to the issue owner must
 // not give the person a run on an agent they cannot invoke. A missing agent is
-// not invocable.
+// not invocable. A failed lookup is an error, never a denial or an approval;
+// it reads through queries, so a caller in a transaction stays on its connection.
 func (handler *Handler) personMayInvoke(ctx context.Context, queries *db.Queries, agentID, humanID, workspaceID pgtype.UUID) (bool, error) {
 	agent, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: agentID})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -188,7 +194,7 @@ func (handler *Handler) personMayInvoke(ctx context.Context, queries *db.Queries
 	} else if err != nil {
 		return false, err
 	}
-	return handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(workspaceID)), nil
+	return handler.invokeAgentDecisionVia(ctx, queries, agent, "member", uuidToString(humanID), "", uuidToString(workspaceID))
 }
 
 // loadDecisionRecipient reads the recipient, its active task on the issue and

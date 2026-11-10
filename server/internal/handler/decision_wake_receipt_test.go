@@ -287,3 +287,31 @@ func TestAnsweredActionOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(t
 		test.Fatalf("receipts = %+v, want one requester receipt", receipts)
 	}
 }
+
+// Negative control: permission revoked after the receipt was written but
+// before it dispatches. The receipt settles without a run.
+func TestAnsweredActionReceiptDoesNotDispatchAfterTheAssigneeInvokeIsRevoked(test *testing.T) {
+	runner := newDeliveryRunner(test)
+	fixture := newAskedRecordFixture(test)
+	assignee := createHandlerTestAgent(test, "revoked assignee", []byte("[]"))
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, assignee, fixture.issueID)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	if _, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput()); err != nil {
+		test.Fatal(err)
+	}
+	receipts := wakeReceipts(test, fixture.decision.ID)
+	if len(receipts) != 1 || receipts[0].Role != "assignee" {
+		test.Fatalf("receipts = %+v, want one assignee receipt", receipts)
+	}
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, assignee, createEphemeralUser(test, "revoker"))
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
+	decisionPass(test, runner)
+	decisionPass(test, runner)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assignee); n != 0 {
+		test.Fatalf("revoked assignee runs = %d, want 0", n)
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_wake_receipt WHERE event_id IN (SELECT id FROM decision_wake_event WHERE request_id = $1) AND status = 'skipped_ineligible'`, fixture.decision.ID); n != 1 {
+		test.Fatalf("skipped receipts = %d, want 1", n)
+	}
+}

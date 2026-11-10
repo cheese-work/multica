@@ -212,6 +212,17 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if verdict != "" {
 		status = verdict
 	}
+	if verdict == "" && state.receipt.Role == "assignee" && state.issue.Status == "need_decision" {
+		// Permission can change after the receipt was written: the person must
+		// still be able to invoke the assignee when it dispatches.
+		invocable, err := handler.personMayInvoke(ctx, queries, state.recipient.ID, state.request.HumanUserID, workspaceID)
+		if err != nil {
+			return false, err
+		}
+		if !invocable {
+			verdict = "skipped_ineligible"
+		}
+	}
 	var enqueued db.AgentTaskQueue
 	if verdict == "" && !state.recipient.ArchivedAt.Valid && state.recipient.RuntimeID.Valid && state.recipient.Kind != "system" {
 		trigger, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: state.event.SourceCommentID})

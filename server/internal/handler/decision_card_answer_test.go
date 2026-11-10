@@ -400,3 +400,22 @@ func TestCardAnswerOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(test 
 		test.Fatalf("asking agent runs = %d, want 1", count)
 	}
 }
+
+func TestCardAnswerOnNeedDecisionIssueRunsNobodyWhenTheAssigneeIsDeniedAndTheAskerIsGone(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	assigneeID := createHandlerTestAgent(test, "Restricted owner", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, assigneeID, createEphemeralUser(test, "restricted"))
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assigneeID); count != 0 {
+		test.Fatalf("restricted assignee runs = %d, want 0", count)
+	}
+}
