@@ -1,4 +1,4 @@
-export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext,
+export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, CommentPreview, SourceContextAuthorState, IssueSourceContext,
   IssueDuplicateOf,
 } from "./issue";
 export type {
@@ -38,6 +38,10 @@ export type {
   AgentInvocationTarget,
   AgentInvocationTargetInput,
   AgentTask,
+  AgentPreset,
+  TaskPresetRun,
+  TaskPresetSettings,
+  TaskPresetSkip,
   TaskUsage,
   TaskAttribution,
   AttributionUser,
@@ -91,6 +95,7 @@ export type {
   DashboardFailureDaily,
   DashboardFailureByAgent,
   RuntimeUpdate,
+  RuntimeUpdateProgress,
   RuntimeUpdateStatus,
   RuntimeModel,
   RuntimeModelServiceTier,
@@ -114,7 +119,7 @@ export type {
   MikaBootstrapResponse,
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES, RUNTIME_PROFILE_RUNTIME_TYPES } from "./agent";
-export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, WorkspaceExportPrivacy, JevRoutingMode, GovernanceAuditEntry, WorkspaceGovernanceConfig, WorkspaceJevGovernance, WorkspaceGovernanceRollback, JevCredentialPresence, WorkspaceJevGovernancePatch, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
+export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, WorkspaceExportPrivacy, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type {
   PluginInstallation,
   PluginConfigField,
@@ -151,7 +156,7 @@ export type {
   NotificationPreferenceResponse,
   UpdateNotificationChannelRequest,
 } from "./notification-preference";
-export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
+export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionConfigChange, DecisionConfigDiffHunk, DecisionCard, DecisionCoveredCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
 export type { Comment, CommentType, CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, ListIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";
@@ -186,6 +191,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatStaleLevel,
+  ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -205,6 +212,10 @@ export type {
   ChatPendingTask,
   ChatQueuedTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ChatSupplementStatus,
+  ChatHeadSupplement,
+  ResendChatSupplementResponse,
   PendingChatTaskItem,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
@@ -386,3 +397,5 @@ export type {
 export type { IssueWakeup, IssueWakeupInput, SystemWakeup, WorkspaceSystemWakeup, WakeupPreview, IssueWakeupSummaryRow, WakeupCondition, WakeupPausedReason, WakeupRun, PausedWakeup, WakeupSource, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupDefinitionScopeKind, WakeupCapabilities, WakeupEffectiveRule } from "./issue-wakeup";
 
 export type { WorkspaceWakeup, WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupScope } from "./issue-wakeup";
+
+export type { ProviderBreaker, ProviderBreakerState } from "./provider-breaker";

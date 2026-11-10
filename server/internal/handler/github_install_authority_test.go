@@ -433,30 +433,30 @@ func TestGitHubInstallStateExpiryAndTamper(t *testing.T) {
 	const workspaceID = "11111111-2222-3333-4444-555555555555"
 	now := time.Now()
 
-	fresh, err := signStateForReturnAt(workspaceID, githubReturnToRepositories, now)
+	fresh, err := signStateForReturnAt(workspaceID, githubReturnToRepositories, "", now)
 	if err != nil {
 		t.Fatalf("sign fresh state: %v", err)
 	}
-	if gotWorkspace, gotReturn, ok := verifyStateWithReturnAt(fresh, now); !ok || gotWorkspace != workspaceID || gotReturn != githubReturnToRepositories {
+	if gotWorkspace, gotReturn, _, ok := verifyStateWithReturnAt(fresh, now); !ok || gotWorkspace != workspaceID || gotReturn != githubReturnToRepositories {
 		t.Fatalf("fresh state changed or rejected: (%q, %q, %v)", gotWorkspace, gotReturn, ok)
 	}
 
 	tampered := strings.Replace(fresh, ".repositories.", ".github.", 1)
-	if _, _, ok := verifyStateWithReturnAt(tampered, now); ok {
+	if _, _, _, ok := verifyStateWithReturnAt(tampered, now); ok {
 		t.Fatal("tampered state was accepted")
 	}
-	stale, err := signStateForReturnAt(workspaceID, githubReturnToGitHub, now.Add(-githubStateMaxAge-time.Second))
+	stale, err := signStateForReturnAt(workspaceID, githubReturnToGitHub, "", now.Add(-githubStateMaxAge-time.Second))
 	if err != nil {
 		t.Fatalf("sign stale state: %v", err)
 	}
-	if _, _, ok := verifyStateWithReturnAt(stale, now); ok {
+	if _, _, _, ok := verifyStateWithReturnAt(stale, now); ok {
 		t.Fatal("stale state was accepted")
 	}
-	future, err := signStateForReturnAt(workspaceID, githubReturnToGitHub, now.Add(githubStateClockSkew+time.Second))
+	future, err := signStateForReturnAt(workspaceID, githubReturnToGitHub, "", now.Add(githubStateClockSkew+time.Second))
 	if err != nil {
 		t.Fatalf("sign future state: %v", err)
 	}
-	if _, _, ok := verifyStateWithReturnAt(future, now); ok {
+	if _, _, _, ok := verifyStateWithReturnAt(future, now); ok {
 		t.Fatal("state beyond clock skew was accepted")
 	}
 }

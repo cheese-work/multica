@@ -787,6 +787,7 @@ func buildChatPrompt(task Task) string {
 		b.WriteString("\n")
 	} else {
 		b.WriteString("Other agents' decision requests appear in `multica chat history`.\n\n")
+		b.WriteString(replyStateBlock(task.ChatOpenAskIDs))
 	}
 	if task.Agent != nil && len(task.Agent.Skills) > 0 {
 		refs := ExtractSlashSkills(task.ChatMessage)
@@ -867,6 +868,26 @@ func buildChatPrompt(task Task) string {
 	default:
 		fmt.Fprintf(&b, "\nThis reply is delivered to %s as text. You cannot attach a file to it: `multica attachment upload` binds to a Multica chat reply, which this is not. If you produce a file, describe it in words — never write its local path as a link, and never upload it and then write as though it arrived.\n", channelDisplayName(task.ChatChannelType))
 	}
+	return b.String()
+}
+
+// replyStateBlock tells a DM turn how to declare its outcome (plan r4 T6-T8) and lists the ask ids
+// it may name. The server refuses an invalid outcome and records the turn as unclassified.
+func replyStateBlock(openAskIDs []string) string {
+	var b strings.Builder
+	b.WriteString("Before you finish, declare this turn's outcome with `multica chat reply-state`:\n")
+	b.WriteString("- `question [--ask <id> | --new]` — your reply asks the human something. `--ask` continues one of your open asks, `--new` opens another; with exactly one open ask or none, the flag may be omitted.\n")
+	b.WriteString("- `done --ask <id> [--ask <id>...]` — your reply settles the named asks. `--ask` is required.\n")
+	b.WriteString("- `info` — nothing is owed by the human.\n")
+	if len(openAskIDs) == 0 {
+		b.WriteString("Your open asks in this DM: no open asks.\n\n")
+		return b.String()
+	}
+	b.WriteString("Your open asks in this DM, oldest first:\n")
+	for _, id := range openAskIDs {
+		fmt.Fprintf(&b, "- %s\n", id)
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 

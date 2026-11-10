@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -442,7 +443,13 @@ func buildCodexArgs(opts ExecOptions, logger *slog.Logger) []string {
 	if opts.ServiceTier == codexFastServiceTier {
 		launchArgs = enforceCodexFastMode(launchArgs, logger)
 	}
-	return append(args, launchArgs...)
+	args = append(args, launchArgs...)
+	if opts.DisableProviderWebTools {
+		// Appended after the user arguments, which were stripped of any
+		// web search override, so the disable is the only value codex sees.
+		args = append(stripCodexWebSearchOverrides(args, logger), "-c", `web_search="disabled"`)
+	}
+	return args
 }
 
 // NormalizeCodexLaunchArgs returns the user-supplied Codex args (extra then
@@ -1247,6 +1254,11 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		// only needs the conflicting disable/config overrides removed.
 		runtimeCmd = runtimeCmd.withFilteredPrefix(func(prefix []string) []string {
 			return stripCodexFastModeConflicts(prefix, b.cfg.Logger)
+		})
+	}
+	if opts.DisableProviderWebTools {
+		runtimeCmd = runtimeCmd.withFilteredPrefix(func(prefix []string) []string {
+			return stripCodexWebSearchOverrides(prefix, b.cfg.Logger)
 		})
 	}
 	codexArgs := buildCodexArgs(opts, b.cfg.Logger)
@@ -2916,32 +2928,34 @@ func (c *codexClient) request(ctx context.Context, method string, params any) (j
 		c.cfg.Logger.Info("codex turn/start sent", "request_id", id, "thread_id", threadID)
 	}
 
+	var res rpcResult
 	select {
-	case res := <-pr.ch:
-		return res.result, res.err
+	case res = <-pr.ch:
 	case <-processDone:
 		select {
-		case res := <-pr.ch:
-			return res.result, res.err
+		case res = <-pr.ch:
 		default:
+			c.mu.Lock()
+			delete(c.pending, id)
+			res.err = c.processErr
+			c.mu.Unlock()
+			if res.err == nil {
+				res.err = errCodexProcessExited
+			}
 		}
-		c.mu.Lock()
-		delete(c.pending, id)
-		err := c.processErr
-		c.mu.Unlock()
-		if requestCtx.Err() != nil {
-			return nil, codexRequestContextError(requestCtx)
-		}
-		if err == nil {
-			err = errCodexProcessExited
-		}
-		return nil, err
 	case <-requestCtx.Done():
 		c.mu.Lock()
 		delete(c.pending, id)
 		c.mu.Unlock()
 		return nil, codexRequestContextError(requestCtx)
 	}
+	// markProcessExited fails pending RPCs, so a cancellation that tears down
+	// the process makes several select cases ready at once. Cancellation must
+	// win regardless of which case select picked; a ready response still wins.
+	if res.err != nil && requestCtx.Err() != nil {
+		return nil, codexRequestContextError(requestCtx)
+	}
+	return res.result, res.err
 }
 
 func (c *codexClient) notify(method string) {
@@ -4573,4 +4587,19 @@ func nilIfEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// codexWebSearchConfigKeyRe matches the Codex web search config keys (root,
+// profile, tools table and the deprecated feature flags) that could re-enable
+// the provider's server-side search after the daemon turned it off.
+var codexWebSearchConfigKeyRe = regexp.MustCompile(
+	`^\s*(?:profiles\s*\.\s*` + codexProfileNameKeyPattern + `\s*\.\s*)?(?:features\s*\.\s*web_search\w*|(?:tools\s*\.\s*)?web_search)\s*(?:\.|=|$)`)
+
+const codexWebSearchConfigNamespace = "web_search"
+
+// stripCodexWebSearchOverrides removes every user argument that would turn
+// Codex web search on: the --search flag and web_search config overrides.
+func stripCodexWebSearchOverrides(args []string, logger *slog.Logger) []string {
+	args = filterCodexConfigOverrides(args, codexWebSearchConfigKeyRe, codexWebSearchConfigNamespace, logger)
+	return slices.DeleteFunc(slices.Clone(args), func(a string) bool { return a == "--search" })
 }

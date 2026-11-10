@@ -359,6 +359,44 @@ export interface TaskCancellationActor {
   name?: string;
 }
 
+/** A named bundle of model, thinking level, service tier and context args. */
+export interface AgentPreset {
+  name: string;
+  /** null = inherit the agent's own value. */
+  model: string | null;
+  thinking_level: string | null;
+  service_tier: string | null;
+  /** null = inherit, [] = clear. */
+  context_args: string[] | null;
+  is_default: boolean;
+  /** Why the preset cannot run for the agent as it is now; "" when it can. */
+  stale: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskPresetSettings {
+  model: string | null;
+  thinking_level: string | null;
+  service_tier: string | null;
+  context_args: string[];
+}
+
+export interface TaskPresetSkip {
+  level: string;
+  name: string;
+  reason: string;
+}
+
+/** What a run asked for (`claimed`) apart from what the daemon reported (`applied`, null until it does). */
+export interface TaskPresetRun {
+  name: string;
+  source: string;
+  skips: TaskPresetSkip[];
+  claimed: TaskPresetSettings;
+  applied: (TaskPresetSettings & { reported_at: string }) | null;
+}
+
 export interface AgentTask {
   wakeup_id?: string;
   id: string;
@@ -512,6 +550,8 @@ export interface AgentTask {
    * reporting was not free, we just don't know what it cost.
    */
   usage?: TaskUsage[];
+  /** Present only when the claim recorded a preset selection. */
+  preset_run?: TaskPresetRun;
 }
 
 /**
@@ -1183,6 +1223,12 @@ export type RuntimeUpdateStatus =
   | "failed"
   | "timeout";
 
+export interface RuntimeUpdateProgress {
+  phase: string;
+  bytes_done: number;
+  bytes_total: number;
+}
+
 export interface RuntimeUpdate {
   id: string;
   runtime_id: string;
@@ -1190,6 +1236,8 @@ export interface RuntimeUpdate {
   target_version: string;
   output?: string;
   error?: string;
+  /** Latest download progress the daemon reported; absent before the first report or from an older server. */
+  progress?: RuntimeUpdateProgress;
   created_at: string;
   updated_at: string;
 }

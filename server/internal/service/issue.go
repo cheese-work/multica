@@ -47,7 +47,7 @@ type IssueService struct {
 	// the self-hosted unlimited path.
 	Entitlements entitlement.Provider
 	// SquadDispatcher overrides default squad leader enqueue on issue create,
-	// allowing handler-level Jev fast-path routing and access gating.
+	// allowing handler-level access gating.
 	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
 }
 
@@ -65,10 +65,13 @@ func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.
 // to IssueService.Create. The handler owns the parsing step that turns its
 // request payload into this struct; the service stays transport-agnostic.
 type IssueCreateParams struct {
-	WorkspaceID   pgtype.UUID
-	Title         string
-	Description   pgtype.Text
-	Status        string
+	WorkspaceID pgtype.UUID
+	Title       string
+	Description pgtype.Text
+	Status      string
+	// StatusOmitted marks a creator who picked no status: Status then holds
+	// the caller's placeholder and the workflow's start status wins.
+	StatusOmitted bool
 	Priority      string
 	AssigneeType  pgtype.Text
 	AssigneeID    pgtype.UUID
@@ -97,6 +100,9 @@ type IssueCreateParams struct {
 	// used by the standalone PUT path, then inserts the complete bag atomically.
 	Properties     map[pgtype.UUID]json.RawMessage
 	AllowDuplicate bool
+	// MarkedWriter: the creating task is marked external_read, so the description
+	// stores the mark (CHE-2216 plan 3.7).
+	MarkedWriter bool
 	// Stage groups this issue into an ordered barrier group under its parent
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
@@ -106,6 +112,9 @@ type IssueCreateParams struct {
 	// actually lands on, and its answer replaces any assignee the caller
 	// resolved earlier from an unlocked read.
 	HandoffResolver CreateHandoffResolver
+	// EntryGate, when set, checks the entry gates of the step the issue lands
+	// on, under the same locks. Platform spawns leave it nil and are not gated.
+	EntryGate CreateEntryGate
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
@@ -116,6 +125,14 @@ type IssueCreateParams struct {
 // the workflow step a new issue enters. It returns no assignee when the step
 // resolves to nobody.
 type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
+
+// CreateEntryGate refuses a create the landing step's block entry gates stop.
+// It may return a recorder for the new row (warn gates), which Create runs in
+// the same transaction right after the insert.
+type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step) (RecordCreateEntry, error)
+
+// RecordCreateEntry writes what an entry gate leaves on a created issue.
+type RecordCreateEntry func(ctx context.Context, q *db.Queries, issue db.Issue) error
 
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
@@ -376,13 +393,13 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if err != nil {
 		return IssueCreateResult{}, err
 	}
-	if def != nil && !def.IsDefault && !def.Has(p.Status) {
+	if def != nil && !def.IsDefault && (p.StatusOmitted || !def.Has(p.Status)) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
-		if p.WorkflowID.Valid {
+		if p.WorkflowID.Valid && !p.StatusOmitted {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
-		p.Status = issueworkflow.StartStatus
+		p.Status = def.Start()
 	}
 	// The handler of the step the issue lands on comes from the workflow as it
 	// stands under the locks. An earlier unlocked read can name the former
@@ -396,6 +413,15 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 					return IssueCreateResult{}, err
 				}
 				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+			}
+		}
+	}
+	var recordEntry RecordCreateEntry
+	if p.EntryGate != nil && def != nil {
+		if step, ok := def.Step(p.Status); ok {
+			var err error
+			if recordEntry, err = p.EntryGate(ctx, qtx, step); err != nil {
+				return IssueCreateResult{}, err
 			}
 		}
 	}
@@ -504,6 +530,21 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}
 		return IssueCreateResult{}, fmt.Errorf("create issue: %w", err)
 	}
+	if recordEntry != nil {
+		if err := recordEntry(ctx, qtx, issue); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record entry gate: %w", err)
+		}
+		// The recorded comment bumped the revision the result must carry.
+		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
+		}
+	}
+
+	if p.MarkedWriter && p.Description.Valid {
+		if err := qtx.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("mark description external_read: %w", err)
+		}
+	}
 
 	if p.SourceContext != nil {
 		if _, err := PersistSourceContext(ctx, qtx, *p.SourceContext, issue.ID, pgtype.UUID{}); err != nil {
@@ -576,6 +617,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 		}); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("attach issue label: %w", err)
 		}
+	}
+
+	if err := followNewIssue(ctx, qtx, p, issue); err != nil {
+		return IssueCreateResult{}, fmt.Errorf("follow new issue: %w", err)
 	}
 
 	if !opts.AssignedAgentRunFireAt.IsZero() && s.shouldEnqueueAgentTaskWithQueries(ctx, qtx, issue) {
@@ -1039,7 +1084,7 @@ func (s *IssueService) isSquadLeaderReady(ctx context.Context, issue db.Issue) b
 	if err != nil {
 		return false
 	}
-	return verdict.Ready()
+	return !verdict.Blocked()
 }
 
 func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {

@@ -79,22 +79,28 @@ type Task struct {
 	RequireCredentialIsolation bool                    `json:"require_credential_isolation,omitempty"`
 	CredentialExecutionBinding *credentialexec.Binding `json:"credential_execution_binding,omitempty"`
 	// StartClaimSupported gates retries when talking to older servers.
-	StartClaimSupported  bool                   `json:"start_claim_supported,omitempty"`
-	DispatchedAt         string                 `json:"dispatched_at,omitempty"`
-	ID                   string                 `json:"id"`
-	AgentID              string                 `json:"agent_id"`
-	RuntimeID            string                 `json:"runtime_id"`
-	IssueID              string                 `json:"issue_id"`
-	WorkspaceID          string                 `json:"workspace_id"`
-	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
-	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
-	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
+	StartClaimSupported bool `json:"start_claim_supported,omitempty"`
+	// AppliedSettingsSupported: the server accepts this claim's applied-settings report.
+	AppliedSettingsSupported bool                   `json:"applied_settings_supported,omitempty"`
+	DispatchedAt             string                 `json:"dispatched_at,omitempty"`
+	ID                       string                 `json:"id"`
+	AgentID                  string                 `json:"agent_id"`
+	RuntimeID                string                 `json:"runtime_id"`
+	IssueID                  string                 `json:"issue_id"`
+	WorkspaceID              string                 `json:"workspace_id"`
+	WorkspaceSlug            string                 `json:"workspace_slug,omitempty"`
+	IssueIdentifier          string                 `json:"issue_identifier,omitempty"`
+	RemoteMCPConnections     []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// Profile, Scopes, Epoch and TaintIDs are the server's claim-time launch hint
 	// (CHE-2216 plan 3.1). Read the profile through EffectiveProfile.
 	Profile  string   `json:"profile,omitempty"`
 	Scopes   []string `json:"scopes,omitempty"`
 	Epoch    int64    `json:"epoch,omitempty"`
 	TaintIDs []string `json:"taint_ids,omitempty"`
+	// PinnedBaseSHA and PinnedHeadSHA seed an elevated run's synthetic base
+	// (CHE-2216 plan 3.5): the head pin when set, otherwise the base pin.
+	PinnedBaseSHA string `json:"pinned_base_sha,omitempty"`
+	PinnedHeadSHA string `json:"pinned_head_sha,omitempty"`
 	// IntakeRun, PinnedBranch and PinnedRepo are the claim-time intake pin (CHE-2216 plan 3.6).
 	IntakeRun    bool   `json:"intake_run,omitempty"`
 	PinnedBranch string `json:"pinned_branch,omitempty"`
@@ -153,6 +159,7 @@ type Task struct {
 	IssueAssigneeID               string                 `json:"issue_assignee_id,omitempty"`                // assignee UUID at claim time; empty when unassigned
 	ChatSessionID                 string                 `json:"chat_session_id,omitempty"`                  // non-empty for chat tasks
 	ChatChannelType               string                 `json:"chat_channel_type,omitempty"`                // "slack" when the chat session is backed by an IM channel; empty for a web-only chat. Drives the channel-awareness block in the prompt
+	ChatOpenAskIDs                []string               `json:"chat_open_ask_ids,omitempty"`                // this agent's open DM asks for the human, oldest first; the ids `multica chat reply-state` may name (CHE-4150)
 	ChatChannelDeliversFiles      bool                   `json:"chat_channel_delivers_files,omitempty"`      // server capability: this deployment carries a file the agent produces the last hop into this conversation. Absent on a server predating it, which reads as false — the run is told to describe its file in words, and the worst case is a delivery that could have happened did not. Must never be re-derived from chat_channel_type: whether the hop exists depends on the SERVER's storage and adapter wiring, which no daemon can see (MUL-4899)
 	ChatType                      string                 `json:"chat_type,omitempty"`                        // "group" when the channel conversation is a shared room, "p2p" for a 1:1 with the bot. Empty for a web chat or an old server; the per-turn prompt then reports unknown rather than guessing 1:1
 	ChatInThread                  bool                   `json:"chat_in_thread,omitempty"`                   // true when the latest @mention was a thread reply; selects which read command the prompt tells the agent to start with
@@ -262,6 +269,9 @@ type AgentData struct {
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// HarnessProfile is the server-resolved profile (agent override >
+	// workspace default > personal). Empty means personal (CHE-3706).
+	HarnessProfile string `json:"harness_profile,omitempty"`
 }
 
 // DisabledRuntimeSkillData is the task-wire identity of one runtime-local
@@ -378,4 +388,10 @@ func (t Task) EffectiveProfile() string {
 		return "elevated"
 	}
 	return "restricted"
+}
+
+// DisableProviderWebTools reports whether the run starts with the provider's
+// server-side web tools off (CHE-2216 plan 3.3).
+func (t Task) DisableProviderWebTools() bool {
+	return t.EffectiveProfile() == "elevated"
 }

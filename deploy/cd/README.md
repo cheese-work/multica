@@ -17,9 +17,12 @@ against C00, gated on its own separate approval.
 
 `cd-qualification.yml` builds backend and web in a two-entry X99 matrix.
 Each image gets its own runner/DinD budget, rather than sharing one DinD's
-4 GiB and 3 CPUs. The final `cd-qualification` job keeps the existing check
-name and assembles the same `cd-build-evidence-<sha>` artifact after both
-images succeed. The web job supplies the exact optional fork entries used
+4 GiB and 3 CPUs. The D1 fixture suites run once in the hosted `d1-fixtures`
+job, and the final `cd-qualification` job also runs on a hosted runner, so
+neither takes an X99 queue slot (CHE-3983). `cd-qualification` keeps the
+existing check name and assembles the same `cd-build-evidence-<sha>`
+artifact after both images and `d1-fixtures` succeed. Images can push before
+the fixtures finish, but no evidence manifest exists unless they pass. The web job supplies the exact optional fork entries used
 in its image, so manifest assembly cannot hash a different download.
 
 Each runner's Docker daemon retains the named `multica-cd-backend-v1` and
@@ -33,7 +36,10 @@ No registry cache or untrusted PR cache is imported.
 Go compilation uses `/root/.cache/go-build` cache mounts, including the
 four daemon targets. Unversioned utilities compile before the release
 arguments; server and daemon linking still consume the exact release
-version and commit. Web builds retain `/app/apps/web/.next/cache`.
+version and commit. Web builds retain `/app/apps/web/.next/cache`. The web
+`builder` stage extends `deps` instead of copying `node_modules` into a second
+layer, and sets `NEXT_SKIP_TYPECHECK=true` because `pnpm typecheck` already
+gates every PR in `ci.yml`.
 `NEXT_PUBLIC_*` stays after dependency installation but before compilation:
 Next.js embeds those values in client bundles, so moving them after the
 build would ship stale release metadata.
@@ -304,6 +310,7 @@ before it runs an upgrade or rollback rehearsal.
 bash deploy/cd/test-release-manifest.sh
 bash deploy/cd/test-admission.sh
 bash deploy/cd/test-record-checks.sh
+python3 deploy/cd/test-github-api-retry.py
 python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 bash deploy/cd/test-isolated-qualification.sh
@@ -644,7 +651,7 @@ adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need. The run title names the qualifying candidate SHA rather
 than the workflow run's default-branch SHA.
 
-`candidate-preflight` runs on X99 without the `c00-production` environment or
+`candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
 does not need to contain the new preflight script. Before requesting approval,
 `require-current.sh` requires the candidate to be an ancestor of (or equal to)
@@ -673,24 +680,26 @@ A finished older build is not wasted: `require-current.sh` accepts a qualified
 older `main` commit that is a forward move from C00. This group is separate from
 every approval and C00 mutation lock.
 
-An eligible candidate waits at `approve-c00`, the only job that asks for
-approval (CHE-2027): one prompt per version, on both the automatic and manual
-paths. It runs in the existing `c00-production` environment (required reviewer,
-wait timer, branch policy), which is left unchanged, and holds no secrets. Its concurrency group
-`cd-deploy-c00-approval` has `cancel-in-progress: true`, so a newer version
-replaces an older run still waiting for approval. Once approved, a candidate
-is not superseded merely because `main` advances (CHE-2146). There is no
-post-approval `require-current.sh` guard or `deploy-gate` job. The manual path
-still names an explicit admitted manifest and may deploy a non-head ref.
+Deploy is dispatch-only (CHE-4495). A push to `main` builds, runs
+`candidate-preflight` and, when eligible, `notify-approval`, then stops: no C00
+job runs. The notice links to the workflow's dispatch page with the full
+`candidate_sha`. The `approve-c00` environment approval was removed: required
+reviewers do not exist on a private Team repository, so it was a silent no-op.
 
-`prepare-release-candidate` and `deploy` use the C00 secrets from the
-`c00-runtime` environment, which has no reviewers or wait timer, so they do not
-ask again. `c00-production` keeps its protection on purpose: runs started by
-the previous workflow, and reruns of their jobs, still use that workflow and
-therefore still stop at it. Secrets are copied to `c00-runtime` and must be
-rotated in both environments until `c00-production` secrets are retired. A
-missing `c00-runtime` environment fails closed: GitHub creates it empty, the
-SSH step has no key and stops. They share the
+The gate is `authorize-c00`, a job that runs only on `workflow_dispatch` and
+exits 1 unless `github.triggering_actor` is `congvc-dev`. It has no environment
+and no secrets. Every C00-touching job (`prepare-release-candidate`,
+`admission`, `deploy`) depends on it, so a dispatch by anyone else fails before
+any C00 step. The `c00-runtime` deployment-branch policy allows `main` only, so
+a dispatch from another ref gets no `c00-runtime` secrets. A dispatch with
+`candidate_sha` looks up the successful `main` push qualification run and issues
+the release candidate itself; manual evidence paths remain for explicit
+admitted manifests. The `c00-production` environment is no longer used by this
+workflow; its secrets can be retired. The
+`prepare-release-candidate` and `deploy` jobs use the C00 secrets from the
+`c00-runtime` environment.
+A missing `c00-runtime` environment fails closed: GitHub creates it empty, the
+deploy step has no secrets and stops. They share the
 job-level lock `cd-deploy-c00` with `queue: max` and no `cancel-in-progress`: one
 C00 stage at a time, queued FIFO, and a started deploy is never cancelled. The
 default queue (`single`) keeps one pending job and cancels it for any newcomer,
@@ -719,25 +728,15 @@ evidence does not replace final admission. Manual dispatch keeps its existing
 evidence and admission requirements and bypasses only the automatic
 eligibility filter.
 
-The `deploy` job does not check out the repository on C00 — it `scp`'s an
-explicit file allowlist into a fresh `remote_dir` and runs `deploy.sh` from
-there. Every file `deploy.sh` sources or shells out to by relative path must
-be in that list, or `deploy.sh`'s own file-existence checks refuse to start
-(see its `script_dir` checks immediately after `usage()`): `deploy-lib.sh`
-(the shared JSON/image/migration helper library it `source`s directly, CHE-397
-unit 2), `capture-tuple.sh` and `tuple-snapshot.mjs` (post-deploy tuple
-recording). Adding a new file `deploy.sh` depends on means adding it to
-`cd-deploy.yml`'s `scp` line too — a dependency that exists only in the repo
-checkout, not in what actually reaches C00, fails silently until the next
-real deploy run, not in CI.
+The `deploy` job runs directly on the C00 self-hosted runner (`[self-hosted, linux, x64, cheese-c00-deploy]`) and stages the content-addressed cutover bundle into a fresh `remote_dir` (`${C00_STATE_DIR%/}/cd-deploy-<ts>`), verifies `cutover-controller.tar.sha256` and `verify-cutover-bundle.sh`, and executes `cutover.sh` locally through `render-cutover-remote-script.sh | env -i HOME="$HOME" PATH="$PATH" bash -s` without opening an SSH or SCP session or leaking ambient step environment variables into the cutover shell.
 
 D1's automatic main-push build only ever emits a `build-evidence` manifest,
 which `admission.mjs` refuses. A deployable `release-candidate` additionally
 binds the baseline tuple of the host being deployed to — the fresh Hermes
 configuration digest and migration snapshot described above — which only a
-stage with C00 access can read. `prepare-release-candidate` runs on the
-C00-reachable runner under the same `c00-production` secrets environment as the
-deploy job, after the single `approve-c00` approval, reads that baseline over SSH with `capture-tuple.sh`, re-issues
+stage running on C00 can read. `prepare-release-candidate` runs on the
+C00 self-hosted runner under the `c00-runtime` environment as the
+deploy job, after the `authorize-c00` gate, reads that baseline locally with `capture-tuple.sh`, re-issues
 D1's evidence (carrying D1's own image digests forward unchanged) as a
 release-candidate bound to it, records the qualifying event and the commit's
 required-check results, and hands the set to the unchanged `admission` and
@@ -753,6 +752,18 @@ or cancellation ends the wait at once and admission refuses it; a check still
 running at the deadline is recorded as running and refused as "has not
 completed". Run 35822016641 (`5c834a2f`) is the case: the snapshot at
 05:37 UTC had no `backend` run, which then passed at 05:55.
+
+The commit and check-run reads retry HTTP 403 rate limits and HTTP 429,
+honoring `Retry-After` or `X-RateLimit-Reset` within the checks deadline.
+Ordinary permission errors and a reset beyond the deadline fail closed.
+Each paginated response is buffered until every page succeeds, so a failed
+page cannot leave a partial check snapshot. `candidate-preflight.sh` shares
+one deadline across its current-candidate checks and the recorder through
+the internal `CHECKS_DEADLINE` variable.
+
+Before Buildx setup, qualification inspects only its named persistent
+builder. A failed bootstrap, node error, or incompatible driver removes that
+builder so setup can recreate it. Healthy builders retain their cache.
 
 `admission.mjs` is not weakened to make this fit: it still refuses
 build-evidence, still requires the manifest to bind the exact tuple it is
@@ -914,8 +925,8 @@ The login uses a private temporary Docker configuration and a credential
 helper that reads the job token from the environment. The helper never
 stores the token on disk. Exit cleanup removes only that configuration and
 helper and restores the caller's Docker configuration and executable path.
-`cd-deploy.yml`'s `deploy` job forwards the secret to the remote SSH session
-by exporting it inside a script piped over the session's stdin, never as a
+`cd-deploy.yml`'s `deploy` job forwards the secret to the local cutover shell
+by exporting it inside a script piped over the shell's stdin, never as a
 command-line argument or a file written to C00, so it is not visible to
 `ps` or left behind by the `remote_dir` cleanup. Covered by
 `deploy/cd/test-deploy.sh`'s `ghcr-login-happy-path` and `ghcr-login-fails`
@@ -924,3 +935,53 @@ GHCR is still pending the runner above).
 `deploy/cd/test-ghcr-credentials.sh` checks the helper protocol, absence of
 on-disk credentials, cleanup after successful and failed login, and restoration
 of the caller's environment without contacting a registry.
+
+## Rollback-drill candidate evidence and readiness fault (CHE-4664)
+
+`cd-evidence.yml` (owner dispatch only) issues `cd-release-candidate-<sha>`
+for an already-qualified `main` commit and stops. It has no admission, deploy
+or cutover job and never builds. Its steps are those of `cd-deploy.yml`'s
+`prepare-release-candidate`, so its one C00 access is the read-only
+`capture-remote-baseline.sh`. The `c00-runtime` environment allows only
+`main`, so the workflow must be on `main` and dispatched with `--ref main`:
+
+```
+gh workflow run cd-evidence.yml --repo cheese-work/multica --ref main -f candidate_sha=<40-hex sha>
+```
+
+`docker-compose.fault-readyz.yml` points the candidate backend at
+`fault-db.invalid` (reserved TLD, never resolves). `cutover.sh` loads a fixed
+overlay list (ab, flags, jev) and has no hook for it, so `deploy/cd/drill/docker`
+carries it in: a `docker` shim that appends the overlay to one call, the
+candidate start (`compose ... up` with `MULTICA_SKIP_MIGRATIONS=1`). The
+migrator (`run`), the incumbent recovery (`start`) and everything else pass
+through, so the migration reaches the real database. A bad URL at the migrator
+would fail the migration after the incumbent was drained, and `cutover.sh`
+treats that as an outage with neither colour running. `cutover.sh` is not edited.
+
+Drill procedure (the operator runs the real cutover; this shim changes nothing
+else):
+
+```
+export DRILL_FAULT_READYZ=1
+PATH="<repo>/deploy/cd/drill:$PATH" deploy/cd/cutover.sh cutover <the usual arguments>
+```
+
+The shim is inert without `DRILL_FAULT_READYZ=1` and refuses (exit 2) if the
+candidate start carries no `-f` files. It prints `drill shim: layering ...` on
+stderr once, at the candidate start: that line is the proof it fired. Unset the
+variable and the PATH prefix afterwards.
+
+Expected `cutover.sh cutover` outcome with the overlay applied: final gate and
+migration pass; the candidate container starts, then exits with `unable to
+connect to database` / `unable to ping database` (the service restarts under
+`unless-stopped`); `/readyz` never answers; `wait_ready_on_port` gives up
+after 180 s (an earlier bindings check may fire first); `recover_incumbent`
+restarts the incumbent; the router generation never switches. This exercises
+`recover_incumbent`, not the `rollback` subcommand.
+
+`test-evidence-fault.py` checks the workflow shape, renders the overlay, and
+drives `deploy-lib.sh`'s real `compose()` function through the shim against a
+stand-in `docker`: the candidate start renders the fault, the migrator, the
+recovery start and a run without the switch render the real database. It does
+not run `cutover.sh` or touch C00.

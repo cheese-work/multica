@@ -21,7 +21,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -33,11 +32,13 @@ import (
 )
 
 type CommentResponse struct {
-	ID                  string  `json:"id"`
-	IssueID             string  `json:"issue_id"`
-	AuthorType          string  `json:"author_type"`
-	AuthorID            string  `json:"author_id"`
-	Content             string  `json:"content"`
+	ID         string `json:"id"`
+	IssueID    string `json:"issue_id"`
+	AuthorType string `json:"author_type"`
+	AuthorID   string `json:"author_id"`
+	Content    string `json:"content"`
+	// Withheld marks Content as a stub: an elevated run may not read the body.
+	Withheld            bool    `json:"withheld,omitempty"`
 	Type                string  `json:"type"`
 	ParentID            *string `json:"parent_id"`
 	WebURL              string  `json:"web_url,omitempty"`
@@ -611,6 +612,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, commentIDs)
 	groupedAtt := h.groupAttachments(r, commentIDs)
 
+	readFilter := h.newReadFilter(r)
 	resp := make([]CommentResponse, len(result.Comments))
 	for i, c := range result.Comments {
 		cid := uuidToString(c.ID)
@@ -638,6 +640,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			clipped, truncated := summarizeContent(resp[i].Content)
 			resp[i].Content = clipped
 			resp[i].ContentTruncated = &truncated
+		}
+		// Last, so no read mode or summary clip can put the original text back.
+		if readFilter.withholdsComment(c) {
+			resp[i].Content = h.commentStub(r.Context(), c)
+			resp[i].Withheld = true
 		}
 	}
 
@@ -1450,11 +1457,14 @@ type SupersedeResult struct {
 }
 
 type CreateCommentRequest struct {
-	Content          string   `json:"content"`
-	Supersedes       []string `json:"supersedes"`
-	DecisionIntent   bool     `json:"decision_intent"`
-	DecisionRecord   bool     `json:"decision_record"`
-	DecisionVeto     bool     `json:"decision_veto"`
+	Content        string   `json:"content"`
+	Supersedes     []string `json:"supersedes"`
+	DecisionIntent bool     `json:"decision_intent"`
+	DecisionRecord bool     `json:"decision_record"`
+	DecisionVeto   bool     `json:"decision_veto"`
+	// NotifyOnly declares an FYI: an agent-task comment may mention a member
+	// without a decision request. It never binds a wait.
+	NotifyOnly       bool     `json:"notify_only"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
 	Excerpts         []string `json:"excerpts"`
@@ -1714,6 +1724,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.NotifyOnly && (req.DecisionIntent || req.DecisionRecord || req.DecisionVeto) {
+		writeError(w, http.StatusBadRequest, "notify_only cannot combine with decision_intent, decision_record or decision_veto")
+		return
+	}
+
 	// Strip bytes PostgreSQL's TEXT column rejects before the empty check. The
 	// case reachable over the JSON API is an embedded NUL (0x00, SQLSTATE
 	// 22021) that survives a JSON round trip; sanitizeNullBytes also drops
@@ -1807,6 +1822,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same promise as above: a mention of an agent the author cannot reach is
+	// refused before the insert, so nothing is saved, published or enqueued.
+	if h.rejectInvalidAgentMentions(r.Context(), w, issue, req.Content, authorType, authorID, h.invokeOriginatorFromRequest(r, authorType, authorID), nil) {
+		return
+	}
+
 	// sourceTaskID captures the agent's currently-executing task when it posts
 	// via the CLI (X-Task-ID header). Stamping it on the comment row keeps the
 	// originator inheritance chain (resolveOriginatorFromTriggerComment →
@@ -1840,8 +1861,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// no_action guards below, and autopilotDelegationAuthority's lineage
 	// verification (MUL-4857).
 	var sourceTaskID pgtype.UUID
+	var actorTask *db.AgentTaskQueue
 	if authorType == "agent" {
 		if task, ok := h.taskFromRequestHeader(r); ok {
+			actorTask = &task
 			// Defense against resumed-session drift: when an agent posts from
 			// inside a comment-triggered task AND the comment is being posted on
 			// that same issue, the parent_id must exactly match the task's
@@ -1886,6 +1909,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceTaskID = task.ID
 		}
+	}
+
+	if !req.DecisionIntent && !req.NotifyOnly && !h.askGuardAllowsComment(w, r, issue, authorType, actorTask, req.Content) {
+		return
 	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
@@ -2118,11 +2145,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if kind, ok := parseStatusQuery(comment.Content); ok {
 		answer := h.buildStatusAnswer(r.Context(), issue, kind)
 		resp.StatusAnswer = &answer
-		// CHE-685: observe-only, after the response is fully decided. See
-		// the call below for the full contract; this earlier return path
-		// (a reserved status-query phrase) still creates a real comment row
-		// and must not silently skip receipt capture for it.
-		h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 		writeJSON(w, http.StatusCreated, resp)
 		return
 	}
@@ -2135,13 +2157,6 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if !steer.empty() {
 		applyCommentSupplements(&resp, h.listCommentSupplements(r.Context(), issue.WorkspaceID, []pgtype.UUID{comment.ID})[uuidToString(comment.ID)])
 	}
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture.
-	// Runs strictly after triggerTasksForComment (native mention/task
-	// routing has already fully happened) and can never change resp or the
-	// status code below — see observeGovernanceReceipt's doc. Bounded to
-	// receipt.Budget (50ms) internally; never retried.
-	h.observeGovernanceReceipt(r, issue, comment, receipt.TriggerCreate)
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -2605,7 +2620,34 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
+	// The same refusals the rerun path types (task_lifecycle.go); each is a
+	// property of the issue or stage, so the code stays enumeration-safe.
+	if errors.Is(err, service.ErrStageQueueFull) {
+		return ReasonStageQueueFull
+	}
+	if errors.Is(err, service.ErrAdmissionDeferred) {
+		return ReasonAdmissionDeferred
+	}
+	if errors.Is(err, service.ErrRunBudgetExhausted) {
+		return ReasonRunBudgetExhausted
+	}
+	if errors.Is(err, service.ErrIssueInTriage) {
+		return ReasonIssueInTriage
+	}
 	return ReasonInternalError
+}
+
+// logCommentAdmissionInternalError records why a comment admission branch
+// reported internal_error. trigger_outcomes carries only the reason code, so
+// this warning is the only place the cause is readable.
+func logCommentAdmissionInternalError(branch string, issueID pgtype.UUID, opts commentTriggerComputeOptions, targetType, targetID string, err error) {
+	slog.Warn("comment admission reported internal_error",
+		"branch", branch,
+		"issue_id", uuidToString(issueID),
+		"comment_id", uuidToString(opts.ExcludeTriggerCommentID),
+		"target_type", targetType,
+		"target_id", targetID,
+		"error", err)
 }
 
 // hasActiveTaskForIssueAndAgent reports whether the (issue, agent) pair has any
@@ -2761,6 +2803,9 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		"new_trigger_comment_id", uuidToString(newTriggerCommentID),
 		"coalesced_count", len(row.CoalescedCommentIds))
 	h.TaskService.RecordHumanDelegation(ctx, attr)
+	// The run's status is unchanged, so no lifecycle event tells clients that it
+	// now answers this comment.
+	h.TaskService.BroadcastTaskCoalesced(ctx, row)
 	return commentMergeSucceeded
 }
 
@@ -3105,6 +3150,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 			triggers = nil
 			for index := range targets {
 				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
+					if reason == ReasonInternalError {
+						logCommentAdmissionInternalError("project_active_check", issue.ID, opts, targets[index].TargetType, targets[index].TargetID, err)
+					}
 					targets[index].ExecAgentID = ""
 					targets[index].Status = DispatchBlocked
 					targets[index].ReasonCode = reason
@@ -3822,6 +3870,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
 			if err != nil {
+				logCommentAdmissionInternalError("squad_mention_pending_check", issue.ID, opts, "squad", m.ID, err)
 				blockTarget("squad", m.ID, ReasonInternalError)
 				continue
 			}
@@ -3881,6 +3930,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, agentUUID, opts)
 		if err != nil {
+			logCommentAdmissionInternalError("agent_mention_pending_check", issue.ID, opts, "agent", m.ID, err)
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
@@ -4012,6 +4062,17 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if h.rejectMissingRequiredSourceLink(w, r, actorType, true, issueForSource, req.Content, "content") {
 		return
 	}
+	// Only agents this edit adds are checked: an old mention whose agent was
+	// archived since must not block an unrelated edit.
+	if existing.Content != req.Content {
+		triggerType, triggerID := commentTriggerActor(existing, actorType, actorID)
+		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
+			return
+		}
+		if !h.askGuardAllowsCommentEdit(w, r, issueForSource, actorType, existing.Content, req.Content) {
+			return
+		}
+	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {
 			writeError(w, http.StatusBadRequest, "expected_revision must be a positive integer")
@@ -4046,6 +4107,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// lineage is re-derived from the EDIT action itself (MUL-4857), never carried
 	// over from the comment's original authoring run.
 	sourceTaskID := existing.SourceTaskID
+	markExternalRead := false
 	var triggerIssue *db.Issue
 	var cancelled []db.AgentTaskQueue
 	if oldContent != req.Content {
@@ -4071,6 +4133,15 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		} else {
 			sourceTaskID = pgtype.UUID{}
 		}
+		// The edit clears the lineage for a non-author, so the comment trigger
+		// cannot inherit the writer's external_read mark: carry it explicitly.
+		acting, hasActing, actingErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actingErr != nil {
+			slog.Warn("read acting task for comment edit failed", "comment_id", uuidToString(existing.ID), "error", actingErr)
+			writeError(w, http.StatusInternalServerError, "failed to prepare comment edit")
+			return
+		}
+		markExternalRead = hasActing && acting.ExternalRead
 		// Legacy clients keep the existing cancel-before-update behavior. Strict
 		// revision writes defer cancellation until the conditional UPDATE wins,
 		// so a race that returns 409 cannot mutate the task queue.
@@ -4085,9 +4156,10 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updateParams := db.UpdateCommentParams{
-		ID:           commentUUID,
-		Content:      req.Content,
-		SourceTaskID: sourceTaskID,
+		ID:               commentUUID,
+		Content:          req.Content,
+		SourceTaskID:     sourceTaskID,
+		MarkExternalRead: pgtype.Bool{Bool: markExternalRead, Valid: markExternalRead},
 		// New text replaces the "don't start" choices completion replay keeps.
 		SuppressedAgentIds: suppressAgentIDs,
 	}
@@ -4214,17 +4286,6 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	// The broadcast above intentionally omits trigger_outcomes — it is the
 	// editor's private feedback, not shared timeline state (MUL-4525 §2).
 	resp.TriggerOutcomes = retriggerEditedComment()
-
-	// CHE-685: post-commit, best-effort Jev governance receipt capture — the
-	// UpdateComment twin of CreateComment's hook. issueForSource (loaded
-	// unconditionally above, for the required-source-link check) is used
-	// rather than triggerIssue, which stays nil when content did not
-	// change: an edit that only touches attachments/expected_revision still
-	// commits a real comment mutation and must not silently skip capture.
-	// Runs strictly after retriggerEditedComment (native mention/task
-	// re-routing has already fully happened) and can never change resp or
-	// the status code below.
-	h.observeGovernanceReceipt(r, issueForSource, comment, receipt.TriggerEdit)
 
 	writeJSON(w, http.StatusOK, resp)
 }

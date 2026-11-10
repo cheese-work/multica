@@ -47,7 +47,7 @@ type WakeupCondition struct {
 	// every stage closing while a later one waits, then every sub-issue
 	// closing. Only the platform sets it.
 	EachStage bool `json:"each_stage,omitempty"`
-	// pull_request: checks_finished | merged | conflicts
+	// pull_request: checks_finished | merged | conflicts | dequeued
 	Event string `json:"event,omitempty"`
 	// other_issue: the watched issue and done | ended | in_review | blocked. The
 	// identifier is recorded for display; clients never set it.
@@ -87,6 +87,25 @@ func badCondition(msg string) error {
 	return fmt.Errorf("%w: %w: %s", ErrWakeupInput, errBadCondition, msg)
 }
 
+// conditionHints are the same-issue events that should trigger an early
+// evaluation of a normalized condition; the rest is polled.
+func conditionHints(c WakeupCondition) []string {
+	if c.Type != "issue_field" {
+		return nil
+	}
+	switch c.Field {
+	case "status":
+		return []string{"issue.status_changed"}
+	case "assignee":
+		return []string{"issue.assignee_changed"}
+	case "label":
+		return []string{"issue.labels_changed"}
+	case "property":
+		return []string{"issue.properties_changed"}
+	}
+	return nil
+}
+
 // validateCondition normalizes a condition against the issue's workspace and
 // returns the same-issue events that should trigger an early evaluation.
 func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.RawMessage) (json.RawMessage, []string, error) {
@@ -109,7 +128,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		return id, nil
 	}
-	var events []string
 	var out WakeupCondition
 	switch c.Type {
 	case "issue_field":
@@ -130,7 +148,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				}
 			}
 			out.Value, _ = json.Marshal(status)
-			events = []string{"issue.status_changed"}
 		case "assignee":
 			id, err := uuidArg(c.AssigneeID, "assignee_id")
 			if err != nil {
@@ -154,7 +171,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown assignee")
 			}
 			out.AssigneeType, out.AssigneeID = c.AssigneeType, util.UUIDToString(id)
-			events = []string{"issue.assignee_changed"}
 		case "label":
 			id, err := uuidArg(c.LabelID, "label_id")
 			if err != nil {
@@ -168,7 +184,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown label")
 			}
 			out.LabelID = util.UUIDToString(id)
-			events = []string{"issue.labels_changed"}
 		case "property":
 			id, err := uuidArg(c.PropertyID, "property_id")
 			if err != nil {
@@ -186,7 +201,6 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("property value must be a JSON value within 1 KB")
 			}
 			out.PropertyID, out.Value = util.UUIDToString(id), value
-			events = []string{"issue.properties_changed"}
 		default:
 			return nil, nil, badCondition("field must be status, assignee, label or property")
 		}
@@ -199,8 +213,8 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		out = WakeupCondition{Type: c.Type, Stage: c.Stage}
 	case "pull_request":
-		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" {
-			return nil, nil, badCondition("event must be checks_finished, merged or conflicts")
+		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" && c.Event != "dequeued" {
+			return nil, nil, badCondition("event must be checks_finished, merged, conflicts or dequeued")
 		}
 		out = WakeupCondition{Type: c.Type, Event: c.Event}
 	case "other_issue":
@@ -235,8 +249,18 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		return nil, nil, badCondition("type must be issue_field, children_done, pull_request, other_issue or github_run")
 	}
 	normalized, _ := json.Marshal(out)
-	return normalized, events, nil
+	return normalized, conditionHints(out), nil
 }
+
+// checksRollupIgnoringVerdict is the PR rollup a checks_finished rule reads.
+// The security-gate status stays PENDING until a cross-lab verdict exists, and
+// flows wait for finished checks before asking for it, so a PENDING rollup
+// whose only unfinished contexts are verdict statuses reads as SUCCESS. A
+// failing check already makes the rollup FAILURE, so only PENDING needs this.
+const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
+	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
+	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
 
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
@@ -280,6 +304,9 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		met, fingerprint, observed := childrenDone(c, children)
 		return met, fingerprint, observed, nil
 	case "pull_request":
+		if c.Event == "dequeued" {
+			return evaluatePRDequeued(ctx, tx, q, w)
+		}
 		// Without the snapshot client GitHub rows are never refreshed, so their
 		// checks and mergeability neither satisfy nor stall the rule. Self-hosted VCS rows carry
 		// their own commit statuses and are evaluated regardless (#9034).
@@ -288,7 +315,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
 		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -320,8 +347,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				missingSnapshot = missingSnapshot || head == ""
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
-					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
-					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks)})
+					keys = append(keys, prChecksKey(number, head, checks))
+					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks), "head_current": head == currentHead})
 					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "conflicts":
@@ -398,7 +425,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				if head != "" && checks != "" {
 					keys = append(keys, fmt.Sprintf("vcs:%s@%s:%s", util.UUIDToString(id), head, checks))
-					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks)})
+					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks), "head_current": true})
 				}
 			}
 		}
@@ -589,9 +616,10 @@ func conditionNewlyMet(previous, current string) bool {
 }
 
 // conditionFiresOnChange reports whether facts already true at registration
-// are ignored. Finished checks usually belong to the head the agent just
-// replaced, so a checks condition waits for a newer result; states such as a
-// status value, finished sub-issues or a merged PR fire as soon as they hold.
+// can be ignored. Finished checks may belong to the head the agent just
+// replaced, so baselineCondition ignores those, but not checks finished on the
+// PR's current head; states such as a status value, finished sub-issues or a
+// merged PR fire as soon as they hold.
 func conditionFiresOnChange(raw []byte) bool {
 	var c WakeupCondition
 	_ = json.Unmarshal(raw, &c)
@@ -601,7 +629,7 @@ func conditionFiresOnChange(raw []byte) bool {
 // baselineCondition records which facts already satisfy a new or re-enabled
 // rule, so it wakes the agent when they change rather than immediately.
 func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) error {
-	met, fingerprint, _, err := s.evaluateCondition(ctx, tx, q, w)
+	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
 	if err != nil && !conditionDiagnostic(err) {
 		return err
 	}
@@ -610,8 +638,42 @@ func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q
 	}
 	if !met {
 		fingerprint = ""
+	} else if staleOnly, ok := replacedHeadChecks(w.Condition, observed); ok {
+		fingerprint = staleOnly
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
+}
+
+// prChecksKey is the fingerprint key of one finished checks result.
+func prChecksKey(number any, head, checks string) string {
+	return fmt.Sprintf("%v@%s:%s", number, head, strings.ToUpper(checks))
+}
+
+// replacedHeadChecks returns the fingerprint a new checks_finished rule
+// baselines: only the results on a replaced head, since those are not news.
+// A result on a PR's current head stays out of it, so the next poll fires,
+// whatever the other linked PRs show. ok is false for any other rule.
+func replacedHeadChecks(raw []byte, observed map[string]any) (fingerprint string, ok bool) {
+	var c WakeupCondition
+	_ = json.Unmarshal(raw, &c)
+	if c.Type != "pull_request" || c.Event != "checks_finished" {
+		return "", false
+	}
+	var keys []string
+	prs, _ := observed["pull_requests"].([]map[string]any)
+	for _, pr := range prs {
+		if current, _ := pr["head_current"].(bool); current {
+			continue
+		}
+		head, _ := pr["head_sha"].(string)
+		checks, _ := pr["checks"].(string)
+		keys = append(keys, prChecksKey(pr["number"], head, checks))
+	}
+	if len(keys) == 0 {
+		return "", true
+	}
+	sort.Strings(keys)
+	return "pr:" + strings.Join(keys, ","), true
 }
 
 // A completed evaluation replaces the previous pass's error with its current
@@ -798,6 +860,10 @@ type linkedPR struct {
 // splitHaltedPRs returns the matching PRs outside halted repositories, and the
 // identities of all linked PRs inside them. repos[i] is the repository of prs[i].
 func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
+	// Held to the end of the evaluation's transaction: a switch change waits for it, or is seen by it (CHE-2223).
+	if err := q.LockGitHubDispatchHaltShared(ctx, workspaceID); err != nil {
+		return nil, nil, err
+	}
 	halted := map[[2]string]bool{}
 	isHalted := func(repo [2]string) (bool, error) {
 		if h, ok := halted[repo]; ok {
@@ -865,4 +931,54 @@ func withoutPRs(fingerprint string, identities []string) string {
 		return ""
 	}
 	return "pr:" + strings.Join(kept, ",")
+}
+
+// evaluatePRDequeued reads the dequeue facts the webhook recorded as receipts
+// of the issue's pr_dequeued rule (CHE-4231), for the PRs linked now and
+// received since this rule was created. A dequeue is an event, not a state the
+// snapshot holds, and the updated_at in each receipt key makes every
+// dequeue a new fingerprint.
+func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
+	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, pr.id::text, pr.repo_owner, pr.repo_name, r.payload->>'head_sha', r.payload->>'reason'
+		FROM issue_wakeup dw JOIN issue_wakeup_receipt r ON r.wakeup_id=dw.id
+		JOIN github_pull_request pr ON lower(pr.repo_owner)=lower(r.payload->>'repo_owner') AND lower(pr.repo_name)=lower(r.payload->>'repo_name') AND pr.pr_number=(r.payload->>'pr_number')::int
+		JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id AND ipr.issue_id=dw.issue_id
+		WHERE dw.issue_id=$1 AND dw.system_rule='pr_dequeued' AND r.created_at>=$2
+		ORDER BY r.event_key`, w.IssueID, w.CreatedAt)
+	if err != nil {
+		return false, "", nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	var prs []map[string]any
+	var repos [][2]string
+	var linked []linkedPR
+	for rows.Next() {
+		var key, id, repoOwner, repoName string
+		var number int32
+		var head, reason pgtype.Text
+		if err := rows.Scan(&key, &number, &id, &repoOwner, &repoName, &head, &reason); err != nil {
+			return false, "", nil, err
+		}
+		// The key starts with the PR number, like the other pull_request keys,
+		// so a halted repository's dequeues are consumed by conditionDropped.
+		keys = append(keys, fmt.Sprintf("%d@%s", number, key))
+		prs = append(prs, map[string]any{"number": number, "head_sha": head.String, "reason": reason.String})
+		repos = append(repos, [2]string{repoOwner, repoName})
+		linked = append(linked, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
+	}
+	if err := rows.Err(); err != nil {
+		return false, "", nil, err
+	}
+	// The kill switch (CHE-2220) consumes a halted repository's dequeues: they
+	// stay in the fingerprint, so lifting the halt does not replay them.
+	prs, haltedPRs, err := splitHaltedPRs(ctx, q, w.WorkspaceID, prs, repos, linked)
+	if err != nil {
+		return false, "", nil, err
+	}
+	observed := map[string]any{"pull_requests": prs}
+	if len(haltedPRs) > 0 {
+		observed[haltedPRsField] = haltedPRs
+	}
+	return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 }

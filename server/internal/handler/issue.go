@@ -39,15 +39,16 @@ import (
 
 // IssueResponse is the JSON response for an issue.
 type IssueResponse struct {
-	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
-	ID              string                  `json:"id"`
-	WorkspaceID     string                  `json:"workspace_id"`
-	Number          int32                   `json:"number"`
-	Identifier      string                  `json:"identifier"`
-	WebURL          string                  `json:"web_url,omitempty"`
-	Title           string                  `json:"title"`
-	Description     *string                 `json:"description"`
-	Status          string                  `json:"status"`
+	TriggerOutcomes     []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
+	ID                  string                  `json:"id"`
+	WorkspaceID         string                  `json:"workspace_id"`
+	Number              int32                   `json:"number"`
+	Identifier          string                  `json:"identifier"`
+	WebURL              string                  `json:"web_url,omitempty"`
+	Title               string                  `json:"title"`
+	Description         *string                 `json:"description"`
+	DescriptionWithheld bool                    `json:"description_withheld,omitempty"`
+	Status              string                  `json:"status"`
 	// StatusCategory encodes lifecycle using the legacy seven-value wire enum. It is
 	// omitted when an endpoint cannot resolve a custom status, so consumers must
 	// fall back to their catalog rather than treat a blank as "no category".
@@ -91,9 +92,15 @@ type IssueResponse struct {
 	Stage     *int32  `json:"stage"`
 	StartDate *string `json:"start_date"`
 	DueDate   *string `json:"due_date"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
-	Revision  int64   `json:"revision"`
+	// EffectiveDue, DueSource and Diagnostics are the read-only deadline
+	// projection (see issue_effective_due.go). Detail-only for now; absent
+	// when nothing is inherited or the issue is closed.
+	EffectiveDue *string         `json:"effective_due,omitempty"`
+	DueSource    string          `json:"due_source,omitempty"`
+	Diagnostics  []DueDiagnostic `json:"diagnostics,omitempty"`
+	CreatedAt    string          `json:"created_at"`
+	UpdatedAt    string          `json:"updated_at"`
+	Revision     int64           `json:"revision"`
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
@@ -290,32 +297,53 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || len(issueWriteTaint(ctx)) > 0, func(q *db.Queries) error {
-		if err := wf.lockProject(ctx, q); err != nil {
-			return err
-		}
-		if params.DuplicateOfIssueID.Valid {
-			if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
-				return err
-			}
-		}
-		if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
-			return err
-		}
-		if moveGuard != nil {
-			if err := moveGuard(ctx, q, &params); err != nil {
-				return err
-			}
-		}
-		var innerErr error
-		issue, cancelledWakeups, innerErr = updateIssueStoppingWakeups(ctx, q, params)
-		return innerErr
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+		var err error
+		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
+		return err
 	})
 	if err != nil {
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
 	return issue, nil
+}
+
+// writeIssueLocked is the body of an issue write inside the caller's
+// transaction, which already holds the status-archive guard: project lock,
+// workflow re-check under the issue row lock, then the write. The caller
+// broadcasts the returned wakeups after commit.
+func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, params db.UpdateIssueParams, wf *workflowWrite) (db.Issue, []db.AgentTaskQueue, error) {
+	if err := wf.lockProject(ctx, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if params.DuplicateOfIssueID.Valid {
+		if err := lockAndCheckDuplicateMark(ctx, q, workspaceID, params.ID, params.DuplicateOfIssueID); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	if err := wf.lockIssueAndVerify(ctx, h, q); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if moveGuard := issueMoveGuardFrom(ctx); moveGuard != nil {
+		if err := moveGuard(ctx, q, &params); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
+	if err := markMemberRouteOverride(ctx, q, workspaceID, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if err := captureRouteLabel(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
+	if err != nil {
+		return issue, nil, err
+	}
+	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -326,15 +354,54 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err := guardAgentIssueStatus(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	if err := guardIssueProjectRebinding(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	rec := statusRecordFrom(ctx)
+	recordStatus := rec != nil && params.Status.Valid
+	var fromStatus string
+	if recordStatus {
+		// Lock first so "from" is the status this write replaces, not the
+		// caller's earlier read.
+		prior, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: params.ID, WorkspaceID: rec.workspaceID})
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
+		}
+		fromStatus = prior.Status
+	}
+	var prevParent pgtype.UUID
+	if params.ParentIssueID.Valid {
+		prior, err := q.GetIssue(ctx, params.ID)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("read issue parent: %w", err)
+		}
+		prevParent = prior.ParentIssueID
+	}
 	issue, err := q.UpdateIssue(ctx, params)
 	if err != nil {
 		return issue, nil, err
+	}
+	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
+		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
+	}
+	if recordStatus && fromStatus != issue.Status {
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
+		if err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
+		}
+		rec.activity = &row
+		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
 	if taint := issueWriteTaint(ctx); len(taint) > 0 {
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
+	}
+	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
+		if err := q.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("mark description external_read: %w", err)
 		}
 	}
 	var cancelled []db.AgentTaskQueue
@@ -459,6 +526,30 @@ func duplicateOfPointer(status string, id pgtype.UUID) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return id
+}
+
+// statusMoveRecorded keeps status_changed honest for the event: a write that
+// carried a status record but wrote no row lost the race to an identical
+// concurrent move (the locked status already matched), so it moved nothing.
+// Without this the event would claim a move no row names (CHE-2854).
+func statusMoveRecorded(statusChanged bool, rec *statusRecord) bool {
+	return statusChanged && (rec == nil || rec.activity != nil)
+}
+
+// duplicateRowNamesMove reports whether the duplicate_marked or
+// duplicate_unmarked row the listener writes stands in for this write's status
+// row (MUL-7349). It does not when the pointer is a leftover or its original
+// is gone: no duplicate row is written, so the status row records the move.
+func (h *Handler) duplicateRowNamesMove(ctx context.Context, params db.UpdateIssueParams, prev db.Issue) bool {
+	if params.DuplicateOfIssueID.Valid {
+		return true
+	}
+	mark := duplicateOfPointer(prev.Status, prev.DuplicateOfIssueID)
+	if !mark.Valid {
+		return false
+	}
+	_, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: mark, WorkspaceID: prev.WorkspaceID})
+	return err == nil
 }
 
 // duplicateOriginals memoises the originals a request's duplicates point at,
@@ -716,15 +807,15 @@ type SearchIssueResponse struct {
 // earliest occurring individual term and centers the snippet around it.
 func extractSnippet(content, query string) string {
 	runes := []rune(content)
-	lowerRunes := []rune(strings.ToLower(content))
-	queryRunes := []rune(strings.ToLower(query))
+	lowerRunes := []rune(foldDiacritics(content))
+	queryRunes := []rune(foldDiacritics(query))
 
 	idx := findRuneSubstring(lowerRunes, queryRunes)
 
 	// If phrase not found, try individual terms for multi-word queries.
 	matchLen := len(queryRunes)
 	if idx < 0 {
-		terms := strings.Fields(strings.ToLower(query))
+		terms := strings.Fields(foldDiacritics(query))
 		if len(terms) > 1 {
 			earliest := -1
 			earliestLen := 0
@@ -792,13 +883,13 @@ func descriptionContains(desc pgtype.Text, phrase string, terms []string) bool {
 	if !desc.Valid || desc.String == "" {
 		return false
 	}
-	lower := strings.ToLower(desc.String)
-	if strings.Contains(lower, strings.ToLower(phrase)) {
+	lower := foldDiacritics(desc.String)
+	if strings.Contains(lower, foldDiacritics(phrase)) {
 		return true
 	}
 	if len(terms) > 1 {
 		for _, t := range terms {
-			if !strings.Contains(lower, strings.ToLower(t)) {
+			if !strings.Contains(lower, foldDiacritics(t)) {
 				return false
 			}
 		}
@@ -857,17 +948,92 @@ type searchResult struct {
 	matchedCommentContent string
 }
 
+// searchCommentSource scopes the name "comment" to the stored folded text for
+// one CTE body, so the comment scan reads one narrow table instead of joining
+// comment to its side table. content is the folded text; content_accents is the
+// lowered unfolded text where folding changed it, for the exact-diacritic rank.
+//
+// A comment that matches none of the patterns sets no flag in the aggregate
+// below, so the trigram predicate (CHE-3164) drops it here, where the GIN index
+// on content_folded can serve it, instead of after reading every comment of the
+// workspace. The patterns are the same ones the flags use.
+func searchCommentSource(wsParam string, likeParams []string) string {
+	return fmt.Sprintf(`comment AS (
+			SELECT comment_id AS id, issue_id, workspace_id, created_at,
+				content_folded AS content, content_accents
+			FROM comment_search_text
+			WHERE workspace_id = %s AND (%s)
+		)`, wsParam, foldedLikeAny("content_folded", likeParams))
+}
+
+// searchIssueSource exposes the stored folded text as title and description,
+// next to the raw text that the exact-diacritic ranking compares against.
+//
+// Only issues that can be eligible are read (CHE-3164): a title or description
+// that matches a pattern (one arm per folded column, so each OR stays cheap
+// enough for the planner to pick that column's GIN index), an issue that has a
+// matching comment (comment_matches), or the issue whose number was searched.
+// Every eligibility rule below needs at least one of these, so the flags that
+// follow are computed on those rows instead of every issue of the workspace.
+func searchIssueSource(wsParam string, likeParams []string, numParam string) string {
+	candidates := fmt.Sprintf(`SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[2]s)
+			UNION
+			SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %[1]s AND (%[3]s)
+			UNION
+			SELECT issue_id FROM comment_matches`,
+		wsParam, foldedLikeAny("title_folded", likeParams), foldedLikeAny("description_folded", likeParams))
+	if numParam != "" {
+		candidates += fmt.Sprintf(`
+			UNION
+			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
+	}
+	return fmt.Sprintf(`(
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+			ist.title_folded AS title, ist.description_folded AS description,
+			ist.title_accents, ist.description_accents
+		FROM (
+			%s
+		) candidate
+		JOIN issue i ON i.id = candidate.issue_id AND i.workspace_id = %s
+		JOIN issue_search_text ist ON ist.issue_id = i.id AND ist.workspace_id = i.workspace_id
+	)`, candidates, wsParam)
+}
+
+// foldedLikeAny is column LIKE p for any of the patterns.
+func foldedLikeAny(column string, likeParams []string) string {
+	predicates := make([]string, len(likeParams))
+	for i, param := range likeParams {
+		predicates[i] = column + " LIKE " + param
+	}
+	return strings.Join(predicates, " OR ")
+}
+
 // buildSearchQuery builds a two-stage, workspace-scoped candidate pipeline for issue search.
 // Search patterns are lowercased and escaped in Go so every flag uses the same
-// case-insensitive LIKE semantics as the legacy query. The pipeline deliberately
-// trades the title, description, and comment content GIN fast paths for one
-// predictable pass over each relation within the selected workspace.
+// case-insensitive LIKE semantics as the legacy query.
+//
+// Every scan of the stored folded text keeps its workspace_id equality and adds
+// the same LIKE patterns the flags use (CHE-3164). The workspace btree still
+// bounds the worst case, which is the MUL-4059 plan this pipeline was built for;
+// the trigram GIN indexes let the planner skip rows that no pattern can match
+// when that is cheaper. Cost is the planner's call, so the SQL never forces an
+// index, and the eligibility rules and ranking read the same flags as before.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
-	// Lowercase in Go so SQL only needs LOWER() on the column side.
-	phrase = strings.ToLower(phrase)
+	// The stored search text is lowered and diacritic-folded (search_fold), so the
+	// patterns are folded the same way. The lowered-only query is kept to rank a
+	// match that also agrees on diacritics above one that matches after folding.
+	lowerPhrase := strings.ToLower(phrase)
+	lowerTerms := make([]string, len(terms))
+	foldedTerms := make([]string, len(terms))
 	for i, term := range terms {
-		terms[i] = strings.ToLower(term)
+		lowerTerms[i] = strings.ToLower(term)
+		foldedTerms[i] = foldDiacritics(term)
 	}
+	phrase = foldDiacritics(phrase)
+	terms = foldedTerms
+	exactDiacritics := lowerPhrase != phrase
 
 	args := []any{}
 	nextArg := func(value any) string {
@@ -888,6 +1054,10 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		}
 	}
 
+	// Every flag below needs one of these patterns to match (or the searched
+	// number to equal), so the sources use them to skip rows no flag can hit.
+	textLikeParams := append([]string{phraseContainsParam}, termContainsParams...)
+
 	numParam := ""
 	if hasNum {
 		numParam = nextArg(queryNum)
@@ -898,6 +1068,24 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		// Negate only known terminal keys so an unknown legacy key remains
 		// searchable instead of disappearing from the default result set.
 		terminalStatusesParam = nextArg(terminalStatusKeys)
+	}
+
+	// casedMatch reports whether the unfolded text still agrees with the query on
+	// diacritics: the whole phrase, or every term when they are spread apart.
+	casedMatch := func(string) string { return "FALSE" }
+	if exactDiacritics {
+		casedParts := []string{"%s LIKE " + nextArg("%"+escapeLike(lowerPhrase)+"%")}
+		if len(termContainsParams) > 1 {
+			var casedTerms []string
+			for _, term := range lowerTerms {
+				casedTerms = append(casedTerms, "%s LIKE "+nextArg("%"+escapeLike(term)+"%"))
+			}
+			casedParts = append(casedParts, "("+strings.Join(casedTerms, " AND ")+")")
+		}
+		casedPattern := "(" + strings.Join(casedParts, " OR ") + ")"
+		casedMatch = func(rawLower string) string {
+			return strings.ReplaceAll(casedPattern, "%s", rawLower)
+		}
 	}
 
 	limitParam := nextArg(nil)
@@ -941,6 +1129,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		)
 	}
 
+	// Cased flags (see casedMatch) read the stored accented text, which is NULL
+	// where folding changed nothing and so cannot match a query with diacritics.
+	if exactDiacritics {
+		issueFlagColumns = append(issueFlagColumns,
+			"COALESCE("+casedMatch("i.title_accents")+", FALSE) AS title_cased",
+			"COALESCE("+casedMatch("i.description_accents")+", FALSE) AS description_cased",
+		)
+	}
+
 	issueWhere := "i.workspace_id = " + wsParam
 	if terminalStatusesParam != "" {
 		issueWhere += fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", terminalStatusesParam)
@@ -957,7 +1154,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// fences so expression indexes can still match them.
 	issueMatchesCTE := fmt.Sprintf(`issue_matches AS (
 		SELECT %s
-		FROM issue i
+		FROM %s i
 		CROSS JOIN LATERAL (
 			SELECT LOWER(i.title) AS lowered
 			OFFSET 0
@@ -968,7 +1165,8 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			OFFSET 0
 		) lowered_issue_description ON TRUE
 		WHERE %s
-	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"), titleMatchExpr, issueWhere)
+	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
+		searchIssueSource(wsParam, textLikeParams, numParam), titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1007,10 +1205,16 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// looking the ID up later would repeat text predicates after pagination.
 	// The aggregate stores matching UUIDs per issue (not content), and the ID
 	// tie-break makes equal created_at values deterministic.
-	commentFlagColumns = append(commentFlagColumns, fmt.Sprintf(
-		"(ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s))[1] AS snippet_comment_id",
-		commentSnippetPredicate,
-	))
+	snippetAggregate := fmt.Sprintf(
+		"ARRAY_AGG(c.id ORDER BY c.created_at DESC, c.id DESC) FILTER (WHERE %s)", commentSnippetPredicate)
+	commentFlagColumns = append(commentFlagColumns, "("+snippetAggregate+")[1] AS snippet_comment_id")
+	// Exact diacritics add one flag to the same pass: some comment, not only the
+	// newest, agrees with the query on diacritics. content_accents is NULL for a
+	// comment folding left unchanged, which cannot match a query with diacritics.
+	if exactDiacritics {
+		commentFlagColumns = append(commentFlagColumns,
+			"BOOL_OR("+casedMatch("c.content_accents")+") FILTER (WHERE c.content_accents IS NOT NULL) AS comment_diacritic_match")
+	}
 
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
 	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
@@ -1018,6 +1222,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	// text predicates must stay outside this projection-only fence so an index on
 	// LOWER(c.content) can still match them.
 	commentMatchesCTE := fmt.Sprintf(`comment_matches AS MATERIALIZED (
+		WITH %s
 		SELECT *
 		FROM (
 			SELECT %s
@@ -1031,10 +1236,18 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
+		searchCommentSource(wsParam, textLikeParams),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
+
+	// Exact diacritics rank a match above one that only agrees after folding,
+	// across all three sources.
+	diacriticRank := "0"
+	if exactDiacritics {
+		diacriticRank = "CASE WHEN im.title_cased OR im.description_cased OR COALESCE(cm.comment_diacritic_match, FALSE) THEN 0 ELSE 1 END"
+	}
 
 	// Stage two combines the two narrow sources, applies the legacy eligibility
 	// and ranking rules once, and materializes only the requested page.
@@ -1135,16 +1348,17 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			%s AS cancelled_rank,
 			%s AS relevance_rank,
 			%s AS status_rank,
+			%s AS diacritic_rank,
 			%s AS match_source
 		FROM issue_matches im
 		LEFT JOIN comment_matches cm ON cm.issue_id = im.issue_id
 		WHERE %s
-	)`, cancelledRank, rankExpr, statusRank, matchSourceExpr, eligibleExpr)
+	)`, cancelledRank, rankExpr, statusRank, diacriticRank, matchSourceExpr, eligibleExpr)
 
 	pageCandidatesCTE := fmt.Sprintf(`page_candidates AS MATERIALIZED (
-		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, match_source
+		SELECT issue_id, updated_at, snippet_comment_id, cancelled_rank, relevance_rank, status_rank, diacritic_rank, match_source
 		FROM ranked_candidates
-		ORDER BY cancelled_rank, relevance_rank, status_rank, updated_at DESC, issue_id ASC
+		ORDER BY cancelled_rank, relevance_rank, status_rank, diacritic_rank, updated_at DESC, issue_id ASC
 		LIMIT %s OFFSET %s
 	)`, limitParam, offsetParam)
 
@@ -1156,15 +1370,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision, i.duplicate_of_issue_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		pc.match_source,
 		COALESCE(c.content, '') AS matched_comment_content
 	FROM page_candidates pc
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
-	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.updated_at DESC, pc.issue_id ASC`,
-		issueMatchesCTE,
+	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
 		commentMatchesCTE,
+		issueMatchesCTE,
 		rankedCandidatesCTE,
 		pageCandidatesCTE,
 		wsParam,
@@ -1229,36 +1443,55 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	args[len(args)-1] = offset
 
 	var results []searchResult
-	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
-		for rows.Next() {
-			sr, err := scanSearchIssue(rows)
-			if err != nil {
-				return fmt.Errorf("scan: %w", err)
+	// runSearch fills results from one search statement and writes the error
+	// response itself, returning false when the request is already answered.
+	runSearch := func(sqlQuery string, args []any) bool {
+		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+			for rows.Next() {
+				sr, err := scanSearchIssue(rows)
+				if err != nil {
+					return fmt.Errorf("scan: %w", err)
+				}
+				results = append(results, sr)
 			}
-			results = append(results, sr)
+			return rows.Err()
+		})
+		if err != nil {
+			if writeSearchCancellation(w, r, err) {
+				return false
+			}
+			// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
+			// so the frontend can distinguish a timeout ("try a more
+			// specific query") from a generic 500. This is the fail-fast
+			// path when GIN search indexes are absent or the database is
+			// overloaded; see runSearchQuery header for context.
+			if isSearchStatementTimeout(err) {
+				slog.Warn("search issues timed out",
+					"workspace_id", workspaceID,
+					"query_length", len([]rune(q)),
+					"timeout", searchStatementTimeout)
+				writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
+				return false
+			}
+			slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
+			writeError(w, http.StatusInternalServerError, "failed to search issues")
+			return false
 		}
-		return rows.Err()
-	})
-	if err != nil {
-		if writeSearchCancellation(w, r, err) {
-			return
-		}
-		// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
-		// so the frontend can distinguish a timeout ("try a more
-		// specific query") from a generic 500. This is the fail-fast
-		// path when GIN search indexes are absent or the database is
-		// overloaded; see runSearchQuery header for context.
-		if isSearchStatementTimeout(err) {
-			slog.Warn("search issues timed out",
-				"workspace_id", workspaceID,
-				"query_length", len([]rune(q)),
-				"timeout", searchStatementTimeout)
-			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
-			return
-		}
-		slog.Warn("search issues failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
-		writeError(w, http.StatusInternalServerError, "failed to search issues")
+		return true
+	}
+
+	if !runSearch(sqlQuery, args) {
 		return
+	}
+	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
+	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
+		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
+		fuzzyArgs[1] = wsUUID
+		fuzzyArgs[len(fuzzyArgs)-2] = limit
+		fuzzyArgs[len(fuzzyArgs)-1] = offset
+		if !runSearch(fuzzyQuery, fuzzyArgs) {
+			return
+		}
 	}
 	if writeSearchCancellation(w, r, ctx.Err()) {
 		return
@@ -1270,6 +1503,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		originals = appendDuplicateOriginal(originals, sr.issue.Status, sr.issue.DuplicateOfIssueID)
 	}
 	fillSearch := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
+	searchFilter := h.newReadFilter(r)
 	resp := make([]SearchIssueResponse, len(results))
 	for i, sr := range results {
 		sir := SearchIssueResponse{
@@ -1277,8 +1511,11 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 			MatchSource:   sr.matchSource,
 		}
 		fillSearch(&sir.IssueResponse)
+		searchFilter.stubDescription(h, sr.issue, &sir.IssueResponse)
 		// Always populate comment snippet when a matching comment exists
-		if sr.matchedCommentContent != "" {
+		// The search row does not say whether the matched comment is marked, so
+		// an elevated reader gets no comment snippet at all.
+		if sr.matchedCommentContent != "" && !searchFilter.withholds(true) {
 			snippet := extractSnippet(sr.matchedCommentContent, q)
 			sir.MatchedCommentSnippet = &snippet
 			// Keep backward compat: also set MatchedSnippet for comment-source matches
@@ -1288,7 +1525,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		// Populate description snippet when description matches
 		if sr.matchSource == "description" || descriptionContains(sr.issue.Description, q, terms) {
-			if sr.issue.Description.Valid && sr.issue.Description.String != "" {
+			if sr.issue.Description.Valid && sr.issue.Description.String != "" && !searchFilter.withholds(sr.issue.DescriptionExternalRead) {
 				snippet := extractSnippet(sr.issue.Description.String, q)
 				sir.MatchedDescriptionSnippet = &snippet
 			}
@@ -1323,6 +1560,80 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	r.URL.RawQuery = values.Encode()
 	h.ListIssues(w, r)
 }
+
+// listIssueColumns is the full ListIssues select list.
+const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
+       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+
+var narrowColumns = strings.NewReplacer(
+	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
+	"i.description,", "NULL::text,",
+	"i.metadata,", "NULL::jsonb,",
+	"i.properties,", "NULL::jsonb,",
+)
+
+// narrowListIssueColumns blanks the large title/description/metadata/properties
+// columns in the select list of a ListIssues query (the part before FROM);
+// the WHERE clause is left alone.
+func narrowListIssueColumns(query string) string {
+	selectList, rest, _ := strings.Cut(query, "\nFROM issue i")
+	return narrowColumns.Replace(selectList) + "\nFROM issue i" + rest
+}
+
+func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
+	var issues []db.ListIssuesRow
+	for rows.Next() {
+		var row db.ListIssuesRow
+		if err := rows.Scan(
+			&row.ID, &row.WorkspaceID, &row.Title, &row.Description, &row.Status, &row.Priority,
+			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
+			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
+			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+		); err != nil {
+			return nil, err
+		}
+		issues = append(issues, row)
+	}
+	return issues, rows.Err()
+}
+
+// fullListIssueRows re-reads page (already sorted) with every column, keeping order.
+func (h *Handler) fullListIssueRows(ctx context.Context, wsUUID pgtype.UUID, page []db.ListIssuesRow) ([]db.ListIssuesRow, error) {
+	if len(page) == 0 {
+		return page, nil
+	}
+	ids := make([]pgtype.UUID, len(page))
+	for i, r := range page {
+		ids[i] = r.ID
+	}
+	rows, err := h.DB.Query(ctx, `SELECT `+listIssueColumns+` FROM issue i WHERE i.workspace_id = $1 AND i.id = ANY($2)`, wsUUID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	full, err := scanListIssueRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[pgtype.UUID]db.ListIssuesRow, len(full))
+	for _, r := range full {
+		byID[r.ID] = r
+	}
+	out := page[:0:0]
+	for _, r := range page {
+		if f, ok := byID[r.ID]; ok { // a row deleted mid-request just drops out
+			out = append(out, f)
+		}
+	}
+	return out, nil
+}
+
+// effectiveDueMaxCandidates bounds the rows loaded and projected for
+// sort=effective_due. Var so tests can lower it.
+var effectiveDueMaxCandidates = 2000
 
 func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -1439,6 +1750,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		prefix := h.getIssuePrefix(ctx, wsUUID)
+		rf := h.newReadFilter(r)
 		ids := make([]pgtype.UUID, len(issues))
 		var originals []pgtype.UUID
 		for i, issue := range issues {
@@ -1450,6 +1762,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		resp := make([]IssueResponse, len(issues))
 		for i, issue := range issues {
 			resp[i] = openIssueRowToResponse(issue, prefix)
+			rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
 			fillOpen(&resp[i])
 			labels := labelsMap[resp[i].ID]
 			if labels == nil {
@@ -1526,8 +1839,15 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	sortIsExpr := false
 	sortIsProperty := false
 	sortByStatus := false
+	sortByEffectiveDue := false
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
+		case "effective_due":
+			// Dates are computed on read, so the page is cut after sorting.
+			// Fetch order is the undated order: priority, then oldest.
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+			sortIsExpr = true
+			sortByEffectiveDue = true
 		case "position", "title", "created_at", "updated_at", "start_date", "due_date":
 			sortCol = s
 		case "last_activity":
@@ -1568,7 +1888,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if sortCol == "last_activity_at" {
 		sortDir = "DESC"
 	}
-	if sortCol != "position" {
+	if sortCol != "position" && !sortByEffectiveDue {
 		if d := r.URL.Query().Get("direction"); d != "" {
 			switch strings.ToLower(d) {
 			case "asc":
@@ -1782,21 +2102,32 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	// LIMIT/OFFSET requests, duplicating or dropping rows at page boundaries.
 	if sortCol == "last_activity_at" {
 		orderBy += ", i.id DESC"
+	} else if sortByEffectiveDue {
+		orderBy += ", i.created_at ASC, i.id ASC"
 	} else {
 		orderBy += ", i.created_at DESC, i.id DESC"
 	}
 
-	offsetRef := addArg(int64(offset))
-	limitRef := addArg(int64(limit))
+	fetchOffset, fetchLimit := int64(offset), int64(limit)
+	if sortByEffectiveDue {
+		// ponytail: loads the whole filtered set to sort it, bounded by
+		// effectiveDueMaxCandidates; SQL-side date if that is ever too low.
+		fetchOffset, fetchLimit = 0, int64(effectiveDueMaxCandidates)+1
+	}
+	offsetRef := addArg(fetchOffset)
+	limitRef := addArg(fetchLimit)
 
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id
+	   i.revision, i.duplicate_of_issue_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
 LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+	if sortByEffectiveDue {
+		query = narrowListIssueColumns(query)
+	}
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
@@ -1806,44 +2137,15 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 	defer rows.Close()
 
-	var issues []db.ListIssuesRow
-	for rows.Next() {
-		var row db.ListIssuesRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.WorkspaceID,
-			&row.Title,
-			&row.Description,
-			&row.Status,
-			&row.Priority,
-			&row.AssigneeType,
-			&row.AssigneeID,
-			&row.CreatorType,
-			&row.CreatorID,
-			&row.ParentIssueID,
-			&row.Position,
-			&row.StartDate,
-			&row.DueDate,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-			&row.LastActivityAt,
-			&row.Number,
-			&row.ProjectID,
-			&row.Metadata,
-			&row.Stage,
-			&row.Properties,
-			&row.Revision,
-			&row.DuplicateOfIssueID,
-		); err != nil {
-			slog.Warn("ListIssues scan failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "failed to list issues")
-			return
-		}
-		issues = append(issues, row)
-	}
-	if err := rows.Err(); err != nil {
-		slog.Warn("ListIssues rows failed", "error", err)
+	issues, err := scanListIssueRows(rows)
+	if err != nil {
+		slog.Warn("ListIssues scan failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
+		return
+	}
+	if sortByEffectiveDue && len(issues) > effectiveDueMaxCandidates {
+		// Refuse, never truncate: a sort over a partial set is a wrong order.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many issues to sort by effective_due (max %d); narrow the filter (project, status, assignee)", effectiveDueMaxCandidates))
 		return
 	}
 
@@ -1859,6 +2161,42 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	}
 
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
+	var projections map[pgtype.UUID]dueProjection
+	if sortByEffectiveDue {
+		roots := make([]db.Issue, len(issues))
+		for i, r := range issues {
+			roots[i] = db.Issue{ID: r.ID, WorkspaceID: r.WorkspaceID, Number: r.Number, Status: r.Status, DueDate: r.DueDate, ParentIssueID: r.ParentIssueID}
+		}
+		var err error
+		if projections, err = h.effectiveDueFor(ctx, wsUUID, prefix, roots); errors.Is(err, errEffectiveDueTooBroad) {
+			writeError(w, http.StatusBadRequest, "too many related issues to sort by effective_due; narrow the filter (project, status, assignee)")
+			return
+		} else if err != nil {
+			slog.Warn("ListIssues effective_due failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve sort")
+			return
+		}
+		for _, p := range projections {
+			for _, d := range p.diagnostics {
+				if d.Type == "graph_limit" {
+					// Refuse, never sort: an unknown date is not "no date".
+					writeError(w, http.StatusBadRequest, "an issue's deadline graph is too large to sort by effective_due; narrow the filter (project, status, assignee)")
+					return
+				}
+			}
+		}
+		sortRowsByEffectiveDue(issues, projections)
+		start := min(offset, len(issues)) // bound before adding: offset+limit can overflow
+		issues = issues[start : start+min(limit, len(issues)-start)]
+		// Candidates were read without title/description/metadata/properties; load
+		// those only for the page, so a deep sort cannot buffer 2,001 large rows.
+		if issues, err = h.fullListIssueRows(ctx, wsUUID, issues); err != nil {
+			slog.Warn("ListIssues page fetch failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list issues")
+			return
+		}
+	}
 	ids := make([]pgtype.UUID, len(issues))
 	for i, issue := range issues {
 		ids[i] = issue.ID
@@ -1867,6 +2205,13 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
+		rf.stubDescriptionOf(h, issue.DescriptionExternalRead, issue.Description, issue.CreatorType, issue.CreatorID, &resp[i])
+		if p, ok := projections[issue.ID]; ok {
+			if p.date != "" {
+				resp[i].EffectiveDue, resp[i].DueSource = &p.date, p.source
+			}
+			resp[i].Diagnostics = p.diagnostics
+		}
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
 			labels = []LabelResponse{}
@@ -2392,7 +2737,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -2405,7 +2750,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, group_total
+	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -2455,6 +2800,7 @@ ORDER BY
 			&row.Properties,
 			&row.Revision,
 			&row.DuplicateOfIssueID,
+			&row.DescriptionExternalRead,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -2477,6 +2823,7 @@ ORDER BY
 	}
 	labelsMap := h.labelsByIssue(ctx, wsUUID, ids)
 	prefix := h.getIssuePrefix(ctx, wsUUID)
+	rf := h.newReadFilter(r)
 	// One Resolver for the whole page — a per-row filler would query the
 	// catalog once per custom-status row. (MUL-6243)
 	fillGrouped := h.newStatusCategoryFiller(ctx, wsUUID, originals...)
@@ -2499,6 +2846,7 @@ ORDER BY
 		}
 
 		issue := issueListRowToResponse(row.ListIssuesRow, prefix)
+		rf.stubDescriptionOf(h, row.DescriptionExternalRead, row.Description, row.CreatorType, row.CreatorID, &issue)
 		fillGrouped(&issue)
 		labels := labelsMap[issue.ID]
 		if labels == nil {
@@ -2520,7 +2868,9 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	h.fillEffectiveDue(r.Context(), issue, &resp)
 	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
 	if detailLabels == nil {
 		detailLabels = []LabelResponse{}
@@ -2541,6 +2891,9 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 	})
+	if err == nil {
+		attachments = h.readableAttachments(r, attachments)
+	}
 	if err == nil && len(attachments) > 0 {
 		mode := attachmentURLModeFromRequest(r)
 		resp.Attachments = make([]AttachmentResponse, len(attachments))
@@ -2586,9 +2939,11 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(issue.WorkspaceID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -2672,9 +3027,11 @@ func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) 
 	// built-in statuses still cost no query, and a list full of custom ones
 	// costs one catalog read rather than one per row.
 	statusResolver := issuestatus.NewResolver(wsUUID)
+	readFilter := h.newReadFilter(r)
 	resp := make([]IssueResponse, len(children))
 	for i, child := range children {
 		resp[i] = issueToResponse(child, prefix)
+		readFilter.stubDescription(h, child, &resp[i])
 		resp[i].StatusCategory = issuestatus.WireCategory(child.Status, statusResolver.Category(r.Context(), h.Queries, child.Status))
 		labels := labelsMap[resp[i].ID]
 		if labels == nil {
@@ -3232,6 +3589,40 @@ func duplicateIssueMessage(issue IssueResponse) string {
 	return issueguard.DuplicateMessage(issue.Identifier, issue.Title, issue.Status)
 }
 
+// resolveCreateWorkflow validates the workflow a create names and loads the
+// workflow the new issue follows: the caller's override when it names one
+// (feature flag and workflow-manager permission required), otherwise the
+// project's. It writes the error response and returns false on any failure.
+// Shared by the ordinary create and the captured-comment create.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	var overrideID pgtype.UUID
+	if rawWorkflowID != nil && *rawWorkflowID != "" {
+		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
+		if !ok {
+			return overrideID, nil, db.Project{}, false
+		}
+		overrideID = id
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
+	if overrideID.Valid {
+		if !h.requireProjectWorkflowsV1(w, r) {
+			return overrideID, nil, project, false
+		}
+		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, project); !ok {
+			return overrideID, nil, project, false
+		}
+	}
+	if writeIssueWorkflowError(w, err) {
+		return overrideID, nil, project, false
+	}
+	if err != nil {
+		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return overrideID, nil, project, false
+	}
+	return overrideID, def, project, true
+}
+
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	var req CreateIssueRequest
@@ -3350,32 +3741,15 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var overrideID pgtype.UUID
-	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
-		if !ok {
-			return
-		}
-		overrideID = id
-	}
-	createWorkflow, createWorkflowProject, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
-	if overrideID.Valid {
-		if !h.requireProjectWorkflowsV1(w, r) {
-			return
-		}
-		if _, ok := h.requireIssueWorkflowManager(w, r, workspaceID, createWorkflowProject); !ok {
-			return
-		}
-	}
-	if writeIssueWorkflowError(w, err) {
-		return
-	}
-	if err != nil {
-		slog.Error("create issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	if !ok {
 		return
 	}
 	if createWorkflow != nil {
+		// A creator who picked no status gets the workflow's start status.
+		if req.Status == "" {
+			status = createWorkflow.Start()
+		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
 			return
@@ -3383,7 +3757,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if req.AssigneeType == nil && req.AssigneeID == nil {
 			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
 				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), step, createWorkflowProject, wsUUID, requestedByID)
+				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
 				if err != nil {
 					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -3518,6 +3892,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		if len(atts) == 0 {
 			return nil
 		}
+		atts = h.readableAttachments(r, atts)
 		out := make([]AttachmentResponse, len(atts))
 		for i, a := range atts {
 			out[i] = h.attachmentToResponse(a, attachmentMode)
@@ -3567,12 +3942,25 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
 		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
 	}
+	markedWriter := false
+	if req.Description != nil {
+		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actErr != nil {
+			slog.Error("could not read requesting task", "error", actErr)
+			writeError(w, http.StatusInternalServerError, "failed to create issue")
+			return
+		}
+		markedWriter = acting && (actor.ExternalRead || len(actor.TaintIds) > 0)
+	}
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		MarkedWriter:    markedWriter,
+		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
+		StatusOmitted:   req.Status == "",
 		Priority:        priority,
 		AssigneeType:    assigneeType,
 		AssigneeID:      assigneeID,
@@ -3625,6 +4013,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, service.ErrActiveDuplicate) {
 		dup := *res.DuplicateIssue
 		existing := issueToResponse(dup, h.getIssuePrefix(r.Context(), dup.WorkspaceID))
+		h.newReadFilter(r).stubDescription(h, dup, &existing)
 		h.fillStatusCategory(r.Context(), dup.WorkspaceID, &existing)
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"code":  "active_duplicate_issue",
@@ -3672,6 +4061,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
 
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	resp.WebURL = h.workspaceWebURL(r.Context(), issue.WorkspaceID, func(ws db.Workspace) string { return weblink.Issue(ws.Slug, resp.Identifier) })
 	fillCreated(&resp)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -3687,6 +4077,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 type UpdateIssueRequest struct {
 	ExpectedRevision *int64  `json:"expected_revision,omitempty"`
 	Title            *string `json:"title"`
+	// ReviewFindings come with a reviewer's changes-requested status write.
+	ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
 	// TitleBase is the title adopted by the editor before producing Title. It
 	// protects title edits without coupling them to unrelated issue mutations.
 	TitleBase   *string `json:"title_base,omitempty"`
@@ -3707,6 +4099,9 @@ type UpdateIssueRequest struct {
 	ParentIssueID   *string  `json:"parent_issue_id"`
 	ProjectID       *string  `json:"project_id"`
 	Stage           *int32   `json:"stage"`
+	// HandoffCommentID names the comment that explains a status move. The
+	// status history keeps it only when the comment belongs to the issue.
+	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -3741,6 +4136,10 @@ type UpdateIssueRequest struct {
 	// project move without it is administrative. Batch updates ignore it.
 	// (MUL-7420)
 	EnterWorkflowStep bool `json:"enter_workflow_step,omitempty"`
+	// EntryGateOverrideReason (1-500 chars) passes a status write that fails
+	// block entry gates the step lets a person override. Honored for a person's
+	// own credential only; batch updates and creates have no override. (CHE-2295)
+	EntryGateOverrideReason *string `json:"entry_gate_override_reason,omitempty"`
 	// DuplicateOfIssueID marks this issue as a duplicate of another issue in
 	// the same workspace (MUL-7349). A duplicate is an ordinary cancelled issue
 	// that remembers its original, so this also sets status to cancelled.
@@ -3923,10 +4322,22 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := markMemberRouteOverride(ctx, qtx, workspaceID, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
+	if err := captureRouteLabel(ctx, qtx, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
+	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
+	}
+	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
 	}
 
 	attachmentsChanged := false
@@ -4203,11 +4614,23 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// A handoff assignee passes the same gate as a hand-picked one.
 	// An agent's run may only move the issue from the step it works on.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	if req.EntryGateOverrideReason != nil {
+		reason, valid := validEntryOverrideReason(*req.EntryGateOverrideReason)
+		if !valid {
+			writeError(w, http.StatusBadRequest, "entry_gate_override_reason must be 1 to 500 characters")
+			return
+		}
+		req.EntryGateOverrideReason = &reason
+	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent"})
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
+		if req.EntryGateOverrideReason != nil {
+			workflowWrite.entry.overrideReason = *req.EntryGateOverrideReason
+		}
 	}
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
@@ -4237,13 +4660,48 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
+	suppressRun := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
 			return
 		}
+	}
+	if req.Description != nil {
+		var ok bool
+		if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
+			return
+		}
+	}
+	releaseMove := func() {}
+	if params.Status.Valid {
+		release, ok := h.beginRunBudgetMove(w, r, actorType, prevIssue, params.Status.String)
+		if !ok {
+			return
+		}
+		releaseMove = release
+		defer releaseMove()
+	}
+	// Status history is written in the status transaction. A live duplicate
+	// mark change is named by the listener's duplicate row, which carries the
+	// same trigger instead.
+	statusTrigger := statusTriggerFromRequest(r, actorType, actorID)
+	statusTrigger.Version = service.StatusTriggerVersion
+	var statusRec *statusRecord
+	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
+		if handoff != nil {
+			statusRec.handoffWorkflow = handoff.def.Name
+		}
+		if req.HandoffCommentID != nil {
+			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		writeCtx = withStatusRecord(writeCtx, statusRec)
+	}
+	if actorType == "member" {
+		writeCtx = withMemberRouteOverride(writeCtx)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4259,7 +4717,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4282,9 +4740,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
+	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
 
@@ -4292,6 +4752,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
+		h.recordSystem1Routing(r.Context(), prevIssue, issue, handoff, actorType)
 		h.followDecisionSteward(r.Context(), issue)
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
@@ -4337,7 +4798,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	updatedPayload := map[string]any{
 		"issue":               resp,
 		"assignee_changed":    assigneeChanged,
-		"status_changed":      statusChanged,
+		"status_changed":      statusMoveRecorded(statusChanged, statusRec),
 		"priority_changed":    priorityChanged,
 		"project_changed":     projectChanged,
 		"start_date_changed":  startDateChanged,
@@ -4360,14 +4821,39 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		updatedPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
+		updatedPayload["workflow_handoff"] = handoffPayload
+		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
+	}
+	if statusRec != nil && statusRec.activity != nil {
+		updatedPayload["activity_id"] = uuidToString(statusRec.activity.ID)
+	}
+	if handoff != nil && statusChanged {
+		// The listener still writes a handoff's row; give it the trigger.
+		trigger := statusTriggerFromRequest(r, actorType, actorID)
+		if req.HandoffCommentID != nil {
+			trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		if trigger, err := service.ResolveStatusTrigger(r.Context(), h.Queries, issue, trigger); err != nil {
+			slog.Warn("status trigger for handoff row", "issue_id", uuidToString(issue.ID), "error", err)
+		} else {
+			updatedPayload["status_trigger"] = trigger
+		}
+	}
+	// A handoff row already carries the validated trigger; a duplicate mark that
+	// reopens straight into a handled step must not replace it.
+	if _, resolved := updatedPayload["status_trigger"]; !resolved && duplicateOfPointer(issue.Status, issue.DuplicateOfIssueID) != duplicateOfPointer(prevIssue.Status, prevIssue.DuplicateOfIssueID) {
+		updatedPayload["status_trigger"] = statusTrigger
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, updatedPayload)
+	h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 	if statusChanged && actorType == "member" {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at
 		// the same revision. Otherwise clients advance only the revision here and
@@ -4771,6 +5257,9 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 		} else if !errors.Is(contextErr, pgx.ErrNoRows) {
 			return issueDeleteResult{}, fmt.Errorf("load issue source context for delete: %w", contextErr)
 		}
+		if err := qtx.DeleteDMProgressForIssue(ctx, db.DeleteDMProgressForIssueParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
+			return issueDeleteResult{}, fmt.Errorf("delete dm progress follows: %w", err)
+		}
 		if err := qtx.DeleteIssue(ctx, db.DeleteIssueParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 			return issueDeleteResult{}, fmt.Errorf("delete issue: %w", err)
 		}
@@ -4942,6 +5431,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	updated := 0
 	// The issues this batch wrote; the rest were skipped by a per-issue guard.
 	updatedIDs := []string{}
+	failed := []map[string]any{}
 	var triggerOutcomes []CommentTriggerOutcome
 	// One Resolver for the whole batch — a per-issue filler would query the
 	// catalog once per custom-status row. (MUL-6243)
@@ -4952,6 +5442,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// once after the loop against the final state (MUL-4155), not per child
 	// against a mid-batch snapshot.
 	var changedParents []pgtype.UUID
+	batchFilter := h.newReadFilter(r)
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -5111,6 +5602,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID}
 		// The client previewed no handoff for this batch. An issue that would
 		// hand off now is skipped: nobody confirmed it. verify checks again under
 		// the locks, for a handler that appears between here and the write.
@@ -5129,13 +5621,44 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
+		suppressRun := req.Updates.SuppressRun
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
 			var ok bool
 			if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
 				return
 			}
+		}
+		if req.Updates.Description != nil {
+			var ok bool
+			if writeCtx, ok = h.withIssueWriteExternalRead(w, r, writeCtx); !ok {
+				return
+			}
+		}
+		releaseMove := func() {}
+		if params.Status.Valid {
+			var release func()
+			var err error
+			if actorType == "member" {
+				release, err = h.lockRunBudgetMove(r.Context(), prevIssue, params.Status.String)
+			} else {
+				release, err = h.lockRunBudgetBoundary(r.Context(), prevIssue.ID)
+			}
+			if err != nil {
+				slog.Warn("batch update issue: run budget", "issue_id", issueID, "error", err)
+				continue
+			}
+			releaseMove = release
+		}
+		// Same recording as UpdateIssue: the row commits with the status.
+		var statusRec *statusRecord
+		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
+			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
+			if handoff != nil {
+				statusRec.handoffWorkflow = handoff.def.Name
+			}
+			writeCtx = withStatusRecord(writeCtx, statusRec)
 		}
 		var issue db.Issue
 		if req.Updates.Description != nil {
@@ -5153,19 +5676,38 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			issue, err = h.updateIssueWithStatusGuard(writeCtx, wsUUID, issueStatusGuard, params, workflowWrite)
 		}
 		if err != nil {
+			releaseMove()
 			// The archive race is a property of the batch's shared target
 			// status, not of one issue, so every remaining item would fail the
 			// same way. Abort with 409 instead of reporting a partial update.
 			if writeIssueStatusRaceError(w, err) {
 				return
 			}
+			var gated *EntryGateError
+			if errors.As(err, &gated) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
+				continue
+			}
+			if errors.Is(err, errBudgetRebinding) {
+				failed = append(failed, map[string]any{"id": issueID, "code": budgetRebindingCode})
+				continue
+			}
+			var refused *decisionEpisodeRefusal
+			if errors.As(err, &refused) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
+				continue
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		resp := issueToResponse(issue, prefix)
 		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+		// The warning comment bumps the revision; build the response from the
+		// reloaded issue so the batch result and event carry the stored one.
+		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
+		resp := issueToResponse(issue, prefix)
+		batchFilter.stubDescription(h, issue, &resp)
 
 		fillBatch(&resp)
 		h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
@@ -5199,7 +5741,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		batchPayload := map[string]any{
 			"issue":                      resp,
 			"assignee_changed":           assigneeChanged,
-			"status_changed":             statusChanged,
+			"status_changed":             statusMoveRecorded(statusChanged, statusRec),
 			"priority_changed":           priorityChanged,
 			"project_changed":            projectChanged,
 			"prev_status":                prevIssue.Status,
@@ -5207,14 +5749,22 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			batchPayload["workflow_handoff"] = workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
+			batchPayload["workflow_handoff"] = handoffPayload
+			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
+		}
+		if statusRec != nil && statusRec.activity != nil {
+			batchPayload["activity_id"] = uuidToString(statusRec.activity.ID)
 		}
 		h.publish(protocol.EventIssueUpdated, workspaceID, actorType, actorID, batchPayload)
+		h.publishRecordedStatusActivity(statusRec, actorType, actorID)
 		if statusChanged && actorType == "member" {
 			h.openRunBudgetWindowForMove(r.Context(), issue)
 		} else if statusChanged && actorType == "agent" {
 			h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 		}
+		releaseMove()
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.
@@ -5268,6 +5818,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{"updated": updated, "updated_ids": updatedIDs}
 	if len(triggerOutcomes) > 0 {
 		response["trigger_outcomes"] = triggerOutcomes
+	}
+	if len(failed) > 0 {
+		response["failed"] = failed
 	}
 	writeJSON(w, http.StatusOK, response)
 }

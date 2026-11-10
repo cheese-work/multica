@@ -170,35 +170,39 @@ func (h *Handler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 		InviteeEmail: email, InviteeUserID: inviteeUserID, Role: role,
 		ExpiresAt: pgtype.Timestamptz{Time: expiresAt, Valid: true},
 	}
-	var inv db.WorkspaceInvitation
-	if h.seatCapacityEnabled() {
-		tx, txErr := h.TxStarter.Begin(r.Context())
-		if txErr != nil {
-			h.compensateCapacityIntent(r.Context(), invitationID)
-			writeError(w, http.StatusInternalServerError, "failed to create invitation")
-			return
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		h.compensateCapacityIntent(r.Context(), invitationID)
+		writeError(w, http.StatusInternalServerError, "failed to create invitation")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	inv, err := qtx.CreateInvitation(r.Context(), createParams)
+	if err == nil && h.seatCapacityEnabled() {
+		err = qtx.DeleteSeatCapacityIntentForAction(r.Context(), db.DeleteSeatCapacityIntentForActionParams{
+			OperationToken: uuidToPG(invitationID), Action: seatcapacity.ActionReserveInvitation,
+		})
+	}
+	if err == nil {
+		if auditErr := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind: "invitation.create", WorkspaceID: inv.WorkspaceID, TargetID: inv.ID,
+			After: invitationAuditFields(inv),
+		}); auditErr != nil {
+			err = auditWriteError{auditErr}
 		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
-		inv, err = qtx.CreateInvitation(r.Context(), createParams)
-		if err == nil {
-			err = qtx.DeleteSeatCapacityIntentForAction(r.Context(), db.DeleteSeatCapacityIntentForActionParams{
-				OperationToken: uuidToPG(invitationID), Action: seatcapacity.ActionReserveInvitation,
-			})
-		}
-		if err == nil {
-			err = tx.Commit(r.Context())
-		}
-		if err != nil {
-			// Release transaction locks before the out-of-transaction Cloud
-			// compensation below reads and transitions the durable intent.
-			_ = tx.Rollback(r.Context())
-		}
-	} else {
-		inv, err = h.Queries.CreateInvitation(r.Context(), createParams)
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
+		// Release transaction locks before the out-of-transaction Cloud
+		// compensation below reads and transitions the durable intent.
+		_ = tx.Rollback(r.Context())
 		h.compensateCapacityIntent(r.Context(), invitationID)
+		if failedAudit(w, r, err, "invitation.create") {
+			return
+		}
 		if isUniqueViolation(err) {
 			writeError(w, http.StatusConflict, "invitation already pending for this email")
 			return
@@ -325,6 +329,13 @@ func (h *Handler) RevokeInvitation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to revoke invitation")
 			return
 		}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "invitation.revoke", WorkspaceID: inv.WorkspaceID, TargetID: inv.ID,
+		Before: invitationAuditFields(inv),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "invitation.revoke")
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to revoke invitation")
@@ -528,6 +539,13 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this join against the passkey gate checks (enrolling, revoking by
+	// email code), which read the user's memberships under the same row lock.
+	if err := qtx.LockUserForMembershipChange(r.Context(), user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create membership")
+		return
+	}
+
 	member, err := qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: accepted.WorkspaceID,
 		UserID:      user.ID,
@@ -564,6 +582,13 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "invitation.accept", WorkspaceID: accepted.WorkspaceID, TargetID: accepted.ID,
+		Before: invitationAuditFields(inv), After: invitationAuditFields(accepted),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "invitation.accept")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to accept invitation")
 		return
@@ -678,6 +703,13 @@ func (h *Handler) DeclineInvitation(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to decline invitation")
 			return
 		}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "invitation.decline", WorkspaceID: declined.WorkspaceID, TargetID: declined.ID,
+		Before: invitationAuditFields(inv), After: invitationAuditFields(declined),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "invitation.decline")
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to decline invitation")

@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
@@ -341,7 +342,7 @@ func (h *Handler) groupAttachments(r *http.Request, commentIDs []pgtype.UUID) ma
 	}
 	mode := attachmentURLModeFromRequest(r)
 	grouped := make(map[string][]AttachmentResponse, len(commentIDs))
-	for _, a := range attachments {
+	for _, a := range h.readableAttachments(r, attachments) {
 		cid := uuidToString(a.CommentID)
 		grouped[cid] = append(grouped[cid], h.attachmentToResponse(a, mode))
 	}
@@ -459,6 +460,17 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			Filename:     header.Filename,
 			ContentType:  contentType,
 			SizeBytes:    int64(len(data)),
+		}
+		// A marked task's upload stores the mark (CHE-2216 plan 3.7). If the
+		// requesting task cannot be read, the upload does not happen.
+		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
+		if actErr != nil {
+			slog.Error("could not read requesting task", "error", actErr)
+			writeError(w, http.StatusInternalServerError, "upload failed")
+			return
+		}
+		if acting && (actor.ExternalRead || len(actor.TaintIds) > 0) {
+			params.ExternalRead = pgtype.Bool{Bool: true, Valid: true}
 		}
 
 		if issueID := r.FormValue("issue_id"); issueID != "" {
@@ -655,6 +667,7 @@ func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := attachmentURLModeFromRequest(r)
+	attachments = h.readableAttachments(r, attachments)
 	resp := make([]AttachmentResponse, len(attachments))
 	for i, a := range attachments {
 		resp[i] = h.attachmentToResponse(a, mode)
@@ -784,6 +797,9 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
+	if h.denyWithheldAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 
 	return att, true
 }
@@ -831,14 +847,16 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
-	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
-		return att, true
+	if !h.MembershipCache.Get(r.Context(), userID, workspaceID) {
+		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return db.Attachment{}, false
+		}
+		h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	}
-	if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
-		writeError(w, http.StatusNotFound, "attachment not found")
+	if h.denyWithheldAttachment(w, r, att) {
 		return db.Attachment{}, false
 	}
-	h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	return att, true
 }
 

@@ -4,6 +4,7 @@ import type {
   SupportedLocale,
 } from "../i18n";
 import type { StorageAdapter } from "../types/storage";
+import type { WSClient } from "../api/ws-client";
 
 /** Identifies the calling client to the server. Threaded through to
  *  ApiClient and WSClient so all HTTP requests and WS connections from
@@ -46,4 +47,6 @@ export interface CoreProviderProps {
   localeAdapter?: LocaleAdapter;
   /** Automatically sync the signed-in user's locale. Pause during one-shot handoffs. Default: true. */
   syncUserLocale?: boolean;
+  /** Called when the authenticated WebSocket client is ready; may return cleanup. */
+  onWSClientReady?: (client: WSClient) => void | (() => void);
 }

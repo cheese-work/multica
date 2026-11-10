@@ -458,6 +458,58 @@ describe("DM fork command", () => {
   });
 });
 
+describe("DM preset command", () => {
+  const preset: SlashCommandItem = { id: "preset", label: "preset", descriptionKey: "preset" };
+
+  function presetItems(query: string, canPreset: boolean, before = ""): SlashCommandItem[] {
+    const config = createSlashCommandSuggestion(fakeQc({}), () => false, () => false, () => false, () => false, () => canPreset);
+    const editor = new Editor({
+      extensions: [StarterKit],
+      content: { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: `${before}/${query}` }] }] },
+    });
+    editor.commands.setTextSelection(editor.state.doc.content.size - 1);
+    try {
+      return config.items!({ query, editor, signal: new AbortController().signal }) as SlashCommandItem[];
+    } finally {
+      editor.destroy();
+    }
+  }
+
+  it.each(["", "p", "pre", "PRESET"])("offers /preset for %j only when the DM can use it", (query) => {
+    expect(presetItems(query, true)).toEqual([preset]);
+    expect(presetItems(query, false)).toEqual([]);
+  });
+
+  it("omits /preset after message content and for other queries", () => {
+    expect(presetItems("", true, "Hello ")).toEqual([]);
+    expect(presetItems("fork", true)).toEqual([]);
+  });
+
+  it("describes /preset in the menu and inserts plain text ending in a space", () => {
+    const { getByRole } = render(
+      <I18nWrapper><SlashCommandList items={[preset]} query="" command={vi.fn()} /></I18nWrapper>,
+    );
+    expect(getByRole("button", { name: /\/preset/ })).toHaveTextContent(enEditor.slash_command.commands.preset);
+
+    const element = document.body.appendChild(document.createElement("div"));
+    const editor = new Editor({ element, extensions: [StarterKit, Markdown, SlashCommandExtension], content: "<p>/pre</p>" });
+    editor.commands.setTextSelection(5);
+    window.getSelection()?.selectAllChildren(editor.view.dom);
+    try {
+      createSlashCommandSuggestion(fakeQc({})).command!({ editor, range: { from: 1, to: 5 }, props: preset });
+      expect(editor.getMarkdown()).toBe("/preset ");
+      expect(editor.getJSON().content?.[0]?.content?.[0]?.type).toBe("text");
+    } finally {
+      editor.destroy();
+      element.remove();
+    }
+  });
+
+  it.each([enEditor, frEditor, jaEditor, koEditor, zhEditor])("localizes preset in every locale", (locale) => {
+    expect(locale.slash_command.commands).toHaveProperty("preset", expect.any(String));
+  });
+});
+
 describe("DM compact command", () => {
   const compact = {
     id: "compact",
@@ -954,7 +1006,7 @@ describe("builtin `/` menu — async quick action rendering", () => {
 });
 
 describe("DM statistic, archive, pin and unarchive commands", () => {
-  type Name = "statistic" | "archive" | "pin" | "unarchive";
+  type Name = "statistic" | "archive" | "pin" | "unarchive" | "unseen";
   const ACTIVE: Name[] = ["statistic", "archive", "pin"];
 
   function offered(enabled: Name[], query = "", canCompact = true): string[] {

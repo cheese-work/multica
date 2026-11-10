@@ -10,7 +10,8 @@ import {
 import { autopilotListOptions } from "@multica/core/autopilots/queries";
 import { chatSessionsOptions } from "@multica/core/chat/queries";
 import { inboxListOptions } from "@multica/core/inbox/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useAuthStore } from "@multica/core/auth";
+import { paths, useCurrentWorkspace, useWorkspaceSlug } from "@multica/core/paths";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { runtimeProfileListOptions } from "@multica/core/runtimes";
@@ -82,6 +83,10 @@ const WARM_ON_IDLE: RouteKey[] = [
   "projects",
 ];
 
+// Speculative warm-up starts only after the page's own requests have been quiet
+// this long, so it never shares a slow link with the data the page is waiting on.
+const WARM_QUIET_MS = 3000;
+
 /**
  * Feeds `AppLink`'s hover/focus prefetch with the destination page's data and
  * warms the common list pages once the workspace is idle. Mount inside the
@@ -97,15 +102,16 @@ export function RouteDataPrefetch({
   children: ReactNode;
 }) {
   const qc = useQueryClient();
-  const p = useWorkspacePaths();
+  // Null-safe: the desktop shell mounts before a workspace is open.
+  const slug = useWorkspaceSlug();
 
-  const routeByHref = useMemo(
-    () =>
-      new Map<string, WarmRoute>(
-        (Object.keys(ROUTES) as RouteKey[]).map((key) => [p[key](), ROUTES[key]]),
-      ),
-    [p],
-  );
+  const routeByHref = useMemo(() => {
+    if (!slug) return new Map<string, WarmRoute>();
+    const p = paths.workspace(slug);
+    return new Map<string, WarmRoute>(
+      (Object.keys(ROUTES) as RouteKey[]).map((key) => [p[key](), ROUTES[key]]),
+    );
+  }, [slug]);
 
   const prefetch = useCallback(
     (href: string) => {
@@ -118,20 +124,49 @@ export function RouteDataPrefetch({
 
   useEffect(() => {
     if (!wsId) return;
+    let quietTimer: number | undefined;
+    let idleId: number | undefined;
     const warm = () => {
+      unsubscribe();
       for (const key of WARM_ON_IDLE) ROUTES[key](qc, wsId, userId);
     };
-    if (typeof window.requestIdleCallback === "function") {
-      const id = window.requestIdleCallback(warm, { timeout: 3000 });
-      return () => window.cancelIdleCallback(id);
-    }
-    const timer = window.setTimeout(warm, 1500);
-    return () => window.clearTimeout(timer);
+    // Re-armed on every cache event: any in-flight request cancels the wait.
+    const arm = () => {
+      window.clearTimeout(quietTimer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+      idleId = undefined;
+      if (qc.isFetching() > 0) return;
+      quietTimer = window.setTimeout(() => {
+        if (typeof window.requestIdleCallback === "function") {
+          idleId = window.requestIdleCallback(warm, { timeout: 3000 });
+        } else {
+          warm();
+        }
+      }, WARM_QUIET_MS);
+    };
+    const unsubscribe = qc.getQueryCache().subscribe(arm);
+    arm();
+    return () => {
+      unsubscribe();
+      window.clearTimeout(quietTimer);
+      if (idleId !== undefined) window.cancelIdleCallback(idleId);
+    };
   }, [qc, wsId, userId]);
 
   return (
     <RouteDataPrefetchProvider value={prefetch}>
       {children}
     </RouteDataPrefetchProvider>
+  );
+}
+
+/** `RouteDataPrefetch` for the app shell, scoped to the open workspace and user. */
+export function ShellRouteDataPrefetch({ children }: { children: ReactNode }) {
+  const wsId = useCurrentWorkspace()?.id;
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  return (
+    <RouteDataPrefetch wsId={wsId} userId={userId}>
+      {children}
+    </RouteDataPrefetch>
   );
 }
