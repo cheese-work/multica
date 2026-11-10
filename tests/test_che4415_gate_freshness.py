@@ -26,10 +26,10 @@ CLEAN_DIFF = "+++ b/app.py\n@@ -1 +1,2 @@\n+x = 1\n"
 REF = "agent/x99-claude-sonnet/che-4415-x"
 
 
-def verdict(result="PASS", reviewer="x99-claude-opus (claude-opus-5-5)", pr=405, base="main"):
+def verdict(result="PASS", reviewer="x99-claude-opus (claude-opus-5-5)", pr=405, base="main", sha=HEAD):
     findings = "none" if result == "PASS" else "\n- app.py:7 shell=True on user input -> command injection"
     return "\n".join([f"Security-Gate-Verdict: {result}", f"Reviewer: {reviewer}", "Signed: x99-claude-opus, 2026-11-10 10:00 ICT",
-                      f"Repo: {GH}", f"PR: {pr}", f"Base: {base}", f"SHA: {HEAD}", f"Findings: {findings}"])
+                      f"Repo: {GH}", f"PR: {pr}", f"Base: {base}", f"SHA: {sha}", f"Findings: {findings}"])
 
 
 class FakeGitHub:
@@ -40,12 +40,21 @@ class FakeGitHub:
                       for n in prs}
         self.comments = {n: [{"id": 1, "author_id": BOT, "body": verdict(pr=n), "updated_at": "2026-11-10T03:00:00Z"}]
                          for n in prs}
-        self.status = ""
+        self.statuses: dict[str, str] = {}  # per head sha
+        self.events: list[tuple[str, str]] = []  # ("read", path) and ("write", state), in call order
         self.posts: list[tuple[str, str]] = []  # (sha, state) per attempted status write
         self.fail_writes = set(fail_writes)  # shas whose status write raises
         self.fail_states: set[str] = set()  # states whose status write raises
         self.hooks: list[list] = []  # [needle, remaining reads, action]
         self.next_id = 100
+
+    @property
+    def status(self):
+        return self.statuses.get(HEAD, "")
+
+    @status.setter
+    def status(self, value):
+        self.statuses[HEAD] = value
 
     def after_read(self, needle, nth, action):
         self.hooks.append([needle, nth, action])
@@ -56,6 +65,7 @@ class FakeGitHub:
 
     def gh(self, *args):
         path = " ".join(args)
+        self.events.append(("read", path))
         out = self._answer(args, path)
         for hook in self.hooks:
             if hook[0] in path and hook[1] > 0:
@@ -70,17 +80,18 @@ class FakeGitHub:
         if "/statuses/" in path:
             sha, state = path.split("/statuses/")[1].split()[0], next(a for a in args if a.startswith("state=")).split("=")[1]
             self.posts.append((sha, state))
+            self.events.append(("write", state))
             if sha in self.fail_writes or state in self.fail_states:
                 raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 500")
-            self.status = state  # a landed write is what the next status read returns
+            self.statuses[sha] = state  # a landed write is what the next status read returns
             return ""
         if "/comments" in path:
             n = int(path.split("issues/")[1].split("/")[0])
             if "author_id" in path:
                 return "\n".join(json.dumps(c) for c in self.comments[n])
             return "\n".join(f"{c['id']} {c['updated_at']}" for c in self.comments[n])
-        if path.endswith("/status") or "/status " in path:
-            return self.status
+        if "/commits/" in path and (path.endswith("/status") or "/status " in path):
+            return self.statuses.get(path.split("/commits/")[1].split("/")[0], "")
         if "/pulls" in path and "commits/" in path:
             return "\n".join(json.dumps({"number": n, "head": p["head"]["sha"]}) for n, p in self.pulls.items())
         if "/pulls/" in path:
@@ -344,7 +355,7 @@ class ReviewRound2(unittest.TestCase):
         fake._answer = self.failing_fail(reads_of=lambda p: "/comments" in p and "author_id" not in p)(fake._answer)
         with mock.patch.object(sg, "revoke_queue") as revoke:
             fake.run()
-        self.assertEqual(fake.states(), ["pending"])
+        self.assertEqual(fake.states(), ["pending", "pending"])  # the hold, then the publish write
         revoke.assert_called_once_with(GH, 405, "main", "")
         self.assertEqual(fake.code, 1)
 
@@ -362,13 +373,15 @@ class ReviewRound2(unittest.TestCase):
     def test_a_final_pr_read_that_fails_after_the_pr_kept_moving_is_unreadable_not_a_silent_old_head(self):
         # P1 3: the last head read fell back to the stale head with exit code 0.
         fake = FakeGitHub(prs=(405,))
-        real, reads = fake._answer, []
+        real, reads, head_reads = fake._answer, [], []
         def moving(args, path):
             if "/comments" in path and "author_id" not in path:
                 fake.add_comment(405, "tick")
-            if path.endswith("/pulls/405") and sys._getframe(2).f_code.co_name == "_decide":  # only the final head read
-                reads.append(path)
-                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            if path.endswith("/pulls/405") and sys._getframe(2).f_code.co_name == "_pr_head":  # _decide's head reads
+                head_reads.append(path)
+                if len(head_reads) == sg.FRESHNESS_TRIES + 1:  # one per attempt, then the final one
+                    reads.append(path)
+                    raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
             return real(args, path)
         fake._answer = moving
         with mock.patch.object(sg, "revoke_queue") as revoke:
@@ -416,6 +429,47 @@ class ReviewRound2(unittest.TestCase):
         fake.status = "success"
         fake.run(post=False)
         self.assertEqual(fake.posts, [])
+
+
+class ReviewRound3(unittest.TestCase):
+    """Terra and Gemini P1s on head 667d7408: the hold, the head and the sibling set must be fixed before the first read that can fail."""
+
+    def test_a_pr_that_moves_to_an_already_green_head_holds_that_head_before_a_failing_downgrade(self):
+        # P1 624: only the first head got the write-ahead; a new head already at success stayed green when its failure write failed.
+        new_head = "b" * 40
+        fake = FakeGitHub(prs=(405,))
+        fake.statuses = {HEAD: "success", new_head: "success"}
+        fake.comments[405] = [{"id": 1, "author_id": BOT, "body": verdict("FAIL", sha=new_head), "updated_at": "2026-11-10T03:00:00Z"}]
+        fake.fail_states = {"failure"}
+        # the 2nd status read ends the first snapshot; the PR moves before the evaluation reads its head
+        fake.after_read("/status --jq", 2, lambda: fake.pulls[405]["head"].update(sha=new_head))
+        with mock.patch.object(sg, "revoke_queue"):
+            fake.run()
+        self.assertEqual(fake.statuses[new_head], "pending", "a failed downgrade must not leave the moved head green")
+        self.assertIsNotNone(fake.error, "the job must go red")
+
+    def test_the_hold_is_written_before_any_sibling_or_comment_read(self):
+        # P1 625: the snapshot read siblings and comments first; a failure there came before the hold.
+        fake = FakeGitHub(prs=(405, 406))
+        fake.statuses = {HEAD: "success"}
+        fake.run()
+        order = [e for e in fake.events if e[0] == "write" or "/comments" in e[1] or "commits/" in e[1] and "/pulls" in e[1]]
+        self.assertEqual(order[0], ("write", "pending"), f"first fallible read came before the hold: {order[0]}")
+
+    def test_every_listed_sibling_is_revoked_when_the_first_sibling_read_fails(self):
+        # P1 569: seen grew one sibling at a time, so a failure on the first dropped the later ones.
+        fake = FakeGitHub(prs=(405, 406, 407))
+        fake.statuses = {HEAD: "success"}
+        real = fake._answer
+        def answer(args, path):
+            if path.endswith("/pulls/406"):
+                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            return real(args, path)
+        fake._answer = answer
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertEqual(sorted(c.args[1] for c in revoke.call_args_list), [405, 406, 407])
+        self.assertEqual(fake.code, 1)
 
 
 if __name__ == "__main__":

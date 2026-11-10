@@ -24,15 +24,16 @@ One snapshot covers the whole set. There is no per-PR cache and no partial refre
 
 ```mermaid
 stateDiagram-v2
-    [*] --> WriteAhead: --post and head is success
-    WriteAhead --> Snapshot1: head is pending
-    [*] --> Snapshot1: attempt n of 3
-    Snapshot1 --> Decide: read PR set, bases, comments, status
+    [*] --> ReadHead: attempt n of 3
+    ReadHead --> Hold: one call, the PR's current head
+    Hold --> Snapshot1: head not yet held and at success, write pending (--post only)
+    Snapshot1 --> Decide: list PRs on the head into seen, then read PRs, comments, status
+    Decide --> Hold: evaluated head differs from the held head, hold it first
     Decide --> Publish: state is failure or pending
     Decide --> Snapshot2: state is success
     Snapshot2 --> Publish: equal to Snapshot1, post success at once
-    Snapshot2 --> Snapshot1: differs or unreadable, attempt n+1
-    Snapshot1 --> Publish: 3 attempts used, state pending
+    Snapshot2 --> ReadHead: differs or unreadable, attempt n+1
+    ReadHead --> Publish: 3 attempts used, hold the current head, state pending
     Publish --> [*]
 ```
 
@@ -51,7 +52,7 @@ stateDiagram-v2
 | 1 | Final refresh before returning or posting success, primary and siblings | Snapshot2 covers the whole set; it runs for a printed success as well as a posted one (was: only `--post`, primary only) |
 | 2 | Sibling A's revoked PASS survives a refresh of sibling B | One snapshot, full re-evaluation on any change |
 | 3 | Base bound to the scan | Base ref and base SHA are in the snapshot |
-| 4 | Failed downgrade write leaves `success`, skips queue revocation | Write-ahead `pending`; publish retries the write, revokes the queue regardless, then exits non-zero |
+| 4 | Failed downgrade write leaves `success`, skips queue revocation | Write-ahead `pending` on every observed head before the first fallible read; publish retries the write, revokes the queue regardless, then exits non-zero |
 | 5 | Success write retried after backoff without a refresh | Success is written once; a retry re-enters Snapshot1 |
 
 ## Unstable or unreadable
@@ -78,6 +79,18 @@ Cost, accepted in scope item 4 ("the recorded state must not stay `success`"):
 - **Stuck `pending`.** A run killed by the 20-minute timeout leaves `pending`. The sweep re-runs only PRs at `success`, so it does not heal this; the next comment, push or manual dispatch does. The state is safe (not green), only inconvenient.
 
 A different cut of the same choice (not taken): no write-ahead, accept that three rejected writes leave `success` until the next sweep. Reverting is one `if` in `_decide`.
+
+## Hold before any fallible read (round 3, Terra and Gemini P1s)
+
+Round 2 held only the first head, after the first snapshot's sibling and comment reads. Three gaps, one cause: the hold, the head and the sibling set were not fixed before the first read that can fail. Three rules close them (design review decision: unified fix, not a split):
+
+1. **Head first, hold second, everything else after.** Each attempt starts with one read of the PR's current head, then `_hold(head)` (one status read, a `pending` write when it is `success`), and only then the sibling, comment and status snapshot. A failure in the snapshot cannot find the head still green.
+2. **Every observed head is held before it is trusted.** `_decide` keeps a `held` set. `_hold` runs for the head read at the start of each attempt, for the head the evaluation reports (it may differ when the PR moved), and for the head read after the last attempt. A head already in `held` costs nothing. A failure or non-success on a head that moved to an already-green commit therefore finds that head at `pending`.
+3. **The sibling list is recorded whole.** `_fingerprint` puts the full `_prs_on_head` list into `seen` in one step before reading any PR object, so a failure on the first sibling still revokes the later ones.
+
+The snapshot takes the head as input (`_fingerprint(github, number, head)`), so it reads the head state that was held. The PR's own current head is part of the snapshot, so a PR that moved is a changed snapshot and the attempt repeats on the new head, which gets its hold first.
+
+A `held` head that evaluates to `success` is written again after Snapshot2, as before. Churn and stuck-`pending` costs are unchanged from the section above.
 
 ## Unreadable snapshot keeps what it read
 

@@ -559,28 +559,37 @@ def _prs_on_head(github: str, head: str, number: int) -> list[int]:
     return sorted({r["number"] for r in rows if r["head"] == head} | {number})
 
 
-def _fingerprint(github: str, number: int) -> tuple:
-    """What a success depends on (CHE-4415): for the PR and every open PR on its head, the PR number, head, base ref
-    and base sha and every comment id + edit time, plus the live gate status of the head. One value for the whole set."""
-    head, seen = None, {number}
+def _status(github: str, head: str) -> str:
+    return _gh(f"repos/{github}/commits/{head}/status", "--jq",
+               f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+
+
+def _pr_head(github: str, number: int) -> str:
+    return json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+
+
+def _fingerprint(github: str, number: int, head: str) -> tuple:
+    """What a success depends on (CHE-4415): for the PR and every open PR on `head`, the PR number, head, base ref
+    and base sha and every comment id + edit time, plus the live gate status of the head. One value for the whole set.
+    The PR's own current head is in it, so a PR that moved is a changed snapshot."""
+    seen = {number}
     try:
-        head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+        listed = _prs_on_head(github, head, number)
+        seen.update(listed)  # the whole list before any PR is read: a failed read must not drop the later ones
         prs = []
-        for n in _prs_on_head(github, head, number):
-            seen.add(n)
+        for n in listed:
             pull = json.loads(_gh(f"repos/{github}/pulls/{n}"))
             comments = _gh("--paginate", f"repos/{github}/issues/{n}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
             prs.append((n, pull["head"]["sha"], pull["base"]["ref"], pull["base"]["sha"], comments))
-        status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
-                     f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+        status = _status(github, head)
     except subprocess.CalledProcessError as e:  # keep what was read: the caller must still downgrade this head
         raise GateUnreadable(head, seen) from e
     return head, tuple(prs), status
 
 
-def _unchanged(github: str, number: int, before: tuple) -> bool:
+def _unchanged(github: str, number: int, head: str, before: tuple) -> bool:
     try:
-        return _fingerprint(github, number) == before
+        return _fingerprint(github, number, head) == before
     except GateUnreadable:  # cannot confirm freshness: never a success
         return False
 
@@ -612,28 +621,39 @@ class GateUnreadable(Exception):
         self.head, self.prs = head, prs
 
 
+def _hold(a: argparse.Namespace, head: str, held: set[str]) -> None:
+    """With --post, move a head that is `success` to `pending` before anything about it is trusted, so a downgrade
+    write that never lands leaves `pending`, not the earlier success. Once per head per run."""
+    if a.post and head not in held:
+        if _status(a.github, head) == "success":
+            _post(a.github, head, "pending", "re-checking the verdicts", a.run_url)
+        held.add(head)
+
+
 def _decide(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str, set[int]]:
     """Snapshot, decide, snapshot (CHE-4415, .plans/CHE-4415-gate-freshness-design.md). A success leaves only if the
     snapshot after the decision equals the one before it, whether it is printed or posted. When the PR keeps moving,
     the answer is `pending` on the PR's current head, never an exit that leaves an older success in place. Returns the
     PRs seen on the head too: a non-success covers them all. A read that fails raises GateUnreadable with the head and
-    PRs known so far. With --post, a head that is `success` goes `pending` first, so a downgrade write that never lands
-    leaves `pending`, not the earlier success."""
-    head, seen = None, {a.pr}
+    PRs known so far. Every head this run observes (the PR's head at the start of an attempt, the head the evaluation
+    reports, the head after the last attempt) is held before the sibling and comment reads or any decision about it."""
+    head, seen, held = None, {a.pr}, set()
     try:
-        if a.post:
-            first = _fingerprint(a.github, a.pr)
-            head, seen = first[0], seen | {p[0] for p in first[1]}
-            if first[2] == "success":
-                _post(a.github, head, "pending", "re-checking the verdicts", a.run_url)
         for _ in range(FRESHNESS_TRIES):
-            before = _fingerprint(a.github, a.pr)
-            head, seen = before[0], seen | {p[0] for p in before[1]}
-            head, state, desc = _evaluate(a, trusted, humans, baseline, seen)
-            if state != "success" or _unchanged(a.github, a.pr, before):
+            head = _pr_head(a.github, a.pr)
+            _hold(a, head, held)
+            before = _fingerprint(a.github, a.pr, head)
+            seen.update(p[0] for p in before[1])
+            evaluated, state, desc = _evaluate(a, trusted, humans, baseline, seen)
+            _hold(a, evaluated, held)  # the PR may have moved to a head that is already green
+            if state != "success":
+                return evaluated, state, desc, seen
+            if evaluated == head and _unchanged(a.github, a.pr, head, before):
                 return head, state, desc, seen
-        # the PR may have moved to a head that already carries a success: bind pending to where it is now
-        head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
+            head = evaluated
+        # still moving: bind pending to the head the PR has now
+        head = _pr_head(a.github, a.pr)
+        _hold(a, head, held)
         return (head, *_out("pending", "changed while it was evaluated; re-run"), seen)
     except GateUnreadable as e:
         raise GateUnreadable(e.head or head, seen | e.prs) from e
@@ -703,10 +723,8 @@ def main() -> int:
     if a.revoke_only:
         # The sweep chose this PR as non-success some time ago; a gate run may have turned it green since.
         # Read the live head status right before the flip so a recovered PR keeps its queue entry.
-        head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
-        status = _gh(f"repos/{a.github}/commits/{head}/status", "--jq",
-                     f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
-        if status != "success":
+        head = _pr_head(a.github, a.pr)
+        if _status(a.github, head) != "success":
             revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
         return 0
     with open(f"{a.repo}/{TRUSTED_AUTHORS}") as f:
