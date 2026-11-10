@@ -344,3 +344,36 @@ func TestCardClickOnAHeldClassWaitsTheHold(test *testing.T) {
 		test.Fatalf("chosen index = %+v, want 0", result.Answer.ChosenOptionIndex)
 	}
 }
+
+// TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce is CHE-4997: a card
+// answered while the issue waits in need_decision starts exactly one run for the
+// assignee, triggered by the "> Chose: ..." quote, and a second pass adds none.
+func TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce(test *testing.T) {
+	for _, assignee := range []string{"asker", "other_agent"} {
+		test.Run(assignee, func(test *testing.T) {
+			resetDecisionLease(test)
+			ensureParkCatalog(test)
+			fixture := newCardFixture(test)
+			assigneeID := fixture.agentID
+			if assignee == "other_agent" {
+				assigneeID = createHandlerTestAgent(test, "Need-decision owner", []byte("[]"))
+			}
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+			dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+			result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+			if err != nil {
+				test.Fatal(err)
+			}
+			_, runner := newDecisionRunnerFixture(test)
+			for range 2 {
+				decisionPass(test, runner)
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, assigneeID, result.Comment.ID); count != 1 {
+					test.Fatalf("assignee wake runs = %d, want 1", count)
+				}
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status IN ('queued', 'running')`, fixture.issueID); count != 1 {
+				test.Fatalf("active runs on the issue = %d, want exactly 1", count)
+			}
+		})
+	}
+}

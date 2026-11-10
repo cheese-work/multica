@@ -152,7 +152,10 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 				}
 			}
 		}
-		if askingID.Valid {
+		// A need_decision issue belongs to its assignee; the asking agent (often
+		// the routing agent that posted the card) must not take the wake.
+		ownedByAssignee := snapshot.issue.Status == "need_decision" && agentID.Valid
+		if askingID.Valid && !ownedByAssignee {
 			asking, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: askingID})
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return snapshot, err
