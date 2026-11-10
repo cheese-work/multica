@@ -140,7 +140,7 @@ WITH waiting AS (
     LEFT JOIN issue i ON i.id = t.issue_id
     LEFT JOIN project p ON p.id = i.project_id
     WHERE t.status = 'queued'
-      AND rt.workspace_id = $3::uuid
+      AND rt.workspace_id = $1::uuid
       AND rt.daemon_id IS NOT NULL
       AND ($4::bool OR (p.lead_type = 'member' AND p.lead_id = $5::uuid))
     GROUP BY 1, 2
@@ -150,8 +150,8 @@ SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
        m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
 FROM waiting w
 JOIN LATERAL (
-    SELECT COALESCE(MIN(NULLIF(o.device_info, '')) FILTER (WHERE o.workspace_id = $3::uuid),
-                    MIN(o.name) FILTER (WHERE o.workspace_id = $3::uuid)) AS device_name,
+    SELECT COALESCE(MIN(NULLIF(o.device_info, '')) FILTER (WHERE o.workspace_id = $1::uuid),
+                    MIN(o.name) FILTER (WHERE o.workspace_id = $1::uuid)) AS device_name,
            MAX(o.last_seen_at) AS last_seen_at,
            COALESCE(bool_or(o.status = 'online'), false) AS any_online
     FROM agent_runtime o
@@ -159,15 +159,15 @@ JOIN LATERAL (
 ) m ON true
 LEFT JOIN daemon_pause dp
   ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
- AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $1::int ELSE $2::int END) > now()
+ AND dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END) > now()
 WHERE dp.machine_owner_id IS NOT NULL OR NOT m.any_online
 ORDER BY w.machine_owner_id, w.daemon_id
 `
 
 type ListAffectedMachinesParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
 	MaintenanceSecs int32       `json:"maintenance_secs"`
 	OtherSecs       int32       `json:"other_secs"`
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
 	AllProjects     bool        `json:"all_projects"`
 	UserID          pgtype.UUID `json:"user_id"`
 }
@@ -190,9 +190,9 @@ type ListAffectedMachinesRow struct {
 // workspace's runtimes; online state and last_seen_at are machine-wide.
 func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMachinesParams) ([]ListAffectedMachinesRow, error) {
 	rows, err := q.db.Query(ctx, listAffectedMachines,
+		arg.WorkspaceID,
 		arg.MaintenanceSecs,
 		arg.OtherSecs,
-		arg.WorkspaceID,
 		arg.AllProjects,
 		arg.UserID,
 	)
