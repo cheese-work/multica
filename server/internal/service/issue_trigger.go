@@ -213,7 +213,10 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		verdict, err := AgentReadiness(ctx, s.runtimeLookup(s.Queries), leader)
-		if err != nil || !verdict.Ready() {
+		// Only a BLOCKED leader stops the handoff, as for a direct agent: a
+		// waitable one (offline, provider breaker hold) queues and runs when the
+		// wait ends. Skipping it here would lose the handoff for good (CHE-4408).
+		if err != nil || verdict.Blocked() {
 			return IssueRunTrigger{}, false
 		}
 		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {

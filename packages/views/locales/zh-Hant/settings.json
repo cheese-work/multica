@@ -387,7 +387,8 @@
   },
   "chat": {
     "floating_label": "懸浮聊天窗",
-    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。"
+    "floating_hint": "在每個頁面顯示懸浮聊天按鈕。",
+    "recent_agents_label": "新聊天中的最近智慧體"
   },
   "issue": {
     "opening": {
@@ -465,7 +466,8 @@
       "channels": "訊息渠道",
       "apps": "已連線應用",
       "workflows": "工作流",
-      "export_privacy": "導出隱私"
+      "export_privacy": "導出隱私",
+      "provider_breakers": "服務商熔斷器"
     },
     "groups": {
       "personal": "個人",
@@ -875,13 +877,23 @@
     "auto_compact_hint": "網頁私信的上下文達到閾值後，會在一次回復之後轉入新的私信。",
     "auto_compact_threshold_label": "閾值 (%)",
     "auto_compact_threshold_invalid": "請輸入 50 到 90 的整數。",
+    "auto_compact_tokens_200k_label": "閾值，200k 模型（token）",
+    "auto_compact_tokens_1m_label": "閾值，1M 模型（token）",
+    "auto_compact_tokens_200k_invalid": "請輸入 100000 到 200000 之間的整數。",
+    "auto_compact_tokens_1m_invalid": "請輸入 100000 到 400000 之間的整數。",
     "auto_compact_readonly_on": "開啓，閾值 {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "已開啟，{{small}} / {{large}} token",
     "auto_compact_readonly_off": "關閉",
     "agent_decisions_label": "代理決策",
     "agent_decisions_hint": "代理可以代你決定白名單內的關卡。每項決定都會出現在每日簡報中，並有 24 小時否決期。",
     "agent_decisions_stopped_title": "決策已自動停止",
     "agent_decisions_stopped_description": "原因：{{reason}}。開啟決策會清除這筆記錄。",
     "agent_decisions_stopped_confirm": "開啟",
+    "runtime_profile_label": "執行階段設定檔",
+    "runtime_profile_hint": "代理 CLI 設定方式的工作區預設值。Managed 會為每個任務產生最精簡的設定目錄。沒有受管轉接器的工具在 Managed 下會失敗，請為這些代理明確設定 個人。",
+    "runtime_profile_personal": "個人",
+    "runtime_profile_managed": "受管",
+    "runtime_profile_inherit": "工作區預設",
     "idle_guard_label": "閒置議題守衛",
     "idle_guard_hint": "已開始但沒有執行和喚醒的議題，在 N 小時後被移動。Shadow 只記錄日誌。",
     "idle_guard_off": "關閉",
@@ -995,7 +1007,7 @@
     "not_enabled_self_host_hint": "自託管使用者：詳見專案 README。",
     "preview_title": "飛書 Bot 安裝即將上線",
     "preview_description": "此部署尚未啟用飛書連線，請聯絡管理員。",
-    "connected_bots": "已連線的 Bot",
+    "connected_bots": "機器人",
     "loading": "載入中…",
     "empty_title": "尚未連線 Bot",
     "empty_description_prefix": "在本工作區開啟一個智慧體，點選",
@@ -1042,7 +1054,7 @@
     "install_starting": "正在準備二維碼…",
     "install_scan_hint": "飛書 → 掃一掃 → 授權新 PersonalAgent。",
     "install_open_link_fallback": "或點這裡直接在飛書中開啟",
-    "install_success": "安裝完成，Bot 已上線。",
+    "install_success": "機器人已綁定。請在飛書/Lark 中傳送訊息以驗證接收。",
     "install_success_toast": "飛書 Bot 已安裝",
     "install_open_link_fallback_feishu": "或點這裡直接在飛書中開啟",
     "install_open_link_fallback_lark": "或點這裡直接在 Lark 中開啟",
@@ -1059,7 +1071,12 @@
     "install_error_installer_bind": "已安裝 Bot，但未能繫結你的飛書身份。請重試或聯絡管理員。",
     "install_error_session_lost": "安裝會話已失效或丟失，請重新掃碼。",
     "install_error_forbidden": "你已沒有在此工作區安裝飛書 Bot 的權限，請聯絡工作區管理員。",
-    "install_error_generic": "安裝失敗，請重試。"
+    "install_error_generic": "安裝失敗，請重試。",
+    "bound_label": "已綁定",
+    "inbound_pending": "已綁定，等待訊息驗證",
+    "inbound_verified": "訊息接收已驗證",
+    "inbound_pending_hint": "請在飛書/Lark 中傳送訊息給此機器人以驗證接收。若未收到，請檢查長連線模式、im.message.receive_v1 事件訂閱，以及應用程式發布和審核狀態。既有綁定可能尚無驗證紀錄。",
+    "inbound_verified_hint": "本次綁定已收到有效訊息；這不代表持續連線、智慧體執行成功或回覆成功。"
   },
   "composio": {
     "page_description": "連線智慧體可使用的應用。",
@@ -1607,5 +1624,36 @@
       "permission_changed": "您已不再擁有管理導出隱私設置的權限",
       "permission_changed_title": "需要權限"
     }
+  },
+  "provider_breakers": {
+    "description": "服務商連續出現伺服器錯誤後，熔斷器會拒絕送往該服務商的新任務，並自動再次探測。",
+    "empty": "此工作區沒有觸發過熔斷器。",
+    "load_error": "無法載入熔斷器。",
+    "retry": "重試",
+    "columns": {
+      "provider": "服務商",
+      "state": "狀態",
+      "reason": "原因",
+      "failures": "失敗次數",
+      "opened": "開啟時間",
+      "next_probe": "下次探測",
+      "last_success": "上次成功",
+      "actions": "操作"
+    },
+    "states": {
+      "closed": "關閉",
+      "open": "開啟",
+      "half_open": "半開"
+    },
+    "none": "—",
+    "reset": "重設",
+    "reset_label": "重設 {{provider}} 熔斷器",
+    "reset_title": "重設 {{provider}} 熔斷器？",
+    "reset_description": "熔斷器立即關閉，新任務會再次送往 {{provider}}。如果服務商仍在失敗，熔斷器會再次觸發。重設會記錄到稽核日誌。",
+    "reset_cancel": "取消",
+    "reset_confirm": "重設熔斷器",
+    "resetting": "正在重設…",
+    "reset_success": "熔斷器已重設。",
+    "reset_error": "無法重設熔斷器。"
   }
 }

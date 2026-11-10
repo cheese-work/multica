@@ -116,9 +116,9 @@ describe("view math", () => {
     expect(world.x * next.scale + next.x).toBeCloseTo(anchor.x);
     expect(world.y * next.scale + next.y).toBeCloseTo(anchor.y);
   });
-  it("zoomAt clamps to 20%–200%", () => {
-    expect(zoomAt({ x: 0, y: 0, scale: 1 }, 9, { x: 0, y: 0 }).scale).toBe(2);
-    expect(zoomAt({ x: 0, y: 0, scale: 1 }, 0.01, { x: 0, y: 0 }).scale).toBe(0.2);
+  it("zoomAt is not clamped to a fixed range", () => {
+    expect(zoomAt({ x: 0, y: 0, scale: 1 }, 9, { x: 0, y: 0 }).scale).toBe(9);
+    expect(zoomAt({ x: 0, y: 0, scale: 1 }, 0.01, { x: 0, y: 0 }).scale).toBe(0.01);
   });
   it("fitView shows all bounds inside the viewport", () => {
     const bounds = { x: 100, y: 50, w: 2000, h: 1500 };

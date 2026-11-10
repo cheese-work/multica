@@ -37,14 +37,16 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
-	if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
-		writeError(w, http.StatusForbidden, "a running session chat task is required")
+	if err != nil || !task.ChatSessionID.Valid {
+		writeErrorCode(w, http.StatusForbidden, codeChatTaskNotActive, "a running session chat task is required")
 		return
 	}
-	workspaceID := ctxWorkspaceID(r.Context())
 	session, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-	if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
-		writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+	if err != nil {
+		writeErrorCode(w, http.StatusForbidden, codeChatTaskSessionMismatch, "task does not belong to this chat session")
+		return
+	}
+	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpCompact, task, session, ctxWorkspaceID(r.Context())) {
 		return
 	}
 	summaryText, ok := decodeCompactSummary(w, r)
@@ -53,7 +55,7 @@ func (h *Handler) CompactChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session, summary, fail := h.compactChatInPlace(r.Context(), session.ID, task.ID, summaryText)
 	if fail != nil {
-		writeError(w, fail.status, fail.message)
+		fail.write(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, ChatCompactResponse{Session: chatSessionToResponse(session), SummaryMessageID: uuidToString(summary.ID)})
@@ -74,13 +76,22 @@ func decodeCompactSummary(w http.ResponseWriter, r *http.Request) (string, bool)
 
 type compactFailure struct {
 	status  int
+	code    string // stable error code (DX-4); empty for an uncoded failure
 	message string
+}
+
+func (f *compactFailure) write(w http.ResponseWriter) {
+	if f.code == "" {
+		writeError(w, f.status, f.message)
+		return
+	}
+	writeErrorCode(w, f.status, f.code, f.message)
 }
 
 // compactChatInPlace is the one compaction path: it stores the summary as a
 // divider in the DM and opens the next epoch, all in one transaction under the
 // DM lock. taskID is the compacting chat task, or invalid when the DM's human
-// compacts. The DM stays active and keeps its pins, decision lane and queued
+// compacts. A task is authorized again under the lock (SEC-1 rule 5). The DM stays active and keeps its pins, decision lane and queued
 // turns. Rule E: the epoch cannot move while another chat task of the DM is
 // claimed or running; a queued turn is restamped when it is claimed.
 func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgtype.UUID, summaryText string) (db.ChatSession, db.ChatMessage, *compactFailure) {
@@ -113,8 +124,12 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 			}
 			return fail(http.StatusInternalServerError, "failed to lock the compacting task")
 		}
-		if task.ChatSessionID != session.ID || (task.Status != "running" && task.Status != "dispatched") {
-			return fail(http.StatusConflict, "the task is no longer running")
+		if refusal := h.decideChatTask(ctx, qtx, chatOpCompact, task, session, uuidToString(session.WorkspaceID)); refusal != nil {
+			status := http.StatusForbidden
+			if refusal.Code == codeChatTaskNotActive {
+				status = http.StatusConflict // lost the race with a terminal transition
+			}
+			return db.ChatSession{}, db.ChatMessage{}, &compactFailure{status: status, code: refusal.Code, message: refusal.Message}
 		}
 	}
 	// A human request has no task to exclude: the zero UUID matches none.
@@ -141,14 +156,22 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 			return fail(http.StatusInternalServerError, "failed to check existing summary")
 		}
 	}
-	summary, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
-		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant",
-		Content:     strings.TrimSpace(redact.Prose(summaryText)),
-		TaskID:      taskID,
-		MessageKind: pgtype.Text{String: protocol.ChatMessageKindCompactionSummary, Valid: true},
+	// The server's decision records lead the stored summary: the seed cuts a
+	// too-long summary from its tail, never the decisions.
+	decisions, err := compactionDecisionsBlock(ctx, qtx, session)
+	if err != nil {
+		return fail(http.StatusInternalServerError, "failed to load decision records")
+	}
+	if decisions != "" {
+		summaryText = decisions + "\n" + summaryText
+	}
+	summary, err := qtx.CreateChatCompactionDivider(ctx, db.CreateChatCompactionDividerParams{
+		ID: dbid.NewV7(), ChatSessionID: session.ID,
+		Content: strings.TrimSpace(redact.Prose(summaryText)),
+		TaskID:  taskID,
 	})
 	if err == nil {
-		session, err = qtx.CompactChatSessionInPlace(ctx, session.ID)
+		session, err = qtx.CompactChatSessionInPlace(ctx, db.CompactChatSessionInPlaceParams{ID: session.ID, DividerID: summary.ID})
 	}
 	if err != nil {
 		return fail(http.StatusInternalServerError, "failed to compact chat session")
@@ -157,9 +180,15 @@ func (h *Handler) compactChatInPlace(ctx context.Context, sessionID, taskID pgty
 		return fail(http.StatusInternalServerError, "failed to commit compaction")
 	}
 	id := uuidToString(session.ID)
-	h.publishChatFor(protocol.EventChatMessage, uuidToString(session.WorkspaceID), "agent", uuidToString(session.AgentID), uuidToString(session.CreatorID), id, protocol.ChatMessagePayload{
-		ChatSessionID: id, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
-		TaskID: uuidToString(taskID), CreatedAt: timestampToString(summary.CreatedAt),
-	})
+	h.publishChatFor(protocol.EventChatMessage, uuidToString(session.WorkspaceID), "agent", uuidToString(session.AgentID), uuidToString(session.CreatorID), id, compactionSummaryPayload(id, summary, uuidToString(taskID)))
 	return session, summary, nil
+}
+
+// compactionSummaryPayload is the live event for a new compaction summary.
+func compactionSummaryPayload(sessionID string, summary db.ChatMessage, taskID string) protocol.ChatMessagePayload {
+	return protocol.ChatMessagePayload{
+		ChatSessionID: sessionID, MessageID: uuidToString(summary.ID), Role: summary.Role, Content: summary.Content,
+		TaskID: taskID, CreatedAt: timestampToString(summary.CreatedAt),
+		MessageKind: protocol.ChatMessageKindCompactionSummary,
+	}
 }
