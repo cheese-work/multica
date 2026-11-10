@@ -46,9 +46,11 @@ WHERE sqlc.narg('issue_ids')::uuid[] IS NULL OR issue_id = ANY(sqlc.narg('issue_
 ORDER BY created_at;
 
 -- name: GetReviewAdmissionDeferralExpiry :one
--- When the stored deferral of an issue and agent runs out. No row when there is none.
+-- When the stored deferral of an issue, agent and PR head runs out. No row when
+-- there is none for that head: a deadline never carries over to another head.
 SELECT expires_at FROM review_admission_deferral
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id')::uuid;
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id')::uuid
+  AND head_sha = sqlc.arg('head_sha')::text;
 
 -- name: DeleteReviewAdmissionDeferral :exec
 -- Deletes the exact record the caller read: a replacement the guard wrote for a

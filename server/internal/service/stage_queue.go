@@ -242,13 +242,20 @@ func (s *TaskService) ReleaseStageQueues(ctx context.Context) error {
 		// An admission deferral that expired while the run waited (CHE-4651)
 		// keeps its expiry: the run starts without the admission check and with
 		// the "deferral expired" reason, as the admission release would start it.
+		// Only for the head the deferral was recorded for: a newer head is judged.
 		note := ""
-		expires, err := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
+		pr, err := s.Queries.GetIssueAdmissionPR(ctx, issue.ID)
 		switch {
-		case err == nil && !expires.Time.After(time.Now()):
-			ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read admission deferral: %w", err)
+		case err == nil:
+			expires, derr := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID, HeadSha: pr.HeadSha})
+			switch {
+			case derr == nil && !expires.Time.After(time.Now()):
+				ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
+			case derr != nil && !errors.Is(derr, pgx.ErrNoRows):
+				return fmt.Errorf("read admission deferral: %w", derr)
+			}
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("read admission PR: %w", err)
 		}
 		_, err = s.enqueueIssueTask(ctx, issue, comment, false, note, actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
 		return err

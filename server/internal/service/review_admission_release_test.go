@@ -369,3 +369,32 @@ func TestAdmissionReleaseDoesNotDeleteAReplacementRecord(t *testing.T) {
 		t.Fatalf("replacement record: present = %v, head = %q, want newhead", ok, head)
 	}
 }
+
+// An expired deferral of head A must not bypass admission for head B: if a new
+// head arrives while the run waits for a full stage and the stage frees before
+// the admission release replaces the record, the stage release still judges B.
+func TestStageReleaseDoesNotBypassAdmissionForANewHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	stageLimits = stagequeue.Limits{stagequeue.StageReview: 1}
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	f.Exec(t, `UPDATE review_admission_deferral SET created_at = now() - interval '25 hours', expires_at = now() - interval '1 hour' WHERE issue_id = $1`, f.issue)
+
+	holder := f.reviewIssue(t, "slot holder", 3*time.Hour)
+	holderRun := f.run(t, holder, "running")
+	f.release(t, svc)
+	f.wantTasks(t, 0, "expired, stage full")
+
+	// Head B arrives (no CI yet) and the stage frees before the next admission release.
+	f.Exec(t, `UPDATE github_pull_request SET head_sha = 'bbbb2222' WHERE id = $1`, f.pr)
+	f.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, holderRun)
+	if err := svc.ReleaseStageQueues(context.Background()); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("stage release on the new head: err = %v, want ErrAdmissionDeferred", err)
+	}
+	f.wantTasks(t, 0, "new head has no CI; A's deadline must not admit it")
+	head, _, window, ok := f.deferral(t)
+	if !ok || head != "bbbb2222" || window != 24*time.Hour {
+		t.Fatalf("record head %q window %v ok %v, want bbbb2222 with its own 24h", head, window, ok)
+	}
+}

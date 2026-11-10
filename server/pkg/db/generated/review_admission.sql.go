@@ -96,16 +96,19 @@ func (q *Queries) GetIssueAdmissionPR(ctx context.Context, issueID pgtype.UUID) 
 const getReviewAdmissionDeferralExpiry = `-- name: GetReviewAdmissionDeferralExpiry :one
 SELECT expires_at FROM review_admission_deferral
 WHERE issue_id = $1::uuid AND agent_id = $2::uuid
+  AND head_sha = $3::text
 `
 
 type GetReviewAdmissionDeferralExpiryParams struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	AgentID pgtype.UUID `json:"agent_id"`
+	HeadSha string      `json:"head_sha"`
 }
 
-// When the stored deferral of an issue and agent runs out. No row when there is none.
+// When the stored deferral of an issue, agent and PR head runs out. No row when
+// there is none for that head: a deadline never carries over to another head.
 func (q *Queries) GetReviewAdmissionDeferralExpiry(ctx context.Context, arg GetReviewAdmissionDeferralExpiryParams) (pgtype.Timestamptz, error) {
-	row := q.db.QueryRow(ctx, getReviewAdmissionDeferralExpiry, arg.IssueID, arg.AgentID)
+	row := q.db.QueryRow(ctx, getReviewAdmissionDeferralExpiry, arg.IssueID, arg.AgentID, arg.HeadSha)
 	var expires_at pgtype.Timestamptz
 	err := row.Scan(&expires_at)
 	return expires_at, err
