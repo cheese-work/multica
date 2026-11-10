@@ -17,17 +17,31 @@ import (
 // 24 h deferral ran out, not because the head became admissible.
 const deferralExpiredNote = "deferral expired"
 
-type admissionBypassKey struct{}
-
-// withAdmissionBypass makes guardReviewAdmission admit the run: the deferral
-// has expired, so the review starts on whatever the head is.
-func withAdmissionBypass(ctx context.Context) context.Context {
-	return context.WithValue(ctx, admissionBypassKey{}, true)
+// admissionRecovery is the evidence that a deferral ran out: the issue, agent
+// and head it was recorded for, and its deadline. It is a claim made before the
+// final enqueue, so guardReviewAdmission checks it against the PR head it reads
+// there; evidence for another head is ignored and the run is judged as usual.
+type admissionRecovery struct {
+	IssueID, AgentID pgtype.UUID
+	Head             string
+	ExpiresAt        time.Time
 }
 
-func admissionBypassed(ctx context.Context) bool {
-	bypass, _ := ctx.Value(admissionBypassKey{}).(bool)
-	return bypass
+type admissionRecoveryKey struct{}
+
+func withAdmissionRecovery(ctx context.Context, r admissionRecovery) context.Context {
+	return context.WithValue(ctx, admissionRecoveryKey{}, r)
+}
+
+// expiredFor reports whether the evidence names this issue, agent and head and
+// its deadline has passed.
+func (r admissionRecovery) expiredFor(issueID, agentID pgtype.UUID, head string) bool {
+	return r.Head != "" && r.IssueID == issueID && r.AgentID == agentID && r.Head == head && !r.ExpiresAt.After(time.Now())
+}
+
+func admissionRecoveryOf(ctx context.Context) admissionRecovery {
+	r, _ := ctx.Value(admissionRecoveryKey{}).(admissionRecovery)
+	return r
 }
 
 // releaseAdmissionDeferrals starts the deferred reviewer runs whose PR head is
@@ -87,14 +101,11 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		}
 		return fmt.Errorf("load issue: %w", err)
 	}
-	note := ""
-	if !r.ExpiresAt.Time.After(time.Now()) {
-		ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
-	}
-	err = enqueue(withStageTaint(ctx, r.TaintIds), issue, r.AgentID, r.ActorUserID, r.TriggerCommentID, note)
+	ctx = withAdmissionRecovery(ctx, admissionRecovery{IssueID: r.IssueID, AgentID: r.AgentID, Head: r.HeadSha, ExpiresAt: r.ExpiresAt.Time})
+	err = enqueue(withStageTaint(ctx, r.TaintIds), issue, r.AgentID, r.ActorUserID, r.TriggerCommentID, "")
 	switch {
 	case err == nil || errors.Is(err, ErrDuplicatePendingTask):
-		slog.Info("admission release: run started", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha, "note", note)
+		slog.Info("admission release: run started", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha)
 		return drop()
 	case errors.Is(err, ErrAdmissionDeferred):
 		return nil // still not admissible; the guard kept or replaced the record

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -239,27 +238,38 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(ctx con
 // ReleaseStageQueues is the scheduler's tick.
 func (s *TaskService) ReleaseStageQueues(ctx context.Context) error {
 	return releaseStageQueues(ctx, s.Queries, func(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
-		// An admission deferral that expired while the run waited (CHE-4651)
-		// keeps its expiry: the run starts without the admission check and with
-		// the "deferral expired" reason, as the admission release would start it.
-		// Only for the head the deferral was recorded for: a newer head is judged.
-		note := ""
-		pr, err := s.Queries.GetIssueAdmissionPR(ctx, issue.ID)
-		switch {
-		case err == nil:
-			expires, derr := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID, HeadSha: pr.HeadSha})
-			switch {
-			case derr == nil && !expires.Time.After(time.Now()):
-				ctx, note = withAdmissionBypass(ctx), deferralExpiredNote
-			case derr != nil && !errors.Is(derr, pgx.ErrNoRows):
-				return fmt.Errorf("read admission deferral: %w", derr)
-			}
-		case !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read admission PR: %w", err)
+		ctx, err := s.stageRecoveryContext(ctx, issue)
+		if err != nil {
+			return err
 		}
-		_, err = s.enqueueIssueTask(ctx, issue, comment, false, note, actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
-		return err
+		return s.enqueueStageRelease(ctx, issue, actor, comment)
 	})
+}
+
+// stageRecoveryContext carries an admission deferral that expired while the
+// run waited (CHE-4651), only for the head it was recorded for: a newer head is
+// judged. The lookup is advisory; enqueueStageRelease validates it again.
+func (s *TaskService) stageRecoveryContext(ctx context.Context, issue db.Issue) (context.Context, error) {
+	pr, err := s.Queries.GetIssueAdmissionPR(ctx, issue.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ctx, nil
+		}
+		return ctx, fmt.Errorf("read admission PR: %w", err)
+	}
+	expires, err := s.Queries.GetReviewAdmissionDeferralExpiry(ctx, db.GetReviewAdmissionDeferralExpiryParams{IssueID: issue.ID, AgentID: issue.AssigneeID, HeadSha: pr.HeadSha})
+	switch {
+	case err == nil:
+		return withAdmissionRecovery(ctx, admissionRecovery{IssueID: issue.ID, AgentID: issue.AssigneeID, Head: pr.HeadSha, ExpiresAt: expires.Time}), nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return ctx, fmt.Errorf("read admission deferral: %w", err)
+	}
+	return ctx, nil
+}
+
+func (s *TaskService) enqueueStageRelease(ctx context.Context, issue db.Issue, actor, comment pgtype.UUID) error {
+	_, err := s.enqueueIssueTask(ctx, issue, comment, false, "", actor, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived)
+	return err
 }
 
 // StageQueueSnapshot is where one issue's stage run stands: the stage, the

@@ -1,9 +1,11 @@
 package service
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -62,9 +64,32 @@ type RunTarget struct {
 // (empty when the run is not the issue's reviewer) and whether the budget is
 // spent, so the head's admission is the only way in. The enqueue writes the
 // admission with the task row (CreateAgentTask), never the guard.
+//
+// Pin is the head the review admission judged: it stamps the task but grants no
+// budget exception. Expired marks a run that starts because the head's 24 h
+// deferral ran out; the handoff note says so.
 type ReviewGate struct {
 	Head     string
 	Required bool
+	Pin      string
+	Expired  bool
+}
+
+// ErrReviewHeadMoved refuses an expired-deferral start when the budget and the
+// admission read different heads: neither can vouch for the other.
+var ErrReviewHeadMoved = errors.New("review head moved during the enqueue")
+
+// withExpiryNote returns the handoff note with the deferral-expired reason set
+// or removed, whatever an earlier Apply left on it.
+func withExpiryNote(note pgtype.Text, expired bool) pgtype.Text {
+	base := strings.TrimSuffix(strings.TrimSuffix(note.String, deferralExpiredNote), "\n")
+	if expired {
+		if base != "" {
+			base += "\n"
+		}
+		base += deferralExpiredNote
+	}
+	return pgtype.Text{String: base, Valid: base != ""}
 }
 
 // Apply sets the gate on the task row the enqueue is about to insert. A review
@@ -73,9 +98,10 @@ type ReviewGate struct {
 // even when the PR moves between the guard and the insert or between
 // preparing a mention and inserting it.
 func (g ReviewGate) Apply(p *db.CreateAgentTaskParams) {
-	if g.Head != "" {
-		p.HeadSha = pgtype.Text{String: g.Head, Valid: true}
+	if head := cmp.Or(g.Head, g.Pin); head != "" {
+		p.HeadSha = pgtype.Text{String: head, Valid: true}
 	}
+	p.HandoffNote = withExpiryNote(p.HandoffNote, g.Expired)
 	p.GateHead = pgtype.Text{String: g.Head, Valid: g.Head != ""}
 	p.GateRequired = pgtype.Bool{Bool: g.Required, Valid: g.Required}
 }

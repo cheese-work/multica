@@ -398,3 +398,137 @@ func TestStageReleaseDoesNotBypassAdmissionForANewHead(t *testing.T) {
 		t.Fatalf("record head %q window %v ok %v, want bbbb2222 with its own 24h", head, window, ok)
 	}
 }
+
+// moveHead is a PR update: the PR now names head, and ci (empty: none yet) is
+// the conclusion of its only admission check.
+func (f *admissionFixture) moveHead(t *testing.T, head, ci string) {
+	t.Helper()
+	f.Exec(t, `UPDATE github_pull_request SET head_sha = $2 WHERE id = $1`, f.pr, head)
+	if ci == "" {
+		return
+	}
+	f.checks++
+	f.InsertNoID(t, "github_pull_request_check_run", testutil.Cols{
+		"pr_id": f.pr, "head_sha": head, "ordinal": f.checks, "name": "ci", "status": "completed", "conclusion": ci,
+	}, "pr_id = $1 AND ordinal = $2", f.pr, f.checks)
+}
+
+func (f *admissionFixture) expireRecord(t *testing.T) {
+	t.Helper()
+	f.Exec(t, `UPDATE review_admission_deferral SET created_at = now() - interval '25 hours', expires_at = now() - interval '1 hour' WHERE issue_id = $1`, f.issue)
+}
+
+func (f *admissionFixture) issueRow(t *testing.T) db.Issue {
+	t.Helper()
+	issue, err := f.q.GetIssue(context.Background(), util.MustParseUUID(f.issue))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	return issue
+}
+
+func (f *admissionFixture) taskHeadAndNote(t *testing.T) (head, note string) {
+	t.Helper()
+	f.QueryRow(t, `SELECT COALESCE(context->>'head_sha', ''), COALESCE(handoff_note, '') FROM agent_task_queue WHERE issue_id = $1`, f.issue).Scan(&head, &note)
+	return head, note
+}
+
+// The stage release read head A and A's expired deadline. Head B commits before
+// the real enqueue. B is judged: its CI is missing, so it is deferred for its
+// own 24 h and carries no expiry reason.
+func TestStageReleaseJudgesAHeadThatMovesBeforeTheEnqueue(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	f.expireRecord(t)
+
+	ctx, err := svc.stageRecoveryContext(context.Background(), f.issueRow(t))
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	f.moveHead(t, "bbbb2222", "")
+	if err := svc.enqueueStageRelease(ctx, f.issueRow(t), pgtype.UUID{}, pgtype.UUID{}); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("enqueue on the moved head: err = %v, want ErrAdmissionDeferred", err)
+	}
+	f.wantTasks(t, 0, "B has no CI; A's expiry must not admit it")
+	head, _, window, ok := f.deferral(t)
+	if !ok || head != "bbbb2222" || window != 24*time.Hour {
+		t.Fatalf("record head %q window %v ok %v, want bbbb2222 with its own 24h", head, window, ok)
+	}
+}
+
+// The direct release holds A's expired record while the PR already names B.
+func TestAdmissionReleaseJudgesTheCurrentHeadNotTheRecordedOne(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	f.expireRecord(t)
+	f.moveHead(t, "bbbb2222", "")
+
+	f.release(t, svc)
+	f.wantTasks(t, 0, "B has no CI; A's expiry must not admit it")
+	head, _, window, ok := f.deferral(t)
+	if !ok || head != "bbbb2222" || window != 24*time.Hour {
+		t.Fatalf("record head %q window %v ok %v, want bbbb2222 with its own 24h", head, window, ok)
+	}
+}
+
+// B is admissible after A's token was captured: one run on B, with the normal
+// reason, not A's expiry.
+func TestAdmissionReleaseStartsAnAdmissibleNewHeadWithTheNormalReason(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	f.expireRecord(t)
+	f.moveHead(t, "bbbb2222", "success")
+
+	f.release(t, svc)
+	f.wantTasks(t, 1, "B is green")
+	if head, note := f.taskHeadAndNote(t); head != "bbbb2222" || note != "" {
+		t.Fatalf("run head %q reason %q, want bbbb2222 and no reason", head, note)
+	}
+	f.wantRecord(t, false, "after the start")
+}
+
+// A mention prepared on head A and inserted after the PR moved to B: the final
+// guard decides B, so the task names B, not the stale head A.
+func TestPreparedMentionIsPinnedToTheHeadTheFinalGuardAdmits(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "success")
+	issue := f.issueRow(t)
+	params, err := svc.PrepareTaskForMention(context.Background(), f.q, issue, issue.AssigneeID, pgtype.UUID{}, pgtype.UUID{}, OriginDerived)
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	f.moveHead(t, "bbbb2222", "success")
+	if _, err := svc.EnqueuePreparedTaskForMentionInTx(context.Background(), f.q, issue, params, OriginDerived); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if head, _ := f.taskHeadAndNote(t); head != "bbbb2222" {
+		t.Fatalf("task head = %q, want bbbb2222 (the head the final guard admitted)", head)
+	}
+}
+
+func TestWithExpiryNoteSetsAndStripsOnlyItsOwnReason(t *testing.T) {
+	cases := []struct {
+		in      string
+		expired bool
+		want    string
+	}{
+		{"", true, deferralExpiredNote},
+		{"", false, ""},
+		{"wake up", true, "wake up\n" + deferralExpiredNote},
+		{"wake up\n" + deferralExpiredNote, true, "wake up\n" + deferralExpiredNote},
+		{"wake up\n" + deferralExpiredNote, false, "wake up"},
+		{deferralExpiredNote, false, ""},
+	}
+	for _, c := range cases {
+		if got := withExpiryNote(pgtype.Text{String: c.in, Valid: c.in != ""}, c.expired).String; got != c.want {
+			t.Errorf("withExpiryNote(%q, %v) = %q, want %q", c.in, c.expired, got, c.want)
+		}
+	}
+}
