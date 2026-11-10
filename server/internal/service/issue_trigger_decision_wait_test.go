@@ -81,12 +81,11 @@ func TestWillEnqueueRunSkipsNeedDecisionStepWithOpenDecisionRequest(t *testing.T
 		}
 	}
 
-	need := setIssue("need_decision")
 	insertRequest("open")
 	// The step is not declared a no-op: it may have entry work, even for the
 	// workspace routing agent. The open request must not swallow that run.
 	stepOn(agentID, false)
-	need = setIssue("need_decision")
+	need := setIssue("need_decision")
 	if !enters(need) {
 		t.Fatal("a need_decision step that does not declare waits_on_open_decision must still start its run")
 	}
