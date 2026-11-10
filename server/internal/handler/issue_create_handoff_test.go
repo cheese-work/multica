@@ -228,3 +228,45 @@ func TestCreateIssueWithAssigneeEntersTheStepHandler(t *testing.T) {
 		})
 	}
 }
+
+// The create reads the step's handler before the service takes its locks. When
+// the workflow switches to one whose step hands off to nobody in between, the
+// issue keeps the assignee the request named, not the former workflow's handler
+// (CHE-4992).
+func TestCreateIssueWithAssigneeKeepsItWhenTheSwitchedStepHasNoHandler(t *testing.T) {
+	seedTestCatalog(t)
+	former := seededReadyAgentID(t)
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, former).Scan(&runtimeID)
+	named := dbfx.Agent(t, "Create switch named assignee "+workflowTestSuffix(), runtimeID)
+
+	from := createTestWorkflow(t, "Create named from "+workflowTestSuffix(), "in_progress")
+	setWorkflowHandoff(t, from.ID, "in_progress", handToAgent(former, "former handler")).Want(http.StatusOK)
+	to := createTestWorkflow(t, "Create named to "+workflowTestSuffix(), "in_progress")
+	projectID := createWorkflowTestProject(t, "Create named switch project")
+	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": from.ID}).Want(http.StatusOK)
+
+	body := map[string]any{
+		"title":         "named created mid switch " + workflowTestSuffix(),
+		"status":        "in_progress",
+		"project_id":    projectID,
+		"assignee_type": "agent",
+		"assignee_id":   named,
+	}
+	resp := raceAgainst(t, func(tx pgx.Tx) { switchProjectWorkflow(t, tx, projectID, to.ID) },
+		func() *testutil.Response {
+			return testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body))
+		})
+	resp.Want(http.StatusCreated)
+	var created struct {
+		ID string `json:"id"`
+	}
+	resp.JSON(&created)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(created.ID))
+	})
+
+	if got := createdIssueAssignee(t, created.ID); got != named {
+		t.Fatalf("assignee = %q, want the named assignee %q", got, named)
+	}
+}

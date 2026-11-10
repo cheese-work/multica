@@ -3754,7 +3754,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeIssueWorkflowError(w, err)
 			return
 		}
-		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
+		// A named assignee is left alone here: the service swaps in the handler
+		// under the locks, so a workflow switch cannot leave the former handler
+		// in place of it.
+		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
 			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
 			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
 			if err != nil {
