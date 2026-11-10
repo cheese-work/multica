@@ -4496,10 +4496,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_count_running"
 			return fmt.Errorf("count running tasks: %w", err)
 		}
-		if running >= int64(agent.MaxConcurrentTasks) {
+		// At the cap, one extra urgent task may still start (CHE-5118). Running
+		// above cap+1 means the reserved slot is already used.
+		var minPriority int32
+		atCap := running >= int64(agent.MaxConcurrentTasks)
+		if atCap {
 			decisionDetail = claimDecisionDetail{running: running, maxConcurrent: int64(agent.MaxConcurrentTasks)}
-			outcome = "no_capacity"
-			return nil
+			if running > int64(agent.MaxConcurrentTasks) || !urgentReservedSlotEnabled(agent.RuntimeConfig) {
+				outcome = "no_capacity"
+				return nil
+			}
+			minPriority = priorityToInt("urgent")
 		}
 
 		t0 = time.Now()
@@ -4509,11 +4516,15 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			RuntimeID:        claimRuntimeID,
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+			MinPriority:      minPriority,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				outcome = "no_tasks"
+				if atCap {
+					outcome = "no_capacity"
+				}
 				return nil
 			}
 			outcome = "error_claim"
@@ -9151,6 +9162,18 @@ func computeChatElapsedMs(task db.AgentTaskQueue) pgtype.Int8 {
 		ms = 0
 	}
 	return pgtype.Int8{Int64: ms, Valid: true}
+}
+
+// urgentReservedSlotEnabled reads agent.runtime_config.urgent_reserved_slot.
+// Default on: absent, null or malformed config keeps the slot.
+func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
+	var cfg struct {
+		Enabled *bool `json:"urgent_reserved_slot"`
+	}
+	if json.Unmarshal(runtimeConfig, &cfg) != nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
 }
 
 func priorityToInt(p string) int32 {

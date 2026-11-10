@@ -902,6 +902,9 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= @min_priority::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
