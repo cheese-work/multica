@@ -515,6 +515,11 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			return out, e
 		}
 		condition, in.EventTypes = normalized, hints
+		if !existingID.Valid {
+			if err := refuseRepeatChecksFinished(ctx, tx, issueID, source, condition); err != nil {
+				return out, err
+			}
+		}
 		// The scheduler evaluates the condition on its first tick.
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
