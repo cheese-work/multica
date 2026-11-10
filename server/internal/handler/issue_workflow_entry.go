@@ -172,10 +172,6 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 	}
 }
 
-// handoffRunReasonTargetDiffers records that a handoff run started although the
-// caller asked for no run: the step's handler is not the caller.
-const handoffRunReasonTargetDiffers = "handoff_target_differs"
-
 // handoffRunReasonStageQueueFull records why a handoff started no run: the
 // handler's WIP limit for the step's stage is reached, so the stage queue holds
 // the run until the scheduler releases it (CHE-3611).
@@ -193,21 +189,6 @@ func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun b
 		return false, handoffRunReasonStageQueueFull
 	}
 	return true, runReason
-}
-
-// suppressRunForWrite is the write's suppress_run after the handoff rule:
-// --no-start says the caller's own work is already underway, which holds only
-// when the caller is the agent the handoff goes to. A handoff to anyone else
-// keeps its run, or nobody starts it. The reason is set when the flag was
-// overridden.
-func (h *Handler) suppressRunForWrite(ctx context.Context, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, handoff *workflowHandoff, suppressRun bool) (suppress bool, reason string) {
-	if !suppressRun || handoff == nil {
-		return suppressRun, ""
-	}
-	if actorType == "agent" && h.handedToAgent(ctx, prev, params, true) == actorID {
-		return true, ""
-	}
-	return false, handoffRunReasonTargetDiffers
 }
 
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
