@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -42,6 +43,7 @@ class FakeGitHub:
         self.status = ""
         self.posts: list[tuple[str, str]] = []  # (sha, state) per attempted status write
         self.fail_writes = set(fail_writes)  # shas whose status write raises
+        self.fail_states: set[str] = set()  # states whose status write raises
         self.hooks: list[list] = []  # [needle, remaining reads, action]
         self.next_id = 100
 
@@ -68,8 +70,9 @@ class FakeGitHub:
         if "/statuses/" in path:
             sha, state = path.split("/statuses/")[1].split()[0], next(a for a in args if a.startswith("state=")).split("=")[1]
             self.posts.append((sha, state))
-            if sha in self.fail_writes:
+            if sha in self.fail_writes or state in self.fail_states:
                 raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 500")
+            self.status = state  # a landed write is what the next status read returns
             return ""
         if "/comments" in path:
             n = int(path.split("issues/")[1].split("/")[0])
@@ -164,7 +167,7 @@ class FinalRefresh(unittest.TestCase):
             return real(args, path)
         fake._answer = moving
         fake.run()
-        self.assertEqual(fake.states(), ["pending"])
+        self.assertEqual(fake.states(), ["pending", "pending"])  # the write-ahead, then the unsettled answer
         self.assertNotIn("success", fake.states())
 
 
@@ -204,13 +207,16 @@ class FailedDowngradeWrite(unittest.TestCase):
         return fake
 
     def test_the_downgrade_write_is_retried_and_the_job_still_fails_when_it_never_lands(self):
-        fake = self.revoked(fail_writes={HEAD}).run()
-        self.assertEqual(fake.states(), ["failure"] * 3)
+        fake = self.revoked()
+        fake.fail_states = {"failure"}
+        fake.run()
+        self.assertEqual(fake.states(), ["pending"] + ["failure"] * 3)  # write-ahead, then three downgrade attempts
         self.assertIsInstance(fake.error, subprocess.CalledProcessError)
 
     def test_queue_revocation_runs_even_when_the_downgrade_write_failed(self):
         # Finding 4: the exception from the status write skipped revoke_queue.
-        fake = self.revoked(fail_writes={HEAD})
+        fake = self.revoked()
+        fake.fail_states = {"failure"}
         with mock.patch.object(sg, "revoke_queue") as revoke:
             fake.run()
         revoke.assert_called_once_with(GH, 405, "main", "")
@@ -219,7 +225,7 @@ class FailedDowngradeWrite(unittest.TestCase):
         fake = self.revoked()
         real, tries = fake._answer, [0]
         def flaky(args, path):
-            if "/statuses/" in path:
+            if "/statuses/" in path and "state=failure" in path:
                 tries[0] += 1
                 if tries[0] < 3:
                     fake.posts.append((HEAD, "failure"))
@@ -234,7 +240,8 @@ class FailedDowngradeWrite(unittest.TestCase):
 
     def test_a_failing_queue_revocation_does_not_hide_a_failed_status_write(self):
         # CHARACTERIZATION PIN: green on main (the status write raises first).
-        fake = self.revoked(fail_writes={HEAD})
+        fake = self.revoked()
+        fake.fail_states = {"failure"}
         with mock.patch.object(sg, "revoke_queue", side_effect=RuntimeError("queue")):
             fake.run()
         self.assertIsInstance(fake.error, (subprocess.CalledProcessError, RuntimeError))
@@ -275,7 +282,7 @@ class ReviewRound1(unittest.TestCase):
         with mock.patch.object(sg, "revoke_queue") as revoke:
             fake.run()
         self.assertNotIn("success", fake.states())
-        self.assertEqual(fake.states(), ["pending"])
+        self.assertEqual(fake.states(), ["pending", "pending"])  # the write-ahead, then the fail-closed answer
         revoke.assert_called_once_with(GH, 405, "main", "")
         self.assertIsNotNone(fake.error or (fake.code if fake.code else None), "the job must go red")
 
@@ -311,6 +318,104 @@ class ReviewRound1(unittest.TestCase):
             fake.run()
         self.assertEqual(revoke.call_count, 2)
         self.assertIsInstance(fake.error, RuntimeError)
+
+
+class ReviewRound2(unittest.TestCase):
+    """Terra's four P1 findings on head ad762c83 (CHANGES REQUESTED)."""
+
+    @staticmethod
+    def failing_fail(*, reads_of, from_nth=1):
+        """An _answer wrapper that raises on the Nth and later reads whose path contains `reads_of`."""
+        seen = []
+        def wrap(real):
+            def answer(args, path):
+                if reads_of(path):
+                    seen.append(path)
+                    if len(seen) >= from_nth:
+                        raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+                return real(args, path)
+            return answer
+        return wrap
+
+    def test_a_snapshot_that_reads_the_head_then_fails_still_downgrades_that_head(self):
+        # P1 1: _fingerprint read the head, then failed on a comment read; the head never reached the caller.
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        fake._answer = self.failing_fail(reads_of=lambda p: "/comments" in p and "author_id" not in p)(fake._answer)
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertEqual(fake.states(), ["pending"])
+        revoke.assert_called_once_with(GH, 405, "main", "")
+        self.assertEqual(fake.code, 1)
+
+    def test_a_sibling_that_appears_after_the_snapshot_and_fails_is_still_revoked(self):
+        # P1 2: the revoked set came from the first snapshot; a sibling found by the evaluation was never revoked.
+        fake = FakeGitHub(prs=(405,), fail_writes={HEAD})
+        def sibling_appears():
+            fake.pulls[406] = {"head": {"sha": HEAD, "ref": REF}, "base": {"sha": BASE, "ref": "main"}, "user": {"id": BOT}}
+            fake.comments[406] = [{"id": 1, "author_id": BOT, "body": verdict("FAIL", pr=406), "updated_at": "2026-11-10T03:00:00Z"}]
+        fake.after_read("/status --jq", 1, sibling_appears)
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertEqual(sorted(c.args[1] for c in revoke.call_args_list), [405, 406])
+
+    def test_a_final_pr_read_that_fails_after_the_pr_kept_moving_is_unreadable_not_a_silent_old_head(self):
+        # P1 3: the last head read fell back to the stale head with exit code 0.
+        fake = FakeGitHub(prs=(405,))
+        real, reads = fake._answer, []
+        def moving(args, path):
+            if "/comments" in path and "author_id" not in path:
+                fake.add_comment(405, "tick")
+            if path.endswith("/pulls/405") and sys._getframe(2).f_code.co_name == "_decide":  # only the final head read
+                reads.append(path)
+                raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 502")
+            return real(args, path)
+        fake._answer = moving
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(fake.code, 1, "the job must go red")
+        revoke.assert_called_once()
+        self.assertNotIn("success", fake.states())
+
+    def test_a_failed_downgrade_write_leaves_pending_not_the_earlier_success(self):
+        # P1 4: three failed downgrade writes left the earlier success as the recorded state.
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        fake.comments[405] = [{"id": 1, "author_id": BOT, "body": verdict("FAIL"), "updated_at": "2026-11-10T03:00:00Z"}]
+        fake.fail_states = {"failure"}
+        with mock.patch.object(sg, "revoke_queue"):
+            fake.run()
+        self.assertEqual(fake.status, "pending")
+        self.assertIsNotNone(fake.error, "the job must go red")
+
+    def test_a_green_pr_goes_pending_before_it_is_evaluated_and_ends_success(self):
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        fake.run()
+        self.assertEqual(fake.states(), ["pending", "success"])
+        self.assertEqual(fake.status, "success")
+
+    def test_a_pr_that_is_not_green_gets_no_write_ahead_pending(self):
+        fake = FakeGitHub(prs=(405,))
+        fake.run()
+        self.assertEqual(fake.states(), ["success"])
+
+    def test_a_write_ahead_pending_that_cannot_be_written_fails_closed(self):
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        fake.fail_states = {"pending"}
+        with mock.patch.object(sg, "revoke_queue") as revoke:
+            fake.run()
+        self.assertNotIn("success", fake.states())
+        revoke.assert_called_once()
+        self.assertTrue(fake.error is not None or fake.code == 1, "the job must go red")
+
+    def test_a_print_only_run_writes_nothing(self):
+        fake = FakeGitHub(prs=(405,))
+        fake.status = "success"
+        fake.run(post=False)
+        self.assertEqual(fake.posts, [])
 
 
 if __name__ == "__main__":

@@ -24,6 +24,8 @@ One snapshot covers the whole set. There is no per-PR cache and no partial refre
 
 ```mermaid
 stateDiagram-v2
+    [*] --> WriteAhead: --post and head is success
+    WriteAhead --> Snapshot1: head is pending
     [*] --> Snapshot1: attempt n of 3
     Snapshot1 --> Decide: read PR set, bases, comments, status
     Decide --> Publish: state is failure or pending
@@ -49,7 +51,7 @@ stateDiagram-v2
 | 1 | Final refresh before returning or posting success, primary and siblings | Snapshot2 covers the whole set; it runs for a printed success as well as a posted one (was: only `--post`, primary only) |
 | 2 | Sibling A's revoked PASS survives a refresh of sibling B | One snapshot, full re-evaluation on any change |
 | 3 | Base bound to the scan | Base ref and base SHA are in the snapshot |
-| 4 | Failed downgrade write leaves `success`, skips queue revocation | Publish retries the write, revokes the queue regardless, then exits non-zero |
+| 4 | Failed downgrade write leaves `success`, skips queue revocation | Write-ahead `pending`; publish retries the write, revokes the queue regardless, then exits non-zero |
 | 5 | Success write retried after backoff without a refresh | Success is written once; a retry re-enters Snapshot1 |
 
 ## Unstable or unreadable
@@ -60,10 +62,27 @@ stateDiagram-v2
 
 Publish revokes the queue for **every PR seen on the head**, one at a time. A failing revocation does not skip the next PR. The first error is raised after all of them ran.
 
+## Write-ahead `pending` (finding 4, round 2)
+
+A commit status cannot be deleted or forced from the client. The only client-side hold against a downgrade write that never lands is to move the head off `success` **before** the long evaluation. With `--post`, when the first snapshot shows the head at `success`, the gate writes `pending` ("re-checking the verdicts") to that head first. Then:
+
+- a decision of `success` writes `success` again (still once, after Snapshot2),
+- a decision of `failure` or `pending` writes that state, 3 attempts; if all fail, the head stays `pending`, not the earlier `success`,
+- a write-ahead that cannot be written is unreadable GitHub state: no evaluation, `pending` is attempted (3 attempts), the queue is revoked for every PR seen, exit 1.
+
+No write-ahead happens when the head is not at `success` (nothing to hold), and none without `--post`.
+
+Cost, accepted in scope item 4 ("the recorded state must not stay `success`"):
+
+- **Churn.** Every sweep run (30 min) and every comment run of a green PR flips the required check to `pending` for the length of the evaluation (a few minutes with semgrep), then back. An enqueue in that window waits.
+- **Stuck `pending`.** A run killed by the 20-minute timeout leaves `pending`. The sweep re-runs only PRs at `success`, so it does not heal this; the next comment, push or manual dispatch does. The state is safe (not green), only inconvenient.
+
+A different cut of the same choice (not taken): no write-ahead, accept that three rejected writes leave `success` until the next sweep. Reverting is one `if` in `_decide`.
+
+## Unreadable snapshot keeps what it read
+
+`_fingerprint` raises `GateUnreadable` carrying the head and every PR it had read when a later read failed. `_decide` merges those into what it already knew, and `_evaluate` adds each sibling it lists to a shared `seen` set as soon as it lists it, so a sibling that appears after the snapshot and then fails is still revoked. The final head read after three moving snapshots has no fallback: if it fails the result is `GateUnreadable` (pending on the last known head, revoke, exit 1), never a silent old head with exit 0.
+
 ## Residual risk
 
-**Finding 4 as scoped ("the recorded state must not stay `success`") is met except when every write is rejected.** Terra asked for a fail-closed strategy for the head. A commit status cannot be deleted or forced from the client. The only client-side way to hold it is a write-ahead `pending` at the start of each run. This note does **not** do that, on purpose: every sweep and every comment run would flip a green required check to `pending` for the whole evaluation (blocking an enqueue in that window), and a run killed by the 20-minute timeout would leave `pending` where the sweep (it only re-runs `success` PRs) never looks. That is a larger behavior change than this issue's scope.
-
-What holds instead: the write is retried 3 times, the queue is revoked for every PR on the head, the job goes red, and the 30-minute sweep re-runs the gate on every PR still at `success`, which re-attempts the downgrade. So the exposure is a write that is rejected on 3 attempts **and** on the next sweep, for as long as the API refuses writes. Owner of the choice to add a write-ahead `pending` instead: Cheese (follow-up if wanted).
-
-The gap between Snapshot2 and the write is one API round trip. It cannot be closed from the client; the sweep and the per-comment gate run cover it.
+The gap between Snapshot2 and the write is one API round trip. It cannot be closed from the client; the sweep and the per-comment gate run cover it. If every status write is rejected for the whole run (API down), no write-ahead can land either: the head stays as it was, the queue is revoked as far as the API allows, and the job goes red.

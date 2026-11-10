@@ -635,7 +635,8 @@ class FreshnessRaceTest(unittest.TestCase):
     def test_an_unchanged_verdict_set_still_posts_the_success(self):
         code, posted = self.run_main()
         self.assertEqual(code, 0)
-        self.assertEqual([("state=success" in p) for p in posted], [True])
+        # CHE-4415: the head was `success`, so a write-ahead `pending` precedes the one success
+        self.assertEqual([("state=pending" in p, "state=success" in p) for p in posted], [(True, False), (False, True)])
 
     def test_a_verdict_set_that_never_settles_posts_pending_and_no_success(self):
         # CHE-4415: exiting without a write left the older success in place; the head now ends `pending`.

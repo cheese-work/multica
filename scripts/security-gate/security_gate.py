@@ -562,28 +562,37 @@ def _prs_on_head(github: str, head: str, number: int) -> list[int]:
 def _fingerprint(github: str, number: int) -> tuple:
     """What a success depends on (CHE-4415): for the PR and every open PR on its head, the PR number, head, base ref
     and base sha and every comment id + edit time, plus the live gate status of the head. One value for the whole set."""
-    head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
-    prs = []
-    for n in _prs_on_head(github, head, number):
-        pull = json.loads(_gh(f"repos/{github}/pulls/{n}"))
-        comments = _gh("--paginate", f"repos/{github}/issues/{n}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
-        prs.append((n, pull["head"]["sha"], pull["base"]["ref"], pull["base"]["sha"], comments))
-    status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
-                 f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+    head, seen = None, {number}
+    try:
+        head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
+        prs = []
+        for n in _prs_on_head(github, head, number):
+            seen.add(n)
+            pull = json.loads(_gh(f"repos/{github}/pulls/{n}"))
+            comments = _gh("--paginate", f"repos/{github}/issues/{n}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+            prs.append((n, pull["head"]["sha"], pull["base"]["ref"], pull["base"]["sha"], comments))
+        status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
+                     f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
+    except subprocess.CalledProcessError as e:  # keep what was read: the caller must still downgrade this head
+        raise GateUnreadable(head, seen) from e
     return head, tuple(prs), status
 
 
 def _unchanged(github: str, number: int, before: tuple) -> bool:
     try:
         return _fingerprint(github, number) == before
-    except subprocess.CalledProcessError:  # cannot confirm freshness: never a success
+    except GateUnreadable:  # cannot confirm freshness: never a success
         return False
 
 
-def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
+def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None,
+              seen: set[int]) -> tuple[str, str, str]:
+    """`seen` collects every PR on the head the evaluation lists, also when it later fails."""
     head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
     results = [(state, desc)]
-    for n in sorted(set(_prs_on_head(a.github, head, a.pr)) - {a.pr}):
+    siblings = sorted(set(_prs_on_head(a.github, head, a.pr)) - {a.pr})
+    seen.update(siblings)
+    for n in siblings:
         try:
             h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
         except Exception as e:  # an unreadable sibling must block, never skip the status write
@@ -607,22 +616,29 @@ def _decide(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline
     """Snapshot, decide, snapshot (CHE-4415, .plans/CHE-4415-gate-freshness-design.md). A success leaves only if the
     snapshot after the decision equals the one before it, whether it is printed or posted. When the PR keeps moving,
     the answer is `pending` on the PR's current head, never an exit that leaves an older success in place. Returns the
-    PRs seen on the head too: a non-success covers them all. An unreadable snapshot raises GateUnreadable."""
-    head, prs = None, {a.pr}
+    PRs seen on the head too: a non-success covers them all. A read that fails raises GateUnreadable with the head and
+    PRs known so far. With --post, a head that is `success` goes `pending` first, so a downgrade write that never lands
+    leaves `pending`, not the earlier success."""
+    head, seen = None, {a.pr}
     try:
+        if a.post:
+            first = _fingerprint(a.github, a.pr)
+            head, seen = first[0], seen | {p[0] for p in first[1]}
+            if first[2] == "success":
+                _post(a.github, head, "pending", "re-checking the verdicts", a.run_url)
         for _ in range(FRESHNESS_TRIES):
             before = _fingerprint(a.github, a.pr)
-            head, prs = before[0], prs | {p[0] for p in before[1]}
-            head, state, desc = _evaluate(a, trusted, humans, baseline)
+            head, seen = before[0], seen | {p[0] for p in before[1]}
+            head, state, desc = _evaluate(a, trusted, humans, baseline, seen)
             if state != "success" or _unchanged(a.github, a.pr, before):
-                return head, state, desc, prs
-        try:  # the PR may have moved to a head that already carries a success: bind pending to where it is now
-            head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
-        except subprocess.CalledProcessError:
-            pass  # keep the last head we read
-        return (head, *_out("pending", "changed while it was evaluated; re-run"), prs)
+                return head, state, desc, seen
+        # the PR may have moved to a head that already carries a success: bind pending to where it is now
+        head = json.loads(_gh(f"repos/{a.github}/pulls/{a.pr}"))["head"]["sha"]
+        return (head, *_out("pending", "changed while it was evaluated; re-run"), seen)
+    except GateUnreadable as e:
+        raise GateUnreadable(e.head or head, seen | e.prs) from e
     except subprocess.CalledProcessError as e:
-        raise GateUnreadable(head, prs) from e
+        raise GateUnreadable(head, seen) from e
 
 
 def _publish(a: argparse.Namespace, head: str | None, state: str, desc: str, prs: set[int]) -> None:
