@@ -146,19 +146,21 @@ export async function readActionState(seed: DmWorkflowSeed, actionId: string) {
 export async function removeWorkflowSeed(seed: DmWorkflowSeed, removeBase: (seed: DmBudgetSeed) => Promise<void>) {
   try {
     await removeBase(seed);
-  } finally {
-    // Runs even when the base cleanup fails, so the delegated setting is never left installed.
     await withDb(async (db) => {
       await db.query(`UPDATE issue SET workflow_id = NULL WHERE id = $1`, [seed.issueId]);
       await db.query(`DELETE FROM issue_workflow WHERE id = $1`, [seed.workflowId]);
-      // Put back only the key this journey set, and only while it still holds the value this journey installed;
-      // a concurrent change to that key, or to any other setting, is left as it is.
-      await db.query(
+    });
+  } finally {
+    // Runs after any earlier cleanup statement fails, so the delegated setting is never left installed.
+    // Put back only the key this journey set, and only while it still holds the value this journey installed;
+    // a concurrent change to that key, or to any other setting, is left as it is.
+    await withDb((db) =>
+      db.query(
         `UPDATE workspace SET settings = CASE WHEN $2::jsonb IS NULL THEN COALESCE(settings, '{}'::jsonb) - 'delegated_governed_writes'
                                               ELSE COALESCE(settings, '{}'::jsonb) || jsonb_build_object('delegated_governed_writes', $2::jsonb) END
           WHERE id = $1 AND settings -> 'delegated_governed_writes' = $3::jsonb`,
         [seed.workspaceId, seed.originalDelegation, JSON.stringify(delegationFor(seed.agentId))],
-      );
-    });
+      ),
+    );
   }
 }
