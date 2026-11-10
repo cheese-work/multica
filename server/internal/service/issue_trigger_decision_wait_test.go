@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/util"
@@ -53,42 +54,64 @@ func TestWillEnqueueRunSkipsNeedDecisionStepWithOpenDecisionRequest(t *testing.T
 		}
 	}
 
-	routingOn := func(agent string) {
+	// stepOn stores a project workflow whose need_decision step is handled by
+	// agent, with or without the explicit waits_on_open_decision declaration, and
+	// points the issue at it.
+	stepOn := func(agent string, waits bool) {
 		t.Helper()
-		if _, err := pool.Exec(ctx, `UPDATE workspace SET settings = jsonb_build_object('routing_agent', jsonb_build_object('agent_id', $2::text)) WHERE id = $1`,
-			workspaceID, agent); err != nil {
+		step := map[string]any{
+			"status_key":   "need_decision",
+			"handler":      map[string]any{"type": "agent", "id": agent},
+			"instructions": "Entry work: file the decision brief before waiting.",
+		}
+		if waits {
+			step["waits_on_open_decision"] = true
+		}
+		raw, _ := json.Marshal([]map[string]any{{"status_key": "in_progress"}, step})
+		var workflowID string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO issue_workflow (workspace_id, name, initial_status_key, steps)
+			VALUES ($1, 'decision-wait-'||gen_random_uuid()::text, 'in_progress', $2::jsonb) RETURNING id::text`,
+			workspaceID, string(raw)).Scan(&workflowID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE issue SET workflow_id = $2 WHERE id = $1`,
+			util.MustParseUUID(issueID), workflowID); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	need := setIssue("need_decision")
 	insertRequest("open")
-	// No routing agent is configured: the step keeps its own handler, which may
-	// have entry work to do. The open request must not swallow that run.
+	// The step is not declared a no-op: it may have entry work, even for the
+	// workspace routing agent. The open request must not swallow that run.
+	stepOn(agentID, false)
+	need = setIssue("need_decision")
 	if !enters(need) {
-		t.Fatal("a configured handler's need_decision step must still start its run")
+		t.Fatal("a need_decision step that does not declare waits_on_open_decision must still start its run")
 	}
 
-	routingOn(agentID)
+	stepOn(agentID, true)
+	need = setIssue("need_decision")
 	if enters(need) {
-		t.Fatal("the routing agent's need_decision step with an open decision request must start no run")
+		t.Fatal("a declared waits_on_open_decision step with an open decision request must start no run")
 	}
 
-	// The answer goes to the asking agent, not the routing agent; the routing
+	// The answer goes to the asking agent, not the step's handler; the declared
 	// step is still a no-op.
 	if _, err := pool.Exec(ctx, `UPDATE decision_request SET asking_agent_id = $2 WHERE issue_id = $1`,
 		util.MustParseUUID(issueID), util.MustParseUUID(otherAgentID)); err != nil {
 		t.Fatal(err)
 	}
 	if enters(need) {
-		t.Fatal("a different asking agent leaves the routing step a no-op: no run")
+		t.Fatal("a different asking agent leaves the declared step a no-op: no run")
 	}
 
 	if _, err := pool.Exec(ctx, `UPDATE decision_request SET status = 'answered' WHERE issue_id = $1`, util.MustParseUUID(issueID)); err != nil {
 		t.Fatal(err)
 	}
 	if !enters(need) {
-		t.Fatal("an answered request waits on nobody; the routing step's run must start")
+		t.Fatal("an answered request waits on nobody; the step's run must start")
 	}
 	if _, err := pool.Exec(ctx, `UPDATE decision_request SET status = 'open' WHERE issue_id = $1`, util.MustParseUUID(issueID)); err != nil {
 		t.Fatal(err)

@@ -2,11 +2,11 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -312,14 +312,21 @@ func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) 
 	return err == nil && last == head
 }
 
-// waitingOnOpenDecision reports whether the issue entered need_decision under
-// the workspace routing agent while a human decision request is open
-// (CHE-4976). That step only routes: its text tells the routing agent to end the
-// run and leave the status, and the answer wakes the asking agent. A configured
-// handler may have entry work, so it is never skipped. Errors read as "not
-// waiting": a lookup failure must not swallow a run.
+// waitingOnOpenDecision reports whether the issue entered a need_decision step
+// that its workflow declares a no-op while a human decision request is open
+// (CHE-4976, `waits_on_open_decision`), and such a request is open. The answer
+// wakes the issue, so the run would only end at once. A step without the
+// declaration may have entry work and is never skipped, whoever its handler is.
+// Errors read as "not waiting": a lookup failure must not swallow a run.
 func (s *IssueService) waitingOnOpenDecision(ctx context.Context, issue db.Issue) bool {
-	if issue.Status != statusNeedDecision || !s.assigneeIsRoutingAgent(ctx, issue) {
+	if issue.Status != statusNeedDecision {
+		return false
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, s.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return false
+	}
+	if step, ok := def.Step(issue.Status); !ok || !step.WaitsOnOpenDecision {
 		return false
 	}
 	open, err := s.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{
@@ -327,23 +334,4 @@ func (s *IssueService) waitingOnOpenDecision(ctx context.Context, issue db.Issue
 		IssueID:     issue.ID,
 	})
 	return err == nil && open
-}
-
-// assigneeIsRoutingAgent reports whether the workspace routing setting names the
-// issue's assignee for the step the issue is in.
-func (s *IssueService) assigneeIsRoutingAgent(ctx context.Context, issue db.Issue) bool {
-	ws, err := s.Queries.GetWorkspace(ctx, issue.WorkspaceID)
-	if err != nil {
-		return false
-	}
-	var settings map[string]any
-	if json.Unmarshal(ws.Settings, &settings) != nil {
-		return false
-	}
-	var project db.Project
-	if issue.ProjectID.Valid {
-		project, _ = s.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: issue.ProjectID, WorkspaceID: issue.WorkspaceID})
-	}
-	routing := RoutingAgentFromSettings(settings).AgentFor(WorkflowScope(ctx, s.Queries, project), issue.Status)
-	return routing != "" && routing == util.UUIDToString(issue.AssigneeID)
 }
