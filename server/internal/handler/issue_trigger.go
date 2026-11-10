@@ -93,6 +93,15 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	if trigger.BlockedEntry {
+		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
+		if err != nil {
+			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
+		} else if skip {
+			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask)
+			return false
+		}
+	}
 	// Checked here as well as at the queue door so the activity names the actor
 	// whose status move or assignment was refused; the door has no actor.
 	var notConfirmed *service.StopNotConfirmedError

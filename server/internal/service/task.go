@@ -1735,6 +1735,7 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
 	if err == nil {
+		s.stampBlockedDispatchSnapshot(ctx, queries, issue, task)
 		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
