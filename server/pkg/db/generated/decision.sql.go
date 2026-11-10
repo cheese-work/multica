@@ -1079,6 +1079,25 @@ func (q *Queries) GetLastAssistantMessageBefore(ctx context.Context, arg GetLast
 	return id, err
 }
 
+const hasOpenDecisionRequestForIssue = `-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2 AND status = 'open'
+)::boolean
+`
+
+type HasOpenDecisionRequestForIssueParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) HasOpenDecisionRequestForIssue(ctx context.Context, arg HasOpenDecisionRequestForIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenDecisionRequestForIssue, arg.WorkspaceID, arg.IssueID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
 WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
 UPDATE decision_answer answer SET
