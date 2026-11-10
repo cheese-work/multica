@@ -1147,6 +1147,7 @@ jobs:
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
           python3 deploy/cd/test-github-api-retry.py
 
       # CHE-773: A/B cutover port agreement, pre-drain refusal, gated
