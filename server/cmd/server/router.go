@@ -2170,6 +2170,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
+				r.Get("/urgent-orphans", h.ListUrgentOrphanIssues)
 				r.Get("/children", h.ListChildrenByParents)
 				r.Get("/grouped", h.ListGroupedIssues)
 				r.Get("/", h.ListIssues)
