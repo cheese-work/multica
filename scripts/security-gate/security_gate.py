@@ -551,23 +551,39 @@ def gate_pr(repo: str, github: str, number: int, default_branch: str, trusted: s
     return head, state, desc
 
 
+def _prs_on_head(github: str, head: str, number: int) -> list[int]:
+    """Open PRs whose head is exactly `head`, always including `number`. The API also lists PRs that merely contain
+    the commit (descendants, forks) with a different head; their objects may not be fetched, so they are dropped."""
+    rows = [json.loads(l) for l in _gh(f"repos/{github}/commits/{head}/pulls", "--jq",
+                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
+    return sorted({r["number"] for r in rows if r["head"] == head} | {number})
+
+
 def _fingerprint(github: str, number: int) -> tuple:
-    """What a success depends on: the PR head, every comment id + edit time, and the current gate status."""
+    """What a success depends on (CHE-4415): for the PR and every open PR on its head, the PR number, head, base ref
+    and base sha and every comment id + edit time, plus the live gate status of the head. One value for the whole set."""
     head = json.loads(_gh(f"repos/{github}/pulls/{number}"))["head"]["sha"]
-    comments = _gh("--paginate", f"repos/{github}/issues/{number}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+    prs = []
+    for n in _prs_on_head(github, head, number):
+        pull = json.loads(_gh(f"repos/{github}/pulls/{n}"))
+        comments = _gh("--paginate", f"repos/{github}/issues/{n}/comments", "--jq", r'.[] | "\(.id) \(.updated_at)"')
+        prs.append((n, pull["head"]["sha"], pull["base"]["ref"], pull["base"]["sha"], comments))
     status = _gh(f"repos/{github}/commits/{head}/status", "--jq",
                  f'[.statuses[] | select(.context=="{CONTEXT}") | .state] | first // ""').strip()
-    return head, comments, status
+    return head, tuple(prs), status
+
+
+def _unchanged(github: str, number: int, before: tuple) -> bool:
+    try:
+        return _fingerprint(github, number) == before
+    except subprocess.CalledProcessError:  # cannot confirm freshness: never a success
+        return False
 
 
 def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
     head, state, desc = gate_pr(a.repo, a.github, a.pr, a.default_branch, trusted, humans, baseline)
-    # The API also lists PRs that merely contain the commit (descendants, forks) with a different head. Their
-    # head objects may not be fetched, so they are filtered here, before any diff is read.
-    rows = [json.loads(l) for l in _gh(f"repos/{a.github}/commits/{head}/pulls", "--jq",
-                                       '.[] | select(.state=="open") | {number, head: .head.sha}').splitlines()]
     results = [(state, desc)]
-    for n in sorted({r["number"] for r in rows if r["head"] == head} - {a.pr}):
+    for n in sorted(set(_prs_on_head(a.github, head, a.pr)) - {a.pr}):
         try:
             h, st, d = gate_pr(a.repo, a.github, n, a.default_branch, trusted, humans, baseline)
         except Exception as e:  # an unreadable sibling must block, never skip the status write
@@ -576,6 +592,42 @@ def _evaluate(a: argparse.Namespace, trusted: set[int], humans: set[int], baseli
             results.append((st, f"#{n}: {d}"))
     state, desc = _out(*combine(results))
     return head, state, desc
+
+
+def _decide(a: argparse.Namespace, trusted: set[int], humans: set[int], baseline: list[str] | None) -> tuple[str, str, str]:
+    """Snapshot, decide, snapshot (CHE-4415, .plans/CHE-4415-gate-freshness-design.md). A success leaves only if the
+    snapshot after the decision equals the one before it, whether it is printed or posted. When the PR keeps moving or
+    the second snapshot cannot be read, the answer is `pending`, never an exit that leaves an older success in place."""
+    for _ in range(FRESHNESS_TRIES):
+        before = _fingerprint(a.github, a.pr)
+        head, state, desc = _evaluate(a, trusted, humans, baseline)
+        if state != "success" or _unchanged(a.github, a.pr, before):
+            return head, state, desc
+    return (before[0], *_out("pending", "changed while it was evaluated; re-run"))
+
+
+def _publish(a: argparse.Namespace, head: str, state: str, desc: str) -> None:
+    """A success is written once: a retry would send a decision older than the failure (it must re-enter _decide). A
+    non-success is retried, and the queue is revoked whether or not the write landed; the job fails if either failed."""
+    if state == "success":
+        _post(a.github, head, state, desc, a.run_url)
+        return
+    errors: list[Exception] = []
+    for attempt in range(3):
+        try:
+            _post(a.github, head, state, desc, a.run_url)
+            break
+        except subprocess.CalledProcessError as e:
+            if attempt == 2:
+                errors.append(e)
+            else:
+                time.sleep(2 * (attempt + 1))
+    try:
+        revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+    except Exception as e:
+        errors.append(e)
+    if errors:
+        raise errors[0]
 
 
 def main() -> int:
@@ -628,20 +680,10 @@ def main() -> int:
         baseline = load_baseline(a.repo) if a.semgrep else None
     except SemgrepError as e:
         sys.exit(f"semgrep baseline: {e}")  # fail the job: no status is posted, the required check stays pending
-    for _ in range(FRESHNESS_TRIES):
-        before = _fingerprint(a.github, a.pr)
-        head, state, desc = _evaluate(a, trusted, humans, baseline)
-        # CHE-4385: the scheduled sweep can run for minutes. A FAIL verdict, a new head or a status change that
-        # landed meanwhile must not be overwritten by a success: re-read, and evaluate again if anything moved.
-        if not a.post or state != "success" or _fingerprint(a.github, a.pr) == before:
-            break
-    else:
-        sys.exit("security-gate: the PR changed on every evaluation; no success posted")
+    head, state, desc = _decide(a, trusted, humans, baseline)
     print(json.dumps({"context": CONTEXT, "sha": head, "state": state, "description": desc}))
     if a.post:
-        _post(a.github, head, state, desc, a.run_url)
-        if state != "success":
-            revoke_queue(a.github, a.pr, a.default_branch, a.run_url)
+        _publish(a, head, state, desc)
     return 0
 
 
