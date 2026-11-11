@@ -134,6 +134,16 @@ multica issue rerun-task <run-id> --issue MUL-123
 multica issue rerun-task <run-id> --issue MUL-123 --fresh
 ```
 
+列出、恢复或丢弃被搁置（parked）的输入（仅限成员），并设置项目的 WIP 上限：
+
+```bash
+multica issue inputs list MUL-123
+multica issue inputs resume MUL-123 --agent <agent>
+multica issue inputs discard MUL-123 --agent <agent>
+multica project wip-limit <project> 3
+multica project wip-limit <project> none
+```
+
 把评论插话到仍在进行中的运行，而不是排队一个后续运行（仅限支持插话的运行；你的评论能启动哪个智能体，就能向它插话）：
 
 ```bash

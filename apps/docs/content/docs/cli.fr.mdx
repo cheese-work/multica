@@ -134,6 +134,16 @@ multica issue rerun-task <run-id> --issue MUL-123
 multica issue rerun-task <run-id> --issue MUL-123 --fresh
 ```
 
+Lister, reprendre ou abandonner les entrées en attente (membres uniquement), et définir la limite WIP d’un projet :
+
+```bash
+multica issue inputs list MUL-123
+multica issue inputs resume MUL-123 --agent <agent>
+multica issue inputs discard MUL-123 --agent <agent>
+multica project wip-limit <project> 3
+multica project wip-limit <project> none
+```
+
 Ajouter un commentaire à une exécution encore en cours, au lieu de mettre une exécution de suivi en file d'attente (uniquement les exécutions qui acceptent des messages supplémentaires, et seulement pour un agent que votre commentaire pourrait démarrer) :
 
 ```bash
