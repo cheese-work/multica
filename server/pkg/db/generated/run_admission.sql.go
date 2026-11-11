@@ -77,8 +77,12 @@ func (q *Queries) BindHeldRunInputs(ctx context.Context, arg BindHeldRunInputsPa
 
 const countProjectWIP = `-- name: CountProjectWIP :one
 SELECT count(*)::bigint FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE i.project_id = $1
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) = $1
   AND ($2::uuid IS NULL OR t.id <> $2::uuid)
   AND (t.status IN ('dispatched', 'running', 'waiting_local_directory') OR t.admission_state = 'reserved')
 `
@@ -292,6 +296,25 @@ func (q *Queries) GetProjectAdmission(ctx context.Context, id pgtype.UUID) (GetP
 	return i, err
 }
 
+const getTaskProjectID = `-- name: GetTaskProjectID :one
+SELECT COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE t.id = $1
+`
+
+// The project a run belongs to: its issue's, a quick-create run's chosen
+// project, or a run-only autopilot's. NULL for chat and project-less runs.
+func (q *Queries) GetTaskProjectID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getTaskProjectID, id)
+	var project_id pgtype.UUID
+	err := row.Scan(&project_id)
+	return project_id, err
+}
+
 const hasQueuedRetryChild = `-- name: HasQueuedRetryChild :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue WHERE parent_task_id = $1 AND status = 'queued'
@@ -465,8 +488,12 @@ func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) 
 }
 
 const listExpiredReservations = `-- name: ListExpiredReservations :many
-SELECT t.id, t.reservation_lease_id, i.project_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
+SELECT t.id, t.reservation_lease_id, COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
 WHERE t.status = 'queued' AND t.admission_state = 'reserved'
   AND t.reservation_expires_at <= now()
 ORDER BY t.reservation_expires_at ASC
@@ -501,9 +528,13 @@ func (q *Queries) ListExpiredReservations(ctx context.Context) ([]ListExpiredRes
 
 const listHeldProjectTasks = `-- name: ListHeldProjectTasks :many
 SELECT t.id, t.issue_id, t.agent_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
-ORDER BY t.priority DESC, i.created_at ASC, t.created_at ASC, t.id ASC
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+ORDER BY t.priority DESC, COALESCE(i.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
 FOR UPDATE OF t SKIP LOCKED
 `
 
@@ -621,9 +652,16 @@ func (q *Queries) ListParkedRunInputs(ctx context.Context, arg ListParkedRunInpu
 }
 
 const listProjectsWithHeldRuns = `-- name: ListProjectsWithHeldRuns :many
-SELECT DISTINCT i.project_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE t.status = 'queued' AND t.admission_state IS NOT NULL AND i.project_id IS NOT NULL
+SELECT DISTINCT COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE t.status = 'queued' AND t.admission_state IS NOT NULL
+  AND COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) IS NOT NULL
 `
 
 // The startup reconcile: projects that still have held or reserved runs.
@@ -711,6 +749,55 @@ func (q *Queries) ParkHeldRunInputs(ctx context.Context, arg ParkHeldRunInputsPa
 	return err
 }
 
+const parkOrphanedRunInputs = `-- name: ParkOrphanedRunInputs :many
+UPDATE run_input r
+SET state = 'parked', park_reason = 'orphaned', updated_at = clock_timestamp()
+WHERE r.state = 'held'
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t
+      WHERE t.issue_id = r.issue_id AND t.agent_id = r.agent_id AND t.status IN ('queued', 'deferred')
+  )
+RETURNING r.workspace_id, r.issue_id, r.agent_id, r.event_id, r.seq, r.kind, r.payload, r.state, r.task_id, r.redelivery_of_task_id, r.park_reason, r.failure_class, r.created_at, r.updated_at
+`
+
+// Held inputs of an (issue, agent) with no queued run to carry them: nothing
+// would ever start them, so they are parked for a member to resume or discard.
+// A run and its input commit together, so a live input always has its run.
+func (q *Queries) ParkOrphanedRunInputs(ctx context.Context) ([]RunInput, error) {
+	rows, err := q.db.Query(ctx, parkOrphanedRunInputs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RunInput{}
+	for rows.Next() {
+		var i RunInput
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.EventID,
+			&i.Seq,
+			&i.Kind,
+			&i.Payload,
+			&i.State,
+			&i.TaskID,
+			&i.RedeliveryOfTaskID,
+			&i.ParkReason,
+			&i.FailureClass,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const parkRunInputs = `-- name: ParkRunInputs :exec
 UPDATE run_input SET state = 'parked', park_reason = $1, failure_class = $2,
     updated_at = clock_timestamp()
@@ -730,8 +817,13 @@ func (q *Queries) ParkRunInputs(ctx context.Context, arg ParkRunInputsParams) er
 
 const projectHasHeldRuns = `-- name: ProjectHasHeldRuns :one
 SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
-    WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+    SELECT 1 FROM agent_task_queue t
+    LEFT JOIN issue i ON i.id = t.issue_id
+    LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+    LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+    WHERE COALESCE(i.project_id,
+             CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+             ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
 )
 `
 

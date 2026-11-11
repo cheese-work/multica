@@ -3750,3 +3750,12 @@ type WorkspaceShareLink struct {
 	IsActive    bool               `json:"is_active"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
+
+type WriteEvent struct {
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventKey     string             `json:"event_key"`
+	State        string             `json:"state"`
+	StatusCode   pgtype.Int4        `json:"status_code"`
+	ResponseBody []byte             `json:"response_body"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+}

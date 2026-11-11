@@ -20,7 +20,11 @@ import (
 // at its WIP limit, stays queued with admission_state 'held'. Every start path
 // runs admission in one transaction under a per-project advisory lock.
 
-const reservationLease = 2 * time.Minute
+const (
+	reservationLease = 2 * time.Minute
+	// writeEventMaxAge is how long a finished write keeps its stored response.
+	writeEventMaxAge = 7 * 24 * time.Hour
+)
 
 // RunInput is one trigger of an (issue, agent) run, with a stable event id.
 type RunInput struct {
@@ -52,15 +56,12 @@ func lockProjectAdmission(ctx context.Context, q *db.Queries, projectID pgtype.U
 // admitClaimedTask runs inside the claim transaction. A refused run goes back to
 // the queue as held; an admitted run takes every held input of its (issue, agent).
 func admitClaimedTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) (held bool, err error) {
-	if !task.IssueID.Valid {
-		return false, nil
-	}
-	issue, err := q.GetIssue(ctx, task.IssueID)
+	projectID, err := q.GetTaskProjectID(ctx, task.ID)
 	if err != nil {
-		return false, fmt.Errorf("get issue for admission: %w", err)
+		return false, fmt.Errorf("get task project for admission: %w", err)
 	}
-	if issue.ProjectID.Valid {
-		project, err := lockProjectAdmission(ctx, q, issue.ProjectID)
+	if projectID.Valid {
+		project, err := lockProjectAdmission(ctx, q, projectID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return false, err
 		}
@@ -69,7 +70,7 @@ func admitClaimedTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue
 			if project.Status == "paused" {
 				reason = "project paused"
 			} else if limit := wipLimit(project.Settings); limit > 0 {
-				n, err := q.CountProjectWIP(ctx, db.CountProjectWIPParams{ProjectID: issue.ProjectID, ExcludedTaskID: task.ID})
+				n, err := q.CountProjectWIP(ctx, db.CountProjectWIPParams{ProjectID: projectID, ExcludedTaskID: task.ID})
 				if err != nil {
 					return false, fmt.Errorf("count project wip: %w", err)
 				}
@@ -84,6 +85,9 @@ func admitClaimedTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue
 				return true, nil
 			}
 		}
+	}
+	if !task.IssueID.Valid {
+		return false, nil
 	}
 	if _, err := q.BindHeldRunInputs(ctx, db.BindHeldRunInputsParams{TaskID: task.ID, IssueID: task.IssueID, AgentID: task.AgentID}); err != nil {
 		return false, fmt.Errorf("bind run inputs: %w", err)
@@ -180,19 +184,16 @@ func (s *TaskService) releaseAfterRun(tasks ...db.AgentTaskQueue) {
 	defer cancel()
 	seen := map[pgtype.UUID]bool{}
 	for _, t := range tasks {
-		if !t.IssueID.Valid {
+		projectID, err := s.Queries.GetTaskProjectID(ctx, t.ID)
+		if err != nil || !projectID.Valid || seen[projectID] {
 			continue
 		}
-		issue, err := s.Queries.GetIssue(ctx, t.IssueID)
-		if err != nil || !issue.ProjectID.Valid || seen[issue.ProjectID] {
+		seen[projectID] = true
+		if has, err := s.Queries.ProjectHasHeldRuns(ctx, projectID); err != nil || !has {
 			continue
 		}
-		seen[issue.ProjectID] = true
-		if has, err := s.Queries.ProjectHasHeldRuns(ctx, issue.ProjectID); err != nil || !has {
-			continue
-		}
-		if err := s.ReleaseProjectAdmission(ctx, issue.ProjectID); err != nil {
-			slog.Warn("release project admission failed", "project_id", util.UUIDToString(issue.ProjectID), "error", err)
+		if err := s.ReleaseProjectAdmission(ctx, projectID); err != nil {
+			slog.Warn("release project admission failed", "project_id", util.UUIDToString(projectID), "error", err)
 		}
 	}
 }
@@ -243,11 +244,22 @@ func (s *TaskService) ExpireDueReservations(ctx context.Context) (int, error) {
 	return expired, nil
 }
 
-// ReconcileAdmission is the one pass after a restart: expire lapsed reservations,
-// then release every project that still holds runs.
+// ReconcileAdmission is the one admission pass (startup and the 15 s tick):
+// expire lapsed reservations, park held inputs that have no run, then release
+// every project that still holds runs. Finished write events past their age are purged.
 func (s *TaskService) ReconcileAdmission(ctx context.Context) error {
 	if _, err := s.ExpireDueReservations(ctx); err != nil {
 		return err
+	}
+	parked, err := s.Queries.ParkOrphanedRunInputs(ctx)
+	if err != nil {
+		return fmt.Errorf("park orphaned run inputs: %w", err)
+	}
+	if len(parked) > 0 {
+		slog.Warn("parked held run inputs without a run", "count", len(parked))
+	}
+	if _, err := s.Queries.DeleteOldWriteEvents(ctx, writeEventMaxAge.Seconds()); err != nil {
+		return fmt.Errorf("purge write events: %w", err)
 	}
 	projects, err := s.Queries.ListProjectsWithHeldRuns(ctx)
 	if err != nil {
@@ -282,20 +294,46 @@ func recordRunInput(ctx context.Context, q *db.Queries, in RunInput) (bool, erro
 	return err == nil, err
 }
 
-// recordEnqueuedInput records the trigger of a freshly inserted run. The event id
-// is the trigger comment when there is one, else the run itself.
+type eventIDKey struct{}
+
+// WithEventID carries the stable id of the event that causes a run, so a
+// redelivery of that event records the same input again as a no-op.
+func WithEventID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, eventIDKey{}, id)
+}
+
+// recordEnqueuedInput records the trigger of a freshly inserted run. Event id,
+// first match: the caller's event id, the trigger comment, the run itself.
+// Evidence refs are not event ids: two assignments share one.
 func recordEnqueuedInput(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, p db.CreateAgentTaskParams) error {
 	if skip, _ := ctx.Value(skipRunInputKey{}).(bool); skip || !task.IssueID.Valid {
 		return nil
 	}
+	callerEvent, _ := ctx.Value(eventIDKey{}).(string)
 	event, kind := "task:"+util.UUIDToString(task.ID), "trigger"
-	if p.TriggerCommentID.Valid {
+	switch {
+	case callerEvent != "":
+		event = "event:" + callerEvent
+		if p.TriggerCommentID.Valid {
+			kind = "comment"
+		}
+	case p.TriggerCommentID.Valid:
 		event, kind = "comment:"+util.UUIDToString(p.TriggerCommentID), "comment"
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"task_id":            util.UUIDToString(task.ID),
-		"trigger_comment_id": util.UUIDToString(p.TriggerCommentID),
-		"trigger_summary":    p.TriggerSummary.String,
+		"kind":                 kind,
+		"event_id":             callerEvent,
+		"task_id":              util.UUIDToString(task.ID),
+		"trigger_comment_id":   util.UUIDToString(p.TriggerCommentID),
+		"trigger_summary":      p.TriggerSummary.String,
+		"handoff_note":         p.HandoffNote.String,
+		"originator_user_id":   util.UUIDToString(p.OriginatorUserID),
+		"originator_source":    p.OriginatorSource.String,
+		"trigger_evidence":     p.TriggerEvidenceKind.String,
+		"trigger_evidence_ref": util.UUIDToString(p.TriggerEvidenceRefID),
 	})
 	_, err := recordRunInput(ctx, q, RunInput{WorkspaceID: issue.WorkspaceID, IssueID: task.IssueID, AgentID: task.AgentID, EventID: event, Kind: kind, Payload: payload})
 	return err
@@ -342,24 +380,42 @@ func redeliverToRetry(ctx context.Context, q *db.Queries, parent db.AgentTaskQue
 }
 
 // ResumeParkedInputs is the explicit resume: parked inputs return to held and a
-// run is queued to carry them.
+// run is queued to carry them, in one transaction. Nothing is re-held for an
+// agent the issue is no longer assigned to; a refused carrier run rolls the
+// re-hold back, so no input is left held without a run.
 func (s *TaskService) ResumeParkedInputs(ctx context.Context, issueID, agentID pgtype.UUID) (int, error) {
-	rows, err := s.Queries.ReheldParkedRunInputs(ctx, db.ReheldParkedRunInputsParams{IssueID: issueID, AgentID: agentID})
+	var count int
+	var after func()
+	err := s.runInTx(ctx, func(q *db.Queries) error {
+		issue, err := q.GetIssue(ctx, issueID)
+		if err != nil {
+			return err
+		}
+		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+			return nil
+		}
+		rows, err := q.ReheldParkedRunInputs(ctx, db.ReheldParkedRunInputsParams{IssueID: issueID, AgentID: agentID})
+		if err != nil {
+			return fmt.Errorf("resume parked inputs: %w", err)
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		// A pending run already carries the held inputs when it is claimed.
+		after, err = s.TxScoped(q).EnqueueIssueRunInTx(context.WithValue(ctx, skipRunInputKey{}, true), q, issue, pgtype.UUID{}, nil)
+		if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
+			return err
+		}
+		count = len(rows)
+		return nil
+	})
 	if err != nil {
-		return 0, fmt.Errorf("resume parked inputs: %w", err)
+		return 0, err
 	}
-	issue, err := s.Queries.GetIssue(ctx, issueID)
-	if err != nil {
-		return len(rows), err
+	if after != nil {
+		after()
 	}
-	if len(rows) == 0 || issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
-		return len(rows), nil
-	}
-	_, err = s.EnqueueTaskForIssue(context.WithValue(ctx, skipRunInputKey{}, true), issue)
-	if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
-		return len(rows), err
-	}
-	return len(rows), nil
+	return count, nil
 }
 
 // DiscardParkedInputs drops the parked batch for good.

@@ -15,8 +15,12 @@ SELECT id, workspace_id, status, settings FROM project WHERE id = $1;
 -- Runs of the project's issues that hold a slot: dispatched, running or
 -- reserved. excluded_task_id lets a claim leave out its own row.
 SELECT count(*)::bigint FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE i.project_id = @project_id
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) = @project_id
   AND (sqlc.narg('excluded_task_id')::uuid IS NULL OR t.id <> sqlc.narg('excluded_task_id')::uuid)
   AND (t.status IN ('dispatched', 'running', 'waiting_local_directory') OR t.admission_state = 'reserved');
 
@@ -33,9 +37,13 @@ RETURNING *;
 -- Held runs of one project in focus order: priority (kept in step with the
 -- issue's priority), then issue creation time.
 SELECT t.id, t.issue_id, t.agent_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
-ORDER BY t.priority DESC, i.created_at ASC, t.created_at ASC, t.id ASC
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+ORDER BY t.priority DESC, COALESCE(i.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
 FOR UPDATE OF t SKIP LOCKED;
 
 -- name: ReserveHeldTask :one
@@ -66,8 +74,12 @@ WHERE agent_task_queue.id = (SELECT q.id FROM agent_task_queue q WHERE q.id = @i
 RETURNING *;
 
 -- name: ListExpiredReservations :many
-SELECT t.id, t.reservation_lease_id, i.project_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
+SELECT t.id, t.reservation_lease_id, COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
 WHERE t.status = 'queued' AND t.admission_state = 'reserved'
   AND t.reservation_expires_at <= now()
 ORDER BY t.reservation_expires_at ASC
@@ -75,9 +87,16 @@ LIMIT 200;
 
 -- name: ListProjectsWithHeldRuns :many
 -- The startup reconcile: projects that still have held or reserved runs.
-SELECT DISTINCT i.project_id FROM agent_task_queue t
-JOIN issue i ON i.id = t.issue_id
-WHERE t.status = 'queued' AND t.admission_state IS NOT NULL AND i.project_id IS NOT NULL;
+SELECT DISTINCT COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE t.status = 'queued' AND t.admission_state IS NOT NULL
+  AND COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) IS NOT NULL;
 
 -- name: InsertRunInput :one
 -- One row per trigger. A retry of the same event id changes nothing.
@@ -149,6 +168,35 @@ SELECT EXISTS (
 
 -- name: ProjectHasHeldRuns :one
 SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
-    WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+    SELECT 1 FROM agent_task_queue t
+    LEFT JOIN issue i ON i.id = t.issue_id
+    LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+    LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+    WHERE COALESCE(i.project_id,
+             CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+             ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
 );
+
+-- name: GetTaskProjectID :one
+-- The project a run belongs to: its issue's, a quick-create run's chosen
+-- project, or a run-only autopilot's. NULL for chat and project-less runs.
+SELECT COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id) AS project_id FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+WHERE t.id = $1;
+
+-- name: ParkOrphanedRunInputs :many
+-- Held inputs of an (issue, agent) with no queued run to carry them: nothing
+-- would ever start them, so they are parked for a member to resume or discard.
+-- A run and its input commit together, so a live input always has its run.
+UPDATE run_input r
+SET state = 'parked', park_reason = 'orphaned', updated_at = clock_timestamp()
+WHERE r.state = 'held'
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t
+      WHERE t.issue_id = r.issue_id AND t.agent_id = r.agent_id AND t.status IN ('queued', 'deferred')
+  )
+RETURNING r.*;
