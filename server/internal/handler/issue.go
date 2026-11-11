@@ -3745,6 +3745,20 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Outside any project, with no override, the issue takes the Default's
+	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
+	if !workflowProjectID.Valid && createWorkflow == nil {
+		outside, err := issueworkflow.OutsideProject(r.Context(), h.Queries, wsUUID)
+		if err != nil {
+			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return
+		}
+		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
+			writeIssueWorkflowError(w, err)
+			return
+		}
+	}
 	if createWorkflow != nil {
 		// A creator who picked no status gets the workflow's start status.
 		if req.Status == "" {
