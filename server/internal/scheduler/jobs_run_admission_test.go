@@ -5,11 +5,16 @@ import (
 	"testing"
 )
 
-type fakeAdmission struct{ expire, reconcile int }
+type fakeAdmission struct{ expire, reconcile, release int }
 
 func (f *fakeAdmission) ExpireDueReservations(context.Context) (int, error) {
 	f.expire++
 	return 2, nil
+}
+
+func (f *fakeAdmission) ReleaseObligations(context.Context) (int, error) {
+	f.release++
+	return 3, nil
 }
 
 func (f *fakeAdmission) ReconcileAdmission(context.Context) error {
@@ -30,5 +35,20 @@ func TestRunAdmissionExpiryJobDeliversOnlyDueExpiryEvents(t *testing.T) {
 	}
 	if res.RowsAffected != 2 {
 		t.Fatalf("RowsAffected = %d, want 2", res.RowsAffected)
+	}
+}
+
+// The tick also delivers the releases owed by ended runs (CHE-5265).
+func TestRunAdmissionExpiryJobDeliversOwedReleases(t *testing.T) {
+	f := &fakeAdmission{}
+	res, err := RunAdmissionExpiryJob(f).Handler(context.Background(), HandlerInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.release != 1 {
+		t.Fatalf("tick ran ReleaseObligations %d times, want 1", f.release)
+	}
+	if res.RowsAffected != 5 {
+		t.Fatalf("RowsAffected = %d, want 5 (2 expired + 3 released)", res.RowsAffected)
 	}
 }

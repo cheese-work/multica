@@ -49,6 +49,9 @@ type TaskService struct {
 
 	Queries   *db.Queries
 	TxStarter TxStarter
+	// afterReleaseRead is a test hook: it runs in a release transaction after
+	// the obligation rows are read and before they are deleted.
+	afterReleaseRead func()
 	Hub       *realtime.Hub
 	Bus       *events.Bus
 	Analytics analytics.Client

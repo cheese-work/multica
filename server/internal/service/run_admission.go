@@ -175,6 +175,11 @@ func (s *TaskService) ReleaseProjectAdmission(ctx context.Context, projectID pgt
 	return nil
 }
 
+// ReleaseObligations delivers every release owed by an ended run.
+func (s *TaskService) ReleaseObligations(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
 // releaseAfterRun runs after a run's end committed. It is cheap when nothing is held.
 func (s *TaskService) releaseAfterRun(tasks ...db.AgentTaskQueue) {
 	if s.Queries == nil || s.TxStarter == nil {

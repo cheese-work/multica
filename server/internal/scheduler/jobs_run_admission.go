@@ -8,6 +8,7 @@ import (
 // AdmissionExpirer delivers the lease-expiry events that are due.
 type AdmissionExpirer interface {
 	ExpireDueReservations(ctx context.Context) (int, error)
+	ReleaseObligations(ctx context.Context) (int, error)
 }
 
 // RunAdmissionExpiryJob delivers the durable lease-expiry event of a reserved
