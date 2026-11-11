@@ -5710,6 +5710,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				}
 			}
 		}
+		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
+			s.stampBlockedDispatchSnapshot(ctx, s.Queries, issue, task)
+		} else {
+			slog.Warn("blocked dispatch completion snapshot unavailable", "issue_id", util.UUIDToString(task.IssueID), "error", err)
+		}
 	}
 
 	// Quick-create tasks: locate the issue the agent just created and push
