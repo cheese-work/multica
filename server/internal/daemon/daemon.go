@@ -8760,10 +8760,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.
-	if shimDir, err := installGuardShims(taskTempDir); err != nil {
+	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
-	} else {
-		withGuardShims(agentEnv, shimDir)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
