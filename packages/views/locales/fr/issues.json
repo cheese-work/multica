@@ -1692,6 +1692,8 @@
       "name": "Nom",
       "name_placeholder": "ex. Livraison",
       "description": "Description",
+      "max_runs": "Exécutions max par ticket",
+      "max_runs_invalid": "Saisissez un nombre entier de 1 à {{max}}, ou laissez vide pour la valeur par défaut ({{default}}).",
       "steps": "Étapes",
       "add_step": "Ajouter une étape",
       "start": "Début",
