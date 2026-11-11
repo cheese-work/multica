@@ -11,26 +11,53 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const applyWriteEvent = `-- name: ApplyWriteEvent :execrows
+UPDATE write_event SET state = 'applied'
+WHERE workspace_id = $1 AND event_key = $2 AND owner = $3
+  AND state IN ('pending', 'applied')
+`
+
+type ApplyWriteEventParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	EventKey    string      `json:"event_key"`
+	Owner       pgtype.UUID `json:"owner"`
+}
+
+// Run inside the write's own transaction: the row lock holds off a competing
+// retake until the write commits or rolls back, and zero rows means this
+// request no longer owns the claim. Idempotent for the owner, so a request
+// with more than one transaction can mark each.
+func (q *Queries) ApplyWriteEvent(ctx context.Context, arg ApplyWriteEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, applyWriteEvent, arg.WorkspaceID, arg.EventKey, arg.Owner)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const claimWriteEvent = `-- name: ClaimWriteEvent :one
 
-INSERT INTO write_event (workspace_id, event_key) VALUES ($1, $2)
+INSERT INTO write_event (workspace_id, event_key, owner) VALUES ($1, $2, $3)
 ON CONFLICT (workspace_id, event_key) DO NOTHING
-RETURNING workspace_id, event_key, state, status_code, response_body, created_at
+RETURNING workspace_id, event_key, owner, state, status_code, response_body, created_at
 `
 
 type ClaimWriteEventParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	EventKey    string      `json:"event_key"`
+	Owner       pgtype.UUID `json:"owner"`
 }
 
 // Platform writes that carry a stable event id (CHE-5213). A redelivered write
-// replays the stored response instead of writing again.
+// replays the stored response instead of writing again. owner is the request
+// that holds the claim; every state change names it.
 func (q *Queries) ClaimWriteEvent(ctx context.Context, arg ClaimWriteEventParams) (WriteEvent, error) {
-	row := q.db.QueryRow(ctx, claimWriteEvent, arg.WorkspaceID, arg.EventKey)
+	row := q.db.QueryRow(ctx, claimWriteEvent, arg.WorkspaceID, arg.EventKey, arg.Owner)
 	var i WriteEvent
 	err := row.Scan(
 		&i.WorkspaceID,
 		&i.EventKey,
+		&i.Owner,
 		&i.State,
 		&i.StatusCode,
 		&i.ResponseBody,
@@ -39,9 +66,10 @@ func (q *Queries) ClaimWriteEvent(ctx context.Context, arg ClaimWriteEventParams
 	return i, err
 }
 
-const completeWriteEvent = `-- name: CompleteWriteEvent :exec
+const completeWriteEvent = `-- name: CompleteWriteEvent :execrows
 UPDATE write_event SET state = 'done', status_code = $1, response_body = $2
-WHERE workspace_id = $3 AND event_key = $4 AND state = 'pending'
+WHERE workspace_id = $3 AND event_key = $4 AND owner = $5
+  AND state IN ('pending', 'applied')
 `
 
 type CompleteWriteEventParams struct {
@@ -49,16 +77,21 @@ type CompleteWriteEventParams struct {
 	ResponseBody []byte      `json:"response_body"`
 	WorkspaceID  pgtype.UUID `json:"workspace_id"`
 	EventKey     string      `json:"event_key"`
+	Owner        pgtype.UUID `json:"owner"`
 }
 
-func (q *Queries) CompleteWriteEvent(ctx context.Context, arg CompleteWriteEventParams) error {
-	_, err := q.db.Exec(ctx, completeWriteEvent,
+func (q *Queries) CompleteWriteEvent(ctx context.Context, arg CompleteWriteEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, completeWriteEvent,
 		arg.StatusCode,
 		arg.ResponseBody,
 		arg.WorkspaceID,
 		arg.EventKey,
+		arg.Owner,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteOldWriteEvents = `-- name: DeleteOldWriteEvents :execrows
@@ -74,7 +107,7 @@ func (q *Queries) DeleteOldWriteEvents(ctx context.Context, maxAgeSecs float64) 
 }
 
 const getWriteEvent = `-- name: GetWriteEvent :one
-SELECT workspace_id, event_key, state, status_code, response_body, created_at FROM write_event WHERE workspace_id = $1 AND event_key = $2
+SELECT workspace_id, event_key, owner, state, status_code, response_body, created_at FROM write_event WHERE workspace_id = $1 AND event_key = $2
 `
 
 type GetWriteEventParams struct {
@@ -88,6 +121,7 @@ func (q *Queries) GetWriteEvent(ctx context.Context, arg GetWriteEventParams) (W
 	err := row.Scan(
 		&i.WorkspaceID,
 		&i.EventKey,
+		&i.Owner,
 		&i.State,
 		&i.StatusCode,
 		&i.ResponseBody,
@@ -97,41 +131,51 @@ func (q *Queries) GetWriteEvent(ctx context.Context, arg GetWriteEventParams) (W
 }
 
 const releaseWriteEvent = `-- name: ReleaseWriteEvent :exec
-DELETE FROM write_event WHERE workspace_id = $1 AND event_key = $2 AND state = 'pending'
+DELETE FROM write_event WHERE workspace_id = $1 AND event_key = $2 AND owner = $3 AND state = 'pending'
 `
 
 type ReleaseWriteEventParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	EventKey    string      `json:"event_key"`
+	Owner       pgtype.UUID `json:"owner"`
 }
 
-// A failed write leaves no trace, so the redelivery can try again.
+// A failed write that never committed leaves no trace, so the redelivery can
+// try again. An 'applied' claim stays: its write is in the database.
 func (q *Queries) ReleaseWriteEvent(ctx context.Context, arg ReleaseWriteEventParams) error {
-	_, err := q.db.Exec(ctx, releaseWriteEvent, arg.WorkspaceID, arg.EventKey)
+	_, err := q.db.Exec(ctx, releaseWriteEvent, arg.WorkspaceID, arg.EventKey, arg.Owner)
 	return err
 }
 
 const retakeStaleWriteEvent = `-- name: RetakeStaleWriteEvent :one
-UPDATE write_event SET created_at = now()
-WHERE workspace_id = $1 AND event_key = $2 AND state = 'pending'
-  AND created_at < now() - make_interval(secs => $3::double precision)
-RETURNING workspace_id, event_key, state, status_code, response_body, created_at
+UPDATE write_event SET owner = $1, created_at = now()
+WHERE workspace_id = $2 AND event_key = $3 AND state = 'pending'
+  AND created_at < now() - make_interval(secs => $4::double precision)
+RETURNING workspace_id, event_key, owner, state, status_code, response_body, created_at
 `
 
 type RetakeStaleWriteEventParams struct {
+	Owner       pgtype.UUID `json:"owner"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	EventKey    string      `json:"event_key"`
 	StaleSecs   float64     `json:"stale_secs"`
 }
 
-// A write that never finished (crash between claim and completion) can be taken
-// again once its claim is older than stale_secs.
+// A claim that never reached its write's transaction (still 'pending') can be
+// taken over once it is older than stale_secs. An 'applied' claim already
+// committed its write and is never retaken.
 func (q *Queries) RetakeStaleWriteEvent(ctx context.Context, arg RetakeStaleWriteEventParams) (WriteEvent, error) {
-	row := q.db.QueryRow(ctx, retakeStaleWriteEvent, arg.WorkspaceID, arg.EventKey, arg.StaleSecs)
+	row := q.db.QueryRow(ctx, retakeStaleWriteEvent,
+		arg.Owner,
+		arg.WorkspaceID,
+		arg.EventKey,
+		arg.StaleSecs,
+	)
 	var i WriteEvent
 	err := row.Scan(
 		&i.WorkspaceID,
 		&i.EventKey,
+		&i.Owner,
 		&i.State,
 		&i.StatusCode,
 		&i.ResponseBody,

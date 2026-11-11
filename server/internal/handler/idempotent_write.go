@@ -2,13 +2,16 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -76,58 +79,86 @@ func (h *Handler) IdempotentWrite(next http.Handler) http.Handler {
 		}
 		key := writeEventKey(r, id)
 		r = r.WithContext(service.WithEventID(r.Context(), id))
-		ctx := r.Context()
-
-		_, err = h.Queries.ClaimWriteEvent(ctx, db.ClaimWriteEventParams{WorkspaceID: workspaceID, EventKey: key})
-		if errors.Is(err, pgx.ErrNoRows) {
-			if replayed := h.replayWriteEvent(w, r, workspaceID, key); replayed {
-				return
-			}
-		} else if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to record event")
+		owner := pgtype.UUID{Bytes: uuid.New(), Valid: true}
+		if !h.claimWriteEvent(w, r, workspaceID, key, owner) {
 			return
 		}
+		r = r.WithContext(service.WithWriteEventClaim(r.Context(), workspaceID, key, owner))
+		ctx := r.Context()
 
 		rec := &recordingWriter{ResponseWriter: w}
 		next.ServeHTTP(rec, r)
 		if rec.status >= 200 && rec.status < 300 {
-			_ = h.Queries.CompleteWriteEvent(ctx, db.CompleteWriteEventParams{
-				WorkspaceID: workspaceID, EventKey: key, StatusCode: pgtype.Int4{Int32: int32(rec.status), Valid: true}, ResponseBody: rec.body.Bytes(),
-			})
+			// The write is committed. A completion that fails here leaves the
+			// claim 'applied', which a redelivery answers without writing.
+			done := db.CompleteWriteEventParams{
+				WorkspaceID: workspaceID, EventKey: key, Owner: owner,
+				StatusCode: pgtype.Int4{Int32: int32(rec.status), Valid: true}, ResponseBody: rec.body.Bytes(),
+			}
+			for attempt := 0; attempt < 3; attempt++ {
+				_, err := h.Queries.CompleteWriteEvent(context.WithoutCancel(ctx), done)
+				if err == nil {
+					break
+				}
+				slog.Warn("write event completion failed", "error", err, "attempt", attempt+1)
+			}
 			return
 		}
-		_ = h.Queries.ReleaseWriteEvent(ctx, db.ReleaseWriteEventParams{WorkspaceID: workspaceID, EventKey: key})
+		_ = h.Queries.ReleaseWriteEvent(context.WithoutCancel(ctx), db.ReleaseWriteEventParams{WorkspaceID: workspaceID, EventKey: key, Owner: owner})
 	})
 }
 
-// replayWriteEvent answers a redelivery. It returns false when the earlier claim
-// went stale and this request now owns the write.
-func (h *Handler) replayWriteEvent(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, key string) bool {
+// claimWriteEvent makes this request the owner of the event id's claim, or
+// answers the request and returns false. A request runs its write only as the
+// owner: a replay, an unfinished claim held by another request and a lost race
+// all answer here.
+func (h *Handler) claimWriteEvent(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, key string, owner pgtype.UUID) bool {
 	ctx := r.Context()
-	ev, err := h.Queries.GetWriteEvent(ctx, db.GetWriteEventParams{WorkspaceID: workspaceID, EventKey: key})
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Released between the claim and the read: the write failed, so go on.
-		return false
-	}
-	if err != nil {
+	// A claim released between our insert and our read frees the id, so go round
+	// again rather than write without owning it.
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err := h.Queries.ClaimWriteEvent(ctx, db.ClaimWriteEventParams{WorkspaceID: workspaceID, EventKey: key, Owner: owner})
+		if err == nil {
+			return true
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to record event")
+			return false
+		}
+		ev, err := h.Queries.GetWriteEvent(ctx, db.GetWriteEventParams{WorkspaceID: workspaceID, EventKey: key})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read event")
+			return false
+		}
+		switch ev.State {
+		case "done":
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(IdempotentReplayHeader, "true")
+			w.WriteHeader(int(ev.StatusCode.Int32))
+			_, _ = w.Write(ev.ResponseBody)
+			return false
+		case "applied":
+			// Committed, but its response was never stored.
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set(IdempotentReplayHeader, "true")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"applied":true,"idempotent_replay":true}`))
+			return false
+		}
+		_, err = h.Queries.RetakeStaleWriteEvent(ctx, db.RetakeStaleWriteEventParams{WorkspaceID: workspaceID, EventKey: key, Owner: owner, StaleSecs: writeEventStale.Seconds()})
+		if err == nil {
+			return true
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "an earlier write with this event id is still in progress")
+			return false
+		}
 		writeError(w, http.StatusInternalServerError, "failed to read event")
-		return true
-	}
-	if ev.State == "done" {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(IdempotentReplayHeader, "true")
-		w.WriteHeader(int(ev.StatusCode.Int32))
-		_, _ = w.Write(ev.ResponseBody)
-		return true
-	}
-	_, err = h.Queries.RetakeStaleWriteEvent(ctx, db.RetakeStaleWriteEventParams{WorkspaceID: workspaceID, EventKey: key, StaleSecs: writeEventStale.Seconds()})
-	if err == nil {
 		return false
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusConflict, "an earlier write with this event id is still in progress")
-		return true
-	}
-	writeError(w, http.StatusInternalServerError, "failed to read event")
-	return true
+	writeError(w, http.StatusConflict, "the event id is contended; retry")
+	return false
 }

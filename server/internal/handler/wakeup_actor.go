@@ -73,6 +73,10 @@ func (h *Handler) beginWakeupWrite(ctx context.Context) (pgx.Tx, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := service.ApplyWriteEvent(ctx, h.Queries.WithTx(tx)); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
 	if scope, ok := ctx.Value(projectWriteScopeKey{}).(projectWriteScope); ok {
 		queries := h.Queries.WithTx(tx)
 		if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, scope.workspaceID); err != nil {
