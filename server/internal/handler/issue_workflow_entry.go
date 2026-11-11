@@ -114,7 +114,7 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	humans, err := h.workflowHumans(ctx, step, project, prev.WorkspaceID, prev.RequestedByID)
+	humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID)
 	if err != nil {
 		return nil, err
 	}
@@ -156,7 +156,7 @@ func (e *createHandoffError) Error() string { return e.message }
 // calls it under the catalog and project locks.
 func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		humans, err := h.workflowHumans(ctx, step, project, project.WorkspaceID, requestedByID)
+		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID)
 		if err != nil {
 			return pgtype.Text{}, pgtype.UUID{}, err
 		}
@@ -172,23 +172,23 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 	}
 }
 
-// handoffRunReasonTargetDiffers records that a handoff run started although the
-// caller asked for no run: the step's handler is not the caller.
-const handoffRunReasonTargetDiffers = "handoff_target_differs"
+// handoffRunReasonStageQueueFull records why a handoff started no run: the
+// handler's WIP limit for the step's stage is reached, so the stage queue holds
+// the run until the scheduler releases it (CHE-3611).
+const handoffRunReasonStageQueueFull = "stage_queue_full"
 
-// suppressRunForWrite is the write's suppress_run after the handoff rule:
-// --no-start says the caller's own work is already underway, which holds only
-// when the caller is the agent the handoff goes to. A handoff to anyone else
-// keeps its run, or nobody starts it. The reason is set when the flag was
-// overridden.
-func (h *Handler) suppressRunForWrite(ctx context.Context, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, handoff *workflowHandoff, suppressRun bool) (suppress bool, reason string) {
-	if !suppressRun || handoff == nil {
-		return suppressRun, ""
+// deferHandoffRun is the run flag and reason a handoff records once the stage
+// queue is consulted: a run the queue will refuse is not started. It reads the
+// queue and writes nothing; the enqueue that follows stays the authority.
+func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun bool, runReason string) (bool, string) {
+	if !willRun {
+		return false, runReason
 	}
-	if actorType == "agent" && h.handedToAgent(ctx, prev, params, true) == actorID {
-		return true, ""
+	snap, err := service.LoadStageQueueSnapshot(ctx, h.Queries, issue)
+	if err == nil && snap.State == "queued" {
+		return false, handoffRunReasonStageQueueFull
 	}
-	return false, handoffRunReasonTargetDiffers
+	return true, runReason
 }
 
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
@@ -204,7 +204,7 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 	if runStarted && note != "" {
 		out["note"] = note
 	}
-	if runStarted && runReason != "" {
+	if runReason != "" && (runStarted || runReason == handoffRunReasonStageQueueFull) {
 		out["run_reason"] = runReason
 	}
 	return out
@@ -609,7 +609,10 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 // stored ids outlive the member row. Other handlers need none of this, so they
 // skip the lookups. A workspace with no owner is not an error; a failed lookup
 // is, so the write fails instead of leaving the issue unassigned.
-func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+	if step.Handler.Type == issueworkflow.HandlerAgent {
+		return issueworkflow.Humans{RoutingAgent: routingAgentFor(ctx, q, workspaceID, project, step.StatusKey)}, nil
+	}
 	if step.Handler.Type != issueworkflow.HandlerHumanByRole {
 		return issueworkflow.Humans{}, nil
 	}
@@ -648,7 +651,7 @@ func (h *Handler) workflowHumans(ctx context.Context, step issueworkflow.Step, p
 func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project db.Project, step issueworkflow.Step) string {
 	// A brief only names the handler; on a lookup failure it names the fallbacks
 	// that need no lookup. The write that matters resolves it again and fails.
-	humans, err := h.workflowHumans(ctx, step, project, issue.WorkspaceID, issue.RequestedByID)
+	humans, err := h.workflowHumans(ctx, h.Queries, step, project, issue.WorkspaceID, issue.RequestedByID)
 	if err != nil {
 		slog.Warn("workflow brief: resolve human handler", "issue_id", uuidToString(issue.ID), "error", err)
 	}

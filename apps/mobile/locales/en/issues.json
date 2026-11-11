@@ -115,7 +115,9 @@
   },
   "errors": {
     "create_failed": "Failed to create issue",
-    "load_failed": "Failed to load issues: {{message}}"
+    "load_failed": "Failed to load issues: {{message}}",
+    "data_error": "This issue has data the app cannot read.",
+    "not_found": "Issue not found."
   },
   "empty": {
     "filtered": "No issues match the current filters.",

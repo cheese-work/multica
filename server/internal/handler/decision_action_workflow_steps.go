@@ -32,6 +32,7 @@ var workflowSteps = &Handler{}
 
 func init() {
 	registerConfigChange(decisionaction.WorkflowStepsSet, configChange{
+		Fields: []string{workflowStepsField, workflowInstructionsField},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict, false)
 			if err != nil {
@@ -148,6 +149,7 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 		return nil, err
 	}
 	keepStoredEntry(steps, live)
+	keepStoredWaits(steps, inputs, live)
 	name, description, steps := issueworkflow.Normalize(workflow.Name, workflow.Description, steps)
 	catalog, err := workflowSteps.workflowStatusCatalog(ctx, queries, workflow.WorkspaceID)
 	if err != nil {

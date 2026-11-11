@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CoreProvider } from "@multica/core/platform";
+import type { WSClient } from "@multica/core/api/ws-client";
 import { pickLocale, type SupportedLocale } from "@multica/core/i18n";
 import { useAuthStore } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
@@ -29,6 +30,12 @@ import { DesktopClientUsageReporter } from "./platform/client-usage-reporter";
 import { DiagnosticRouteReporter } from "./platform/diagnostic-route-reporter";
 import { flushFreezeBreadcrumb } from "./freeze-flush";
 import { DesktopAuthSessionBridge } from "./platform/auth-session-bridge";
+import { WorkspaceWindowBridge } from "./platform/workspace-window-bridge";
+import {
+  launchWorkspaceSlug,
+  otherWindowWorkspaces,
+  resolveWindowWorkspace,
+} from "./platform/workspace-windows";
 import {
   tearDownOnLogout,
   tearDownOnSessionExpiry,
@@ -48,6 +55,24 @@ const HTML_LANG: Record<SupportedLocale, string> = {
   ja: "ja-JP",
   fr: "fr-FR",
 };
+
+function watchWSLifecycle(client: WSClient) {
+  const onVisible = () => {
+    if (document.visibilityState === "visible") client.probe();
+  };
+  const onOnline = () => client.probe();
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) client.probe();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("pageshow", onPageShow);
+  return () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", onOnline);
+    window.removeEventListener("pageshow", onPageShow);
+  };
+}
 
 
 /**
@@ -287,12 +312,17 @@ function AppContent() {
   // while a failed background refetch retains the last successful list.
   useLayoutEffect(() => {
     if (!workspaceListReady) return;
-    const validSlugs = new Set(workspaces.map((w) => w.slug));
-    useTabStore.getState().validateWorkspaceSlugs(validSlugs);
+    const slugs = workspaces.map((w) => w.slug);
+    useTabStore.getState().validateWorkspaceSlugs(new Set(slugs));
     const { activeWorkspaceSlug, switchWorkspace } = useTabStore.getState();
-    if (!activeWorkspaceSlug && workspaces.length > 0) {
-      switchWorkspace(workspaces[0].slug);
-    }
+    if (slugs.length === 0) return;
+    const target = resolveWindowWorkspace(
+      slugs,
+      activeWorkspaceSlug,
+      launchWorkspaceSlug(),
+      otherWindowWorkspaces(),
+    );
+    if (target && target !== activeWorkspaceSlug) switchWorkspace(target);
   }, [workspaces, workspaceListReady]);
 
   // null = undecided (pre-login or list hasn't settled yet)
@@ -465,12 +495,14 @@ export default function App() {
             windowContext.kind === "main" ? handleSessionExpired : undefined
           }
           identity={identity}
+          onWSClientReady={watchWSLifecycle}
           locale={locale}
           resources={resources}
           localeAdapter={localeAdapter}
         >
           <DesktopAuthSessionBridge />
           {windowContext.kind === "main" && <DiagnosticRouteReporter />}
+          {windowContext.kind === "main" && <WorkspaceWindowBridge />}
           {windowContext.kind === "main" && (
             <DesktopClientUsageReporter
               apiUrl={runtimeConfigResult.config.apiUrl}
