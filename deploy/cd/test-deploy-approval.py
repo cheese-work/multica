@@ -57,14 +57,14 @@ class DeployApprovalTests(unittest.TestCase):
     def test_gate_runs_for_dispatch_and_for_a_successful_qualification_only(self):
         gate = self.jobs[GATE]
         self.assertIn("workflow_dispatch", gate["if"])
-        self.assertIn("workflow_run", gate["if"])
-        self.assertIn("conclusion == 'success'", gate["if"])
+        self.assertIn("github.event_name == 'schedule'", gate["if"])
+        self.assertIn("needs.schedule-resolve.outputs.sha != ''", gate["if"])
         self.assertNotIn("environment", gate)
         self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read"})
         step = next(s for s in gate["steps"] if "authorize-c00.py" in s.get("run", ""))
         self.assertEqual(step["env"]["TRIGGERING_ACTOR"], "${{ github.triggering_actor }}")
         self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
-        self.assertEqual(step["env"]["HEAD_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(step["env"]["HEAD_SHA"], "${{ needs.schedule-resolve.outputs.sha }}")
         self.assertEqual(step["env"]["EXTRA_AUTHORIZERS"], "${{ vars.C00_DEPLOY_AUTHORIZERS }}")
         self.assertEqual(set(gate["outputs"]), {"authorized", "candidate_sha"})
 
@@ -89,14 +89,14 @@ class DeployApprovalTests(unittest.TestCase):
 
     def test_push_path_notice_only_for_candidates_nobody_authorized(self):
         notify = self.jobs["notify-approval"]
-        self.assertEqual(sorted(needs(notify)), sorted(["candidate-preflight", GATE]))
-        self.assertIn("workflow_run", notify["if"])
+        self.assertEqual(sorted(needs(notify)), sorted(["schedule-resolve", "candidate-preflight", GATE]))
+        self.assertIn("github.event_name == 'schedule'", notify["if"])
         self.assertIn("needs.authorize-c00.outputs.authorized != 'true'", notify["if"])
 
     def test_notice_links_the_dispatch_page_with_the_full_candidate(self):
         notify = json.dumps(self.jobs["notify-approval"]["steps"])
         self.assertIn("actions/workflows/cd-deploy.yml", notify)
-        self.assertIn("workflow_run.head_sha", notify)
+        self.assertIn("needs.schedule-resolve.outputs.sha", notify)
         self.assertNotIn("inputs.ref", notify)
 
     def test_readback_is_immediate_and_releases_the_runner(self):
@@ -437,7 +437,7 @@ else:
                 script = step.get("run", "")
                 if "require-current.sh" not in script and step.get("name") != "Deploy to C00 on local runner":
                     continue
-                script = script.replace("${{ github.event.workflow_run.head_sha }}", candidate)
+                script = script.replace("${{ needs.schedule-resolve.outputs.sha }}", candidate)
                 script = script.replace("${{ needs.admission.outputs.source_sha }}", candidate)
                 result = subprocess.run(["/bin/bash", "-c", script], cwd=self.repository,
                                         env=environment, text=True, capture_output=True)

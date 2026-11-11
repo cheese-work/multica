@@ -1,5 +1,5 @@
 name: CD deploy to C00
-run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.candidate_sha || inputs.ref || github.sha }}
+run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.event_name }}
 
 # D2 (CHE-530 / CHE-1923): deploys an already-admitted release-candidate tuple
 # to the live C00 self-host stack on the target-host local runner
@@ -8,8 +8,14 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.c
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
+# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:00, 04:00,
+# 08:00, 12:00, 16:00, 20:00 ICT), not after every qualified build. The first
+# job, schedule-resolve, picks the newest main commit whose cd-qualification run
+# succeeded and ends the run with "nothing new to deploy" when C00 already runs
+# it. It uses no C00 runner, lock or environment.
+#
 # CHE-4495 / CHE-4582: the owner's merge to `main` is the deploy authorization.
-# After a SUCCESSFUL cd-qualification run, authorize-c00 reads who merged the
+# For the scheduled candidate, authorize-c00 reads who merged the
 # pull request behind that commit. The owner (`congvc-dev`) or a login in the
 # C00_DEPLOY_AUTHORIZERS repository variable (CHE-3123 adds the agent merge
 # identity there, no workflow change) deploys automatically once
@@ -44,10 +50,9 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.c
 # provenance digests and the required checks, and still refuses
 # build-evidence.
 on:
-  workflow_run:
-    workflows: ["CD qualification build"]
-    types: [completed]
-    branches: [main]
+  schedule:
+    # 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 ICT (UTC+7).
+    - cron: "0 1,5,9,13,17,21 * * *"
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -91,17 +96,41 @@ permissions:
 # to 100 pending jobs FIFO and evicts none. `cancel-in-progress` stays off (the default): it
 # cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
+  # CHE-5182: scheduled runs only. Ends here with an empty `sha` when there is
+  # nothing new to deploy, so no later job starts. No environment, no secrets and
+  # no concurrency group: it never queues behind a deploy.
+  schedule-resolve:
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Resolve the newest qualified commit C00 does not run yet
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
+        run: bash deploy/cd/resolve-scheduled.sh
+
   # ---------------------------------------------------------------------------
   # The deploy gate (CHE-4495, CHE-4582). Runs for a dispatch and for a
-  # successful qualification. deploy/cd/authorize-c00.py fails a dispatch by an
+  # scheduled candidate. deploy/cd/authorize-c00.py fails a dispatch by an
   # actor outside the allowlist, so every C00 job behind it never starts. For a
-  # qualification it answers `authorized=false` (no error) unless the merger of
+  # scheduled candidate it answers `authorized=false` (no error) unless the merger of
   # the commit's pull request is on the allowlist and no earlier automatic
   # deploy failed. It has no environment and no secrets. The script comes from
   # the workflow revision itself (no `ref`), never from a pull request.
   # ---------------------------------------------------------------------------
   authorize-c00:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    needs: schedule-resolve
+    if: always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -122,18 +151,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           EXTRA_AUTHORIZERS: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: python3 deploy/cd/authorize-c00.py
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead webhook never holds a deploy.
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
+  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # reach the tailnet-only Multica server.
   notify-approval:
-    needs: [candidate-preflight, authorize-c00]
-    if: always() && github.event_name == 'workflow_run' && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
-    runs-on: ubuntu-24.04
+    needs: [schedule-resolve, candidate-preflight, authorize-c00]
+    if: always() && github.event_name == 'schedule' && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
+    # One notice at a time, so two candidates cannot both read "no open ask" and
+    # post. The script also checks freshness at the write.
+    concurrency:
+      group: c00-approval-notice
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -141,14 +177,22 @@ jobs:
           sparse-checkout: deploy/cd/notify-approval.sh
       - name: Notify owner
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
+          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
+          MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID }}
+          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE }}
+          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    needs: schedule-resolve
+    if: always() && github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
@@ -207,7 +251,7 @@ jobs:
           # The scripts re-read the App budget before every API phase and drop to FALLBACK_TOKEN below the reserve.
           APP_TOKEN: ${{ steps.app.outputs.token }}
           FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
         run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
@@ -215,11 +259,11 @@ jobs:
   # CHE-4998: an empty dispatch (no candidate_sha, no evidence path) deploys the
   # newest qualified main commit. Resolved after the actor check; a typed SHA or
   # an evidence-path dispatch passes through (see deploy/cd/resolve-candidate.sh).
-  # CHE-4582: an authorized qualification passes its own head SHA through the
+  # CHE-4582: an authorized scheduled candidate passes its own SHA through the
   # same step, so every job behind it reads one `sha` output.
   resolve-candidate:
     needs: authorize-c00
-    if: needs.authorize-c00.outputs.authorized == 'true'
+    if: always() && needs.authorize-c00.outputs.authorized == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

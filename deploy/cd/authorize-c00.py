@@ -8,7 +8,7 @@ variable can never lock the owner out or widen the owner's own rights.
 
 - workflow_dispatch: the triggering actor must be allowed, otherwise exit 1
   before any C00 step. Outputs authorized=true and the candidate_sha input.
-- workflow_run (a successful qualification of a `main` push): the merger of the
+- schedule (the newest qualified `main` commit, resolved by schedule-resolve; CHE-5182): the merger of the
   pull request whose merge commit is HEAD_SHA must be allowed, and the latest
   automatic deploy must not have failed. Anything else is not an error: the
   run builds and stops (authorized=false). A GitHub API error fails the job.

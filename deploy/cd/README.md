@@ -650,12 +650,14 @@ carries none of the secrets `cd-deploy.yml` uses — verify this after any
 change to either workflow by diffing `cd-qualification.yml`; it should never
 change as part of D2 work.
 
-`cd-deploy.yml` runs automatically after a successful `cd-qualification` run
-for a `main` commit, and can still be dispatched by hand. The automatic path
-adds `candidate-preflight` and `prepare-release-candidate`, which the manual
+`cd-deploy.yml` runs automatically every 4 hours (00:00, 04:00, 08:00, 12:00,
+16:00, 20:00 ICT; CHE-5182), and can still be dispatched by hand. Its first
+job, `schedule-resolve`, picks the newest `main` commit whose `cd-qualification`
+run succeeded. When C00 already runs that commit or a descendant, the run ends
+there with "nothing new to deploy": no C00 runner, lock or approval is taken.
+The automatic path adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need (CHE-4582: the automatic path deploys only for an
-authorized merger, below). The run title names the qualifying candidate SHA rather
-than the workflow run's default-branch SHA.
+authorized merger, below). The resolved candidate SHA is in the `schedule-resolve` job summary.
 
 `candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
@@ -697,7 +699,16 @@ eligible, `prepare-release-candidate`, `admission` and `deploy` run with no
 dispatch click. A merge by anyone else, or a commit with no merged `main` pull
 request, runs `candidate-preflight` and `notify-approval` and stops: no C00 job
 runs. The notice links to the workflow's dispatch page with the full
-`candidate_sha`. The `approve-c00` environment approval was removed: required
+`candidate_sha`. The notice goes by `C00_APPROVAL_WEBHOOK_URL` and/or a Multica
+decision card (secrets `C00_APPROVAL_MULTICA_{SERVER_URL,TOKEN,WORKSPACE_ID,ISSUE,MEMBER_ID}`:
+`POST /api/decisions/ci` opens one card on that issue for the member with the
+dispatch one-liner and the run link). `TOKEN` is a personal access token of the
+workspace owner with the `decisions:ci_request` scope. The server keeps one open
+card per SHA, withdraws the older open card when a newer candidate arrives and
+refuses a stale one with 409 (the job treats 200 and 409 as delivered). The job
+runs in the `c00-approval-notice` concurrency group so notices do not overlap.
+With no route configured or delivered the job fails
+(CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
 
 The gate is `authorize-c00` (`deploy/cd/authorize-c00.py`, checked out from the
