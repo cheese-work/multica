@@ -695,7 +695,16 @@ eligible, `prepare-release-candidate`, `admission` and `deploy` run with no
 dispatch click. A merge by anyone else, or a commit with no merged `main` pull
 request, runs `candidate-preflight` and `notify-approval` and stops: no C00 job
 runs. The notice links to the workflow's dispatch page with the full
-`candidate_sha`. The `approve-c00` environment approval was removed: required
+`candidate_sha`. The notice goes by `C00_APPROVAL_WEBHOOK_URL` and/or a Multica
+decision card (secrets `C00_APPROVAL_MULTICA_{SERVER_URL,TOKEN,WORKSPACE_ID,ISSUE,MEMBER_ID}`:
+`POST /api/decisions/ci` opens one card on that issue for the member with the
+dispatch one-liner and the run link). `TOKEN` is a personal access token of the
+workspace owner with the `decisions:ci_request` scope. The server keeps one open
+card per SHA, withdraws the older open card when a newer candidate arrives and
+refuses a stale one with 409 (the job treats 200 and 409 as delivered). The job
+runs in the `c00-approval-notice` concurrency group so notices do not overlap.
+With no route configured or delivered the job fails
+(CHE-4879). The `approve-c00` environment approval was removed: required
 reviewers do not exist on a private Team repository, so it was a silent no-op.
 
 The gate is `authorize-c00` (`deploy/cd/authorize-c00.py`, checked out from the
