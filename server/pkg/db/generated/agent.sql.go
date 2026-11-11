@@ -2328,6 +2328,9 @@ WHERE id = (
     WHERE atq.agent_id = $2
       AND atq.runtime_id = $3
       AND atq.status = 'queued'
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= $4::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
@@ -2357,7 +2360,7 @@ WHERE id = (
             )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
-                now() - make_interval(secs => $4::double precision)
+                now() - make_interval(secs => $5::double precision)
       )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
@@ -2387,6 +2390,7 @@ type ClaimAgentTaskParams struct {
 	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
 	AgentID          pgtype.UUID `json:"agent_id"`
 	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	MinPriority      int32       `json:"min_priority"`
 	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
 }
 
@@ -2405,6 +2409,7 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.PrepareLeaseSecs,
 		arg.AgentID,
 		arg.RuntimeID,
+		arg.MinPriority,
 		arg.RuntimeStaleSecs,
 	)
 	var i AgentTaskQueue
