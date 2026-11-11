@@ -161,6 +161,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` retire les commentaires et garde tous les enregistrements d'activité ; `--action` ne renvoie que les actions indiquées, peut être répété et implique `--activity-only`. Le serveur limite l'historique qu'il lit ; si le résultat est tronqué, un avertissement s'affiche sur stderr, et il ne faut pas en déduire de durée.
 
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` liste les révisions enregistrées de la description d'une tâche, de la plus ancienne à la plus récente, avec le numéro de révision, l'heure (ICT) et l'auteur. `issue description diff` affiche un diff unifié entre deux d'entre elles. Le numéro de révision est le compteur de révision de la tâche. Seules existent les révisions enregistrées après la mise en service de l'historique ; pour chaque tâche, la première entrée est un état de référence de la description à ce moment-là. Une révision qui n'a pas modifié la description renvoie le dernier texte antérieur. Une révision inconnue renvoie 404. `--output json` est disponible pour les deux.
+
 ### Lire de longs fils de commentaires
 
 Sur une tâche très commentée, tout lire un par un coûte beaucoup de tokens à un agent. Parcourez d'abord les fils, puis ouvrez celui qui vous intéresse :
