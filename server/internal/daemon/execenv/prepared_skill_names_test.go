@@ -166,7 +166,7 @@ func TestPreparedSkillNamesMatchPrivateDiscoveryDirectories(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
-			t.Cleanup(func() { env.Cleanup(true) })
+			defer env.Cleanup(true)
 			for _, phase := range []string{"prepare", "reuse"} {
 				if phase == "reuse" {
 					env = Reuse(ReuseParams{
@@ -273,7 +273,8 @@ func TestPrepareQwenpawKeepsPrivateSkillNamesIndependent(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					defer env.Cleanup(true)
+					e := env
+					t.Cleanup(func() { e.Cleanup(true) })
 				} else {
 					env = Reuse(ReuseParams{
 						WorkspacesRoot: params.WorkspacesRoot, WorkDir: workDir, Provider: params.Provider, Task: params.Task,
