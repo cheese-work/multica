@@ -209,7 +209,11 @@ func expandInlineMultiAgentV2(content string) (string, error) {
 			return "", fmt.Errorf("parse inline multi-agent V2 settings: %w", err)
 		}
 		for _, key := range keys {
-			settings = settings[key].(map[string]any)
+			next, ok := settings[key].(map[string]any)
+			if !ok {
+				return "", fmt.Errorf("inline multi-agent V2 settings key %q is not a table", key)
+			}
+			settings = next
 		}
 		delete(settings, "enabled")
 		optionKeys := make([]string, 0, len(settings))
