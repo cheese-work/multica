@@ -186,6 +186,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` drops comments and keeps every activity record; `--action` returns only the given actions, is repeatable, and implies `--activity-only`. The server caps how far back it reads; when the result is truncated, a warning goes to stderr, and durations should not be inferred from it.
 
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` lists the recorded revisions of an issue's description, oldest first, with revision number, time (ICT) and actor. `issue description diff` prints a unified diff between two of them. A revision number is the issue's own revision counter. Only revisions recorded after the history feature shipped exist; for each issue the first entry is a baseline of the description at that time. A revision that did not change the description resolves to the latest earlier text. An unknown revision returns 404. `--output json` is available on both.
+
 ### Reading long comment threads
 
 On an issue with many comments, reading them one by one costs an agent a lot of tokens. Scan the threads first, then open the one you need:

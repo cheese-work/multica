@@ -141,7 +141,9 @@ def lab_of(name: str) -> str | None:
 
 
 # CHE-4596 signer roles, matched on whole name tokens (`x99-claude-opus`, `mbp-claude-opus`, `x99-codex-sol-200k`).
-SIGNER_RES = {"opus": re.compile(r"(?:^|-)claude-opus(?:$|-)"), "sol": re.compile(r"(?:^|-)codex-sol(?:$|-)")}
+# CHE-5097: Sol's review work moved to Gemini, so `x99-agy-gemini` holds the `sol` role too.
+SIGNER_RES = {"opus": re.compile(r"(?:^|-)claude-opus(?:$|-)"),
+              "sol": re.compile(r"(?:^|-)(?:codex-sol|agy-gemini)(?:$|-)")}
 
 
 def signer_role(name: str | None) -> str | None:

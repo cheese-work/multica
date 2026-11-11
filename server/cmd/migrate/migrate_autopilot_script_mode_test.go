@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const autopilotScriptModeVersion = "99965_autopilot_script_mode"
+const autopilotScriptModeVersion = "99976_autopilot_script_mode"
 
 // CHE-5090: the execution_mode CHECK allows "script" and script_config exists
 // after up. Down refuses while a script autopilot exists, then reverses clean;

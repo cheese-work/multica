@@ -399,7 +399,7 @@ func autopilotScriptConfigFromFlags(cmd *cobra.Command, isScriptMode bool) (map[
 	name, _ := cmd.Flags().GetString("script")
 	args, _ := cmd.Flags().GetStringArray("arg")
 	if !isScriptMode {
-		if name != "" || len(args) > 0 {
+		if cmd.Flags().Changed("script") || len(args) > 0 {
 			return nil, fmt.Errorf("--script and --arg require --mode script")
 		}
 		return nil, nil
@@ -579,7 +579,7 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, etc.")
+		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, or --arg")
 	}
 
 	var result map[string]any

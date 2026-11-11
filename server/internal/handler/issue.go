@@ -3745,6 +3745,20 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Outside any project, with no override, the issue takes the Default's
+	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
+	if !workflowProjectID.Valid && createWorkflow == nil {
+		outside, err := issueworkflow.OutsideProject(r.Context(), h.Queries, wsUUID)
+		if err != nil {
+			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return
+		}
+		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
+			writeIssueWorkflowError(w, err)
+			return
+		}
+	}
 	if createWorkflow != nil {
 		// A creator who picked no status gets the workflow's start status.
 		if req.Status == "" {
@@ -3754,22 +3768,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeIssueWorkflowError(w, err)
 			return
 		}
-		if req.AssigneeType == nil && req.AssigneeID == nil {
-			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
-				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
-				if err != nil {
-					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
-					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+		// A named assignee is left alone here: the service swaps in the handler
+		// under the locks, so a workflow switch cannot leave the former handler
+		// in place of it.
+		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
+			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
+			if err != nil {
+				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+				return
+			}
+			if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
+				assigneeType = pgtype.Text{String: t, Valid: true}
+				assigneeID = id
+				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
+					writeError(w, status, msg)
 					return
-				}
-				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
-					assigneeType = pgtype.Text{String: t, Valid: true}
-					assigneeID = id
-					if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
-						writeError(w, status, msg)
-						return
-					}
 				}
 			}
 		}
@@ -3937,11 +3952,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var handoffResolver service.CreateHandoffResolver
-	if req.AssigneeType == nil && req.AssigneeID == nil {
-		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
-	}
+	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -3955,6 +3967,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
 		Title:           req.Title,
