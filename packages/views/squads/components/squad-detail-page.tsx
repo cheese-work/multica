@@ -10,6 +10,12 @@ import { useModalStore } from "@multica/core/modals";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { isImeComposing } from "@multica/core/utils";
+import {
+  squadDraftKey,
+  useSquadAddMemberDraft,
+  useSquadFieldDraft,
+  useSquadFieldDraftStore,
+} from "@multica/core/squads";
 import { getShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
 import { agentListOptions, memberListOptions, squadMemberStatusOptions, workspaceKeys } from "@multica/core/workspace/queries";
@@ -381,6 +387,7 @@ export function SquadDetailPage() {
           title={
             canManage ? (
               <SquadNameEditor
+                squadId={squad.id}
                 value={squad.name}
                 onSave={async (next) => { await updateSquadMut.mutateAsync({ name: next.trim() }); }}
               />
@@ -391,6 +398,7 @@ export function SquadDetailPage() {
           description={
             canManage ? (
               <SquadDescriptionEditor
+                squadId={squad.id}
                 value={squad.description ?? ""}
                 onSave={async (next) => { await updateSquadMut.mutateAsync({ description: next }); }}
               />
@@ -435,6 +443,7 @@ export function SquadDetailPage() {
 
       {showAddMember && (
         <AddMemberDialog
+          squadId={squadId}
           availableMembers={availableMembers}
           availableAgents={availableAgents}
           onClose={() => setShowAddMember(false)}
@@ -623,6 +632,7 @@ function SquadMembersSection({
                   </span>
                   {canManage ? (
                     <RoleEditor
+                      draftKey={squadDraftKey(m.squad_id, "role", `${m.member_type}:${m.member_id}`)}
                       value={m.role ?? ""}
                       onSave={async (next) => { await onUpdateRole(m, next); }}
                     />
@@ -728,7 +738,7 @@ function SquadMembersSection({
 
 // The squad leader's prompt picks these up at task claim time
 // (server/internal/handler/daemon.go).
-function SquadInstructionsSection({
+export function SquadInstructionsSection({
   squad,
   canManage,
   onSave,
@@ -739,20 +749,33 @@ function SquadInstructionsSection({
 }) {
   const { t } = useT("squads");
   const saved = squad.instructions ?? "";
-  const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(saved);
+  const draftKey = squadDraftKey(squad.id, "instructions");
+  const {
+    text: value,
+    hasDraft: isDirty,
+    setText: setValue,
+    discard,
+    commit: commitDraft,
+  } = useSquadFieldDraft(draftKey, saved);
+  // An unsent draft reopens the editor, so it is visible again after a remount.
+  const [editing, setEditing] = useState(isDirty);
   const [saving, setSaving] = useState(false);
-  const isDirty = value !== saved;
+  // Cancel unmounts an editor that flushes its pending text on unmount; that
+  // flush must not write the discarded text back into the draft.
+  const discardingRef = useRef(false);
 
+  // A debounced editor can land its last update after the save closed the
+  // editor; that text is a draft again, so show it.
   useEffect(() => {
-    if (!editing) setValue(saved);
-  }, [saved, editing]);
+    if (isDirty) setEditing(true);
+  }, [isDirty]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await onSave(value);
-      setEditing(false);
+      await commitDraft(value, () => onSave(value));
+      // Text typed while the save was pending stays as a draft: keep it open.
+      if (useSquadFieldDraftStore.getState().getDraft(draftKey)?.text == null) setEditing(false);
     } catch {
       // toast handled by parent
     } finally {
@@ -765,7 +788,13 @@ function SquadInstructionsSection({
       title={t(($) => $.detail.instructions)}
       action={
         canManage && !editing ? (
-          <ObjectSectionAction icon={Pencil} onClick={() => setEditing(true)}>
+          <ObjectSectionAction
+            icon={Pencil}
+            onClick={() => {
+              discardingRef.current = false;
+              setEditing(true);
+            }}
+          >
             {t(($) => $.detail.edit)}
           </ObjectSectionAction>
         ) : null
@@ -780,9 +809,13 @@ function SquadInstructionsSection({
             <ContentEditor
               key={squad.id}
               value={value}
-              onUpdate={setValue}
+              onUpdate={(md) => {
+                if (!discardingRef.current) setValue(md);
+              }}
               placeholder={t(($) => $.instructions_tab.placeholder)}
               debounceMs={150}
+              // Keep the last edit when the route changes inside the debounce window.
+              flushPendingOnUnmount
               disableMentions
               className="min-h-24"
             />
@@ -796,7 +829,8 @@ function SquadInstructionsSection({
               size="sm"
               disabled={saving}
               onClick={() => {
-                setValue(saved);
+                discardingRef.current = true;
+                discard();
                 setEditing(false);
               }}
             >
@@ -979,16 +1013,19 @@ function SquadProperties({
 // Inline name editor — reveals a Pencil affordance on hover, opens a small
 // popover with a single-line input. Mirrors the NameAndDescription editor
 // in the agent inspector.
-function SquadNameEditor({
+export function SquadNameEditor({
+  squadId,
   value,
   onSave,
 }: {
+  squadId: string;
   value: string;
   onSave: (next: string) => Promise<void>;
 }) {
   const { t } = useT("squads");
   return (
     <InlineEditPopover
+      draftKey={squadDraftKey(squadId, "name")}
       value={value}
       onSave={onSave}
       title={t(($) => $.name_editor.title)}
@@ -1012,6 +1049,7 @@ function SquadNameEditor({
 }
 
 function InlineEditPopover({
+  draftKey,
   value,
   onSave,
   title,
@@ -1019,6 +1057,7 @@ function InlineEditPopover({
   validate,
   children,
 }: {
+  draftKey: string;
   value: string;
   onSave: (next: string) => Promise<void>;
   title: string;
@@ -1028,16 +1067,13 @@ function InlineEditPopover({
 }) {
   const { t } = useT("squads");
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(value);
+  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, value);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (open) {
-      setDraft(value);
-      setError(null);
-    }
-  }, [open, value]);
+    if (open) setError(null);
+  }, [open]);
 
   const commit = async () => {
     const err = validate?.(draft) ?? null;
@@ -1051,7 +1087,7 @@ function InlineEditPopover({
     }
     setSaving(true);
     try {
-      await onSave(draft);
+      await commitDraft(draft, () => onSave(draft));
       setOpen(false);
       toast.success(t(($) => $.name_editor.saved));
     } catch (e) {
@@ -1092,7 +1128,7 @@ function InlineEditPopover({
           />
           {error && <p className="text-caption text-destructive">{error}</p>}
           <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={saving}>
+            <Button variant="ghost" size="sm" onClick={() => { discard(); setOpen(false); }} disabled={saving}>
               {t(($) => $.name_editor.cancel)}
             </Button>
             <Button size="sm" onClick={() => void commit()} disabled={saving || draft === value}>
@@ -1111,20 +1147,32 @@ function InlineEditPopover({
 // 2) optionally describe the role they'll play in this squad. Description
 //    lives here (not on the picker) because role is per-squad context that
 //    only makes sense at the moment of joining.
-function AddMemberDialog({
+export function AddMemberDialog({
+  squadId,
   availableMembers,
   availableAgents,
   onClose,
   onSubmit,
 }: {
+  squadId: string;
   availableMembers: MemberWithUser[];
   availableAgents: Agent[];
   onClose: () => void;
   onSubmit: (input: { type: "agent" | "member"; id: string; role?: string }) => Promise<void>;
 }) {
   const { t } = useT("squads");
-  const [target, setTarget] = useState<{ type: "agent" | "member"; id: string; name: string } | null>(null);
-  const [role, setRole] = useState("");
+  const [draft, patchDraft, discardDraft] = useSquadAddMemberDraft(squadId);
+  const { role } = draft;
+  const setRole = (next: string) => patchDraft({ role: next });
+  // A restored target that was added elsewhere in the meantime is stale.
+  const target =
+    draft.target &&
+    (draft.target.type === "member" ? availableMembers : availableAgents).some(
+      (c) => ("user_id" in c ? c.user_id : c.id) === draft.target?.id,
+    )
+      ? draft.target
+      : null;
+  const setTarget = (next: NonNullable<typeof target>) => patchDraft({ target: next });
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerFilter, setPickerFilter] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1140,6 +1188,7 @@ function AddMemberDialog({
     setSubmitting(true);
     try {
       await onSubmit({ type: target.type, id: target.id, role });
+      discardDraft();
       onClose();
     } catch {
       setSubmitting(false);
@@ -1250,7 +1299,7 @@ function AddMemberDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>{t(($) => $.add_member_dialog.cancel)}</Button>
+          <Button variant="ghost" onClick={() => { discardDraft(); onClose(); }}>{t(($) => $.add_member_dialog.cancel)}</Button>
           <Button onClick={() => void handleSubmit()} disabled={!canSubmit}>
             {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t(($) => $.add_member_dialog.add)}
           </Button>
@@ -1264,20 +1313,20 @@ function AddMemberDialog({
 // click (or click the placeholder when empty) to swap in an input that
 // commits on blur / Enter and cancels on Escape. Avoids opening a modal
 // for what is usually a one-word change.
-function RoleEditor({ value, onSave }: { value: string; onSave: (next: string) => Promise<void> }) {
+export function RoleEditor({ draftKey, value, onSave }: { draftKey: string; value: string; onSave: (next: string) => Promise<void> }) {
   const { t } = useT("squads");
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
+  const { text: draft, hasDraft, setText: setDraft, discard } = useSquadFieldDraft(draftKey, value);
+  // An unsent draft reopens the input, so it is visible again after a remount.
+  const [editing, setEditing] = useState(hasDraft);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
 
   const commit = async () => {
     const next = draft.trim();
-    if (next === value.trim()) { setEditing(false); return; }
+    if (next === value.trim()) { discard(); setEditing(false); return; }
     setSaving(true);
     try {
       await onSave(next);
+      discard();
       setEditing(false);
     } catch {
       // toast handled by mutation
@@ -1296,7 +1345,7 @@ function RoleEditor({ value, onSave }: { value: string; onSave: (next: string) =
         onKeyDown={(e) => {
           if (isImeComposing(e)) return;
           if (e.key === "Enter") void commit();
-          else if (e.key === "Escape") { setDraft(value); setEditing(false); }
+          else if (e.key === "Escape") { discard(); setEditing(false); }
         }}
         disabled={saving}
         placeholder={t(($) => $.role_editor.placeholder)}
@@ -1326,10 +1375,12 @@ function RoleEditor({ value, onSave }: { value: string; onSave: (next: string) =
 // agent-detail-inspector's DescriptionEditor: opens a modal with a textarea
 // (enough room for multi-paragraph descriptions); the inline trigger shows
 // the current value (or a placeholder) with a hover-revealed Pencil.
-function SquadDescriptionEditor({
+export function SquadDescriptionEditor({
+  squadId,
   value,
   onSave,
 }: {
+  squadId: string;
   value: string;
   onSave: (next: string) => Promise<void>;
 }) {
@@ -1354,6 +1405,7 @@ function SquadDescriptionEditor({
         <DialogContent className="sm:max-w-lg">
           {open && (
             <SquadDescriptionEditorBody
+              draftKey={squadDraftKey(squadId, "description")}
               initialValue={value}
               onSave={onSave}
               onClose={() => setOpen(false)}
@@ -1366,16 +1418,18 @@ function SquadDescriptionEditor({
 }
 
 function SquadDescriptionEditorBody({
+  draftKey,
   initialValue,
   onSave,
   onClose,
 }: {
+  draftKey: string;
   initialValue: string;
   onSave: (next: string) => Promise<void>;
   onClose: () => void;
 }) {
   const { t } = useT("squads");
-  const [draft, setDraft] = useState(initialValue);
+  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, initialValue);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
   const dirty = draft !== initialValue;
@@ -1386,7 +1440,7 @@ function SquadDescriptionEditorBody({
     savingRef.current = true;
     setSaving(true);
     try {
-      await onSave(draft);
+      await commitDraft(draft, () => onSave(draft));
       onClose();
     } catch {
       // toast handled by parent's mutation
@@ -1418,7 +1472,7 @@ function SquadDescriptionEditorBody({
         className="w-full resize-none rounded-md border bg-transparent px-3 py-2 text-body outline-none focus-visible:border-input"
       />
       <DialogFooter>
-        <Button variant="ghost" size="sm" onClick={onClose} disabled={saving}>{t(($) => $.description_dialog.cancel)}</Button>
+        <Button variant="ghost" size="sm" onClick={() => { discard(); onClose(); }} disabled={saving}>{t(($) => $.description_dialog.cancel)}</Button>
         <Button size="sm" onClick={() => void commit()} disabled={saving || !dirty}>
           {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t(($) => $.description_dialog.save)}
         </Button>

@@ -142,7 +142,7 @@ func TestReview8545PostgresAbandonedInFlightDoesNotBlockForever(t *testing.T) {
 	bot := &auditBot{}
 	o, q, c, e := review8545Setup(t, bot)
 	// Expiry is decided by database time, which the test clock cannot move, so
-	// the lease is shortened and really waited out.
+	// the test expires the lease in the database (lapseLeases).
 	o.leaseTTL = testLeaseTTL
 	ctx := context.Background()
 	target, err := o.resolveTarget(ctx, e, false)
@@ -162,7 +162,7 @@ func TestReview8545PostgresAbandonedInFlightDoesNotBlockForever(t *testing.T) {
 	}
 	// The owner process dies after claiming: it never records an outcome and
 	// never releases the turn. Only the lease expiring can free it.
-	time.Sleep(testLeaseLapse)
+	lapseLeases(t)
 	c.advance(24 * time.Hour)
 	_ = q
 	reply := &terminalReply{event: e}
@@ -323,7 +323,7 @@ func TestReview8545PostgresStaleStreamCannotOverwriteSettledAnswer(t *testing.T)
 	<-q.entered
 	// The paused frame still owns the turn; the final answer takes over only
 	// once that lease expires.
-	time.Sleep(testLeaseLapse)
+	lapseLeases(t)
 	b.enqueueTerminalReply(e)
 	auditDrain(t, b, c, e.ChatSessionID)
 	q.release <- struct{}{}
@@ -470,7 +470,7 @@ func TestReview8545PostgresFailureNoticeWaitsForALiveLease(t *testing.T) {
 	b.leaseTTL = testLeaseTTL
 	b.handleTaskFailed(events.Event{TaskID: e.TaskID, ChatSessionID: e.ChatSessionID,
 		Payload: map[string]any{"retry_pending": false}})
-	time.Sleep(testLeaseLapse)
+	lapseLeases(t)
 	auditDrain(t, b, c, e.ChatSessionID)
 
 	review8545MessageCount(t, bot, 1)
@@ -549,7 +549,7 @@ func TestReview8545PostgresFailureNoticeStopsAfterLosingTheLease(t *testing.T) {
 	// Another replica takes the turn over while this one waits.
 	other := review8545Second(o)
 	other.leaseTTL = testLeaseTTL
-	time.Sleep(testLeaseLapse)
+	lapseLeases(t)
 	target, err := other.resolveTarget(context.Background(), e, false)
 	if err != nil {
 		t.Fatal(err)

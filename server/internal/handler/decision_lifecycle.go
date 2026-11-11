@@ -69,7 +69,7 @@ func (handler *Handler) CancelDecisionLifecycle(ctx context.Context, workspaceID
 	if err != nil || reason == "" {
 		return result, err
 	}
-	out, err := cancelLockedDecision(ctx, queries, current, answer, root, reason)
+	out, err := cancelDecisionLifecycleLocked(ctx, queries, current, answer, root, reason)
 	if err != nil {
 		return result, err
 	}
@@ -94,9 +94,9 @@ func (handler *Handler) publishDecisionCancelNote(workspaceID pgtype.UUID, curre
 	}
 }
 
-// cancelLockedDecision cancels an open or answered request for reason. The caller holds the
+// cancelDecisionLifecycleLocked cancels an open or answered request for reason. The caller holds the
 // lifecycle locks (workspace, session, asking agent, thread, issue, request, live answer).
-func cancelLockedDecision(ctx context.Context, queries *db.Queries, current db.DecisionRequest, answer db.DecisionAnswer, root *db.Comment, reason string) (decisionCancelOutcome, error) {
+func cancelDecisionLifecycleLocked(ctx context.Context, queries *db.Queries, current db.DecisionRequest, answer db.DecisionAnswer, root *db.Comment, reason string) (decisionCancelOutcome, error) {
 	var out decisionCancelOutcome
 	workspaceID, requestID := current.WorkspaceID, current.ID
 	parentID := pgtype.UUID{}
@@ -175,6 +175,9 @@ func cancelLockedDecision(ctx context.Context, queries *db.Queries, current db.D
 	}
 	out.withdrawal.Request, err = queries.CancelDecisionLifecycleRequest(ctx, db.CancelDecisionLifecycleRequestParams{WorkspaceID: workspaceID, ID: requestID, Reason: pgtype.Text{String: reason, Valid: true}})
 	if err != nil {
+		return out, err
+	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &out.withdrawal, pgtype.UUID{}); err != nil {
 		return out, err
 	}
 	if root != nil {

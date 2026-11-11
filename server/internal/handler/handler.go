@@ -221,6 +221,8 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
+	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter
@@ -253,6 +255,9 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. New wires the real guard; nil
+	// refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service
@@ -547,6 +552,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
+		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
@@ -618,6 +624,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -1071,6 +1078,10 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
+	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
+}
+
+func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1079,7 +1090,7 @@ func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID st
 	if err != nil {
 		return db.Member{}, err
 	}
-	return h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})

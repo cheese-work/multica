@@ -340,6 +340,11 @@
       "completed": "更新完成。守护进程正在重启...",
       "failed": "更新失败",
       "timeout": "超时"
+    },
+    "phase": {
+      "download": "下载中",
+      "verify": "校验中",
+      "install": "安装中"
     }
   },
   "charts": {

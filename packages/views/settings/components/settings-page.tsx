@@ -41,6 +41,7 @@ import { AppLink, useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
 import { TokensTab } from "./tokens-tab";
+import { PasskeysTab } from "./passkeys-tab";
 import { WorkspaceTab } from "./workspace-tab";
 import { MembersTab } from "./members-tab";
 import { CodeTab } from "./code-tab";
@@ -70,6 +71,7 @@ import { CollapsedNavTrigger, PageHeader } from "../../layout/page-header";
 import { PanelHeader } from "../../layout/panel-nav";
 import { useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
+import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { useT } from "../../i18n";
 
 export interface ExtraSettingsTab {
@@ -162,6 +164,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
               : []),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
+            entry("passkeys", t(($) => $.page.tabs.passkeys), Lock, <PasskeysTab />),
           ],
         },
       ],
@@ -216,6 +219,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               wide: true,
               adminOnly: true,
             }),
+            entry(
+              "provider-breakers",
+              t(($) => $.page.tabs.provider_breakers),
+              Zap,
+              <ProviderBreakersTab />,
+              { wide: true },
+            ),
             entry("labels", t(($) => $.page.tabs.labels), Tags, <LabelsTab />, {
               wide: true,
             }),

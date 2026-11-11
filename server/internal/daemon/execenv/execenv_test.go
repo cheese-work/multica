@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +16,25 @@ import (
 	"time"
 )
 
+// testLogger forwards to the default logger but drops WARN and below: the
+// codex sandbox WARN fires in dozens of tests, and interleaved parallel test
+// output can split its timestamp so warning-budget counts a stray line (CHE-4202).
 func testLogger() *slog.Logger {
-	return slog.Default()
+	return slog.New(errorOnlyHandler{slog.Default().Handler()})
+}
+
+type errorOnlyHandler struct{ slog.Handler }
+
+func (h errorOnlyHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return l >= slog.LevelError && h.Handler.Enabled(ctx, l)
+}
+
+func (h errorOnlyHandler) WithAttrs(a []slog.Attr) slog.Handler {
+	return errorOnlyHandler{h.Handler.WithAttrs(a)}
+}
+
+func (h errorOnlyHandler) WithGroup(n string) slog.Handler {
+	return errorOnlyHandler{h.Handler.WithGroup(n)}
 }
 
 func discardLogger() *slog.Logger {

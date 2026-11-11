@@ -52,6 +52,8 @@ import {
   ListPropertiesResponseSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   RuntimeModelListRequestSchema,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SearchProjectsResponseSchema,
   RuntimeHourlyActivityListSchema,
   RuntimeUsageByAgentListSchema,
@@ -157,6 +159,36 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionListSchema.parse([baseSession])[0]).toEqual(parsed);
   });
 
+  it("reads the DM attention projection and tolerates older or newer servers", () => {
+    const attention = {
+      attention_source: "ask",
+      attention_since: "2026-11-05T01:00:00Z",
+      stale_level: "yellow",
+      next_change_at: "2026-11-06T01:00:00Z",
+    };
+    expect(ChatSessionSchema.parse({ ...baseSession, ...attention })).toMatchObject(attention);
+
+    // Older server: fields absent.
+    const old = ChatSessionSchema.parse(baseSession);
+    expect(old.stale_level).toBeUndefined();
+    expect(old.attention_source).toBeUndefined();
+
+    // Newer server: unknown enum values fall back instead of dropping the session.
+    const newer = ChatSessionListSchema.parse([
+      { ...baseSession, ...attention, stale_level: "purple", attention_source: "turn", next_change_at: 7 },
+    ]);
+    expect(newer).toHaveLength(1);
+    expect(newer[0]?.stale_level).toBe("none");
+    expect(newer[0]?.attention_source).toBeNull();
+    expect(newer[0]?.next_change_at).toBeUndefined();
+
+    // Untyped turns ride along as subject keys; a malformed value is dropped.
+    const keys = ["turn:t1", "turn:t2"];
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
+    expect(old.attention_unclassified_keys).toBeUndefined();
+    expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
+  });
+
   it("keeps sessions readable when older servers send lane-summary data", () => {
     for (const summary of [
       { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
@@ -204,6 +236,8 @@ describe("ChatSessionSchema", () => {
   });
 
   it("drops one malformed list item without hiding the other Chats", () => {
+    const latestMessageId = "00000000-0000-4000-8000-000000000002";
+    const latestMessageTaskId = "00000000-0000-4000-8000-000000000003";
     const parsed = ChatSessionListSchema.parse([
       baseSession,
       { ...baseSession, id: 42 },
@@ -211,6 +245,8 @@ describe("ChatSessionSchema", () => {
         ...baseSession,
         id: "onboarding-chat",
         last_message: {
+          id: latestMessageId,
+          task_id: latestMessageTaskId,
           content: "Welcome",
           role: "assistant",
           created_at: "2026-08-18T00:00:00Z",
@@ -221,6 +257,8 @@ describe("ChatSessionSchema", () => {
 
     expect(parsed.map((session) => session.id)).toEqual(["chat-1", "onboarding-chat"]);
     expect(parsed[1]?.last_message?.message_kind).toBe("onboarding_opening");
+    expect(parsed[1]?.last_message?.id).toBe(latestMessageId);
+    expect(parsed[1]?.last_message?.task_id).toBe(latestMessageTaskId);
   });
 });
 describe("IssueSchema (via ListIssuesResponseSchema)", () => {
@@ -262,6 +300,25 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
       const issue = parse({ workflow_id: bad });
       expect(issue?.id).toBe(baseIssue.id);
       expect(issue?.workflow_id ?? null).toBeNull();
+    }
+  });
+  it("reads the deadline projection and tolerates a server without it or a malformed one", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    const diagnostics = [{ type: "cycle", members: ["CHE-1", "CHE-2"] }, { type: "depth_limit" }];
+    const issue = parse({ effective_due: "2026-12-01", due_source: "parent:CHE-9", diagnostics });
+    expect(issue?.effective_due).toBe("2026-12-01");
+    expect(issue?.due_source).toBe("parent:CHE-9");
+    expect(issue?.diagnostics).toEqual(diagnostics);
+    const bare = parse({});
+    expect(bare?.effective_due).toBeUndefined();
+    expect(bare?.due_source).toBeUndefined();
+    expect(bare?.diagnostics).toBeUndefined();
+    for (const bad of [42, { date: "x" }, true]) {
+      const dropped = parse({ effective_due: bad, due_source: bad, diagnostics: bad });
+      expect(dropped?.id).toBe(baseIssue.id);
+      expect(dropped?.effective_due).toBeUndefined();
+      expect(dropped?.due_source).toBeUndefined();
+      expect(dropped?.diagnostics).toBeUndefined();
     }
   });
   it("keeps the issue while independently dropping a malformed source context", () => {
@@ -376,12 +433,24 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.metadata).toEqual({});
   });
 
-  it("rejects metadata with non-primitive values (nested object)", () => {
+  // CHE-3472: the server's decision park writes an object under `decision_park`.
+  // One non-primitive entry must not fail the whole issue, or the detail view
+  // reads a malformed response as "does not exist".
+  it("drops non-primitive metadata entries and keeps the issue (decision_park)", () => {
     const payload = {
-      issues: [{ ...baseIssue, metadata: { nested: { x: 1 } } }],
+      issues: [
+        {
+          ...baseIssue,
+          metadata: {
+            decision_park: { status: "blocked", to: "need_decision", set: "opt-1" },
+            status_summary: "Blocked",
+          },
+        },
+      ],
       total: 1,
     };
-    expect(ListIssuesResponseSchema.safeParse(payload).success).toBe(false);
+    const parsed = ListIssuesResponseSchema.parse(payload);
+    expect(parsed.issues[0]?.metadata).toEqual({ status_summary: "Blocked" });
   });
 
   it("accepts a numeric stage", () => {
@@ -2632,6 +2701,46 @@ describe("CommentPreviewSchema", () => {
     expect(ok.author_name).toBe("");
     expect(ok.preview).toBe("");
     expect(CommentPreviewSchema.safeParse({ comment_id: "c" }).success).toBe(false);
+  });
+});
+
+describe("RuntimeUpdateSchema", () => {
+  const running = {
+    id: "u-1",
+    runtime_id: "rt-1",
+    status: "running",
+    target_version: "v1.2.3",
+    created_at: "2026-11-04T00:00:00Z",
+    updated_at: "2026-11-04T00:00:01Z",
+  };
+  const parse = (data: unknown) =>
+    parseWithFallback(data, RuntimeUpdateSchema, MALFORMED_RUNTIME_UPDATE, {
+      endpoint: "test",
+    });
+
+  it("keeps a well-formed progress", () => {
+    const progress = { phase: "download", bytes_done: 512, bytes_total: 2048 };
+    expect(parse({ ...running, progress }).progress).toEqual(progress);
+  });
+
+  it("parses a response without progress (older server)", () => {
+    const parsed = parse(running);
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it.each([
+    ["a string", "50%"],
+    ["wrong field types", { phase: "download", bytes_done: "x", bytes_total: 1 }],
+    ["missing fields", { phase: "download" }],
+  ])("drops a malformed progress (%s) and keeps the rest", (_name, progress) => {
+    const parsed = parse({ ...running, progress });
+    expect(parsed.status).toBe("running");
+    expect(parsed.progress).toBeUndefined();
+  });
+
+  it("falls back to failed when the body is not an update", () => {
+    expect(parse(null)).toEqual(MALFORMED_RUNTIME_UPDATE);
   });
 });
 

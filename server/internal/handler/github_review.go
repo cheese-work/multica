@@ -65,7 +65,7 @@ func (h *Handler) handlePullRequestReviewEvent(ctx context.Context, body []byte)
 			"installation_id", payload.Installation.ID, "repo_owner", payload.Repository.Owner.Login, "repo_name", payload.Repository.Name, "pr_number", payload.PullRequest.Number)
 		return nil
 	}
-	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
+	installations, err := h.allowedGitHubInstallations(ctx, payload.Installation.ID)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (h *Handler) handleGitHubReviewForWorkspace(ctx context.Context, workspaceI
 		if len(content) > 1<<20 {
 			return errors.New("github: review content exceeds size limit")
 		}
-		if err := h.createGitHubReviewWakeup(ctx, issue, author.ID, userID, pull.ID, payload.Review.ID, content); err != nil {
+		if err := h.createGitHubReviewWakeup(ctx, issue, pull, author.ID, userID, payload.Review.ID, content); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -188,8 +188,8 @@ func githubReviewContent(mention string, pull db.GithubPullRequest, payload *ghR
 	return content.String()
 }
 
-func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, authorID, userID, pullID pgtype.UUID, reviewID int64, content string) error {
-	key := githubReviewKey(issue.ID, pullID, reviewID)
+func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, pull db.GithubPullRequest, authorID, userID pgtype.UUID, reviewID int64, content string) error {
+	key := githubReviewKey(issue.ID, pull.ID, reviewID)
 	commentID := pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceURL, []byte(key)), Valid: true}
 	params, err := h.TaskService.PrepareTaskForMention(ctx, h.Queries, issue, authorID, commentID, userID, service.OriginDerived)
 	if err != nil {
@@ -204,6 +204,15 @@ func (h *Handler) createGitHubReviewWakeup(ctx context.Context, issue db.Issue, 
 		return err
 	}
 	queries := h.Queries.WithTx(tx)
+	// Held to the commit: a switch change waits for this admission and sweeps it, or is seen here (CHE-2223).
+	if err := queries.LockGitHubDispatchHaltShared(ctx, issue.WorkspaceID); err != nil {
+		return err
+	}
+	if halted, err := queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: issue.WorkspaceID, RepoOwner: pull.RepoOwner, RepoName: pull.RepoName}); err != nil {
+		return err
+	} else if halted {
+		return nil
+	}
 	seen, err := queries.HasGitHubReviewWakeup(ctx, db.HasGitHubReviewWakeupParams{IssueID: issue.ID, ReviewKey: key})
 	if err != nil {
 		return err

@@ -3,7 +3,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, AgentRuntime, MemberWithUser } from "@multica/core/types";
-import { providerSupportsMcpConfig } from "@multica/core/agents";
+import {
+  providerSupportsMcpConfig,
+  useAgentCustomArgsDraftStore,
+  useAgentEnvDraftStore,
+} from "@multica/core/agents";
 import { useFeatureEnabled } from "@multica/core/config";
 import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -39,6 +43,7 @@ import { IntegrationsTab } from "./tabs/integrations-tab";
 import { QoderAgentTab } from "./tabs/qoder-agent-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
 import { AgentDetailInspector } from "./agent-detail-inspector";
+import { AgentAutoCompactSection } from "./agent-auto-compact-section";
 import { AgentAccessSettings } from "./agent-access-settings";
 import { useT } from "../../i18n";
 
@@ -222,6 +227,11 @@ export function AgentAdvancedSettings({
 
   const confirmDiscard = () => {
     if (pending === undefined) return;
+    // Discarding is explicit: the section's stored draft goes with it.
+    if (active.id === "env") useAgentEnvDraftStore.getState().clearDraft(agent.id);
+    if (active.id === "custom_args") {
+      useAgentCustomArgsDraftStore.getState().clearDraft(agent.id);
+    }
     setDirty(false);
     onSectionChange(pending);
     setPending(undefined);
@@ -306,15 +316,23 @@ export function AgentAdvancedSettings({
                 </h2>
                 <div className="mt-6">
                   {active.id === "general" && (
-                    <AgentDetailInspector
-                      agent={agent}
-                      runtime={runtime}
-                      runtimes={runtimes}
-                      members={members}
-                      currentUserId={currentUserId}
-                      canEdit={canEdit}
-                      onUpdate={onUpdate}
-                    />
+                    <>
+                      <AgentDetailInspector
+                        agent={agent}
+                        runtime={runtime}
+                        runtimes={runtimes}
+                        members={members}
+                        currentUserId={currentUserId}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                      <AgentAutoCompactSection
+                        key={agent.id}
+                        agent={agent}
+                        canEdit={canEdit}
+                        onUpdate={onUpdate}
+                      />
+                    </>
                   )}
                   {active.id === "access" && (
                     <AgentAccessSettings

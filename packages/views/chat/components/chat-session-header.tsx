@@ -8,6 +8,7 @@ import {
   Minimize2,
   MoreHorizontal,
   Pencil,
+  EyeOff,
   Pin,
   PinOff,
   Settings2,
@@ -63,9 +64,11 @@ export function ChatSessionHeader({
   onArchive,
   onUnarchive,
   onTogglePin,
+  onMarkUnseen,
   onOpenStatistics,
   renameRequest = 0,
-  autoCompactThresholdPct = null,
+  autoCompactThresholdTokens = null,
+  lastTurnTokens,
   onCompact,
   onSetPreset,
   leading,
@@ -80,11 +83,15 @@ export function ChatSessionHeader({
   onUnarchive?: (session: ChatSession) => void;
   /** Pins or unpins an active DM. Omit to hide the Pin item. */
   onTogglePin?: (session: ChatSession) => void;
+  /** Marks an active DM unseen and leaves it. Omit to hide the item. */
+  onMarkUnseen?: (session: ChatSession) => void;
   /** Opens the Statistics dialog. Omit to hide the Statistics item. */
   onOpenStatistics?: () => void;
   renameRequest?: number;
-  /** Auto-compact threshold for this DM, or null when auto-compact is off. */
-  autoCompactThresholdPct?: number | null;
+  /** Prompt size at which this DM auto-compacts, or null when auto-compact is off. */
+  autoCompactThresholdTokens?: number | null;
+  /** Prompt growth of the last turn, when known. */
+  lastTurnTokens?: number | null;
   /** Sends /compact. Omit to hide the "Compact now" item. */
   onCompact?: () => void;
   /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
@@ -288,7 +295,8 @@ export function ChatSessionHeader({
               <ChatContextMeter
                 tokens={session.context_tokens}
                 window={session.context_window}
-                thresholdPct={autoCompactThresholdPct}
+                thresholdTokens={autoCompactThresholdTokens}
+                lastTurnTokens={lastTurnTokens}
               />
             )}
 
@@ -335,6 +343,18 @@ export function ChatSessionHeader({
                       >
                         {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
                         {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
+                      </DropdownMenuItem>
+                    ) : null;
+                  }
+                  if (item.id === "unseen") {
+                    return onMarkUnseen ? (
+                      <DropdownMenuItem
+                        key={item.id}
+                        data-testid="chat-more-menu-unseen"
+                        onClick={() => onMarkUnseen(session)}
+                      >
+                        <EyeOff className="h-4 w-4" />
+                        {t(($) => $.header.unseen)}
                       </DropdownMenuItem>
                     ) : null;
                   }

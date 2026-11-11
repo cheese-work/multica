@@ -166,7 +166,7 @@ func TestPreparedSkillNamesMatchPrivateDiscoveryDirectories(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Prepare: %v", err)
 			}
-			defer env.Cleanup(true)
+			t.Cleanup(func() { env.Cleanup(true) })
 			for _, phase := range []string{"prepare", "reuse"} {
 				if phase == "reuse" {
 					env = Reuse(ReuseParams{

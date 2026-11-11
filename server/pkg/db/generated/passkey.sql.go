@@ -340,6 +340,46 @@ func (q *Queries) LeavePasskeyRecovery(ctx context.Context, id pgtype.UUID) erro
 	return err
 }
 
+const listLivePasskeys = `-- name: ListLivePasskeys :many
+SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, id
+`
+
+func (q *Queries) ListLivePasskeys(ctx context.Context, userID pgtype.UUID) ([]UserPasskey, error) {
+	rows, err := q.db.Query(ctx, listLivePasskeys, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserPasskey{}
+	for rows.Next() {
+		var i UserPasskey
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.CredentialID,
+			&i.PublicKey,
+			&i.AttestationType,
+			&i.Aaguid,
+			&i.SignCount,
+			&i.Transports,
+			&i.Flags,
+			&i.SuspectAt,
+			&i.CreatedAt,
+			&i.LastUsedAt,
+			&i.RevokedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUsablePasskeys = `-- name: ListUsablePasskeys :many
 SELECT id, user_id, credential_id, public_key, attestation_type, aaguid, sign_count, transports, flags, suspect_at, created_at, last_used_at, revoked_at FROM user_passkey
 WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL
@@ -707,6 +747,35 @@ UPDATE user_passkey SET suspect_at = now() WHERE id = $1 AND suspect_at IS NULL
 func (q *Queries) MarkPasskeySuspect(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markPasskeySuspect, id)
 	return err
+}
+
+const passkeyEnrollCodeIsSuperseded = `-- name: PasskeyEnrollCodeIsSuperseded :one
+SELECT EXISTS (
+    SELECT 1 FROM passkey_enroll_ceremony
+    WHERE user_id = $1 AND purpose = $2 AND code_hmac = $3 AND id <> $4
+      AND consumed_at IS NOT NULL AND created_at > now() - interval '1 hour'
+)::bool
+`
+
+type PasskeyEnrollCodeIsSupersededParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	Purpose  string      `json:"purpose"`
+	CodeHmac []byte      `json:"code_hmac"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+// True when the code belongs to an older, consumed ceremony of the same user and
+// purpose: the user typed an earlier email's code.
+func (q *Queries) PasskeyEnrollCodeIsSuperseded(ctx context.Context, arg PasskeyEnrollCodeIsSupersededParams) (bool, error) {
+	row := q.db.QueryRow(ctx, passkeyEnrollCodeIsSuperseded,
+		arg.UserID,
+		arg.Purpose,
+		arg.CodeHmac,
+		arg.ID,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const revokeAllPasskeys = `-- name: RevokeAllPasskeys :execrows

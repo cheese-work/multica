@@ -149,7 +149,7 @@ func (s *piSupplementSession) write(ctx context.Context, command any) error {
 			deadline = d
 		}
 		_ = pipe.SetWriteDeadline(deadline)
-		defer pipe.SetWriteDeadline(time.Time{})
+		defer func() { _ = pipe.SetWriteDeadline(time.Time{}) }()
 	}
 	return json.NewEncoder(s.stdin).Encode(command)
 }

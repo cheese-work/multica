@@ -1091,5 +1091,15 @@
     "section_owner": "Owner",
     "section_model": "Model"
   },
-  "actions": {}
+  "actions": {
+    "selected_one": "{{count}} selected",
+    "selected_other": "{{count}} selected",
+    "clear_selection": "Clear selection"
+  },
+  "auto_compact": {
+    "title": "Auto-compact",
+    "hint": "Leave a field empty to use the workspace value.",
+    "inherit_placeholder": "Workspace default",
+    "save_failed": "Could not save the auto-compact setting."
+  }
 }

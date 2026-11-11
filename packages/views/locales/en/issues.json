@@ -467,7 +467,8 @@
   },
   "list": {
     "empty_status": "No issues",
-    "add_issue_tooltip": "Add issue"
+    "add_issue_tooltip": "Add issue",
+    "unread_mention": "Unread mention"
   },
   "swimlane": {
     "no_parent": "No parent",
@@ -505,6 +506,7 @@
     "not_found": "This issue does not exist or has been deleted in this workspace.",
     "load_failed": "Couldn't load this issue. Check your connection and retry.",
     "card_load_failed": "Couldn't load this issue.",
+    "data_error": "This issue has data the app cannot read.",
     "retry": "Retry",
     "not_found_title": "Issue not found",
     "breadcrumb_project_unknown": "Unknown project",
@@ -1545,7 +1547,34 @@
       "rate": "more than 12 runs in an hour"
     },
     "paused_banner": "Wakeups paused by {{name}} at {{time}}",
-    "paused_banner_anonymous": "Wakeups paused at {{time}}"
+    "paused_banner_anonymous": "Wakeups paused at {{time}}",
+    "defaults": {
+      "title": "Default wakeups",
+      "rule_pr_merged": "When the linked PR merges",
+      "rule_pr_checks_failed": "When PR checks fail",
+      "rule_pr_needs_attention": "When the linked PR needs attention",
+      "state_on": "On",
+      "state_disabled": "Disabled",
+      "state_paused": "Paused: {{reason}}",
+      "inherited": "Inherited from {{source}}",
+      "overridden": "Overridden on this issue",
+      "source_workspace": "workspace",
+      "source_project": "project",
+      "source_default": "the default",
+      "open_project": "Edit in project rules",
+      "override": "Override",
+      "override_label": "Override {{rule}}",
+      "edit": "Edit override",
+      "edit_label": "Edit override {{rule}}",
+      "reset": "Reset",
+      "reset_label": "Reset {{rule}}",
+      "save": "Save override",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "save_error": "Could not save the override.",
+      "reset_error": "Could not reset the rule.",
+      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs."
+    }
   },
   "duplicates": {
     "banner_prefix": "Duplicate of",
@@ -1673,6 +1702,8 @@
       "name": "Name",
       "name_placeholder": "e.g. Delivery",
       "description": "Description",
+      "max_runs": "Max runs per issue",
+      "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
       "steps": "Steps",
       "add_step": "Add step",
       "start": "Start",
@@ -2046,5 +2077,32 @@
       "empty_title": "No saved views yet",
       "empty_description": "Set up filters and display options in an issue list, then save them as a view."
     }
+  },
+  "status_history": {
+    "title": "Status history",
+    "description": "Every status change on this issue, oldest first.",
+    "empty": "No status changes recorded.",
+    "truncated": "Older status changes are not shown. The list starts at the oldest change the server returned.",
+    "trigger_not_recorded": "Trigger not recorded",
+    "removed": "{{status}} (removed)",
+    "handoff_comment": "Handoff comment",
+    "handoff_invalid": "Handoff link invalid",
+    "scrubber_label": "Position in status history",
+    "position": "{{current}} of {{total}}",
+    "cause": {
+      "ui_or_api": "Changed by a person",
+      "workflow_edge": "Workflow edge",
+      "workflow_remap": "Workflow remap",
+      "pr_merged": "PR merged",
+      "ci_advance": "CI advance",
+      "run_budget": "Run budget",
+      "decision": "Decision",
+      "watchdog": "Watchdog",
+      "task_reset": "Failed run reset",
+      "qoder": "Qoder",
+      "duplicate": "Duplicate",
+      "system": "System"
+    },
+    "open": "Status history"
   }
 }

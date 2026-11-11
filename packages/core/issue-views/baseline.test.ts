@@ -116,3 +116,41 @@ describe("baselineFromQuery agent running", () => {
     expect(issueViewFilterCount({ agentRunningFilter: true, statusFilters: ["todo"] })).toBe(2);
   });
 });
+
+// A shared view's query is attacker-controlled JSON. An actor whose `type` is
+// not one of the known strings must be dropped, never reach actorFilterKey
+// (a non-string `type` throws in the template literal and breaks the directory
+// render for every member who can see the view).
+describe("baselineFromQuery actor filters", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+
+  it("keeps known actor types", () => {
+    const baseline = baselineFromQuery({
+      assigneeFilters: [{ type: "member", id }],
+      creatorFilters: [{ type: "agent", id }, { type: "squad", id }],
+    });
+    expect([...baseline.assignee]).toEqual([`member:${id}`]);
+    expect([...baseline.creator]).toEqual([`agent:${id}`, `squad:${id}`]);
+  });
+
+  it("drops actors with a missing, unknown or non-string type", () => {
+    const bad = [
+      { id },
+      { id, type: "robot" },
+      { id, type: 7 },
+      { id, type: { toString: null, valueOf: null } },
+    ];
+    expect(() => baselineFromQuery({ assigneeFilters: bad, creatorFilters: bad })).not.toThrow();
+    const baseline = baselineFromQuery({ assigneeFilters: bad, creatorFilters: bad });
+    expect(baseline.assignee.size).toBe(0);
+    expect(baseline.creator.size).toBe(0);
+    expect(baseline.raw.assigneeFilters).toEqual([]);
+    expect(baseline.raw.creatorFilters).toEqual([]);
+  });
+
+  it("counts malformed actors as no filter", () => {
+    expect(
+      issueViewFilterCount({ assigneeFilters: [{ id, type: { toString: null } }] }),
+    ).toBe(0);
+  });
+});

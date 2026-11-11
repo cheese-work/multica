@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -41,7 +43,7 @@ func hicResolve(t *testing.T, ctx context.Context, issueID, agentID string) (*hu
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testHandler.resolveHumanInCharge(ctx, issue, agent)
+	return testHandler.resolveHumanInCharge(ctx, testHandler.Queries, issue, agent)
 }
 
 func wantHIC(t *testing.T, got *humanInCharge, err error, userID, source string) {
@@ -139,7 +141,7 @@ func TestHumanInChargeProjectLookupErrorFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err = testHandler.resolveHumanInCharge(ctx, issueRow, agentRow)
+	got, err = testHandler.resolveHumanInCharge(ctx, testHandler.Queries, issueRow, agentRow)
 	if err == nil || got != nil {
 		t.Fatalf("project lookup failure must return an error and no member, got %+v err=%v", got, err)
 	}
@@ -204,4 +206,42 @@ func TestHumanInChargeReplayCHE2586(t *testing.T) {
 			t.Fatalf("issue %s: human = %+v, want %s", issue, out.Human, requester)
 		}
 	}
+}
+
+// The resolver runs inside the issue write transaction, which waits on the issue
+// lock while holding its own connection. It must read through the queries it is
+// given: reaching for a second pooled connection lets concurrent writers
+// exhaust the pool while they wait on one another.
+func TestHumanInChargeResolverUsesGivenQueries(t *testing.T) {
+	creator := hicMember(t, "member")
+	issueID := dbfx.Issue(t, "hic given queries", testutil.Cols{"creator_id": creator})
+	fx := newHICFixture(t, issueID)
+
+	cfg := testPool.Config()
+	cfg.MaxConns = 1
+	starved, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer starved.Close()
+	held, err := starved.Acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+
+	h := *testHandler
+	h.Queries = db.New(starved)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := testHandler.Queries.GetAgent(context.Background(), parseUUID(fx.agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := h.resolveHumanInCharge(ctx, testHandler.Queries, issue, agent)
+	wantHIC(t, got, err, creator, "creator")
 }

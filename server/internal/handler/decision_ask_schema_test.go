@@ -19,7 +19,7 @@ func (fixture requestCoreFixture) newShapeAsk() map[string]any {
 			map[string]any{"label": "KEEP", "what_happens": "Agents collect proof.", "pros": []string{"Safer"}, "cons": []string{"Slower"}, "cost_or_time": "1 day"},
 			map[string]any{"label": "WAIVE", "what_happens": "Agents skip proof.", "pros": []string{"Faster"}, "cons": []string{"Riskier"}, "cost_or_time": "No extra time"},
 		},
-		"recommendation": "KEEP", "default_if_no_reply": "KEEP",
+		"recommendation": "KEEP", "recommended_option": "KEEP", "default_if_no_reply": "KEEP",
 		"source_issue_id": fixture.issueID, "source_comment_id": fixture.tagID,
 	}
 }
@@ -51,7 +51,7 @@ func TestDecisionAskSchemaErrorsNameTheField(test *testing.T) {
 			ask["after_done"] = "x99-claude-sonnet re-runs the workflow"
 		}, "ask.human_steps[0] names MULTICA_TOKEN without a values entry"},
 		{"steps without probes", func(ask map[string]any) {
-			ask["human_steps"] = []any{map[string]any{"action": "Merge the PR", "verify_done": "PR shows Merged"}}
+			ask["human_steps"] = []any{map[string]any{"action": "Merge the PR into the default branch", "verify_done": "PR shows Merged"}}
 			ask["after_done"] = "x99-claude-sonnet starts the next slice"
 		}, "ask.probes requires at least one item"},
 	}

@@ -1065,5 +1065,14 @@
       "next": "次へ"
     }
   },
-  "actions": {}
+  "actions": {
+    "selected_other": "{{count}} 件選択中",
+    "clear_selection": "選択を解除"
+  },
+  "auto_compact": {
+    "title": "自動コンパクト",
+    "hint": "空欄の場合はワークスペースの値を使います。",
+    "inherit_placeholder": "ワークスペースの既定値",
+    "save_failed": "自動コンパクトの設定を保存できませんでした。"
+  }
 }

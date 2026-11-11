@@ -398,7 +398,8 @@
   },
   "chat": {
     "floating_label": "Fenêtre de discussion flottante",
-    "floating_hint": "Afficher le bouton de chat flottant sur chaque page."
+    "floating_hint": "Afficher le bouton de chat flottant sur chaque page.",
+    "recent_agents_label": "Agents récents dans le sélecteur Nouvelle discussion"
   },
   "issue": {
     "opening": {
@@ -459,6 +460,7 @@
       "issue": "Tâche",
       "notifications": "Notifications",
       "tokens": "Jetons d'API",
+      "passkeys": "Clés d'accès",
       "general": "Général",
       "github": "GitHub",
       "labs": "Labo",
@@ -475,7 +477,8 @@
       "code": "Code",
       "channels": "Messagerie",
       "apps": "Applications connectées",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "provider_breakers": "Disjoncteurs des fournisseurs"
     },
     "groups": {
       "personal": "Personnel",
@@ -757,6 +760,39 @@
       "enabled_badge": "Activé"
     }
   },
+  "passkeys": {
+    "title": "Clés d'accès",
+    "purpose": "Les clés d'accès signent les approbations sensibles avec cet appareil ou une clé de sécurité.",
+    "description": "Une clé d'accès prouve que c'est bien vous qui approuvez une décision protégée. Gardez-en au moins deux, sur des appareils différents.",
+    "desktop_note": "Les clés d'accès sont liées à l'application web : gérez-les dans votre navigateur.",
+    "open_in_browser": "Ouvrir dans le navigateur",
+    "add": "Ajouter une clé d'accès",
+    "code_hint": "Nous vous avons envoyé un code par e-mail. Saisissez-le, puis suivez l'invite de votre navigateur pour créer la clé d'accès.",
+    "code_label": "Code reçu par e-mail",
+    "attempt_tag": "Tentative {{tag}} : utilisez l’e-mail dont l’objet se termine par [{{tag}}].",
+    "confirm": "Confirmer",
+    "cancel": "Annuler",
+    "empty": "Aucune clé d'accès pour le moment.",
+    "load_failed": "Impossible de charger vos clés d'accès. Rechargez la page pour réessayer.",
+    "item_title": "Clé d'accès {{number}}",
+    "item_meta": "Ajoutée le {{created}} · {{lastUsed}}",
+    "last_used_with_date": "Dernière utilisation le {{date}}",
+    "last_used_never": "Jamais utilisée",
+    "suspect": "Suspecte",
+    "revoke_code_hint": "Nous vous avons envoyé un code par e-mail pour supprimer cette clé d'accès. Saisissez-le pour confirmer.",
+    "revoke_aria": "Révoquer la clé d'accès {{number}}",
+    "toast_enrolled": "Clé d'accès ajoutée",
+    "toast_enroll_failed": "Échec de l'ajout de la clé d'accès",
+    "toast_revoked": "Clé d'accès révoquée",
+    "toast_revoke_failed": "Échec de la révocation de la clé d'accès",
+    "revoke_dialog": {
+      "title": "Révoquer la clé d'accès",
+      "description": "Cette clé d'accès sera supprimée et ne pourra plus approuver de décisions. Vous la confirmez avec une autre clé d'accès.",
+      "cancel": "Annuler",
+      "confirm": "Révoquer",
+      "use_code": "Utiliser un code par e-mail à la place"
+    }
+  },
   "tokens": {
     "title": "Jetons d'API",
     "description": "Les jetons d'accès personnels permettent au CLI et aux intégrations externes de s'authentifier avec votre compte. Utilisez-en un via multica login --token, ou comme jeton Bearer lors des appels à l'API.",
@@ -846,13 +882,23 @@
     "auto_compact_hint": "Un message privé web continue dans un nouveau message privé après une réponse, dès que son contexte atteint le seuil.",
     "auto_compact_threshold_label": "Seuil (%)",
     "auto_compact_threshold_invalid": "Saisissez un nombre entier de 50 à 90.",
+    "auto_compact_tokens_200k_label": "Seuil, modèles 200k (tokens)",
+    "auto_compact_tokens_1m_label": "Seuil, modèles 1M (tokens)",
+    "auto_compact_tokens_200k_invalid": "Saisissez un nombre entier de 100000 à 200000.",
+    "auto_compact_tokens_1m_invalid": "Saisissez un nombre entier de 100000 à 400000.",
     "auto_compact_readonly_on": "Activé, à {{threshold}} %",
+    "auto_compact_readonly_on_tokens": "Activé, à {{small}} / {{large}} tokens",
     "auto_compact_readonly_off": "Désactivé",
     "agent_decisions_label": "Décisions des agents",
     "agent_decisions_hint": "Les agents peuvent trancher à votre place les étapes autorisées. Chaque décision apparaît dans le récapitulatif quotidien avec un veto de 24 h.",
     "agent_decisions_stopped_title": "Les décisions ont été arrêtées automatiquement",
     "agent_decisions_stopped_description": "Motif : {{reason}}. Activer les décisions efface cet enregistrement.",
     "agent_decisions_stopped_confirm": "Activer",
+    "runtime_profile_label": "Profil d'exécution",
+    "runtime_profile_hint": "Valeur par défaut de l'espace de travail pour la configuration des CLI d'agent. Managed crée un dossier minimal par tâche. Les outils sans adaptateur géré échouent sous Managed : donnez à ces agents une surcharge explicite Personnel.",
+    "runtime_profile_personal": "Personnel",
+    "runtime_profile_managed": "Géré",
+    "runtime_profile_inherit": "Valeur par défaut de l'espace de travail",
     "idle_guard_label": "Garde des tickets inactifs",
     "idle_guard_hint": "Déplace les tickets démarrés sans exécution ni réveil après N heures. Shadow journalise seulement.",
     "idle_guard_off": "Désactivée",
@@ -861,6 +907,12 @@
     "idle_guard_hours_label": "Après (heures)",
     "idle_guard_hours_invalid": "Saisissez un nombre entier de 1 à 72.",
     "idle_guard_readonly": "{{mode}}, après {{hours}} h",
+    "routing_agent_label": "Agent de routage",
+    "routing_agent_hint": "Traite les étapes de workflow de simple routage : todo, blocked, merged et need decision. Non défini, chaque étape garde son propre agent.",
+    "routing_fallback_label": "Agent de secours",
+    "routing_fallback_hint": "Reprend une étape de routage quand l'agent de routage échoue sur une erreur du fournisseur.",
+    "routing_agent_none": "Aucun",
+    "routing_agent_unknown": "Agent inconnu",
     "slug_hint": "Utilisé dans toutes les URL de l'espace de travail. Il ne peut pas être modifié.",
     "copy_slug": "Copier le slug",
     "copy_failed": "Impossible de copier",
@@ -1323,6 +1375,7 @@
     "github_not_configured": "La connexion GitHub n'est pas configurée pour ce déploiement.",
     "github_browse_not_configured": "Le parcours des dépôts exige GITHUB_APP_ID et GITHUB_APP_PRIVATE_KEY.",
     "github_connect_failed": "Impossible de connecter GitHub. Réessayez.",
+    "github_installation_not_allowed": "Ce compte GitHub n'est pas autorisé sur ce déploiement.",
     "github_picker_title": "Choisir des dépôts GitHub",
     "github_picker_description": "Les entrées manuelles existantes restent inchangées.",
     "github_account": "Compte GitHub",
@@ -1605,5 +1658,36 @@
     "mcp": "Ajoutés par les administrateurs, partagés dans l'espace de travail puis attribués agent par agent.",
     "apps": "Autorisées avec votre propre compte via Composio et activées sur les agents qui vous appartiennent.",
     "plugins": "Paquets installés pouvant ajouter des outils, des hooks planifiés et du stockage, chacun avec ses propres autorisations."
+  },
+  "provider_breakers": {
+    "description": "Un disjoncteur refuse le nouveau travail d'un fournisseur après des erreurs serveur répétées, puis le sonde de nouveau tout seul.",
+    "empty": "Aucun disjoncteur ne s'est déclenché dans cet espace de travail.",
+    "load_error": "Impossible de charger les disjoncteurs.",
+    "retry": "Réessayer",
+    "columns": {
+      "provider": "Fournisseur",
+      "state": "État",
+      "reason": "Raison",
+      "failures": "Échecs",
+      "opened": "Ouvert",
+      "next_probe": "Prochaine sonde",
+      "last_success": "Dernier succès",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Fermé",
+      "open": "Ouvert",
+      "half_open": "Semi-ouvert"
+    },
+    "none": "—",
+    "reset": "Réinitialiser",
+    "reset_label": "Réinitialiser le disjoncteur {{provider}}",
+    "reset_title": "Réinitialiser le disjoncteur {{provider}} ?",
+    "reset_description": "Le disjoncteur se ferme maintenant et le nouveau travail atteint de nouveau {{provider}}. Si le fournisseur échoue encore, le disjoncteur se déclenche à nouveau. La réinitialisation est enregistrée dans le journal d'audit.",
+    "reset_cancel": "Annuler",
+    "reset_confirm": "Réinitialiser le disjoncteur",
+    "resetting": "Réinitialisation…",
+    "reset_success": "Disjoncteur réinitialisé.",
+    "reset_error": "Impossible de réinitialiser le disjoncteur."
   }
 }

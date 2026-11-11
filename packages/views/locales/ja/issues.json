@@ -457,7 +457,8 @@
   },
   "list": {
     "empty_status": "タスクなし",
-    "add_issue_tooltip": "タスクを追加"
+    "add_issue_tooltip": "タスクを追加",
+    "unread_mention": "未読のメンション"
   },
   "swimlane": {
     "no_parent": "親タスクなし",
@@ -495,6 +496,7 @@
     "not_found": "このタスクはこのワークスペースに存在しないか、削除されています。",
     "load_failed": "このタスクを読み込めませんでした。接続を確認して再試行してください。",
     "card_load_failed": "このタスクを読み込めませんでした。",
+    "data_error": "このタスクにはアプリが読み取れないデータが含まれています。",
     "retry": "再試行",
     "not_found_title": "タスクが見つかりません",
     "breadcrumb_project_unknown": "不明なプロジェクト",
@@ -1487,7 +1489,34 @@
       "rate": "1 時間に 12 回を超えて起動"
     },
     "paused_banner": "{{name}} が {{time}} にウェイクアップを一時停止しました",
-    "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました"
+    "paused_banner_anonymous": "ウェイクアップは {{time}} に一時停止されました",
+    "defaults": {
+      "title": "既定のウェイクアップ",
+      "rule_pr_merged": "リンクされた PR がマージされたとき",
+      "rule_pr_checks_failed": "PR のチェックが失敗したとき",
+      "rule_pr_needs_attention": "リンクされた PR に対応が必要なとき",
+      "state_on": "オン",
+      "state_disabled": "無効",
+      "state_paused": "一時停止中: {{reason}}",
+      "inherited": "{{source}}から継承",
+      "overridden": "この Issue で上書き中",
+      "source_workspace": "ワークスペース",
+      "source_project": "プロジェクト",
+      "source_default": "既定値",
+      "open_project": "プロジェクトのルールで編集",
+      "override": "上書き",
+      "override_label": "{{rule}}を上書き",
+      "edit": "上書きを編集",
+      "edit_label": "{{rule}}の上書きを編集",
+      "reset": "リセット",
+      "reset_label": "{{rule}}をリセット",
+      "save": "上書きを保存",
+      "saving": "保存中…",
+      "cancel": "キャンセル",
+      "save_error": "上書きを保存できませんでした。",
+      "reset_error": "ルールをリセットできませんでした。",
+      "conflict_error": "他の人が先にこのルールを変更しました。編集内容は保持されています。再読み込みして相手の変更を確認してください。"
+    }
   },
   "duplicates": {
     "banner_prefix": "重複元:",
@@ -1607,6 +1636,8 @@
       "name": "名前",
       "name_placeholder": "例：開発フロー",
       "description": "説明",
+      "max_runs": "Issue あたりの最大実行数",
+      "max_runs_invalid": "1〜{{max}} の整数を入力してください。空欄の場合は既定値（{{default}}）になります。",
       "steps": "ステップ",
       "add_step": "ステップを追加",
       "start": "開始",
@@ -1965,5 +1996,32 @@
       "empty_title": "保存したビューはまだありません",
       "empty_description": "タスク一覧でフィルターと表示方法を調整し、ビューとして保存します。"
     }
+  },
+  "status_history": {
+    "title": "ステータス履歴",
+    "description": "この課題のステータス変更を古い順に表示します。",
+    "empty": "ステータス変更の記録はありません。",
+    "truncated": "古いステータス変更は表示されていません。サーバーが返した最も古い変更から始まります。",
+    "trigger_not_recorded": "トリガーは記録されていません",
+    "removed": "{{status}}（削除済み）",
+    "handoff_comment": "引き継ぎコメント",
+    "handoff_invalid": "引き継ぎリンクが無効です",
+    "scrubber_label": "ステータス履歴の位置",
+    "position": "{{current}} / {{total}}",
+    "cause": {
+      "ui_or_api": "ユーザーによる変更",
+      "workflow_edge": "ワークフロー遷移",
+      "workflow_remap": "ワークフロー再マッピング",
+      "pr_merged": "PR マージ",
+      "ci_advance": "CI 進行",
+      "run_budget": "実行予算",
+      "decision": "決定",
+      "watchdog": "ウォッチドッグ",
+      "task_reset": "失敗した実行のリセット",
+      "qoder": "Qoder",
+      "duplicate": "重複",
+      "system": "システム"
+    },
+    "open": "ステータス履歴"
   }
 }

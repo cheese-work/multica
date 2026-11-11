@@ -45,6 +45,15 @@ var workflowGetCmd = &cobra.Command{
 	RunE:  runWorkflowGet,
 }
 
+var workflowLintCmd = &cobra.Command{
+	Use:   "lint [<id>]",
+	Short: "Lint one workflow, or every workflow with --all",
+	Long: `Run the workflow lint rules against the live server. Waived findings are
+listed but do not count. Exits non-zero when any workflow has an unwaived error.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkflowLint,
+}
+
 var workflowCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a workflow",
@@ -83,6 +92,8 @@ Run rules change with their own flags, with or without --steps-file; a rule
 flag left out keeps its value. --max-runs-per-issue N (1 to 1000) caps the runs
 one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
+--start-status KEY sets the status where new issues of the workflow start (an
+unstarted or started step of the workflow; "" restores todo).
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
@@ -150,6 +161,7 @@ this way neither reassigns them nor starts runs.`,
 func init() {
 	workflowCmd.AddCommand(workflowListCmd)
 	workflowCmd.AddCommand(workflowGetCmd)
+	workflowCmd.AddCommand(workflowLintCmd)
 	workflowCmd.AddCommand(workflowCreateCmd)
 	workflowCmd.AddCommand(workflowUpdateCmd)
 	workflowCmd.AddCommand(workflowSetInstructionsCmd)
@@ -165,6 +177,8 @@ func init() {
 	workflowListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 
 	workflowGetCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowLintCmd.Flags().Bool("all", false, "Lint every workflow in the workspace")
+	workflowLintCmd.Flags().String("output", "table", "Output format: table or json")
 
 	workflowCreateCmd.Flags().String("name", "", "Workflow name (required)")
 	workflowCreateCmd.Flags().String("description", "", "Workflow description")
@@ -178,6 +192,7 @@ func init() {
 	workflowUpdateCmd.Flags().Bool("dry-run", false, "Print the migration plan without writing")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
+	workflowUpdateCmd.Flags().String("start-status", "", "Status where new issues of the workflow start; an unstarted or started step (\"\" restores todo)")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	workflowSetInstructionsCmd.Flags().String("status", "", "status_key of the step to change (required)")
@@ -356,7 +371,11 @@ func printWorkflowRules(wf map[string]any) {
 	if b, ok := wf["include_child_prs"].(bool); ok {
 		include = b
 	}
-	fmt.Printf("max runs per issue: %s, include child PRs: %t\n", maxRuns, include)
+	start := issueworkflow.StartStatus
+	if key := strVal(wf, "start_status_key"); key != "" {
+		start = key
+	}
+	fmt.Printf("max runs per issue: %s, include child PRs: %t, start status: %s\n", maxRuns, include, start)
 }
 
 func printMappingPlan(plan map[string]any) {
@@ -646,8 +665,12 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 		include, _ := cmd.Flags().GetBool("include-child-prs")
 		body["include_child_prs"] = include
 	}
+	if cmd.Flags().Changed("start-status") {
+		key, _ := cmd.Flags().GetString("start-status")
+		body["start_status_key"] = key
+	}
 	if len(body) == 0 {
-		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue and/or --include-child-prs")
+		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue, --include-child-prs and/or --start-status")
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err

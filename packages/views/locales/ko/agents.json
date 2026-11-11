@@ -1065,5 +1065,14 @@
       "next": "다음"
     }
   },
-  "actions": {}
+  "actions": {
+    "selected_other": "{{count}}개 선택됨",
+    "clear_selection": "선택 해제"
+  },
+  "auto_compact": {
+    "title": "자동 압축",
+    "hint": "비워 두면 워크스페이스 값을 사용합니다.",
+    "inherit_placeholder": "워크스페이스 기본값",
+    "save_failed": "자동 압축 설정을 저장하지 못했습니다."
+  }
 }

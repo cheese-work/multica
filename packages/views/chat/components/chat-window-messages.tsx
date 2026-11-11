@@ -12,8 +12,6 @@ import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { InteractiveLoginBanner } from "./interactive-login-banner";
 
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
-
 /** Message-only observers leave with the fading list; the composer stays alive. */
 export function ChatWindowMessages({
   sessionId,
@@ -69,11 +67,6 @@ export function ChatWindowMessages({
   const messages = hideQueuedChatMessages(
     [...pages].reverse().flatMap((page) => page.messages),
     pendingTask ?? undefined,
-  );
-  // Older pages prepend rows without changing the newest window's indices.
-  const olderMessageCount = pages.slice(1).reduce(
-    (count, page) => count + page.messages.length,
-    0,
   );
   const loginRequired =
     interactiveLoginRequired || errorCode(error) === "interactive_login_required";
@@ -132,9 +125,6 @@ export function ChatWindowMessages({
           sessions={sessions}
           pendingTask={pendingTask}
           availability={availability}
-          firstItemIndex={messages.length > 0
-            ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-            : 0}
           hasOlderMessages={!!hasNextPage}
           isFetchingOlderMessages={isFetchingNextPage}
           onLoadOlderMessages={() => void fetchNextPage()}

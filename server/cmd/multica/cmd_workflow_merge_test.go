@@ -133,7 +133,13 @@ func TestWorkflowUpdateResolvesNameAndKeepsRunRules(t *testing.T) {
 }
 
 func TestDecisionFlagsOnStepEditsOnly(t *testing.T) {
-	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd, workflowHandoffSetCmd} {
+	// Looked up through the command tree, not a package symbol, so a take-upstream
+	// resolution that drops the verb fails on behaviour instead of compiling out.
+	setInstructions, _, _ := workflowCmd.Find([]string{"set-instructions"})
+	if setInstructions == nil || setInstructions == workflowCmd {
+		t.Fatal("workflow set-instructions verb is missing")
+	}
+	for _, c := range []*cobra.Command{workflowUpdateCmd, setInstructions, workflowHandoffSetCmd} {
 		if c.Flags().Lookup("decision-id") == nil || c.Flags().Lookup("print-hash") == nil {
 			t.Errorf("%s lacks --decision-id/--print-hash", c.CommandPath())
 		}
