@@ -2,6 +2,7 @@
 
 import { cloneElement, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   Bot,
   CalendarClock,
   CalendarDays,
@@ -168,6 +169,7 @@ function getActiveFilterCount(
     propertyFilters?: Record<string, PropertyFilterValue[]>;
     advancedFilter?: AdvancedFilterGroup | null;
     dateFilter?: IssueDateFilter | null;
+    agentRunningFilter?: boolean;
   },
   // Inside a saved view only the user's additions on top of the view's own
   // query count — the baseline is the view, not "active filtering".
@@ -215,6 +217,7 @@ function getActiveFilterCount(
     if (deltaCount > 0) count++;
   }
   if (state.dateFilter) count++;
+  if (state.agentRunningFilter && !baseline?.agentRunning) count++;
   return count;
 }
 
@@ -1088,6 +1091,7 @@ export function IssueFilterMenu({
   const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
+  const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
   const viewStoreApi = useViewStoreApi();
   const act = viewStoreApi.getState();
   const advancedMode = advancedFilter !== null;
@@ -1142,6 +1146,7 @@ export function IssueFilterMenu({
         negatedFilters,
         advancedFilter,
         dateFilter: showDateFilter ? dateFilter : null,
+        agentRunningFilter,
       },
       viewBaseline,
     ) > 0;
@@ -1176,11 +1181,13 @@ export function IssueFilterMenu({
   const sectionLabel = (key: string) =>
     key === "date"
       ? t(($) => $.filters.section_date)
+      : key === "agentRunning"
+        ? `${t(($) => $.filters.section_agent_status)} ${t(($) => $.filters.agent_status_running)}`
       : key === "workflow"
         ? t(($) => $.filters.section_workflow)
-      : key.startsWith("property:")
-        ? filterableProperties.find((p) => `property:${p.id}` === key)?.name ?? ""
-        : fieldLabels[key as NegatableFilterDimension] ?? "";
+        : key.startsWith("property:")
+          ? filterableProperties.find((p) => `property:${p.id}` === key)?.name ?? ""
+          : fieldLabels[key as NegatableFilterDimension] ?? "";
   const renderFieldSections = (pass: "active" | "rest" | "search") => {
     const show = (key: string) =>
       pass === "search" ? matchesFilterQuery(sectionLabel(key), query) : inPass(key, pass);
@@ -1236,6 +1243,30 @@ export function IssueFilterMenu({
                     </DropdownMenuCheckboxItem>
                   );
                 })}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+            )}
+
+            {/* Agent status */}
+            {show("agentRunning") && (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Bot className="size-3.5" />
+                <span className="flex-1">{t(($) => $.filters.section_agent_status)}</span>
+                {triggerValue("agentRunning")}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-auto min-w-44">
+                <DropdownMenuCheckboxItem
+                  checked={agentRunningFilter}
+                  disabled={viewBaseline?.agentRunning === true}
+                  title={viewBaseline?.agentRunning === true ? fixedTitle : undefined}
+                  onCheckedChange={() => act.toggleAgentRunningFilter()}
+                  className={FILTER_ITEM_CLASS}
+                >
+                  <HoverCheck checked={agentRunningFilter} />
+                  <Activity className="size-3.5 text-muted-foreground" />
+                  {t(($) => $.filters.agent_status_running)}
+                </DropdownMenuCheckboxItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
             )}
@@ -1590,6 +1621,7 @@ export function IssueFilterMenu({
   };
   const sectionKeys = [
     ...searchFields.filter((field) => field !== "relation" || showRelation),
+    "agentRunning",
     ...(showDateFilter ? ["date"] : []),
     ...filterableProperties.map((p) => `property:${p.id}`),
   ];
@@ -1847,6 +1879,7 @@ export function IssueDisplayControls({
   const dueDateFilters = useViewStore((s) => s.dueDateFilters);
   const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
+  const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
@@ -1928,6 +1961,7 @@ export function IssueDisplayControls({
       negatedFilters,
       advancedFilter,
       dateFilter: showDateFilter ? dateFilter : null,
+      agentRunningFilter,
     },
     viewBaseline,
   );

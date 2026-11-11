@@ -314,7 +314,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertIn("record-checks.sh", json.dumps(preparation["steps"]))
         self.assertIn("github.event.workflow_run.head_sha", self.workflow["run-name"])
         self.assertIn("inputs.ref", self.workflow["run-name"])
-        self.assertIn("needs.authorize-c00.result == 'success'", self.workflow["jobs"]["admission"]["if"])
+        self.assertIn("needs.authorize-c00.outputs.authorized == 'true'", self.workflow["jobs"]["admission"]["if"])
 
     def test_check_validation_rejects_another_candidates_sha(self):
         checks = self.directory / "other-checks.json"

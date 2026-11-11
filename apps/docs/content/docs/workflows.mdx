@@ -86,6 +86,8 @@ Admins can also set a handoff from the project board: hover a column header and 
 
 Removing a column may ask you to choose a new status for issues already in it. Other issues stay where they are, and this move does not start agents. The status library below the workflows is where you rename or recolor statuses; those changes are shared wherever the status is used.
 
+Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client.
+
 To delete a workflow, first switch the projects using it to another workflow. Issues keep their current status.
 
 If **Settings** does not include **Workflows**, the feature is not available in this workspace yet, and statuses are still managed in **Settings → Issue Statuses**.

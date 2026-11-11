@@ -226,6 +226,8 @@
     "relation_assigned": "Qui me sont assignés",
     "relation_created": "Créés par moi",
     "relation_my_agents": "Assignés à mes agents",
+    "section_agent_status": "Statut de l'agent",
+    "agent_status_running": "En cours d'exécution",
     "operator_label": "Condition",
     "operator_is": "est",
     "operator_is_not": "n'est pas",
@@ -1059,6 +1061,9 @@
     "copy_link": "Copier le lien",
     "copy_workdir_path": "Copier le chemin du répertoire de travail local",
     "copy_project_directory_path": "Copier le chemin du répertoire du projet",
+    "copy_identifier": "Copier l'identifiant",
+    "identifier_copied": "{{identifier}} copié",
+    "stop_agent_run": "Arrêter l’exécution de {{name}}",
     "relations": "Relations",
     "create_sub_issue": "Créer une sous-tâche",
     "set_parent_issue": "Définir la tâche parente...",
@@ -1687,6 +1692,8 @@
       "name": "Nom",
       "name_placeholder": "ex. Livraison",
       "description": "Description",
+      "max_runs": "Exécutions max par ticket",
+      "max_runs_invalid": "Saisissez un nombre entier de 1 à {{max}}, ou laissez vide pour la valeur par défaut ({{default}}).",
       "steps": "Étapes",
       "add_step": "Ajouter une étape",
       "start": "Début",
@@ -1792,8 +1799,6 @@
       "picker_more": "Créez d’autres workflows dans Paramètres → Workflows."
     },
     "picker": {
-      "header": "{{workflow}} · selon le projet « {{project}} »",
-      "header_no_project": "Statuts {{workflow}} · sans projet",
       "footer": "Seuls les états du workflow de cette tâche sont affichés. À droite : à qui elle est confiée en entrant dans l’état."
     },
     "confirm": {

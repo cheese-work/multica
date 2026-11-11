@@ -95,6 +95,7 @@ func (handler *Handler) RevokePasskey(writer http.ResponseWriter, request *http.
 
 type revokeCodeStartResponse struct {
 	CeremonyID string    `json:"ceremony_id"`
+	Tag        string    `json:"tag"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
@@ -118,7 +119,7 @@ func (handler *Handler) StartPasskeyRevocationByCode(writer http.ResponseWriter,
 		writeRevokeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, revokeCodeStartResponse{CeremonyID: uuidToString(started.CeremonyID), ExpiresAt: started.ExpiresAt})
+	writeJSON(writer, http.StatusOK, revokeCodeStartResponse{CeremonyID: uuidToString(started.CeremonyID), Tag: started.Tag, ExpiresAt: started.ExpiresAt})
 }
 
 type revokeCodeConfirmRequest struct {
