@@ -455,7 +455,8 @@
   },
   "list": {
     "empty_status": "タスクなし",
-    "add_issue_tooltip": "タスクを追加"
+    "add_issue_tooltip": "タスクを追加",
+    "unread_mention": "未読のメンション"
   },
   "swimlane": {
     "no_parent": "親タスクなし",

@@ -465,7 +465,8 @@
   },
   "list": {
     "empty_status": "No issues",
-    "add_issue_tooltip": "Add issue"
+    "add_issue_tooltip": "Add issue",
+    "unread_mention": "Unread mention"
   },
   "swimlane": {
     "no_parent": "No parent",

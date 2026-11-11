@@ -465,7 +465,8 @@
   },
   "list": {
     "empty_status": "Aucune tâche",
-    "add_issue_tooltip": "Ajouter une tâche"
+    "add_issue_tooltip": "Ajouter une tâche",
+    "unread_mention": "Mention non lue"
   },
   "swimlane": {
     "no_parent": "Sans parent",
