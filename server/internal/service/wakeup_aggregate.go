@@ -220,6 +220,10 @@ func aggregateCounterBusy(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "55P03"
 }
 
+// errAggregateCounterBusy is why a start waited for a later pass; the scheduler
+// records it as the rule's reason (CHE-5252). Its text is shown to people.
+var errAggregateCounterBusy = errors.New("Waiting for a busy aggregate counter; retried on a later pass.")
+
 // oldestReceiptAge is when the oldest of the facts arrived; zero when there are none.
 func oldestReceiptAge(receipts []db.IssueWakeupReceipt) time.Time {
 	var oldest time.Time

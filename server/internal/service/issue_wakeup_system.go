@@ -453,7 +453,10 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		return err
 	}
 	announceWithdrawn()
-	return s.dispatchSystem(ctx, w)
+	if err := s.dispatchSystem(ctx, w); !errors.Is(err, errAggregateCounterBusy) {
+		return err
+	}
+	return nil
 }
 
 // prEventCarries reports whether the pr.event fallback already carries the
@@ -730,7 +733,7 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 		} else {
 			err = s.dispatch(ctx, w)
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, errAggregateCounterBusy) {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		}
 	}
@@ -1565,7 +1568,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if caps := config.aggregateCaps(); len(caps) > 0 {
 		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.SystemRule.String, FactAge: oldestReceiptAge(receipts)}, caps, now)
 		if aggregateCounterBusy(err) {
-			return nil // another start holds the counter; this one is retried on a later pass
+			return errAggregateCounterBusy // another start holds the counter; retried on a later pass
 		}
 		if err != nil {
 			return err
