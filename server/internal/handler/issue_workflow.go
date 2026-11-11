@@ -856,11 +856,16 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
+	machine := isMachineCredentialActor(r)
+	// A machine credential never writes the budget fields directly (CHE-5228).
+	if machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil) {
+		writeBudgetRequiresDecision(w)
+		return
+	}
 	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
 		return
 	}
-	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -890,15 +895,14 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
-	// The run cap is budget authority (CHE-2798 S1b): only an interactive
-	// session changes it. A write that leaves it as stored keeps its usual
-	// authorization. The budget start has no write path here.
-	if req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32 && r.Header.Get("X-Actor-Source") != "interactive_jwt" {
-		writeErrorCode(w, http.StatusForbidden, "budget_requires_interactive", "changing a workflow's run budget needs an interactive web or desktop session")
-		return
-	}
-	if machine && req.MaxRunsPerIssue != nil {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+	// The budget fields are budget authority (CHE-2798 S1b, CHE-5228): an
+	// interactive session changes them directly, anyone else through a
+	// workflow.budget decision. A write that leaves them as stored keeps its
+	// usual authorization. The budget start has no write path here.
+	changesBudget := (req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32) ||
+		(req.IncludeChildPRs != nil && includeChildPRs.Bool != current.IncludeChildPrs)
+	if changesBudget && !isInteractiveRequest(r) {
+		writeBudgetRequiresDecision(w)
 		return
 	}
 	// Read under the exclusive catalog lock, so no other save can slip between
@@ -1851,4 +1855,11 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeBudgetRequiresDecision refuses a direct budget write from a credential
+// that is not an interactive session and names the path that works.
+func writeBudgetRequiresDecision(w http.ResponseWriter) {
+	writeErrorCode(w, http.StatusForbidden, "budget_requires_decision",
+		"changing a workflow's run budget needs the owner's approval: run `multica config propose workflow.budget <workflow-id> --max-runs N` and submit it with `multica decision request`, or use an interactive web or desktop session")
 }

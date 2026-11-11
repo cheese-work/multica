@@ -3620,6 +3620,20 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return overrideID, nil, project, false
 	}
+	// One widening rule for create, update and set (CHE-5228): a non-interactive
+	// credential cannot name a workflow whose budget is wider than the one the
+	// issue would follow without the override.
+	if overrideID.Valid && !isInteractiveRequest(r) {
+		before, berr := issueBinding(r.Context(), h.Queries, wsUUID, pgtype.UUID{}, workflowProjectID, pgtype.Int4{})
+		if berr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return overrideID, nil, project, false
+		}
+		if budgetWidens(before, workflowBinding(def, pgtype.Int4{})) {
+			writeBudgetRebindingRefused(w)
+			return overrideID, nil, project, false
+		}
+	}
 	return overrideID, def, project, true
 }
 
