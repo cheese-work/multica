@@ -549,10 +549,11 @@ const issueListMaxPageSize = 100
 
 // validIssueSortColumns are the sort keys `issue list --sort` accepts. They
 // mirror the server's ListIssues handler. "position" is the default and is
-// always sorted ascending (the board's manual drag order), so --direction is
-// only meaningful for the other columns.
+// always sorted ascending (the board's manual drag order), and "effective_due"
+// has one fixed order (dated first by date, then undated by priority and
+// age), so --direction is only meaningful for the other columns.
 var validIssueSortColumns = []string{
-	"position", "title", "created_at", "start_date", "due_date", "priority",
+	"position", "title", "created_at", "start_date", "due_date", "priority", "effective_due",
 }
 
 // validIssueFields are the top-level keys /api/issues actually emits for
@@ -569,16 +570,16 @@ var validIssueFields = []string{
 	"assignee_id", "creator_type", "creator_id", "parent_issue_id",
 	"duplicate_of", "project_id", "workflow_id", "requested_by_id", "position", "stage", "start_date", "due_date", "created_at",
 	"updated_at", "revision", "last_activity_at", "metadata", "properties",
-	"labels",
+	"labels", "effective_due", "due_source", "diagnostics",
 }
 
 // directionalIssueSortColumns are the sort keys for which --direction is
-// meaningful: every valid column except "position". Derived from
+// meaningful: every valid column except "position" and "effective_due". Derived from
 // validIssueSortColumns so the two stay in sync.
 var directionalIssueSortColumns = func() []string {
-	cols := make([]string, 0, len(validIssueSortColumns)-1)
+	cols := make([]string, 0, len(validIssueSortColumns)-2)
 	for _, c := range validIssueSortColumns {
-		if c != "position" {
+		if c != "position" && c != "effective_due" {
 			cols = append(cols, c)
 		}
 	}
@@ -628,6 +629,7 @@ func init() {
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
+	issueCmd.AddCommand(issueUrgentOrphansCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
 	issueCmd.AddCommand(issueAssignCmd)
@@ -669,8 +671,8 @@ func init() {
 	issueListCmd.Flags().StringArray("property", nil, `Filter by custom property, written as "Name=Value" or as a comparison such as "Score>=3", "Ship Date<2026-01-01" or "Notes~=review" (repeatable, one member per flag; quote it so the shell does not read < and > as redirection). Name is a property name (case-insensitive) or its UUID; a name containing =, <, >, ! or ~ has to be given by UUID. Use __none__ to match issues where the property is unset; it works for every type, so an option or member actually named __none__ has to be given by id. Repeating a property matches ANY of its members; different properties must ALL match. The per-type value forms and comparisons are in the command description above.`)
 	issueListCmd.Flags().Int("limit", 50, fmt.Sprintf("Page size, 1 to %d (the server returns at most %d issues per request; use --offset to page through more)", issueListMaxPageSize, issueListMaxPageSize))
 	issueListCmd.Flags().Int("offset", 0, "Number of issues to skip (for pagination; while --output json reports has_more, advance it by the number of issues in that same response)")
-	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
-	issueListCmd.Flags().String("direction", "", "Sort direction (asc or desc); requires --sort to be a non-position column or a property sort (position is always ascending)")
+	issueListCmd.Flags().String("sort", "", "Sort column: position (default, manual board order), title, created_at, start_date, due_date, priority, effective_due (dated issues first by earliest inherited due date, then undated by priority, oldest first; adds effective_due, due_source and diagnostics to each row), or property:<name-or-id> to sort by a custom property (select properties sort by option order)")
+	issueListCmd.Flags().String("direction", "", "Sort direction (asc or desc); requires --sort to be a column other than position or effective_due, or a property sort (those always sort one way)")
 	issueListCmd.Flags().String("fields", "", "JSON output only: comma-separated list of issue fields to include (e.g. id,title,status,priority). Filtering happens client-side after the full response is fetched, so this shrinks CLI output size and agent context cost, not network/server-side cost. Omit for the full issue object (default, unchanged). Valid fields: "+strings.Join(validIssueFields, ", "))
 	issueListCmd.Flags().Bool("resolve-properties", false, resolvePropertiesHelp)
 
@@ -684,6 +686,7 @@ func init() {
 	issuePullRequestsUnlinkCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
+	issueUrgentOrphansCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 
 	// issue create
@@ -728,13 +731,13 @@ func init() {
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run, including a workflow step handler's run.")
 	issueUpdateCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID) and cancel it; --status, if given, must be cancelled, and description/attachment changes must go in a separate update")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
@@ -792,6 +795,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
+	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -953,8 +957,8 @@ func runIssueList(cmd *cobra.Command, _ []string) error {
 		// ignores --direction for it. Reject the combination up front rather
 		// than silently dropping the flag — a passed-but-ignored flag is a
 		// footgun, especially in scripts.
-		if sortVal == "" || sortVal == "position" {
-			return fmt.Errorf("--direction requires --sort to be one of %s, or a property:<name-or-id> sort; position (the default manual board order) is always ascending", strings.Join(directionalIssueSortColumns, ", "))
+		if sortVal == "" || sortVal == "position" || sortVal == "effective_due" {
+			return fmt.Errorf("--direction requires --sort to be one of %s, or a property:<name-or-id> sort; position (the default manual board order) and effective_due always sort one way", strings.Join(directionalIssueSortColumns, ", "))
 		}
 		params.Set("direction", d)
 	}
@@ -3040,6 +3044,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
+	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
+	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
+		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -3144,6 +3152,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"content": content}
 	if decisionVeto {
 		body["decision_veto"] = true
+	}
+	if notifyOnly {
+		body["notify_only"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true

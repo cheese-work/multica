@@ -103,7 +103,7 @@ func TestIssueTableRowsAdvancedFilter(t *testing.T) {
 		return dbfx.Issue(t, fmt.Sprintf("advanced %s %d", title, suffix), cols)
 	}
 	estimate := uuid.NewString()
-	estimateOf := func(n int) any { return testutil.Raw(fmt.Sprintf(`'{"%s": %d}'::jsonb`, estimate, n)) }
+	estimateOf := func(n int) any { return testutil.Raw(fmt.Sprintf(`'{%q: %d}'::jsonb`, estimate, n)) }
 	urgentInProject := issue("urgent in project", testutil.Cols{"priority": "urgent", "project_id": project, "properties": estimateOf(5)})
 	bugInProject := issue("bug in project", testutil.Cols{"priority": "low", "project_id": project, "due_date": "2026-03-10", "properties": estimateOf(2)})
 	quietInProject := issue("quiet in project", testutil.Cols{"priority": "low", "project_id": project, "status": "done"})

@@ -14,6 +14,7 @@ import {
   Info,
   Pencil,
   Pin,
+  EyeOff,
   PinOff,
   Loader2,
   Square,
@@ -351,6 +352,8 @@ export function ChatWindow() {
   useEffect(() => {
     if (!isOpen || !appForeground || !activeSessionId) return;
     if (!currentHasUnread) return;
+    // Marked unseen on purpose: stay unread until the next real open.
+    if (useChatStore.getState().autoReadSuppressedId === activeSessionId) return;
     uiLogger.info("auto markRead", { sessionId: activeSessionId });
     markRead.mutate(activeSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
@@ -740,6 +743,9 @@ export function ChatWindow() {
       if (next) handleSelectSession(next);
       else setActiveSession(null);
     },
+    onUnseen: (unseenSession) => {
+      if (useChatStore.getState().activeSessionId === unseenSession.id) setActiveSession(null);
+    },
     onRename: handleRename,
     onFork: canForkSession(currentSession) ? handleFork : undefined,
   });
@@ -929,6 +935,7 @@ export function ChatWindow() {
             onUnarchiveSession={dm.unarchive}
             onOpenMessageHit={(session, messageId) => openMessageHit(session.id, messageId)}
             onTogglePin={dm.togglePin}
+            onMarkUnseen={dm.markUnseen}
             onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
         </div>
@@ -1271,6 +1278,7 @@ export function SessionDropdown({
   onUnarchiveSession,
   onOpenMessageHit,
   onTogglePin,
+  onMarkUnseen,
   onOpenStatistics,
   renameRequest,
 }: {
@@ -1284,6 +1292,7 @@ export function SessionDropdown({
   /** Open a chat at a matching message; the owner pushes the history entry that scrolls there. */
   onOpenMessageHit: (session: ChatSession, messageId: string) => void;
   onTogglePin: (session: ChatSession) => unknown;
+  onMarkUnseen: (session: ChatSession) => unknown;
   onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
 }) {
@@ -1514,6 +1523,19 @@ export function SessionDropdown({
                 ),
                 label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
                 onSelect: () => void onTogglePin(session),
+              },
+            ];
+          }
+          if (item.id === "unseen") {
+            return [
+              {
+                key: "unseen",
+                icon: <EyeOff className="size-3.5" />,
+                label: t(($) => $.list.unseen),
+                onSelect: () => {
+                  setIsHistoryOpen(false);
+                  void onMarkUnseen(session);
+                },
               },
             ];
           }

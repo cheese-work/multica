@@ -10,6 +10,7 @@ import {
   type ScrollRestorationAdapter,
 } from "../../platform";
 import { ChatMessageList } from "./chat-message-list";
+import { CHAT_FIRST_ITEM_INDEX_BASE } from "./use-chat-first-item-index";
 
 // Reading-position restore for a DM: the list saves a view anchor
 // ({ itemId, offsetInItemPx, atLiveEnd }) under `chat::<sessionId>` and a
@@ -124,7 +125,7 @@ describe("ChatMessageList reading-position restore", () => {
     expect(virtuosoProps.initialTopMostItemIndex).toEqual({
       index: 2,
       align: "start",
-      offset: -20,
+      offset: 20,
     });
     // Shown straight away: there is no live end to wait for.
     const root = view.container.querySelector("[data-tab-scroll-root]");
@@ -173,7 +174,7 @@ describe("ChatMessageList reading-position restore", () => {
     root.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
     row.getBoundingClientRect = () => ({ top: 80, bottom: 180 }) as DOMRect;
 
-    act(() => virtuosoProps.rangeChanged?.({ startIndex: 4, endIndex: 5 }));
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 4, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 5 }));
 
     expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 20, atLiveEnd: false });
   });
@@ -185,7 +186,7 @@ describe("ChatMessageList reading-position restore", () => {
     const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
     root.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
     row.getBoundingClientRect = () => ({ top: 80, bottom: 1500 }) as DOMRect;
-    act(() => virtuosoProps.rangeChanged?.({ startIndex: 4, endIndex: 5 }));
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 4, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 5 }));
     expect(savedAnchor("s1")?.offsetInItemPx).toBe(20);
 
     // 700 px further down the same tall row: the range endpoints do not change,
@@ -202,7 +203,7 @@ describe("ChatMessageList reading-position restore", () => {
     saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
     mount("s1", messagesFor("s1"));
 
-    act(() => virtuosoProps.rangeChanged?.({ startIndex: 4, endIndex: 5 }));
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 4, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 5 }));
     act(() => virtuosoProps.atBottomStateChange?.(true));
 
     expect(savedAnchor("s1")?.atLiveEnd).toBe(true);
@@ -215,7 +216,7 @@ describe("ChatMessageList reading-position restore", () => {
     // the range Virtuoso reports on its way there is not the reader's position.
     mount("s3", messagesFor("s3"));
 
-    act(() => virtuosoProps.rangeChanged?.({ startIndex: 0, endIndex: 1 }));
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 0, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 1 }));
 
     expect(savedAnchor("s3")).toBeUndefined();
   });

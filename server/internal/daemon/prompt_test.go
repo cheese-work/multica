@@ -2295,3 +2295,24 @@ func TestBuildCommentPromptEmbedsTriggerThreadContext(t *testing.T) {
 		t.Fatal("empty thread context must render no section")
 	}
 }
+
+// CHE-4150 (L6 of CHE-2769): a DM turn lists the open ask ids it may name in
+// `multica chat reply-state`, so the agent never has to guess.
+func TestBuildChatPromptListsOpenAskIDs(t *testing.T) {
+	out := buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi", ChatOpenAskIDs: []string{"ask-1", "ask-2"}})
+	for _, want := range []string{"multica chat reply-state", "ask-1", "ask-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildChatPromptWithoutOpenAsksStillExplainsReplyState(t *testing.T) {
+	out := buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi"})
+	if !strings.Contains(out, "multica chat reply-state") {
+		t.Errorf("prompt lacks the reply-state instruction:\n%s", out)
+	}
+	if !strings.Contains(out, "no open asks") {
+		t.Errorf("prompt must say there are no open asks:\n%s", out)
+	}
+}

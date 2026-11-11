@@ -23,6 +23,7 @@ type prConditionTx struct {
 	prs       [][]any
 	queryErr  error
 	lastError pgtype.Text
+	state     string
 	next      pgtype.Timestamptz
 	writes    int
 }
@@ -64,7 +65,9 @@ func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgcon
 		tx.lastError = args[0].(pgtype.Text)
 		tx.writes++
 	case strings.Contains(sql, "SetWakeupConditionState"):
+		tx.state = args[0].(string)
 		tx.next = args[1].(pgtype.Timestamptz)
+	case strings.Contains(sql, "LockGitHubDispatchHaltShared"):
 	default:
 		return pgconn.CommandTag{}, fmt.Errorf("unexpected write: %s", sql)
 	}
@@ -180,6 +183,37 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 			met, fingerprint, _, err := s.evaluateCondition(ctx, tx, q, w)
 			if err != nil || met != step.wantMet || (met && fingerprint != step.wantState) {
 				t.Fatalf("met=%t fingerprint=%q err=%v; want met=%t fingerprint=%q", met, fingerprint, err, step.wantMet, step.wantState)
+			}
+		})
+	}
+}
+
+// Checks already finished on a PR's current head must fire a new
+// checks_finished rule. Only a result for a replaced head is baselined, even
+// when another linked PR has a current result.
+func TestBaselineChecksFinishedOnCurrentHead(t *testing.T) {
+	current := []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget"}
+	replaced := []any{int32(2), "open", "old", "SUCCESS", "head", "", "p2", "acme", "widget"}
+	running := []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget"}
+	for _, tc := range []struct {
+		name      string
+		rows      [][]any
+		wantState string
+	}{
+		{"finished on current head", [][]any{current}, ""},
+		{"finished on replaced head", [][]any{replaced}, "pr:2@old:SUCCESS"},
+		{"still running", [][]any{running}, ""},
+		{"current and replaced PRs", [][]any{current, replaced}, "pr:2@old:SUCCESS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &IssueWakeupService{Tasks: &TaskService{PRSnapshotsEnabled: true}}
+			w := db.IssueWakeup{ID: dbid.NewV7(), IssueID: dbid.NewV7(), Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})}
+			tx := &prConditionTx{issue: w.IssueID, prs: tc.rows}
+			if err := s.baselineCondition(context.Background(), tx, db.New(tx), w, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if tx.state != tc.wantState {
+				t.Fatalf("baseline state=%q, want %q", tx.state, tc.wantState)
 			}
 		})
 	}

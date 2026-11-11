@@ -24,6 +24,12 @@ import {
   type PreparedSkillArchive,
 } from "@multica/core/skills";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  CREATE_SKILL_DRAFT_KEY,
+  EMPTY_SKILL_CREATE_DRAFT,
+  useSkillCreateDraftStore,
+} from "@multica/core/skills/draft-stores";
 import { isImeComposing } from "@multica/core/utils";
 import {
   skillDetailOptions,
@@ -116,8 +122,12 @@ function ManualForm({
   const { t } = useT("skills");
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  // Unsent input survives dialog close/reopen; cleared on a successful create.
+  const [{ name, description }, patchDraft, clearDraft] = usePersistedDraft(
+    useSkillCreateDraftStore,
+    CREATE_SKILL_DRAFT_KEY,
+    EMPTY_SKILL_CREATE_DRAFT,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -133,6 +143,7 @@ function ManualForm({
         name: trimmed,
         description: description.trim(),
       });
+      clearDraft();
       seedAfterCreate(qc, wsId, skill);
       toast.success(t(($) => $.create.manual.toast_created));
       onCreated(skill);
@@ -161,7 +172,7 @@ function ManualForm({
             autoFocus
             value={name}
             onChange={(e) => {
-              setName(e.target.value);
+              patchDraft({ name: e.target.value });
               setError("");
             }}
             placeholder={t(($) => $.create.manual.name_placeholder)}
@@ -186,7 +197,7 @@ function ManualForm({
           <Textarea
             id="create-skill-desc"
             value={description}
-            onChange={(e) => setDescription(e.target.value)}
+            onChange={(e) => patchDraft({ description: e.target.value })}
             placeholder={t(($) => $.create.manual.description_placeholder)}
             rows={3}
             className="resize-none"

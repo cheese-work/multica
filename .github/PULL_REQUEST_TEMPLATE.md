@@ -33,6 +33,9 @@ REPLACE-THIS-LINE-WITH-YOUR-DISPOSITION
        Changelog: Refactor X store
        Changelog: CHE-123 add Y
      In a stack, only the PR that lands on `main` carries the line, for the whole stack.
+     `Changelog: none` is only for internal-only changes (CI, scripts, docs, tests). A
+     feat, fix or perf PR that changes user-facing code fails the check with `none`:
+     write the sentence, or use a non-user-facing type (ci, test, chore).
      Upstream-sync PRs use `Changelog: none`. -->
 
 Changelog: <one user-facing sentence, or none>
@@ -59,6 +62,14 @@ Changelog: <one user-facing sentence, or none>
 1.
 2.
 3.
+
+## Cost delta
+
+<!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->
+
+- C1 Cost delta: <vs today, per day or per run: tokens (which model), agent runs, Actions runs/minutes, API calls, USD>
+- C2 Optimality check: <cheaper or simpler alternative considered, why rejected>
+- C3 Watch: <how observed after rollout (daily usage report, CHE-4324); rollback threshold>
 
 ## Checklist
 

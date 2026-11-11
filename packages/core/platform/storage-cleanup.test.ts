@@ -96,6 +96,7 @@ describe("clearAllWorkspaceStorage", () => {
       "multica_navigation:initech": "3",
       "multica:chat:activeSessionId:acme": "4",
       multica_quick_create: "5",
+      "multica_quick_create#abc|def": "6",
       // Not session state — a device preference and another app's key.
       multica_locale: "zh-Hans",
       unrelated_key: "keep",

@@ -115,6 +115,9 @@ func (handler *Handler) checkDecisionAnswer(ctx context.Context, workspaceID, re
 	if err != nil {
 		return empty, err
 	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &result, pgtype.UUID{}); err != nil {
+		return empty, err
+	}
 	if root != nil {
 		result.ClearedComments, err = queries.ClearThreadResolutionForReply(ctx, db.ClearThreadResolutionForReplyParams{ThreadRootID: root.ID, IssueID: current.IssueID, WorkspaceID: workspaceID})
 		if err != nil {

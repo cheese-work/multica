@@ -65,10 +65,13 @@ func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.
 // to IssueService.Create. The handler owns the parsing step that turns its
 // request payload into this struct; the service stays transport-agnostic.
 type IssueCreateParams struct {
-	WorkspaceID   pgtype.UUID
-	Title         string
-	Description   pgtype.Text
-	Status        string
+	WorkspaceID pgtype.UUID
+	Title       string
+	Description pgtype.Text
+	Status      string
+	// StatusOmitted marks a creator who picked no status: Status then holds
+	// the caller's placeholder and the workflow's start status wins.
+	StatusOmitted bool
 	Priority      string
 	AssigneeType  pgtype.Text
 	AssigneeID    pgtype.UUID
@@ -104,11 +107,16 @@ type IssueCreateParams struct {
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
 	// HandoffResolver, when set, decides the assignee a workflow step hands the
-	// new issue to. Set it only when the caller chose no assignee. The service
-	// calls it under the catalog and project locks, with the step the issue
-	// actually lands on, and its answer replaces any assignee the caller
-	// resolved earlier from an unlocked read.
+	// new issue to. The service calls it under the catalog and project locks,
+	// with the step the issue actually lands on, and its answer replaces any
+	// assignee the caller resolved earlier from an unlocked read, and the
+	// assignee the caller named: entering a step that hands off gives the
+	// issue to its handler. A step with no handler leaves a named assignee.
 	HandoffResolver CreateHandoffResolver
+	// AssigneeNamed marks an assignee the caller chose, as opposed to one the
+	// handler read of an unlocked workflow filled in. Only the latter is
+	// cleared before the locked handoff decision.
+	AssigneeNamed bool
 	// EntryGate, when set, checks the entry gates of the step the issue lands
 	// on, under the same locks. Platform spawns leave it nil and are not gated.
 	EntryGate CreateEntryGate
@@ -399,26 +407,30 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			p.Status = issueworkflow.StartStatus
 		}
 	}
-	if def != nil && def.Limits() && !def.Has(p.Status) {
+	if def != nil && def.Limits() && (p.StatusOmitted || !def.Has(p.Status)) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
-		if p.WorkflowID.Valid {
+		if p.WorkflowID.Valid && !p.StatusOmitted {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
-		p.Status = issueworkflow.StartStatus
+		p.Status = def.Start()
 	}
 	// The handler of the step the issue lands on comes from the workflow as it
 	// stands under the locks. An earlier unlocked read can name the former
 	// workflow's handler, or none, after a switch.
 	if p.HandoffResolver != nil {
-		p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		if !p.AssigneeNamed {
+			p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		}
 		if def != nil {
 			if step, ok := def.Step(p.Status); ok && step.HandsOff() {
 				assigneeType, assigneeID, err := p.HandoffResolver(ctx, step, workflowProject)
 				if err != nil {
 					return IssueCreateResult{}, err
 				}
-				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				if assigneeID.Valid {
+					p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				}
 			}
 		}
 	}
@@ -1090,7 +1102,7 @@ func (s *IssueService) isSquadLeaderReady(ctx context.Context, issue db.Issue) b
 	if err != nil {
 		return false
 	}
-	return verdict.Ready()
+	return !verdict.Blocked()
 }
 
 func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {

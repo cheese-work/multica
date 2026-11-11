@@ -351,6 +351,11 @@
       "completed": "Update complete. Daemon is restarting...",
       "failed": "Update failed",
       "timeout": "Timeout"
+    },
+    "phase": {
+      "download": "Downloading",
+      "verify": "Verifying",
+      "install": "Installing"
     }
   },
   "charts": {

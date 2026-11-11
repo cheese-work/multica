@@ -3,6 +3,7 @@ export {
   isGlobalPath,
   isMyAgentsSearch,
   AGENT_FOCUS_CONVERSATION_STARTERS,
+  FOCUS_WAKEUPS,
 } from "./paths";
 export type { WorkspacePaths } from "./paths";
 export { RESERVED_SLUGS, isReservedSlug } from "./reserved-slugs";

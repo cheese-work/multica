@@ -23,6 +23,9 @@ describe("parseTabSubject", () => {
     // Resource details
     ["/acme/issues/bug-1", { kind: "issue", id: "bug-1" }],
     ["/acme/projects/p1", { kind: "project", id: "p1" }],
+    // A wakeups deep link opens the same project / issue tab, not a new kind.
+    ["/acme/projects/p1?focus=wakeups", { kind: "project", id: "p1" }],
+    ["/acme/issues/bug-1?focus=wakeups", { kind: "issue", id: "bug-1" }],
     ["/acme/autopilots/a1", { kind: "autopilot", id: "a1" }],
     ["/acme/skills/s1", { kind: "skill", id: "s1" }],
     ["/acme/attachments/att1/preview", { kind: "attachment", id: "att1", filename: null }],

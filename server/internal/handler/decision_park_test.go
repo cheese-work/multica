@@ -2,6 +2,9 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -38,8 +41,24 @@ func newParkFixture(test *testing.T) parkFixture {
 
 func (fixture parkFixture) state(test *testing.T) (status, readiness, parkedFrom string) {
 	test.Helper()
-	dbfx.QueryRow(test, `SELECT status, COALESCE(properties ->> $1, ''), COALESCE(metadata -> 'decision_park' ->> 'status', '') FROM issue WHERE id = $2`, fixture.readinessID, fixture.issueID).Scan(&status, &readiness, &parkedFrom)
+	dbfx.QueryRow(test, `SELECT status, COALESCE(properties ->> $1, ''), COALESCE((SELECT prior_status FROM issue_decision_park WHERE issue_id = issue.id), '') FROM issue WHERE id = $2`, fixture.readinessID, fixture.issueID).Scan(&status, &readiness, &parkedFrom)
 	return
+}
+
+// wantDecisionStatusRows fails unless the issue has exactly n status rows and
+// every one is a decision move (CHE-2854: the listener writes no stand-in).
+func wantDecisionStatusRows(test *testing.T, issueID string, n int) {
+	test.Helper()
+	rows := statusRows(test, issueID)
+	if len(rows) != n {
+		test.Fatalf("status_changed rows = %d, want %d", len(rows), n)
+	}
+	for _, row := range rows {
+		trigger, _ := row["trigger"].(map[string]any)
+		if cause, _ := trigger["cause"].(map[string]any); cause["kind"] != "decision" {
+			test.Fatalf("status row trigger = %v, want cause.kind decision", trigger)
+		}
+	}
 }
 
 func TestDecisionRequestParksTheIssue(test *testing.T) {
@@ -48,11 +67,41 @@ func TestDecisionRequestParksTheIssue(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	if !result.Parked {
+	if result.ParkedActivity == nil {
 		test.Fatal("result does not report the park")
 	}
 	if status, readiness, from := fixture.state(test); status != "need_decision" || readiness != "gate" || from != "in_progress" {
 		test.Fatalf("status=%q readiness=%q parked_from=%q, want need_decision/gate/in_progress", status, readiness, from)
+	}
+	wantDecisionStatusRows(test, fixture.issueID, 1)
+}
+
+func TestParkedIssueMetadataHoldsOnlyPrimitives(test *testing.T) {
+	fixture := newParkFixture(test)
+	if _, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input()); err != nil {
+		test.Fatal(err)
+	}
+	if dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1 AND prior_status = 'in_progress' AND to_status = 'need_decision'`, fixture.issueID) != 1 {
+		test.Fatal("the park row is missing")
+	}
+	request := withURLParam(newRequest("GET", "/api/issues/"+fixture.issueID, nil), "id", fixture.issueID)
+	recorder := httptest.NewRecorder()
+	testHandler.GetIssue(recorder, request)
+	if recorder.Code != http.StatusOK {
+		test.Fatalf("GET issue = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		Metadata map[string]any `json:"metadata"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		test.Fatal(err)
+	}
+	for key, value := range body.Metadata {
+		switch value.(type) {
+		case string, float64, bool:
+		default:
+			test.Fatalf("metadata[%q] = %v (%T): the contract allows primitive values only", key, value, value)
+		}
 	}
 }
 
@@ -64,8 +113,8 @@ func TestDecisionRequestKeepsTheFirstParkOfAnAlreadyParkedIssue(test *testing.T)
 	if err != nil {
 		test.Fatal(err)
 	}
-	if status, readiness, from := fixture.state(test); result.Parked || status != "need_decision" || readiness != "ready" || from != "" {
-		test.Fatalf("parked=%v status=%q readiness=%q parked_from=%q: an already parked issue must stay untouched", result.Parked, status, readiness, from)
+	if status, readiness, from := fixture.state(test); result.ParkedActivity != nil || status != "need_decision" || readiness != "ready" || from != "" {
+		test.Fatalf("parked=%v status=%q readiness=%q parked_from=%q: an already parked issue must stay untouched", result.ParkedActivity != nil, status, readiness, from)
 	}
 }
 
@@ -102,9 +151,10 @@ func TestDecisionAnswerRestoresTheParkedIssue(test *testing.T) {
 	if status != "todo" || readiness != "" {
 		test.Fatalf("after the answer: status=%q readiness=%q, want todo and no Readiness", status, readiness)
 	}
-	if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_park'`, fixture.issueID) != 0 {
+	if dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueID) != 0 {
 		test.Fatal("the park record outlived the answer")
 	}
+	wantDecisionStatusRows(test, fixture.issueID, 2) // park, then restore
 }
 
 func TestDecisionCancellationRestoresTheParkedIssue(test *testing.T) {
@@ -120,6 +170,7 @@ func TestDecisionCancellationRestoresTheParkedIssue(test *testing.T) {
 	if status, readiness, from := fixture.state(test); status != "in_progress" || readiness != "ready" || from != "" {
 		test.Fatalf("status=%q readiness=%q parked_from=%q, want in_progress/ready and no record", status, readiness, from)
 	}
+	wantDecisionStatusRows(test, fixture.issueID, 2) // park, then restore
 }
 
 func TestDecisionAnswerKeepsAReadinessSetDuringTheWait(test *testing.T) {
@@ -217,7 +268,7 @@ func TestDecisionAnswerKeepsTheParkWhileAnotherAnswerAwaitsDelivery(test *testin
 	decisionPass(test, runner)
 	var status string
 	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
-	if status != "need_decision" || dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_park'`, fixture.issueID) != 1 {
+	if status != "need_decision" || dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueID) != 1 {
 		test.Fatalf("status = %q: delivering one answer must keep the park while another is undelivered", status)
 	}
 }

@@ -11,6 +11,11 @@ import {
 } from "@multica/ui/icons";
 import type { Agent, RuntimeDevice } from "@multica/core/types";
 import { createSafeId } from "@multica/core/utils";
+import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  EMPTY_AGENT_CUSTOM_ARGS_DRAFT,
+  useAgentCustomArgsDraftStore,
+} from "@multica/core/agents";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
@@ -55,12 +60,25 @@ export function CustomArgsTab({
   onDirtyChange?: (dirty: boolean) => void;
 }) {
   const { t } = useT("agents");
-  const [entries, setEntries] = useState<ArgEntry[]>(
-    argsToEntries(agent.custom_args ?? []),
+  const [draft, setDraft] = usePersistedDraft(
+    useAgentCustomArgsDraftStore,
+    agent.id,
+    EMPTY_AGENT_CUSTOM_ARGS_DRAFT,
   );
-  const [editor, setEditor] = useState<EditorState>(null);
-  const [editorValue, setEditorValue] = useState("");
+  const [entries, setEntries] = useState<ArgEntry[]>(() =>
+    argsToEntries(draft.args ?? agent.custom_args ?? []),
+  );
+  // Reopen the editor a remount interrupted, with its text. An edited entry is
+  // found by position; if the list shrank, the text comes back as a new entry.
+  const [editor, setEditor] = useState<EditorState>(() => {
+    const open = draft.editor;
+    if (!open) return null;
+    const entry = open.index === null ? undefined : entries[open.index];
+    return entry ? { kind: "edit", entryId: entry.id } : { kind: "add" };
+  });
+  const [editorValue, setEditorValue] = useState(draft.editor?.value ?? "");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const editorInputRef = useRef<HTMLInputElement>(null);
 
   const currentArgs = entriesToArgs(entries);
@@ -70,6 +88,28 @@ export function CustomArgsTab({
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  // Keep the unsaved list and the open editor's text across unmount. No edit
+  // relative to the server is no draft. A failed save leaves it; once the
+  // list matches the server it drops here. Not mid-save: an optimistic parent
+  // update matches the list to the server before the save is confirmed.
+  const argsKey = JSON.stringify(currentArgs);
+  const editedIndex =
+    editor?.kind === "edit"
+      ? entries.findIndex((entry) => entry.id === editor.entryId)
+      : -1;
+  const editorBaseline = editedIndex >= 0 ? (entries[editedIndex]?.value ?? "") : "";
+  const editorKey = JSON.stringify(
+    editor && editorValue.trim() && editorValue !== editorBaseline
+      ? { index: editor.kind === "edit" && editedIndex >= 0 ? editedIndex : null, value: editorValue }
+      : null,
+  );
+  useEffect(() => {
+    setDraft({
+      args: dirty || savingRef.current ? JSON.parse(argsKey) : null,
+      editor: JSON.parse(editorKey),
+    });
+  }, [dirty, argsKey, editorKey, setDraft]);
 
   useEffect(() => {
     if (editor) editorInputRef.current?.focus();
@@ -112,9 +152,17 @@ export function CustomArgsTab({
   };
 
   const handleSave = async () => {
+    savingRef.current = true;
     setSaving(true);
     try {
-      await onSave({ custom_args: currentArgs });
+      const submitted = currentArgs;
+      await onSave({ custom_args: submitted });
+      // Confirmed. Drop the list only if it still is what was sent; an edit made
+      // while the save was in flight stays a draft.
+      const current = useAgentCustomArgsDraftStore.getState().getDraft(agent.id);
+      if (JSON.stringify(current?.args) === JSON.stringify(submitted)) {
+        setDraft({ args: null });
+      }
       toast.success(t(($) => $.tab_body.custom_args.saved_toast));
     } catch (err) {
       toast.error(
@@ -123,6 +171,7 @@ export function CustomArgsTab({
           : t(($) => $.tab_body.custom_args.save_failed_toast),
       );
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

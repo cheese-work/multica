@@ -1,6 +1,7 @@
 package decisionaction
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -51,6 +52,9 @@ func SettingsDigest(workspaceID string, keys map[string]json.RawMessage) (string
 var configFields = []string{
 	"agent.instructions", "squad.instructions", "workspace.context",
 	"workflow.steps", "workflow.instructions", SettingsField,
+	// Dedicated identities (CHE-4462 E0a): none is a settings key, so the generic
+	// patch still refuses routing_agent and delegated_governed_writes.
+	"workspace.routing_agent", "workspace.delegated_writes", "agent.skills",
 }
 
 // SettingsField is the field a workspace settings patch writes.
@@ -90,4 +94,29 @@ func CheckConfigChange(field string, keys []string) error {
 		}
 	}
 	return nil
+}
+
+// WorkflowDigest is the CHE-2456 workflow recipe: sha256 of the canonical JSON
+// (keys sorted, numbers kept as written, no HTML escaping) of
+// {"steps": <steps>, "workflow_id": <id>}. The server hashes the step payloads it
+// stores; the CLI hashes the steps array as the workflow GET returns it.
+func WorkflowDigest(workflowID string, steps json.RawMessage) (string, error) {
+	raw, err := json.Marshal(map[string]any{"steps": steps, "workflow_id": workflowID})
+	if err != nil {
+		return "", invalid("steps are not JSON: %v", err)
+	}
+	var generic any
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&generic); err != nil {
+		return "", invalid("steps are not JSON: %v", err)
+	}
+	var canonical bytes.Buffer
+	encoder := json.NewEncoder(&canonical) // a map encodes with its keys sorted
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(generic); err != nil {
+		return "", invalid("steps are not canonicalizable: %v", err)
+	}
+	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
+	return hex.EncodeToString(sum[:]), nil
 }

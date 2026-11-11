@@ -82,6 +82,36 @@ describe("advanced filter mode", () => {
     expect(merged.propertyFilters).toEqual({});
     expect(merged.advancedFilter?.children[1]).toMatchObject({ field: "property:prop", values: ["opt"] });
   });
+
+  it("drops malformed shared-view property filters instead of throwing", () => {
+    const tree = { type: "group", match: "all", children: [{ type: "condition", field: "status", values: ["todo"] }] };
+    const merged = mergeViewStatePersisted(
+      {
+        advancedFilter: tree,
+        propertyFilters: {
+          obj: { length: 1 },
+          str: "abc",
+          nul: null,
+          mixed: ["ok", 5, null, { op: "gt", value: 3 }, { op: "nope", value: "x" }, { op: "gt", value: "2" }],
+        },
+      },
+      store.getState(),
+    );
+    expect(merged.propertyFilters).toEqual({});
+    expect(merged.advancedFilter?.children[1]).toMatchObject({
+      field: "property:mixed",
+      values: ["ok", { op: "gt", value: "2" }],
+    });
+    expect(merged.advancedFilter?.children).toHaveLength(2);
+  });
+
+  it("keeps only valid property filter members without a tree", () => {
+    const merged = mergeViewStatePersisted(
+      { propertyFilters: { obj: { length: 1 }, mixed: ["ok", 5] } },
+      store.getState(),
+    );
+    expect(merged.propertyFilters).toEqual({ mixed: ["ok"] });
+  });
 });
 
 describe("saved views in advanced mode", () => {

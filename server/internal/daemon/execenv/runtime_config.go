@@ -192,6 +192,25 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (strin
 	return content, writeRuntimeConfigFile(path, content)
 }
 
+// RuntimeBrief renders the runtime brief without writing it anywhere. The
+// managed harness profile ships it via --append-system-prompt-file.
+func RuntimeBrief(provider string, ctx TaskContextForEnv) string {
+	return buildMetaSkillContent(provider, ctx)
+}
+
+// SourceClaudeConfigDir is the user's Claude config dir a managed home seeds
+// credentials from: CLAUDE_CONFIG_DIR, else ~/.claude.
+func SourceClaudeConfigDir() string {
+	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), ".claude")
+	}
+	return filepath.Join(home, ".claude")
+}
+
 // runtimeConfigPath returns the absolute path to the runtime config file that
 // InjectRuntimeConfig writes for the given provider, or "" when the provider
 // has no file-based config target. Centralising the mapping keeps Inject /

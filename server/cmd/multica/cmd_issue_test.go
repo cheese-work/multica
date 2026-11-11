@@ -5111,6 +5111,29 @@ func TestRunIssueListSendsSortAndDirection(t *testing.T) {
 	}
 }
 
+func TestRunIssueListSendsEffectiveDueSort(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueListTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("sort", "effective_due")
+	if err := runIssueList(cmd, nil); err != nil {
+		t.Fatalf("runIssueList: %v", err)
+	}
+	if got := gotQuery.Get("sort"); got != "effective_due" {
+		t.Fatalf("sort query = %q, want effective_due", got)
+	}
+}
+
 func TestRunIssueListRejectsInvalidSortAndDirection(t *testing.T) {
 	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:0")
 	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
@@ -5148,6 +5171,7 @@ func TestRunIssueListRejectsDirectionWithoutDirectionalSort(t *testing.T) {
 	}{
 		{"direction without sort", ""},
 		{"direction with explicit position sort", "position"},
+		{"direction with effective_due sort", "effective_due"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5192,6 +5216,7 @@ func sampleIssueResponse() handler.IssueResponse {
 	lastActivity := "2024-01-01T00:00:00Z"
 	labels := []handler.LabelResponse{}
 
+	effectiveDue := "2024-02-01"
 	return handler.IssueResponse{
 		ID:             "iss-1",
 		WorkspaceID:    "ws-1",
@@ -5220,6 +5245,10 @@ func sampleIssueResponse() handler.IssueResponse {
 		Metadata:       map[string]any{},
 		Properties:     map[string]any{},
 		Labels:         &labels,
+		// Present on `--sort effective_due` rows (CHE-3463).
+		EffectiveDue: &effectiveDue,
+		DueSource:    "parent:CHE-1",
+		Diagnostics:  []handler.DueDiagnostic{{Type: "depth_limit"}},
 	}
 }
 
@@ -7115,5 +7144,16 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 	out := stderr.read()
 	if !strings.Contains(out, "old-1 superseded and resolved") || !strings.Contains(out, "old-2 superseded, left open (human_reply)") {
 		t.Fatalf("stderr should report each superseded thread, got %q", out)
+	}
+}
+
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
+		usage := cmd.Flags().Lookup("no-start").Usage
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
+		}
 	}
 }

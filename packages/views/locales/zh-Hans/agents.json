@@ -1051,5 +1051,14 @@
     "section_owner": "owner",
     "section_model": "模型"
   },
-  "actions": {}
+  "actions": {
+    "selected_other": "已选 {{count}} 项",
+    "clear_selection": "清除选择"
+  },
+  "auto_compact": {
+    "title": "自动压缩",
+    "hint": "留空则使用工作区的值。",
+    "inherit_placeholder": "工作区默认值",
+    "save_failed": "无法保存自动压缩设置。"
+  }
 }

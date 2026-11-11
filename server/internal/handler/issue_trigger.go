@@ -93,6 +93,15 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	if trigger.BlockedEntry {
+		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
+		if err != nil {
+			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
+		} else if skip {
+			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
+			return false
+		}
+	}
 	// Checked here as well as at the queue door so the activity names the actor
 	// whose status move or assignment was refused; the door has no actor.
 	var notConfirmed *service.StopNotConfirmedError
@@ -159,7 +168,7 @@ func (h *Handler) withIssueWriteExternalRead(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, "failed to update issue")
 		return ctx, false
 	}
-	if !ok || !actor.ExternalRead {
+	if !ok || !(actor.ExternalRead || len(actor.TaintIds) > 0) {
 		return ctx, true
 	}
 	return context.WithValue(ctx, issueWriteExternalReadKey{}, true), true
@@ -333,7 +342,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						humans, err := h.workflowHumans(r.Context(), step, project, wsUUID, previewRequester(actorType, actorID))
+						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID))
 						if err != nil {
 							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
 							return

@@ -242,6 +242,23 @@ describe("issue surface view store registry", () => {
     expect(view.getState().agentRunningFilter).toBe(true);
   });
 
+  it("does not keep the agent running filter on a regular surface across a reload", async () => {
+    setCurrentWorkspace("acme", "ws_a");
+    await flush();
+    const surface = getIssueSurfaceViewStore("project:a");
+    surface.getState().toggleAgentRunningFilter();
+    expect(surface.getState().agentRunningFilter).toBe(true);
+    expect(
+      getIssueSurfaceViewStateRegistrySnapshot()["project:a"]?.state,
+    ).not.toHaveProperty("agentRunningFilter");
+
+    setCurrentWorkspace("beta", "ws_b");
+    await flush();
+    setCurrentWorkspace("acme", "ws_a");
+    await flush();
+    expect(surface.getState().agentRunningFilter).toBe(false);
+  });
+
   it("clears one surface without touching sibling surfaces", async () => {
     setCurrentWorkspace("acme", "ws_a");
     await flush();

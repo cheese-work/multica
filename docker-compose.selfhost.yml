@@ -132,6 +132,9 @@ services:
       # this single URL when it is configured.
       MULTICA_CLOUD_URL: ${MULTICA_CLOUD_URL:-}
       GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      # Comma-separated GitHub account IDs allowed to connect. Empty = policy
+      # off (every account allowed, with a startup warning).
+      GITHUB_ALLOWED_ACCOUNT_IDS: ${GITHUB_ALLOWED_ACCOUNT_IDS:-}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       # Required for Connect GitHub. Enable user authorization during
       # installation and grant the App read-only organization Members access.
