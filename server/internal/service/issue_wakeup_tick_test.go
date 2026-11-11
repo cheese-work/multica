@@ -448,7 +448,7 @@ func TestWakeupDueAtRuleHeldByClaimedRunRecordsReason(t *testing.T) {
 	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 600, Instruction: "one-shot"})
 	f.Task(t, agent, testutil.Cols{"issue_id": issue, "status": "dispatched", "dispatched_at": testutil.Raw("now()"),
 		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),
-		"context": testutil.Raw("jsonb_build_object('wakeup_id','" + util.UUIDToString(w.ID) + "')")})
+		"context":    testutil.Raw("jsonb_build_object('wakeup_id','" + util.UUIDToString(w.ID) + "')")})
 	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
 	got := wakeTick(t, f, s, w.ID)
 	if !got.LastError.Valid || got.LastError.String == "" {
