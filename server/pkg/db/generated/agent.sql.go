@@ -6976,14 +6976,15 @@ const issueHasOpenWait = `-- name: IssueHasOpenWait :one
 SELECT EXISTS (
   SELECT 1 FROM issue_wakeup
   WHERE issue_id = $1 AND enabled AND disabled_at IS NULL
-    AND condition IS NOT NULL AND system_rule IS NULL
+    AND system_rule IS NULL
     AND decision_request_id IS NULL AND purpose IS NULL
 )
 `
 
-// True when an explicit condition wait is still armed on the issue: a wakeup
-// someone set for another blocker. Default-rule and decision wakeups are not
-// blockers (CHE-5239).
+// True when an explicit wait is still armed on the issue: a wakeup someone set
+// for another blocker (a condition, an event such as task.completed, or a
+// time). System-rule, decision-bound and observe wakeups are not blockers
+// (CHE-5239).
 func (q *Queries) IssueHasOpenWait(ctx context.Context, issueID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, issueHasOpenWait, issueID)
 	var exists bool

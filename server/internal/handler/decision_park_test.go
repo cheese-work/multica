@@ -274,15 +274,35 @@ func TestDecisionAnswerKeepsTheParkWhileAnotherAnswerAwaitsDelivery(test *testin
 	}
 }
 
-// parkedFromBlockedCard is a card fixture whose issue was `blocked` when the
-// card was asked (CHE-5239): the park remembers `blocked` as the prior status.
-func parkedFromBlockedCard(test *testing.T) askedRecordFixture {
+// blockedCardFixture is a card asked on an issue that is already `blocked`
+// (CHE-5239). With the need_decision step listed the park moves it there; without
+// it the issue stays `blocked`. Either way the park must remember `blocked`.
+func blockedCardFixture(test *testing.T, needDecision bool) askedRecordFixture {
 	test.Helper()
 	resetDecisionLease(test)
 	ensureParkCatalog(test)
-	fixture := newCardFixture(test)
-	dbfx.Exec(test, `UPDATE issue_decision_park SET prior_status = 'blocked' WHERE issue_id = $1`, fixture.issueID)
-	return fixture
+	if !needDecision {
+		dbfx.Exec(test, `DELETE FROM issue_status WHERE workspace_id = $1 AND key = 'need_decision'`, testWorkspaceID)
+		test.Cleanup(func() {
+			dbfx.Insert(test, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": "need_decision", "name": "Need Decision", "category": "started", "color": "#112233"})
+		})
+	}
+	core := newRequestCoreFixture(test, false)
+	dbfx.Exec(test, `UPDATE issue SET status = 'blocked' WHERE id = $1`, core.issueID)
+	core.issue, _ = testHandler.Queries.GetIssue(context.Background(), parseUUID(core.issueID))
+	result, err := testHandler.createDecisionRequest(core.request(), core.issue, core.input())
+	if err != nil {
+		test.Fatal(err)
+	}
+	if result.ParkedActivity != nil {
+		core.issue = result.ParkedIssue
+	}
+	messageID := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": core.sessionID, "role": "user", "content": "Yes.", "sent_via": "interactive_jwt"})
+	chatTaskID := dbfx.Task(test, core.agentID, testutil.Cols{"status": "running", "chat_session_id": core.sessionID, "runtime_id": handlerTestRuntimeID(test)})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, chatTaskID)
+	dbfx.Exec(test, `UPDATE decision_request SET ask_json = $2::jsonb, options = $3::jsonb WHERE id = $1`, result.Request.ID, cardAskJSON, cardOptions)
+	dbfx.Exec(test, `UPDATE decision_intent SET sealed_at = clock_timestamp() WHERE id = $1`, core.intentID)
+	return askedRecordFixture{core, result.Request, uuidToString(result.Comment.ID), messageID, chatTaskID}
 }
 
 func (fixture askedRecordFixture) answerAndDeliver(test *testing.T, finishRun bool) {
@@ -312,7 +332,7 @@ func (fixture askedRecordFixture) assigneeRuns(test *testing.T) int {
 
 // The card was the only blocker: the answer resumes the issue and starts one run.
 func TestDecisionAnswerResumesABlockedIssueWhenTheCardWasTheOnlyBlocker(test *testing.T) {
-	fixture := parkedFromBlockedCard(test)
+	fixture := blockedCardFixture(test, true)
 	fixture.answerAndDeliver(test, true)
 	if status := fixture.status(test); status != "in_progress" {
 		test.Fatalf("status = %q, want in_progress", status)
@@ -322,9 +342,38 @@ func TestDecisionAnswerResumesABlockedIssueWhenTheCardWasTheOnlyBlocker(test *te
 	}
 }
 
+// The workspace lists no need_decision step: the blocked issue gets no status
+// move, but the park is still recorded so the answer resumes it (CHE-5239).
+func TestDecisionAnswerResumesABlockedIssueWithoutANeedDecisionStep(test *testing.T) {
+	fixture := blockedCardFixture(test, false)
+	if status := fixture.status(test); status != "blocked" {
+		test.Fatalf("after the ask: status = %q, want blocked", status)
+	}
+	fixture.answerAndDeliver(test, true)
+	if status := fixture.status(test); status != "in_progress" {
+		test.Fatalf("status = %q, want in_progress", status)
+	}
+	if runs := fixture.assigneeRuns(test); runs != 1 {
+		test.Fatalf("assignee runs = %d, want 1", runs)
+	}
+}
+
+// An armed event wait with no condition (task.completed) is another blocker too.
+func TestDecisionAnswerKeepsABlockedIssueBlockedWhileAnEventWaitIsArmed(test *testing.T) {
+	fixture := blockedCardFixture(test, true)
+	dbfx.Insert(test, "issue_wakeup", testutil.Cols{"id": uuid.NewString(), "workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "agent_id": fixture.agentID, "instruction": "wait for the other run", "kind": "event", "mode": "once", "event_types": "{task.completed}"})
+	fixture.answerAndDeliver(test, true)
+	if status := fixture.status(test); status != "blocked" {
+		test.Fatalf("status = %q, want blocked", status)
+	}
+	if runs := fixture.assigneeRuns(test); runs != 1 {
+		test.Fatalf("assignee runs = %d, want 1", runs)
+	}
+}
+
 // Another blocker is still recorded: the issue stays blocked, one run re-checks it.
 func TestDecisionAnswerKeepsABlockedIssueBlockedWhileAnotherBlockerIsOpen(test *testing.T) {
-	fixture := parkedFromBlockedCard(test)
+	fixture := blockedCardFixture(test, true)
 	dbfx.Insert(test, "issue_wakeup", testutil.Cols{"id": uuid.NewString(), "workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "agent_id": fixture.agentID, "instruction": "wait for the PR", "kind": "event", "mode": "once", "condition": `{"type":"pr","state":"checks"}`})
 	fixture.answerAndDeliver(test, true)
 	if status := fixture.status(test); status != "blocked" {
@@ -338,7 +387,7 @@ func TestDecisionAnswerKeepsABlockedIssueBlockedWhileAnotherBlockerIsOpen(test *
 // CHE-5171 facts 1-4: a run stamped with the step the issue had while parked
 // writes its status after the system unpark. The write must not be lost.
 func TestAgentStatusWriteAfterTheSystemUnparkIsNotLost(test *testing.T) {
-	fixture := parkedFromBlockedCard(test)
+	fixture := blockedCardFixture(test, true)
 	projectID := deliveryProject(test, "Unpark stale step project", fixture.agentID)
 	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, projectID, fixture.issueID)
 	// The run was queued while the issue was parked, so it is stamped with that step.

@@ -74,8 +74,19 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 			break
 		}
 	}
-	if target == "" || issue.Status == target {
+	// An issue already `blocked` with no need_decision step to move to still gets
+	// a park record, so the answer can resume it (CHE-5239). A record already
+	// there keeps the prior state of the first card.
+	staysBlocked := target == issuestatus.Blocked && issue.Status == target
+	if target == "" || issue.Status == target && !staysBlocked {
 		return issue, nil, nil
+	}
+	if staysBlocked {
+		if _, err := queries.GetIssueDecisionPark(ctx, db.GetIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err == nil {
+			return issue, nil, nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return issue, nil, err
+		}
 	}
 	park := decisionPark{Status: issue.Status, To: target}
 	propertyID, optionID, err := gatedHumanReadiness(ctx, queries, issue)
@@ -100,6 +111,9 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 		PriorReadiness: park.Readiness, SetValue: park.Set,
 	}); err != nil {
 		return issue, nil, err
+	}
+	if staysBlocked {
+		return issue, nil, nil
 	}
 	updated, err := queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
@@ -161,16 +175,20 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 				return previous, nil, err
 			}
 		}
-		if issue, err = queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID}); err != nil {
-			return previous, nil, err
+		if target != issue.Status {
+			if issue, err = queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID}); err != nil {
+				return previous, nil, err
+			}
 		}
 		// Runs stamped with a step either side of the park follow the system move,
 		// or their next status write is refused as stale.
 		if err := queries.RestampActiveTasksWorkflowStep(ctx, db.RestampActiveTasksWorkflowStepParams{IssueID: issue.ID, ToStep: pgtype.Text{String: target, Valid: true}, FromSteps: []string{park.To, park.Status}}); err != nil {
 			return previous, nil, err
 		}
-		if recorded, err = recordSystemStatusChange(ctx, queries, previous, issue, service.StatusCauseDecision, nil); err != nil {
-			return previous, nil, err
+		if previous.Status != issue.Status {
+			if recorded, err = recordSystemStatusChange(ctx, queries, previous, issue, service.StatusCauseDecision, nil); err != nil {
+				return previous, nil, err
+			}
 		}
 	}
 	if err := queries.DeleteIssueDecisionPark(ctx, db.DeleteIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
