@@ -400,11 +400,11 @@ func TestProposeWorkflowBudgetRejectsBadInputWithoutWriting(t *testing.T) {
 		flags map[string]string
 		args  []string
 	}{
-		"no budget flag":     {map[string]string{"out": out}, []string{"workflow.budget", proposeWorkflowID}},
-		"cap above limit":    {map[string]string{"max-runs": "1001", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
-		"negative cap":       {map[string]string{"max-runs": "-1", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
-		"file is not taken":  {map[string]string{"max-runs": "5", "file": writeInput(t, "x"), "out": out}, []string{"workflow.budget", proposeWorkflowID}},
-		"no target":          {map[string]string{"max-runs": "5", "out": out}, []string{"workflow.budget"}},
+		"no budget flag":      {map[string]string{"out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"cap above limit":     {map[string]string{"max-runs": "1001", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"negative cap":        {map[string]string{"max-runs": "-1", "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"file is not taken":   {map[string]string{"max-runs": "5", "file": writeInput(t, "x"), "out": out}, []string{"workflow.budget", proposeWorkflowID}},
+		"no target":           {map[string]string{"max-runs": "5", "out": out}, []string{"workflow.budget"}},
 		"flag on other field": {map[string]string{"max-runs": "5", "file": writeInput(t, "x"), "out": out}, []string{"agent.instructions", proposeAgentID}},
 	} {
 		t.Run(name, func(t *testing.T) {
