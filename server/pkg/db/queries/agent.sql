@@ -888,6 +888,7 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
+    admission_state = NULL, hold_reason = NULL, reservation_lease_id = NULL, reservation_expires_at = NULL,
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -902,6 +903,9 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      -- Admission (CHE-5213): a held run waits for a release event; a reserved
+      -- run is claimable only while its lease lasts.
+      AND (atq.admission_state IS NULL OR (atq.admission_state = 'reserved' AND atq.reservation_expires_at > now()))
       -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
       -- the reserved urgent slot is left (CHE-5118).
       AND atq.priority >= @min_priority::int

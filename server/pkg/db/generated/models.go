@@ -244,6 +244,10 @@ type AgentTaskQueue struct {
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
+	AdmissionState            pgtype.Text        `json:"admission_state"`
+	HoldReason                pgtype.Text        `json:"hold_reason"`
+	ReservationLeaseID        pgtype.UUID        `json:"reservation_lease_id"`
+	ReservationExpiresAt      pgtype.Timestamptz `json:"reservation_expires_at"`
 }
 
 type AgentToLabel struct {
@@ -2832,6 +2836,7 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	Settings          []byte             `json:"settings"`
 }
 
 type ProjectResource struct {
@@ -3075,6 +3080,23 @@ type RunGateEvent struct {
 	SeenCount           int32              `json:"seen_count"`
 	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
 	LastSeenAt          pgtype.Timestamptz `json:"last_seen_at"`
+}
+
+type RunInput struct {
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	AgentID            pgtype.UUID        `json:"agent_id"`
+	EventID            string             `json:"event_id"`
+	Seq                pgtype.Int8        `json:"seq"`
+	Kind               string             `json:"kind"`
+	Payload            []byte             `json:"payload"`
+	State              string             `json:"state"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	RedeliveryOfTaskID pgtype.UUID        `json:"redelivery_of_task_id"`
+	ParkReason         pgtype.Text        `json:"park_reason"`
+	FailureClass       pgtype.Text        `json:"failure_class"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RuntimeProfile struct {
