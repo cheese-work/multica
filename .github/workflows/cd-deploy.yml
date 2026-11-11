@@ -834,9 +834,9 @@ jobs:
         run: echo "The 15-minute window after ${{ needs.readback.outputs.t0 }} (epoch seconds) has elapsed."
 
   # CHE-5175: judge the window from history, on the C00 runner, in seconds.
+  # docker events since T0 must show no unhealthy, die, oom or restart on the
   # active colour, the router log since T0 must hold no 502, 503 or 504, the
   # restart count must not have grown, and the SHA and
-  # active colour, the restart count must not have grown, and the SHA and
   # digests must be unchanged or C00 must run a newer deploy that descends from
   # this one. A failure here suspends automatic deploys and starts the rollback.
   readback-confirm:
