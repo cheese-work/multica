@@ -93,6 +93,8 @@ La démonstration ci-dessous part d'une tâche déjà assignée à un agent et l
 
 Les membres et les agents peuvent modifier directement les statuts. Dans un projet avec un [workflow](/workflows), choisissez parmi ses étapes. Entrer dans une étape avec passage de relais peut aussi changer le responsable et demander à un agent de commencer.
 
+Lorsqu’une tâche revient à `blocked`, le paramètre d’espace de travail `blocked_dispatch_dedup.mode` contrôle les nouvelles exécutions Tofu sans changement. Sa valeur par défaut est `block` ; `warn` journalise une exécution qui aurait été ignorée, mais lance quand même une exécution, et `off` désactive cette vérification. Une transition déclenchée par un membre lance toujours une exécution.
+
 Les agents mettent à jour le statut au fil du travail : par défaut, ils passent la tâche à `in_progress` en commençant et à `in_review` à la livraison. Si le projet utilise un workflow, ils suivent ses étapes et ses consignes de relais.
 
 <Callout type="info">
@@ -113,6 +115,14 @@ Un `owner` ou un `admin` peut ajouter des statuts comme **Revue de code**, **QA*
 - Avant d’archiver un statut, déplacez toutes les tâches qui l’utilisent vers un autre statut adapté, y compris celles terminées ou annulées. Retirez-le aussi des workflows personnalisés. Il ne sera ensuite plus proposé.
 
 La bibliothèque contient les statuts disponibles. Le workflow d’un projet choisit ceux que ses tâches utilisent et leur ordre.
+
+### Historique des statuts
+
+Ouvrez **Historique des statuts** dans la barre latérale du ticket pour voir chaque changement de statut, du plus ancien au plus récent. Chaque ligne indique le changement, ce qui l'a déclenché (une personne, une transition de workflow, une PR fusionnée, etc.), l'heure et un lien vers le commentaire de transmission s'il existe. Faites glisser le curseur pour parcourir les changements.
+
+- Un changement antérieur à l'enregistrement des déclencheurs affiche **Déclencheur non enregistré**.
+- Un statut supprimé depuis de l'espace de travail affiche **(supprimé)** après son nom.
+- Lorsque le ticket a plus d'historique que le serveur n'en renvoie, un avis indique que les changements plus anciens ne sont pas affichés.
 
 ## Propriétés personnalisées
 

@@ -212,6 +212,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
 		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 
@@ -1515,6 +1516,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

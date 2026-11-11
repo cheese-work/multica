@@ -707,3 +707,48 @@ Migrations 557–560 are additive (new columns, a table with its trigger, and tw
 concurrent indexes). Deploy them before the server and the server before the
 clients; older clients ignore the new fields, and older servers read as "no
 condition, not paused" in new clients.
+
+## Scoped wakeup definitions (qualification)
+
+Workspace, project and issue scopes store sparse `"v":1` patches in
+`issue_wakeup_definition`. Resolution order: built-in baseline, workspace,
+project, issue. `enabled:false` disables at that scope; nested objects
+(`trigger`, `target`, `schedule`, `filters`, `rate_limit`, `active_run`)
+replace the inherited value whole. User-facing docs and curl examples:
+`apps/docs/content/docs/issue-wakeups.mdx` (`#defaults`, all five locales).
+
+**Routes.** `/api/wakeup-definitions/{key}` (workspace),
+`/api/projects/{id}/wakeup-definitions/{key}`,
+`/api/issues/{id}/wakeup-definitions/{key}`; each has list, `PUT`, `DELETE`
+and `.../effective`. Revisions are decimal strings; a stale write returns 409.
+
+**Write gates.** Closed activation gate: 403 `wakeup_definition_writes_closed`
+(reads and previews stay open). Agents (task token) may only `POST` a
+workspace or project rule: the server stores it `enabled:false` with
+`pending_approval=true` (migration 946) and resolution keeps it, and every scope
+below it, disabled until an owner or admin writes it enabled. Agent edit,
+delete, preview and issue-scope writes: 403. Other machine credentials: 403,
+nothing stored. Workspace and project writes need owner or admin; issue scope
+allows any member. CLI: `multica wakeup-definition create [--project]`;
+read with `multica wakeup-definition get <rule> [--project P | --issue I]`
+(same JSON as `/effective`, CHE-3984).
+
+**Runtime state.** `execution{instance_id,enabled,paused_reason}` is returned
+at issue scope only, from the per-issue `issue_wakeup` instance. Resetting an
+override keeps the instance id.
+
+**Workspace aliases.** Workspace-scope `enabled` and `instruction` of the
+built-in rules mirror `workspace.settings` keys (`github_wake_on_pr_merge`,
+`github_wake_on_ci_failure`, `system_wakeup_child_done`,
+`system_wakeup_child_done_instruction`). A test that writes them must restore
+the settings.
+
+**Regression coverage.** `wakeup_definition_qualification_test.go` runs
+inherited, override, disabled and runtime states through the workspace,
+project and issue handlers, and checks that an agent proposal is stored
+disabled, that a member's issue override does not enable it and that an admin
+write does. `cmd_issue_wakeup_test.go` covers CLI list passthrough of default
+origin and state; CHE-3671 covers `wakeup-definition create` and CHE-3984
+covers `wakeup-definition get`. `e2e/wakeup-definitions.spec.ts` compares the
+CLI `get` output with the API `/effective` response at workspace, project and
+issue scope in every state it walks.

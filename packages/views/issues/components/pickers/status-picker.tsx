@@ -33,6 +33,7 @@ export function StatusPicker({
   onMarkDuplicate,
   isDuplicate,
   projectId,
+  workflowId,
   allowedStatuses,
   issue,
 }: {
@@ -67,6 +68,8 @@ export function StatusPicker({
    * (MUL-8121) Omit (`undefined`) when the surface spans projects.
    */
   projectId?: string | null;
+  /** The issue's own workflow override; it replaces the project's. (CHE-2822) */
+  workflowId?: string | null;
   /**
    * Narrows the options to these keys — for a selection spanning projects,
    * the statuses every selected issue's workflow allows. Null offers all.
@@ -101,7 +104,7 @@ export function StatusPicker({
     catalog,
     resolved: workflowResolved,
     retry: retryCatalog,
-  } = useIssueStatusOptions(wsId, projectId, status);
+  } = useIssueStatusOptions(wsId, projectId, status, workflowId);
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
   const allOptions = useMemo(
     () => (allowedStatuses ? projectOptions.filter((o) => allowedStatuses.has(o.key)) : projectOptions),
@@ -149,26 +152,13 @@ export function StatusPicker({
         if (!v) setQuery("");
         setOpen(v);
       }}
-      width={workflow || defaultScope ? "w-60" : "w-52"}
+      width={workflow ? "w-60" : "w-52"}
       align={align}
       triggerRender={triggerRender}
       tooltip={tooltip}
       searchable={searchable}
       searchPlaceholder={t(($) => $.filters.search_status)}
       onSearchChange={setQuery}
-      header={
-        workflow ? (
-          <div className="truncate px-2 pb-1 pt-1.5 text-caption text-muted-foreground">
-            {project
-              ? t(($) => $.workflows.picker.header, { workflow: workflow.name, project: project.title })
-              : workflow.name}
-          </div>
-        ) : defaultScope ? (
-          <div className="truncate px-2 pb-1 pt-1.5 text-caption text-muted-foreground">
-            {t(($) => $.workflows.picker.header_no_project, { workflow: defaultScope.name })}
-          </div>
-        ) : undefined
-      }
       footer={markDuplicate ?? undefined}
       trigger={
         customTrigger ??
@@ -197,7 +187,7 @@ export function StatusPicker({
             // For an existing issue in a project, wait until the workflow has resolved:
             // a workflow that is merely unloaded reads as "no handoff", and the server
             // would still apply the real one with no confirmation shown.
-            if (issue && projectId && !workflowResolved) {
+            if (issue && (projectId || workflowId) && !workflowResolved) {
               notifyCatalogUnresolved(() => retryCatalog?.());
               return;
             }

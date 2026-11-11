@@ -108,6 +108,10 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds claims for every agent in the workspace. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -137,6 +141,9 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
+
+		SchedulingPausedAt: timestampToPtr(w.SchedulingPausedAt),
+		SchedulingPausedBy: uuidToPtr(w.SchedulingPausedBy),
 	}
 }
 
@@ -370,6 +377,12 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// HarnessProfile sets settings.harness_profile alone (CHE-3706); null
+	// removes it so the workspace falls back to personal.
+	HarnessProfile json.RawMessage `json:"harness_profile"`
+	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
+	// named fields overwrite, absent fields keep their saved value. Owner only.
+	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
 	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
 	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
 	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
@@ -467,11 +480,14 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
 			return
 		}
-		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), r, id, hermesExceptionRequest{
 			NewContent:           *req.Context,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
 		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if failedAudit(w, r, swapErr, "workspace.context") {
+			return
+		}
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return
@@ -536,7 +552,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := validateCompactConfig(req.Settings); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -565,7 +581,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			err = errAutoCompactShape
 		} else {
-			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+			err = validateAutoCompactPatch(incoming)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -574,8 +590,35 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if incoming == nil {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
-			params.AutoCompact = req.AutoCompact
+			params.AutoCompact = clearStalePct(req.AutoCompact)
 		}
+	}
+	if req.HarnessProfile != nil {
+		var profile any
+		err := json.Unmarshal(req.HarnessProfile, &profile)
+		if err == nil {
+			err = validateHarnessProfileConfig(map[string]any{"harness_profile": profile})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := profile.(string); ok {
+			params.HarnessProfile = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.HarnessProfileReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.IdleStartedGuard != nil {
+		// The route admits admins; this switch is the owner's.
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateIdleGuardPatch(req.IdleStartedGuard); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.IdleStartedGuard = req.IdleStartedGuard
 	}
 	for _, mapping := range []struct {
 		field string
@@ -633,10 +676,17 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID)
+	ws, pauseAction, activity, err := h.saveWorkspace(r, params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
 	var rejected settingsRejectedError
+	if errors.Is(err, errBackgroundAgentsHumanOnly) {
+		writeBackgroundAgentsRefused(w)
+		return
+	}
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
+	if failedAudit(w, r, err, "workspace.update") {
 		return
 	}
 	if err != nil {
@@ -817,11 +867,29 @@ func (h *Handler) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updatedMember, err := h.Queries.UpdateMemberRole(r.Context(), db.UpdateMemberRoleParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	updatedMember, err := qtx.UpdateMemberRole(r.Context(), db.UpdateMemberRoleParams{
 		ID:   target.ID,
 		Role: role,
 	})
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "member.update", WorkspaceID: updatedMember.WorkspaceID, TargetID: updatedMember.ID,
+		Before: memberAuditFields(target), After: memberAuditFields(updatedMember),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "member.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update member")
 		return
 	}
@@ -878,8 +946,11 @@ func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requesterUserID := requestUserID(r)
-	result, err := h.revokeAndRemoveMember(r.Context(), target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
+	result, err := h.removeMemberAudited(r.Context(), r, "member.remove", target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
 	if err != nil {
+		if failedAudit(w, r, err, "member.remove") {
+			return
+		}
 		slog.Warn("delete member failed", append(logger.RequestAttrs(r), "error", err, "member_id", memberID, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete member")
 		return
@@ -923,8 +994,11 @@ func (h *Handler) LeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.revokeAndRemoveMember(r.Context(), member.WorkspaceID, member.UserID, member.ID, member.UserID)
+	result, err := h.removeMemberAudited(r.Context(), r, "member.leave", member.WorkspaceID, member.UserID, member.ID, member.UserID)
 	if err != nil {
+		if failedAudit(w, r, err, "member.leave") {
+			return
+		}
 		slog.Warn("leave workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to leave workspace")
 		return
@@ -1416,6 +1490,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete chat pins",
 			run:  func() error { return qtx.DeleteChatPinnedAgentsByWorkspace(ctx, requester.WorkspaceID) },
 		},
@@ -1444,6 +1522,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 				_, err := tx.Exec(ctx, `DELETE FROM cloud_agent_connection WHERE provider='qoder_cloud' AND workspace_id=$1`, requester.WorkspaceID)
 				return err
 			},
+		},
+		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete provider breaker audit",
+			run:  func() error { return qtx.DeleteProviderBreakerAuditForWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete leaf data",
@@ -1553,6 +1639,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		{
 			name: "delete administration data",
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
+		},
+		{
+			// The one place audit rows may go: the SQL function sets the purge
+			// flag inside this tx (CHE-2774).
+			name: "delete audit events",
+			run: func() error {
+				_, err := qtx.AuditWorkspaceDelete(ctx, requester.WorkspaceID)
+				return err
+			},
 		},
 		{
 			// At this point workspaceMember has resolved → workspaceID is a

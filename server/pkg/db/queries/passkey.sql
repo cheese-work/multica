@@ -38,6 +38,11 @@ SELECT * FROM user_passkey
 WHERE user_id = $1 AND revoked_at IS NULL AND suspect_at IS NULL
 ORDER BY id;
 
+-- name: ListLivePasskeys :many
+SELECT * FROM user_passkey
+WHERE user_id = $1 AND revoked_at IS NULL
+ORDER BY created_at, id;
+
 -- name: LockPasskeyByCredentialNowait :one
 SELECT * FROM user_passkey WHERE credential_id = $1 FOR UPDATE NOWAIT;
 
@@ -108,6 +113,15 @@ UPDATE passkey_enroll_ceremony SET
 WHERE id = $1
 RETURNING attempts;
 
+-- True when the code belongs to an older, consumed ceremony of the same user and
+-- purpose: the user typed an earlier email's code.
+-- name: PasskeyEnrollCodeIsSuperseded :one
+SELECT EXISTS (
+    SELECT 1 FROM passkey_enroll_ceremony
+    WHERE user_id = $1 AND purpose = $2 AND code_hmac = $3 AND id <> $4
+      AND consumed_at IS NOT NULL AND created_at > now() - interval '1 hour'
+)::bool;
+
 -- name: ConsumePasskeyEnrollCeremony :exec
 UPDATE passkey_enroll_ceremony SET consumed_at = now() WHERE id = $1;
 
@@ -157,3 +171,43 @@ WHERE m.user_id = $1 ORDER BY w.id FOR KEY SHARE OF w NOWAIT;
 
 -- name: CountLivePasskeys :one
 SELECT count(*)::int FROM user_passkey WHERE user_id = $1 AND revoked_at IS NULL;
+
+-- Recovery (CHE-2798 P6, B3). The C00 command takes the person's row FOR
+-- UPDATE; a gate check holds it FOR SHARE, so a check in flight finishes first
+-- and a later one sees recovery_required.
+
+-- name: LockUserForRecovery :one
+SELECT id FROM "user" WHERE email = $1 FOR UPDATE;
+
+-- name: EnterPasskeyRecovery :one
+UPDATE "user" SET passkey_state = 'recovery_required', session_generation = session_generation + 1, updated_at = now()
+WHERE id = $1
+RETURNING session_generation;
+
+-- Suspect keys included: every credential of the person dies.
+
+-- name: RevokeAllPasskeys :execrows
+UPDATE user_passkey SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL;
+
+-- name: SupersedeOpenPasskeyChallenges :exec
+UPDATE passkey_assertion_challenge SET superseded_at = now()
+WHERE user_id = $1 AND consumed_at IS NULL AND superseded_at IS NULL;
+
+-- Approvals read the state under the same share lock the gate check takes.
+-- NOWAIT: a recovery in flight answers busy and nothing waits.
+
+-- name: LockUserPasskeyState :one
+SELECT passkey_state FROM "user" WHERE id = $1 FOR SHARE NOWAIT;
+
+-- Serializes a credential insert with recovery: recovery holds the row FOR
+-- UPDATE, so this waits for it and then reads the bumped generation.
+
+-- name: LockUserSessionGeneration :one
+SELECT session_generation FROM "user" WHERE id = $1 FOR SHARE;
+
+-- Ends recovery in the transaction that brings the usable keys to two.
+
+-- name: LeavePasskeyRecovery :exec
+UPDATE "user" SET passkey_state = 'ready', updated_at = now()
+WHERE "user".id = $1 AND "user".passkey_state = 'recovery_required'
+  AND (SELECT count(*) FROM user_passkey WHERE user_passkey.user_id = $1 AND user_passkey.revoked_at IS NULL AND user_passkey.suspect_at IS NULL) >= 2;

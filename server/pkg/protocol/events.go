@@ -30,12 +30,19 @@ const (
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
 
+	// Scheduling pause: published once per real change, never on a no-op.
+	EventAgentSchedulingPaused      = "agent:scheduling_paused"
+	EventAgentSchedulingResumed     = "agent:scheduling_resumed"
+	EventWorkspaceSchedulingPaused  = "workspace:scheduling_paused"
+	EventWorkspaceSchedulingResumed = "workspace:scheduling_resumed"
+
 	// Task events (server <-> daemon).
 	// Each event maps to a status transition on agent_task_queue. Front-end
 	// subscribes by `task:` prefix and invalidates the workspace task
 	// snapshot, so the granularity here is "what does the user want to see
 	// change" — not "every internal status flip".
 	EventTaskQueued                = "task:queued"                  // ∅ → queued (enqueue / retry create)
+	EventTaskCoalesced             = "task:coalesced"               // status unchanged (a comment folded into a run not yet claimed, which now answers it)
 	EventTaskDispatch              = "task:dispatch"                // queued → dispatched (daemon claim)
 	EventTaskRunning               = "task:running"                 // dispatched → running (daemon started)
 	EventTaskWaitingLocalDirectory = "task:waiting_local_directory" // dispatched → waiting_local_directory (daemon parked on a busy local_directory path)
@@ -58,6 +65,9 @@ const (
 	// Workspace events
 	EventWorkspaceUpdated = "workspace:updated"
 	EventWorkspaceDeleted = "workspace:deleted"
+	// EventWorkspaceBackgroundAgentChanged carries one effective change of one
+	// background job's chain (CHE-4098); it fires after the commit.
+	EventWorkspaceBackgroundAgentChanged = "workspace.background_agent_changed"
 
 	// Member events
 	EventMemberAdded   = "member:added"
@@ -132,6 +142,15 @@ const (
 	// way — re-read it. A project switching workflows publishes
 	// project:updated instead.
 	EventIssueWorkflowChanged = "issue_workflow:changed"
+
+	// Saved issue views. One event for create, edit and delete: every client
+	// answers by re-reading the views it can see. A view that is private on
+	// both sides of the write reaches its owner only.
+	EventIssueViewChanged = "issue_view:changed"
+
+	// A member's own view and sidebar preferences. Always private to that
+	// member: it exists so their other devices follow along.
+	EventIssueViewPreferenceChanged = "issue_view_preference:changed"
 
 	// Pin events
 	EventPinCreated   = "pin:created"

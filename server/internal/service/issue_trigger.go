@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -75,6 +76,7 @@ type IssueRunTrigger struct {
 	AgentID      pgtype.UUID
 	AssigneeType string
 	Source       RunEnqueueSource
+	BlockedEntry bool
 }
 
 func allowAllAgents(db.Agent) bool { return true }
@@ -181,7 +183,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
 		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
@@ -192,6 +194,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AgentID:      issue.AssigneeID,
 			AssigneeType: "agent",
 			Source:       source,
+			BlockedEntry: in.EnteredHandoffStep && in.StatusChanged && currentStatus == "blocked",
 		}, true
 
 	case "squad":
@@ -213,7 +216,10 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		verdict, err := AgentReadiness(ctx, s.runtimeLookup(s.Queries), leader)
-		if err != nil || !verdict.Ready() {
+		// Only a BLOCKED leader stops the handoff, as for a direct agent: a
+		// waitable one (offline, provider breaker hold) queues and runs when the
+		// wait ends. Skipping it here would lose the handoff for good (CHE-4408).
+		if err != nil || verdict.Blocked() {
 			return IssueRunTrigger{}, false
 		}
 		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {
@@ -227,6 +233,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AgentID:      squad.LeaderID,
 			AssigneeType: "squad",
 			Source:       source,
+			BlockedEntry: in.EnteredHandoffStep && in.StatusChanged && currentStatus == "blocked",
 		}, true
 	}
 	return IssueRunTrigger{}, false
@@ -290,4 +297,44 @@ func (s *IssueService) CancelStaleStepRuns(ctx context.Context, issue db.Issue, 
 				"issue_id", util.UUIDToString(issue.ID), "task_id", util.UUIDToString(task.ID), "error", err)
 		}
 	}
+}
+
+// headAlreadyReviewed reports whether the issue entered agent_review on the PR
+// head its latest review verdict was for (CHE-3243). The loop only has a new
+// review to give after a push. Errors read as "not reviewed": a lookup failure
+// must not swallow a review.
+func (s *IssueService) headAlreadyReviewed(ctx context.Context, issue db.Issue) bool {
+	if issue.Status != statusAgentReview {
+		return false
+	}
+	head := s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)
+	if head == "" {
+		return false
+	}
+	last, err := s.Queries.LastVerdictHeadSHA(ctx, issue.ID)
+	return err == nil && last == head
+}
+
+// waitingOnOpenDecision reports whether the issue entered a need_decision step
+// that its workflow declares a no-op while a human decision request is open
+// (CHE-4976, `waits_on_open_decision`), and such a request is open. The answer
+// wakes the issue, so the run would only end at once. A step without the
+// declaration may have entry work and is never skipped, whoever its handler is.
+// Errors read as "not waiting": a lookup failure must not swallow a run.
+func (s *IssueService) waitingOnOpenDecision(ctx context.Context, issue db.Issue) bool {
+	if issue.Status != statusNeedDecision {
+		return false
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, s.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return false
+	}
+	if step, ok := def.Step(issue.Status); !ok || !step.WaitsOnOpenDecision {
+		return false
+	}
+	open, err := s.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+	})
+	return err == nil && open
 }

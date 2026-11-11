@@ -30,6 +30,7 @@ var testPool *pgxpool.Pool
 var testUserID string
 var testWorkspaceID string
 var testRuntimeID string
+var testSeededAgentID string
 
 // dbfx builds the rows these tests act on and removes them again when the test
 // that asked for them ends. New tests build fixtures through it rather than
@@ -67,6 +68,7 @@ func TestMain(m *testing.M) {
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	watchStatusEventsWithoutActivityID(bus)
 	// Production always wires a real *featureflag.Service (cmd/server/main.go);
 	// leaving it nil here would make every flag defaulting to true (currently
 	// only ExportPrivacyControls, CHE-766) silently deny in tests where a
@@ -100,7 +102,15 @@ func TestMain(m *testing.M) {
 	}
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
+	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
+	// The run-budget suites spend many runs in seconds; the loop breaker has its own tests.
+	os.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "0")
 	code := m.Run()
+	stopHeartbeat()
+	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {
+		fmt.Printf("status-change events without activity_id (the listener no longer writes their row): %v\n", lost)
+		code = 1
+	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -173,6 +183,7 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 	`, seededAgentID, workspaceID); err != nil {
 		return "", "", err
 	}
+	testSeededAgentID = seededAgentID
 
 	return userID, workspaceID, nil
 }

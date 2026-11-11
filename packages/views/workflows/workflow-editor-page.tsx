@@ -33,7 +33,12 @@ import {
 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { ApiError, clientErrorMessage } from "@multica/core/api";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { useWorkspaceId } from "@multica/core/hooks";
+import {
+  EMPTY_WORKFLOW_EDITOR_DRAFT,
+  useWorkflowEditorDraftStore,
+} from "@multica/core/issue-workflows/draft-stores";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { statusColumnKeys } from "@multica/core/issues";
@@ -107,6 +112,18 @@ interface Draft {
   blocked: boolean;
   middle: DraftColumn[];
   handoffs: Record<string, Handoff>;
+  /** The run cap as typed; empty keeps the platform default. */
+  maxRuns: string;
+}
+
+/** The platform's run cap for a workflow that sets none (server DefaultMaxRunsPerIssue). */
+const DEFAULT_MAX_RUNS = 15;
+const MAX_RUNS_LIMIT = 1000;
+
+/** True when the typed cap is empty (platform default) or a whole number in 1..1000. */
+function validMaxRuns(value: string): boolean {
+  const v = value.trim();
+  return v === "" || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= MAX_RUNS_LIMIT);
 }
 
 /**
@@ -121,7 +138,7 @@ function hasHandoff(h: Handoff | undefined): h is Handoff {
   return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.edges?.length);
 }
 
-function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps">): Draft {
+function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps" | "max_runs_per_issue">): Draft {
   const keys = workflow.steps.map((s) => s.status_key);
   const handoffs: Record<string, Handoff> = {};
   for (const s of workflow.steps) {
@@ -142,6 +159,7 @@ function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps
     blocked: keys.includes("blocked"),
     middle: workflowMiddleKeys(workflow).map((key) => ({ id: key, status_key: key })),
     handoffs,
+    maxRuns: workflow.max_runs_per_issue ? String(workflow.max_runs_per_issue) : "",
   };
 }
 
@@ -222,7 +240,7 @@ export function WorkflowEditorPage({
   const isDefault = !!saved?.is_default;
   const baseline = useMemo<Draft>(() => {
     if (saved) return draftFrom(saved);
-    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }) };
+    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }), maxRuns: "" };
     const tpl = template ? WORKFLOW_TEMPLATES.find((x) => x.id === template) : undefined;
     if (tpl) {
       const statusName = (name: string) =>
@@ -233,6 +251,7 @@ export function WorkflowEditorPage({
         backlog: true,
         blocked: true,
         handoffs: {},
+        maxRuns: "",
         middle: tpl.columns.map((column): DraftColumn => {
           if ("status" in column) return { id: column.status, status_key: column.status };
           const name = statusName(column.name);
@@ -250,6 +269,7 @@ export function WorkflowEditorPage({
       blocked: true,
       middle: NEW_WORKFLOW_MIDDLE.map((key) => ({ id: key, status_key: key })),
       handoffs: {},
+      maxRuns: "",
     };
     // Re-seed when the target changes or the saved row is refreshed. The version
     // is in the key because updated_at has one-second resolution: two saves in a
@@ -319,6 +339,50 @@ export function WorkflowEditorPage({
     if (!conflictRef.current) acceptedVersion.current = latestVersion;
   }, [baseline, targetKey, workflowId, latestVersion]);
 
+  // Unsaved edits survive a route change, reload or remount, per editor target.
+  // They are put back once the row is ready; if the saved version moved on since
+  // they were made, they are flagged like any edit another admin overtook.
+  const [held, holdDraft, dropDraft] = usePersistedDraft(
+    useWorkflowEditorDraftStore,
+    targetKey,
+    EMPTY_WORKFLOW_EDITOR_DRAFT,
+  );
+  const heldRef = useRef(held);
+  heldRef.current = held;
+  const holding = useRef(false);
+  const restored = useRef(false);
+  const created = useRef(false);
+  const edited = !sameDraft(draft, baseline);
+  useEffect(() => {
+    if (created.current) return;
+    if (edited) {
+      holding.current = true;
+      // The version the edits sit on, not the newest one: a restore must still
+      // see a save another admin made while these edits were open.
+      holdDraft({ draft, baseVersion: acceptedVersion.current ?? "" });
+    } else if (holding.current) {
+      holding.current = false;
+      dropDraft();
+    }
+  }, [edited, draft, latestVersion, changedElsewhere, holdDraft, dropDraft]);
+  const rowLoaded = !workflowId || !!saved;
+  useEffect(() => {
+    if (restored.current || !rowLoaded) return;
+    restored.current = true;
+    const { draft: back, baseVersion } = heldRef.current;
+    if (!back) return;
+    holding.current = true;
+    // A draft held before the field existed has no cap: keep the saved one.
+    setDraft({ ...back, maxRuns: back.maxRuns ?? baseline.maxRuns });
+    if (workflowId && baseVersion !== (latestVersion ?? "")) {
+      // The edits sit on the older version: keep naming it, so the stored base
+      // survives further reloads and a save cannot pass for the newer one.
+      if (baseVersion) acceptedVersion.current = baseVersion;
+      setChangedElsewhere(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowLoaded]);
+
   const dirty = !workflowId || !sameDraft(draft, baseline);
   const pending = createWorkflow.isPending || updateWorkflow.isPending;
   // Statuses this save would create; a member must drop them or ask an admin.
@@ -334,7 +398,7 @@ export function WorkflowEditorPage({
     [draft],
   );
   const graphIssues = useMemo(() => validateWorkflowGraph(graphSteps), [graphSteps]);
-  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
+  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && validMaxRuns(draft.maxRuns) && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -422,6 +486,9 @@ export function WorkflowEditorPage({
       description: draft.description.trim(),
       steps,
       ...(mapping ? { status_mapping: mapping } : {}),
+      // Only a changed cap is sent: the server takes a cap change from an
+      // interactive session alone, so an untouched field must stay out of the write.
+      ...(draft.maxRuns !== baseline.maxRuns ? { max_runs_per_issue: Number(draft.maxRuns.trim() || 0) } : {}),
       // Save against the version the editor started from, so a save that
       // arrives after another admin's cannot replace it.
       ...(workflowId && acceptedVersion.current ? { expected_version: acceptedVersion.current } : {}),
@@ -447,9 +514,12 @@ export function WorkflowEditorPage({
           }
         }
       } else {
-        const created = await createWorkflow.mutateAsync({ ...body, name: draft.name.trim() });
+        const createdWorkflow = await createWorkflow.mutateAsync({ ...body, name: draft.name.trim() });
         toast.success(t(($) => $.workflows.editor.created));
-        onOpen({ id: created.id });
+        // The editor closes on create; the effect must not write the draft back.
+        created.current = true;
+        dropDraft();
+        onOpen({ id: createdWorkflow.id });
       }
       setMappingPlan(null);
     } catch (err) {
@@ -615,6 +685,27 @@ export function WorkflowEditorPage({
                     : t(($) => $.workflows.editor.unused_note)}
               </span>
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label htmlFor="workflow-max-runs" className="text-caption font-medium">
+                {t(($) => $.workflows.editor.max_runs)}
+              </label>
+              <Input
+                id="workflow-max-runs"
+                inputMode="numeric"
+                maxLength={4}
+                value={draft.maxRuns}
+                readOnly={!canEdit}
+                aria-invalid={!validMaxRuns(draft.maxRuns)}
+                placeholder={String(DEFAULT_MAX_RUNS)}
+                onChange={(e) => setDraft((d) => ({ ...d, maxRuns: e.target.value }))}
+                className="h-8 w-24"
+              />
+              {!validMaxRuns(draft.maxRuns) && (
+                <p role="alert" className="text-caption text-destructive">
+                  {t(($) => $.workflows.editor.max_runs_invalid, { max: MAX_RUNS_LIMIT, default: DEFAULT_MAX_RUNS })}
+                </p>
+              )}
+            </div>
           </div>
           {(canEdit || canDuplicate) && (
             <div className="flex shrink-0 items-center gap-2">

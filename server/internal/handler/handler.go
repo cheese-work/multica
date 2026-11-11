@@ -221,10 +221,15 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
+	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
-	workflowWriter         workflowWriter
-	Queries                *db.Queries
+	workflowWriter workflowWriter
+	Queries        *db.Queries
+	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
+	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
+	ActionRequestsEnabled  bool
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -250,6 +255,9 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. New wires the real guard; nil
+	// refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service
@@ -260,6 +268,9 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
+	// WakeupActivationKey selects the wakeup definition activation the write gate
+	// reads; empty is production's. Tests set their own.
+	WakeupActivationKey string
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -449,6 +460,12 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
+
+	// ConfigSyncGitHub builds the GitHub reader for one config repo (CHE-3284);
+	// nil when the GitHub App is not configured. configSyncRun runs one
+	// evaluation (nil = in a goroutine); tests run it inline.
+	ConfigSyncGitHub func(installationID int64, owner, repo string) ConfigSyncGitHub
+	configSyncRun    func(func())
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
@@ -527,6 +544,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
+		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
@@ -583,9 +601,22 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+	h.PRRefresh.SetOnClosed(func(ctx context.Context, installationID int64, owner, repo string, number int32) error {
+		err := h.replayClosedPullRequest(ctx, installationID, owner, repo, number)
+		if err != nil {
+			slog.Warn("github: closed pull request replay failed", "repo", owner+"/"+repo, "pr_number", number, "err", err)
+		}
+		return err
+	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	if h.PRRefresh.Enabled() {
+		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
+			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
+		}
+	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -1039,6 +1070,10 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
+	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
+}
+
+func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1047,7 +1082,7 @@ func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID st
 	if err != nil {
 		return db.Member{}, err
 	}
-	return h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})

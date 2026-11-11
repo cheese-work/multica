@@ -25,6 +25,7 @@ export type WSEventType =
   | "agent:archived"
   | "agent:restored"
   | "task:queued"
+  | "task:coalesced"
   | "task:dispatch"
   | "task:running"
   | "task:waiting_local_directory"
@@ -65,6 +66,7 @@ export type WSEventType =
   | "chat:session_read"
   | "chat:session_deleted"
   | "chat:session_updated"
+  | "chat:supplement_updated"
   | "project:created"
   | "project:updated"
   | "project:deleted"
@@ -81,6 +83,8 @@ export type WSEventType =
   | "property:updated"
   | "issue_status:changed"
   | "issue_workflow:changed"
+  | "issue_view:changed"
+  | "issue_view_preference:changed"
   | "pin:created"
   | "pin:deleted"
   | "pin:reordered"
@@ -176,6 +180,21 @@ export interface IssueStatusChangedPayload {
 
 export interface IssueWorkflowChangedPayload {
   action?: "created" | "updated" | "deleted";
+}
+
+/**
+ * A saved view was created, edited or deleted. Clients re-read their views;
+ * the payload names the view only, so a view going private carries nothing out.
+ */
+export interface IssueViewChangedPayload {
+  view_id: string;
+  action?: "created" | "updated" | "deleted";
+}
+
+/** One of this member's own preference documents was saved, on any device. */
+export interface IssueViewPreferenceChangedPayload {
+  scope_type: string;
+  scope_id: string | null;
 }
 
 export interface AgentStatusPayload {
@@ -347,6 +366,17 @@ export interface TaskQueuedPayload {
   status: string;
 }
 
+// task:coalesced fires when a comment folds into a run that has not started.
+// The status is unchanged, but the run's trigger and covered comments changed,
+// which moves its block under the newest comment it answers.
+export interface TaskCoalescedPayload {
+  task_id: string;
+  agent_id: string;
+  issue_id: string;
+  chat_session_id?: string;
+  status: string;
+}
+
 export interface TaskDispatchPayload {
   task_id: string;
   agent_id: string;
@@ -443,6 +473,10 @@ export interface ChatMessageEventPayload {
   task_id?: string;
   created_at: string;
   message_kind?: import("./chat").ChatMessageKind;
+}
+
+export interface ChatSupplementUpdatedPayload {
+  supplement: import("./chat").ChatSupplement;
 }
 
 export interface ChatDonePayload {
@@ -604,6 +638,8 @@ export interface WSEventPayloadMap {
   "property:updated": PropertyChangedPayload;
   "issue_status:changed": IssueStatusChangedPayload;
   "issue_workflow:changed": IssueWorkflowChangedPayload;
+  "issue_view:changed": IssueViewChangedPayload;
+  "issue_view_preference:changed": IssueViewPreferenceChangedPayload;
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "comment:created": CommentCreatedPayload;
@@ -619,6 +655,7 @@ export interface WSEventPayloadMap {
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
   "task:queued": TaskQueuedPayload;
+  "task:coalesced": TaskCoalescedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;
   "task:waiting_local_directory": TaskWaitingLocalDirectoryPayload;
@@ -650,6 +687,7 @@ export interface WSEventPayloadMap {
   "chat:session_read": ChatSessionReadPayload;
   "chat:session_deleted": ChatSessionDeletedPayload;
   "chat:session_updated": unknown;
+  "chat:supplement_updated": ChatSupplementUpdatedPayload;
   "project:created": ProjectCreatedPayload;
   "project:updated": ProjectUpdatedPayload;
   "project:deleted": ProjectDeletedPayload;

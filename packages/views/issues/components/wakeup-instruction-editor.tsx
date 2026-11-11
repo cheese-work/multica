@@ -2,6 +2,8 @@
 
 import { useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { usePersistedDraft } from "@multica/core/drafts";
+import { EMPTY_TEXT_EDIT, useWakeupInstructionDraftStore } from "@multica/core/issues/stores";
 import { Pencil } from "@multica/ui/icons";
 import {
   issueWakeupsOptions,
@@ -48,8 +50,8 @@ export function WakeupInstructionEditor({
       render={
         <Button
           variant="ghost"
-          size={triggerStyle === "icon" ? "icon" : "sm"}
-          className={triggerStyle === "icon" ? "size-11 text-muted-foreground" : undefined}
+          size={triggerStyle === "icon" ? "icon-xs" : "sm"}
+          className={triggerStyle === "icon" ? "text-muted-foreground" : undefined}
           disabled={disabled}
           aria-label={label}
         />
@@ -140,7 +142,11 @@ function InstructionForm({
   // Keep the editing snapshot through query refreshes; a stale save conflicts
   // instead of replacing another person's changes or silently resetting drafts.
   const [original] = useState(wakeup);
-  const [value, setValue] = useState(wakeup.instruction);
+  // The unsent prompt survives closing the dialog. It keeps the prompt it started
+  // from, so saving after the rule changed conflicts instead of overwriting it.
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useWakeupInstructionDraftStore, wakeup.id, EMPTY_TEXT_EDIT);
+  const value = draft.value ?? original.instruction;
+  const expectedInstruction = draft.base ?? original.instruction;
   const [error, setError] = useState("");
   const busy = useRef(false);
   const mutation = useEditWakeupInstruction(workspaceId, wakeup.issue_id);
@@ -162,9 +168,10 @@ function InstructionForm({
           await mutation.mutateAsync({
             id: wakeup.id,
             instruction,
-            expected_instruction: original.instruction,
+            expected_instruction: expectedInstruction,
             revision: original.revision ?? 0,
           });
+          clearDraft();
           onSaved();
         } catch (err) {
           setError(text.error(err, t(($) => $.wakeups.instruction_save_error)));
@@ -186,7 +193,7 @@ function InstructionForm({
         aria-invalid={!!error}
         aria-describedby={error ? `${id}-error` : undefined}
         onChange={(event) => {
-          setValue(event.target.value);
+          setDraft({ value: event.target.value, base: expectedInstruction });
           setError("");
         }}
         onKeyDown={(event) => {
@@ -202,7 +209,7 @@ function InstructionForm({
         </p>
       )}
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" disabled={mutation.isPending} onClick={onCancel}>
+        <Button type="button" variant="outline" disabled={mutation.isPending} onClick={() => { clearDraft(); onCancel(); }}>
           {t(($) => $.wakeups.instruction_cancel)}
         </Button>
         <Button type="submit" disabled={mutation.isPending || value.trim() === original.instruction}>

@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS ci_failure_event_run_attempt_uidx;

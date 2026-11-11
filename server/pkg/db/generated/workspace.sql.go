@@ -368,6 +368,41 @@ func (q *Queries) GetWorkspaceExportPrivacyForUpdate(ctx context.Context, id pgt
 	return i, err
 }
 
+const getWorkspaceForUpdate = `-- name: GetWorkspaceForUpdate :one
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
+WHERE id = $1
+FOR UPDATE
+`
+
+// Scheduling pause/resume reads the prior state under this lock, so the caller
+// that flips it is the only one that sees a transition.
+func (q *Queries) GetWorkspaceForUpdate(ctx context.Context, id pgtype.UUID) (Workspace, error) {
+	row := q.db.QueryRow(ctx, getWorkspaceForUpdate, id)
+	var i Workspace
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.Description,
+		&i.Settings,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Context,
+		&i.Repos,
+		&i.IssuePrefix,
+		&i.IssueCounter,
+		&i.AvatarUrl,
+		&i.AttributionFailClosed,
+		&i.ExportRedactionMode,
+		&i.ExportManifestRetentionDays,
+		&i.DecisionPasskeyGate,
+		&i.PolicyRevision,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+	)
+	return i, err
+}
+
 const incrementIssueCounter = `-- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
 WHERE id = $1
@@ -631,28 +666,40 @@ UPDATE workspace SET
     -- named fields into the saved object so an unnamed field keeps its value.
     -- CHE-2269: github_review_members / github_review_authors replace one settings
     -- key each; the other survives.
+    -- CHE-3296: idle_started_guard merges named fields into the saved object, so
+    -- the statuses list and any unnamed field keep their value.
+    -- CHE-3706: harness_profile sets or (reset) removes one settings key.
     settings = (
         SELECT CASE
-            WHEN $5::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $5::jsonb)
-            ELSE m.v
+            WHEN $5::bool THEN h.v - 'harness_profile'
+            WHEN $6::text IS NOT NULL THEN jsonb_set(h.v, '{harness_profile}', to_jsonb($6::text))
+            ELSE h.v
         END
         FROM (SELECT CASE
-            WHEN $6::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $6::jsonb)
+            WHEN $7::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $7::jsonb)
+            ELSE g.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $8::jsonb)
+            ELSE m.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $9::jsonb)
             ELSE a.v
         END AS v FROM (SELECT CASE
-            WHEN $7::bool THEN base.v - 'auto_compact'
-            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $8::jsonb)
+            WHEN $10::bool THEN base.v - 'auto_compact'
+            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $11::jsonb)
             ELSE base.v
         END AS v
         FROM (SELECT CASE
-            WHEN $9::bool THEN COALESCE($10::jsonb, settings) - 'compact_prompt'
-            WHEN $11::text IS NOT NULL THEN jsonb_set(COALESCE($10::jsonb, settings), '{compact_prompt}', to_jsonb($11::text))
-            ELSE COALESCE($10::jsonb, settings)
-        END AS v) AS base) AS a) AS m
+            WHEN $12::bool THEN COALESCE($13::jsonb, settings) - 'compact_prompt'
+            WHEN $14::text IS NOT NULL THEN jsonb_set(COALESCE($13::jsonb, settings), '{compact_prompt}', to_jsonb($14::text))
+            ELSE COALESCE($13::jsonb, settings)
+        END AS v) AS base) AS a) AS m) AS g) AS h
     ),
-    repos = COALESCE($12, repos),
-    issue_prefix = COALESCE($13, issue_prefix),
-    avatar_url = COALESCE($14, avatar_url),
+    repos = COALESCE($15, repos),
+    issue_prefix = COALESCE($16, issue_prefix),
+    avatar_url = COALESCE($17, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
@@ -663,6 +710,9 @@ type UpdateWorkspaceParams struct {
 	Name                pgtype.Text `json:"name"`
 	Description         pgtype.Text `json:"description"`
 	Context             pgtype.Text `json:"context"`
+	HarnessProfileReset pgtype.Bool `json:"harness_profile_reset"`
+	HarnessProfile      pgtype.Text `json:"harness_profile"`
+	IdleStartedGuard    []byte      `json:"idle_started_guard"`
 	GithubReviewAuthors []byte      `json:"github_review_authors"`
 	GithubReviewMembers []byte      `json:"github_review_members"`
 	AutoCompactReset    pgtype.Bool `json:"auto_compact_reset"`
@@ -681,6 +731,9 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.Description,
 		arg.Context,
+		arg.HarnessProfileReset,
+		arg.HarnessProfile,
+		arg.IdleStartedGuard,
 		arg.GithubReviewAuthors,
 		arg.GithubReviewMembers,
 		arg.AutoCompactReset,
