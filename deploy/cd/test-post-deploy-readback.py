@@ -64,6 +64,28 @@ class ReadbackTests(unittest.TestCase):
     def test_a_descendant_running_commit_passes(self):
         self.assertEqual(self.readback(running="newer").returncode, 0)
 
+    def test_unhealthy_route_is_retried_until_healthy_within_the_wait(self):
+        # CHE-5175: the readback waits for health, bounded, instead of watching a window.
+        sha = self.commits["deployed"]
+        counter = self.dir / "tries"
+        counter.write_text("0")
+        self.stub("ab-health-check.sh", f'n=$(( $(cat {counter}) + 1 )); echo $n > {counter}; [ "$n" -ge 2 ]\n')
+        live = {"application_sha": sha, "images": {"backend": {"digest": DIGEST}, "web": {"digest": DIGEST}}}
+        self.stub("capture-remote-baseline.sh", f"echo '{json.dumps(live)}' > \"$1\"\n")
+        env = {**os.environ, "C00_ROUTER_STATE_DIR": "/r", "C00_CUTOVER_STATE_DIR": "/c", "READBACK_RETRY_SECONDS": "0"}
+        result = subprocess.run(["bash", "deploy/cd/post-deploy-readback.sh", sha, "30", "manifest.json"], cwd=self.dir, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(counter.read_text().strip(), "2")
+
+    def test_the_health_check_samples_once_per_try_not_a_window(self):
+        sha = self.commits["deployed"]
+        self.stub("ab-health-check.sh", 'echo "$@" >> args; exit 0\n')
+        live = {"application_sha": sha, "images": {"backend": {"digest": DIGEST}, "web": {"digest": DIGEST}}}
+        self.stub("capture-remote-baseline.sh", f"echo '{json.dumps(live)}' > \"$1\"\n")
+        env = {**os.environ, "C00_ROUTER_STATE_DIR": "/r", "C00_CUTOVER_STATE_DIR": "/c"}
+        subprocess.run(["bash", "deploy/cd/post-deploy-readback.sh", sha, "120"], cwd=self.dir, env=env, check=True, capture_output=True)
+        self.assertIn("--window 0", (self.dir / "args").read_text())
+
     def test_short_sha_is_refused(self):
         env = {**os.environ, "C00_ROUTER_STATE_DIR": "/r", "C00_CUTOVER_STATE_DIR": "/c"}
         result = subprocess.run(["bash", "deploy/cd/post-deploy-readback.sh", "abc", "1"], cwd=self.dir, env=env, text=True, capture_output=True)

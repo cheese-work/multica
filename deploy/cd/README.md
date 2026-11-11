@@ -315,6 +315,8 @@ python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 python3 deploy/cd/test-authorize-c00.py
 python3 deploy/cd/test-post-deploy-readback.py
+python3 deploy/cd/test-post-deploy-confirm.py
+python3 .github/scripts/test_ci_wait_policy.py
 python3 deploy/cd/test-rollback-failed-readback.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
@@ -709,18 +711,41 @@ job is skipped; a GitHub API error fails the job closed. Every C00-touching job
 The `c00-runtime` deployment-branch policy allows `main` only, so a dispatch
 from another ref gets no `c00-runtime` secrets.
 
-After `deploy` succeeds, `readback` (outside the C00 lock) runs
-`post-deploy-readback.sh` for 15 minutes (CHE-2365): health of the public route
-and upstream, then the running commit (the deployed one or a descendant) and the
-image digests against the admitted manifest. A failed `deploy` or `readback`
+After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
+(CHE-2365, CHE-5175), in three jobs outside the C00 lock:
+
+1. `readback` runs `post-deploy-readback.sh` and holds the C00 runner for at most
+   2 minutes. It waits for the public route and upstream to turn healthy (one
+   sample per try, `READBACK_RETRY_SECONDS` apart), then checks the running
+   commit (the deployed one or a descendant) and the image digests against the
+   admitted manifest. It records T0 (epoch seconds) and the active colour's
+   Docker restart count (`restart-count.sh`) as job outputs.
+2. `readback-delay` is the 15-minute wait timer of the `c00-readback-delay`
+   environment. A waiting job holds no runner. It runs on a hosted runner
+   because a job can use only one environment and the C00 secrets stay in
+   `c00-runtime`.
+3. `readback-confirm` runs `post-deploy-confirm.sh` on the C00 runner for about
+   10 seconds. It reads the window from history: `docker events` since T0 shows
+   no `health_status: unhealthy`, `die`, `oom` or `restart` for the active
+   colour's backend and frontend; the restart count did not grow; and the SHA and
+   image digests are unchanged, or C00 runs a newer deploy that descends from this
+   one (that deploy's own confirm then judges its own window).
+
+`c00-readback-delay` is a repository setting, not workflow code: deployment
+branches `main` only (like `c00-runtime`), a wait timer of 15 minutes, no
+secrets and no reviewers. Create it before the first deploy after this change;
+without it the first run creates the environment with no wait timer and the
+window is not watched.
+
+A failed `deploy`, `readback` or `readback-confirm`
 suspends automatic deploys: the next `authorize-c00` walks the finished `main`
 runs of this workflow, newest first, 100 per page and at most 5 pages, until one
-had a `deploy`/`readback` job that succeeded or failed. A failure there means
+had a `deploy`/`readback`/`readback-confirm` job that succeeded or failed. A failure there means
 suspended, however many built-and-stopped runs came since. Finding no deploy in
 all 5 pages is unknown and stays suspended; a history that ends sooner (never
 deployed) is not suspended. A later successful deploy, such as the owner's
 dispatch, lifts it; a dispatch is never suspended. A failed cutover rolls back
-by digest inside `cutover.sh`. A failed `readback` also starts the `rollback`
+by digest inside `cutover.sh`. A failed `readback` or `readback-confirm` also starts the `rollback`
 job, under the C00 lock: `rollback-failed-readback.sh` runs `cutover.sh
 rollback` (retained predecessor, no down migration, no restore) and reads back
 the health and SHA. It identifies the live commit with `live-application-sha.sh`,
