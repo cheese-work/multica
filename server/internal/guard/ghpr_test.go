@@ -373,3 +373,57 @@ func TestStreamedExitCodeIsKept(t *testing.T) {
 		t.Errorf("exit %d, want 4", code)
 	}
 }
+
+// Preflight and readback failures must not let an unguarded call through:
+// that would open a non-draft PR or mark one ready without the checks.
+func TestCreateRefusedWhenPreflightFails(t *testing.T) {
+	cases := map[string]func(*fakeEnv){
+		"repo view fails": func(f *fakeEnv) { f.repoViewFails = true },
+		"pr list fails":   func(f *fakeEnv) { f.listFails = true },
+		"branch unknown":  func(f *fakeEnv) { f.branch = "" },
+	}
+	for name, inject := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFake()
+			inject(f)
+			code, _, errs := run(t, f, policyWith(cheeseReview), "pr", "create", "--title", "feat: a")
+			if code != 2 {
+				t.Fatalf("exit %d, want 2 (%q)", code, errs)
+			}
+			if len(f.streamed) != 0 || len(f.prs) != 0 {
+				t.Errorf("an unguarded create ran: streamed %v prs %d", f.streamed, len(f.prs))
+			}
+			if n := len(guardLines(errs)); n != 1 {
+				t.Errorf("want one guard line, got %q", errs)
+			}
+		})
+	}
+}
+
+func TestReadyRefusedWhenViewFails(t *testing.T) {
+	f := newFake()
+	f.viewFails = true
+	f.prs = []*fakePR{{Number: 7, Repo: "cheese-work/multica", HeadRef: "feature/x", Base: "main", Title: "feat: a [squash]", Draft: true}}
+	code, _, errs := run(t, f, policyWith(cheeseReview), "pr", "ready", "7")
+	if code != 2 {
+		t.Fatalf("exit %d, want 2 (%q)", code, errs)
+	}
+	if !f.pr(t, 0).Draft {
+		t.Error("PR must stay draft")
+	}
+	if len(f.streamed) != 0 {
+		t.Errorf("gh pr ready ran: %v", f.streamed)
+	}
+}
+
+func TestPreflightFailureStillPassesWhenVerifyIsOff(t *testing.T) {
+	f := newFake()
+	f.viewFails = true
+	f.prs = []*fakePR{{Number: 7, Repo: "cheese-work/multica", HeadRef: "feature/x", Base: "main", Title: "feat: a", Draft: true}}
+	off := false
+	pol := DefaultPolicy()
+	pol.Verify = &off
+	if code, _, _ := run(t, f, pol, "pr", "ready", "7"); code != 0 || len(f.streamed) != 1 {
+		t.Errorf("exit %d streamed %v", code, f.streamed)
+	}
+}

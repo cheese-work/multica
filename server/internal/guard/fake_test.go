@@ -46,6 +46,7 @@ type fakeEnv struct {
 	editReviewerFails   bool
 	viewFails           bool
 	repoViewFails       bool
+	listFails           bool
 	streamExit          int
 }
 
@@ -237,6 +238,9 @@ func (f *fakeEnv) gh(args []string) Result {
 		return Result{Stdout: mustJSON(map[string]any{
 			"nameWithOwner": repo, "defaultBranchRef": map[string]string{"name": f.defaultBranch}})}
 	case len(args) >= 2 && args[0] == "pr" && args[1] == "list":
+		if f.listFails {
+			return Result{Exit: 1, Stderr: "HTTP 502"}
+		}
 		repo := val(args, "--repo", "-R")
 		head := val(args, "--head", "-H")
 		out := []jsonPR{}

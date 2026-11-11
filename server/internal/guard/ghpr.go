@@ -152,6 +152,16 @@ func (e *Engine) headOwner(ctx context.Context, branch string) string {
 	return ""
 }
 
+// createPreflightFailed refuses a create when a check before it failed.
+// Running gh pr create unchecked could open a non-draft PR; nothing exists yet,
+// so a retry is safe. With verify off the call goes through unchecked.
+func (e *Engine) createPreflightFailed(err error, what string) (decision, error) {
+	if !e.Policy.verify() {
+		return decision{}, err
+	}
+	return refuse(2, "gh pr create stopped: could not %s (%s); nothing was created, retry the command", what, firstLine(err.Error(), 120)), nil
+}
+
 func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decision, error) {
 	flags, _ := prSpec.scan(args)
 	for _, n := range []string{"fill", "fill-first", "fill-verbose", "web"} {
@@ -178,7 +188,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 		} `json:"defaultBranchRef"`
 	}
 	if err := e.ghJSON(ctx, &rv, append(repoView, "--json", "nameWithOwner,defaultBranchRef")...); err != nil {
-		return decision{}, err
+		return e.createPreflightFailed(err, "read the repository")
 	}
 	base := rv.DefaultBranchRef.Name
 	if b, ok := find(flags, "base"); ok && b.hasVal {
@@ -196,7 +206,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 	if branch == "" {
 		b, ok := e.git(ctx, "branch", "--show-current")
 		if !ok || b == "" {
-			return decision{}, fmt.Errorf("cannot tell which branch the PR comes from")
+			return e.createPreflightFailed(fmt.Errorf("cannot tell which branch the PR comes from"), "tell which branch the PR comes from")
 		}
 		branch = b
 	}
@@ -219,7 +229,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 	}
 	found, err := list()
 	if err != nil {
-		return decision{}, err
+		return e.createPreflightFailed(err, "list the open PRs")
 	}
 	if len(found) > 0 && owner == "" {
 		return refuse(2, "an open PR from a branch named %s exists and the guard cannot tell whose it is; pass --head owner:%s", branch, branch), nil
@@ -382,7 +392,10 @@ func (e *Engine) prReady(ctx context.Context, pl *Plugin, args []string) (decisi
 	}
 	info, err := e.view(ctx, selector(flags, pos[2:])...)
 	if err != nil {
-		return decision{}, err
+		if !e.Policy.verify() {
+			return decision{}, err
+		}
+		return refuse(2, "gh pr ready stopped: could not read the PR (%s); it stays draft, retry the command", firstLine(err.Error(), 120)), nil
 	}
 	d := e.ensure(ctx, pl, info.URL, false, 2, nil)
 	if d.kind == KindRefused {

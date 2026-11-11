@@ -66,11 +66,12 @@ func TestShellAliasPassesThrough(t *testing.T) {
 
 func TestPluginErrorFailsOpenWithOneWarningAndIsLogged(t *testing.T) {
 	f := newFake()
-	f.repoViewFails = true
+	f.viewFails = true
+	f.prs = []*fakePR{{Number: 7, Repo: "cheese-work/multica", HeadRef: "feature/x", Base: "main", Title: "feat: a", Draft: true}}
 	var log bytes.Buffer
 	var out, errb bytes.Buffer
 	e := &Engine{Policy: DefaultPolicy(), Runner: f, Log: &log, Out: &out, Err: &errb}
-	code, err := e.Exec(context.Background(), "gh", []string{"pr", "create", "--title", "feat: a"})
+	code, err := e.Exec(context.Background(), "gh", []string{"pr", "edit", "7", "--title", "feat: b"})
 	if err != nil || code != 0 {
 		t.Fatalf("exit %d err %v", code, err)
 	}
