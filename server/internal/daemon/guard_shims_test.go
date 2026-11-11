@@ -1,12 +1,19 @@
 package daemon
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
@@ -179,5 +186,67 @@ func TestGuardShimsFallBackToDaemonPATH(t *testing.T) {
 	}
 	if !strings.HasPrefix(env["PATH"], dir+string(os.PathListSeparator)) || !strings.Contains(env["PATH"], real) {
 		t.Fatalf("PATH = %q, want %q first, then the daemon PATH containing %q", env["PATH"], dir, real)
+	}
+}
+
+// runTask launches each runtime's agent process with the guard shims first on
+// its PATH: a test-created agent records what `git` and `gh` resolve to from
+// inside the process runTask starts (CHE-5203). No installed CLI is run.
+func TestRunTaskLaunchesAgentWithGuardShims(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script agent fixture is POSIX-only")
+	}
+	for _, provider := range []string{"claude", "codex"} {
+		t.Run(provider, func(t *testing.T) {
+			real := fakeTools(t)
+			seen := filepath.Join(t.TempDir(), "resolved")
+			fake := filepath.Join(t.TempDir(), provider+"-fixture")
+			writeTestExecutable(t, fake, []byte("#!/bin/sh\n"+
+				"case \"$*\" in *--version*) echo '9.9.9'; exit 0;; esac\n"+
+				"{ command -v git; command -v gh; git --version; } > '"+seen+"'\n"+
+				"exit 0\n"))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{}`))
+			}))
+			defer srv.Close()
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			d := &Daemon{
+				client: NewClient(srv.URL), logger: logger,
+				workspaces: make(map[string]*workspaceState), activeEnvRoots: make(map[string]int),
+				runtimeIndex: map[string]Runtime{"test-rt": {ID: "test-rt", Provider: provider}},
+				cfg: Config{
+					WorkspacesRoot: t.TempDir(), AgentTimeout: 5 * time.Second, ServerBaseURL: srv.URL,
+					Agents: map[string]AgentEntry{provider: {Path: fake}},
+				},
+			}
+			task := Task{
+				ID: "test-task", WorkspaceID: "test-ws", RuntimeID: "test-rt", IssueID: "test-issue",
+				AgentID: "test-agent", AuthToken: "mat_test_guard",
+				Agent: &AgentData{ID: "test-agent", Name: "test"},
+			}
+			d.activeStores, d.deletingStores = make(map[string]int), make(map[string]bool)
+			d.activeStoresCond = sync.NewCond(&d.activeStoresMu)
+			// The fixture speaks no agent protocol, so the run may end failed; only
+			// the environment it started with matters here.
+			_, _ = d.runTask(context.Background(), task, provider, 0, logger)
+
+			out, err := os.ReadFile(seen)
+			if err != nil {
+				t.Fatalf("%s agent never started with a recorded PATH: %v", provider, err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			if len(lines) != 3 {
+				t.Fatalf("resolution output = %q", out)
+			}
+			for i, name := range guardShimNames {
+				got := lines[i]
+				if filepath.Base(got) != name || filepath.Base(filepath.Dir(got)) != "guard-bin" {
+					t.Fatalf("%s resolves to %q in the %s run, want a guard-bin shim (real is in %s)", name, got, provider, real)
+				}
+			}
+			if lines[2] != "real-git --version" {
+				t.Fatalf("git shim did not reach the real git: %q", lines[2])
+			}
+		})
 	}
 }
