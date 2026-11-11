@@ -91,11 +91,15 @@ jobs:
           bash deploy/cd/test-release-manifest.sh
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
           python3 deploy/cd/test-github-api-retry.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-rollback-failed-readback.py
           bash deploy/cd/test-workflow-path-filters.sh
           bash deploy/cd/test-isolated-qualification.sh
           bash deploy/cd/test-tuple-snapshot.sh

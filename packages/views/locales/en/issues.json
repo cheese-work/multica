@@ -1692,6 +1692,8 @@
       "name": "Name",
       "name_placeholder": "e.g. Delivery",
       "description": "Description",
+      "max_runs": "Max runs per issue",
+      "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
       "steps": "Steps",
       "add_step": "Add step",
       "start": "Start",
