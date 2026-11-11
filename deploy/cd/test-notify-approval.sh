@@ -2,8 +2,9 @@
 set -euo pipefail
 
 # notify-approval.sh (CHE-2418 B5, CHE-4879): one notice per waiting approval, by
-# webhook and/or a Multica comment. No route configured, or no route delivered,
-# fails the job. curl is mocked; it records its arguments and can be told to fail.
+# webhook and/or a Multica decision card (POST /api/decisions/ci). No route
+# configured, or no route delivered, fails the job. curl and gh are mocked; they
+# record their arguments and can be told to fail.
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root_dir"
@@ -15,19 +16,27 @@ cat >"$work_dir/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$NOTIFY_TEST_DIR/curl-args"
 [ ! -f "$NOTIFY_TEST_DIR/curl-fails" ] || exit 22
+out="" fmt=""
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in -o) out="${args[i+1]}" ;; -w) fmt="${args[i+1]}" ;; esac
+done
 case "$*" in
+  *"/api/decisions/ci"*)
+    cat >"$NOTIFY_TEST_DIR/curl-body"
+    [ -z "$out" ] || printf '{"id":"card-1"}' >"$out"
+    [ -z "$fmt" ] || cat "$NOTIFY_TEST_DIR/ci-status" 2>/dev/null || printf 201 ;;
+  *"/comments"*) cat "$NOTIFY_TEST_DIR/list.json" 2>/dev/null || echo '[{"id":"11111111-1111-4111-8111-111111111111"}]' ;;
   *"-d @-"*) cat >"$NOTIFY_TEST_DIR/curl-body"; printf '{"id":"new"}' ;;
-  *"/api/me"*) printf '{"id":"bot-1"}' ;;
-  *) cat "$NOTIFY_TEST_DIR/list.json" 2>/dev/null || echo '[]' ;;
 esac
 MOCK
 chmod +x "$work_dir/bin/curl"
-# gh mock: `gh api repos/R/compare/<ask>...<ours> -q .status` answers from $NOTIFY_TEST_DIR/gh-status.
+# gh mock: `gh api repos/R/commits/<sha> -q .commit.committer.date` answers the commit time.
 cat >"$work_dir/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$NOTIFY_TEST_DIR/gh-args"
 [ ! -f "$NOTIFY_TEST_DIR/gh-fails" ] || exit 1
-cat "$NOTIFY_TEST_DIR/gh-status" 2>/dev/null || echo ahead
+echo 2026-11-11T09:00:00Z
 MOCK
 chmod +x "$work_dir/bin/gh"
 export PATH="$work_dir/bin:$PATH" NOTIFY_TEST_DIR="$work_dir"
@@ -61,80 +70,57 @@ if output="$(WEBHOOK_URL= run)"; then echo "no route: want non-zero exit" >&2; e
 [[ "$output" == *"::error"* ]] || { echo "no route: no error: $output" >&2; exit 1; }
 [ ! -e "$work_dir/curl-args" ] || { echo "no route: curl was called" >&2; exit 1; }
 
-# Multica route: one comment to Cheese with the SHA and the dispatch one-liner.
+# Multica route: one decision card for Cheese with the SHA and the dispatch one-liner.
 export MULTICA_TOKEN=mul_secret_token MULTICA_SERVER_URL=https://multica.example MULTICA_WORKSPACE_ID=ws-1
 export MULTICA_NOTIFY_ISSUE=issue-1 MULTICA_NOTIFY_MEMBER_ID=member-1
+SRC=11111111-1111-4111-8111-111111111111
+post() { rm -f "$work_dir/curl-args" "$work_dir/curl-body"; WEBHOOK_URL= run >/dev/null; }
 rm -f "$work_dir/curl-args" "$work_dir/curl-body"
 output="$(WEBHOOK_URL= run)" || { echo "multica: want exit 0" >&2; echo "$output" >&2; exit 1; }
 args="$(cat "$work_dir/curl-args")"
-[[ "$args" == *"https://multica.example/api/issues/issue-1/comments"* ]] || { echo "multica: wrong url: $args" >&2; exit 1; }
+[[ "$args" == *"https://multica.example/api/decisions/ci"* ]] || { echo "multica: wrong url: $args" >&2; exit 1; }
 [[ "$args" != *"$MULTICA_TOKEN"* ]] || { echo "token must not be in argv: $args" >&2; exit 1; }
 body="$(cat "$work_dir/curl-body")"
-python3 - "$body" "$SOURCE_SHA" <<'PY' || { echo "multica body wrong: $body" >&2; exit 1; }
+python3 - "$body" "$SOURCE_SHA" "$SRC" <<'PY' || { echo "multica body wrong: $body" >&2; exit 1; }
 import json, sys
-b = json.loads(sys.argv[1]); sha = sys.argv[2]
-c = b["content"]
-assert "mention://member/member-1" in c
-assert f"gh workflow run cd-deploy.yml --repo cheese-work/multica --ref main -f candidate_sha={sha}" in c
-assert not b.get("supersedes")
+b = json.loads(sys.argv[1]); sha = sys.argv[2]; src = sys.argv[3]
+assert b["issue_id"] == "issue-1" and b["for"] == "member-1", b
+assert b["candidate_sha"] == sha and b["candidate_at"] == "2026-11-11T09:00:00Z", b
+assert set(b) == {"issue_id", "for", "ask", "candidate_sha", "candidate_at"}, sorted(b)
+a = b["ask"]
+assert a["source_issue_id"] == "issue-1" and a["source_comment_id"] == src, a
+assert len(a["options"]) >= 2 and a["recommended_option"] in [o["label"] for o in a["options"]], a
+text = json.dumps(a)
+assert f"gh workflow run cd-deploy.yml --repo cheese-work/multica --ref main -f candidate_sha={sha}" in text
+assert sha[:12] in text
 PY
 
-# Asks are authenticated by author: a marker comment from anyone but the token's own
-# user is ignored, so it can neither suppress the notice nor be superseded.
-OLD=ffffffffffffffffffffffffffffffffffffffff
-ask() { # id author_id sha [resolved_at]
-  printf '{"id":"%s","author_type":"member","author_id":"%s","content":"candidate_sha=%s <!-- cd-deploy-candidate -->","created_at":"2026-11-09T01:00:00Z","resolved_at":%s,"superseded_by_id":null}' \
-    "$1" "$2" "$3" "${4:-null}"
-}
-list() { printf '[%s]' "$(IFS=,; echo "$*")" >"$work_dir/list.json"; }
-post() { rm -f "$work_dir/curl-args" "$work_dir/curl-body"; WEBHOOK_URL= run >/dev/null; }
-
-# Forged marker for our own SHA from another author: the real notice is still sent.
-list "$(ask forged someone-else "$SOURCE_SHA")"
-post
-[ -e "$work_dir/curl-body" ] || { echo "forged marker suppressed the notice" >&2; exit 1; }
-
-# A newer SHA supersedes the older open ask of ours (gh compare says ahead);
-# a resolved ask and a forged ask are not superseded.
-list "$(ask old-ask bot-1 "$OLD")" "$(ask done-ask bot-1 "$OLD" '"2026-11-09T03:00:00Z"')" "$(ask forged someone-else "$OLD")"
-echo ahead >"$work_dir/gh-status"
-post
-python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["supersedes"]==["old-ask"]' "$work_dir/curl-body" \
-  || { echo "newer SHA must supersede only old-ask: $(cat "$work_dir/curl-body")" >&2; exit 1; }
-
-# An older candidate finishing after a newer one must not replace the newer ask.
-for status in behind identical; do
-  list "$(ask newer-ask bot-1 "$OLD")"
-  echo "$status" >"$work_dir/gh-status"
-  post
-  [ ! -e "$work_dir/curl-body" ] || { echo "$status: stale candidate posted over the newer ask" >&2; exit 1; }
+# The server decides freshness: a new card (201), a replay (200) and a newer
+# candidate already asked (409) are all delivered; any other status fails.
+for code in 201 200 409; do
+  printf %s "$code" >"$work_dir/ci-status"; post
 done
-
-# The same SHA is not asked twice; no ancestry lookup is needed for it.
-list "$(ask same bot-1 "$SOURCE_SHA")"
-rm -f "$work_dir/gh-args"
-post
-[ ! -e "$work_dir/curl-body" ] || { echo "same SHA asked twice" >&2; exit 1; }
-
-# An ancestry lookup that fails or answers diverged fails the job; nothing is posted.
-list "$(ask old-ask bot-1 "$OLD")"
-echo diverged >"$work_dir/gh-status"
-rm -f "$work_dir/curl-body"
-if WEBHOOK_URL= run >/dev/null; then echo "diverged: want non-zero exit" >&2; exit 1; fi
-[ ! -e "$work_dir/curl-body" ] || { echo "diverged: comment posted" >&2; exit 1; }
+for code in 400 403 500; do
+  printf %s "$code" >"$work_dir/ci-status"
+  if WEBHOOK_URL= run >/dev/null; then echo "status $code: want non-zero exit" >&2; exit 1; fi
+done
+rm -f "$work_dir/ci-status"
+echo '[]' >"$work_dir/list.json"
+if WEBHOOK_URL= run >/dev/null; then echo "no root comment: want non-zero exit" >&2; exit 1; fi
+rm -f "$work_dir/list.json"
 touch "$work_dir/gh-fails"
-if WEBHOOK_URL= run >/dev/null; then echo "gh failure: want non-zero exit" >&2; exit 1; fi
-rm -f "$work_dir/gh-fails" "$work_dir/list.json" "$work_dir/gh-status"
+if WEBHOOK_URL= run >/dev/null; then echo "commit lookup failure: want non-zero exit" >&2; exit 1; fi
+rm -f "$work_dir/gh-fails"
 
-# RUN_LINK, when set, is the run link in the Multica comment.
+# RUN_LINK, when set, is the run link in the card.
 RUN_LINK=https://github.com/cheese-work/multica/actions/runs/777 post
-grep -q 'actions/runs/777' "$work_dir/curl-body" || { echo "RUN_LINK missing from comment" >&2; exit 1; }
+grep -q 'actions/runs/777' "$work_dir/curl-body" || { echo "RUN_LINK missing from card" >&2; exit 1; }
 
 # Both routes configured: both fire. A failing Multica route alone fails the job
 # even though the webhook delivered nothing it could report.
 rm -f "$work_dir/curl-args"
 run >/dev/null
-[ "$(wc -l <"$work_dir/curl-args")" -eq 4 ] || { echo "both routes: want webhook POST + me + list + comment" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
+[ "$(wc -l <"$work_dir/curl-args")" -eq 3 ] || { echo "both routes: want webhook POST + comments + card" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
 touch "$work_dir/curl-fails"
 if run >/dev/null; then echo "both routes failing: want non-zero exit" >&2; exit 1; fi
 rm "$work_dir/curl-fails"
