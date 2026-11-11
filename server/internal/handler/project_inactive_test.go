@@ -29,7 +29,8 @@ func TestInactiveProjectRequestTriggers(test *testing.T) {
 					issueID := fixture.issueFor(test, "", "project trigger: "+entry.name)
 					dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
 					response := entry.call(test, fixture, issueID)
-					active := status == "planned" || status == "in_progress"
+					// A paused project still accepts triggers: the run is held at claim (CHE-5213).
+					active := status == "planned" || status == "in_progress" || status == "paused"
 					if active {
 						response.WantOneOf(http.StatusOK, http.StatusCreated, http.StatusAccepted)
 						if tasksOn(test, issueID) == 0 {
@@ -64,7 +65,7 @@ func TestInactiveProjectRequestTriggers(test *testing.T) {
 func TestInactiveProjectAgentWrites(test *testing.T) {
 	fixture := newTriageRunFixture(test)
 	actorTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "status": "running"})
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		test.Run(status, func(test *testing.T) {
 			projectID := inactiveProject(test, status)
 			issueID := fixture.issueFor(test, "", "inactive agent write")
@@ -108,7 +109,7 @@ func TestInactiveProjectAgentWrites(test *testing.T) {
 
 func TestInactiveProjectCloseCancelsRunsAndResumeDoesNotReplay(test *testing.T) {
 	fixture := newTriageRunFixture(test)
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		test.Run(status, func(test *testing.T) {
 			projectID := inactiveProject(test, "in_progress")
 			issueID := fixture.issueFor(test, "", "project close")
@@ -156,7 +157,7 @@ func TestInactiveProjectCloseCancelsRunsAndResumeDoesNotReplay(test *testing.T) 
 
 func TestInactiveProjectMoveCancelsRuns(test *testing.T) {
 	fixture := newTriageRunFixture(test)
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		for _, mode := range []string{"single", "description", "batch"} {
 			test.Run(status+"/"+mode, func(test *testing.T) {
 				projectID := inactiveProject(test, status)
@@ -184,7 +185,7 @@ func TestInactiveProjectMoveCancelsRuns(test *testing.T) {
 }
 
 func TestInactiveProjectStartRefusesAndSettles(test *testing.T) {
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		for _, mode := range []string{"legacy", "claim"} {
 			test.Run(status+"/"+mode, func(test *testing.T) {
 				taskID, runtimeID, generation := startClaimFixture(test, "dispatched")
@@ -215,7 +216,7 @@ func TestInactiveProjectStartRefusesAndSettles(test *testing.T) {
 func TestInactiveProjectAgentBatchDelete(test *testing.T) {
 	fixture := newTriageRunFixture(test)
 	actorTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "status": "running"})
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		test.Run(status, func(test *testing.T) {
 			projectID := inactiveProject(test, status)
 			activeIssue := fixture.issueFor(test, "", "active batch peer")
@@ -277,7 +278,7 @@ func TestInactiveProjectCloseSerializesMoveOut(test *testing.T) {
 
 func TestInactiveProjectAutomaticRetry(test *testing.T) {
 	fixture := newTriageRunFixture(test)
-	projectID := inactiveProject(test, "paused")
+	projectID := inactiveProject(test, "cancelled")
 	issueID := fixture.issueFor(test, "", "inactive retry")
 	dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
 	taskID := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "issue_id": issueID,
@@ -296,7 +297,7 @@ func TestInactiveProjectWriteTriggerDecision(test *testing.T) {
 	fixture := newTriageRunFixture(test)
 	for _, source := range []string{"assignment", "status"} {
 		test.Run(source, func(test *testing.T) {
-			projectID := inactiveProject(test, "paused")
+			projectID := inactiveProject(test, "cancelled")
 			issueID := fixture.issueFor(test, "", "inactive "+source)
 			dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
 			issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(issueID))
@@ -317,7 +318,7 @@ func TestInactiveProjectWriteTriggerDecision(test *testing.T) {
 
 func TestInactiveProjectMemberWriteTriggers(test *testing.T) {
 	fixture := newTriageRunFixture(test)
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		test.Run(status, func(test *testing.T) {
 			projectID := inactiveProject(test, status)
 			var created IssueResponse

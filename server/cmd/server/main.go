@@ -883,6 +883,17 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
 		slog.Error("scheduler: register stage queue release", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.RunAdmissionExpiryJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register run admission expiry", "error", err)
+	}
+	// CHE-5213: one reconcile pass after a restart, no periodic sweep.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := taskSvc.ReconcileAdmission(ctx); err != nil {
+			slog.Warn("run admission reconcile after restart failed", "error", err)
+		}
+	}()
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
