@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -228,7 +229,7 @@ func (s *TaskService) ExpireDueReservations(ctx context.Context) (int, error) {
 				return err
 			}
 			second, err := releaseLocked(ctx, q, d.ProjectID, nil)
-			admitted = append(first, second...)
+			admitted = slices.Concat(first, second)
 			return err
 		})
 		if err != nil {
