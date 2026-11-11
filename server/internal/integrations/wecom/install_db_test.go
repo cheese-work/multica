@@ -62,6 +62,7 @@ func setupScanDB(t *testing.T, agents int) (context.Context, *pgxpool.Pool) {
 		_, _ = pool.Exec(ctx, `DELETE FROM agent WHERE workspace_id = $1`, wcScanWS)
 		_, _ = pool.Exec(ctx, `DELETE FROM agent_runtime WHERE workspace_id = $1`, wcScanWS)
 		_, _ = pool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, wcScanWS)
+		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, wcScanUser)
 	}
 	cleanScan()
 	t.Cleanup(cleanScan)
@@ -83,6 +84,10 @@ func setupScanDB(t *testing.T, agents int) (context.Context, *pgxpool.Pool) {
 	exec(`INSERT INTO workspace (id, name, slug, description) VALUES ($1, 'wecom scan', 'wecom-scan', '')`, wcScanWS)
 	exec(`INSERT INTO agent_runtime (id, workspace_id, name, runtime_mode, provider)
 VALUES ($1, $2, 'wecom scan runtime', 'local', 'multica_daemon')`, wcScanRuntime, wcScanWS)
+	// The initiator is an admin: finalize re-checks that (see
+	// TestInstallDB_DemotedInitiatorCannotFinalize).
+	exec(`INSERT INTO "user" (id, name, email) VALUES ($1, 'wecom scan user', 'wecom-scan-user@example.test')`, wcScanUser)
+	exec(`INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, 'admin')`, wcScanWS, wcScanUser)
 	for i := 0; i < agents; i++ {
 		exec(`INSERT INTO agent (id, workspace_id, name, runtime_mode, runtime_id)
 VALUES ($1, $2, $3, 'local', $4)`, wcScanAgent(i), wcScanWS, fmt.Sprintf("wecom scan %d", i), wcScanRuntime)
@@ -461,6 +466,90 @@ func TestInstallDB_WorkerWalksASessionToSuccess(t *testing.T) {
 
 	if worked, err := w.processOne(ctx); err != nil || worked {
 		t.Fatalf("a settled session was claimed again: worked=%v err=%v", worked, err)
+	}
+}
+
+// The initiator's role is re-read at finalize, not trusted from begin: an admin
+// who starts an install and is demoted (or removed) before scanning must not
+// get a bot bound.
+func TestInstallDB_DemotedInitiatorCannotFinalize(t *testing.T) {
+	for _, tc := range []struct{ name, sql string }{
+		{"demoted to member", `UPDATE member SET role = 'member' WHERE workspace_id = $1`},
+		{"removed from workspace", `DELETE FROM member WHERE workspace_id = $1`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, pool := setupScanDB(t, 1)
+			provider := &fakeProvider{gen: GenerateResult{Scode: "scode-demote", AuthURL: "https://example.test/qr"}}
+			binder, err := NewInstallationService(db.New(pool), pool, testBox(t), WithCredentialProbe(&fakeProbe{}))
+			if err != nil {
+				t.Fatalf("NewInstallationService: %v", err)
+			}
+			svc := newDBInstallService(t, pool, provider, binder, InstallServiceConfig{})
+			w := NewInstallWorker(svc, InstallWorkerConfig{})
+
+			begun, err := svc.BeginInstall(ctx, scanBegin(0, "demote"))
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			if worked, err := w.processOne(ctx); err != nil || !worked {
+				t.Fatalf("generate step: worked=%v err=%v", worked, err)
+			}
+			if _, err := pool.Exec(ctx, tc.sql, wcScanWS); err != nil {
+				t.Fatalf("change role: %v", err)
+			}
+			provider.query = QueryResult{Status: QueryStatusSuccess, BotInfo: &BotInfo{BotID: "bot_scan_demote", Secret: "s3cret"}}
+			makeDue(t, ctx, pool, begun.SessionID)
+			if worked, err := w.processOne(ctx); err != nil || !worked {
+				t.Fatalf("success poll: worked=%v err=%v", worked, err)
+			}
+
+			row := loadSession(t, ctx, pool, begun.SessionID)
+			if row.Status != InstallStatusError || row.ErrorReason.String != InstallErrorBindFailed {
+				t.Fatalf("status=%s reason=%q, want failed with %s", row.Status, row.ErrorReason.String, InstallErrorBindFailed)
+			}
+			var n int
+			if err := pool.QueryRow(ctx, `SELECT count(*) FROM channel_installation WHERE workspace_id = $1`, wcScanWS).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("installations after a demoted initiator's scan: n=%d err=%v, want 0", n, err)
+			}
+		})
+	}
+}
+
+// A role change in flight is not a gap: with the demotion uncommitted, the bind
+// waits on the member row, and once it commits the bind sees the new role.
+func TestInstallDB_BindWaitsForAConcurrentDemotion(t *testing.T) {
+	ctx, pool := setupScanDB(t, 1)
+	binder, err := NewInstallationService(db.New(pool), pool, testBox(t), WithCredentialProbe(&fakeProbe{}))
+	if err != nil {
+		t.Fatalf("NewInstallationService: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE member SET role = 'member' WHERE workspace_id = $1`, wcScanWS); err != nil {
+		t.Fatalf("demote: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := binder.Upsert(ctx, InstallationParams{
+			WorkspaceID: mustUUID(wcScanWS), AgentID: mustUUID(wcScanAgent(0)), InstallerUserID: mustUUID(wcScanUser),
+			BotID: "bot_scan_race", Secret: "s3cret", RequireManagerInstaller: true,
+		})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("bind finished while the demotion was uncommitted: err=%v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit demotion: %v", err)
+	}
+	if err := <-done; !errors.Is(err, ErrInstallerNotManager) {
+		t.Fatalf("bind after the demotion committed: err=%v, want ErrInstallerNotManager", err)
 	}
 }
 
