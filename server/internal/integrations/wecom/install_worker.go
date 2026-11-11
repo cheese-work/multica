@@ -320,6 +320,9 @@ func (w *InstallWorker) finalizeSuccess(ctx context.Context, row db.WecomInstall
 		InstallerUserID: row.InitiatorUserID,
 		BotID:           bot.BotID,
 		Secret:          bot.Secret,
+		// The initiator was an admin when the QR was issued; the role may have
+		// been revoked before the scan.
+		RequireManagerInstaller: true,
 	})
 	if err != nil {
 		// The bot exists on WeCom's side either way, so the session ends with a
