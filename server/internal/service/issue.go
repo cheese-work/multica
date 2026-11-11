@@ -107,11 +107,16 @@ type IssueCreateParams struct {
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
 	// HandoffResolver, when set, decides the assignee a workflow step hands the
-	// new issue to. Set it only when the caller chose no assignee. The service
-	// calls it under the catalog and project locks, with the step the issue
-	// actually lands on, and its answer replaces any assignee the caller
-	// resolved earlier from an unlocked read.
+	// new issue to. The service calls it under the catalog and project locks,
+	// with the step the issue actually lands on, and its answer replaces any
+	// assignee the caller resolved earlier from an unlocked read, and the
+	// assignee the caller named: entering a step that hands off gives the
+	// issue to its handler. A step with no handler leaves a named assignee.
 	HandoffResolver CreateHandoffResolver
+	// AssigneeNamed marks an assignee the caller chose, as opposed to one the
+	// handler read of an unlocked workflow filled in. Only the latter is
+	// cleared before the locked handoff decision.
+	AssigneeNamed bool
 	// EntryGate, when set, checks the entry gates of the step the issue lands
 	// on, under the same locks. Platform spawns leave it nil and are not gated.
 	EntryGate CreateEntryGate
@@ -405,14 +410,18 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// stands under the locks. An earlier unlocked read can name the former
 	// workflow's handler, or none, after a switch.
 	if p.HandoffResolver != nil {
-		p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		if !p.AssigneeNamed {
+			p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
+		}
 		if def != nil {
 			if step, ok := def.Step(p.Status); ok && step.HandsOff() {
 				assigneeType, assigneeID, err := p.HandoffResolver(ctx, step, workflowProject)
 				if err != nil {
 					return IssueCreateResult{}, err
 				}
-				p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				if assigneeID.Valid {
+					p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
+				}
 			}
 		}
 	}
