@@ -345,6 +345,7 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 | `auth`, `login`, `setup` | Se connecter, vérifier l'état de l'authentification et initialiser une connexion |
 | `config` | Consulter ou modifier la configuration locale du profil CLI actuel |
 | `update`, `version` | Mettre à jour le CLI ou afficher la version |
+| `guard` | Vérifier les appels d'outils des agents selon la politique de l'espace de travail |
 
 `multica chat` lit **la session de messagerie externe qu'un agent traite actuellement** ; elle sert surtout aux agents des intégrations de messagerie et n'est pas une commande générale pour parcourir n'importe quelle discussion de l'espace de travail.
 
@@ -493,6 +494,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
+| `guard` | `exec <tool> -- <args>` | Exécuter un appel d'outil via le garde : `gh pr create`, `edit` et `ready` sont forcés en brouillon, étiquetés et relus ; les écritures sur les pull requests via `gh api` sont refusées | Code de sortie : celui de l'outil, 2 si le garde refuse. Env : `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
 
 ### Propositions de décision
 
