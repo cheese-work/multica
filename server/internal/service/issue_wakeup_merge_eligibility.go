@@ -199,12 +199,16 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 	if err != nil {
 		return false, "", nil, err
 	}
+	// The PR rows are only as current as the snapshot refresh that wrote them.
+	if s.Tasks == nil || !s.Tasks.PRSnapshotsEnabled {
+		return false, "", nil, errPRSnapshotsUnavailable
+	}
 	// Held to the end of the transaction, like the pull_request conditions (CHE-2223).
 	if err := q.LockGitHubDispatchHaltShared(ctx, w.WorkspaceID); err != nil {
 		return false, "", nil, err
 	}
 	rows, err := tx.Query(ctx, `SELECT pr.repo_owner,pr.repo_name,pr.pr_number,pr.state,pr.head_sha,COALESCE(pr.snapshot_head_sha,''),
-			COALESCE(pr.snapshot_base_ref,''),COALESCE(pr.api_mergeable,''),COALESCE(pr.checks_rollup_state,'')
+			COALESCE(pr.snapshot_base_ref,''),COALESCE(pr.api_mergeable,''),COALESCE(pr.checks_rollup_state,''),pr.snapshot_fetched_at
 		FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 	if err != nil {
 		return false, "", nil, err
@@ -212,11 +216,12 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 	type linked struct {
 		owner, repo, state, head, snapshotHead, base, mergeable, checks string
 		number                                                          int32
+		fetchedAt                                                       pgtype.Timestamptz
 	}
 	var prs []linked
 	for rows.Next() {
 		var l linked
-		if err = rows.Scan(&l.owner, &l.repo, &l.number, &l.state, &l.head, &l.snapshotHead, &l.base, &l.mergeable, &l.checks); err != nil {
+		if err = rows.Scan(&l.owner, &l.repo, &l.number, &l.state, &l.head, &l.snapshotHead, &l.base, &l.mergeable, &l.checks, &l.fetchedAt); err != nil {
 			rows.Close()
 			return false, "", nil, err
 		}
@@ -237,6 +242,13 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 		if l.state != "open" || l.mergeable != "MERGEABLE" || l.checks != "SUCCESS" || l.base == "" || l.head == "" || l.snapshotHead != l.head {
 			continue
 		}
+		// The refresher keeps the old row when GitHub is unreachable, so a matching
+		// head does not prove the verdict is current: the snapshot needs a fetch
+		// time inside the policy's freshness bound.
+		if age := now.Sub(l.fetchedAt.Time); !l.fetchedAt.Valid || age < 0 || age > time.Duration(policy.MaxFactAgeSeconds)*time.Second {
+			pending = errPRSnapshotPending
+			continue
+		}
 		if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: w.WorkspaceID, RepoOwner: l.owner, RepoName: l.repo}); err != nil {
 			return false, "", nil, err
 		} else if halted {
@@ -254,14 +266,15 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 		if len(policy.refusals(facts, now)) > 0 {
 			continue
 		}
-		keys = append(keys, fmt.Sprintf("%s/%s#%d@%s>%s|%s|%s", l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence))
+		// One key per candidate, comma-free because conditionKeys splits on commas.
+		keys = append(keys, strings.ReplaceAll(fmt.Sprintf("%s/%s#%d@%s>%s|%s|%s", l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence), ",", "%2C"))
 		observed = append(observed, map[string]any{"repo": l.owner + "/" + l.repo, "number": l.number, "head_sha": l.head, "base_ref": l.base, "policy_revision": policy.Revision, "evidence": facts.Evidence})
 	}
 	if len(keys) == 0 {
 		return false, "", nil, pending
 	}
 	sort.Strings(keys)
-	return true, "me:" + strings.Join(keys, ","), map[string]any{"pull_requests": observed}, nil
+	return true, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": observed}, nil
 }
 
 var (

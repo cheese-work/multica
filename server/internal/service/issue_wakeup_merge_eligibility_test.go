@@ -71,6 +71,7 @@ func newMergeFix(t *testing.T, mutateFacts func(*MergeFacts), prClause string) *
 		"pr_created_at": "2026-01-01T00:00:00Z", "pr_updated_at": "2026-01-01T00:00:00Z",
 		"head_sha": "a", "snapshot_head_sha": "a", "snapshot_base_ref": "main",
 		"api_mergeable": "MERGEABLE", "checks_rollup_state": "SUCCESS",
+		"snapshot_fetched_at": "2026-11-12T09:59:00Z",
 	})
 	f.Cleanup(t, "DELETE FROM github_dispatch_halt WHERE workspace_id=$1", f.WorkspaceID)
 	f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", fix.pr)
@@ -188,6 +189,16 @@ func TestMergeEligibilityRefusesWhenFactsOrPolicyAreUnavailable(t *testing.T) {
 	}{
 		{"facts source fails", func(m *mergeFix, _ *testing.T) { m.facts.err = context.DeadlineExceeded }, errMergeFactsUnavailable},
 		{"no facts source", func(m *mergeFix, _ *testing.T) { m.s.MergeFacts = nil }, errMergeFactsUnavailable},
+		{"snapshot client disabled", func(m *mergeFix, _ *testing.T) { m.s.Tasks.PRSnapshotsEnabled = false }, errPRSnapshotsUnavailable},
+		{"snapshot never fetched", func(m *mergeFix, t *testing.T) {
+			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at=NULL WHERE id=$1", m.pr)
+		}, errPRSnapshotPending},
+		{"snapshot expired", func(m *mergeFix, t *testing.T) {
+			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at='2026-11-12T09:54:00Z' WHERE id=$1", m.pr)
+		}, errPRSnapshotPending},
+		{"snapshot dated in the future", func(m *mergeFix, t *testing.T) {
+			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at='2026-11-12T10:05:00Z' WHERE id=$1", m.pr)
+		}, errPRSnapshotPending},
 		{"no policy", func(m *mergeFix, t *testing.T) {
 			m.f.Exec(t, "UPDATE workspace SET settings=settings-'merge_eligibility' WHERE id=$1", m.f.WorkspaceID)
 		}, errMergePolicyMissing},
@@ -282,5 +293,45 @@ func TestMergeEligibilityRepeatsOnlyOnANewEligibleEpisode(t *testing.T) {
 	m.tick(t)
 	if n := m.runs(t); n != 3 {
 		t.Fatalf("%d runs after a new head, want 3", n)
+	}
+}
+
+// A PR leaving the eligible set must not replay the candidates that stay: the
+// agent already ran for them in this episode.
+func TestMergeEligibilityIgnoresAPRLeavingTheEligibleSet(t *testing.T) {
+	m := newMergeFix(t, nil, "")
+	prB := m.f.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": m.f.WorkspaceID, "installation_id": 1,
+		"repo_owner": "fixture", "repo_name": "merge", "pr_number": 10,
+		"title": "PR B", "state": "open", "html_url": "https://example.test/pr/10",
+		"pr_created_at": "2026-01-01T00:00:00Z", "pr_updated_at": "2026-01-01T00:00:00Z",
+		"head_sha": "b", "snapshot_head_sha": "b", "snapshot_base_ref": "main",
+		"api_mergeable": "MERGEABLE", "checks_rollup_state": "SUCCESS",
+		"snapshot_fetched_at": "2026-11-12T09:59:00Z",
+	})
+	m.f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", prB)
+	m.f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", m.issue, prB)
+
+	m.tick(t)
+	if n := m.runs(t); n != 1 {
+		t.Fatalf("%d runs for two eligible PRs, want 1", n)
+	}
+	m.finishRuns(t)
+
+	m.f.Exec(t, "UPDATE github_pull_request SET checks_rollup_state='FAILURE' WHERE id=$1", prB)
+	m.tick(t)
+	m.tick(t)
+	if n := m.runs(t); n != 1 {
+		t.Fatalf("%d runs after PR B left the set, want 1: PR A is unchanged", n)
+	}
+	if live := m.f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id'=$1 AND status IN ('queued','dispatched','running')", util.UUIDToString(m.w.ID)); live != 0 {
+		t.Fatalf("%d live tasks after PR B left the set, want 0", live)
+	}
+
+	// PR B going green again is news, and only B.
+	m.f.Exec(t, "UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE id=$1", prB)
+	m.tick(t)
+	if n := m.runs(t); n != 2 {
+		t.Fatalf("%d runs after PR B returned, want 2", n)
 	}
 }

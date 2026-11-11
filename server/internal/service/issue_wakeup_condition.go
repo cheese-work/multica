@@ -577,7 +577,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	isRun := condition.Type == "github_run"
 	if met {
 		newlyMet := fingerprint != state
-		if isRun || (condition.Type == "pull_request" && condition.Event == "conflicts") {
+		if isRun || condition.Type == "merge_eligibility" || (condition.Type == "pull_request" && condition.Event == "conflicts") {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
 		if newlyMet && !conditionDropped(observed, state, fingerprint, condition.Event == "conflicts") {
