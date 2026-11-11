@@ -579,7 +579,7 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, etc.")
+		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, or --arg")
 	}
 
 	var result map[string]any
