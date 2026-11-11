@@ -663,6 +663,27 @@ SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE;
 -- (MUL-7420). See migration 557.
 UPDATE agent_task_queue SET workflow_step = @workflow_step WHERE id = @id;
 
+-- name: RestampActiveTasksWorkflowStep :exec
+-- A system move (decision unpark) puts the issue on a new step. Runs stamped
+-- with a step on either side of that move follow it, so their next status
+-- write is judged from where the system left the issue (CHE-5239).
+UPDATE agent_task_queue SET workflow_step = @to_step
+WHERE issue_id = @issue_id
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY(@from_steps::text[])
+  AND workflow_step IS DISTINCT FROM @to_step;
+
+-- name: IssueHasOpenWait :one
+-- True when an explicit condition wait is still armed on the issue: a wakeup
+-- someone set for another blocker. Default-rule and decision wakeups are not
+-- blockers (CHE-5239).
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = @issue_id AND enabled AND disabled_at IS NULL
+    AND condition IS NOT NULL AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+);
+
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
 -- an automatic retry. It preserves the immutable quick-create context JSON

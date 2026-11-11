@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -270,5 +271,85 @@ func TestDecisionAnswerKeepsTheParkWhileAnotherAnswerAwaitsDelivery(test *testin
 	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
 	if status != "need_decision" || dbfx.Count(test, `SELECT count(*) FROM issue_decision_park WHERE issue_id = $1`, fixture.issueID) != 1 {
 		test.Fatalf("status = %q: delivering one answer must keep the park while another is undelivered", status)
+	}
+}
+
+// parkedFromBlockedCard is a card fixture whose issue was `blocked` when the
+// card was asked (CHE-5239): the park remembers `blocked` as the prior status.
+func parkedFromBlockedCard(test *testing.T) askedRecordFixture {
+	test.Helper()
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	dbfx.Exec(test, `UPDATE issue_decision_park SET prior_status = 'blocked' WHERE issue_id = $1`, fixture.issueID)
+	return fixture
+}
+
+func (fixture askedRecordFixture) answerAndDeliver(test *testing.T, finishRun bool) {
+	test.Helper()
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option A"}); err != nil {
+		test.Fatal(err)
+	}
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.chatTaskID)
+	if finishRun {
+		dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+}
+
+func (fixture askedRecordFixture) status(test *testing.T) string {
+	test.Helper()
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, fixture.issueID).Scan(&status)
+	return status
+}
+
+func (fixture askedRecordFixture) assigneeRuns(test *testing.T) int {
+	test.Helper()
+	return dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued','dispatched','running')`, fixture.issueID, fixture.agentID)
+}
+
+// The card was the only blocker: the answer resumes the issue and starts one run.
+func TestDecisionAnswerResumesABlockedIssueWhenTheCardWasTheOnlyBlocker(test *testing.T) {
+	fixture := parkedFromBlockedCard(test)
+	fixture.answerAndDeliver(test, true)
+	if status := fixture.status(test); status != "in_progress" {
+		test.Fatalf("status = %q, want in_progress", status)
+	}
+	if runs := fixture.assigneeRuns(test); runs != 1 {
+		test.Fatalf("assignee runs = %d, want 1", runs)
+	}
+}
+
+// Another blocker is still recorded: the issue stays blocked, one run re-checks it.
+func TestDecisionAnswerKeepsABlockedIssueBlockedWhileAnotherBlockerIsOpen(test *testing.T) {
+	fixture := parkedFromBlockedCard(test)
+	dbfx.Insert(test, "issue_wakeup", testutil.Cols{"id": uuid.NewString(), "workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "agent_id": fixture.agentID, "instruction": "wait for the PR", "kind": "event", "mode": "once", "condition": `{"type":"pr","state":"checks"}`})
+	fixture.answerAndDeliver(test, true)
+	if status := fixture.status(test); status != "blocked" {
+		test.Fatalf("status = %q, want blocked", status)
+	}
+	if runs := fixture.assigneeRuns(test); runs != 1 {
+		test.Fatalf("assignee runs = %d, want 1", runs)
+	}
+}
+
+// CHE-5171 facts 1-4: a run stamped with the step the issue had while parked
+// writes its status after the system unpark. The write must not be lost.
+func TestAgentStatusWriteAfterTheSystemUnparkIsNotLost(test *testing.T) {
+	fixture := parkedFromBlockedCard(test)
+	projectID := deliveryProject(test, "Unpark stale step project", fixture.agentID)
+	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, projectID, fixture.issueID)
+	// The run was queued while the issue was parked, so it is stamped with that step.
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'queued', started_at = NULL, workflow_step = 'need_decision' WHERE id = $1`, fixture.taskID)
+	fixture.answerAndDeliver(test, false)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, fixture.taskID)
+	if status := fixture.status(test); status != "in_progress" {
+		test.Fatalf("after the answer: status = %q, want in_progress", status)
+	}
+	agentUpdateIssue(test, fixture.issueID, fixture.agentID, fixture.taskID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+	if status := fixture.status(test); status != "in_review" {
+		test.Fatalf("after the agent's write: status = %q, want in_review", status)
 	}
 }

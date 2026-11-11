@@ -6972,6 +6972,25 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	return retired, err
 }
 
+const issueHasOpenWait = `-- name: IssueHasOpenWait :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = $1 AND enabled AND disabled_at IS NULL
+    AND condition IS NOT NULL AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+)
+`
+
+// True when an explicit condition wait is still armed on the issue: a wakeup
+// someone set for another blocker. Default-rule and decision wakeups are not
+// blockers (CHE-5239).
+func (q *Queries) IssueHasOpenWait(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, issueHasOpenWait, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
 SELECT COALESCE((
   SELECT details->>'head_sha' FROM activity_log
@@ -12031,6 +12050,28 @@ func (q *Queries) RequeueAgentTaskAfterClaimFailure(ctx context.Context, arg Req
 		&i.Purpose,
 	)
 	return i, err
+}
+
+const restampActiveTasksWorkflowStep = `-- name: RestampActiveTasksWorkflowStep :exec
+UPDATE agent_task_queue SET workflow_step = $1
+WHERE issue_id = $2
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY($3::text[])
+  AND workflow_step IS DISTINCT FROM $1
+`
+
+type RestampActiveTasksWorkflowStepParams struct {
+	ToStep    pgtype.Text `json:"to_step"`
+	IssueID   pgtype.UUID `json:"issue_id"`
+	FromSteps []string    `json:"from_steps"`
+}
+
+// A system move (decision unpark) puts the issue on a new step. Runs stamped
+// with a step on either side of that move follow it, so their next status
+// write is judged from where the system left the issue (CHE-5239).
+func (q *Queries) RestampActiveTasksWorkflowStep(ctx context.Context, arg RestampActiveTasksWorkflowStepParams) error {
+	_, err := q.db.Exec(ctx, restampActiveTasksWorkflowStep, arg.ToStep, arg.IssueID, arg.FromSteps)
+	return err
 }
 
 const restoreAgent = `-- name: RestoreAgent :one
