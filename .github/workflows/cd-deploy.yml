@@ -32,11 +32,11 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # c00-readback-delay environment's 15-minute wait timer; a waiting job holds no
 # runner. `readback-confirm` then spends about 10 seconds on the C00 runner and
 # reads the window from `docker events` since T0 and the restart count. A failed
-# deploy, readback or readback-confirm suspends automatic deploys: the next
+# deploy, readback, readback-delay or readback-confirm suspends automatic deploys: the next
 # authorize-c00 finds the latest finished run failed and builds without
 # deploying, until a later deploy succeeds (the owner's dispatch lifts it).
 # The cutover controller rolls back by digest on a failed cutover, and the
-# `rollback` job does the same after a failed readback or readback-confirm.
+# `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
 #
 # A dispatch with `candidate_sha` needs one job a manual-evidence dispatch does
 # not: prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
@@ -875,18 +875,19 @@ jobs:
           C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
         run: bash deploy/cd/post-deploy-confirm.sh check "$SOURCE_SHA" "$T0" "$RESTARTS" cutover-input/manifest.json
 
-  # CHE-2365, CHE-5175: a failed readback or readback-confirm rolls C00 back by
-  # digest to the retained predecessor. The failed job is also what suspends
-  # automatic deploys (authorize-c00 reads it), so the run stays red whatever
-  # this job does. It
+  # CHE-2365, CHE-5175: a failed readback, readback-delay or readback-confirm
+  # rolls C00 back by digest to the retained predecessor (a failed delay skips
+  # the confirm, so nothing judged the window). The failed job is also what
+  # suspends automatic deploys (authorize-c00 reads it), so the run stays red
+  # whatever this job does. It
   # takes the C00 lock because it changes C00; the script skips when a newer
   # deploy already replaced the deployed commit. A cancelled readback is a
   # person's decision and is not rolled back.
   # CHE-5144: it runs the workflow revision's cutover.sh and scripts, not the
   # candidate's, for the same reason as readback.
   rollback:
-    needs: [admission, readback, readback-confirm]
-    if: always() && (needs.readback.result == 'failure' || needs.readback-confirm.result == 'failure')
+    needs: [admission, readback, readback-delay, readback-confirm]
+    if: always() && (needs.readback.result == 'failure' || needs.readback-delay.result == 'failure' || needs.readback-confirm.result == 'failure')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
     environment: c00-runtime

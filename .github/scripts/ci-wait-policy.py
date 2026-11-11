@@ -7,7 +7,7 @@ wakeup instead; neither holds a runner.
 
 An exception sits in .github/ci-policy.yml under `exceptions:` with
 `rule: inline-wait`, `workflow`, `owner`, `root_fix` (an issue key such as
-CHE-123, a URL or owner/repo#n), `added` and `expires`. `expires` is at most 7
+CHE-123, a URL or owner/repo#n), `added` and `expires`. `added` is not in the future, `expires` is at most 7
 days after `added` and not in the past, or the exception is itself a violation.
 
 Detection is a heuristic over each step's `run:` text:
@@ -77,6 +77,8 @@ def exception_problem(entry, today):
     added, expires = as_date(entry.get("added")), as_date(entry.get("expires"))
     if not added or not expires:
         return "added and expires must be dates"
+    if added > today:
+        return f"added {added} is in the future"
     if expires < today:
         return f"expired on {expires}"
     if (expires - added).days > MAX_EXCEPTION_DAYS:

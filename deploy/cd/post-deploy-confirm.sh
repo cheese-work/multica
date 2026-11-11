@@ -3,6 +3,12 @@
 # the readback, so the runner is held for seconds, not for the window. It reads
 # the window from history instead of watching it. Fails, and so suspends
 # automatic deploys and starts the rollback, unless:
+#   - the 15-minute window has elapsed since T0 (CONFIRM_WINDOW_SECONDS, default
+#     900), so an early or mis-timed run cannot pass an unobserved window;
+#   - the public route and the router-selected upstream answer now
+#     (ab-health-check.sh, one read-only sample). Containers define no
+#     healthcheck, so a hung application leaves no event in the window; this
+#     sample is the only HTTP evidence at confirmation, not a window-long probe;
 #   - C00 runs the deployed commit, or a descendant of it (a newer deploy landed;
 #     the window then belongs to that deploy and is left to its own confirm);
 #   - the live image digests equal the admitted manifest's;
@@ -10,7 +16,7 @@
 #     restart for the active colour's backend and frontend; and
 #   - the restart count did not grow since the readback recorded it.
 # usage: post-deploy-confirm.sh check SOURCE_SHA T0_EPOCH RESTART_BASELINE [MANIFEST_JSON]
-# Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR.
+# Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR, C00_ROUTER_STATE_DIR.
 set -euo pipefail
 
 mode=${1:-}
@@ -23,6 +29,14 @@ manifest=${5:-}
 [[ "$t0" =~ ^[0-9]+$ ]] || { echo "::error::T0 must be whole epoch seconds" >&2; exit 2; }
 [[ "$baseline" =~ ^[0-9]+$ ]] || { echo "::error::restart baseline must be a whole number" >&2; exit 2; }
 : "${C00_CUTOVER_STATE_DIR:?C00_CUTOVER_STATE_DIR is required}"
+: "${C00_ROUTER_STATE_DIR:?C00_ROUTER_STATE_DIR is required}"
+window="${CONFIRM_WINDOW_SECONDS:-900}"
+[[ "$window" =~ ^[0-9]+$ ]] || { echo "::error::CONFIRM_WINDOW_SECONDS must be whole seconds" >&2; exit 2; }
+elapsed=$(($(date +%s) - t0))
+if [ "$elapsed" -lt "$window" ]; then
+  echo "::error title=C00 confirm::the ${window}s window after T0 ${t0} has not elapsed (${elapsed}s)" >&2
+  exit 1
+fi
 
 field() {
   node -e 'const v=process.argv[2].split(".").reduce((a,k)=>a?.[k],JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")));process.stdout.write(v==null?"":String(v))' "$1" "$2"
@@ -50,6 +64,14 @@ if [ -n "$manifest" ]; then
   done
 fi
 
+# The other half of "stayed healthy": the route answers now. Containers define no
+# healthcheck, so events alone cannot show a hung application or a failed router.
+bash deploy/cd/ab-health-check.sh --router-state-dir "${C00_ROUTER_STATE_DIR%/}" \
+  --cutover-state-dir "$C00_CUTOVER_STATE_DIR" --window 0 || {
+  echo "::error title=C00 confirm::route health check failed at confirmation" >&2
+  exit 1
+}
+
 colour="$(field "${C00_CUTOVER_STATE_DIR%/}/cutover-state.json" active_colour)"
 [[ "$colour" =~ ^(blue|green)$ ]] || { echo "::error title=C00 confirm::no active colour in the cutover state" >&2; exit 1; }
 until_epoch="$(date +%s)"
@@ -76,4 +98,4 @@ if [ "$now_restarts" -gt "$baseline" ]; then
   echo "::error title=C00 confirm::restart count grew from ${baseline} to ${now_restarts}" >&2
   exit 1
 fi
-echo "C00 confirm ok: ${running} quiet from ${t0} to ${until_epoch}, restarts ${now_restarts}${manifest:+, image digests match the admitted manifest}."
+echo "C00 confirm ok: ${running} quiet and healthy from ${t0} to ${until_epoch}, restarts ${now_restarts}${manifest:+, image digests match the admitted manifest}."

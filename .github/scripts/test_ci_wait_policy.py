@@ -82,6 +82,8 @@ class WaitPolicyTests(unittest.TestCase):
         cases = {
             "expired": exception(expires="2026-11-10"),
             "longer than 7 days": exception(expires="2026-11-19"),
+            "added in the future": exception(added="2099-01-01", expires="2099-01-08"),
+            "added tomorrow": exception(added="2026-11-12", expires="2026-11-15"),
             "no owner": exception(owner=""),
             "no root fix": exception(root_fix=""),
             "root fix not an issue": exception(root_fix="later"),

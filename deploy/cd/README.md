@@ -740,7 +740,11 @@ After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
    no `health_status: unhealthy`, `die`, `oom` or `restart` for the active
    colour's backend and frontend; the restart count did not grow; and the SHA and
    image digests are unchanged, or C00 runs a newer deploy that descends from this
-   one (that deploy's own confirm then judges its own window).
+   one (that deploy's own confirm then judges its own window). It fails if less than
+   `CONFIRM_WINDOW_SECONDS` (900) passed since T0, and it samples route health once
+   (`ab-health-check.sh`). The containers define no healthcheck, so a hung
+   application leaves no event in the window: HTTP health is checked at
+   confirmation only, not across the window.
 
 `c00-readback-delay` is a repository setting, not workflow code: deployment
 branches `main` only (like `c00-runtime`), a wait timer of 15 minutes, no
@@ -748,15 +752,15 @@ secrets and no reviewers. Create it before the first deploy after this change;
 without it the first run creates the environment with no wait timer and the
 window is not watched.
 
-A failed `deploy`, `readback` or `readback-confirm`
+A failed `deploy`, `readback`, `readback-delay` or `readback-confirm`
 suspends automatic deploys: the next `authorize-c00` walks the finished `main`
 runs of this workflow, newest first, 100 per page and at most 5 pages, until one
-had a `deploy`/`readback`/`readback-confirm` job that succeeded or failed. A failure there means
+had a `deploy`/`readback`/`readback-delay`/`readback-confirm` job that succeeded or failed. A failure there means
 suspended, however many built-and-stopped runs came since. Finding no deploy in
 all 5 pages is unknown and stays suspended; a history that ends sooner (never
 deployed) is not suspended. A later successful deploy, such as the owner's
 dispatch, lifts it; a dispatch is never suspended. A failed cutover rolls back
-by digest inside `cutover.sh`. A failed `readback` or `readback-confirm` also starts the `rollback`
+by digest inside `cutover.sh`. A failed `readback`, `readback-delay` or `readback-confirm` also starts the `rollback`
 job, under the C00 lock: `rollback-failed-readback.sh` runs `cutover.sh
 rollback` (retained predecessor, no down migration, no restore) and reads back
 the health and SHA. It identifies the live commit with `live-application-sha.sh`,

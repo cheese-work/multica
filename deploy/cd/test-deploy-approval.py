@@ -138,12 +138,14 @@ class DeployApprovalTests(unittest.TestCase):
 
     def test_failed_readback_or_confirm_rolls_back_under_the_c00_lock(self):
         rollback = self.jobs["rollback"]
-        self.assertEqual(sorted(needs(rollback)), ["admission", "readback", "readback-confirm"])
+        self.assertEqual(sorted(needs(rollback)), ["admission", "readback", "readback-confirm", "readback-delay"])
         self.assertEqual(rollback["runs-on"], C00_RUNNER)
         self.assertEqual(rollback["environment"], RUNTIME)
         self.assertEqual(rollback["concurrency"]["group"], "cd-deploy-c00")
         self.assertIn("needs.readback.result == 'failure'", rollback["if"])
         self.assertIn("needs.readback-confirm.result == 'failure'", rollback["if"])
+        # A failed delay skips confirm, so nothing judged the window: that must roll back too.
+        self.assertIn("needs.readback-delay.result == 'failure'", rollback["if"])
         self.assertNotIn("cancelled", rollback["if"])
         self.assertIn("rollback-failed-readback.sh", yaml.safe_dump(rollback))
         # The readback jobs stay the ones that fail, so the suspension still reads them.
