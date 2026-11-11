@@ -32,6 +32,7 @@ const (
 var delegatedWriteFields = []string{
 	"workflow.steps", "workflow.instructions", "workspace.context",
 	"squad.instructions", "agent.instructions", "project.description",
+	"workflow.budget", "issue.workflow",
 }
 
 // DelegatedWritesConfig defaults to no agents, no fields and a required human

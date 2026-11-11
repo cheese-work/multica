@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -857,15 +858,22 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
-	// A machine credential never writes the budget fields directly (CHE-5228).
-	if machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil) {
+	// A machine credential writes the budget fields only with a workflow.budget
+	// decision (CHE-5228), alone: a budget write carries no step or name edit.
+	budgetWrite := machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil)
+	if budgetWrite && strings.TrimSpace(req.DecisionID) == "" {
 		writeBudgetRequiresDecision(w)
 		return
 	}
 	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
 		return
 	}
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
+	carriesMore := req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun
+	if budgetWrite && (req.Steps != nil || carriesMore) {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound budget write carries the budget fields and the decision only")
+		return
+	}
+	if machine && !budgetWrite && (req.Steps == nil || carriesMore) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
@@ -893,6 +901,10 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	// A bound agent write is authorized by its decision, checked below.
 	if !machine && !canEditIssueWorkflow(member, current) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
+		return
+	}
+	if budgetWrite {
+		h.updateBoundBudget(w, r, tx, qtx, member, current, req)
 		return
 	}
 	// The budget fields are budget authority (CHE-2798 S1b, CHE-5228): an
@@ -1090,6 +1102,33 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
+	h.writeIssueWorkflow(w, r, http.StatusOK, row)
+}
+
+// updateBoundBudget applies an agent's workflow.budget write: the owner's card
+// named the budget before and after, and the digests prove this write is that
+// change and nothing wider. It commits qtx's transaction.
+func (h *Handler) updateBoundBudget(w http.ResponseWriter, r *http.Request, tx pgx.Tx, qtx *db.Queries, member db.Member, current db.IssueWorkflow, req IssueWorkflowWriteRequest) {
+	ctx := r.Context()
+	id := uuidToString(current.ID)
+	liveCap, liveChildren := storedBudget(current)
+	afterCap, afterChildren := budgetAfter(current, req.MaxRunsPerIssue, req.IncludeChildPRs)
+	if err := h.verifyBoundDigests(ctx, qtx, r, current.WorkspaceID, req.DecisionBindingFields, workflowBudgetField,
+		decisionaction.WorkflowBudgetDigest(id, liveCap, liveChildren), decisionaction.WorkflowBudgetDigest(id, afterCap, afterChildren)); err != nil {
+		writeDecisionError(w, err, "workflow budget write")
+		return
+	}
+	row, err := qtx.UpdateIssueWorkflow(ctx, budgetUpdateParams(current, req.MaxRunsPerIssue, req.IncludeChildPRs))
+	if err != nil {
+		slog.Warn("UpdateIssueWorkflow budget failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	h.publishIssueWorkflowChanged(uuidToString(current.WorkspaceID), member, "updated")
 	h.writeIssueWorkflow(w, r, http.StatusOK, row)
 }
 

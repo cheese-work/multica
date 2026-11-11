@@ -40,16 +40,7 @@ func init() {
 				return configChangeRead{}, err
 			}
 			liveCap, liveChildren := storedBudget(workflow)
-			afterCap, afterChildren := liveCap, liveChildren
-			if wanted.MaxRunsPerIssue != nil {
-				afterCap = nil
-				if *wanted.MaxRunsPerIssue > 0 {
-					afterCap = wanted.MaxRunsPerIssue
-				}
-			}
-			if wanted.IncludeChildPRs != nil {
-				afterChildren = *wanted.IncludeChildPRs
-			}
+			afterCap, afterChildren := budgetAfter(workflow, wanted.MaxRunsPerIssue, wanted.IncludeChildPRs)
 			id := uuidToString(workflow.ID)
 			return configChangeRead{
 				Field: workflowBudgetField, TargetID: id,
@@ -70,18 +61,7 @@ func init() {
 			if err := json.Unmarshal(execution.Action.Params, &wanted); err != nil {
 				return err
 			}
-			params := db.UpdateIssueWorkflowParams{
-				Name: workflow.Name, Description: workflow.Description, InitialStatusKey: workflow.InitialStatusKey,
-				Steps: workflow.Steps, IncludeChildPrs: pgtype.Bool{Bool: workflow.IncludeChildPrs, Valid: true},
-				ID: workflow.ID, WorkspaceID: workflow.WorkspaceID,
-			}
-			// A NULL cap keeps the stored one; 0 clears it, as a workflow save does.
-			if wanted.MaxRunsPerIssue != nil {
-				params.MaxRunsPerIssue = pgtype.Int4{Int32: int32(*wanted.MaxRunsPerIssue), Valid: true}
-			}
-			if wanted.IncludeChildPRs != nil {
-				params.IncludeChildPrs = pgtype.Bool{Bool: *wanted.IncludeChildPRs, Valid: true}
-			}
+			params := budgetUpdateParams(workflow, wanted.MaxRunsPerIssue, wanted.IncludeChildPRs)
 			_, err = execution.Queries.UpdateIssueWorkflow(ctx, params)
 			return err
 		},
@@ -102,4 +82,38 @@ func storedBudget(workflow db.IssueWorkflow) (*int, bool) {
 
 func budgetView(cap *int, includeChildPRs bool) map[string]any {
 	return map[string]any{"max_runs_per_issue": cap, "include_child_prs": includeChildPRs}
+}
+
+// budgetAfter is the budget a write leaves: a field left out keeps its stored
+// value, and a cap of 0 clears the cap. Both the owner-approved action and the
+// decision-bound PATCH digest this result, so the card names one change.
+func budgetAfter(workflow db.IssueWorkflow, maxRuns *int, includeChildPRs *bool) (*int, bool) {
+	cap, children := storedBudget(workflow)
+	if maxRuns != nil {
+		cap = nil
+		if *maxRuns > 0 {
+			cap = maxRuns
+		}
+	}
+	if includeChildPRs != nil {
+		children = *includeChildPRs
+	}
+	return cap, children
+}
+
+// budgetUpdateParams rewrites a workflow row with only its budget changed. A
+// NULL cap keeps the stored one; 0 clears it, as a workflow save does.
+func budgetUpdateParams(workflow db.IssueWorkflow, maxRuns *int, includeChildPRs *bool) db.UpdateIssueWorkflowParams {
+	params := db.UpdateIssueWorkflowParams{
+		Name: workflow.Name, Description: workflow.Description, InitialStatusKey: workflow.InitialStatusKey,
+		Steps: workflow.Steps, IncludeChildPrs: pgtype.Bool{Bool: workflow.IncludeChildPrs, Valid: true},
+		ID: workflow.ID, WorkspaceID: workflow.WorkspaceID,
+	}
+	if maxRuns != nil {
+		params.MaxRunsPerIssue = pgtype.Int4{Int32: int32(*maxRuns), Valid: true}
+	}
+	if includeChildPRs != nil {
+		params.IncludeChildPrs = pgtype.Bool{Bool: *includeChildPRs, Valid: true}
+	}
+	return params
 }
