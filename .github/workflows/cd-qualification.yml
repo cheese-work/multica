@@ -99,6 +99,7 @@ jobs:
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
           python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-deploy-job-guard.py
           python3 deploy/cd/test-post-deploy-readback.py
           python3 deploy/cd/test-rollback-failed-readback.py
           bash deploy/cd/test-workflow-path-filters.sh

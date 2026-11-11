@@ -515,6 +515,12 @@ jobs:
 
   deploy:
     needs: admission
+    # always(): on a manual dispatch candidate-preflight is skipped, and the
+    # implicit success() is false when any job up the needs chain was skipped,
+    # so deploy, readback and rollback never ran (CHE-5147). The explicit
+    # admission result keeps the gate: admission itself needs the
+    # authorize-c00 actor check.
+    if: always() && needs.admission.result == 'success'
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
