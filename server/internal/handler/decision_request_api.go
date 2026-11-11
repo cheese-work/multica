@@ -207,10 +207,43 @@ type decisionRequestResponse struct {
 	Action *decisionActionResponse `json:"action,omitempty"`
 }
 
+// decisionReadResponse is the stored request plus its newest answer, so an
+// agent reads the same state the person saw: who answered, when, with what.
+type decisionReadResponse struct {
+	db.DecisionRequest
+	Answer *decisionAnswerRead `json:"answer,omitempty"`
+}
+
+type decisionAnswerRead struct {
+	ID                string  `json:"id"`
+	AnsweredByUserID  *string `json:"answered_by_user_id"`
+	AnswerSource      string  `json:"answer_source"`
+	ChosenOptionIndex *int32  `json:"chosen_option_index"`
+	ContentSnapshot   string  `json:"content_snapshot"`
+	CreatedAt         *string `json:"created_at"`
+	DisclaimedAt      *string `json:"disclaimed_at"`
+	DisclaimReason    *string `json:"disclaim_reason"`
+}
+
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
-	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
-		writeJSON(writer, http.StatusOK, stored)
+	stored, _, ok := handler.loadDecisionForRead(writer, request)
+	if !ok {
+		return
 	}
+	response := decisionReadResponse{DecisionRequest: stored}
+	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
+	switch {
+	case err == nil:
+		response.Answer = &decisionAnswerRead{
+			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
+			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
+			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision answer")
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 // loadDecisionForRead resolves {id} for a workspace member who can read the

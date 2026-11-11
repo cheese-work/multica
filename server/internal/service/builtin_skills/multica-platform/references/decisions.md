@@ -17,6 +17,14 @@ multica decision feed ack <answer-id> --version <n>
 multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible
 ```
 
+- `decision get` on an answered request carries `answer`: `answered_by_user_id`,
+  `answer_source`, `chosen_option_index` (null for a text-only answer),
+  `content_snapshot` (the person's words), `created_at` and `disclaimed_at`.
+  `status: answered` with no `answer` means a batch card covered it: read
+  `answered_by_batch_request_id`. A text-only answer on an
+  option card is still an answer: read `content_snapshot`, do not treat the
+  card as open.
+
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
   `recommendation`, `recommended_option` (the exact label of the recommended
   option; required with two or more options, the server puts it first),
