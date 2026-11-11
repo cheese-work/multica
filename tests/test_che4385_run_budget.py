@@ -95,8 +95,8 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(jobs["mechanical-tier"]["needs"], "security-gate")
 
     def test_push_to_main_workflows_do_not_start_each_other(self):
-        # The workflow_run chains are CD qualification -> deploy and security-gate -> security-gate-queue (CHE-4251).
-        # The second fires once per security-gate run, now only a queue entry, a verdict dispatch or a verdict edit or
+        # The only workflow_run chain is security-gate -> security-gate-queue (CHE-4251); cd-deploy runs on a schedule (CHE-5182).
+        # It fires once per security-gate run, now only a queue entry, a verdict dispatch or a verdict edit or
         # delete: no PR event and no created comment starts one. main-build calls the other two in its own run.
         chains = {}
         for p in WF.glob("*.yml"):
@@ -105,7 +105,7 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 chains[p.name] = on["workflow_run"]["workflows"]
         self.assertEqual(
             chains,
-            {"cd-deploy.yml": ["CD qualification build"], "security-gate-queue.yml": ["security-gate"]},
+            {"security-gate-queue.yml": ["security-gate"]},
         )
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
