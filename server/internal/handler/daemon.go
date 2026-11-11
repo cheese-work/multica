@@ -4164,6 +4164,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		resp.AutopilotTitle = ap.Title
 		resp.Script = claimScriptFor(ap.ExecutionMode, ap.ScriptConfig)
+		if resp.Script != nil {
+			h.AutopilotService.RecordScriptClaim(r.Context(), run.ID, resp.Script.Name, resp.Script.Args)
+		}
 		resp.ThreadName = ap.Title
 		if ap.Description.Valid {
 			resp.AutopilotDescription = ap.Description.String

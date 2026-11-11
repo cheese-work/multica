@@ -76,6 +76,7 @@ func TestScriptRunAuditFields(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newScriptFixture(t)
+			f.svc.RecordScriptClaim(context.Background(), f.run.ID, "sweep-reconcile", []string{"--once", "--limit=5"})
 			f.task.Status = tc.status
 			f.task.Error = pgtype.Text{String: tc.taskErr, Valid: tc.taskErr != ""}
 			f.task.FailureReason = pgtype.Text{String: tc.wantFailed, Valid: tc.wantFailed != ""}
@@ -148,5 +149,40 @@ func TestRevokeTaskTokensFailureIsRecorded(t *testing.T) {
 	}
 	if _, _, res := f.runResult(t); !res.TokenRevokeError {
 		t.Fatal("failed deletion not recorded on the run result")
+	}
+}
+
+// The audit names what the daemon was told to run at claim, not the autopilot
+// config at settlement. Editing the autopilot between claim and settlement
+// must not rewrite the record.
+func TestScriptAuditBindsToClaimedScript(t *testing.T) {
+	f := newScriptFixture(t)
+	f.svc.RecordScriptClaim(context.Background(), f.run.ID, "sweep-reconcile", []string{"--once", "--limit=5"})
+	f.Exec(t, `UPDATE autopilot SET script_config = '{"name":"other-script","args":["--changed"]}'::jsonb WHERE id = $1`, util.UUIDToString(f.run.AutopilotID))
+
+	f.task.Status = "completed"
+	f.svc.SyncRunFromTask(context.Background(), f.task)
+
+	_, _, res := f.runResult(t)
+	want := sha256.Sum256([]byte("--once\x00--limit=5"))
+	if res.Script == nil {
+		t.Fatal("result.script audit missing")
+	}
+	if res.Script.Name != "sweep-reconcile" || res.Script.ArgvSHA256 != hex.EncodeToString(want[:]) {
+		t.Errorf("audit follows the live config: name=%q hash=%q", res.Script.Name, res.Script.ArgvSHA256)
+	}
+}
+
+// With no recorded claim the audit must not fall back to the live config.
+func TestScriptAuditWithoutClaimDoesNotUseLiveConfig(t *testing.T) {
+	f := newScriptFixture(t)
+	f.task.Status = "completed"
+	f.svc.SyncRunFromTask(context.Background(), f.task)
+	_, _, res := f.runResult(t)
+	if res.Script == nil {
+		t.Fatal("result.script audit missing")
+	}
+	if res.Script.Name != "" || res.Script.ArgvSHA256 != "" {
+		t.Errorf("unclaimed run audit leaked the live config: name=%q hash=%q", res.Script.Name, res.Script.ArgvSHA256)
 	}
 }
