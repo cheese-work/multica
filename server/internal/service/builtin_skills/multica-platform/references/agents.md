@@ -462,6 +462,20 @@ working directory and session when safe, and `--fresh` starts with new ones.
 The deprecated `rerun` re-enqueues the issue's current agent assignment. On
 both, `--reason` goes to the server audit log only; it is not stored on the run.
 
+**Held and parked inputs.** A run of a `paused` project, or of a project at its
+WIP limit, is held at claim; its triggers wait as inputs. A run that ends in any
+way other than `completed` parks its batch. Parked inputs are never admitted
+again on their own:
+
+```bash
+multica issue inputs list <issue-id> [--output json]
+multica issue inputs resume <issue-id> [--agent <agent>]    # queue a run with the same event ids
+multica issue inputs discard <issue-id> [--agent <agent>]   # drop the parked inputs
+```
+
+`--agent` defaults to the issue's agent assignee. Members only; an agent run
+token is refused.
+
 **Runtime-local skills.** `multica agent skills runtime-set <agent-id>` turns one
 skill that lives on the runtime off or back on:
 

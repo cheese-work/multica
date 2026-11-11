@@ -371,3 +371,20 @@ func (s *TaskService) DiscardParkedInputs(ctx context.Context, issueID, agentID 
 func (s *TaskService) RunInputsForTask(ctx context.Context, taskID pgtype.UUID) ([]db.RunInput, error) {
 	return s.Queries.ListRunInputsForTask(ctx, taskID)
 }
+
+// SetProjectWIPLimit stores the project's WIP limit (nil removes it) and runs
+// admission: a raised limit is a release event.
+func (s *TaskService) SetProjectWIPLimit(ctx context.Context, workspaceID, projectID pgtype.UUID, limit *int32) (db.Project, error) {
+	arg := db.SetProjectWIPLimitParams{ID: projectID, WorkspaceID: workspaceID}
+	if limit != nil {
+		arg.WipLimit = pgtype.Int4{Int32: *limit, Valid: true}
+	}
+	project, err := s.Queries.SetProjectWIPLimit(ctx, arg)
+	if err != nil {
+		return db.Project{}, err
+	}
+	if err := s.ReleaseProjectAdmission(ctx, project.ID); err != nil {
+		slog.Warn("release project admission after WIP change failed", "project_id", util.UUIDToString(project.ID), "error", err)
+	}
+	return project, nil
+}
