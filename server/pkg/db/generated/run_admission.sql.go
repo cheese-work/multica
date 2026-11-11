@@ -11,6 +11,22 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const acquireProjectAdmissionLock = `-- name: AcquireProjectAdmissionLock :exec
+
+SELECT pg_advisory_xact_lock(hashtextextended('run_admission:' || $1::text, 0))
+`
+
+// Dispatch-time admission (CHE-5213). A run keeps status 'queued' while held or
+// reserved; admission_state carries the derived state.
+// The one lock every start path takes before it counts WIP, so admissions of
+// one project serialize. A transaction advisory lock, not FOR UPDATE on the
+// project row: every task write already holds FOR SHARE on that row
+// (lock_active_project), so two claims upgrading to FOR UPDATE would deadlock.
+func (q *Queries) AcquireProjectAdmissionLock(ctx context.Context, projectID string) error {
+	_, err := q.db.Exec(ctx, acquireProjectAdmissionLock, projectID)
+	return err
+}
+
 const bindHeldRunInputs = `-- name: BindHeldRunInputs :many
 UPDATE run_input SET state = 'claimed', task_id = $1, updated_at = clock_timestamp()
 WHERE issue_id = $2 AND agent_id = $3 AND state = 'held'
@@ -63,7 +79,7 @@ const countProjectWIP = `-- name: CountProjectWIP :one
 SELECT count(*)::bigint FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE i.project_id = $1
-  AND t.id <> $2
+  AND ($2::uuid IS NULL OR t.id <> $2::uuid)
   AND (t.status IN ('dispatched', 'running', 'waiting_local_directory') OR t.admission_state = 'reserved')
 `
 
@@ -141,8 +157,9 @@ const expireReservation = `-- name: ExpireReservation :one
 UPDATE agent_task_queue
 SET admission_state = 'held', hold_reason = 'reservation expired',
     reservation_lease_id = NULL, reservation_expires_at = NULL
-WHERE id = $1 AND status = 'queued' AND admission_state = 'reserved'
-  AND reservation_lease_id = $2
+WHERE agent_task_queue.id = (SELECT q.id FROM agent_task_queue q WHERE q.id = $1 FOR UPDATE SKIP LOCKED)
+  AND agent_task_queue.status = 'queued' AND agent_task_queue.admission_state = 'reserved'
+  AND agent_task_queue.reservation_lease_id = $2
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, admission_state, hold_reason, reservation_lease_id, reservation_expires_at
 `
 
@@ -151,7 +168,9 @@ type ExpireReservationParams struct {
 	LeaseID pgtype.UUID `json:"lease_id"`
 }
 
-// Conditional on the lease, so a claim and the expiry cannot both win.
+// Conditional on the lease, so a claim and the expiry cannot both win. SKIP
+// LOCKED: a claim holds the row first and then waits for the admission lock, so
+// waiting on the row here would deadlock; a locked row means a claim is winning.
 func (q *Queries) ExpireReservation(ctx context.Context, arg ExpireReservationParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, expireReservation, arg.ID, arg.LeaseID)
 	var i AgentTaskQueue
@@ -246,6 +265,29 @@ func (q *Queries) ExpireReservation(ctx context.Context, arg ExpireReservationPa
 		&i.HoldReason,
 		&i.ReservationLeaseID,
 		&i.ReservationExpiresAt,
+	)
+	return i, err
+}
+
+const getProjectAdmission = `-- name: GetProjectAdmission :one
+SELECT id, workspace_id, status, settings FROM project WHERE id = $1
+`
+
+type GetProjectAdmissionRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      string      `json:"status"`
+	Settings    []byte      `json:"settings"`
+}
+
+func (q *Queries) GetProjectAdmission(ctx context.Context, id pgtype.UUID) (GetProjectAdmissionRow, error) {
+	row := q.db.QueryRow(ctx, getProjectAdmission, id)
+	var i GetProjectAdmissionRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Status,
+		&i.Settings,
 	)
 	return i, err
 }
@@ -644,34 +686,6 @@ func (q *Queries) ListRunInputsForTask(ctx context.Context, taskID pgtype.UUID) 
 	return items, nil
 }
 
-const lockProjectAdmission = `-- name: LockProjectAdmission :one
-
-SELECT id, workspace_id, status, settings FROM project WHERE id = $1 FOR UPDATE
-`
-
-type LockProjectAdmissionRow struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Status      string      `json:"status"`
-	Settings    []byte      `json:"settings"`
-}
-
-// Dispatch-time admission (CHE-5213). A run keeps status 'queued' while held or
-// reserved; admission_state carries the derived state.
-// The one lock every start path takes before it counts WIP, so admissions of
-// one project serialize.
-func (q *Queries) LockProjectAdmission(ctx context.Context, id pgtype.UUID) (LockProjectAdmissionRow, error) {
-	row := q.db.QueryRow(ctx, lockProjectAdmission, id)
-	var i LockProjectAdmissionRow
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Status,
-		&i.Settings,
-	)
-	return i, err
-}
-
 const parkHeldRunInputs = `-- name: ParkHeldRunInputs :exec
 UPDATE run_input SET state = 'parked', park_reason = $1, failure_class = $2,
     updated_at = clock_timestamp()
@@ -712,6 +726,20 @@ type ParkRunInputsParams struct {
 func (q *Queries) ParkRunInputs(ctx context.Context, arg ParkRunInputsParams) error {
 	_, err := q.db.Exec(ctx, parkRunInputs, arg.ParkReason, arg.FailureClass, arg.TaskID)
 	return err
+}
+
+const projectHasHeldRuns = `-- name: ProjectHasHeldRuns :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+    WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+)
+`
+
+func (q *Queries) ProjectHasHeldRuns(ctx context.Context, projectID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, projectHasHeldRuns, projectID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const reheldParkedRunInputs = `-- name: ReheldParkedRunInputs :many

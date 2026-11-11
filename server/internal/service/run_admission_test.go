@@ -326,6 +326,7 @@ func TestAdmissionRestartKeepsHeldAndReserved(t *testing.T) {
 	if got := e.claim(); got != nil {
 		t.Fatalf("second claim at WIP 1 started %v", got.ID)
 	}
+	e.claim()
 	e.complete(runA)
 	if got := e.where(b.ID); got != "queued/reserved" {
 		t.Fatalf("next held run = %s, want queued/reserved", got)
@@ -437,6 +438,7 @@ func TestAdmissionUnclaimedReservationReturnsToHeldAtExpiry(t *testing.T) {
 		t.Fatalf("claim A = %v", runA)
 	}
 	e.claim()
+	e.claim()
 	e.complete(runA)
 	if got := e.where(b.ID); got != "queued/reserved" {
 		t.Fatalf("B = %s, want reserved", got)
@@ -501,6 +503,7 @@ func TestAdmissionLapsedReservationExpiredByStartupReconcile(t *testing.T) {
 		t.Fatalf("claim A = %v", runA)
 	}
 	e.claim()
+	e.claim()
 	e.complete(runA)
 	e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET reservation_expires_at = now() - interval '1 minute' WHERE id = $1`, b.ID)
 	e.svc = &TaskService{Queries: db.New(e.pool), TxStarter: e.pool, Bus: events.New()}
@@ -526,12 +529,12 @@ func TestAdmissionCrashAfterClaimParksInputs(t *testing.T) {
 	if got := e.inputStates(issue); !eqStrings(got, []string{"claimed"}) {
 		t.Fatalf("inputs after claim = %v, want [claimed]", got)
 	}
-	// The run timeout fails the dispatched run.
-	if _, err := e.svc.FailTask(context.Background(), run.ID, "timeout", "", "", "", "timeout", false, "", ""); err != nil {
+	// A non-retryable failure of the dispatched run.
+	if _, err := e.svc.FailTask(context.Background(), run.ID, "boom", "", "", "", "agent_error", false, "", ""); err != nil {
 		t.Fatalf("fail: %v", err)
 	}
 	if got := e.inputStates(issue); !eqStrings(got, []string{"parked"}) {
-		t.Fatalf("inputs after timeout = %v, want [parked]", got)
+		t.Fatalf("inputs after the failure = %v, want [parked]", got)
 	}
 }
 
@@ -589,7 +592,7 @@ func TestAdmissionRepeatedProviderFailureStopsAtRetryLimit(t *testing.T) {
 	e.enqueue(issue)
 	runs := 0
 	for i := 0; i < 10; i++ {
-		e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL WHERE issue_id = $1 AND status = 'queued'`, issue)
+		e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL, status = 'queued' WHERE issue_id = $1 AND status IN ('queued', 'deferred')`, issue)
 		run := e.claim()
 		if run == nil {
 			break
@@ -597,8 +600,8 @@ func TestAdmissionRepeatedProviderFailureStopsAtRetryLimit(t *testing.T) {
 		runs++
 		e.fail(run, string(taskfailure.ReasonAgentProviderNetwork))
 	}
-	if runs < 2 || runs > 3 {
-		t.Fatalf("provider failures ran %d times, want the recovery path's limit of 2-3", runs)
+	if runs != 3 {
+		t.Fatalf("provider failures ran %d times, want the recovery path's limit of 3", runs)
 	}
 	if got := e.inputStates(issue); !eqStrings(got, []string{"parked"}) {
 		t.Fatalf("inputs after the retry limit = %v, want [parked]", got)
@@ -611,9 +614,9 @@ func TestAdmissionRecoveryPathRedeliversSameEventIDs(t *testing.T) {
 	e.enqueue(issue)
 	e.record(issue, e.agent, "evt-2", "comment")
 	first := e.claim()
-	e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL WHERE issue_id = $1 AND status = 'queued'`, issue)
+	e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL, status = 'queued' WHERE issue_id = $1 AND status IN ('queued', 'deferred')`, issue)
 	e.fail(first, string(taskfailure.ReasonAgentProviderNetwork))
-	e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL WHERE issue_id = $1 AND status = 'queued'`, issue)
+	e.pool.Exec(context.Background(), `UPDATE agent_task_queue SET fire_at = NULL, status = 'queued' WHERE issue_id = $1 AND status IN ('queued', 'deferred')`, issue)
 	second := e.claim()
 	if second == nil || second.ID == first.ID {
 		t.Fatalf("recovery run = %v, want a new run", second)
@@ -707,6 +710,7 @@ func TestAdmissionPriorityChangeReordersNextRelease(t *testing.T) {
 	if runA == nil || runA.ID != a.ID {
 		t.Fatalf("claim A = %v", runA)
 	}
+	e.claim()
 	e.claim()
 	e.pool.Exec(context.Background(), `UPDATE issue SET priority = 'urgent' WHERE id = $1`, cIssue)
 	e.complete(runA)

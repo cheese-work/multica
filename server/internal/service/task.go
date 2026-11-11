@@ -1737,6 +1737,9 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		task, err = createAgentTask(ctx, queries, createParams)
 	}
 	if err == nil {
+		err = recordEnqueuedInput(ctx, queries, issue, task, createParams)
+	}
+	if err == nil {
 		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
@@ -4402,7 +4405,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	start := time.Now()
 	outcome := "unknown"
 	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
-	var claimed *db.AgentTaskQueue
+	var claimed, admissionHeld *db.AgentTaskQueue
 	var reclaimCheckAfter time.Time
 	var decisionDetail claimDecisionDetail
 	defer func() {
@@ -4531,6 +4534,19 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		// Dispatch-time admission (CHE-5213): a paused or full project sends the
+		// run back to the queue as held; no claim is returned.
+		held, err := admitClaimedTask(ctx, qtx, task)
+		if err != nil {
+			outcome = "error_admission"
+			return err
+		}
+		if held {
+			outcome = "admission_held"
+			admissionHeld = &task
+			return nil
+		}
+
 		if breakerCanary {
 			if err := acquireProviderBreakerCanary(ctx, qtx, agent.WorkspaceID, breakerProvider, task.ID); err != nil {
 				if errors.Is(err, errProviderBreakerCanaryTaken) {
@@ -4600,6 +4616,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_transaction"
 		}
 		return nil, err
+	}
+	if admissionHeld != nil {
+		// The held run stays queued; wake the runtime so the next queued run is
+		// not delayed until the next poll.
+		s.notifyRuntimeMayHaveWork(admissionHeld.RuntimeID, "")
+		return nil, nil
 	}
 	if claimed == nil {
 		return nil, nil
@@ -5774,6 +5796,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
+	s.releaseAfterRun(task)
 
 	// DM auto-compact (CHE-1803): after the completion is final and announced.
 	s.maybeAutoCompact(ctx, task, runContext)
@@ -6606,7 +6629,14 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			failureMsg = &failure
 		}
-		return SettleTerminalTaskState(ctx, qtx, t)
+		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
+			return err
+		}
+		if retried != nil {
+			// Failed-run recovery path: the retry child carries the same batch.
+			return redeliverToRetry(ctx, qtx, t)
+		}
+		return nil
 	}); err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
@@ -6662,6 +6692,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			s.NotifyTaskEnqueued(ctx, *retried)
 		}
 	}
+
+	s.releaseAfterRun(task)
 
 	// A delegated task that has reached a terminal failure must hand control
 	// back to the task that delegated it. This runs only after the existing
@@ -7249,6 +7281,9 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
 			return nil, err
 		}
+	}
+	if err := redeliverToRetry(ctx, qtx, parent); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("task auto-retry: commit: %w", err)
@@ -8075,6 +8110,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		}
 	}
 	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
+	}
+	if err := settleRunInputs(ctx, q, tasks...); err != nil {
 		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
@@ -9214,6 +9252,7 @@ func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQ
 func (s *TaskService) NotifyTaskFinished(task db.AgentTaskQueue) {
 	s.forgetTaskReclaim(task)
 	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
+	s.releaseAfterRun(task)
 }
 
 // notifyTasksFinished is the batch form used by bulk terminal transitions.
@@ -9233,6 +9272,7 @@ func (s *TaskService) notifyTasksFinished(tasks []db.AgentTaskQueue) {
 		seen[runtimeKey] = struct{}{}
 		s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
 	}
+	s.releaseAfterRun(tasks...)
 }
 
 // notifyTaskAvailable runs after a task has been inserted: bumps the

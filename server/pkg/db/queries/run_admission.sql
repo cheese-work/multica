@@ -1,10 +1,15 @@
 -- Dispatch-time admission (CHE-5213). A run keeps status 'queued' while held or
 -- reserved; admission_state carries the derived state.
 
--- name: LockProjectAdmission :one
+-- name: AcquireProjectAdmissionLock :exec
 -- The one lock every start path takes before it counts WIP, so admissions of
--- one project serialize.
-SELECT id, workspace_id, status, settings FROM project WHERE id = $1 FOR UPDATE;
+-- one project serialize. A transaction advisory lock, not FOR UPDATE on the
+-- project row: every task write already holds FOR SHARE on that row
+-- (lock_active_project), so two claims upgrading to FOR UPDATE would deadlock.
+SELECT pg_advisory_xact_lock(hashtextextended('run_admission:' || @project_id::text, 0));
+
+-- name: GetProjectAdmission :one
+SELECT id, workspace_id, status, settings FROM project WHERE id = $1;
 
 -- name: CountProjectWIP :one
 -- Runs of the project's issues that hold a slot: dispatched, running or
@@ -12,7 +17,7 @@ SELECT id, workspace_id, status, settings FROM project WHERE id = $1 FOR UPDATE;
 SELECT count(*)::bigint FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
 WHERE i.project_id = @project_id
-  AND t.id <> @excluded_task_id
+  AND (sqlc.narg('excluded_task_id')::uuid IS NULL OR t.id <> sqlc.narg('excluded_task_id')::uuid)
   AND (t.status IN ('dispatched', 'running', 'waiting_local_directory') OR t.admission_state = 'reserved');
 
 -- name: HoldClaimedTask :one
@@ -49,12 +54,15 @@ WHERE id = $1 AND status = 'queued' AND admission_state = 'held'
 RETURNING *;
 
 -- name: ExpireReservation :one
--- Conditional on the lease, so a claim and the expiry cannot both win.
+-- Conditional on the lease, so a claim and the expiry cannot both win. SKIP
+-- LOCKED: a claim holds the row first and then waits for the admission lock, so
+-- waiting on the row here would deadlock; a locked row means a claim is winning.
 UPDATE agent_task_queue
 SET admission_state = 'held', hold_reason = 'reservation expired',
     reservation_lease_id = NULL, reservation_expires_at = NULL
-WHERE id = @id AND status = 'queued' AND admission_state = 'reserved'
-  AND reservation_lease_id = @lease_id
+WHERE agent_task_queue.id = (SELECT q.id FROM agent_task_queue q WHERE q.id = @id FOR UPDATE SKIP LOCKED)
+  AND agent_task_queue.status = 'queued' AND agent_task_queue.admission_state = 'reserved'
+  AND agent_task_queue.reservation_lease_id = @lease_id
 RETURNING *;
 
 -- name: ListExpiredReservations :many
@@ -137,4 +145,10 @@ WHERE issue_id = @issue_id AND agent_id = @agent_id AND state = 'held';
 -- name: HasQueuedRetryChild :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue WHERE parent_task_id = $1 AND status = 'queued'
+);
+
+-- name: ProjectHasHeldRuns :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+    WHERE i.project_id = $1 AND t.status = 'queued' AND t.admission_state = 'held'
 );
