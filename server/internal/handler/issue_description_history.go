@@ -7,7 +7,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
-	"github.com/pmezard/go-difflib/difflib"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -94,11 +93,11 @@ func (h *Handler) DiffIssueDescription(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
-		A: difflib.SplitLines(a), B: difflib.SplitLines(b),
-		FromFile: "revision " + strconv.FormatInt(from, 10), ToFile: "revision " + strconv.FormatInt(to, 10),
-		Context: 3,
-	})
+	diff, err := unifiedDiff(a, b, "revision "+strconv.FormatInt(from, 10), "revision "+strconv.FormatInt(to, 10))
+	if errors.Is(err, errDiffTooLarge) {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build diff")
 		return
