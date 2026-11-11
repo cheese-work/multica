@@ -405,6 +405,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 | `auth`, `login`, `setup` | Log in, check auth status, and initialize a connection |
 | `config` | View or edit the current CLI profile's local configuration |
 | `update`, `version` | Update the CLI or print the version |
+| `guard` | Check agent tool calls against the workspace policy |
 
 `multica chat` reads **the external chat session an agent is currently handling**; it is mainly for agents in chat integrations, not a general command for browsing arbitrary workspace conversations.
 
@@ -642,6 +643,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | `config` | `show`, `set <key> <value>` | View or edit the current profile's local configuration | Precedence: command-line flags > environment variables > `config.json` > built-in defaults; set an empty string to clear a value |
 | `update` | — | Update the CLI to the latest version | |
 | `version` | — | Print version information | `--output` (`text` or `json`) |
+| `guard` | `exec <tool> -- <args>` | Run a tool call through the guard: `gh pr create`, `edit` and `ready` are forced to draft, tagged and read back; writes to pull requests through `gh api` are refused | Exit code: the tool's own, 2 when the guard refuses. Env: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
 
 ## Driving Multica from another coding agent
 
