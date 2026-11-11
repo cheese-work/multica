@@ -6,7 +6,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { generateEntries, loadBackfill, optionsFromEnv, serializeEntries, writeAtomically } from "./fork-changelog.mjs";
 
 export const FETCH_DEADLINE_MS = 180_000;
-const DEPLOY_ENVIRONMENT = "c00-production";
+// CHE-4495 moved the C00 deploy from c00-production to c00-runtime (8 Nov 2026); older deploys stay in c00-production.
+const DEPLOY_ENVIRONMENTS = ["c00-runtime", "c00-production"];
+// A c00-runtime run makes one deployment per environment job; only the `deploy` job is a deploy.
+const RUNTIME_ENVIRONMENT = "c00-runtime";
+const DEPLOY_JOB = "deploy";
 
 // "<UPSTREAM_VERSION at that commit>-<release stamp of the commit time>", e.g. 0.7.2-20261105-1426.
 export function versionLabel(sha, { cwd = process.cwd() } = {}) {
@@ -22,13 +26,15 @@ export const deploymentsFromGraphql = (json) =>
   (json?.data?.repository?.deployments?.nodes ?? []).flatMap((node) => {
     const successes = (node?.statuses?.nodes ?? []).filter((status) => status?.state === "SUCCESS" && status.createdAt)
       .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    return node?.commitOid && successes.length ? [{ sha: node.commitOid, state: "SUCCESS", createdAt: successes[0].createdAt }] : [];
+    const [, runId, jobId] = /\/actions\/runs\/(\d+)\/job\/(\d+)/.exec(successes[0]?.logUrl ?? "") ?? [];
+    return node?.commitOid && successes.length
+      ? [{ sha: node.commitOid, state: "SUCCESS", createdAt: successes[0].createdAt, environment: node.environment, runId, jobId }] : [];
   });
 
-// Pages the c00-production deployments (newest first) through GraphQL; throws on any failure.
+// Pages the C00 deploy deployments (newest first) through GraphQL; throws on any failure.
 export async function fetchDeployments({ token, repository, fetchImpl = fetch, signal }) {
   const [owner, name] = repository.split("/");
-  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){deployments(environments:["${DEPLOY_ENVIRONMENT}"],first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{commitOid statuses(first:20){nodes{state createdAt}}}}}}`;
+  const query = `query($owner:String!,$name:String!,$after:String){repository(owner:$owner,name:$name){deployments(environments:${JSON.stringify(DEPLOY_ENVIRONMENTS)},first:100,after:$after,orderBy:{field:CREATED_AT,direction:DESC}){pageInfo{hasNextPage endCursor} nodes{commitOid environment statuses(first:20){nodes{state createdAt logUrl}}}}}}`;
   const all = [];
   for (let after = null, pages = 0; pages < 20; pages += 1) {
     const response = await fetchImpl("https://api.github.com/graphql", {
@@ -41,10 +47,24 @@ export async function fetchDeployments({ token, repository, fetchImpl = fetch, s
     if (json.errors?.length) throw new Error(`deployments: ${json.errors[0].message}`);
     all.push(...deploymentsFromGraphql(json));
     const info = json.data?.repository?.deployments?.pageInfo;
-    if (!info?.hasNextPage) return all;
+    if (!info?.hasNextPage) break;
     after = info.endCursor;
   }
-  return all;
+  return keepDeployJobs(all, { token, repository, fetchImpl, signal });
+}
+
+// Drops c00-runtime deployments that belong to another job of the run (prepare-release-candidate); needs `actions: read`.
+async function keepDeployJobs(deployments, { token, repository, fetchImpl, signal }) {
+  const runs = [...new Set(deployments.filter((d) => d.environment === RUNTIME_ENVIRONMENT).map((d) => d.runId))];
+  const deployJobIds = new Set();
+  await Promise.all(runs.map(async (run) => {
+    const response = await fetchImpl(`https://api.github.com/repos/${repository}/actions/runs/${run}/jobs?per_page=100`, {
+      signal, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
+    });
+    if (!response.ok) throw new Error(`deploy jobs: HTTP ${response.status}`);
+    for (const job of (await response.json()).jobs ?? []) if (job.name === DEPLOY_JOB) deployJobIds.add(String(job.id));
+  }));
+  return deployments.filter((d) => d.environment !== RUNTIME_ENVIRONMENT || deployJobIds.has(d.jobId));
 }
 const annotate = (message) => console.warn(`::warning::${message.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A")}`);
 
