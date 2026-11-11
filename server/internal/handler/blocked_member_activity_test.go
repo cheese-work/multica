@@ -11,7 +11,7 @@ import (
 
 func TestBlockedMemberCommentWakesAssignee_CHE2393(t *testing.T) {
 	for _, assigneeType := range []string{"agent", "squad"} {
-		for _, route := range []string{"other agent thread", "member thread", "explicit other agent", "assignee thread"} {
+		for _, route := range []string{"other agent thread", "member thread", "explicit other agent", "explicit other agent plus all", "explicit assignee", "assignee thread"} {
 			for _, pending := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/pending=%t", assigneeType, route, pending), func(t *testing.T) {
 					assigneeID := createHandlerTestAgent(t, "blocked assignee", nil)
@@ -25,16 +25,26 @@ func TestBlockedMemberCommentWakesAssignee_CHE2393(t *testing.T) {
 					})
 					dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", issueID)
 					body := map[string]any{"content": "Use the revised approach."}
-					wantOther := 0
+					wantOther, wantAssignee := 0, 1
 					switch route {
 					case "other agent thread":
 						body["parent_id"] = dbfx.Comment(t, issueID, "Need a decision.", testutil.Cols{"author_type": "agent", "author_id": otherID})
 						wantOther = 1
 					case "member thread":
 						body["parent_id"] = dbfx.Comment(t, issueID, "Original member question.")
+					// Tagging another agent wakes only that agent, even when blocked.
 					case "explicit other agent":
 						body["content"] = fmt.Sprintf("[@worker](mention://agent/%s) Use the revised approach.", otherID)
-						wantOther = 1
+						wantOther, wantAssignee = 1, 0
+					case "explicit other agent plus all":
+						body["content"] = fmt.Sprintf("[@all](mention://all/all) [@worker](mention://agent/%s) Use the revised approach.", otherID)
+						wantOther, wantAssignee = 1, 0
+					case "explicit assignee":
+						kind := "agent"
+						if assigneeType == "squad" {
+							kind = "squad"
+						}
+						body["content"] = fmt.Sprintf("[@owner](mention://%s/%s) Use the revised approach.", kind, ownerID)
 					case "assignee thread":
 						body["parent_id"] = dbfx.Comment(t, issueID, "Need a decision.", testutil.Cols{"author_type": "agent", "author_id": assigneeID})
 					}
@@ -47,21 +57,29 @@ func TestBlockedMemberCommentWakesAssignee_CHE2393(t *testing.T) {
 					}
 					// Preview and create share the recipient computation.
 					preview := previewCommentTriggersForTest(t, issueID, body)
-					wantIDs := []string{assigneeID}
+					var wantIDs []string
+					if wantAssignee == 1 {
+						wantIDs = append(wantIDs, assigneeID)
+					}
 					if wantOther == 1 {
 						wantIDs = append(wantIDs, otherID)
 					}
 					for i := 0; i < 2; i++ {
 						replyID := postCommentForTriggerPreviewTest(t, issueID, body)
-						if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 1 {
-							t.Fatalf("assignee runs = %d after reply %d, want exactly 1", got, i+1)
+						wantRuns := wantAssignee
+						if pending {
+							wantRuns = 1 // the seeded run stays whether or not the reply joins it
 						}
-						var carriesReply bool
-						dbfx.QueryRow(t, `SELECT trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids)
-							FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`,
+						if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != wantRuns {
+							t.Fatalf("assignee runs = %d after reply %d, want %d", got, i+1, wantRuns)
+						}
+						var carriesReply int
+						dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue
+							WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+							AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`,
 							issueID, assigneeID, replyID).Scan(&carriesReply)
-						if !carriesReply {
-							t.Fatal("pending assignee run does not carry the member reply")
+						if carriesReply != wantAssignee {
+							t.Fatalf("assignee runs carrying the reply = %d, want %d", carriesReply, wantAssignee)
 						}
 						if got := countQueuedCommentTriggerTasks(t, issueID, otherID); got != wantOther {
 							t.Fatalf("thread/mention recipient runs = %d, want %d", got, wantOther)
