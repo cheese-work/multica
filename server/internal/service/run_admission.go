@@ -192,10 +192,28 @@ func (s *TaskService) releaseAfterRun(tasks ...db.AgentTaskQueue) {
 		if has, err := s.Queries.ProjectHasHeldRuns(ctx, projectID); err != nil || !has {
 			continue
 		}
-		if err := s.ReleaseProjectAdmission(ctx, projectID); err != nil {
-			slog.Warn("release project admission failed", "project_id", util.UUIDToString(projectID), "error", err)
+		if err := s.releaseWithRetry(ctx, projectID); err != nil {
+			slog.Warn("release project admission failed; the next release event in the project or a restart delivers it", "project_id", util.UUIDToString(projectID), "error", err)
 		}
 	}
+}
+
+// releaseWithRetry retries a release that failed on a transient database error.
+func (s *TaskService) releaseWithRetry(ctx context.Context, projectID pgtype.UUID) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+		if err = s.ReleaseProjectAdmission(ctx, projectID); err == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // ExpireDueReservations is the lease-expiry event: an unclaimed reservation goes
@@ -244,9 +262,18 @@ func (s *TaskService) ExpireDueReservations(ctx context.Context) (int, error) {
 	return expired, nil
 }
 
-// ReconcileAdmission is the one admission pass (startup and the 15 s tick):
-// expire lapsed reservations, park held inputs that have no run, then release
-// every project that still holds runs. Finished write events past their age are purged.
+// PurgeWriteEvents drops finished write events past their age.
+func (s *TaskService) PurgeWriteEvents(ctx context.Context) (int64, error) {
+	n, err := s.Queries.DeleteOldWriteEvents(ctx, writeEventMaxAge.Seconds())
+	if err != nil {
+		return 0, fmt.Errorf("purge write events: %w", err)
+	}
+	return n, nil
+}
+
+// ReconcileAdmission is the restart-time admission pass: events lost with the
+// process (a release that never ran, a lapsed lease) are delivered once. Nothing
+// calls it on a timer; the tick job delivers only due lease-expiry events.
 func (s *TaskService) ReconcileAdmission(ctx context.Context) error {
 	if _, err := s.ExpireDueReservations(ctx); err != nil {
 		return err
@@ -257,9 +284,6 @@ func (s *TaskService) ReconcileAdmission(ctx context.Context) error {
 	}
 	if len(parked) > 0 {
 		slog.Warn("parked held run inputs without a run", "count", len(parked))
-	}
-	if _, err := s.Queries.DeleteOldWriteEvents(ctx, writeEventMaxAge.Seconds()); err != nil {
-		return fmt.Errorf("purge write events: %w", err)
 	}
 	projects, err := s.Queries.ListProjectsWithHeldRuns(ctx)
 	if err != nil {
@@ -336,6 +360,72 @@ func recordEnqueuedInput(ctx context.Context, q *db.Queries, issue db.Issue, tas
 		"trigger_evidence_ref": util.UUIDToString(p.TriggerEvidenceRefID),
 	})
 	_, err := recordRunInput(ctx, q, RunInput{WorkspaceID: issue.WorkspaceID, IssueID: task.IssueID, AgentID: task.AgentID, EventID: event, Kind: kind, Payload: payload})
+	return err
+}
+
+// RecordCoalescedTrigger stores the non-comment trigger (a status change, an
+// assignment, a child-done or leader callback) that a queued run of (issue,
+// agent) absorbed in place of a new run, so the run's batch carries it. source
+// names the producer; commentID is its comment, if any. Event id, first match:
+// the caller's event id, the trigger comment, the issue's write stamp.
+func (s *TaskService) RecordCoalescedTrigger(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
+	return recordCoalescedTrigger(ctx, s.Queries, issue, agentID, commentID, source)
+}
+
+// noteCoalesced records the trigger behind a duplicate-pending refusal and
+// returns err unchanged. Call it after the failed transaction rolled back: the
+// write goes through the pool.
+func (s *TaskService) noteCoalesced(ctx context.Context, err error, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
+	if errors.Is(err, ErrDuplicatePendingTask) {
+		if rerr := s.RecordCoalescedTrigger(ctx, issue, agentID, commentID, source); rerr != nil {
+			slog.Error("record coalesced trigger failed", "issue_id", util.UUIDToString(issue.ID), "source", source, "error", rerr)
+		}
+	}
+	return err
+}
+
+// noteCoalescedIn is noteCoalesced inside the caller's transaction: the
+// pre-check refused before any insert, so the transaction is still usable and
+// the stored trigger commits or rolls back with the caller's write.
+func (s *TaskService) noteCoalescedIn(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID, source string) error {
+	if err := recordCoalescedTrigger(ctx, q, issue, agentID, pgtype.UUID{}, source); err != nil {
+		return fmt.Errorf("record coalesced trigger: %w", err)
+	}
+	return ErrDuplicatePendingTask
+}
+
+func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
+	if skip, _ := ctx.Value(skipRunInputKey{}).(bool); skip {
+		return nil
+	}
+	callerEvent, _ := ctx.Value(eventIDKey{}).(string)
+	var event string
+	switch {
+	case callerEvent != "":
+		event = "event:" + callerEvent
+	case commentID.Valid:
+		event = "comment:" + util.UUIDToString(commentID)
+	default:
+		event = fmt.Sprintf("%s:%s:%d", source, util.UUIDToString(issue.ID), issue.UpdatedAt.Time.UnixNano())
+	}
+	kind := "trigger"
+	if commentID.Valid {
+		kind = "comment"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"kind":               kind,
+		"source":             source,
+		"coalesced":          true,
+		"event_id":           callerEvent,
+		"issue_status":       issue.Status,
+		"trigger_comment_id": util.UUIDToString(commentID),
+	})
+	_, err := q.InsertCoalescedRunInput(ctx, db.InsertCoalescedRunInputParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, EventID: event, Kind: kind, Payload: payload,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
 	return err
 }
 

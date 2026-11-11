@@ -1469,7 +1469,11 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		// Key dedup on the reviewed head (TEN-356).
 		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
-	if err != nil || hasPending {
+	if err != nil {
+		return squadEnqueueNone
+	}
+	if hasPending {
+		h.recordCoalescedTrigger(ctx, issue, squad.LeaderID, pgtype.UUID{}, "squad_leader")
 		return squadEnqueueNone
 	}
 

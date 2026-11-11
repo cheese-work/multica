@@ -272,7 +272,7 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // under locks, whatever the status.
 func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, inTx bool, fn func(q *db.Queries) error) error {
 	_, hasActor := ctx.Value(wakeupActorKey{}).(wakeupActor)
-	if !inTx && !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
+	if !inTx && !hasActor && !service.HasWriteEventClaim(ctx) && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
 		return fn(h.Queries)
 	}
 	tx, err := h.beginWakeupWrite(ctx)
@@ -4809,6 +4809,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			AssigneeChanged:    assigneeChanged || handoff != nil,
 			StatusChanged:      statusChanged,
 			EnteredHandoffStep: handoff != nil,
+			RecordCoalesced:    true,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 	)
@@ -5753,6 +5754,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				AssigneeChanged:    assigneeChanged || handoff != nil,
 				StatusChanged:      statusChanged,
 				EnteredHandoffStep: handoff != nil,
+				RecordCoalesced:    true,
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		)

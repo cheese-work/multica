@@ -111,7 +111,7 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 		return nil, fmt.Errorf("check pending run: %w", err)
 	}
 	if pending {
-		return nil, ErrDuplicatePendingTask
+		return nil, s.noteCoalescedIn(ctx, q, issue, issue.AssigneeID, "assignment")
 	}
 	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
 	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
@@ -141,7 +141,7 @@ func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queri
 		return nil, fmt.Errorf("check pending leader run: %w", err)
 	}
 	if pending {
-		return nil, ErrDuplicatePendingTask
+		return nil, s.noteCoalescedIn(ctx, q, issue, leaderID, "squad_leader")
 	}
 	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
 	if err != nil {

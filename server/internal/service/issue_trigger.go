@@ -66,6 +66,10 @@ type IssueTriggerInput struct {
 	// when its handler is the agent whose run made the move, so the
 	// self-assignment suppression does not apply.
 	EnteredHandoffStep bool
+	// RecordCoalesced marks the write path: a trigger a queued run absorbs is
+	// stored as a run input. The preview endpoint shares the predicate and
+	// leaves it unset, so a dry run writes nothing.
+	RecordCoalesced bool
 }
 
 // IssueRunTrigger is the resolved decision shared by preview and the write
@@ -183,10 +187,15 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) {
+				s.noteCoalesced(ctx, in, issue.AssigneeID)
+				return IssueRunTrigger{}, false
+			}
+			if s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
 		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
+			s.noteCoalesced(ctx, in, issue.AssigneeID)
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
@@ -226,6 +235,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {
+			s.noteCoalesced(ctx, in, squad.LeaderID)
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
@@ -237,6 +247,21 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		}, true
 	}
 	return IssueRunTrigger{}, false
+}
+
+// noteCoalesced stores the trigger a pending run absorbs, on the write path
+// only. A failure is logged: the write it follows has already happened.
+func (s *IssueService) noteCoalesced(ctx context.Context, in IssueTriggerInput, agentID pgtype.UUID) {
+	if !in.RecordCoalesced {
+		return
+	}
+	source := "status"
+	if in.AssigneeChanged || in.IsCreate {
+		source = "assignment"
+	}
+	if err := s.TaskService.RecordCoalescedTrigger(ctx, in.Issue, agentID, pgtype.UUID{}, source); err != nil {
+		slog.Error("record coalesced trigger failed", "issue_id", util.UUIDToString(in.Issue.ID), "source", source, "error", err)
+	}
 }
 
 // hasPendingRun reports whether the agent already holds a queued or dispatched

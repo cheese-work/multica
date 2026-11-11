@@ -80,9 +80,10 @@ SELECT count(*)::bigint FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
 LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
 LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
 WHERE COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) = $1
+         ap.project_id, cs.project_id) = $1
   AND ($2::uuid IS NULL OR t.id <> $2::uuid)
   AND (t.status IN ('dispatched', 'running', 'waiting_local_directory') OR t.admission_state = 'reserved')
 `
@@ -299,15 +300,16 @@ func (q *Queries) GetProjectAdmission(ctx context.Context, id pgtype.UUID) (GetP
 const getTaskProjectID = `-- name: GetTaskProjectID :one
 SELECT COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) AS project_id FROM agent_task_queue t
+         ap.project_id, cs.project_id) AS project_id FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
 LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
 LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
 WHERE t.id = $1
 `
 
 // The project a run belongs to: its issue's, a quick-create run's chosen
-// project, or a run-only autopilot's. NULL for chat and project-less runs.
+// project, a run-only autopilot's, or a chat session's. NULL for project-less runs.
 func (q *Queries) GetTaskProjectID(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, getTaskProjectID, id)
 	var project_id pgtype.UUID
@@ -441,6 +443,55 @@ func (q *Queries) HoldClaimedTask(ctx context.Context, arg HoldClaimedTaskParams
 	return i, err
 }
 
+const insertCoalescedRunInput = `-- name: InsertCoalescedRunInput :one
+INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload)
+SELECT $1, $2, $3, $4, $5, $6
+WHERE EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.issue_id = $2 AND t.agent_id = $3 AND t.status = 'queued')
+ON CONFLICT (issue_id, agent_id, event_id) DO NOTHING
+RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+`
+
+type InsertCoalescedRunInputParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+	EventID     string      `json:"event_id"`
+	Kind        string      `json:"kind"`
+	Payload     []byte      `json:"payload"`
+}
+
+// The trigger a queued run absorbed instead of a new run. Stored only while a
+// queued run of (issue, agent) exists to carry it; a retry of the same event id
+// changes nothing.
+func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalescedRunInputParams) (RunInput, error) {
+	row := q.db.QueryRow(ctx, insertCoalescedRunInput,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.EventID,
+		arg.Kind,
+		arg.Payload,
+	)
+	var i RunInput
+	err := row.Scan(
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.AgentID,
+		&i.EventID,
+		&i.Seq,
+		&i.Kind,
+		&i.Payload,
+		&i.State,
+		&i.TaskID,
+		&i.RedeliveryOfTaskID,
+		&i.ParkReason,
+		&i.FailureClass,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertRunInput = `-- name: InsertRunInput :one
 INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload)
 VALUES ($1, $2, $3, $4, $5, $6)
@@ -490,10 +541,11 @@ func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) 
 const listExpiredReservations = `-- name: ListExpiredReservations :many
 SELECT t.id, t.reservation_lease_id, COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) AS project_id FROM agent_task_queue t
+         ap.project_id, cs.project_id) AS project_id FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
 LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
 LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
 WHERE t.status = 'queued' AND t.admission_state = 'reserved'
   AND t.reservation_expires_at <= now()
 ORDER BY t.reservation_expires_at ASC
@@ -531,9 +583,10 @@ SELECT t.id, t.issue_id, t.agent_id FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
 LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
 LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
 WHERE COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+         ap.project_id, cs.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
 ORDER BY t.priority DESC, COALESCE(i.created_at, t.created_at) ASC, t.created_at ASC, t.id ASC
 FOR UPDATE OF t SKIP LOCKED
 `
@@ -654,14 +707,15 @@ func (q *Queries) ListParkedRunInputs(ctx context.Context, arg ListParkedRunInpu
 const listProjectsWithHeldRuns = `-- name: ListProjectsWithHeldRuns :many
 SELECT DISTINCT COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) AS project_id FROM agent_task_queue t
+         ap.project_id, cs.project_id) AS project_id FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
 LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
 LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
 WHERE t.status = 'queued' AND t.admission_state IS NOT NULL
   AND COALESCE(i.project_id,
          CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-         ap.project_id) IS NOT NULL
+         ap.project_id, cs.project_id) IS NOT NULL
 `
 
 // The startup reconcile: projects that still have held or reserved runs.
@@ -821,9 +875,10 @@ SELECT EXISTS (
     LEFT JOIN issue i ON i.id = t.issue_id
     LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
     LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+    LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
     WHERE COALESCE(i.project_id,
              CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
-             ap.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+             ap.project_id, cs.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
 )
 `
 

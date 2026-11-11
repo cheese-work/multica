@@ -886,6 +886,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.RunAdmissionExpiryJob(taskSvc)); err != nil {
 		slog.Error("scheduler: register run admission expiry", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.WriteEventRetentionJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register write event retention", "error", err)
+	}
 	// CHE-5213: one reconcile pass after a restart, no periodic sweep.
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

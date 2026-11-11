@@ -1594,7 +1594,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 			s.PublishTaskEnqueued(ctx, task)
 		}
 	}
-	return task, err
+	return task, s.noteCoalesced(ctx, err, issue, issue.AssigneeID, triggerCommentID, "issue")
 }
 
 func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
@@ -1906,9 +1906,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
-		if isDuplicatePendingTaskErr(err) {
+		if isDuplicatePendingTaskErr(err) || errors.Is(err, ErrDuplicatePendingTask) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+			return db.AgentTaskQueue{}, s.noteCoalesced(ctx, ErrDuplicatePendingTask, issue, agentID, triggerCommentID, "mention")
 		}
 		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)

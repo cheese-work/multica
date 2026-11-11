@@ -1087,7 +1087,11 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 		// Key dedup on the reviewed head (TEN-356).
 		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
 	})
-	if err != nil || hasPending {
+	if err != nil {
+		return
+	}
+	if hasPending {
+		h.recordCoalescedTrigger(ctx, parent, parent.AssigneeID, triggerCommentID, "child_done")
 		return
 	}
 
@@ -1146,7 +1150,11 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 		// Key dedup on the reviewed head (TEN-356).
 		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
 	})
-	if err != nil || hasPending {
+	if err != nil {
+		return
+	}
+	if hasPending {
+		h.recordCoalescedTrigger(ctx, parent, squad.LeaderID, triggerCommentID, "child_done")
 		return
 	}
 
@@ -1155,5 +1163,14 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 			"parent_id", uuidToString(parent.ID),
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID))
+	}
+}
+
+// recordCoalescedTrigger stores the trigger a queued run of (issue, agent)
+// absorbed in place of a new run. The wake it follows has already happened, so
+// a failure is logged.
+func (h *Handler) recordCoalescedTrigger(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, source string) {
+	if err := h.TaskService.RecordCoalescedTrigger(ctx, issue, agentID, commentID, source); err != nil {
+		slog.Error("record coalesced trigger failed", "issue_id", uuidToString(issue.ID), "source", source, "error", err)
 	}
 }
