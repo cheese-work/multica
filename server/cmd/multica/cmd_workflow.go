@@ -94,6 +94,9 @@ one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
 --start-status KEY sets the status where new issues of the workflow start (an
 unstarted or started step of the workflow; "" restores todo).
+An agent cannot change --max-runs-per-issue or --include-child-prs directly:
+"multica config propose workflow.budget <workflow-id> --max-runs N" writes the
+action file, and the owner approves it with one passkey card.
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
