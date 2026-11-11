@@ -250,3 +250,65 @@ test("a deployment read that outlives its budget falls back to day grouping and 
   assert.equal("deploys" in JSON.parse(readFileSync(data.out, "utf8")), false);
   assert.match(data.warnings[0], /Deploy dividers unavailable/);
 });
+
+// CHE-5172: 100+ c00-runtime runs were looked up at once; GitHub answered 403 to some, one failure threw away every deploy, c00-production history included.
+const manyRuntimeNodes = (count) => Array.from({ length: count }, (_, i) => runtimeNode(`sha${i}`, "SUCCESS", 1000 + i, 5000 + i, "2026-11-10T02:59:12Z"));
+const jobsFor = (count) => Object.fromEntries(Array.from({ length: count }, (_, i) => [1000 + i, [{ id: 5000 + i, name: "deploy" }]]));
+const productionNode = { commitOid: "prod", environment: "c00-production", statuses: { nodes: [{ state: "SUCCESS", createdAt: "2026-11-07T00:00:00Z" }] } };
+
+test("fetchDeployments bounds concurrent job lookups so GitHub's concurrency limit is not hit", async () => {
+  const github = fakeGithub({ nodes: [productionNode, ...manyRuntimeNodes(120)], jobsByRun: jobsFor(120) });
+  let inFlight = 0;
+  let peak = 0;
+  const fetchImpl = async (url, init) => {
+    if (String(url).includes("/graphql")) return github(url, init);
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      if (inFlight > 10) return { ok: false, status: 403, json: async () => ({ message: "secondary rate limit" }) };
+      return await github(url, init);
+    } finally { inFlight -= 1; }
+  };
+  const report = [];
+  const result = await fetchDeployments({ token: "t", repository: "o/r", fetchImpl, report: (m) => report.push(m), retryDelayMs: 0 });
+  assert.ok(peak <= 10, `peak concurrency ${peak}`);
+  assert.equal(result.length, 121);
+  assert.deepEqual(report, []);
+});
+
+test("fetchDeployments keeps every readable run and c00-production when one jobs lookup keeps failing, and reports it", async () => {
+  const github = fakeGithub({ nodes: [productionNode, ...manyRuntimeNodes(3)], jobsByRun: jobsFor(3) });
+  const fetchImpl = async (url, init) => /runs\/1001\/jobs/.test(url)
+    ? { ok: false, status: 403, json: async () => ({ message: "Resource not accessible by integration" }) }
+    : github(url, init);
+  const report = [];
+  const result = await fetchDeployments({ token: "t", repository: "o/r", fetchImpl, report: (m) => report.push(m), retryDelayMs: 0 });
+  assert.deepEqual(result.map((d) => d.sha).sort(), ["prod", "sha0", "sha2"]);
+  assert.equal(report.length, 1);
+  assert.match(report[0], /1 of 3 runs/);
+  assert.match(report[0], /HTTP 403.*Resource not accessible by integration/);
+});
+
+test("fetchDeployments retries a transient jobs-lookup failure", async () => {
+  const github = fakeGithub({ nodes: manyRuntimeNodes(1), jobsByRun: jobsFor(1) });
+  let calls = 0;
+  const fetchImpl = async (url, init) => (String(url).includes("/jobs") && (calls += 1) === 1
+    ? { ok: false, status: 403, json: async () => ({ message: "secondary rate limit" }) }
+    : github(url, init));
+  const report = [];
+  const result = await fetchDeployments({ token: "t", repository: "o/r", fetchImpl, report: (m) => report.push(m), retryDelayMs: 0 });
+  assert.equal(result.length, 1);
+  assert.deepEqual(report, []);
+});
+
+test("a partial deployment read keeps the dividers and prints a warning plus a step-summary line", async (context) => {
+  const data = fixture(context, {
+    firstParent: [{ sha, message: "", time: "2026-10-13T00:00:00Z" }],
+    deployments: async (_signal, report) => { report("Deploy dividers incomplete: 1 of 3 runs unreadable"); return []; },
+  });
+  await fetchChangelog(data.options);
+  assert.equal(Array.isArray(JSON.parse(readFileSync(data.out, "utf8")).deploys), true);
+  assert.deepEqual(data.warnings, ["Deploy dividers incomplete: 1 of 3 runs unreadable"]);
+  assert.match(readFileSync(data.summaryPath, "utf8"), /Deploy dividers incomplete/);
+});
