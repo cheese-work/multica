@@ -316,7 +316,9 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `multica config propose` 为工作区配置变更生成动作文件。它读取当前值，用与服务端重新计算相同的方法算出 `before_sha256` 和 `after_sha256`，并写出 `multica decision request --action-file` 接收的文件。它不发送任何内容，也不写入密钥。仍由人用 passkey 批准。
 
-字段：`agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>` 和 `workspace.settings --set key=value|key:=<json>`。文本字段使用 `--file`（UTF-8，不含 NUL 字节）。`workflow.steps` 接收工作流 GET 返回的 steps 数组；请编辑该输出，因为服务端若对 steps 做了不同的规范化，会拒绝请求（`after_digest_mismatch`）。`workflow.step.instructions` 的 after 摘要由服务端计算，所以文件不含 `after_sha256`，打印出的摘要仅供对照。`--out <path>` 写出文件；`--dry-run` 只打印两个摘要和动作，不写文件。`--expires-in <秒>` 设置请求有效期。
+字段：`agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>`、`workflow.budget <workflow-id>` 和 `workspace.settings --set key=value|key:=<json>`。文本字段使用 `--file`（UTF-8，不含 NUL 字节）。`workflow.steps` 接收工作流 GET 返回的 steps 数组；请编辑该输出，因为服务端若对 steps 做了不同的规范化，会拒绝请求（`after_digest_mismatch`）。`workflow.step.instructions` 的 after 摘要由服务端计算，所以文件不含 `after_sha256`，打印出的摘要仅供对照。`--out <path>` 写出文件；`--dry-run` 只打印两个摘要和动作，不写文件。`--expires-in <秒>` 设置请求有效期。
+
+`workflow.budget <workflow-id>` 用 `--max-runs <n>`（1 到 1000；0 表示清除上限）和 `--include-child-prs=<true|false>` 代替 `--file`；至少指定一个，省略的字段保持已存储的值。智能体不能直接写入工作流的这两个字段（`budget_requires_decision`）：先提出修改并请求决定，批准后若工作流仍与 CLI 读到的摘要一致，服务端即应用。
 
 其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
 
@@ -324,6 +326,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 multica config propose workspace.context --file ./context.md --out ./action.json
 multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
 multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
 multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```

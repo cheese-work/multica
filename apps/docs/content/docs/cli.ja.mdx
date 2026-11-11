@@ -316,7 +316,9 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `multica config propose` は、ワークスペース設定の変更用アクションファイルを作ります。現在の値を読み、サーバーが再計算するのと同じ方式で `before_sha256` と `after_sha256` を計算し、`multica decision request --action-file` が受け取るファイルを書き出します。何も送信せず、シークレットも書きません。承認は引き続き人がパスキーで行います。
 
-対象フィールド: `agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>`、`workspace.settings --set key=value|key:=<json>`。テキストは `--file`（UTF-8、NUL バイトなし）で渡します。`workflow.steps` にはワークフロー GET が返す steps 配列を渡します。この出力を編集してください。サーバーが steps を別の形に正規化すると、リクエストは拒否されます（`after_digest_mismatch`）。`workflow.step.instructions` ではサーバーが after ダイジェストを計算するため、ファイルに `after_sha256` は入らず、表示されるダイジェストは比較用です。`--out <path>` でファイルを書き、`--dry-run` で何も書かずに 2 つのダイジェストとアクションを表示します。`--expires-in <秒>` で有効期限を指定します。
+対象フィールド: `agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>`, `workflow.budget <workflow-id>`、`workspace.settings --set key=value|key:=<json>`。テキストは `--file`（UTF-8、NUL バイトなし）で渡します。`workflow.steps` にはワークフロー GET が返す steps 配列を渡します。この出力を編集してください。サーバーが steps を別の形に正規化すると、リクエストは拒否されます（`after_digest_mismatch`）。`workflow.step.instructions` ではサーバーが after ダイジェストを計算するため、ファイルに `after_sha256` は入らず、表示されるダイジェストは比較用です。`--out <path>` でファイルを書き、`--dry-run` で何も書かずに 2 つのダイジェストとアクションを表示します。`--expires-in <秒>` で有効期限を指定します。
+
+`workflow.budget <workflow-id>` は `--file` の代わりに `--max-runs <n>`（1〜1000。0 で上限を解除）と `--include-child-prs=<true|false>` を取ります。少なくとも 1 つを指定してください。省略した欄は保存済みの値のままです。エージェントはこの 2 つの欄をワークフローに直接書き込めません（`budget_requires_decision`）。変更を提案して決定を依頼すると、CLI が読んだダイジェストとワークフローが一致する場合に限り、承認時にサーバーが適用します。
 
 それ以外のフィールドは、何も読む前に `denylisted` で拒否されます: `project.description`、パスキーと決定ゲート、メンバーとロール、オーナー移譲、認証・連携のシークレット、ワークスペース削除、アクションレジストリ、`delegated_governed_writes`。サーバーの許可テーブルにない設定キーも同様に拒否され、許可キーと拒否キーが混在するパッチは全体が拒否されます。サーバーはリクエスト時と承認時にもう一度確認します。
 
@@ -324,6 +326,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 multica config propose workspace.context --file ./context.md --out ./action.json
 multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
 multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
 multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
