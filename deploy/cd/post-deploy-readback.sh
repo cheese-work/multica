@@ -4,14 +4,21 @@
 # suspends automatic deploys, unless, within that wait:
 #   - the public route and the router-selected upstream turn healthy
 #     (ab-health-check.sh, read-only, one sample per try); and
+#   - the native health observer is armed for the whole 15-minute window and its
+#     timer has sampled once (health-window.mjs arm; install-health-observer.sh
+#     installs the timer on C00); and
 #   - C00 then runs the deployed commit, or a descendant of it (a newer deploy
 #     may have landed), and, when it runs exactly that commit, the live image
 #     digests equal the admitted manifest's.
-# The 15-minute watch is not here: post-deploy-confirm.sh judges it from history
-# after an environment wait timer, so no runner is held while time passes.
+# The 15-minute watch is not here: the observer's timer samples C00 on the host
+# and post-deploy-confirm.sh verifies its journal after an environment wait
+# timer, so no runner is held while time passes.
 # usage: post-deploy-readback.sh SOURCE_SHA WAIT_SECONDS [MANIFEST_JSON]
-# Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR, C00_ROUTER_STATE_DIR.
-# READBACK_RETRY_SECONDS (default 5) is the pause between health tries.
+# Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR, C00_ROUTER_STATE_DIR
+# and OBSERVATION_ID (names this deploy's journal). On success the arm step writes
+# observation and t0 to GITHUB_OUTPUT.
+# READBACK_RETRY_SECONDS (default 5) is the pause between health tries;
+# READBACK_ARM_VERIFY_SECONDS (default 30) bounds the wait for the timer's first sample.
 set -euo pipefail
 
 sha=${1:?source sha is required}
@@ -21,6 +28,9 @@ manifest=${3:-}
 [[ "$window" =~ ^[0-9]+$ ]] || { echo "::error::window must be whole seconds" >&2; exit 2; }
 : "${C00_ROUTER_STATE_DIR:?C00_ROUTER_STATE_DIR is required}"
 : "${C00_CUTOVER_STATE_DIR:?C00_CUTOVER_STATE_DIR is required}"
+: "${C00_COMPOSE_DIR:?C00_COMPOSE_DIR is required}"
+: "${C00_STATE_DIR:?C00_STATE_DIR is required}"
+: "${OBSERVATION_ID:?OBSERVATION_ID is required}"
 
 # Wait for health, bounded: one sample per try, so the wait ends at the first
 # healthy sample or at the deadline, whichever comes first.
@@ -35,6 +45,16 @@ until bash deploy/cd/ab-health-check.sh --router-state-dir "${C00_ROUTER_STATE_D
   fi
   sleep "$retry"
 done
+
+# Arm before the SHA check so the window starts at the first healthy sample. A newer
+# deploy that already landed arms its own journal later and supersedes this one.
+node deploy/cd/health-window.mjs arm --dir "${C00_STATE_DIR%/}/health-observer" --id "$OBSERVATION_ID" --sha "$sha" \
+  --window 900 --interval 10 --verify-seconds "${READBACK_ARM_VERIFY_SECONDS:-30}" \
+  --compose-dir "$C00_COMPOSE_DIR" --cutover-state-dir "$C00_CUTOVER_STATE_DIR" \
+  --router-state-dir "${C00_ROUTER_STATE_DIR%/}" --health-script deploy/cd/ab-health-check.sh || {
+  echo "::error title=C00 readback::the health observer is not armed and sampling (see health-window output above)" >&2
+  exit 1
+}
 
 live="$(mktemp)"
 trap 'rm -f "$live"' EXIT

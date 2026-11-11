@@ -13,10 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOYED, NEWER = "deployed", "newer"
 DIGEST = "sha256:" + "1" * 64
 T0 = "1700000000"
-
-
-def access(status, uri="/api/issues"):
-    return f'127.0.0.1 - - [11/Nov/2026:10:05:00 +0000] "GET {uri} HTTP/1.1" {status} 512'
+OBS = "run-7-1"
 
 
 def event(action, service="backend-blue"):
@@ -33,6 +30,7 @@ class ConfirmTests(unittest.TestCase):
         (self.dir / "state").mkdir()
         (self.dir / "state/cutover-state.json").write_text(json.dumps({"active_colour": "blue"}))
         shutil.copy(ROOT / "deploy/cd/post-deploy-confirm.sh", self.dir / "deploy/cd/")
+        self.stub("deploy/cd/health-window.mjs", "")
         subprocess.run(["git", "init", "-q"], cwd=self.dir, check=True)
         self.commits = {}
         for name in [DEPLOYED, NEWER]:
@@ -46,8 +44,15 @@ class ConfirmTests(unittest.TestCase):
         target.write_text(body)
         target.chmod(0o755)
 
+    def journal(self, ok=True, reason="journal is not ok"):
+        """Stand-in for `health-window.mjs verify`; test-health-window.py owns what it accepts."""
+        self.stub("deploy/cd/health-window.mjs",
+                  f'import fs from "node:fs";\nfs.writeFileSync("{self.dir}/verify-args", process.argv.slice(2).join(" "));\n'
+                  + ('' if ok else f'console.error("::error::{reason}");\nprocess.exit(1);\n'))
+
     def confirm(self, events=(), running=DEPLOYED, digest=DIGEST, restarts=0, baseline=0, healthy=True, t0=T0,
-                router_log=(), router_logs_fail=False):
+                journal_ok=True, journal_reason="journal is not ok", obs=OBS):
+        self.journal(journal_ok, journal_reason)
         live = {"application_sha": self.commits[running], "images": {"backend": {"digest": digest}, "web": {"digest": digest}}}
         self.stub("deploy/cd/capture-remote-baseline.sh", f"echo '{json.dumps(live)}' > \"$1\"\n")
         self.stub("deploy/cd/restart-count.sh", f"echo {restarts}\n")
@@ -55,18 +60,14 @@ class ConfirmTests(unittest.TestCase):
                   f'echo "$@" > "{self.dir}/health-args"\n' + ("" if healthy else 'echo "::error::route unhealthy" >&2\nexit 1\n'))
         lines = "\n".join(json.dumps(e) for e in events)
         (self.dir / "events.ndjson").write_text(lines + ("\n" if lines else ""))
-        logs = "\n".join(router_log)
-        (self.dir / "router.log").write_text(logs + ("\n" if logs else ""))
-        # `docker events` (container history) and `docker logs` (the router's access log) are the
-        # only docker calls the script makes; record each one's arguments.
+        # `docker events` is the only docker call the script makes; record its arguments.
         self.stub("bin/docker", f'case "$1" in\n'
                   f'  events) echo "$@" > "{self.dir}/docker-args"; cat "{self.dir}/events.ndjson" ;;\n'
-                  f'  logs) echo "$@" > "{self.dir}/docker-logs-args"; '
-                  + ('echo "Error: No such container" >&2; exit 1' if router_logs_fail else f'cat "{self.dir}/router.log"') + ' ;;\n'
                   f'  *) exit 64 ;;\nesac\n')
         env = {**os.environ, "PATH": f"{self.dir}/bin:{os.environ['PATH']}", "C00_CUTOVER_STATE_DIR": str(self.dir / "state"),
-               "C00_ROUTER_STATE_DIR": "/r"}
-        args = ["bash", "deploy/cd/post-deploy-confirm.sh", "check", self.commits[DEPLOYED], t0, str(baseline), "manifest.json"]
+               "C00_ROUTER_STATE_DIR": "/r",
+               "C00_STATE_DIR": "/state"}
+        args = ["bash", "deploy/cd/post-deploy-confirm.sh", "check", self.commits[DEPLOYED], t0, str(baseline), obs, "manifest.json"]
         return subprocess.run(args, cwd=self.dir, env=env, text=True, capture_output=True)
 
     def test_a_quiet_window_passes_and_asks_docker_for_history_since_t0(self):
@@ -119,31 +120,38 @@ class ConfirmTests(unittest.TestCase):
         self.assertIn("--router-state-dir /r", args)
         self.assertIn(f"--cutover-state-dir {self.dir / 'state'}", args)
 
-    def test_router_gateway_errors_in_the_window_fail_even_after_recovery(self):
-        # An outage mid-window that recovered before confirmation: the final sample is healthy and
-        # no container event fired (no healthcheck), but the router logged the failed requests.
-        for status in ["502", "503", "504"]:
-            with self.subTest(status=status):
-                result = self.confirm(router_log=[access("200"), access(status), access("200")])
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(status, result.stderr)
+    def test_the_journal_is_verified_for_this_deploy(self):
+        result = self.confirm()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = (self.dir / "verify-args").read_text()
+        self.assertEqual(args, f"verify --dir /state/health-observer --id {OBS} --sha {self.commits[DEPLOYED]}")
 
-    def test_router_log_is_read_for_the_whole_window_from_t0(self):
-        self.assertEqual(self.confirm(router_log=[access("200"), access("304"), access("404"), access("500")]).returncode, 0)
-        args = (self.dir / "docker-logs-args").read_text()
-        self.assertIn(f"--since {T0}", args)
-        self.assertIn("multica-ab-router", args)
-
-    def test_a_status_inside_a_path_is_not_a_gateway_error(self):
-        self.assertEqual(self.confirm(router_log=[access("200", "/api/issues/502"), access("200", "/x 503 9")]).returncode, 0)
-
-    def test_an_unreadable_router_log_fails(self):
-        result = self.confirm(router_logs_fail=True)
+    def test_a_journal_that_does_not_verify_fails_even_with_a_healthy_route_and_quiet_events(self):
+        # Closes the passive-log gap: a recovered no-traffic outage or a /health 500 leaves
+        # failed samples in the journal, and nothing else in the window.
+        result = self.confirm(journal_ok=False, journal_reason="sample 7 failed: GET /health 500")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("router", result.stderr)
+        self.assertIn("sample 7 failed", result.stderr)
+        self.assertIn("journal", result.stderr)
 
-    def test_a_descendant_deploy_skips_the_router_log(self):
-        self.assertEqual(self.confirm(running=NEWER, router_log=[access("502")]).returncode, 0)
+    def test_the_router_log_is_not_read(self):
+        self.assertEqual(self.confirm().returncode, 0)
+        self.assertFalse((self.dir / "docker-logs-args").exists())
+
+    def test_a_descendant_deploy_does_not_verify_the_older_journal(self):
+        # The newer deploy has its own journal and confirm; the older window never rolls it back.
+        result = self.confirm(running=NEWER, journal_ok=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.dir / "verify-args").exists())
+
+    def test_the_observation_id_is_required_and_checked(self):
+        env = {**os.environ, "C00_CUTOVER_STATE_DIR": str(self.dir / "state"), "C00_ROUTER_STATE_DIR": "/r", "C00_STATE_DIR": "/state"}
+        result = subprocess.run(["bash", "deploy/cd/post-deploy-confirm.sh", "check", self.commits[DEPLOYED], T0, "0", "../x", "manifest.json"],
+                                cwd=self.dir, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 2)
+        result = subprocess.run(["bash", "deploy/cd/post-deploy-confirm.sh", "check", self.commits[DEPLOYED], T0, "0"],
+                                cwd=self.dir, env=env, text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_a_window_that_has_not_elapsed_fails(self):
         for t0 in [str(int(time.time())), str(int(time.time()) - 600)]:
@@ -157,7 +165,7 @@ class ConfirmTests(unittest.TestCase):
 
     def test_bad_arguments_are_refused(self):
         env = {**os.environ, "C00_CUTOVER_STATE_DIR": str(self.dir / "state")}
-        for args in [["check", "abc", T0, "0"], ["check", self.commits[DEPLOYED], "now", "0"], ["check", self.commits[DEPLOYED], T0, "x"], ["nope"]]:
+        for args in [["check", "abc", T0, "0", OBS], ["check", self.commits[DEPLOYED], "now", "0", OBS], ["check", self.commits[DEPLOYED], T0, "x", OBS], ["nope"]]:
             with self.subTest(args=args):
                 result = subprocess.run(["bash", "deploy/cd/post-deploy-confirm.sh", *args], cwd=self.dir, env=env, text=True, capture_output=True)
                 self.assertEqual(result.returncode, 2)

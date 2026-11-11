@@ -316,6 +316,8 @@ python3 deploy/cd/test-deploy-approval.py
 python3 deploy/cd/test-authorize-c00.py
 python3 deploy/cd/test-post-deploy-readback.py
 python3 deploy/cd/test-post-deploy-confirm.py
+python3 deploy/cd/test-health-window.py
+python3 deploy/cd/test-install-health-observer.py
 python3 .github/scripts/test_ci_wait_policy.py
 python3 deploy/cd/test-rollback-failed-readback.py
 bash deploy/cd/test-isolated-qualification.sh
@@ -727,28 +729,52 @@ After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
 
 1. `readback` runs `post-deploy-readback.sh` and holds the C00 runner for at most
    2 minutes. It waits for the public route and upstream to turn healthy (one
-   sample per try, `READBACK_RETRY_SECONDS` apart), then checks the running
-   commit (the deployed one or a descendant) and the image digests against the
-   admitted manifest. It records T0 (epoch seconds) and the active colour's
-   Docker restart count (`restart-count.sh`) as job outputs.
+   sample per try, `READBACK_RETRY_SECONDS` apart), then **arms the health
+   observer** (`health-window.mjs arm`, journal `OBSERVATION_ID` =
+   `<run id>-<attempt>`): it records T0 (epoch seconds) and the container identity,
+   takes slot 0, and does not return until the native systemd timer has taken a
+   passing sample (`READBACK_ARM_VERIFY_SECONDS`, default 30). If the timer is not
+   installed or does not fire, the readback fails and nothing is watched
+   unobserved. It then checks the running commit (the deployed one or a
+   descendant) and the image digests against the admitted manifest, and records the
+   active colour's Docker restart count (`restart-count.sh`). T0, the observation id
+   and the restart count are job outputs.
 2. `readback-delay` is the 15-minute wait timer of the `c00-readback-delay`
    environment. A waiting job holds no runner. It runs on a hosted runner
    because a job can use only one environment and the C00 secrets stay in
    `c00-runtime`.
 3. `readback-confirm` runs `post-deploy-confirm.sh` on the C00 runner for about
-   10 seconds. It reads the window from history: `docker events` since T0 shows
-   no `health_status: unhealthy`, `die`, `oom` or `restart` for the active
-   colour's backend and frontend; `docker logs` of the router (`multica-ab-router`,
-   override with `ROUTER_CONTAINER`) since T0 holds no 502, 503 or 504; the restart
-   count did not grow; and the SHA and
-   image digests are unchanged, or C00 runs a newer deploy that descends from this
-   one (that deploy's own confirm then judges its own window). It fails if less than
-   `CONFIRM_WINDOW_SECONDS` (900) passed since T0, and it samples route health once
-   (`ab-health-check.sh`). The containers define no healthcheck, so a hung
-   application leaves no event in the window. The router access log is the HTTP
-   history: an outage that recovered before confirmation still fails it. Limit:
-   only requests that reached the router are seen, so a window with no traffic
-   proves nothing about an outage in it; the final sample covers the end.
+   10 seconds. It verifies the journal and the events; it does not watch.
+
+The observer is `multica-health-observer.timer` on C00 (installed once by
+`install-health-observer.sh STATE_DIR RUN_USER`, which is C00 configuration and
+needs the owner's approval). Every 5 s it runs `health-window.mjs tick`, which does
+nothing until a readback arms an observation. For the armed observation it takes
+one sample per 10 s slot, T0 to T0+900 inclusive (91 samples), by running
+`ab-health-check.sh --window 0` (selected backend `/readyz`, routed API `/health`,
+routed web `/`, each with a bounded timeout). The journal is
+`$C00_STATE_DIR/health-observer/<observation>/` (`meta.json`, `samples.jsonl`,
+`state.json`); each sample records its scheduled slot, actual start and end, the
+source (`arm`, `timer` or `manual`), the systemd invocation id, the active colour,
+the container ids and the result. A failed sample stays failed after recovery. The
+observer holds no CI lock, runner or agent run.
+
+`post-deploy-confirm.sh` fails (and so suspends automatic deploys and starts the
+rollback) unless: at least `CONFIRM_WINDOW_SECONDS` (900) passed since T0; C00 runs
+the deployed commit with the admitted image digests, or runs a newer deploy that
+descends from this one (that deploy's own journal and confirm then judge its own
+window, and the older window is not judged); the journal verifies (`health-window.mjs
+verify`: present, readable, not truncated, this deploy's id and commit, not
+superseded, no replaced containers or identity change, exactly one passing sample
+in every slot including the last, each taken by the native timer, slot 0 by the arm step); the
+route answers once more; `docker events` since T0 shows no `health_status:
+unhealthy`, `die`, `oom` or `restart` for the active colour's backend and frontend;
+and the restart count did not grow. A newer deploy arms its own observation, which
+supersedes an older open journal; journals are never mixed.
+
+The wait timer starts when `readback` finishes, after T0, so the last slot (T0+900)
+is normally sampled before `readback-confirm` starts. If it is not, verify fails
+closed rather than pass an unobserved slot.
 
 `c00-readback-delay` is a repository setting, not workflow code: deployment
 branches `main` only (like `c00-runtime`), a wait timer of 15 minutes, no
