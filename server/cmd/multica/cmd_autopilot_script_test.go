@@ -115,6 +115,7 @@ func TestRunAutopilotCreateRejectsBadScriptFlagPairs(t *testing.T) {
 		want string
 	}{
 		{"script without mode", map[string]string{"script": "sweep"}, "--mode script"},
+		{"empty script without mode", map[string]string{"script": ""}, "--mode script"},
 		{"script with other mode", map[string]string{"mode": "run_only", "script": "sweep"}, "--mode script"},
 		{"mode script without script", map[string]string{"mode": "script"}, "--script"},
 		{"arg without script mode", map[string]string{"mode": "run_only", "arg": "x"}, "--script"},
@@ -180,6 +181,7 @@ func TestRunAutopilotUpdateRejectsBadScriptFlagPairs(t *testing.T) {
 		want string
 	}{
 		{"script without mode", map[string]string{"script": "sweep"}, "--mode script"},
+		{"empty script without mode", map[string]string{"script": ""}, "--mode script"},
 		{"script with other mode", map[string]string{"mode": "create_issue", "script": "sweep"}, "--mode script"},
 		{"mode script without script", map[string]string{"mode": "script"}, "--script"},
 		{"arg without script", map[string]string{"arg": "x"}, "--script"},

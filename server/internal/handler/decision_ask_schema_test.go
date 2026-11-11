@@ -51,7 +51,7 @@ func TestDecisionAskSchemaErrorsNameTheField(test *testing.T) {
 			ask["after_done"] = "x99-claude-sonnet re-runs the workflow"
 		}, "ask.human_steps[0] names MULTICA_TOKEN without a values entry"},
 		{"steps without probes", func(ask map[string]any) {
-			ask["human_steps"] = []any{map[string]any{"action": "Merge the PR", "verify_done": "PR shows Merged"}}
+			ask["human_steps"] = []any{map[string]any{"action": "Merge the PR into the default branch", "verify_done": "PR shows Merged"}}
 			ask["after_done"] = "x99-claude-sonnet starts the next slice"
 		}, "ask.probes requires at least one item"},
 	}

@@ -428,9 +428,11 @@ export function ManualCreatePanel({
     setParentIssueId(id);
     setStage(null);
   };
-  // A project using a named workflow only accepts its columns: a status it
-  // does not list moves to todo, which every workflow keeps. (MUL-7420)
-  const createWorkflow = useProjectWithWorkflow(wsId, projectId, workflowId).workflow;
+  // An issue only takes its workflow's columns — its override's, its project's,
+  // or Default's outside a project: a status it does not list moves to todo,
+  // which every workflow keeps. (MUL-7420, MUL-8250)
+  const { workflow: issueWorkflow, defaultWorkflow: workspaceDefault } = useProjectWithWorkflow(wsId, projectId, workflowId);
+  const createWorkflow = projectId || workflowId ? issueWorkflow : workspaceDefault;
   useEffect(() => {
     if (createWorkflow && !workflowAllowsStatus(createWorkflow, status)) {
       setStatus("todo");

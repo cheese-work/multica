@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { compareBriefs, compareDirs, parseChecklist } from "./brief-replay-check.mjs";
+import { compareBriefs, compareDirs, findRecentBriefs, parseChecklist, checkRealBriefs } from "./brief-replay-check.mjs";
 
 const oldBrief = [
   "## Workflow",
@@ -98,4 +98,55 @@ test("an empty or comment-only checklist fails: it checks no rules", (t) => {
   const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./brief-replay-check.mjs", import.meta.url)), a, b, join(dir, "empty.txt")], { encoding: "utf8" });
   assert.equal(cli.status, 1);
   assert.match(cli.stdout, /EMPTY-CHECKLIST/);
+});
+
+// Real-brief mode: the platform keeps each run's finished brief (<root>/<ws>/<task>/workdir/CLAUDE.md|AGENTS.md).
+const realRoot = (t, briefs) => {
+  const root = mkdtempSync(join(tmpdir(), "brief-real-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  briefs.forEach(([task, file, text, age], i) => {
+    const d = join(root, "ws", task, "workdir");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, file), text);
+    utimesSync(join(d, file), new Date(Date.now() - age * 1000), new Date(Date.now() - age * 1000));
+  });
+  return root;
+};
+
+test("findRecentBriefs returns the newest N brief files only, ignoring other files", (t) => {
+  const root = realRoot(t, [["a", "CLAUDE.md", "x", 300], ["b", "AGENTS.md", "x", 200], ["c", "CLAUDE.md", "x", 100], ["d", "notes.md", "x", 1]]);
+  const got = findRecentBriefs(root, 2).map((f) => f.split("/").at(-3));
+  assert.deepEqual(got, ["c", "b"]);
+});
+
+test("checkRealBriefs: each checklist phrase must appear in at least one real brief", (t) => {
+  const root = realRoot(t, [["a", "CLAUDE.md", "rule one\nchat only rule", 2], ["b", "AGENTS.md", "rule one\nrule two", 1]]);
+  const files = findRecentBriefs(root, 10);
+  const pass = checkRealBriefs(files, ["rule one", "rule two", "chat only rule"]);
+  assert.equal(pass.ok, true);
+  assert.deepEqual(pass.counts, [["rule one", 2], ["rule two", 1], ["chat only rule", 1]]);
+  const fail = checkRealBriefs(files, ["rule one", "invented rule"]);
+  assert.equal(fail.ok, false);
+  assert.deepEqual(fail.neverSeen, ["invented rule"]);
+});
+
+test("checkRealBriefs fails with no briefs or an empty checklist", () => {
+  assert.equal(checkRealBriefs([], ["rule"]).ok, false);
+  assert.equal(checkRealBriefs([], ["rule"]).noBriefs, true);
+  assert.equal(checkRealBriefs([], []).ok, false);
+  assert.equal(checkRealBriefs([], []).emptyChecklist, true);
+});
+
+test("cli --real exits 0 when every phrase is in a real brief and 1 when one never is; prints no brief text", (t) => {
+  const root = realRoot(t, [["a", "CLAUDE.md", "rule one SECRET-ISSUE-TEXT", 1]]);
+  writeFileSync(join(root, "ok.txt"), "rule one\n");
+  writeFileSync(join(root, "bad.txt"), "rule one\ninvented rule\n");
+  const cli = fileURLToPath(new URL("./brief-replay-check.mjs", import.meta.url));
+  const run = (l) => spawnSync(process.execPath, [cli, "--real", join(root, l), root, "5"], { encoding: "utf8" });
+  const ok = run("ok.txt");
+  assert.equal(ok.status, 0);
+  assert.doesNotMatch(ok.stdout, /SECRET-ISSUE-TEXT/);
+  const bad = run("bad.txt");
+  assert.equal(bad.status, 1);
+  assert.match(bad.stdout, /NEVER-SEEN: invented rule/);
 });

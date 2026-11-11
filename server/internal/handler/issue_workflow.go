@@ -97,6 +97,9 @@ type IssueWorkflowStepPayload struct {
 	// WaitsOnOpenDecision: see issueworkflow.Step. A write that omits it keeps
 	// the stored value; false clears it. A response carries it only when set.
 	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
+	// KeepOtherAssignee: see issueworkflow.Step. TEMPORARY, replaced by
+	// per-issue workflows (CHE-5024).
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowResponse struct {
@@ -159,6 +162,8 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 		Edges:            s.Edges,
 		SubWorkflow:      s.SubWorkflow,
 		Entry:            s.Entry,
+
+		KeepOtherAssignee: s.KeepOtherAssignee,
 	}
 	if s.WaitsOnOpenDecision {
 		set := true
@@ -181,6 +186,7 @@ func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.
 		Entry:            in.Entry,
 
 		WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
+		KeepOtherAssignee:   in.KeepOtherAssignee,
 	}
 }
 
@@ -404,6 +410,8 @@ type IssueWorkflowStepInput struct {
 	Entry []issueworkflow.EntryGate `json:"entry,omitempty"`
 	// WaitsOnOpenDecision: see IssueWorkflowStepPayload.
 	WaitsOnOpenDecision *bool `json:"waits_on_open_decision,omitempty"`
+	// KeepOtherAssignee: see IssueWorkflowStepPayload.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 type IssueWorkflowWriteRequest struct {
@@ -473,6 +481,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			Entry:            in.Entry,
 
 			WaitsOnOpenDecision: in.WaitsOnOpenDecision != nil && *in.WaitsOnOpenDecision,
+			KeepOtherAssignee:   in.KeepOtherAssignee,
 		}
 		if in.Handler != nil {
 			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}

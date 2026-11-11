@@ -262,6 +262,16 @@ const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
 	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
 	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
 
+// PRChecksRollupIgnoringVerdict is the PR's rollup with checksRollupIgnoringVerdict
+// applied, so the green wake and the checks_finished rule read one definition.
+func PRChecksRollupIgnoringVerdict(ctx context.Context, db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, prID pgtype.UUID) (string, error) {
+	var rollup string
+	err := db.QueryRow(ctx, `SELECT `+checksRollupIgnoringVerdict+` FROM github_pull_request pr WHERE pr.id=$1`, prID).Scan(&rollup)
+	return rollup, err
+}
+
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
 // small observation for the woken agent's trigger facts.
