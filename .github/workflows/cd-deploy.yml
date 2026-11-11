@@ -706,6 +706,8 @@ jobs:
   # outside the C00 lock so the next deploy is not held for 15 minutes; a
   # failure here suspends automatic deploys (authorize-c00 reads this job) and
   # starts the rollback job below.
+  # CHE-5144: the job runs deploy/cd/ from the workflow revision, not the
+  # candidate ref. A candidate cut before a script existed does not have it.
   readback:
     needs: [admission, deploy]
     if: always() && needs.deploy.result == 'success'
@@ -716,7 +718,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.admission.outputs.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node
@@ -747,6 +749,8 @@ jobs:
   # takes the C00 lock because it changes C00; the script skips when a newer
   # deploy already replaced the deployed commit. A cancelled readback is a
   # person's decision and is not rolled back.
+  # CHE-5144: it runs the workflow revision's cutover.sh and scripts, not the
+  # candidate's, for the same reason as readback.
   rollback:
     needs: [admission, readback]
     if: always() && needs.readback.result == 'failure'
@@ -764,7 +768,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.admission.outputs.ref }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Setup Node

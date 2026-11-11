@@ -121,6 +121,36 @@ class DeployApprovalTests(unittest.TestCase):
         # The readback job stays the one that fails, so the suspension still reads it.
         self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs["readback"]))
 
+    def test_readback_and_rollback_run_the_workflow_revisions_tooling_not_the_candidates(self):
+        # CHE-5144: a candidate cut before the readback and rollback scripts existed
+        # has no deploy/cd/post-deploy-readback.sh, so a job that ran them from a
+        # checkout of the candidate ref failed with exit 127 and C00 had no watch.
+        # The tooling comes from the workflow revision; the candidate's manifest
+        # arrives through the cd-deploy-admitted-input artifact.
+        for name in ["readback", "rollback"]:
+            with self.subTest(job=name):
+                checkouts = [s for s in self.jobs[name]["steps"] if s.get("uses", "").startswith("actions/checkout")]
+                self.assertTrue(checkouts)
+                for step in checkouts:
+                    self.assertEqual(step["with"]["ref"], "${{ github.sha }}")
+
+    def test_only_candidate_pinned_jobs_run_deploy_scripts_from_a_candidate_checkout(self):
+        # prepare-release-candidate, admission and deploy build, verify and ship the
+        # candidate's own tooling on purpose. Any other job that runs deploy/cd/ from a root
+        # checkout of a candidate ref breaks on a candidate older than the script.
+        candidate_pinned = {"prepare-release-candidate", "admission", "deploy"}
+        for name, job in self.jobs.items():
+            steps = job.get("steps", [])
+            from_candidate = any(
+                step.get("uses", "").startswith("actions/checkout")
+                and "path" not in step.get("with", {})
+                and any(marker in str(step.get("with", {}).get("ref", ""))
+                        for marker in ("admission.outputs.ref", "steps.q.outputs.sha", "steps.paths.outputs.ref"))
+                for step in steps)
+            runs_tooling = any("deploy/cd/" in step.get("run", "") for step in steps)
+            if from_candidate and runs_tooling and name not in candidate_pinned:
+                self.fail(f"{name} runs deploy/cd/ scripts from a checkout of the candidate ref (CHE-5144)")
+
     def test_dispatch_with_candidate_sha_issues_the_candidate_itself(self):
         prepare = self.jobs["prepare-release-candidate"]
         self.assertIn("needs.resolve-candidate.outputs.sha != ''", prepare["if"])
