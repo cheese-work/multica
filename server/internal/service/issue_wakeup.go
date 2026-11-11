@@ -133,6 +133,11 @@ type IssueWakeupService struct {
 	// and runs; empty is the production activation. Tests set their own so
 	// parallel packages never share state.
 	ActivationKey string
+	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
+	// leaves the condition pending with a diagnostic.
+	MergeFacts MergeFactsSource
+	// Now is the clock for fact freshness; nil means time.Now.
+	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
 	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).

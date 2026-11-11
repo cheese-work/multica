@@ -173,6 +173,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` 去掉评论，保留全部活动记录；`--action` 只返回指定的动作，可重复，并隐含 `--activity-only`。服务器读取的历史有上限，被截断时 stderr 会打印警告，这时不要据此推算停留时长。
 
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` 按从旧到新列出任务描述已记录的修订，含修订号、时间（ICT）和操作者；`issue description diff` 输出其中两个修订之间的 unified diff。修订号就是任务自身的修订计数器。只有历史功能上线之后记录的修订才存在，每个任务的第一条是当时描述的基线。没有改动描述的修订，取其之前最近的一份文本。不存在的修订返回 404。两条命令都支持 `--output json`。
+
 ### 读长评论线程
 
 评论多的任务，智能体逐条读取很费 token。先扫一遍线程，再展开需要的那一个：
