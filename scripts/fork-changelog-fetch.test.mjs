@@ -154,7 +154,7 @@ test("per-PR content warnings are logged as notes, not annotations", async (cont
 
 // CHE-4015
 import { execFileSync } from "node:child_process";
-import { deploymentsFromGraphql, versionLabel } from "./fork-changelog-fetch.mjs";
+import { deploymentsFromGraphql, fetchDeployments, versionLabel } from "./fork-changelog-fetch.mjs";
 
 test("versionLabel is UPSTREAM_VERSION plus the release stamp of the commit time (ICT)", (context) => {
   const dir = mkdtempSync(join(tmpdir(), "fork-label-"));
@@ -195,7 +195,52 @@ test("deploymentsFromGraphql keeps a deployment that was ever SUCCESS, at its ea
     { commitOid: "b", statuses: { nodes: [{ state: "QUEUED", createdAt: "2026-11-05T02:00:00Z" }, { state: "FAILURE", createdAt: "2026-11-05T02:05:00Z" }] } },
     { commitOid: "c", statuses: { nodes: [] } },
   ];
-  assert.deepEqual(deploymentsFromGraphql({ data: { repository: { deployments: { nodes } } } }), [{ sha: "a", state: "SUCCESS", createdAt: "2026-11-05T01:05:00Z" }]);
+  assert.deepEqual(deploymentsFromGraphql({ data: { repository: { deployments: { nodes } } } }), [{ sha: "a", state: "SUCCESS", createdAt: "2026-11-05T01:05:00Z", environment: undefined, jobId: undefined, runId: undefined }]);
+});
+
+// CHE-5021: CHE-4495 moved the C00 deploy to c00-runtime, whose runs make two deployments (prepare-release-candidate and deploy).
+const runtimeNode = (commitOid, state, runId, jobId, createdAt) => ({
+  commitOid, environment: "c00-runtime",
+  statuses: { nodes: [{ state, createdAt, logUrl: `https://github.com/o/r/actions/runs/${runId}/job/${jobId}` }] },
+});
+const fakeGithub = ({ nodes, jobsByRun, queries = [] }) => async (url, init) => {
+  if (String(url).includes("/graphql")) {
+    queries.push(JSON.parse(init.body).query);
+    return { ok: true, json: async () => ({ data: { repository: { deployments: { pageInfo: { hasNextPage: false }, nodes } } } }) };
+  }
+  const run = /runs\/(\d+)\/jobs/.exec(url)[1];
+  return { ok: true, json: async () => ({ jobs: jobsByRun[run] }) };
+};
+
+test("fetchDeployments reads c00-runtime and keeps c00-production for history", async () => {
+  const queries = [];
+  await fetchDeployments({ token: "t", repository: "o/r", fetchImpl: fakeGithub({ nodes: [], jobsByRun: {}, queries }) });
+  assert.match(queries[0], /environments:\["c00-runtime","c00-production"\]/);
+});
+
+test("fetchDeployments counts the deploy job once per run, not prepare-release-candidate", async () => {
+  const nodes = [
+    runtimeNode("aaa", "SUCCESS", 1, 11, "2026-11-10T02:56:05Z"),
+    runtimeNode("aaa", "SUCCESS", 1, 12, "2026-11-10T02:59:12Z"),
+  ];
+  const jobsByRun = { 1: [{ id: 11, name: "prepare-release-candidate" }, { id: 12, name: "deploy" }] };
+  const result = await fetchDeployments({ token: "t", repository: "o/r", fetchImpl: fakeGithub({ nodes, jobsByRun }) });
+  assert.deepEqual(result.map((d) => [d.sha, d.createdAt]), [["aaa", "2026-11-10T02:59:12Z"]]);
+});
+
+test("fetchDeployments ignores a run whose deploy job failed after prepare-release-candidate succeeded", async () => {
+  const nodes = [
+    runtimeNode("bbb", "SUCCESS", 2, 21, "2026-11-10T01:00:00Z"),
+    runtimeNode("bbb", "FAILURE", 2, 22, "2026-11-10T01:05:00Z"),
+  ];
+  const jobsByRun = { 2: [{ id: 21, name: "prepare-release-candidate" }, { id: 22, name: "deploy" }] };
+  assert.deepEqual(await fetchDeployments({ token: "t", repository: "o/r", fetchImpl: fakeGithub({ nodes, jobsByRun }) }), []);
+});
+
+test("fetchDeployments keeps c00-production deployments without a job lookup", async () => {
+  const nodes = [{ commitOid: "ccc", environment: "c00-production", statuses: { nodes: [{ state: "SUCCESS", createdAt: "2026-11-07T00:00:00Z" }] } }];
+  const result = await fetchDeployments({ token: "t", repository: "o/r", fetchImpl: fakeGithub({ nodes, jobsByRun: {} }) });
+  assert.deepEqual(result.map((d) => d.sha), ["ccc"]);
 });
 
 test("a deployment read that outlives its budget falls back to day grouping and keeps the entries", async (context) => {

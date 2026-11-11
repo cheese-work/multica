@@ -3,8 +3,8 @@
 # CHE-2365: "on failure roll back and suspend"). The suspension is separate: the
 # failed readback job already suspends automatic deploys.
 #
-# Runs cutover.sh `rollback` from this checkout (the admitted ref, the same
-# controller the deploy ran): drain the failing colour, quiescence gate, check
+# Runs cutover.sh `rollback` from this checkout (the workflow revision, CHE-5144:
+# a candidate older than this script does not carry it): drain the failing colour, quiescence gate, check
 # the ledger against minimum_rollback_version, start the predecessor without
 # migrations, restore its router generation. Never a down migration or restore.
 # Skips, with exit 0, when C00 no longer runs SOURCE_SHA: a newer deploy owns it.

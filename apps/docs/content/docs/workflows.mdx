@@ -56,6 +56,8 @@ If you added a new status, save the workflow before setting up that status's han
 
 **No handoff** keeps the current assignee. Handing to a member assigns the work without starting an agent. Handing to an agent asks it to start this step; it still needs to be available to you, and its computer needs to be online to run.
 
+A step with `keep_other_assignee: true` skips the handoff when the issue's current assignee was chosen on purpose: it is neither this step's handler nor the handler of the step the issue is leaving. That assignee keeps the issue, and an agent assignee starts a run for this step. The flag is off by default and is set through the API or CLI. It is temporary: per-issue workflows (CHE-5024) will replace it.
+
 ## Use it in a project
 
 Open a project and choose its **Workflow**. Workspace owners, admins, and the project's lead, when that lead is a member, can change this choice.
@@ -70,7 +72,7 @@ Change an issue's status or drag its card to another column. If that step has a 
 
 <WorkflowDemo />
 
-When you create an issue in a project without picking an assignee, and its status has a handoff, the issue goes straight to that step's handler; an agent starts right away. The create dialog shows who it will be handed to. To create it without starting anything yet, put it in Backlog.
+When you create an issue in a project and its status has a handoff, the issue goes straight to that step's handler, even if you picked an assignee; an agent starts right away. The create dialog shows who it will be handed to. To create it without starting anything yet, put it in Backlog.
 
 When the previous assignee is an agent with a run underway or waiting to start, the confirmation adds an option to stop or cancel it, selected by default. Leave it selected unless you want both agents working at once; the comments and work it already saved are kept.
 

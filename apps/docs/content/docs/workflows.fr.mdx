@@ -56,6 +56,8 @@ Si vous avez ajouté un nouveau statut, enregistrez d’abord le workflow avant 
 
 Sans passage de relais, le responsable ne change pas. Confier la tâche à un membre change le responsable sans lancer d’agent. La confier à un agent lui demande de commencer cette étape. Vous devez avoir le droit de l’appeler et son ordinateur doit être en ligne pour l’exécuter.
 
+Une étape avec `keep_other_assignee: true` saute le passage de relais lorsque le responsable actuel a été choisi volontairement : il n’est ni le responsable de cette étape ni celui de l’étape que la tâche quitte. Il garde la tâche, et un agent responsable lance une exécution pour cette étape. L’option est désactivée par défaut et se définit via l’API ou la CLI. Elle est temporaire : les workflows par tâche (CHE-5024) la remplaceront.
+
 ## L’utiliser dans un projet
 
 Ouvrez un projet et choisissez son **Workflow**. Les `owner`, les `admin` et le responsable du projet, s’il s’agit d’un membre, peuvent modifier ce choix.
@@ -70,7 +72,7 @@ Changez le statut d’une tâche ou faites glisser sa carte vers une autre colon
 
 <WorkflowDemo />
 
-Si vous créez une tâche dans un projet sans choisir de responsable et que son statut prévoit un passage de relais, elle est confiée directement au responsable de cette étape ; un agent commence aussitôt. La fenêtre de création indique à qui elle sera confiée. Pour la créer sans rien lancer, placez-la dans Backlog.
+Si vous créez une tâche dans un projet et que son statut prévoit un passage de relais, elle est confiée directement au responsable de cette étape, même si vous avez choisi un responsable ; un agent commence aussitôt. La fenêtre de création indique à qui elle sera confiée. Pour la créer sans rien lancer, placez-la dans Backlog.
 
 Si le responsable précédent est un agent dont l’exécution est encore en cours ou en attente, la confirmation propose en plus de l’arrêter ou de l’annuler, option cochée par défaut. Laissez-la cochée, sauf si vous voulez que les deux agents travaillent en même temps ; ses commentaires publiés et le travail déjà enregistré sont conservés.
 

@@ -547,6 +547,9 @@ cleared_pr_events AS (
 ),
 cleared_review_admissions AS (
     DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_unread AS (
+    DELETE FROM issue_unread WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target)
 `

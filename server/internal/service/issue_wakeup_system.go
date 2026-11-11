@@ -158,6 +158,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	// pairKey is the one key the build before CHE-1665 recorded for DIRTY and
 	// BEHIND alike on a head and base pair.
 	var pairKey string
+	// failedKey is the key a failing run of the same head recorded; a green after
+	// it is a re-run, not the first green of the head.
+	var failedKey string
 	switch in.Rule {
 	case SystemRulePRMerged:
 		if in.MergeCommit == "" {
@@ -174,6 +177,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return fmt.Errorf("invalid passing pull request checks input")
 		}
 		eventType = "pr.checks_passed"
+		failedKey = eventKey + ":" + in.HeadSHA
 		eventKey += ":passed:" + in.HeadSHA
 	case SystemRulePRDequeued:
 		// Keyed on signed content only: head, GitHub's reason and the payload's
@@ -325,6 +329,18 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	if !held {
 		if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
 			return err
+		}
+	}
+	if failedKey != "" {
+		var rerun bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_wakeup_pr_event e JOIN issue_wakeup x ON x.id=e.wakeup_id
+			WHERE x.issue_id=$1 AND e.event_key=$2)`, issue.ID, failedKey).Scan(&rerun); err != nil {
+			return err
+		}
+		// ponytail: one extra green per head. A second red on the head is deduped
+		// like the first, so a second re-run does not wake again.
+		if rerun {
+			eventKey += ":after-red"
 		}
 	}
 	// A BEHIND is covered by any earlier wake on its pair, including a
