@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -255,5 +256,52 @@ func TestPersonWakeNowIsNeverSkipped(t *testing.T) {
 	}
 	if got := wakeRuns(t, e.f, id); got != 2 {
 		t.Fatalf("heartbeat runs after wake now = %d, want 2", got)
+	}
+}
+
+// CHE-4984 (CHE-2795): the cron conflict heartbeat reads only PR mergeability,
+// so the platform can tell nothing changed.
+const conflictHeartbeatText = "Read mergeable and mergeStateStatus of the PR. On CONFLICTING or DIRTY, merge the base and push."
+
+func (e skipEnv) conflictHeartbeat(t *testing.T) pgtype.UUID {
+	t.Helper()
+	w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "cron", CronExpression: "0 */4 * * *", Instruction: conflictHeartbeatText})
+	e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2 WHERE id=$1`, w.ID, dbid.NewV7())
+	return w.ID
+}
+
+func TestConflictHeartbeatSkipsWhenPRStateUnchangedAndShowsInRuns(t *testing.T) {
+	e := newSkipEnv(t, true)
+	id := e.conflictHeartbeat(t)
+	wakeTick(t, e.f, e.s, id)
+	e.finishRuns(t, "completed")
+	wakeTick(t, e.f, e.s, id)
+	if got := wakeRuns(t, e.f, id); got != 1 {
+		t.Fatalf("heartbeat runs after an unchanged PR = %d, want 1", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities = %d, want 1", got)
+	}
+	rows, err := e.f.q.ListWakeupRuns(context.Background(), db.ListWakeupRunsParams{WakeupID: util.UUIDToString(id), IssueID: e.issue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Status != "skipped" || rows[0].CheckinNote != wakeupOutcomeUnchanged {
+		t.Fatalf("runs list = %+v, want the skip first, then the run", rows)
+	}
+}
+
+func TestConflictHeartbeatRunsAgainWhenHeadChanged(t *testing.T) {
+	e := newSkipEnv(t, true)
+	id := e.conflictHeartbeat(t)
+	wakeTick(t, e.f, e.s, id)
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `UPDATE github_pull_request SET head_sha='h2' WHERE id=$1`, e.prID)
+	wakeTick(t, e.f, e.s, id)
+	if got := wakeRuns(t, e.f, id); got != 2 {
+		t.Fatalf("heartbeat runs after a new head = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities = %d, want 0", got)
 	}
 }

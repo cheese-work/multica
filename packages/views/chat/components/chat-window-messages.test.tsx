@@ -162,10 +162,11 @@ describe("floating chat message lifetime", () => {
 
     setOpen(false);
     expect(screen.getByTestId("messages")).toHaveAttribute("data-active", "false");
-    await waitFor(() => expect(screen.queryByTestId("messages")).not.toBeInTheDocument());
-    // The observer unsubscribes in a passive effect cleanup, which can run
-    // after the node has left the DOM.
-    await waitFor(() => expect(observers()).toBe(0));
+    // The observer leaves in the unmount's passive cleanup, which can trail the DOM removal.
+    await waitFor(() => {
+      expect(screen.queryByTestId("messages")).not.toBeInTheDocument();
+      expect(observers()).toBe(0);
+    });
 
     act(() => qc.setQueryData(key, pages([message("arrived while closed")])));
     setOpen(true);

@@ -69,6 +69,37 @@ curl https://api.multica.ai/api/issues \
 
 脚本中的令牌取自 secret manager 或受保护的环境变量，不要硬编码。自托管实例把域名替换为自己的公开 API 地址。
 
+## CI 专用的限定范围令牌
+
+创建 PAT 时可以带上 `scopes` 列表。限定范围的 PAT 只开放该范围的路由，不开放其他路由。服务器每次调用都从令牌记录中读取范围，因此被吊销或被重新限定范围的令牌会立即失效。PAT 的用户必须是工作区所有者。
+
+| 范围 | 开放的路由 |
+| --- | --- |
+| `decisions:feed` | `GET /api/decisions/feed` 及其确认 |
+| `decisions:ci_request` | `POST /api/decisions/ci` |
+
+`decisions:ci_request` 让没有正在运行的智能体任务的 CI 作业可以创建一张决策卡。卡片的类别固定为 `deploy`，针对指定的 issue 和指定的成员（`for`）。请求体包含结构化的 `ask`、`candidate_sha`（7 到 64 位十六进制）和 `candidate_at`（RFC 3339 提交时间）。不能包含 `action`，也不能包含被覆盖的卡片。
+
+```bash
+curl -X POST https://api.multica.ai/api/decisions/ci \
+  -H "Authorization: Bearer $MULTICA_CI_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issue_id": "<issue-id>",
+    "for": "<member-user-id>",
+    "ask": { ... },
+    "candidate_sha": "<commit-sha>",
+    "candidate_at": "2026-11-10T07:32:29Z"
+  }'
+```
+
+- 某个 SHA 的首次调用返回 `201` 和新卡片。
+- 再次使用同一个 SHA 返回 `200` 和已有卡片，不会重复创建。
+- 更新的 SHA（按 `candidate_at` 判断）会撤回该 issue 上较旧的未处理卡片。
+- 在更新的 SHA 之后提交较旧的 SHA 返回 `409`，且不创建任何内容。
+- 其他凭据、没有该范围的 PAT，或用户不是工作区所有者的 PAT，返回 `403`。
+
 ## 退出登录与吊销
 
 `multica auth logout` 只删除当前 CLI profile 中保存的 PAT；Web 退出登录只删除当前浏览器的 cookie。它们不会吊销服务器上的个人访问令牌。

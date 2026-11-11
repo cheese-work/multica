@@ -6338,6 +6338,16 @@ type TaskMessageBatchRequest struct {
 	Messages []TaskMessageRequest `json:"messages"`
 }
 
+// sealsChatText reports whether a batch holds a row that ends a text block.
+func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
+	for _, m := range rows {
+		if m.Type != string(agent.MessageText) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReportTaskMessages receives a batch of agent execution messages from the daemon.
 func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
@@ -6506,6 +6516,18 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 				ChatSessionOwnerID: scope.ChatSessionOwnerID,
 				Payload:            taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)),
 			})
+		}
+	}
+
+	// A non-text row seals the text before it, so an agent line that came before
+	// a tool call is final now: show it in the DM instead of waiting for the end
+	// of the turn, and keep it if the turn fails or is cancelled (CHE-4704).
+	// Best-effort: the completion path writes whatever this misses.
+	if task.ChatSessionID.Valid && sealsChatText(created) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if err := h.TaskService.PublishChatInterimMessages(ctx, task); err != nil {
+			slog.Warn("publish chat interim messages failed", "task_id", taskID, "error", err)
 		}
 	}
 
