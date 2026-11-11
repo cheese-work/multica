@@ -310,8 +310,6 @@ func run(t *testing.T, f *fakeEnv, pol *Policy, args ...string) (int, string, st
 	return code, out.String(), errb.String()
 }
 
-func boolp(b bool) *bool { return &b }
-
 // policyWith is the built-in plugins plus a review rule.
 func policyWith(rules ...ReviewRule) *Policy {
 	p := DefaultPolicy()
