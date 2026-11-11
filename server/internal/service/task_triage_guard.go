@@ -143,6 +143,10 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
+	// Before the budget: a loop is refused whatever the budget has left.
+	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	gate, err := guardRunBudget(ctx, q, issueID, target)
 	if err != nil {
 		return ReviewGate{}, err

@@ -149,6 +149,7 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 		return nil, err
 	}
 	keepStoredEntry(steps, live)
+	keepStoredWaits(steps, inputs, live)
 	name, description, steps := issueworkflow.Normalize(workflow.Name, workflow.Description, steps)
 	catalog, err := workflowSteps.workflowStatusCatalog(ctx, queries, workflow.WorkspaceID)
 	if err != nil {

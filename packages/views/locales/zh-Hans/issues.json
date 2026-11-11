@@ -455,7 +455,8 @@
   },
   "list": {
     "empty_status": "无任务",
-    "add_issue_tooltip": "新建任务"
+    "add_issue_tooltip": "新建任务",
+    "unread_mention": "未读的提及"
   },
   "swimlane": {
     "no_parent": "无父级",
@@ -819,6 +820,9 @@
     "hover_header_queued_other": "{{count}} 个智能体排队中",
     "status_running": "正在工作",
     "status_queued": "排队中",
+    "unread_completed": "{{agent}} 已完成运行 · {{time}}",
+    "unread_failed": "{{agent}} 运行失败 · {{time}}",
+    "unread_manual": "已标为未读",
     "empty_hover": "当前没有智能体在工作",
     "unknown_hover": "工作中的智能体：尚未加载",
     "filter_active_label": "正在查看有智能体在工作的任务",
@@ -1004,6 +1008,8 @@
     "open_in_new_tab": "在新标签页打开",
     "pin_to_sidebar": "固定到侧边栏",
     "unpin_from_sidebar": "从侧边栏取消固定",
+    "mark_read": "标为已读",
+    "mark_unread": "标为未读",
     "copy_link": "复制链接",
     "copy_workdir_path": "复制本地 workdir 路径",
     "copy_project_directory_path": "复制项目目录路径",
@@ -1626,6 +1632,8 @@
       "name": "名称",
       "name_placeholder": "例如：研发流程",
       "description": "描述",
+      "max_runs": "每个 Issue 的最大运行次数",
+      "max_runs_invalid": "请输入 1 到 {{max}} 的整数，留空则使用默认值（{{default}}）。",
       "steps": "步骤",
       "add_step": "添加步骤",
       "start": "起始",

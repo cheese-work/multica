@@ -1,0 +1,23 @@
+2026-11-06T04:50:25.7365445Z ##[group]Run python3 .github/scripts/cache-policy.py
+2026-11-06T04:50:25.7366632Z [36;1mpython3 .github/scripts/cache-policy.py[0m
+2026-11-06T04:50:25.7388595Z shell: /usr/bin/bash -e {0}
+2026-11-06T04:50:25.7389250Z env:
+2026-11-06T04:50:25.7399312Z   GH_TOKEN: ***
+2026-11-06T04:50:25.7399811Z ##[endgroup]
+2026-11-06T04:50:26.1486435Z gh: API rate limit exceeded for installation. If you reach out to GitHub Support for help, please include the request ID 5800:BDDA5:FF215F:16DA245:6AED5C91 and timestamp 2026-11-06 04:50:26 UTC. For more on scraping GitHub and how it may affect your rights, please review our Terms of Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service) (HTTP 403)
+2026-11-06T04:50:26.2245119Z Traceback (most recent call last):
+2026-11-06T04:50:26.2351973Z   File "/home/runner/work/multica/multica/.github/scripts/cache-policy.py", line 98, in <module>
+2026-11-06T04:50:26.2352891Z     main()
+2026-11-06T04:50:26.2353768Z   File "/home/runner/work/multica/multica/.github/scripts/cache-policy.py", line 56, in main
+2026-11-06T04:50:26.2354708Z     default_ref = "refs/heads/" + api(f"repos/{repository}")["default_branch"]
+2026-11-06T04:50:26.2355475Z                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-06T04:50:26.2356258Z   File "/home/runner/work/multica/multica/.github/scripts/cache-policy.py", line 45, in api
+2026-11-06T04:50:26.2357298Z     return json.loads(subprocess.check_output(["gh", "api", endpoint], text=True))
+2026-11-06T04:50:26.2358099Z                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-06T04:50:26.2359062Z   File "/usr/lib/python3.12/subprocess.py", line 466, in check_output
+2026-11-06T04:50:26.2359857Z     return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+2026-11-06T04:50:26.2360520Z            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-11-06T04:50:26.2361134Z   File "/usr/lib/python3.12/subprocess.py", line 571, in run
+2026-11-06T04:50:26.2361829Z     raise CalledProcessError(retcode, process.args,
+2026-11-06T04:50:26.2362827Z subprocess.CalledProcessError: Command '['gh', 'api', 'repos/cheese-work/multica']' returned non-zero exit status 1.
+2026-11-06T04:50:26.2453483Z ##[error]Process completed with exit code 1.

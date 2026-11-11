@@ -195,6 +195,12 @@ SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND status = 'open'
+)::boolean;
+
 -- name: ListDecisionPingRetries :many
 SELECT * FROM decision_request
 WHERE authority = 'human' AND origin = 'asked' AND ping_notified_at IS NULL
@@ -602,3 +608,11 @@ FOR UPDATE;
 UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
+
+-- name: ListCIDecisionRequests :many
+-- Every card a CI job opened on the issue, any status. The fingerprint carries
+-- the candidate SHA and its commit time; the caller holds the workspace lock.
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND request_fingerprint LIKE 'server:ci:%'
+ORDER BY created_at, id;

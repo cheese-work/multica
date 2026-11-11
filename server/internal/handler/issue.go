@@ -3745,6 +3745,20 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Outside any project, with no override, the issue takes the Default's
+	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
+	if !workflowProjectID.Valid && createWorkflow == nil {
+		outside, err := issueworkflow.OutsideProject(r.Context(), h.Queries, wsUUID)
+		if err != nil {
+			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return
+		}
+		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
+			writeIssueWorkflowError(w, err)
+			return
+		}
+	}
 	if createWorkflow != nil {
 		// A creator who picked no status gets the workflow's start status.
 		if req.Status == "" {
@@ -3754,22 +3768,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeIssueWorkflowError(w, err)
 			return
 		}
-		if req.AssigneeType == nil && req.AssigneeID == nil {
-			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
-				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
-				if err != nil {
-					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
-					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+		// A named assignee is left alone here: the service swaps in the handler
+		// under the locks, so a workflow switch cannot leave the former handler
+		// in place of it.
+		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
+			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
+			if err != nil {
+				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+				return
+			}
+			if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
+				assigneeType = pgtype.Text{String: t, Valid: true}
+				assigneeID = id
+				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
+					writeError(w, status, msg)
 					return
-				}
-				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
-					assigneeType = pgtype.Text{String: t, Valid: true}
-					assigneeID = id
-					if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
-						writeError(w, status, msg)
-						return
-					}
 				}
 			}
 		}
@@ -3937,11 +3952,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var handoffResolver service.CreateHandoffResolver
-	if req.AssigneeType == nil && req.AssigneeID == nil {
-		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
-	}
+	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -3955,6 +3967,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
 		Title:           req.Title,
@@ -4660,7 +4673,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
+	suppressRun := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
@@ -4821,7 +4834,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 		updatedPayload["workflow_handoff"] = handoffPayload
 		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
@@ -5620,7 +5634,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
+		suppressRun := req.Updates.SuppressRun
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
@@ -5748,7 +5762,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 			batchPayload["workflow_handoff"] = handoffPayload
 			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 		}

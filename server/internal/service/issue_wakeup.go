@@ -515,6 +515,11 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			return out, e
 		}
 		condition, in.EventTypes = normalized, hints
+		if !existingID.Valid {
+			if err := refuseRepeatChecksFinished(ctx, tx, issueID, source, condition); err != nil {
+				return out, err
+			}
+		}
 		// The scheduler evaluates the condition on its first tick.
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
@@ -1448,6 +1453,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		enabled = false
 		next = pgtype.Timestamptz{}
 	}
+	heartbeatFP := ""
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1499,6 +1505,38 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			if held, err := s.customActiveRun(ctx, q, w, custom, current, receipts, deferring, now, next, note); err != nil {
 				return err
 			} else if held {
+				return commit()
+			}
+		}
+		// CHE-4984: a scheduled conflict heartbeat over a PR that is as it was
+		// when the last heartbeat run started adds nothing, so it starts no run.
+		if scheduled && custom == nil && isConflictHeartbeat(w) {
+			if heartbeatFP, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+				return err
+			}
+			if heartbeatFP != "" {
+				// An edited rule is not what the last run answered.
+				heartbeatFP += fmt.Sprintf("|%d|%s", w.Revision, w.Instruction)
+			}
+			lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), heartbeatFP)
+			if err != nil {
+				return err
+			}
+			if unchanged {
+				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+					return err
+				}
+				if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+					return err
+				}
+				if timedOut {
+					if err := markTimedOut(); err != nil {
+						return err
+					}
+				}
+				if err := note(wakeupActivitySkipped, skippedUnchangedDetails("conflict_heartbeat", lastTask)); err != nil {
+					return err
+				}
 				return commit()
 			}
 		}
@@ -1622,6 +1660,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
+		}
+		if heartbeatFP != "" {
+			taskContext[wakeupFingerprintKey] = heartbeatFP
 		}
 		contextJSON, _ := json.Marshal(taskContext)
 		// A custom rule's resolved target carries its own squad identity.
