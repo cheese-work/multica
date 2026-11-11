@@ -216,3 +216,33 @@ WHERE r.state = 'held'
       WHERE t.issue_id = r.issue_id AND t.agent_id = r.agent_id AND t.status IN ('queued', 'deferred')
   )
 RETURNING r.*;
+
+-- name: InsertAdmissionRelease :exec
+-- The release an ended run owes its project (CHE-5265). Written in the run's
+-- terminal transaction; a repeat for the same run changes nothing.
+INSERT INTO admission_release (task_id, project_id) VALUES (@task_id, @project_id)
+ON CONFLICT (task_id) DO NOTHING;
+
+-- name: ListAdmissionReleaseTasks :many
+SELECT task_id FROM admission_release WHERE project_id = $1;
+
+-- name: DeleteAdmissionReleases :exec
+-- Deletes exactly the rows a release read; rows inserted since stay.
+DELETE FROM admission_release WHERE task_id = ANY(@task_ids::uuid[]);
+
+-- name: ListAdmissionReleaseProjects :many
+-- The job's work list: projects that owe a release. The table stays small
+-- because a release deletes what it delivered.
+SELECT DISTINCT project_id FROM admission_release;
+
+-- name: CountHeldProjectTasks :one
+-- Held runs of one project, without a lock: ListHeldProjectTasks skips locked
+-- rows, so count minus listed is the number it skipped.
+SELECT count(*)::bigint FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id, cs.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held';

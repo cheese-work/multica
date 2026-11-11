@@ -75,6 +75,26 @@ func (q *Queries) BindHeldRunInputs(ctx context.Context, arg BindHeldRunInputsPa
 	return items, nil
 }
 
+const countHeldProjectTasks = `-- name: CountHeldProjectTasks :one
+SELECT count(*)::bigint FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+LEFT JOIN autopilot_run ar ON ar.id = t.autopilot_run_id AND t.issue_id IS NULL
+LEFT JOIN autopilot ap ON ap.id = ar.autopilot_id
+LEFT JOIN chat_session cs ON cs.id = t.chat_session_id AND t.issue_id IS NULL
+WHERE COALESCE(i.project_id,
+         CASE WHEN t.context ->> 'type' = 'quick_create' THEN NULLIF(t.context ->> 'project_id', '')::uuid END,
+         ap.project_id, cs.project_id) = $1 AND t.status = 'queued' AND t.admission_state = 'held'
+`
+
+// Held runs of one project, without a lock: ListHeldProjectTasks skips locked
+// rows, so count minus listed is the number it skipped.
+func (q *Queries) CountHeldProjectTasks(ctx context.Context, projectID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countHeldProjectTasks, projectID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const countProjectWIP = `-- name: CountProjectWIP :one
 SELECT count(*)::bigint FROM agent_task_queue t
 LEFT JOIN issue i ON i.id = t.issue_id
@@ -100,6 +120,16 @@ func (q *Queries) CountProjectWIP(ctx context.Context, arg CountProjectWIPParams
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const deleteAdmissionReleases = `-- name: DeleteAdmissionReleases :exec
+DELETE FROM admission_release WHERE task_id = ANY($1::uuid[])
+`
+
+// Deletes exactly the rows a release read; rows inserted since stay.
+func (q *Queries) DeleteAdmissionReleases(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteAdmissionReleases, taskIds)
+	return err
 }
 
 const deliverRunInputs = `-- name: DeliverRunInputs :exec
@@ -443,6 +473,23 @@ func (q *Queries) HoldClaimedTask(ctx context.Context, arg HoldClaimedTaskParams
 	return i, err
 }
 
+const insertAdmissionRelease = `-- name: InsertAdmissionRelease :exec
+INSERT INTO admission_release (task_id, project_id) VALUES ($1, $2)
+ON CONFLICT (task_id) DO NOTHING
+`
+
+type InsertAdmissionReleaseParams struct {
+	TaskID    pgtype.UUID `json:"task_id"`
+	ProjectID pgtype.UUID `json:"project_id"`
+}
+
+// The release an ended run owes its project (CHE-5265). Written in the run's
+// terminal transaction; a repeat for the same run changes nothing.
+func (q *Queries) InsertAdmissionRelease(ctx context.Context, arg InsertAdmissionReleaseParams) error {
+	_, err := q.db.Exec(ctx, insertAdmissionRelease, arg.TaskID, arg.ProjectID)
+	return err
+}
+
 const insertCoalescedRunInput = `-- name: InsertCoalescedRunInput :one
 INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload)
 SELECT $1, $2, $3, $4, $5, $6
@@ -536,6 +583,56 @@ func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listAdmissionReleaseProjects = `-- name: ListAdmissionReleaseProjects :many
+SELECT DISTINCT project_id FROM admission_release
+`
+
+// The job's work list: projects that owe a release. The table stays small
+// because a release deletes what it delivered.
+func (q *Queries) ListAdmissionReleaseProjects(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAdmissionReleaseProjects)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var project_id pgtype.UUID
+		if err := rows.Scan(&project_id); err != nil {
+			return nil, err
+		}
+		items = append(items, project_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAdmissionReleaseTasks = `-- name: ListAdmissionReleaseTasks :many
+SELECT task_id FROM admission_release WHERE project_id = $1
+`
+
+func (q *Queries) ListAdmissionReleaseTasks(ctx context.Context, projectID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAdmissionReleaseTasks, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var task_id pgtype.UUID
+		if err := rows.Scan(&task_id); err != nil {
+			return nil, err
+		}
+		items = append(items, task_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listExpiredReservations = `-- name: ListExpiredReservations :many

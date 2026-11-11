@@ -97,28 +97,34 @@ func admitClaimedTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue
 
 // releaseLocked admits held runs of the project in focus order while a slot is
 // free. The caller holds the project's admission lock. skip leaves out runs that
-// just came back from an expired reservation.
-func releaseLocked(ctx context.Context, q *db.Queries, projectID pgtype.UUID, skip map[pgtype.UUID]bool) ([]db.AgentTaskQueue, error) {
+// just came back from an expired reservation. skipped counts held runs another
+// transaction had locked, so the release did not see them; a closed (paused or
+// inactive) project skips none: its held runs wait for its own release event.
+func releaseLocked(ctx context.Context, q *db.Queries, projectID pgtype.UUID, skip map[pgtype.UUID]bool) (admitted []db.AgentTaskQueue, skipped int, err error) {
 	project, err := q.GetProjectAdmission(ctx, projectID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if ProjectInactive(project.Status) || project.Status == "paused" {
-		return nil, nil
+		return nil, 0, nil
+	}
+	heldCount, err := q.CountHeldProjectTasks(ctx, projectID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count held runs: %w", err)
 	}
 	held, err := q.ListHeldProjectTasks(ctx, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("list held runs: %w", err)
+		return nil, 0, fmt.Errorf("list held runs: %w", err)
 	}
+	skipped = max(0, int(heldCount)-len(held))
 	limit := wipLimit(project.Settings)
 	count, err := q.CountProjectWIP(ctx, db.CountProjectWIPParams{ProjectID: projectID})
 	if err != nil {
-		return nil, fmt.Errorf("count project wip: %w", err)
+		return nil, 0, fmt.Errorf("count project wip: %w", err)
 	}
-	var admitted []db.AgentTaskQueue
 	for _, h := range held {
 		if skip[h.ID] {
 			continue
@@ -126,7 +132,7 @@ func releaseLocked(ctx context.Context, q *db.Queries, projectID pgtype.UUID, sk
 		if limit == 0 {
 			t, err := q.UnholdTask(ctx, h.ID)
 			if err != nil {
-				return nil, fmt.Errorf("admit held run: %w", err)
+				return nil, 0, fmt.Errorf("admit held run: %w", err)
 			}
 			admitted = append(admitted, t)
 			continue
@@ -136,12 +142,12 @@ func releaseLocked(ctx context.Context, q *db.Queries, projectID pgtype.UUID, sk
 		}
 		t, err := q.ReserveHeldTask(ctx, db.ReserveHeldTaskParams{ID: h.ID, LeaseID: dbid.NewV7(), LeaseSecs: reservationLease.Seconds()})
 		if err != nil {
-			return nil, fmt.Errorf("reserve held run: %w", err)
+			return nil, 0, fmt.Errorf("reserve held run: %w", err)
 		}
 		count++
 		admitted = append(admitted, t)
 	}
-	return admitted, nil
+	return admitted, skipped, nil
 }
 
 func (s *TaskService) notifyAdmitted(tasks []db.AgentTaskQueue) {
@@ -151,22 +157,37 @@ func (s *TaskService) notifyAdmitted(tasks []db.AgentTaskQueue) {
 }
 
 // ReleaseProjectAdmission is the one release event: unpause, a run ending, a
-// priority change or a WIP-limit change all end here.
+// priority change or a WIP-limit change all end here. It also delivers the
+// releases owed by ended runs (admission_release): it deletes exactly the rows
+// it read at its start, and only when no held run was skipped behind a lock.
 func (s *TaskService) ReleaseProjectAdmission(ctx context.Context, projectID pgtype.UUID) error {
 	if !projectID.Valid || s.TxStarter == nil {
 		return nil
 	}
 	var admitted []db.AgentTaskQueue
 	err := s.runInTx(ctx, func(q *db.Queries) error {
-		if _, err := lockProjectAdmission(ctx, q, projectID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil
-			}
+		_, err := lockProjectAdmission(ctx, q, projectID)
+		gone := errors.Is(err, pgx.ErrNoRows)
+		if err != nil && !gone {
 			return err
 		}
-		var err error
-		admitted, err = releaseLocked(ctx, q, projectID, nil)
-		return err
+		owed, err := q.ListAdmissionReleaseTasks(ctx, projectID)
+		if err != nil {
+			return fmt.Errorf("list owed releases: %w", err)
+		}
+		var skipped int
+		if !gone { // a deleted project has nothing to admit; its rows just go
+			if admitted, skipped, err = releaseLocked(ctx, q, projectID, nil); err != nil {
+				return err
+			}
+		}
+		if s.afterReleaseRead != nil {
+			s.afterReleaseRead()
+		}
+		if skipped > 0 || len(owed) == 0 {
+			return nil
+		}
+		return q.DeleteAdmissionReleases(ctx, owed)
 	})
 	if err != nil {
 		return err
@@ -175,9 +196,26 @@ func (s *TaskService) ReleaseProjectAdmission(ctx context.Context, projectID pgt
 	return nil
 }
 
-// ReleaseObligations delivers every release owed by an ended run.
+// ReleaseObligations delivers, for every project that owes a release, the
+// release of the ended runs, and returns how many projects it released. One
+// project's failure is logged and does not stop the others. Delivery is at
+// least once: a second release of a project with nothing held changes nothing.
 func (s *TaskService) ReleaseObligations(ctx context.Context) (int, error) {
-	return 0, nil
+	projects, err := s.Queries.ListAdmissionReleaseProjects(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list projects owing a release: %w", err)
+	}
+	released := 0
+	var errs []error
+	for _, p := range projects {
+		if err := s.ReleaseProjectAdmission(ctx, p); err != nil {
+			slog.Warn("release owed by an ended run failed; the next tick retries", "project_id", util.UUIDToString(p), "error", err)
+			errs = append(errs, err)
+			continue
+		}
+		released++
+	}
+	return released, errors.Join(errs...)
 }
 
 // releaseAfterRun runs after a run's end committed. It is cheap when nothing is held.
@@ -198,7 +236,7 @@ func (s *TaskService) releaseAfterRun(tasks ...db.AgentTaskQueue) {
 			continue
 		}
 		if err := s.releaseWithRetry(ctx, projectID); err != nil {
-			slog.Warn("release project admission failed; the next release event in the project or a restart delivers it", "project_id", util.UUIDToString(projectID), "error", err)
+			slog.Warn("release project admission failed; the job delivers it from the ended run's admission_release row", "project_id", util.UUIDToString(projectID), "error", err)
 		}
 	}
 }
@@ -248,11 +286,11 @@ func (s *TaskService) ExpireDueReservations(ctx context.Context) (int, error) {
 			}
 			won = true
 			// Next held run first; the expired run only takes a slot nobody else wants.
-			first, err := releaseLocked(ctx, q, d.ProjectID, map[pgtype.UUID]bool{t.ID: true})
+			first, _, err := releaseLocked(ctx, q, d.ProjectID, map[pgtype.UUID]bool{t.ID: true})
 			if err != nil {
 				return err
 			}
-			second, err := releaseLocked(ctx, q, d.ProjectID, nil)
+			second, _, err := releaseLocked(ctx, q, d.ProjectID, nil)
 			admitted = slices.Concat(first, second)
 			return err
 		})
@@ -278,7 +316,8 @@ func (s *TaskService) PurgeWriteEvents(ctx context.Context) (int64, error) {
 
 // ReconcileAdmission is the restart-time admission pass: events lost with the
 // process (a release that never ran, a lapsed lease) are delivered once. Nothing
-// calls it on a timer; the tick job delivers only due lease-expiry events.
+// calls it on a timer; the tick job delivers due lease-expiry events and the
+// releases owed by ended runs (ReleaseObligations).
 func (s *TaskService) ReconcileAdmission(ctx context.Context) error {
 	if _, err := s.ExpireDueReservations(ctx); err != nil {
 		return err
@@ -432,6 +471,26 @@ func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, 
 		return nil
 	}
 	return err
+}
+
+// settleAdmissionRelease records, in the run's terminal transaction, the release
+// the ended run owes its project. A failed project lookup aborts the end. A run
+// without a project owes nothing. The row is deleted by the release that
+// delivers it, so a failed or skipped fast path is retried by the job.
+func settleAdmissionRelease(ctx context.Context, q *db.Queries, tasks ...db.AgentTaskQueue) error {
+	for _, t := range tasks {
+		projectID, err := q.GetTaskProjectID(ctx, t.ID)
+		if err != nil {
+			return fmt.Errorf("get task project for release: %w", err)
+		}
+		if !projectID.Valid {
+			continue
+		}
+		if err := q.InsertAdmissionRelease(ctx, db.InsertAdmissionReleaseParams{TaskID: t.ID, ProjectID: projectID}); err != nil {
+			return fmt.Errorf("record owed release: %w", err)
+		}
+	}
+	return nil
 }
 
 // settleRunInputs is the acknowledgement. Only a completed run delivers its

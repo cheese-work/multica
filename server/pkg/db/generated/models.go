@@ -22,6 +22,12 @@ type ActivityLog struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AdmissionRelease struct {
+	TaskID    pgtype.UUID        `json:"task_id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Agent struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`

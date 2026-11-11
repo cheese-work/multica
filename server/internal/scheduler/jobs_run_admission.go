@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -11,6 +12,11 @@ type AdmissionExpirer interface {
 	ReleaseObligations(ctx context.Context) (int, error)
 }
 
+// RunAdmissionExpiryJob also delivers the release an ended run owes its project
+// (CHE-5265): the run's terminal transaction stores the obligation, the fast
+// path after the commit delivers it when it can, and this tick delivers what a
+// failed, skipped or never-run fast path left.
+//
 // RunAdmissionExpiryJob delivers the durable lease-expiry event of a reserved
 // run (CHE-5213): the reservation stores its own expiry time, and a reservation
 // nobody claimed returns to held and the slot goes to the next held run. The
@@ -23,8 +29,9 @@ func RunAdmissionExpiryJob(admission AdmissionExpirer) JobSpec {
 		RunTimeout: 30 * time.Second, StaleTimeout: time.Minute, HeartbeatInterval: 10 * time.Second,
 		AllowStaleReentry: true, MaxAttempts: 1, Scopes: StaticScopes(ScopeGlobal),
 		Handler: func(ctx context.Context, _ HandlerInput) (HandlerResult, error) {
-			n, err := admission.ExpireDueReservations(ctx)
-			return HandlerResult{RowsAffected: int64(n)}, err
+			expired, expireErr := admission.ExpireDueReservations(ctx)
+			released, releaseErr := admission.ReleaseObligations(ctx)
+			return HandlerResult{RowsAffected: int64(expired + released)}, errors.Join(expireErr, releaseErr)
 		},
 	}
 }

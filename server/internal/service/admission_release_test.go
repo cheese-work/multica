@@ -30,13 +30,17 @@ func (e *admEnv) obligations() []string {
 		}
 		out = append(out, id)
 	}
-	e.t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM admission_release WHERE project_id = $1`, e.project) })
+	e.t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM admission_release WHERE project_id = $1`, e.project)
+	})
 	return out
 }
 
 func (e *admEnv) addObligation(task pgtype.UUID) {
 	e.t.Helper()
-	e.t.Cleanup(func() { e.pool.Exec(context.Background(), `DELETE FROM admission_release WHERE project_id = $1`, e.project) })
+	e.t.Cleanup(func() {
+		e.pool.Exec(context.Background(), `DELETE FROM admission_release WHERE project_id = $1`, e.project)
+	})
 	if _, err := e.pool.Exec(context.Background(), `INSERT INTO admission_release (task_id, project_id) VALUES ($1, $2)`, task, e.project); err != nil {
 		e.t.Fatalf("insert obligation: %v", err)
 	}
@@ -221,6 +225,7 @@ func TestAdmissionReleaseRepeatedDeliveryAdmitsOnce(t *testing.T) {
 	run := e.claim()
 	h1 := e.enqueue(e.issue("medium"))
 	h2 := e.enqueue(e.issue("medium"))
+	e.claim()
 	e.claim()
 	e.endWithoutFastPath(run)
 	var wg sync.WaitGroup

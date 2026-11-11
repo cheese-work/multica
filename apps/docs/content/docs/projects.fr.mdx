@@ -60,7 +60,7 @@ Le **Workflow** du projet définit les colonnes du tableau et qui prend le relai
 
 Une exécution d’un projet `paused` ne démarre pas. Elle reste en file d’attente et ses déclencheurs sont conservés avec leurs identifiants d’événement. Les exécutions déjà en cours continuent. Quand le projet quitte `paused`, les exécutions retenues démarrent une par une selon l’ordre de priorité : priorité du projet, puis priorité de la tâche, puis date de création de la tâche.
 
-Un projet peut aussi plafonner le nombre d’exécutions envoyées, en cours ou réservées en même temps. Définissez-le avec `multica project wip-limit <projet> <n>` ; `none` supprime le plafond (valeur par défaut). Les exécutions au-delà du plafond sont retenues de la même façon et démarrent à mesure que d’autres se terminent.
+Un projet peut aussi plafonner le nombre d’exécutions envoyées, en cours ou réservées en même temps. Définissez-le avec `multica project wip-limit <projet> <n>` ; `none` supprime le plafond (valeur par défaut). Les exécutions au-delà du plafond sont retenues de la même façon et démarrent à mesure que d’autres se terminent. Quand une exécution se termine, sa place libérée passe aussitôt à l’exécution retenue suivante. Si ce passage échoue ou si le serveur s’arrête avant, le serveur le retente environ toutes les 15 secondes jusqu’à ce qu’il réussisse.
 
 Une exécution qui se termine autrement que par `completed` met ses entrées en attente. Rien ne les relance seul. Un membre peut lancer `multica issue inputs list <tâche>`, puis `multica issue inputs resume <tâche>` pour démarrer une exécution avec les mêmes entrées, ou `multica issue inputs discard <tâche>` pour les abandonner.
 

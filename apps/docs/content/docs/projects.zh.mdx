@@ -60,7 +60,7 @@ import { ProjectDemo } from "@/components/demos/project-demo";
 
 处于 `paused` 的项目，其运行不会启动。运行留在队列中，触发连同事件 ID 一起被保留。已经在运行的不受影响。项目离开 `paused` 后，被保留的运行按项目优先级、任务优先级、任务创建时间的顺序逐个启动。
 
-项目还可以限制同时处于已派发、运行中或已预留的运行数量。用 `multica project wip-limit <project> <n>` 设置，`none` 表示不限制（默认）。超出上限的运行同样被保留，其他运行结束后依次启动。
+项目还可以限制同时处于已派发、运行中或已预留的运行数量。用 `multica project wip-limit <project> <n>` 设置，`none` 表示不限制（默认）。超出上限的运行同样被保留，其他运行结束后依次启动。运行结束后，空出的名额会立即交给下一个被保留的运行。如果该交接失败，或服务器先停止，服务器会约每 15 秒重试一次，直到成功。
 
 以 `completed` 之外的方式结束的运行，会把其输入搁置（parked）。没有任何机制会自动重新启动它们。成员可先用 `multica issue inputs list <issue>` 查看，再用 `multica issue inputs resume <issue>` 以相同输入启动新运行，或用 `multica issue inputs discard <issue>` 丢弃。
 

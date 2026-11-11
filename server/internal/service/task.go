@@ -52,11 +52,11 @@ type TaskService struct {
 	// afterReleaseRead is a test hook: it runs in a release transaction after
 	// the obligation rows are read and before they are deleted.
 	afterReleaseRead func()
-	Hub       *realtime.Hub
-	Bus       *events.Bus
-	Analytics analytics.Client
-	Metrics   *obsmetrics.BusinessMetrics
-	Wakeup    TaskWakeupNotifier
+	Hub              *realtime.Hub
+	Bus              *events.Bus
+	Analytics        analytics.Client
+	Metrics          *obsmetrics.BusinessMetrics
+	Wakeup           TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
@@ -8116,6 +8116,9 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		return err
 	}
 	if err := settleRunInputs(ctx, q, tasks...); err != nil {
+		return err
+	}
+	if err := settleAdmissionRelease(ctx, q, tasks...); err != nil {
 		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {

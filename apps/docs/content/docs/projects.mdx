@@ -60,7 +60,7 @@ Choose the project’s **Workflow** to set its board columns and who takes over 
 
 A run in a `paused` project does not start. It stays queued, and its triggers are held with their event ids. Runs already running keep going. When the project leaves `paused`, held runs start one at a time in focus order: project priority, then issue priority, then issue creation time.
 
-A project can also cap how many runs are dispatched, running or reserved at once. Set it with `multica project wip-limit <project> <n>`; `none` removes the cap (the default). Runs over the cap are held the same way and start as runs end.
+A project can also cap how many runs are dispatched, running or reserved at once. Set it with `multica project wip-limit <project> <n>`; `none` removes the cap (the default). Runs over the cap are held the same way and start as runs end. When a run ends, its freed slot goes to the next held run at once. If that hand-over fails or the server stops first, the server retries it about every 15 seconds until it succeeds.
 
 A run that ends in any way other than `completed` parks its inputs. Nothing starts them again on its own. A member can run `multica issue inputs list <issue>`, then `multica issue inputs resume <issue>` to start a run with the same inputs, or `multica issue inputs discard <issue>` to drop them.
 

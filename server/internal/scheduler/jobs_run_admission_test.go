@@ -33,8 +33,8 @@ func TestRunAdmissionExpiryJobDeliversOnlyDueExpiryEvents(t *testing.T) {
 	if f.expire != 1 || f.reconcile != 0 {
 		t.Fatalf("tick ran expire=%d reconcile=%d, want expire=1 reconcile=0", f.expire, f.reconcile)
 	}
-	if res.RowsAffected != 2 {
-		t.Fatalf("RowsAffected = %d, want 2", res.RowsAffected)
+	if res.RowsAffected != 5 { // 2 expired + 3 released by the fake
+		t.Fatalf("RowsAffected = %d, want 5", res.RowsAffected)
 	}
 }
 
