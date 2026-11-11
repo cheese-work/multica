@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1905,7 +1907,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -4494,10 +4496,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_count_running"
 			return fmt.Errorf("count running tasks: %w", err)
 		}
-		if running >= int64(agent.MaxConcurrentTasks) {
+		// At the cap, one extra urgent task may still start (CHE-5118). Running
+		// above cap+1 means the reserved slot is already used.
+		var minPriority int32
+		atCap := running >= int64(agent.MaxConcurrentTasks)
+		if atCap {
 			decisionDetail = claimDecisionDetail{running: running, maxConcurrent: int64(agent.MaxConcurrentTasks)}
-			outcome = "no_capacity"
-			return nil
+			if running > int64(agent.MaxConcurrentTasks) || !urgentReservedSlotEnabled(agent.RuntimeConfig) {
+				outcome = "no_capacity"
+				return nil
+			}
+			minPriority = priorityToInt("urgent")
 		}
 
 		t0 = time.Now()
@@ -4507,11 +4516,15 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			RuntimeID:        claimRuntimeID,
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+			MinPriority:      minPriority,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				outcome = "no_tasks"
+				if atCap {
+					outcome = "no_capacity"
+				}
 				return nil
 			}
 			outcome = "error_claim"
@@ -5708,6 +5721,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 				}
 			}
 		}
+		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
+			s.stampBlockedDispatchSnapshot(ctx, s.Queries, issue, task)
+		} else {
+			slog.Warn("blocked dispatch completion snapshot unavailable", "issue_id", util.UUIDToString(task.IssueID), "error", err)
+		}
 	}
 
 	// Quick-create tasks: locate the issue the agent just created and push
@@ -5856,6 +5874,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	if err != nil {
 		return nil, err
 	}
+	if _, err := writeChatInterimMessages(ctx, qtx, task, replySessionID, body, true); err != nil {
+		return nil, err
+	}
 	params := db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
 		ChatSessionID: replySessionID,
@@ -5923,6 +5944,208 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		}
 	}
 	return &row, nil
+}
+
+// chatInterimBlock is one message the agent wrote: the contiguous text rows of
+// a turn. The daemon seals a text row every 500 ms and on every type change, so
+// a single sentence can span several rows (CHE-4704); whitespace-only chunks
+// are part of the sentence and must survive the join. A block is sealed once a
+// non-text row follows it, which is the earliest moment it can no longer grow.
+type chatInterimBlock struct {
+	seq    int32
+	text   string
+	sealed bool
+}
+
+func chatInterimBlocks(steps []db.ListTaskTextStepsRow) []chatInterimBlock {
+	var blocks []chatInterimBlock
+	open := false
+	for _, m := range steps {
+		if m.Type != "text" {
+			if open {
+				blocks[len(blocks)-1].sealed = true
+			}
+			open = false
+			continue
+		}
+		if !open {
+			blocks = append(blocks, chatInterimBlock{seq: m.Seq})
+			open = true
+		}
+		blocks[len(blocks)-1].text += m.Content
+	}
+	return blocks
+}
+
+// chatInterimBody is the text a block shows in the DM: the same unescape and
+// quick-actions strip the final reply gets, trimmed of chunk-boundary spaces.
+func chatInterimBody(text string) string {
+	body, _ := splitChatQuickActions(util.UnescapeBackslashEscapes(text))
+	return strings.TrimSpace(body)
+}
+
+type chatInterimMessage struct {
+	seq  int32
+	body string
+}
+
+// selectChatInterimMessages picks the blocks that become their own DM rows.
+// While the turn runs (completing=false) that is every sealed block. At
+// completion the final reply is written separately, so it must not be repeated:
+// finalBody is matched as a suffix of the last block that ends with it, which
+// keeps the text before it — a provider that reports only its last message as
+// Output (Codex) leaves earlier text after the last tool step. Every other
+// block is written, including those after the match, so trailing text is never
+// dropped. With no match (an empty finalBody, or an Output that differs from the
+// streamed text) every block is written; the cost is a repeat only when the
+// Output restates a block in different words.
+func selectChatInterimMessages(blocks []chatInterimBlock, finalBody string, completing bool) []chatInterimMessage {
+	finalBody = strings.TrimSpace(finalBody)
+	var out []chatInterimMessage
+	add := func(seq int32, text string) {
+		if body := chatInterimBody(text); body != "" {
+			out = append(out, chatInterimMessage{seq: seq, body: body})
+		}
+	}
+	final := -1
+	if completing && finalBody != "" {
+		for i := len(blocks) - 1; i >= 0; i-- {
+			if strings.HasSuffix(chatInterimBody(blocks[i].text), finalBody) {
+				final = i
+				break
+			}
+		}
+	}
+	for i, b := range blocks {
+		switch {
+		case i == final:
+			add(b.seq, strings.TrimSuffix(chatInterimBody(b.text), finalBody))
+		case completing:
+			add(b.seq, b.text)
+		case !completing && b.sealed:
+			add(b.seq, b.text)
+		}
+	}
+	return out
+}
+
+// chatInterimMessageID is the deterministic id of the block that starts at seq.
+// The live writer and the completion writer both derive it, so whichever runs
+// second finds the row and skips it. The seq leads the id so rows written in
+// one transaction (same created_at) still sort in transcript order, ahead of
+// the final reply, whose time-ordered id starts with a far larger timestamp.
+func chatInterimMessageID(taskID pgtype.UUID, seq int32) pgtype.UUID {
+	h := sha256.Sum256([]byte("chat-interim:" + util.UUIDToString(taskID) + ":" + strconv.Itoa(int(seq))))
+	var id [16]byte
+	copy(id[:], h[:16])
+	binary.BigEndian.PutUint32(id[:4], uint32(seq))
+	id[6] = id[6]&0x0f | 0x80
+	id[8] = id[8]&0x3f | 0x80
+	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+// writeChatInterimMessages writes the agent's earlier messages of a direct-chat
+// turn as ordinary assistant rows (CHE-4704). Only the final Output became a
+// chat_message, so status lines and multi-part replies stayed in task_message,
+// where the UI folds them into the step block. The rows carry no task_id: with
+// one, web and mobile key them like the final reply and render the whole task
+// timeline under each. Rows that already exist are skipped and returned
+// nothing. Channel tasks are skipped: their outbound pushes every assistant row
+// to Slack/Lark.
+func writeChatInterimMessages(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, sessionID pgtype.UUID, finalBody string, completing bool) ([]db.ChatMessage, error) {
+	if !task.ChatInputTaskID.Valid {
+		return nil, nil
+	}
+	if channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, task.ChatInputTaskID); err != nil {
+		return nil, fmt.Errorf("check interim chat channel provenance: %w", err)
+	} else if channelIngested {
+		return nil, nil
+	}
+	steps, err := qtx.ListTaskTextSteps(ctx, task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list chat task steps: %w", err)
+	}
+	var created []db.ChatMessage
+	for _, m := range selectChatInterimMessages(chatInterimBlocks(steps), finalBody, completing) {
+		id := chatInterimMessageID(task.ID, m.seq)
+		if _, err := qtx.GetChatMessage(ctx, id); err == nil {
+			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("check interim chat message: %w", err)
+		}
+		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			ID:            id,
+			ChatSessionID: sessionID,
+			Role:          "assistant",
+			Content:       redact.Prose(m.body),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create interim chat message: %w", err)
+		}
+		created = append(created, row)
+	}
+	return created, nil
+}
+
+// PublishChatInterimMessages shows the agent's finished messages in the DM
+// while its turn still runs, instead of when the turn ends (CHE-4704). It
+// writes each sealed text block once, so a turn that later fails or is
+// cancelled keeps what the agent already said. Called after each step batch;
+// best-effort, because the completion path writes whatever this missed.
+func (s *TaskService) PublishChatInterimMessages(ctx context.Context, task db.AgentTaskQueue) error {
+	if !task.ChatSessionID.Valid || !task.ChatInputTaskID.Valid {
+		return nil
+	}
+	var created []db.ChatMessage
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+			return err
+		}
+		// Re-read under the session lock: once the task has settled, the
+		// completion or failure path owns the transcript.
+		current, err := qtx.GetAgentTask(ctx, task.ID)
+		if err != nil {
+			return fmt.Errorf("get task for interim chat messages: %w", err)
+		}
+		if current.Status != "running" {
+			return nil
+		}
+		sessionID, err := chatReplySessionID(ctx, qtx, task.ChatSessionID)
+		if err != nil {
+			return err
+		}
+		created, err = writeChatInterimMessages(ctx, qtx, task, sessionID, "", false)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(created) == 0 {
+		return nil
+	}
+	scope := s.ResolveTaskScope(ctx, task)
+	if scope.WorkspaceID == "" {
+		return nil
+	}
+	for _, msg := range created {
+		s.Bus.Publish(events.Event{
+			Type:               protocol.EventChatMessage,
+			WorkspaceID:        scope.WorkspaceID,
+			ActorType:          "agent",
+			ActorID:            util.UUIDToString(task.AgentID),
+			ChatSessionID:      util.UUIDToString(msg.ChatSessionID),
+			ChatSessionOwnerID: scope.ChatSessionOwnerID,
+			Payload: protocol.ChatMessagePayload{
+				ChatSessionID: util.UUIDToString(msg.ChatSessionID),
+				MessageID:     util.UUIDToString(msg.ID),
+				Role:          msg.Role,
+				Content:       msg.Content,
+				CreatedAt:     msg.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+				MessageKind:   msg.MessageKind,
+			},
+		})
+	}
+	return nil
 }
 
 // observeChatOutputLocalPath records a metric when a chat reply references a
@@ -6465,7 +6688,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		notice := redact.Text(errMsg)
+		if isGatewayClassFailureReason(failureReason) {
+			// CHE-4575: raw provider text may carry a mention link; a live
+			// agent mention would enqueue a run for a failure notice.
+			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
+		}
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
@@ -6555,6 +6784,8 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	// gatewayFailureCooldown holds every new claim of an agent after a provider 5xx
+	// or 429 failure, so queued work does not burn a run into the same saturated route.
 	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
@@ -6939,7 +7170,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -8483,11 +8714,34 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 	return delegatedFailureRecoveryCovered, fmt.Errorf("delegate failure recovery could not acquire coordinator task slot")
 }
 
+// isGatewayClassFailureReason reports the provider/gateway failures (transport,
+// capacity, quota, config, unknown) whose terminal failure comment is the whole
+// notice: waking an LLM coordinator cannot fix them (CHE-4575).
+func isGatewayClassFailureReason(reason string) bool {
+	switch taskfailure.Reason(reason) {
+	case taskfailure.ReasonAgentProviderNetwork,
+		taskfailure.ReasonAgentProviderCapacityOrRateLimit,
+		taskfailure.ReasonAgentProviderServerError,
+		taskfailure.ReasonAgentProviderQuotaLimit,
+		taskfailure.ReasonAgentProviderAuthOrAccess,
+		taskfailure.ReasonAgentMissingConfig,
+		taskfailure.ReasonAgentModelNotFoundOrUnavailable,
+		taskfailure.ReasonAgentUnknown:
+		return true
+	}
+	return false
+}
+
 // recoverDelegatedTaskFailure is the shared post-terminal hook for FailTask and
 // HandleFailedTasks. handled reports whether the failure was an eligible
 // delegated terminal; the production terminal paths deliberately retain their
 // legacy raw-error notice alongside the richer coordinator recovery signal.
 func (s *TaskService) recoverDelegatedTaskFailure(ctx context.Context, failed db.AgentTaskQueue) (handled bool, err error) {
+	// CHE-4575: a gateway-class terminal failure keeps its timeline failure
+	// comment but never wakes the coordinator: no recovery comment, no task.
+	if isGatewayClassFailureReason(failed.FailureReason.String) {
+		return false, nil
+	}
 	target, _, err := s.ensureDelegatedFailureRecoveryComment(ctx, failed.ID)
 	if err != nil || target == nil {
 		return false, err
@@ -8913,6 +9167,18 @@ func computeChatElapsedMs(task db.AgentTaskQueue) pgtype.Int8 {
 		ms = 0
 	}
 	return pgtype.Int8{Int64: ms, Valid: true}
+}
+
+// urgentReservedSlotEnabled reads agent.runtime_config.urgent_reserved_slot.
+// Default on: absent, null or malformed config keeps the slot.
+func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
+	var cfg struct {
+		Enabled *bool `json:"urgent_reserved_slot"`
+	}
+	if json.Unmarshal(runtimeConfig, &cfg) != nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
 }
 
 func priorityToInt(p string) int32 {

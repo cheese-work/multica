@@ -1453,17 +1453,28 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	// A rollup held PENDING only by the security-gate verdict is green for the
+	// wake (CHE-4938); the workflow move below still waits for a real SUCCESS.
+	checksGreen := pr.ChecksRollupState.String == "SUCCESS"
+	verdictPending := false
+	if pr.ChecksRollupState.String == "PENDING" {
+		rollup, err := service.PRChecksRollupIgnoringVerdict(ctx, h.DB, pr.ID)
+		if err != nil {
+			slog.Warn("github: failed to read verdict-pending checks rollup", "err", err, "pr_id", uuidToString(pr.ID))
+		}
+		verdictPending = rollup == "SUCCESS"
+	}
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && (checksGreen || verdictPending) &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
+			if checksGreen && h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
-				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: "SUCCESS",
 				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
@@ -1734,7 +1745,9 @@ func (repo *ghPRHeadRepository) sameOwnerHead(baseID, baseOwnerID int64, baseOwn
 }
 
 type ghPullRequestPayload struct {
-	Action      string `json:"action"`
+	Action string `json:"action"`
+	// Reason is GitHub's cause of a dequeued action (e.g. MERGE_CONFLICT).
+	Reason      string `json:"reason"`
 	PullRequest struct {
 		Number         int32  `json:"number"`
 		HTMLURL        string `json:"html_url"`
@@ -2256,6 +2269,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
+	case p.Action == "dequeued":
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. EventAt is
+		// the signed updated_at, which keys the wake (not the unsigned header).
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, EventAt: p.PullRequest.UpdatedAt}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,

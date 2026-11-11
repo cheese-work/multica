@@ -7149,3 +7149,14 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 		t.Fatalf("stderr should report each superseded thread, got %q", out)
 	}
 }
+
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
+		usage := cmd.Flags().Lookup("no-start").Usage
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
+		}
+	}
+}

@@ -220,6 +220,8 @@
     "relation_assigned": "내가 담당",
     "relation_created": "내가 생성",
     "relation_my_agents": "내 에이전트가 담당",
+    "section_agent_status": "에이전트 상태",
+    "agent_status_running": "실행 중",
     "operator_label": "조건",
     "operator_is": "일치",
     "operator_is_not": "제외",
@@ -453,7 +455,8 @@
   },
   "list": {
     "empty_status": "태스크 없음",
-    "add_issue_tooltip": "태스크 추가"
+    "add_issue_tooltip": "태스크 추가",
+    "unread_mention": "읽지 않은 멘션"
   },
   "swimlane": {
     "no_parent": "상위 태스크 없음",
@@ -817,6 +820,9 @@
     "hover_header_queued_other": "대기 중인 에이전트 {{count}}개",
     "status_running": "작업 중",
     "status_queued": "대기 중",
+    "unread_completed": "{{agent}} 실행 완료 · {{time}}",
+    "unread_failed": "{{agent}} 실행 실패 · {{time}}",
+    "unread_manual": "읽지 않음으로 표시됨",
     "empty_hover": "현재 작업 중인 에이전트가 없습니다",
     "unknown_hover": "작업 중인 에이전트: 아직 불러오지 않았습니다",
     "filter_active_label": "에이전트가 작업 중인 태스크만 보는 중",
@@ -1002,9 +1008,14 @@
     "open_in_new_tab": "새 탭에서 열기",
     "pin_to_sidebar": "사이드바에 고정",
     "unpin_from_sidebar": "사이드바 고정 해제",
+    "mark_read": "읽음으로 표시",
+    "mark_unread": "읽지 않음으로 표시",
     "copy_link": "링크 복사",
     "copy_workdir_path": "로컬 작업 디렉터리 경로 복사",
     "copy_project_directory_path": "프로젝트 디렉터리 경로 복사",
+    "copy_identifier": "식별자 복사",
+    "identifier_copied": "{{identifier}}를 복사했습니다",
+    "stop_agent_run": "{{name}} 실행 중지",
     "relations": "관계",
     "create_sub_issue": "하위 태스크 만들기",
     "set_parent_issue": "상위 태스크 설정...",
@@ -1621,6 +1632,8 @@
       "name": "이름",
       "name_placeholder": "예: 개발 흐름",
       "description": "설명",
+      "max_runs": "이슈당 최대 실행 횟수",
+      "max_runs_invalid": "1~{{max}} 사이의 정수를 입력하세요. 비워 두면 기본값({{default}})이 적용됩니다.",
       "steps": "단계",
       "add_step": "단계 추가",
       "start": "시작",
@@ -1718,8 +1731,6 @@
       "picker_more": "설정 → 워크플로에서 워크플로를 더 만들 수 있습니다."
     },
     "picker": {
-      "header": "{{workflow}} · 프로젝트 “{{project}}” 기준",
-      "header_no_project": "{{workflow}} 상태 · 프로젝트 없음",
       "footer": "이 태스크 워크플로의 상태만 표시합니다. 오른쪽은 해당 상태에 들어갈 때의 처리자입니다."
     },
     "confirm": {

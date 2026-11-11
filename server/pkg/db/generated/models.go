@@ -400,6 +400,46 @@ type AutopilotTrigger struct {
 	CreatedByID pgtype.UUID `json:"created_by_id"`
 }
 
+type BrowserInstance struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Epoch       int64              `json:"epoch"`
+	Phase       string             `json:"phase"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type BrowserLease struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	InstanceID     pgtype.UUID        `json:"instance_id"`
+	ProfileID      pgtype.UUID        `json:"profile_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	IssueID        pgtype.UUID        `json:"issue_id"`
+	UserID         pgtype.UUID        `json:"user_id"`
+	DecisionID     pgtype.UUID        `json:"decision_id"`
+	Class          string             `json:"class"`
+	State          string             `json:"state"`
+	Epoch          pgtype.Int8        `json:"epoch"`
+	JtiHash        pgtype.Text        `json:"jti_hash"`
+	ExpiresAt      pgtype.Timestamptz `json:"expires_at"`
+	GrantedAt      pgtype.Timestamptz `json:"granted_at"`
+	EndedAt        pgtype.Timestamptz `json:"ended_at"`
+	EndReason      pgtype.Text        `json:"end_reason"`
+	CleanupAckedAt pgtype.Timestamptz `json:"cleanup_acked_at"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type BrowserProfile struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Name        string             `json:"name"`
+	Class       string             `json:"class"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type ChannelBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -744,19 +784,23 @@ type ChatWakeup struct {
 }
 
 type CiFailureEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RepoOwner     string             `json:"repo_owner"`
-	RepoName      string             `json:"repo_name"`
-	RunID         int64              `json:"run_id"`
-	RunAttempt    int32              `json:"run_attempt"`
-	WorkflowName  string             `json:"workflow_name"`
-	Event         string             `json:"event"`
-	HeadBranch    string             `json:"head_branch"`
-	HeadSha       string             `json:"head_sha"`
-	Conclusion    string             `json:"conclusion"`
-	SignatureHash string             `json:"signature_hash"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	RunID          int64              `json:"run_id"`
+	RunAttempt     int32              `json:"run_attempt"`
+	WorkflowName   string             `json:"workflow_name"`
+	Event          string             `json:"event"`
+	HeadBranch     string             `json:"head_branch"`
+	HeadSha        string             `json:"head_sha"`
+	Conclusion     string             `json:"conclusion"`
+	SignatureHash  string             `json:"signature_hash"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	Evidence       string             `json:"evidence"`
+	PartialReason  string             `json:"partial_reason"`
+	FailedJobCount int32              `json:"failed_job_count"`
+	Excerpts       []byte             `json:"excerpts"`
 }
 
 type CiSignatureOwner struct {
@@ -1333,6 +1377,16 @@ type DmProgressLaneEvent struct {
 	Kind           string             `json:"kind"`
 	RelatedIssueID pgtype.UUID        `json:"related_issue_id"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type DmProgressPending struct {
+	LineageID   pgtype.UUID        `json:"lineage_id"`
+	EventID     pgtype.UUID        `json:"event_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	EventKind   string             `json:"event_kind"`
+	Immediate   bool               `json:"immediate"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type ElevatedOp struct {
@@ -2248,6 +2302,16 @@ type IssueToLabel struct {
 	LabelID pgtype.UUID `json:"label_id"`
 }
 
+type IssueUnread struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Outcome     string             `json:"outcome"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueVcsPullRequest struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	PullRequestID pgtype.UUID        `json:"pull_request_id"`
@@ -2331,6 +2395,8 @@ type IssueWakeup struct {
 	AggregateRetryAt          pgtype.Timestamptz `json:"aggregate_retry_at"`
 	ContentRevision           int64              `json:"content_revision"`
 	WorkflowStep              pgtype.Text        `json:"workflow_step"`
+	Purpose                   pgtype.Text        `json:"purpose"`
+	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
 }
 
@@ -2922,6 +2988,16 @@ type RecoveryClaim struct {
 	SuccessorTaskID   pgtype.UUID        `json:"successor_task_id"`
 	ClaimedAt         pgtype.Timestamptz `json:"claimed_at"`
 	SettledAt         pgtype.Timestamptz `json:"settled_at"`
+}
+
+type ReviewAdmissionDeferral struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	AgentID   pgtype.UUID        `json:"agent_id"`
+	Trigger   string             `json:"trigger"`
+	HeadSha   string             `json:"head_sha"`
+	Reasons   []string           `json:"reasons"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
 }
 
 type RunBudgetNotice struct {

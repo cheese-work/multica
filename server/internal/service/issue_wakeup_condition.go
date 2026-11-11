@@ -47,7 +47,7 @@ type WakeupCondition struct {
 	// every stage closing while a later one waits, then every sub-issue
 	// closing. Only the platform sets it.
 	EachStage bool `json:"each_stage,omitempty"`
-	// pull_request: checks_finished | merged | conflicts
+	// pull_request: checks_finished | merged | conflicts | dequeued
 	Event string `json:"event,omitempty"`
 	// other_issue: the watched issue and done | ended | in_review | blocked. The
 	// identifier is recorded for display; clients never set it.
@@ -213,8 +213,8 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		out = WakeupCondition{Type: c.Type, Stage: c.Stage}
 	case "pull_request":
-		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" {
-			return nil, nil, badCondition("event must be checks_finished, merged or conflicts")
+		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" && c.Event != "dequeued" {
+			return nil, nil, badCondition("event must be checks_finished, merged, conflicts or dequeued")
 		}
 		out = WakeupCondition{Type: c.Type, Event: c.Event}
 	case "other_issue":
@@ -262,6 +262,16 @@ const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
 	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
 	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
 
+// PRChecksRollupIgnoringVerdict is the PR's rollup with checksRollupIgnoringVerdict
+// applied, so the green wake and the checks_finished rule read one definition.
+func PRChecksRollupIgnoringVerdict(ctx context.Context, db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, prID pgtype.UUID) (string, error) {
+	var rollup string
+	err := db.QueryRow(ctx, `SELECT `+checksRollupIgnoringVerdict+` FROM github_pull_request pr WHERE pr.id=$1`, prID).Scan(&rollup)
+	return rollup, err
+}
+
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
 // small observation for the woken agent's trigger facts.
@@ -304,6 +314,9 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		met, fingerprint, observed := childrenDone(c, children)
 		return met, fingerprint, observed, nil
 	case "pull_request":
+		if c.Event == "dequeued" {
+			return evaluatePRDequeued(ctx, tx, q, w)
+		}
 		// Without the snapshot client GitHub rows are never refreshed, so their
 		// checks and mergeability neither satisfy nor stall the rule. Self-hosted VCS rows carry
 		// their own commit statuses and are evaluated regardless (#9034).
@@ -928,4 +941,54 @@ func withoutPRs(fingerprint string, identities []string) string {
 		return ""
 	}
 	return "pr:" + strings.Join(kept, ",")
+}
+
+// evaluatePRDequeued reads the dequeue facts the webhook recorded as receipts
+// of the issue's pr_dequeued rule (CHE-4231), for the PRs linked now and
+// received since this rule was created. A dequeue is an event, not a state the
+// snapshot holds, and the updated_at in each receipt key makes every
+// dequeue a new fingerprint.
+func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
+	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, pr.id::text, pr.repo_owner, pr.repo_name, r.payload->>'head_sha', r.payload->>'reason'
+		FROM issue_wakeup dw JOIN issue_wakeup_receipt r ON r.wakeup_id=dw.id
+		JOIN github_pull_request pr ON lower(pr.repo_owner)=lower(r.payload->>'repo_owner') AND lower(pr.repo_name)=lower(r.payload->>'repo_name') AND pr.pr_number=(r.payload->>'pr_number')::int
+		JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id AND ipr.issue_id=dw.issue_id
+		WHERE dw.issue_id=$1 AND dw.system_rule='pr_dequeued' AND r.created_at>=$2
+		ORDER BY r.event_key`, w.IssueID, w.CreatedAt)
+	if err != nil {
+		return false, "", nil, err
+	}
+	defer rows.Close()
+	var keys []string
+	var prs []map[string]any
+	var repos [][2]string
+	var linked []linkedPR
+	for rows.Next() {
+		var key, id, repoOwner, repoName string
+		var number int32
+		var head, reason pgtype.Text
+		if err := rows.Scan(&key, &number, &id, &repoOwner, &repoName, &head, &reason); err != nil {
+			return false, "", nil, err
+		}
+		// The key starts with the PR number, like the other pull_request keys,
+		// so a halted repository's dequeues are consumed by conditionDropped.
+		keys = append(keys, fmt.Sprintf("%d@%s", number, key))
+		prs = append(prs, map[string]any{"number": number, "head_sha": head.String, "reason": reason.String})
+		repos = append(repos, [2]string{repoOwner, repoName})
+		linked = append(linked, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
+	}
+	if err := rows.Err(); err != nil {
+		return false, "", nil, err
+	}
+	// The kill switch (CHE-2220) consumes a halted repository's dequeues: they
+	// stay in the fingerprint, so lifting the halt does not replay them.
+	prs, haltedPRs, err := splitHaltedPRs(ctx, q, w.WorkspaceID, prs, repos, linked)
+	if err != nil {
+		return false, "", nil, err
+	}
+	observed := map[string]any{"pull_requests": prs}
+	if len(haltedPRs) > 0 {
+		observed[haltedPRsField] = haltedPRs
+	}
+	return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 }

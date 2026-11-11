@@ -123,6 +123,14 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		if _, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return ReviewGate{}, fmt.Errorf("run budget: %w", err)
 		}
+		// A person's wakeup of a reviewer is judged too; a person's comment or
+		// mention naming an agent still starts it.
+		// ponytail: wakeups only, a named mention stays unrefused by design.
+		if origin == OriginNamed && (target.Trigger == "wakeup" || target.Trigger == "system wakeup") {
+			if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
+				return ReviewGate{}, err
+			}
+		}
 		return ReviewGate{}, nil
 	}
 	state, err := q.GetIssueTriageState(ctx, issueID)
@@ -135,8 +143,17 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
+	// Before the budget: a loop is refused whatever the budget has left.
+	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	gate, err := guardRunBudget(ctx, q, issueID, target)
 	if err != nil {
+		return ReviewGate{}, err
+	}
+	// After the budget, before the stage queue: a PR head that is not
+	// admissible neither starts nor takes a stage slot (CHE-4650).
+	if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
 	}
 	// After the budget: a run the budget refuses never takes a stage slot.

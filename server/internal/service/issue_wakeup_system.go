@@ -54,6 +54,11 @@ const (
 	// attention rule fires.
 	PRAttentionMergeability = "mergeability"
 	PRAttentionDraft        = "returned_to_draft"
+	// SystemRulePRDequeued wakes the owner when GitHub removes a linked PR
+	// from the merge queue (CHE-4231). The wake carries facts only (PR, head,
+	// GitHub's reason); it grants no re-queue.
+	SystemRulePRDequeued       = "pr_dequeued"
+	WorkspaceSettingPRDequeued = "github_wake_on_pr_dequeue"
 	// MaxSystemWakeupInstruction bounds per-issue and workspace instructions.
 	MaxSystemWakeupInstruction = 4000
 	// WorkspaceSettingChildDone and WorkspaceSettingChildDoneInstruction hold
@@ -112,6 +117,8 @@ func prWakeupSetting(rule string) (string, bool) {
 		return WorkspaceSettingPRSuccess, true
 	case SystemRulePRAttention:
 		return WorkspaceSettingPRAttention, true
+	case SystemRulePRDequeued:
+		return WorkspaceSettingPRDequeued, true
 	default:
 		return "", false
 	}
@@ -151,6 +158,9 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	// pairKey is the one key the build before CHE-1665 recorded for DIRTY and
 	// BEHIND alike on a head and base pair.
 	var pairKey string
+	// failedKey is the key a failing run of the same head recorded; a green after
+	// it is a re-run, not the first green of the head.
+	var failedKey string
 	switch in.Rule {
 	case SystemRulePRMerged:
 		if in.MergeCommit == "" {
@@ -167,7 +177,17 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return fmt.Errorf("invalid passing pull request checks input")
 		}
 		eventType = "pr.checks_passed"
+		failedKey = eventKey + ":" + in.HeadSHA
 		eventKey += ":passed:" + in.HeadSHA
+	case SystemRulePRDequeued:
+		// Keyed on signed content only: head, GitHub's reason and the payload's
+		// updated_at. The delivery header is unsigned, so a resend under a new
+		// delivery ID is the same event; a later dequeue has a later updated_at.
+		if in.HeadSHA == "" || in.EventAt == "" {
+			return fmt.Errorf("invalid dequeued pull request input")
+		}
+		eventType = "pr.dequeued"
+		eventKey += ":dequeued:" + in.HeadSHA + ":" + in.Reason + ":" + in.EventAt
 	case SystemRulePRAttention:
 		// Once per head and base pair: DIRTY then BEHIND on the same pair is
 		// one wake; a retarget or a new head is a new pair. Each state has its
@@ -311,6 +331,18 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			return err
 		}
 	}
+	if failedKey != "" {
+		var rerun bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_wakeup_pr_event e JOIN issue_wakeup x ON x.id=e.wakeup_id
+			WHERE x.issue_id=$1 AND e.event_key=$2)`, issue.ID, failedKey).Scan(&rerun); err != nil {
+			return err
+		}
+		// ponytail: one extra green per head. A second red on the head is deduped
+		// like the first, so a second re-run does not wake again.
+		if rerun {
+			eventKey += ":after-red"
+		}
+	}
 	// A BEHIND is covered by any earlier wake on its pair, including a
 	// pre-CHE-1665 entry under the shared pairKey. A DIRTY is covered by an
 	// earlier DIRTY; a shared pairKey entry counts only when its receipt says
@@ -387,6 +419,8 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	case SystemRulePRChecksFailed, SystemRulePRChecksPassed:
 		payload["head_sha"] = in.HeadSHA
 		payload["conclusion"] = in.Conclusion
+	case SystemRulePRDequeued:
+		payload["head_sha"], payload["reason"] = in.HeadSHA, in.Reason
 	case SystemRulePRAttention:
 		payload["reason"], payload["head_sha"], payload["base_branch"] = in.Reason, in.HeadSHA, in.BaseBranch
 		if in.MergeState != "" {
@@ -927,6 +961,10 @@ func systemWakeupInstruction(w db.IssueWakeup, settings []byte, receipts []db.Is
 	case SystemRulePRChecksPassed:
 		headSHA, _ := facts["head_sha"].(string)
 		return fmt.Sprintf("Checks for linked %s passed on head %s. The issue status when those checks finished was %s. Inspect the current issue state, then continue with the next step.", pr, headSHA, issueStatus)
+	case SystemRulePRDequeued:
+		headSHA, _ := facts["head_sha"].(string)
+		reason, _ := facts["reason"].(string)
+		return fmt.Sprintf("GitHub removed linked %s from the merge queue at head %s. Reason: %s. The issue status then was %s. This wake only reports the fact and grants no re-queue: read the current PR and issue state, then decide whether to fix the cause or say on this issue who owns it.", pr, headSHA, reason, issueStatus)
 	default:
 		return w.Instruction
 	}
@@ -954,6 +992,8 @@ func systemWakeupTriggerSummary(rule string) string {
 		return "Wakeup: linked PR checks passed"
 	case SystemRulePRAttention:
 		return "Wakeup: linked PR needs attention"
+	case SystemRulePRDequeued:
+		return "Wakeup: linked PR dequeued"
 	default:
 		return "Wakeup: sub-issues closed"
 	}

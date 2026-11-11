@@ -60,7 +60,7 @@ Dans la tâche ci-dessous, Assistant ops a demandé des devis et attend les rép
 | Liés | Le statut d’une autre tâche | Une autre tâche est terminée, terminée ou annulée, ou passe en revue. |
 | | Événements personnalisés | Choisissez parmi 25 événements bruts : réactions, pièces jointes, commentaires modifiés, fils résolus… |
 
-Multica vérifie lui-même les conditions sur un champ, les sous-tâches, les PR et les autres tâches. Si la condition est déjà remplie à la création, la vérification suivante (dans les 30 secondes environ) réveille l'agent. La CI fait exception : elle ignore les vérifications terminées sur un push plus ancien, mais celles déjà terminées sur le head actuel de la PR réveillent l'agent dans les 30 secondes environ.
+Multica vérifie lui-même les conditions sur un champ, les sous-tâches, les PR et les autres tâches. Si la condition est déjà remplie à la création, la vérification suivante (dans les 30 secondes environ) réveille l'agent. La CI fait exception : elle ignore les vérifications terminées sur un push plus ancien, mais celles déjà terminées sur le head actuel de la PR réveillent l'agent dans les 30 secondes environ. Un agent ne peut pas créer une seconde règle « CI terminée » sur un head de PR dont la règle précédente du même agent s'est déjà déclenchée : la requête renvoie `409` (`wakeup_head_unchanged`) avec `head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`. Poussez un nouveau head, ou attendez le statut à la place.
 
 Toutes les conditions autres que le temps attendent un événement et ont trois réglages de plus :
 

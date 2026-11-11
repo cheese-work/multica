@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS browser_lease_instance_epoch_uidx;
