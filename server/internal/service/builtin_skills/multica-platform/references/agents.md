@@ -473,6 +473,8 @@ multica issue inputs resume <issue-id> [--agent <agent>]    # queue a run with t
 multica issue inputs discard <issue-id> [--agent <agent>]   # drop the parked inputs
 ```
 
+A write that carries `--event-id <id>` (issue comment, issue update, wakeup create or update) happens once per id: a redelivery with the same id gets the first response back (`Idempotent-Replay: true`). A failed write is not remembered, so retry with the same id. An unfinished write with that id answers 409 for 2 minutes. Ids are remembered for 7 days.
+
 `--agent` defaults to the issue's agent assignee. Members only; an agent run
 token is refused.
 

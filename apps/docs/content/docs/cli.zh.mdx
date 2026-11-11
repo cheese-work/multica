@@ -144,6 +144,8 @@ multica project wip-limit <project> 3
 multica project wip-limit <project> none
 ```
 
+带 `--event-id <id>` 的写入（评论、Issue 更新、唤醒的创建或更新）每个 id 只执行一次：相同 id 的重新投递会得到第一次的响应。失败的写入不会被记住，请用同一个 id 重试。同一 id 的未完成写入在 2 分钟内返回 409。id 保留 7 天。
+
 把评论插话到仍在进行中的运行，而不是排队一个后续运行（仅限支持插话的运行；你的评论能启动哪个智能体，就能向它插话）：
 
 ```bash

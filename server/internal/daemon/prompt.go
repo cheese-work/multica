@@ -1012,7 +1012,7 @@ func runInputsBlock(task Task) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n[HELD INPUTS]\nThese triggers arrived while the project was paused or full. Address each, in order. An input marked redelivery was part of an earlier run that did not complete; check whether its work is already done before repeating it.\n")
+	b.WriteString("\n[HELD INPUTS]\nThese triggers arrived while the project was paused or full. Address each, in order. An input marked redelivery was part of an earlier run that did not complete; check whether its work is already done before repeating it. Pass `--event-id <event>:<step>` (for example `comment:<id>:reply`) on each comment, status change or wakeup you write for an input, so a redelivery writes once.\n")
 	for i, in := range task.RunInputs {
 		fmt.Fprintf(&b, "%d. %s (event %s", i+1, in.Kind, in.EventID)
 		if in.RedeliveryOfTaskID != "" {

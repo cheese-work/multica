@@ -144,6 +144,8 @@ multica project wip-limit <project> 3
 multica project wip-limit <project> none
 ```
 
+Une écriture qui porte `--event-id <id>` (commentaire, mise à jour de ticket, création ou mise à jour de réveil) n'a lieu qu'une fois par id : une nouvelle livraison avec le même id reçoit la première réponse. Une écriture échouée n'est pas retenue : réessayez avec le même id. Une écriture inachevée avec cet id répond 409 pendant 2 minutes. Les ids sont conservés 7 jours.
+
 Ajouter un commentaire à une exécution encore en cours, au lieu de mettre une exécution de suivi en file d'attente (uniquement les exécutions qui acceptent des messages supplémentaires, et seulement pour un agent que votre commentaire pourrait démarrer) :
 
 ```bash

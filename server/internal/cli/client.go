@@ -60,6 +60,10 @@ type APIClient struct {
 	TaskID     string
 	HTTPClient *http.Client
 
+	// EventID is the stable id of the event behind a write (--event-id). The
+	// server writes once per id and replays the first response on a redelivery.
+	EventID string
+
 	// Identity overrides. Empty values fall back to the package-level
 	// ClientPlatform / ClientVersion / ClientOS.
 	Platform string
@@ -233,6 +237,9 @@ func (c *APIClient) setHeaders(req *http.Request) {
 	}
 	if c.TaskID != "" {
 		req.Header.Set("X-Task-ID", c.TaskID)
+	}
+	if c.EventID != "" {
+		req.Header.Set("X-Event-Id", c.EventID)
 	}
 
 	platform := c.Platform
