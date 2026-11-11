@@ -1374,9 +1374,6 @@ func (s *AutopilotService) RecordScriptClaim(ctx context.Context, runID pgtype.U
 // timestamps. Best effort: a failed write is logged and never unsettles the
 // run. CHE-5094.
 func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilot, claimed db.AutopilotRun, task db.AgentTaskQueue) {
-	if ap.ExecutionMode != "script" {
-		return
-	}
 	var prior struct {
 		Script struct {
 			Name       *string `json:"name"`
@@ -1384,6 +1381,11 @@ func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilo
 		} `json:"script"`
 	}
 	_ = json.Unmarshal(claimed.Result, &prior) // not an object: no claim was recorded
+	// A recorded claim marks a script run even if the autopilot's mode was
+	// changed after it, so the audit is not lost.
+	if ap.ExecutionMode != "script" && prior.Script.Name == nil {
+		return
+	}
 	audit := map[string]any{"name": prior.Script.Name, "argv_sha256": prior.Script.ArgvSHA256, "exit_code": nil, "duration_ms": nil}
 	if task.Status == "completed" {
 		audit["exit_code"] = 0

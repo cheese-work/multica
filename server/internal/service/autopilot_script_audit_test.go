@@ -186,3 +186,22 @@ func TestScriptAuditWithoutClaimDoesNotUseLiveConfig(t *testing.T) {
 		t.Errorf("unclaimed run audit leaked the live config: name=%q hash=%q", res.Script.Name, res.Script.ArgvSHA256)
 	}
 }
+
+// A mode change between claim and settlement must not drop the audit: the
+// recorded claim, not the live execution mode, identifies a script run.
+func TestScriptAuditSurvivesModeChangeAfterClaim(t *testing.T) {
+	f := newScriptFixture(t)
+	f.svc.RecordScriptClaim(context.Background(), f.run.ID, "sweep-reconcile", []string{"--once", "--limit=5"})
+	f.Exec(t, `UPDATE autopilot SET execution_mode = 'run_only' WHERE id = $1`, util.UUIDToString(f.run.AutopilotID))
+
+	f.task.Status = "completed"
+	f.svc.SyncRunFromTask(context.Background(), f.task)
+
+	_, _, res := f.runResult(t)
+	if res.Script == nil {
+		t.Fatal("result.script audit lost after execution mode change")
+	}
+	if res.Script.Name != "sweep-reconcile" || res.Script.ExitCode == nil || *res.Script.ExitCode != 0 {
+		t.Errorf("audit incomplete: %+v", res.Script)
+	}
+}
