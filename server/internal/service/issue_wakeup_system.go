@@ -453,10 +453,12 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		return err
 	}
 	announceWithdrawn()
-	if err := s.dispatchSystem(ctx, w); !errors.Is(err, errAggregateCounterBusy) {
-		return err
+	err = s.dispatchSystem(ctx, w)
+	if errors.Is(err, errAggregateCounterBusy) {
+		s.noteAggregateBusy(ctx, w)
+		return nil
 	}
-	return nil
+	return err
 }
 
 // prEventCarries reports whether the pr.event fallback already carries the
@@ -733,7 +735,9 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 		} else {
 			err = s.dispatch(ctx, w)
 		}
-		if err != nil && !errors.Is(err, errAggregateCounterBusy) {
+		if errors.Is(err, errAggregateCounterBusy) {
+			s.noteAggregateBusy(ctx, w)
+		} else if err != nil {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		}
 	}

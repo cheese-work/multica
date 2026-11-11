@@ -813,3 +813,30 @@ func TestAggregateBusyCounterRecordsHoldReason(t *testing.T) {
 		t.Fatalf("held rule records no reason: last_error=%v", got.LastError)
 	}
 }
+
+// CHE-5252: the immediate dispatch that follows a PR event records the hold
+// too, before any scheduler pass retries the rule.
+func TestAggregateBusyCounterImmediateDispatchRecordsHoldReason(t *testing.T) {
+	e := newBuiltinEnv(t)
+	e.cleanAggregate(t)
+	e.define(t, WakeupScopeProject, SystemRulePRMerged, `"aggregate_limit":5`)
+	e.fire(t, []pgtype.UUID{e.issueIn(t, e.project)}) // creates the counter row
+	held := e.issueIn(t, e.project)
+	ctx := context.Background()
+	holder, err := e.f.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback(ctx)
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM wakeup_aggregate_budget WHERE workspace_id=$1 FOR UPDATE`, e.f.WorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	e.mergedOn(t, held, 502) // immediate dispatch runs here; no tick follows
+	got, err := e.f.q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: held, SystemRule: systemRuleText(SystemRulePRMerged)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastError.Valid || !strings.Contains(got.LastError.String, "aggregate counter") {
+		t.Fatalf("immediate dispatch records no hold reason: last_error=%v", got.LastError)
+	}
+}
