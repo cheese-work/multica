@@ -648,8 +648,8 @@ carries none of the secrets `cd-deploy.yml` uses — verify this after any
 change to either workflow by diffing `cd-qualification.yml`; it should never
 change as part of D2 work.
 
-`cd-deploy.yml` runs automatically every 4 hours (00:00, 04:00, 08:00, 12:00,
-16:00, 20:00 ICT; CHE-5182), and can still be dispatched by hand. Its first
+`cd-deploy.yml` runs automatically every 4 hours (00:17, 04:17, 08:17, 12:17,
+16:17, 20:17 ICT; CHE-5182), and can still be dispatched by hand. Its first
 job, `schedule-resolve`, picks the newest `main` commit whose `cd-qualification`
 run succeeded. When C00 already runs that commit or a descendant, the run ends
 there with "nothing new to deploy": no C00 runner, lock or approval is taken.
