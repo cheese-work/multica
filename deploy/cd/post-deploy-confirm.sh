@@ -8,12 +8,15 @@
 #   - the public route and the router-selected upstream answer now
 #     (ab-health-check.sh, one read-only sample). Containers define no
 #     healthcheck, so a hung application leaves no event in the window; this
-#     sample is the only HTTP evidence at confirmation, not a window-long probe;
+#     sample covers a persistent outage, the router log below covers the window;
 #   - C00 runs the deployed commit, or a descendant of it (a newer deploy landed;
 #     the window then belongs to that deploy and is left to its own confirm);
 #   - the live image digests equal the admitted manifest's;
 #   - `docker events` since T0 shows no health_status: unhealthy, die, oom or
-#     restart for the active colour's backend and frontend; and
+#     restart for the active colour's backend and frontend;
+#   - the router's access log since T0 (docker logs ROUTER_CONTAINER, default
+#     multica-ab-router) holds no 502, 503 or 504, so an outage that recovered
+#     before this job ran still fails it (only requests that arrived are seen); and
 #   - the restart count did not grow since the readback recorded it.
 # usage: post-deploy-confirm.sh check SOURCE_SHA T0_EPOCH RESTART_BASELINE [MANIFEST_JSON]
 # Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR, C00_ROUTER_STATE_DIR.
@@ -91,6 +94,27 @@ bad="$(docker events --since "$t0" --until "$until_epoch" --filter type=containe
 if [ -n "$bad" ]; then
   echo "::error title=C00 confirm::container events between T0 ${t0} and ${until_epoch}:" >&2
   echo "$bad" >&2
+  exit 1
+fi
+# The router's access log is the HTTP history of the window. Containers define no
+# healthcheck, so an outage that recovered before this job ran leaves no event and the
+# sample above is healthy; the router still logged the 502/503/504 it answered.
+router="${ROUTER_CONTAINER:-multica-ab-router}"
+router_log="$(docker logs --since "$t0" --until "$until_epoch" "$router" 2>&1)" || {
+  echo "::error title=C00 confirm::cannot read the router log of ${router} since T0 ${t0}" >&2
+  exit 1
+}
+gateway_errors="$(printf '%s\n' "$router_log" | node -e '
+  const hits = require("node:fs").readFileSync(0, "utf8").split("\n").flatMap((line) => {
+    const m = line.match(/" (50[234]) \d+\s*$/);
+    return m ? [m[1]] : [];
+  });
+  const counts = {};
+  for (const h of hits) counts[h] = (counts[h] || 0) + 1;
+  process.stdout.write(Object.entries(counts).map(([s, n]) => `${n} x ${s}`).join(", "));
+')"
+if [ -n "$gateway_errors" ]; then
+  echo "::error title=C00 confirm::router answered gateway errors between T0 ${t0} and ${until_epoch}: ${gateway_errors}" >&2
   exit 1
 fi
 now_restarts="$(bash deploy/cd/restart-count.sh)"

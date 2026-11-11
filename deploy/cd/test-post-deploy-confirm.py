@@ -15,6 +15,10 @@ DIGEST = "sha256:" + "1" * 64
 T0 = "1700000000"
 
 
+def access(status, uri="/api/issues"):
+    return f'127.0.0.1 - - [11/Nov/2026:10:05:00 +0000] "GET {uri} HTTP/1.1" {status} 512'
+
+
 def event(action, service="backend-blue"):
     return {"Type": "container", "Action": action, "Actor": {"Attributes": {"com.docker.compose.service": service}}}
 
@@ -42,16 +46,24 @@ class ConfirmTests(unittest.TestCase):
         target.write_text(body)
         target.chmod(0o755)
 
-    def confirm(self, events=(), running=DEPLOYED, digest=DIGEST, restarts=0, baseline=0, healthy=True, t0=T0):
+    def confirm(self, events=(), running=DEPLOYED, digest=DIGEST, restarts=0, baseline=0, healthy=True, t0=T0,
+                router_log=(), router_logs_fail=False):
         live = {"application_sha": self.commits[running], "images": {"backend": {"digest": digest}, "web": {"digest": digest}}}
         self.stub("deploy/cd/capture-remote-baseline.sh", f"echo '{json.dumps(live)}' > \"$1\"\n")
         self.stub("deploy/cd/restart-count.sh", f"echo {restarts}\n")
         self.stub("deploy/cd/ab-health-check.sh",
                   f'echo "$@" > "{self.dir}/health-args"\n' + ("" if healthy else 'echo "::error::route unhealthy" >&2\nexit 1\n'))
         lines = "\n".join(json.dumps(e) for e in events)
-        # `docker events` is the only docker call the script makes; record its arguments.
         (self.dir / "events.ndjson").write_text(lines + ("\n" if lines else ""))
-        self.stub("bin/docker", f'echo "$@" > "{self.dir}/docker-args"\ncat "{self.dir}/events.ndjson"\n')
+        logs = "\n".join(router_log)
+        (self.dir / "router.log").write_text(logs + ("\n" if logs else ""))
+        # `docker events` (container history) and `docker logs` (the router's access log) are the
+        # only docker calls the script makes; record each one's arguments.
+        self.stub("bin/docker", f'case "$1" in\n'
+                  f'  events) echo "$@" > "{self.dir}/docker-args"; cat "{self.dir}/events.ndjson" ;;\n'
+                  f'  logs) echo "$@" > "{self.dir}/docker-logs-args"; '
+                  + ('echo "Error: No such container" >&2; exit 1' if router_logs_fail else f'cat "{self.dir}/router.log"') + ' ;;\n'
+                  f'  *) exit 64 ;;\nesac\n')
         env = {**os.environ, "PATH": f"{self.dir}/bin:{os.environ['PATH']}", "C00_CUTOVER_STATE_DIR": str(self.dir / "state"),
                "C00_ROUTER_STATE_DIR": "/r"}
         args = ["bash", "deploy/cd/post-deploy-confirm.sh", "check", self.commits[DEPLOYED], t0, str(baseline), "manifest.json"]
@@ -106,6 +118,32 @@ class ConfirmTests(unittest.TestCase):
         args = (self.dir / "health-args").read_text()
         self.assertIn("--router-state-dir /r", args)
         self.assertIn(f"--cutover-state-dir {self.dir / 'state'}", args)
+
+    def test_router_gateway_errors_in_the_window_fail_even_after_recovery(self):
+        # An outage mid-window that recovered before confirmation: the final sample is healthy and
+        # no container event fired (no healthcheck), but the router logged the failed requests.
+        for status in ["502", "503", "504"]:
+            with self.subTest(status=status):
+                result = self.confirm(router_log=[access("200"), access(status), access("200")])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(status, result.stderr)
+
+    def test_router_log_is_read_for_the_whole_window_from_t0(self):
+        self.assertEqual(self.confirm(router_log=[access("200"), access("304"), access("404"), access("500")]).returncode, 0)
+        args = (self.dir / "docker-logs-args").read_text()
+        self.assertIn(f"--since {T0}", args)
+        self.assertIn("multica-ab-router", args)
+
+    def test_a_status_inside_a_path_is_not_a_gateway_error(self):
+        self.assertEqual(self.confirm(router_log=[access("200", "/api/issues/502"), access("200", "/x 503 9")]).returncode, 0)
+
+    def test_an_unreadable_router_log_fails(self):
+        result = self.confirm(router_logs_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("router", result.stderr)
+
+    def test_a_descendant_deploy_skips_the_router_log(self):
+        self.assertEqual(self.confirm(running=NEWER, router_log=[access("502")]).returncode, 0)
 
     def test_a_window_that_has_not_elapsed_fails(self):
         for t0 in [str(int(time.time())), str(int(time.time()) - 600)]:

@@ -738,13 +738,17 @@ After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
 3. `readback-confirm` runs `post-deploy-confirm.sh` on the C00 runner for about
    10 seconds. It reads the window from history: `docker events` since T0 shows
    no `health_status: unhealthy`, `die`, `oom` or `restart` for the active
-   colour's backend and frontend; the restart count did not grow; and the SHA and
+   colour's backend and frontend; `docker logs` of the router (`multica-ab-router`,
+   override with `ROUTER_CONTAINER`) since T0 holds no 502, 503 or 504; the restart
+   count did not grow; and the SHA and
    image digests are unchanged, or C00 runs a newer deploy that descends from this
    one (that deploy's own confirm then judges its own window). It fails if less than
    `CONFIRM_WINDOW_SECONDS` (900) passed since T0, and it samples route health once
    (`ab-health-check.sh`). The containers define no healthcheck, so a hung
-   application leaves no event in the window: HTTP health is checked at
-   confirmation only, not across the window.
+   application leaves no event in the window. The router access log is the HTTP
+   history: an outage that recovered before confirmation still fails it. Limit:
+   only requests that reached the router are seen, so a window with no traffic
+   proves nothing about an outage in it; the final sample covers the end.
 
 `c00-readback-delay` is a repository setting, not workflow code: deployment
 branches `main` only (like `c00-runtime`), a wait timer of 15 minutes, no
