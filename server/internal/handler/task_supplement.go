@@ -160,6 +160,9 @@ const (
 type commentSteerRequest struct {
 	TaskIDs []pgtype.UUID
 	All     bool
+	// Implicit marks a default steer the author never asked for (CHE-5286): an
+	// unread one is replayed on completion instead of left for the author to retry.
+	Implicit bool
 }
 
 func (s commentSteerRequest) empty() bool { return len(s.TaskIDs) == 0 && !s.All }
@@ -223,7 +226,7 @@ func (h *Handler) steerCommentAgentTriggers(ctx context.Context, issue db.Issue,
 		bound, err := h.bindCommentSteer(ctx, db.BindCommentTaskSupplementParams{
 			TaskID: taskID, IssueID: issue.ID, AgentID: trigger.Agent.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: comment.AuthorType, MaxAgentBindings: maxAgentSteersPerTurn, MaxBindingsPerAgent: maxAgentSteersPerAgentPerTurn,
-			CommentID: comment.ID, AuthorID: comment.AuthorID, ClientRequestID: comment.ID,
+			CommentID: comment.ID, AuthorID: comment.AuthorID, ClientRequestID: comment.ID, Implicit: steer.Implicit,
 		})
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
