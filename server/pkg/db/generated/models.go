@@ -281,6 +281,8 @@ type Attachment struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
 	ExternalRead    bool               `json:"external_read"`
+	Width           pgtype.Int4        `json:"width"`
+	Height          pgtype.Int4        `json:"height"`
 }
 
 type Autopilot struct {
@@ -2583,6 +2585,7 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	PinnedAt    pgtype.Timestamptz `json:"pinned_at"`
 }
 
 type MemberDelegationDay struct {
@@ -2844,6 +2847,8 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	CreatorType       pgtype.Text        `json:"creator_type"`
+	CreatorID         pgtype.UUID        `json:"creator_id"`
 }
 
 type ProjectResource struct {

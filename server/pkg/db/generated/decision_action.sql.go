@@ -436,7 +436,7 @@ func (q *Queries) LockAgentRuntimeNowait(ctx context.Context, arg LockAgentRunti
 }
 
 const lockDecisionActionMemberNowait = `-- name: LockDecisionActionMemberNowait :one
-SELECT id, workspace_id, user_id, role, created_at FROM member
+SELECT id, workspace_id, user_id, role, created_at, pinned_at FROM member
 WHERE workspace_id = $1 AND user_id = $2
 FOR SHARE NOWAIT
 `
@@ -455,6 +455,7 @@ func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDe
 		&i.UserID,
 		&i.Role,
 		&i.CreatedAt,
+		&i.PinnedAt,
 	)
 	return i, err
 }

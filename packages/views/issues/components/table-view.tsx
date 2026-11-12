@@ -1,5 +1,6 @@
 "use client";
 
+import { subIssueCreateDefaults } from "@multica/core/issues";
 import { useStatusLabel } from "../utils/status-label";
 import {
   useCallback,
@@ -2215,11 +2216,7 @@ export function TableView({
 
   const createSubIssue = useCallback(
     (issue: Issue) =>
-      onCreateIssue({
-        parent_issue_id: issue.id,
-        parent_issue_identifier: issue.identifier,
-        ...(issue.project_id ? { project_id: issue.project_id } : {}),
-      }),
+      onCreateIssue(subIssueCreateDefaults(issue)),
     [onCreateIssue],
   );
 

@@ -68,7 +68,8 @@ func scanSearchProject(rows pgx.Rows) (searchProjectResult, error) {
 		&result.project.ID, &result.project.WorkspaceID, &result.project.Title, &result.project.Description,
 		&result.project.Icon, &result.project.Status, &result.project.Priority, &result.project.LeadType,
 		&result.project.LeadID, &result.project.StartDate, &result.project.DueDate,
-		&result.project.CreatedAt, &result.project.UpdatedAt, &result.matchSource,
+		&result.project.CreatedAt, &result.project.UpdatedAt,
+		&result.project.CreatorType, &result.project.CreatorID, &result.matchSource,
 	)
 	return result, err
 }
