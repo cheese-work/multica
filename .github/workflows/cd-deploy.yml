@@ -779,6 +779,7 @@ jobs:
     outputs:
       t0: ${{ steps.watch.outputs.t0 }}
       observation: ${{ steps.watch.outputs.observation }}
+      superseded: ${{ steps.watch.outputs.superseded }}
       restarts: ${{ steps.window.outputs.restarts }}
     steps:
       - name: Checkout
@@ -827,10 +828,12 @@ jobs:
   # runner for the instant it runs after the timer. The environment
   # c00-readback-delay is main-only like c00-runtime, has a 15-minute wait timer
   # and no secrets: a job can use one environment, and the C00 secrets stay in
-  # c00-runtime for readback-confirm.
+  # c00-runtime for readback-confirm. When C00 already runs a newer deploy, the
+  # readback outputs superseded=true and no journal: this job and the confirm are
+  # skipped, the newer deploy's own run judges its window, and nothing rolls back.
   readback-delay:
     needs: [admission, readback]
-    if: always() && needs.readback.result == 'success'
+    if: always() && needs.readback.result == 'success' && needs.readback.outputs.superseded != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: c00-readback-delay

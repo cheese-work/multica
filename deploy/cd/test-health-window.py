@@ -406,6 +406,21 @@ class ArmTests(Base):
         self.assertEqual((self.obs / "active").read_text().strip(), "new-1")
         self.assertNotEqual(result.returncode, 0)  # no timer in this test: arm itself fails after arming
 
+    def test_t0_is_taken_inside_the_lock_after_the_live_commit_check(self):
+        # A wait for the tick lock or a slow live-commit read longer than one interval must not
+        # put slot 0 outside its schedule: verify rejects a slot-0 sample that starts past T0 + interval.
+        script = self.dir / "live-sha.sh"
+        script.write_text(f'#!/usr/bin/env bash\nsleep 2\nprintf %s "{SHA}"\n')
+        script.chmod(0o755)
+        self.obs.mkdir()
+        started = time.time()
+        self.run_node(*self.arm_args(run_id="slow-1", verify=0, window=30, interval=1))
+        meta = json.loads((self.obs / "slow-1/meta.json").read_text())
+        first = self.samples("slow-1")[0]
+        self.assertGreaterEqual(meta["t0"], int(started) + 2)  # T0 starts after the 2 s live-commit read
+        self.assertEqual((first["slot"], first["scheduled"]), (0, meta["t0"]))
+        self.assertLess(first["start"], first["scheduled"] + 1)  # inside slot 0
+
     def test_bad_arguments_are_refused(self):
         self.obs.mkdir()
         for args in [self.arm_args(run_id="../x"), self.arm_args(sha="abc"), self.arm_args(window=95, interval=10), ["nope"]]:

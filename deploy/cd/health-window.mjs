@@ -244,9 +244,11 @@ async function arm(opts) {
   if (containers.length !== 2) throw new Error(`expected 2 backend/frontend containers for ${colour}, found ${containers.length}`);
 
   fs.mkdirSync(opts.dir, { recursive: true });
-  const t0 = now();
   const first = await withLock(opts.dir, 30_000, async () => {
     assertStillLive(opts);
+    // T0 starts here, not before the lock wait and the live-commit read: those can take longer
+    // than one interval, which would put slot 0 outside its schedule.
+    const t0 = now();
     const meta = {
       id: opts.id, sha: opts.sha, t0, window, interval, colour, containers,
       compose_dir: path.resolve(opts["compose-dir"]),

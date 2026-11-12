@@ -18,7 +18,7 @@
 # usage: post-deploy-readback.sh SOURCE_SHA WAIT_SECONDS [MANIFEST_JSON]
 # Needs C00_COMPOSE_DIR, C00_STATE_DIR, C00_CUTOVER_STATE_DIR, C00_ROUTER_STATE_DIR
 # and OBSERVATION_ID (names this deploy's journal). On success the arm step writes
-# observation and t0 to GITHUB_OUTPUT.
+# observation and t0 to GITHUB_OUTPUT; a descendant writes superseded=true instead.
 # READBACK_RETRY_SECONDS (default 5) is the pause between health tries;
 # READBACK_ARM_VERIFY_SECONDS (default 30) bounds the wait for the timer's first sample.
 set -euo pipefail
@@ -63,6 +63,8 @@ read_live() {
   [ "$running" = "$sha" ] && return 0
   if git merge-base --is-ancestor "$sha" "$running" 2>/dev/null; then
     echo "C00 runs ${running}, a descendant of the deployed ${sha}; its own deploy arms the journal and checks the digests."
+    # No journal was armed for this run: tell the workflow to skip the delay and the confirm.
+    [ -z "${GITHUB_OUTPUT:-}" ] || echo "superseded=true" >> "$GITHUB_OUTPUT"
     exit 0
   fi
   echo "::error title=C00 readback::C00 runs ${running:-<unknown>}, not ${sha} or a descendant" >&2

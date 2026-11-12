@@ -110,13 +110,15 @@ class DeployApprovalTests(unittest.TestCase):
         text = yaml.safe_dump(readback)
         self.assertIn("post-deploy-readback.sh", text)
         self.assertNotIn("900", text)  # the 15-minute window is no longer held in this job
-        self.assertEqual(set(readback["outputs"]), {"t0", "restarts", "observation"})
+        self.assertEqual(set(readback["outputs"]), {"t0", "restarts", "observation", "superseded"})
 
     def test_the_fifteen_minute_wait_is_an_environment_timer_that_holds_no_c00_runner(self):
         delay = self.jobs["readback-delay"]
         self.assertEqual(needs(delay), ["admission", "readback"])
         self.assertEqual(delay["environment"], DELAY)
         self.assertIn("needs.readback.result == 'success'", delay["if"])
+        # A newer deploy owns the window: the older run skips delay and confirm, and is not rolled back.
+        self.assertIn("needs.readback.outputs.superseded != 'true'", delay["if"])
         self.assertNotIn("cheese-c00-deploy", json.dumps(delay["runs-on"]))
         self.assertNotIn("secrets.", json.dumps(delay))
 

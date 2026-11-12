@@ -47,6 +47,10 @@ class ReadbackTests(unittest.TestCase):
         return {**os.environ, "C00_ROUTER_STATE_DIR": "/r", "C00_CUTOVER_STATE_DIR": "/c", "C00_COMPOSE_DIR": "/compose",
                 "C00_STATE_DIR": "/state", "OBSERVATION_ID": "run-7-1", **extra}
 
+    def output(self):
+        out = self.dir / "gh-output"
+        return out.read_text() if out.exists() else ""
+
     def readback(self, health_ok=True, running="deployed", digest=DIGEST, manifest=True, drop_env=None, then=None):
         """`then` is the commit C00 runs on the second baseline read (after a newer deploy landed mid-arm)."""
         sha = self.commits["deployed"]
@@ -62,7 +66,7 @@ class ReadbackTests(unittest.TestCase):
         self.stub("capture-remote-baseline.sh",
                   f'n=$(( $(cat {reads}) + 1 )); echo $n > {reads}\n'
                   f'if [ "$n" -ge 2 ]; then echo \'{second}\' > "$1"; else echo \'{baseline(running)}\' > "$1"; fi\n')
-        env = self.env()
+        env = self.env(GITHUB_OUTPUT=str(self.dir / "gh-output"))
         env.pop(drop_env, None)
         args = ["bash", "deploy/cd/post-deploy-readback.sh", sha, "1"] + (["manifest.json"] if manifest else [])
         return subprocess.run(args, cwd=self.dir, env=env, text=True, capture_output=True)
@@ -85,6 +89,22 @@ class ReadbackTests(unittest.TestCase):
 
     def test_a_descendant_running_commit_passes(self):
         self.assertEqual(self.readback(running="newer").returncode, 0)
+
+    def test_a_descendant_reports_superseded_so_the_workflow_skips_the_old_window(self):
+        # Without t0 and observation the confirm job cannot judge this deploy; the workflow
+        # must skip the delay and confirm instead of failing the older run (CHE-5175).
+        for kwargs in ({"running": "newer"}, {"running": "deployed", "then": "newer"}):
+            with self.subTest(**kwargs):
+                (self.dir / "gh-output").unlink(missing_ok=True)
+                self.arm_exit = 3 if "then" in kwargs else None
+                result = self.readback(**kwargs)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("superseded=true", self.output())
+                self.assertNotIn("t0=", self.output())
+
+    def test_the_deployed_commit_is_not_reported_superseded(self):
+        self.assertEqual(self.readback().returncode, 0)
+        self.assertNotIn("superseded", self.output())
 
     def test_unhealthy_route_is_retried_until_healthy_within_the_wait(self):
         # CHE-5175: the readback waits for health, bounded, instead of watching a window.
