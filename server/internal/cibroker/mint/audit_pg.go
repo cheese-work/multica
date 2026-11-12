@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGAudit writes audit rows to ci_broker_audit (migration 99992).
+// PGAudit writes audit rows to ci_broker_audit (migration 99993).
 type PGAudit struct{ pool *pgxpool.Pool }
 
 // NewPGAudit returns an AuditStore backed by pool.
