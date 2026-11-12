@@ -26,7 +26,7 @@ type KeySource interface {
 }
 
 // Verifier checks signature and claims of a GitHub OIDC JWT, and rejects a
-// replayed jti until its exp.
+// replayed jti until exp plus the clock skew.
 type Verifier struct {
 	Keys KeySource
 	Now  func() time.Time
@@ -76,8 +76,9 @@ func (v *Verifier) Verify(ctx context.Context, token string) (*Claims, error) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	// A token is accepted until exp+skew, so remember its jti that long.
 	for jti, exp := range v.seen {
-		if !exp.After(now) {
+		if !exp.Add(skew).After(now) {
 			delete(v.seen, jti)
 		}
 	}
@@ -142,35 +143,61 @@ func claimsFrom(mc jwt.MapClaims) (*Claims, error) {
 }
 
 // JWKSKeys fetches signing keys from GitHub's JWKS endpoint and caches them. A
-// kid it has not seen triggers at most one refetch per MinRefresh.
+// cached key is trusted for MaxAge. A kid it has not seen, or an expired cache,
+// triggers at most one fetch attempt per MinRefresh, failed attempts included.
 type JWKSKeys struct {
 	URL        string // default JWKSURL; tests only
 	Client     *http.Client
 	MinRefresh time.Duration // default 1 minute
+	MaxAge     time.Duration // default 1 hour
 	Now        func() time.Time
 
-	mu      sync.Mutex
+	fetchMu sync.Mutex // serialises fetches; never held while reading the cache
+	mu      sync.Mutex // guards the fields below
 	keys    map[string]*rsa.PublicKey
-	fetched time.Time
+	fetched time.Time // last successful fetch
+	tried   time.Time // last attempt, successful or not
+	lastErr error     // error of the last attempt, nil if it succeeded
 }
 
 func (j *JWKSKeys) Key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
-	j.mu.Lock()
-	defer j.mu.Unlock()
-	if k, ok := j.keys[kid]; ok {
-		return k, nil
-	}
-	now, minRefresh := time.Now, j.MinRefresh
+	now, minRefresh, maxAge := time.Now, j.MinRefresh, j.MaxAge
 	if j.Now != nil {
 		now = j.Now
 	}
 	if minRefresh == 0 {
 		minRefresh = time.Minute
 	}
-	if j.keys != nil && now().Sub(j.fetched) < minRefresh {
-		return nil, ErrUnknownKey
+	if maxAge == 0 {
+		maxAge = time.Hour
+	}
+	// cached answers from the cache, or says a fetch is due.
+	cached := func() (key *rsa.PublicKey, err error, due bool) {
+		j.mu.Lock()
+		defer j.mu.Unlock()
+		if k, ok := j.keys[kid]; ok && now().Sub(j.fetched) < maxAge {
+			return k, nil, false
+		}
+		if !j.tried.IsZero() && now().Sub(j.tried) < minRefresh {
+			if j.lastErr != nil {
+				return nil, &keyUnavailable{j.lastErr}, false
+			}
+			return nil, ErrUnknownKey, false
+		}
+		return nil, nil, true
+	}
+	if k, err, due := cached(); !due {
+		return k, err
+	}
+	j.fetchMu.Lock()
+	defer j.fetchMu.Unlock()
+	if k, err, due := cached(); !due { // another request fetched while we waited
+		return k, err
 	}
 	keys, err := j.fetch(ctx)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.tried, j.lastErr = now(), err
 	if err != nil {
 		return nil, &keyUnavailable{err}
 	}

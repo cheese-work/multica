@@ -215,6 +215,33 @@ func TestReplayedJTI(t *testing.T) {
 	}
 }
 
+// A token stays acceptable until exp+skew, so its jti must be remembered that long.
+func TestReplayedJTIInsideLeeway(t *testing.T) {
+	f := newFixture(t)
+	c := f.claims()
+	c["exp"] = f.now.Add(2 * time.Minute).Unix()
+	tok := f.sign(c, f.key, jwt.SigningMethodRS256)
+	if _, _, err := f.broker.Authorize(context.Background(), tok); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	f.now = f.now.Add(2*time.Minute + 30*time.Second) // past exp, inside the 60 s leeway
+	if _, _, err := f.broker.Authorize(context.Background(), tok); status(err) != 401 {
+		t.Fatalf("replay inside leeway: err = %v, want 401", err)
+	}
+	// Five-minute lifetime, replayed exactly at exp.
+	f.now = f.now.Add(time.Hour)
+	c = f.claims()
+	c["exp"] = f.now.Add(5 * time.Minute).Unix()
+	tok = f.sign(c, f.key, jwt.SigningMethodRS256)
+	if _, _, err := f.broker.Authorize(context.Background(), tok); err != nil {
+		t.Fatalf("first use: %v", err)
+	}
+	f.now = f.now.Add(5 * time.Minute)
+	if _, _, err := f.broker.Authorize(context.Background(), tok); status(err) != 401 {
+		t.Fatalf("replay at exp: err = %v, want 401", err)
+	}
+}
+
 func TestLoadPolicyRejectsUnsafeEntries(t *testing.T) {
 	base := func(mut func(string) string) string { return mut(testPolicy) }
 	for name, body := range map[string]string{
@@ -314,5 +341,73 @@ func TestJWKSKeys(t *testing.T) {
 	fail = true
 	if _, _, err := f.broker.Authorize(context.Background(), s); status(err) != 503 {
 		t.Errorf("outage: %v, want 503", err)
+	}
+}
+
+// jwksServer serves k1 from f.key while present is true; it counts requests.
+func jwksServer(f *fixture, hits *int, present, fail *bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*hits++
+		if *fail {
+			http.Error(w, "down", 500)
+			return
+		}
+		if !*present {
+			_, _ = w.Write([]byte(`{"keys":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"keys":[{"kty":"RSA","kid":"k1","n":"` +
+			base64.RawURLEncoding.EncodeToString(f.key.PublicKey.N.Bytes()) + `","e":"AQAB"}]}`))
+	}))
+}
+
+func TestJWKSCachedKeyExpires(t *testing.T) {
+	f := newFixture(t)
+	hits, present, fail := 0, true, false
+	srv := jwksServer(f, &hits, &present, &fail)
+	defer srv.Close()
+	f.broker.Verifier = NewVerifier(&JWKSKeys{URL: srv.URL, Now: func() time.Time { return f.now }})
+	f.broker.Verifier.Now = func() time.Time { return f.now }
+
+	if _, _, err := f.broker.Authorize(context.Background(), f.sign(f.claims(), f.key, jwt.SigningMethodRS256)); err != nil {
+		t.Fatalf("valid token: %v", err)
+	}
+	// GitHub withdraws the key. Inside the max age the cached key still works.
+	present = false
+	f.now = f.now.Add(30 * time.Minute)
+	if _, _, err := f.broker.Authorize(context.Background(), f.sign(f.claims(), f.key, jwt.SigningMethodRS256)); err != nil {
+		t.Fatalf("inside max age: %v", err)
+	}
+	// Past the max age the next request refetches and the withdrawn key is refused.
+	f.now = f.now.Add(31 * time.Minute)
+	if _, _, err := f.broker.Authorize(context.Background(), f.sign(f.claims(), f.key, jwt.SigningMethodRS256)); status(err) != 401 {
+		t.Fatalf("withdrawn key after max age: err = %v, want 401", err)
+	}
+}
+
+func TestJWKSFailedFetchIsThrottled(t *testing.T) {
+	f := newFixture(t)
+	hits, present, fail := 0, true, true
+	srv := jwksServer(f, &hits, &present, &fail)
+	defer srv.Close()
+	f.broker.Verifier = NewVerifier(&JWKSKeys{URL: srv.URL, Now: func() time.Time { return f.now }})
+	f.broker.Verifier.Now = func() time.Time { return f.now }
+
+	for i := 0; i < 3; i++ {
+		if _, _, err := f.broker.Authorize(context.Background(), f.sign(f.claims(), f.key, jwt.SigningMethodRS256)); status(err) != 503 {
+			t.Fatalf("request %d during outage: err = %v, want 503", i, err)
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("outbound fetches during outage = %d, want 1 (throttled by MinRefresh)", hits)
+	}
+	// After MinRefresh a new attempt is allowed, and recovery works.
+	f.now = f.now.Add(2 * time.Minute)
+	fail = false
+	if _, _, err := f.broker.Authorize(context.Background(), f.sign(f.claims(), f.key, jwt.SigningMethodRS256)); err != nil {
+		t.Fatalf("after recovery: %v", err)
+	}
+	if hits != 2 {
+		t.Fatalf("fetches after recovery = %d, want 2", hits)
 	}
 }
