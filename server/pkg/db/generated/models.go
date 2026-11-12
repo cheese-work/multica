@@ -300,6 +300,7 @@ type Autopilot struct {
 	AssigneeType       string             `json:"assignee_type"`
 	ProjectID          pgtype.UUID        `json:"project_id"`
 	PauseReason        pgtype.Text        `json:"pause_reason"`
+	ScriptConfig       []byte             `json:"script_config"`
 }
 
 type AutopilotCollaborator struct {
@@ -785,19 +786,23 @@ type ChatWakeup struct {
 }
 
 type CiFailureEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RepoOwner     string             `json:"repo_owner"`
-	RepoName      string             `json:"repo_name"`
-	RunID         int64              `json:"run_id"`
-	RunAttempt    int32              `json:"run_attempt"`
-	WorkflowName  string             `json:"workflow_name"`
-	Event         string             `json:"event"`
-	HeadBranch    string             `json:"head_branch"`
-	HeadSha       string             `json:"head_sha"`
-	Conclusion    string             `json:"conclusion"`
-	SignatureHash string             `json:"signature_hash"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	RunID          int64              `json:"run_id"`
+	RunAttempt     int32              `json:"run_attempt"`
+	WorkflowName   string             `json:"workflow_name"`
+	Event          string             `json:"event"`
+	HeadBranch     string             `json:"head_branch"`
+	HeadSha        string             `json:"head_sha"`
+	Conclusion     string             `json:"conclusion"`
+	SignatureHash  string             `json:"signature_hash"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	Evidence       string             `json:"evidence"`
+	PartialReason  string             `json:"partial_reason"`
+	FailedJobCount int32              `json:"failed_job_count"`
+	Excerpts       []byte             `json:"excerpts"`
 }
 
 type CiSignatureOwner struct {
@@ -2096,6 +2101,15 @@ type IssueDependency struct {
 	Type             string      `json:"type"`
 }
 
+type IssueDescriptionRevision struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Revision    int64              `json:"revision"`
+	Description string             `json:"description"`
+	ActorType   pgtype.Text        `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueIdleGuard struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -2297,6 +2311,16 @@ type IssueTaintClear struct {
 type IssueToLabel struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	LabelID pgtype.UUID `json:"label_id"`
+}
+
+type IssueUnread struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Outcome     string             `json:"outcome"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueVcsPullRequest struct {

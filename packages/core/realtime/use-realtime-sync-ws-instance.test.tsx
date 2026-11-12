@@ -146,11 +146,12 @@ describe("useRealtimeSync — ws instance change", () => {
 
     // Should invalidate workspace-scoped and event-fed account-level keys,
     // plus the cross-workspace inbox summary.
+    // Plus the issue unread marks.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(47));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(48));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {

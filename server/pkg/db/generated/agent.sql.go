@@ -2344,6 +2344,9 @@ WHERE id = (
     WHERE atq.agent_id = $2
       AND atq.runtime_id = $3
       AND atq.status = 'queued'
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= $4::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
@@ -2373,7 +2376,7 @@ WHERE id = (
             )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
-                now() - make_interval(secs => $4::double precision)
+                now() - make_interval(secs => $5::double precision)
       )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
@@ -2403,6 +2406,7 @@ type ClaimAgentTaskParams struct {
 	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
 	AgentID          pgtype.UUID `json:"agent_id"`
 	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	MinPriority      int32       `json:"min_priority"`
 	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
 }
 
@@ -2421,6 +2425,7 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.PrepareLeaseSecs,
 		arg.AgentID,
 		arg.RuntimeID,
+		arg.MinPriority,
 		arg.RuntimeStaleSecs,
 	)
 	var i AgentTaskQueue
@@ -6999,6 +7004,26 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	var retired bool
 	err := row.Scan(&retired)
 	return retired, err
+}
+
+const issueHasOpenWait = `-- name: IssueHasOpenWait :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = $1 AND enabled AND disabled_at IS NULL
+    AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+)
+`
+
+// True when an explicit wait is still armed on the issue: a wakeup someone set
+// for another blocker (a condition, an event such as task.completed, or a
+// time). System-rule, decision-bound and observe wakeups are not blockers
+// (CHE-5239).
+func (q *Queries) IssueHasOpenWait(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, issueHasOpenWait, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
 }
 
 const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
@@ -12142,6 +12167,28 @@ func (q *Queries) RequeueAgentTaskAfterClaimFailure(ctx context.Context, arg Req
 		&i.CancelAckReason,
 	)
 	return i, err
+}
+
+const restampActiveTasksWorkflowStep = `-- name: RestampActiveTasksWorkflowStep :exec
+UPDATE agent_task_queue SET workflow_step = $1
+WHERE issue_id = $2
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY($3::text[])
+  AND workflow_step IS DISTINCT FROM $1
+`
+
+type RestampActiveTasksWorkflowStepParams struct {
+	ToStep    pgtype.Text `json:"to_step"`
+	IssueID   pgtype.UUID `json:"issue_id"`
+	FromSteps []string    `json:"from_steps"`
+}
+
+// A system move (decision unpark) puts the issue on a new step. Runs stamped
+// with a step on either side of that move follow it, so their next status
+// write is judged from where the system left the issue (CHE-5239).
+func (q *Queries) RestampActiveTasksWorkflowStep(ctx context.Context, arg RestampActiveTasksWorkflowStepParams) error {
+	_, err := q.db.Exec(ctx, restampActiveTasksWorkflowStep, arg.ToStep, arg.IssueID, arg.FromSteps)
+	return err
 }
 
 const restoreAgent = `-- name: RestoreAgent :one

@@ -4165,6 +4165,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.AutopilotTriggerPayload = json.RawMessage(run.TriggerPayload)
 		}
 		resp.AutopilotTitle = ap.Title
+		resp.Script = claimScriptFor(ap.ExecutionMode, ap.ScriptConfig)
+		if resp.Script != nil {
+			h.AutopilotService.RecordScriptClaim(r.Context(), run.ID, resp.Script.Name, resp.Script.Args)
+		}
 		resp.ThreadName = ap.Title
 		if ap.Description.Valid {
 			resp.AutopilotDescription = ap.Description.String
@@ -5343,15 +5347,10 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// task's agent capacity or serialization key is re-claimed immediately.
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of any agent task token minted at claim time.
-	// The token would naturally expire at the 24h watermark and is also
-	// cascaded on agent_task deletion, but eagerly deleting it on
-	// completion shrinks the window where a compromised agent process
-	// can keep making API calls after its task finishes. Failure here is
-	// non-fatal; the expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of any agent task token minted at claim time. Not an
+	// immediate-revocation guarantee: on failure the row stays valid until its
+	// expiry, and RevokeTaskTokens logs and records that.
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -6301,12 +6300,9 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	}
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of the mat_ task token minted at claim. Same
-	// rationale as CompleteTask — eager deletion shrinks the post-
-	// terminal window. The 24h expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("fail task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of the mat_ task token minted at claim; same
+	// semantics as CompleteTask (the row stays valid until expiry on failure).
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task failed", "task_id", taskID, "agent_id", uuidToString(task.AgentID), "task_error", req.Error, "failure_reason", req.FailureReason)
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -6337,6 +6333,16 @@ type TaskMessageRequest struct {
 
 type TaskMessageBatchRequest struct {
 	Messages []TaskMessageRequest `json:"messages"`
+}
+
+// sealsChatText reports whether a batch holds a row that ends a text block.
+func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
+	for _, m := range rows {
+		if m.Type != string(agent.MessageText) {
+			return true
+		}
+	}
+	return false
 }
 
 // ReportTaskMessages receives a batch of agent execution messages from the daemon.
@@ -6507,6 +6513,18 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 				ChatSessionOwnerID: scope.ChatSessionOwnerID,
 				Payload:            taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)),
 			})
+		}
+	}
+
+	// A non-text row seals the text before it, so an agent line that came before
+	// a tool call is final now: show it in the DM instead of waiting for the end
+	// of the turn, and keep it if the turn fails or is cancelled (CHE-4704).
+	// Best-effort: the completion path writes whatever this misses.
+	if task.ChatSessionID.Valid && sealsChatText(created) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if err := h.TaskService.PublishChatInterimMessages(ctx, task); err != nil {
+			slog.Warn("publish chat interim messages failed", "task_id", taskID, "error", err)
 		}
 	}
 
