@@ -42,6 +42,33 @@ func (q *Queries) ClaimRunBudgetNotice(ctx context.Context, arg ClaimRunBudgetNo
 	return id, err
 }
 
+const listRunBudgetBlockedIssueIDs = `-- name: ListRunBudgetBlockedIssueIDs :many
+SELECT issue_id FROM run_budget_notice
+WHERE workspace_id = $1 AND kind = 'blocked'
+`
+
+// Issues the run budget holds in blocked (CHE-5285). The marker exists only
+// while the issue is blocked (trigger in migration 882), so the set is small.
+func (q *Queries) ListRunBudgetBlockedIssueIDs(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listRunBudgetBlockedIssueIDs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var issue_id pgtype.UUID
+		if err := rows.Scan(&issue_id); err != nil {
+			return nil, err
+		}
+		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceOwnerUserIDs = `-- name: ListWorkspaceOwnerUserIDs :many
 SELECT user_id FROM member
 WHERE workspace_id = $1 AND role = 'owner'

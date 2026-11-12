@@ -1699,6 +1699,8 @@
       "description": "Description",
       "max_runs": "Max runs per issue",
       "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
+      "budget_request_pending": "A run-cap change for this workflow is waiting for an owner to approve it.",
+      "budget_request_pending_cap": "A run-cap change to {{cap}} runs per issue is waiting for an owner to approve it.",
       "include_child_prs": "Include child PRs",
       "steps": "Steps",
       "add_step": "Add step",
@@ -2109,6 +2111,8 @@
     "raise": "Raise",
     "top_up": "Top up",
     "asked": "Asked the workspace owner to approve.",
+    "chip": "Budget used",
+    "open_request": "Open request below",
     "request_failed": "The request did not go through. Try again."
   },
   "attachment_revision": {
