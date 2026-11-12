@@ -403,6 +403,21 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
 		}
+		// A run created after this commit (a budget recovery run whose refusal
+		// callback has not run yet) has no pending run to inherit from; the
+		// issue's own taint stops it authorizing an elevated operation.
+		if err := q.NoteIssueTaint(ctx, db.NoteIssueTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
+		}
+		// A member's clear keeps the ID off the issue, not off the writer's
+		// task: a recovery run created later reads it from issue_run_taint, and
+		// one already running takes it now.
+		if err := q.NoteIssueRunTaint(ctx, db.NoteIssueRunTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue run taint: %w", err)
+		}
+		if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint recovery runs: %w", err)
+		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
 		if err := q.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
@@ -3263,6 +3278,10 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
+	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, hasSquad, len(req.AttachmentIDs) > 0); status != 0 {
+		writeJSON(w, status, payload)
+		return
+	}
 	if priority != "" || dueDate != "" {
 		if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
 			r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
@@ -3377,6 +3396,29 @@ func (h *Handler) checkQuickCreateDaemonVersion(ctx context.Context, source stri
 	return h.checkQuickCreateDaemonVersionAtLeast(ctx, source, runtimeID, agentpkg.MinQuickCreateCLIVersion)
 }
 
+// checkQuickCreateQoderLimits rejects quick-create requests that a Qoder
+// Cloud Agents leader can create but not run afterwards. The bridge drafts and
+// creates the issue itself, but the run that the new issue's assignment
+// dispatches next fails on the bridge for a squad-leader task or an issue with
+// attachments, so the user would see "created" followed by a failed run.
+func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, squad, attachments bool) (int, map[string]any) {
+	if !squad && !attachments {
+		return 0, nil
+	}
+	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
+	if err != nil || rt.Provider != qoderruntime.Provider {
+		return 0, nil
+	}
+	reason := "Qoder Cloud Agents cannot lead a squad; pick the agent directly to create the issue"
+	if !squad {
+		reason = "Qoder Cloud Agents cannot read attachments; remove them or pick another agent"
+	}
+	return http.StatusUnprocessableEntity, map[string]any{
+		"code":   "agent_unavailable",
+		"reason": reason,
+	}
+}
+
 func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, source string, runtimeID pgtype.UUID, minimum string) (int, map[string]any) {
 	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
 	if err != nil {
@@ -3387,11 +3429,9 @@ func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, sour
 			"reason": "agent's runtime is no longer registered",
 		}
 	}
+	// The Qoder bridge creates the issue itself instead of running the CLI.
 	if rt.Provider == qoderruntime.Provider {
-		return http.StatusUnprocessableEntity, map[string]any{
-			"code":   "agent_unavailable",
-			"reason": "Qoder Cloud Agents supports existing issue runs only; create the issue manually and assign it to this agent",
-		}
+		return 0, nil
 	}
 	current := readRuntimeCLIVersion(rt.Metadata)
 	switch err := agentpkg.CheckMinCLIVersionFor(current, minimum); {
@@ -5036,6 +5076,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	})
 }
 
+// errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
+// after the invoke gate, so a caller who may not use the agent never learns its
+// pause state.
+const errAgentPaused = "agent_paused: this agent is paused; pick another agent by role"
+
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
 // sub-workflow child) judges the human it acts for. Every other check, and the
@@ -5084,6 +5129,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// mode (MUL-6380 / GH #7180).
 			return http.StatusForbidden, "you do not have permission to assign work to this agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
+		}
 		return 0, ""
 	case "squad":
 		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -5104,6 +5152,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
 		}
 		return 0, ""
 	default:
@@ -5292,6 +5343,16 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+
+	// The comment cascade of the delete nulls trigger_comment_id on runs that
+	// can belong to other issues. Lock all of those issues first.
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := service.LockIssuesBeforeIssueDelete(ctx, qtx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
+	}
 
 	result := issueDeleteResult{}
 	for _, issue := range issues {

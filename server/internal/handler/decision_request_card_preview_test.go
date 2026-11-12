@@ -173,6 +173,35 @@ func TestCardPreviewForAgentCopyIsMissingForASourceTheRecipientCannotSee(test *t
 	}
 }
 
+// The target runtime is read for the card's workspace: another workspace's
+// runtime ID must not leak its name or provider into the card (CHE-4452).
+func TestCardPreviewForAgentCopyIsMissingForARuntimeOfAnotherWorkspace(test *testing.T) {
+	action := newPendingCopy(test, "che4452 foreign runtime copy", nil)
+	var workspaceID, runtimeID string
+	dbfx.QueryRow(test, `INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('che4452 foreign', 'che4452-foreign', '', 'C4F') RETURNING id::text`).Scan(&workspaceID)
+	dbfx.Cleanup(test, `DELETE FROM workspace WHERE id = '`+workspaceID+`'`)
+	dbfx.QueryRow(test, `INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, NULL, 'che4452 secret runtime', 'cloud', 'secretprovider', 'online', 'x', '{}'::jsonb, now(), 'public', $2) RETURNING id::text`,
+		workspaceID, testUserID).Scan(&runtimeID)
+	dbfx.Exec(test, `UPDATE decision_action SET params = jsonb_set(params, '{runtime_id}', to_jsonb($2::text)) WHERE id = $1`, action.actionID, runtimeID)
+	card := action.cardAction(test)
+	if card == nil || card.Preview != nil {
+		raw, _ := json.Marshal(card)
+		test.Fatalf("preview of a runtime in another workspace: %s", raw)
+	}
+}
+
+// The executor refuses a runtime private to another member; the preview must
+// not name it to the card's recipient either.
+func TestCardPreviewForAgentCopyIsMissingForAPrivateRuntimeOfAnotherMember(test *testing.T) {
+	action := newPendingCopyOn(test, "che4452 private runtime copy", nil, "private")
+	if card := action.cardAction(test); card == nil || card.Preview != nil {
+		raw, _ := json.Marshal(card)
+		test.Fatalf("preview of a runtime private to another member: %s", raw)
+	}
+}
+
 func TestCardPreviewForEnvPatchIsMissingForAnAgentTheRecipientCannotSee(test *testing.T) {
 	action := newPendingAction(test)
 	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, action.agentID, testUserID)

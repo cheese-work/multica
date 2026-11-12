@@ -27,6 +27,12 @@ func splitDiffLines(s string) []string {
 // and b are equal. ponytail: LCS table over the changed middle only, capped at
 // maxDiffCells; swap in Myers if descriptions ever outgrow the cap.
 func unifiedDiff(a, b, fromName, toName string) (string, error) {
+	return unifiedDiffContext(a, b, fromName, toName, 3)
+}
+
+// unifiedDiffContext is unifiedDiff with ctx lines of unchanged context around
+// each change; a huge ctx returns the whole file as one hunk.
+func unifiedDiffContext(a, b, fromName, toName string, ctx int) (string, error) {
 	al, bl := splitDiffLines(a), splitDiffLines(b)
 	pre := 0
 	for pre < len(al) && pre < len(bl) && al[pre] == bl[pre] {
@@ -80,7 +86,6 @@ func unifiedDiff(a, b, fromName, toName string) (string, error) {
 		ops = append(ops, diffOp{' ', l})
 	}
 
-	const ctx = 3
 	var out strings.Builder
 	fmt.Fprintf(&out, "--- %s\n+++ %s\n", fromName, toName)
 	oldLine, newLine := 1, 1 // line numbers at ops[k]

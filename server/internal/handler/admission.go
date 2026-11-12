@@ -75,6 +75,7 @@ const (
 	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
 	ReasonStageQueueFull                      = dispatch.ReasonStageQueueFull
 	ReasonReviewHeadAnswered                  = dispatch.ReasonReviewHeadAnswered
+	ReasonAgentPaused                         = dispatch.ReasonAgentPaused
 	ReasonAdmissionDeferred                   = dispatch.ReasonAdmissionDeferred
 	ReasonInternalError                       = dispatch.ReasonInternalError
 	ReasonProviderHold                        = dispatch.ReasonProviderHold
@@ -153,6 +154,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the PR's stage is at capacity; it is queued and runs when a slot frees"
 	case ReasonReviewHeadAnswered:
 		return "the agent already answered this PR head; a new head runs again"
+	case ReasonAgentPaused:
+		return "the agent is paused; pick another agent by role"
 	case ReasonAdmissionDeferred:
 		return "the PR head is not admissible (a check is failing, pending or missing, or the PR has a merge conflict); the review is deferred"
 	case ReasonProviderHold:

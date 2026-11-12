@@ -634,6 +634,7 @@ WHERE id = $1 AND issue_id IS NULL
 -- Chat retry priority keeps older input ahead of newer turns. A non-NULL fire_at
 -- defers dispatch until promotion. max_attempts optionally persists the effective
 -- ceiling; it does not re-enable tasks whose retry budget was disabled.
+-- A non-NULL hold_provider stamps the context.provider_hold marker (M3c).
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
@@ -649,7 +650,15 @@ SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     CASE WHEN sqlc.narg(fire_at)::timestamptz IS NOT NULL THEN 'deferred' ELSE 'queued' END,
     CASE WHEN p.chat_session_id IS NOT NULL THEN GREATEST(p.priority, 3) ELSE p.priority END,
-    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
+    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary,
+    -- A held retry (CHE-1736 M1.2) is stamped with the M3c provider_hold marker in
+    -- the same INSERT, so the row is never promotable before it is marked.
+    CASE WHEN sqlc.narg('hold_provider')::text IS NOT NULL
+        THEN COALESCE(p.context, '{}'::jsonb) || jsonb_build_object('provider_hold', jsonb_build_object(
+            'provider', sqlc.narg('hold_provider')::text,
+            'since', now(),
+            'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))))
+        ELSE p.context END,
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
     p.work_dir,
     p.attempt + 1, COALESCE(sqlc.narg(max_attempts)::int, p.max_attempts), p.id,
@@ -1959,6 +1968,33 @@ SET cancel_acked_at = now()
 WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
   AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
 
+-- name: ReleaseStopsAttestedByDaemon :many
+-- CHE-3114 part 2: the claiming runtime's daemon reported its live task set. A
+-- gate-arming cancelled run of that runtime that is not in the set, and was
+-- dispatched before the grace cutoff (so a claim still in flight to the daemon
+-- is not mistaken for a stopped run) and since the daemon process booted (a
+-- restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
+-- with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
+-- rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
+-- reports a pending process cleanup is not released: only a cleanup-confirmed
+-- cancel-ack settles those. The first ack wins.
+UPDATE agent_task_queue t
+SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+FROM agent_runtime r
+WHERE r.id = t.runtime_id
+  AND r.status = 'online'
+  AND t.runtime_id = sqlc.arg('runtime_id')
+  AND t.status = 'cancelled'
+  AND t.failure_reason IN ('superseded_head', 'pr_merged', 'pr_closed')
+  AND t.cancel_acked_at IS NULL
+  AND t.stop_unconfirmed_at IS NULL
+  AND t.dispatched_at IS NOT NULL
+  AND t.dispatched_at < sqlc.arg('dispatched_before')
+  AND t.dispatched_at >= sqlc.arg('dispatched_after')
+  AND NOT (t.id = ANY(sqlc.arg('live_task_ids')::uuid[]))
+  AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
+RETURNING t.id, t.issue_id;
+
 -- name: ListLiveReviewRunsForPR :many
 -- Live review runs of the PR stamped with a head other than the PR's current
 -- one, at the step their issue is still in. Author runs carry a different
@@ -2256,7 +2292,7 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 -- queue or is about to still reads the issue afterwards, so each takes the
 -- writer's taint (the task trigger unions it with what the run has).
 UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory');
 
 -- name: GetTaskTaintIDs :one
 SELECT taint_ids FROM agent_task_queue WHERE id = $1;
@@ -3559,12 +3595,13 @@ WHERE id = @id
 -- untouched; only ClaimAgentTask and its candidate lists skip the agent.
 UPDATE agent
 SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id),
+    scheduling_paused_reason = COALESCE(scheduling_paused_reason, sqlc.narg('reason')::text)
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
 -- name: ResumeAgentScheduling :one
 UPDATE agent
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;

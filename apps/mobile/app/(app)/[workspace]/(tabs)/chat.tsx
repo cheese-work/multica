@@ -51,6 +51,7 @@ import {
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
+import { deriveChatTitle } from "@multica/core/chat/title";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
@@ -399,7 +400,7 @@ export default function ChatTab() {
         try {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
-            title: titleSeed.slice(0, 50),
+            title: deriveChatTitle(titleSeed),
           });
           return session.id;
         } finally {

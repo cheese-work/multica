@@ -67,6 +67,7 @@ import {
 } from "../../layout/collection-list";
 import { availabilityConfig } from "../presence";
 import { AgentRowActions } from "./agent-row-actions";
+import { AgentPausedBadge } from "./agent-scheduling";
 import {
   AgentListFilterMenu,
   countActiveFilterDimensions,
@@ -243,6 +244,7 @@ function NameCell({ row }: { row: AgentListRow }) {
               <TooltipContent>{VISIBILITY_TOOLTIP.private}</TooltipContent>
             </Tooltip>
           )}
+          <AgentPausedBadge agent={agent} />
           {isOwnedByMe && <CollectionTag>{t(($) => $.row.you)}</CollectionTag>}
         </>
       }
@@ -728,6 +730,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
               agent={row.agent}
               presence={row.presence}
               canManage={row.canManage}
+              canSchedule={isWorkspaceAdmin}
               duplicateHref={duplicateHref(row.agent)}
             />
           )}

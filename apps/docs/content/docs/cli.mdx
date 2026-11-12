@@ -476,6 +476,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. For a run-budget action that link opens the approval on the issue; for any other action it links to the card in the chat, where the person approves it. A plain option card (`multica decision request` without `--action-file`) cannot apply a change: Approve only records the answer. The server cannot read intent, so it does not refuse such a card; when the decision or an option reads like a workflow, agent, squad, workspace or budget change (or names an allowlisted action type) it adds an advisory hint. Send that change with `multica decision propose`. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
+### Covered fields need a passkey action
+
+A task token or cloud-node token cannot write these fields through the older routes: `agent.instructions`, `squad.instructions`, `workspace.context`, workflow steps and step instructions, and the workspace settings keys on the decision-action allow table (`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` and the other plain operational keys). The server answers 403 with `code: passkey_action_required` and an `action_type` naming the action to propose instead (`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). The stored value does not change. A vote receipt, a decision binding, a PASS receipt and the Hermes exception no longer lift this refusal. Propose the action with `multica decision propose <action-type>`; a person approves it with a passkey. Writes by a person, and `project.description`, work as before.
+
 ### Config change proposals
 
 `multica config propose` builds the action file for a workspace config change. It reads the live value, computes `before_sha256` and `after_sha256` with the recipes the server recomputes, and writes the file that `multica decision request --action-file` takes. It sends nothing and writes no secret. A person still approves with a passkey.
@@ -558,6 +562,12 @@ CLI configuration files contain tokens that can access Multica as you. Don't com
 ## Command reference
 
 The tables below cover every current top-level command, grouped the way the CLI itself groups them. All commands accept the global flags `--server-url`, `--workspace-id`, `--profile`, and `--debug`. `--output` is registered per command, and the default format varies: `list` commands default to a table, while `get` and `create` commands mostly default to JSON. Full flags are defined by `multica <command> --help`.
+
+### Issue attachments
+
+For `issue create`, `issue update`, and `issue comment add`, each `--attachment` takes one literal file path, including any commas or double quotes in the filename. Repeat the flag for multiple files: `--attachment 'report,final.csv' --attachment notes.txt`. Omitting the flag attaches no files; an explicitly empty path is an error. All local paths are checked before any file is uploaded.
+
+Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --attachment b` to attach two files. The former now selects a single file named `a,b`. Remove extra CSV quotes from the old workaround `--attachment '"report,final.csv"'`; use `--attachment 'report,final.csv'` unless the filename itself contains those double quotes.
 
 ### Core
 
@@ -642,7 +652,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | `user` | `profile get/update` | View or update the current user's profile | |
 | `login` | — | Sign in via the browser and configure all workspaces automatically | `--token` (prompts interactively in the terminal when passed without a value) |
 | `setup` | `cloud` (default), `self-host` | Save the server address, complete sign-in, and start the daemon | `self-host`: `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Download or upload attachments | `download`: `--output-dir`; `upload`: `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Download or upload attachments; list a file's revisions; diff two revisions | `download`: `--output-dir`; `upload`: `--task`, `--issue`, `--replaces <attachment-id>` (the new file becomes the next revision of that attachment); `diff`: `--from`, `--to` (revision numbers) |
 | `config` | `show`, `set <key> <value>` | View or edit the current profile's local configuration | Precedence: command-line flags > environment variables > `config.json` > built-in defaults; set an empty string to clear a value |
 | `update` | — | Update the CLI to the latest version | |
 | `version` | — | Print version information | `--output` (`text` or `json`) |

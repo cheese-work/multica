@@ -119,7 +119,8 @@ class GateDecisionTest(unittest.TestCase):
         state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
         self.assertIn("author", why)
-        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699333}
+        # CHE-4671: dependabot[bot] (49699333) is registered as an author; any other unknown id stays refused
+        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699334}
         self.assertEqual(self.run_gate([comment(verdict())], pr=pr)[0], "failure")
 
     def test_verdict_for_another_pr_with_the_same_head_does_not_pass(self):
