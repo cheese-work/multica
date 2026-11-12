@@ -183,6 +183,8 @@ export interface AttachmentFileCardProps {
   uploading?: boolean;
   /** Rendered after the filename, e.g. a version badge. */
   badge?: ReactNode;
+  /** Always visible, unlike download / remove which wait on hover. */
+  actions?: ReactNode;
   onPreview: () => void;
   onDownload: () => void;
   onDelete?: () => void;
@@ -201,6 +203,7 @@ export function AttachmentFileCard({
   canDownload,
   uploading,
   badge,
+  actions,
   onPreview,
   onDownload,
   onDelete,
@@ -246,6 +249,7 @@ export function AttachmentFileCard({
           </span>
         )}
       </span>
+      {!uploading && actions && <span className="relative shrink-0">{actions}</span>}
       {!uploading && (canDownload || onDelete) && (
         <span className="relative flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/file-card:opacity-100 group-focus-within/file-card:opacity-100 [@media(hover:none)]:opacity-100">
           {canDownload && (

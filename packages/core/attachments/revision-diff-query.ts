@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 
 export const attachmentRevisionDiffKeys = {
@@ -18,6 +18,8 @@ export function useAttachmentRevisionDiff(
     queryKey: attachmentRevisionDiffKeys.diff(id, from, to, full),
     queryFn: () => api.getAttachmentRevisionDiff(id, from, to, full),
     staleTime: Infinity,
+    // Toggling full/changes keeps the shown diff until the other one arrives.
+    placeholderData: keepPreviousData,
     enabled,
   });
 }
