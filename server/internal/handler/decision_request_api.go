@@ -52,6 +52,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
+	if input.Action == nil && handler.refuseBudgetQuestion(writer, request, issue) {
+		return
+	}
 	if len(input.Ask) == 0 || string(input.Ask) == "null" {
 		writeError(writer, http.StatusBadRequest, "a structured ask is required")
 		return
@@ -486,4 +489,39 @@ func (handler *Handler) actionRequestTerms(writer http.ResponseWriter, kind, exp
 		expiry = parsed
 	}
 	return decisiontx.KindAction, expiry.Seconds(), true
+}
+
+// refuseBudgetQuestion refuses a question about a budget block while the
+// platform's top-up card is open: the card is the only way to reopen the
+// budget, and a second card for the same block makes two requests (CHE-5303).
+func (handler *Handler) refuseBudgetQuestion(writer http.ResponseWriter, request *http.Request, issue db.Issue) bool {
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+		return true
+	}
+	for _, open := range requests {
+		holds, isCard, err := runBudgetCardHolds(request.Context(), handler.Queries, open)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+			return true
+		}
+		if !isCard || !holds {
+			continue
+		}
+		action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the run budget card")
+			return true
+		}
+		workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the workspace")
+			return true
+		}
+		url := "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID)
+		writeErrorCode(writer, http.StatusConflict, "budget_card_open", "this issue's run budget top-up card is already open; the person approves it at "+url+" - do not ask a second question")
+		return true
+	}
+	return false
 }
