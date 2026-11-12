@@ -152,6 +152,11 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{at + ".value", "is a placeholder; give the literal or a source"}
 		}
 	}
+	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+		if agentOwned(field.value) {
+			return &AskError{prefix + "." + field.name, agentOwnedMessage}
+		}
+	}
 	text := step.Action + "\n" + step.Command
 	for _, name := range append(upperName.FindAllString(text, -1), placeholder.FindAllString(text, -1)...) {
 		if !step.declares(name) {

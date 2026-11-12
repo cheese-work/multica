@@ -2344,6 +2344,10 @@ WHERE id = (
     WHERE atq.agent_id = $2
       AND atq.runtime_id = $3
       AND atq.status = 'queued'
+      AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= $4::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
@@ -2373,7 +2377,7 @@ WHERE id = (
             )
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
-                now() - make_interval(secs => $4::double precision)
+                now() - make_interval(secs => $5::double precision)
       )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
@@ -2403,6 +2407,7 @@ type ClaimAgentTaskParams struct {
 	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
 	AgentID          pgtype.UUID `json:"agent_id"`
 	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	MinPriority      int32       `json:"min_priority"`
 	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
 }
 
@@ -2421,6 +2426,7 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.PrepareLeaseSecs,
 		arg.AgentID,
 		arg.RuntimeID,
+		arg.MinPriority,
 		arg.RuntimeStaleSecs,
 	)
 	var i AgentTaskQueue
@@ -3193,12 +3199,28 @@ func (q *Queries) CreateAgentBuilder(ctx context.Context, arg CreateAgentBuilder
 }
 
 const createAgentTask = `-- name: CreateAgentTask :one
-WITH review_claim AS (
+WITH provider_hold AS MATERIALIZED (
+    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
+    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
+    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
+        'provider', pb.provider, 'since', now(),
+        'max_hold_until', now() + make_interval(secs => COALESCE($28::int, 21600))
+    )) AS context
+    FROM provider_breaker pb
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
+    WHERE $3::uuid IS NOT NULL AND pb.provider = $29::text
+      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
+          pb.next_probe_at > now() OR EXISTS (
+              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
+                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
+      )))
+), review_claim AS (
     INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
-    SELECT i.workspace_id, i.id, $28::text, $1
+    SELECT i.workspace_id, i.id, $30::text, $1
     FROM issue i
     WHERE i.id = $3
-      AND COALESCE($28::text, '') <> ''
+      AND COALESCE($30::text, '') <> ''
       AND lock_task_owner_rows($1, $3, $2)
     ON CONFLICT (issue_id, head_sha) DO NOTHING
     RETURNING issue_id
@@ -3211,7 +3233,7 @@ INSERT INTO agent_task_queue (
     workflow_step, pull_request_id, taint_ids, id
 )
 SELECT
-    $1, $2, $3, 'queued', $4, $5,
+    $1, $2, $3, CASE WHEN EXISTS (SELECT 1 FROM provider_hold) THEN 'deferred' ELSE 'queued' END, $4, $5,
     COALESCE($6::uuid[], '{}'),
     $7,
     COALESCE($8::boolean, FALSE),
@@ -3226,7 +3248,7 @@ SELECT
         WHEN COALESCE($13::boolean, FALSE)
         THEN '{"fresh_rerun":true}'::jsonb
         ELSE '{}'::jsonb
-    END, '{}'::jsonb),
+    END || COALESCE((SELECT context FROM provider_hold), '{}'::jsonb), '{}'::jsonb),
     $14,
     $15,
     $16,
@@ -3289,6 +3311,8 @@ type CreateAgentTaskParams struct {
 	TaintIds             []string      `json:"taint_ids"`
 	ID                   pgtype.UUID   `json:"id"`
 	GateRequired         pgtype.Bool   `json:"gate_required"`
+	ProviderHoldSeconds  pgtype.Int4   `json:"provider_hold_seconds"`
+	HoldProvider         pgtype.Text   `json:"hold_provider"`
 	GateHead             pgtype.Text   `json:"gate_head"`
 }
 
@@ -3346,6 +3370,8 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.TaintIds,
 		arg.ID,
 		arg.GateRequired,
+		arg.ProviderHoldSeconds,
+		arg.HoldProvider,
 		arg.GateHead,
 	)
 	var i AgentTaskQueue
@@ -3586,6 +3612,23 @@ func (q *Queries) CreateBackgroundTask(ctx context.Context, arg CreateBackground
 }
 
 const createDeferredChannelIssueTask = `-- name: CreateDeferredChannelIssueTask :one
+WITH provider_hold AS MATERIALIZED (
+    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
+    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
+    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
+        'provider', pb.provider, 'since', now(),
+        'max_hold_until', now() + make_interval(secs => COALESCE($25::int, 21600))
+    )) AS context
+    FROM provider_breaker pb
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
+    WHERE $3::uuid IS NOT NULL AND pb.provider = $26::text
+      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
+          pb.next_probe_at > now() OR EXISTS (
+              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
+                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
+      )))
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -3605,7 +3648,7 @@ SELECT
     jsonb_strip_nulls(jsonb_build_object(
         'head_sha', NULLIF(COALESCE($12::text, ''), ''),
         'channel_issue_media_pending', TRUE
-    )),
+    )) || COALESCE((SELECT context FROM provider_hold), '{}'::jsonb),
     $13,
     $14,
     $15,
@@ -3649,6 +3692,8 @@ type CreateDeferredChannelIssueTaskParams struct {
 	TriggerEvidenceRefID pgtype.UUID        `json:"trigger_evidence_ref_id"`
 	FireAt               pgtype.Timestamptz `json:"fire_at"`
 	ID                   pgtype.UUID        `json:"id"`
+	ProviderHoldSeconds  pgtype.Int4        `json:"provider_hold_seconds"`
+	HoldProvider         pgtype.Text        `json:"hold_provider"`
 }
 
 // Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -3684,6 +3729,8 @@ func (q *Queries) CreateDeferredChannelIssueTask(ctx context.Context, arg Create
 		arg.TriggerEvidenceRefID,
 		arg.FireAt,
 		arg.ID,
+		arg.ProviderHoldSeconds,
+		arg.HoldProvider,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -7001,6 +7048,26 @@ func (q *Queries) IsTaskSessionRetired(ctx context.Context, arg IsTaskSessionRet
 	return retired, err
 }
 
+const issueHasOpenWait = `-- name: IssueHasOpenWait :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = $1 AND enabled AND disabled_at IS NULL
+    AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+)
+`
+
+// True when an explicit wait is still armed on the issue: a wakeup someone set
+// for another blocker (a condition, an event such as task.completed, or a
+// time). System-rule, decision-bound and observe wakeups are not blockers
+// (CHE-5239).
+func (q *Queries) IssueHasOpenWait(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, issueHasOpenWait, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const lastVerdictHeadSHA = `-- name: LastVerdictHeadSHA :one
 SELECT COALESCE((
   SELECT details->>'head_sha' FROM activity_log
@@ -8282,6 +8349,7 @@ const listQueuedClaimCandidatesByRuntime = `-- name: ListQueuedClaimCandidatesBy
 SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.context_tokens, atq.context_window, atq.task_kind, atq.compact_reason, atq.compact_trigger_tokens, atq.workflow_step, atq.claimed_model, atq.chat_compaction_epoch, atq.preset_name, atq.preset_source, atq.preset_skips, atq.claimed_thinking_level, atq.claimed_service_tier, atq.claimed_context_args, atq.cancel_acked_at, atq.stop_unconfirmed_at, atq.pull_request_id, atq.replacement_released_at, atq.stop_hold_issue_wide, atq.taint_ids, atq.applied_model, atq.applied_thinking_level, atq.applied_service_tier, atq.applied_context_args, atq.applied_reported_at, atq.external_read, atq.purpose, atq.cancel_ack_reason FROM agent_task_queue atq
 WHERE atq.runtime_id = $1
   AND atq.status = 'queued'
+  AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -8424,6 +8492,7 @@ const listQueuedClaimCandidatesByRuntimes = `-- name: ListQueuedClaimCandidatesB
 SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.context_tokens, atq.context_window, atq.task_kind, atq.compact_reason, atq.compact_trigger_tokens, atq.workflow_step, atq.claimed_model, atq.chat_compaction_epoch, atq.preset_name, atq.preset_source, atq.preset_skips, atq.claimed_thinking_level, atq.claimed_service_tier, atq.claimed_context_args, atq.cancel_acked_at, atq.stop_unconfirmed_at, atq.pull_request_id, atq.replacement_released_at, atq.stop_hold_issue_wide, atq.taint_ids, atq.applied_model, atq.applied_thinking_level, atq.applied_service_tier, atq.applied_context_args, atq.applied_reported_at, atq.external_read, atq.purpose, atq.cancel_ack_reason FROM agent_task_queue atq
 WHERE atq.runtime_id = ANY($1::uuid[])
   AND atq.status = 'queued'
+  AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -10438,6 +10507,7 @@ SELECT MIN(fire_at)::timestamptz
 FROM agent_task_queue t
 WHERE t.runtime_id = ANY($1::uuid[])
   AND t.status = 'deferred'
+  AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
   AND EXISTS (
     SELECT 1 FROM agent_runtime r
     WHERE r.id = t.runtime_id
@@ -10542,6 +10612,7 @@ const promoteDeferredChannelIssueTask = `-- name: PromoteDeferredChannelIssueTas
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL
 WHERE id = $1 AND issue_id IS NOT NULL AND status = 'deferred'
+  AND NOT (COALESCE(context, '{}'::jsonb) ? 'provider_hold')
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason
 `
 
@@ -10653,6 +10724,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = $1
       AND t.status = 'deferred'
+      AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -10818,6 +10890,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = ANY($1::uuid[])
       AND t.status = 'deferred'
+      AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -12131,6 +12204,28 @@ func (q *Queries) RequeueAgentTaskAfterClaimFailure(ctx context.Context, arg Req
 		&i.CancelAckReason,
 	)
 	return i, err
+}
+
+const restampActiveTasksWorkflowStep = `-- name: RestampActiveTasksWorkflowStep :exec
+UPDATE agent_task_queue SET workflow_step = $1
+WHERE issue_id = $2
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY($3::text[])
+  AND workflow_step IS DISTINCT FROM $1
+`
+
+type RestampActiveTasksWorkflowStepParams struct {
+	ToStep    pgtype.Text `json:"to_step"`
+	IssueID   pgtype.UUID `json:"issue_id"`
+	FromSteps []string    `json:"from_steps"`
+}
+
+// A system move (decision unpark) puts the issue on a new step. Runs stamped
+// with a step on either side of that move follow it, so their next status
+// write is judged from where the system left the issue (CHE-5239).
+func (q *Queries) RestampActiveTasksWorkflowStep(ctx context.Context, arg RestampActiveTasksWorkflowStepParams) error {
+	_, err := q.db.Exec(ctx, restampActiveTasksWorkflowStep, arg.ToStep, arg.IssueID, arg.FromSteps)
+	return err
 }
 
 const restoreAgent = `-- name: RestoreAgent :one

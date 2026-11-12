@@ -57,7 +57,7 @@ func patToResponse(pat db.PersonalAccessToken) PersonalAccessTokenResponse {
 type CreatePATRequest struct {
 	Name          string `json:"name"`
 	ExpiresInDays *int   `json:"expires_in_days"`
-	// Scopes narrows the token to named capabilities; today only DecisionFeedScope.
+	// Scopes narrows the token to named capabilities; DecisionFeedScope or DecisionCIRequestScope.
 	Scopes []string `json:"scopes"`
 }
 
@@ -86,7 +86,7 @@ func (h *Handler) CreatePersonalAccessToken(w http.ResponseWriter, r *http.Reque
 	}
 
 	for _, scope := range req.Scopes {
-		if scope != DecisionFeedScope {
+		if scope != DecisionFeedScope && scope != DecisionCIRequestScope {
 			writeError(w, http.StatusBadRequest, "unknown scope: "+scope)
 			return
 		}

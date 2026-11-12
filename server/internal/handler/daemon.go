@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -4193,6 +4194,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.AutopilotTriggerPayload = json.RawMessage(run.TriggerPayload)
 		}
 		resp.AutopilotTitle = ap.Title
+		resp.Script = claimScriptFor(ap.ExecutionMode, ap.ScriptConfig)
+		if resp.Script != nil {
+			h.AutopilotService.RecordScriptClaim(r.Context(), run.ID, resp.Script.Name, resp.Script.Args)
+		}
 		resp.ThreadName = ap.Title
 		if ap.Description.Valid {
 			resp.AutopilotDescription = ap.Description.String
@@ -5241,6 +5246,9 @@ type TaskCompleteRequest struct {
 		Tokens int64 `json:"tokens"`
 		Window int64 `json:"window"`
 	} `json:"context,omitempty"`
+	// InitContext is the daemon's first-prompt token report, stored as part of
+	// the run's result. Optional: daemons that predate it omit it.
+	InitContext *initctx.Report `json:"init_context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -5258,6 +5266,15 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	if req.InitContext != nil {
+		for i := range req.InitContext.Parts {
+			p := &req.InitContext.Parts[i]
+			p.Part = initctx.Part(util.SanitizeTextForPostgres(string(p.Part)))
+			for j := range p.Notes {
+				p.Notes[j] = util.SanitizeTextForPostgres(p.Notes[j])
+			}
+		}
+	}
 }
 
 func sanitizeTaskFailRequest(req *TaskFailRequest) {
@@ -5371,15 +5388,10 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 	// task's agent capacity or serialization key is re-claimed immediately.
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of any agent task token minted at claim time.
-	// The token would naturally expire at the 24h watermark and is also
-	// cascaded on agent_task deletion, but eagerly deleting it on
-	// completion shrinks the window where a compromised agent process
-	// can keep making API calls after its task finishes. Failure here is
-	// non-fatal; the expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("complete task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of any agent task token minted at claim time. Not an
+	// immediate-revocation guarantee: on failure the row stays valid until its
+	// expiry, and RevokeTaskTokens logs and records that.
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task completed", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -6329,12 +6341,9 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	}
 	h.TaskService.NotifyTaskFinished(*task)
 
-	// Best-effort revoke of the mat_ task token minted at claim. Same
-	// rationale as CompleteTask — eager deletion shrinks the post-
-	// terminal window. The 24h expiry / cascade are the durable guards.
-	if err := h.Queries.DeleteTaskTokensByTask(r.Context(), task.ID); err != nil {
-		slog.Warn("fail task: failed to revoke task tokens", "task_id", uuidToString(task.ID), "error", err)
-	}
+	// Best-effort delete of the mat_ task token minted at claim; same
+	// semantics as CompleteTask (the row stays valid until expiry on failure).
+	h.TaskService.RevokeTaskTokens(r.Context(), *task)
 
 	slog.Info("task failed", "task_id", taskID, "agent_id", uuidToString(task.AgentID), "task_error", req.Error, "failure_reason", req.FailureReason)
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
@@ -7079,9 +7088,49 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	// for a column that is near-empty on runs that have not finished.
 	if !activeOnly {
 		h.hydrateTaskUsage(r.Context(), issue.ID, resp)
+		resp = h.withSkippedRuns(r.Context(), issue, tasks, resp)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// withSkippedRuns adds the runs the review-head guard declined (CHE-4649) to
+// the run list as cancelled entries whose failure_reason is the skip reason, in
+// time order with the real runs. They are no task rows (a row would count
+// against the run budget), so the list reads them from the activity. A read
+// error leaves the list as it was.
+func (h *Handler) withSkippedRuns(ctx context.Context, issue db.Issue, tasks []db.AgentTaskQueue, resp []AgentTaskResponse) []AgentTaskResponse {
+	skips, err := h.Queries.ListIssueRunSkips(ctx, issue.ID)
+	if err != nil || len(skips) == 0 {
+		return resp
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	// resp is newest first, one entry per task; place each skip before the first
+	// run that is older than it.
+	for _, skip := range skips {
+		var d struct {
+			Reason  string `json:"reason"`
+			AgentID string `json:"agent_id"`
+			Head    string `json:"head_sha"`
+			Trigger string `json:"trigger"`
+		}
+		if json.Unmarshal(skip.Details, &d) != nil || d.Reason == "" {
+			continue
+		}
+		msg := fmt.Sprintf("Run not started: agent already answered PR head %s (%s)", d.Head, d.Trigger)
+		entry := AgentTaskResponse{
+			ID: uuidToString(skip.ID), AgentID: d.AgentID, IssueID: uuidToString(issue.ID), WorkspaceID: workspaceID,
+			Status: "cancelled", FailureReason: d.Reason, Error: &msg, TriggerSummary: &msg,
+			CreatedAt: timestampToString(skip.CreatedAt), CompletedAt: timestampToPtr(skip.CreatedAt),
+		}
+		at := slices.IndexFunc(tasks, func(t db.AgentTaskQueue) bool { return t.CreatedAt.Time.Before(skip.CreatedAt.Time) })
+		if at < 0 {
+			at = len(resp)
+		}
+		resp = slices.Insert(resp, at, entry)
+		tasks = slices.Insert(tasks, at, db.AgentTaskQueue{CreatedAt: skip.CreatedAt})
+	}
+	return resp
 }
 
 // hydrateTaskUsage attaches each run's own token usage to the execution-log

@@ -976,16 +976,10 @@ func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTas
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
-	// Revoke any mat_ task tokens minted for this task. Cancellation is
-	// a terminal transition, so the running agent process no longer
-	// needs to call back; eagerly deleting the token closes the
-	// window where a compromised process could keep authenticating
-	// against the API until the 24h expiry. Failure is non-fatal — the
-	// expiry / FK cascade are the durable guards. MUL-2600.
-	if err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
-		slog.Warn("cancel task: failed to revoke task tokens",
-			"task_id", util.UUIDToString(task.ID), "error", err)
-	}
+	// Delete any mat_ task tokens minted for this task (MUL-2600). Best
+	// effort: a failed delete leaves the row valid until expiry; see
+	// RevokeTaskTokens.
+	s.RevokeTaskTokens(ctx, task)
 }
 
 // costUSDTicks is the provider's own price for this usage in 1e-10 USD, or 0
@@ -1704,7 +1698,13 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
+		provider, seconds, configErr := issueProviderHoldConfig(ctx, queries, createParams.AgentID)
+		if configErr != nil {
+			return db.AgentTaskQueue{}, configErr
+		}
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
+			HoldProvider:         provider,
+			ProviderHoldSeconds:  seconds,
 			ID:                   dbid.NewV7(),
 			AgentID:              createParams.AgentID,
 			RuntimeID:            createParams.RuntimeID,
@@ -1907,7 +1907,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -4496,10 +4496,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_count_running"
 			return fmt.Errorf("count running tasks: %w", err)
 		}
-		if running >= int64(agent.MaxConcurrentTasks) {
+		// At the cap, one extra urgent task may still start (CHE-5118). Running
+		// above cap+1 means the reserved slot is already used.
+		var minPriority int32
+		atCap := running >= int64(agent.MaxConcurrentTasks)
+		if atCap {
 			decisionDetail = claimDecisionDetail{running: running, maxConcurrent: int64(agent.MaxConcurrentTasks)}
-			outcome = "no_capacity"
-			return nil
+			if running > int64(agent.MaxConcurrentTasks) || !urgentReservedSlotEnabled(agent.RuntimeConfig) {
+				outcome = "no_capacity"
+				return nil
+			}
+			minPriority = priorityToInt("urgent")
 		}
 
 		t0 = time.Now()
@@ -4509,11 +4516,15 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			RuntimeID:        claimRuntimeID,
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+			MinPriority:      minPriority,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				outcome = "no_tasks"
+				if atCap {
+					outcome = "no_capacity"
+				}
 				return nil
 			}
 			outcome = "error_claim"
@@ -5709,6 +5720,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					}
 				}
 			}
+		}
+		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
+			s.stampBlockedDispatchSnapshot(ctx, s.Queries, issue, task)
+		} else {
+			slog.Warn("blocked dispatch completion snapshot unavailable", "issue_id", util.UUIDToString(task.IssueID), "error", err)
 		}
 	}
 
@@ -8641,7 +8657,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ruleVersionID = target.source.RuleVersionID
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
-		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		task, err := createProviderHeldAgentTask(ctx, s.Queries, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              target.agent.ID,
 			RuntimeID:            target.agent.RuntimeID,
@@ -9151,6 +9167,18 @@ func computeChatElapsedMs(task db.AgentTaskQueue) pgtype.Int8 {
 		ms = 0
 	}
 	return pgtype.Int8{Int64: ms, Valid: true}
+}
+
+// urgentReservedSlotEnabled reads agent.runtime_config.urgent_reserved_slot.
+// Default on: absent, null or malformed config keeps the slot.
+func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
+	var cfg struct {
+		Enabled *bool `json:"urgent_reserved_slot"`
+	}
+	if json.Unmarshal(runtimeConfig, &cfg) != nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
 }
 
 func priorityToInt(p string) int32 {
@@ -10182,5 +10210,29 @@ func agentToMap(a db.Agent) map[string]any {
 		"updated_at":           util.TimestampToString(a.UpdatedAt),
 		"archived_at":          util.TimestampToPtr(a.ArchivedAt),
 		"archived_by":          util.UUIDToPtr(a.ArchivedBy),
+	}
+}
+
+// RevokeTaskTokens deletes a task's mat_ tokens at task end. It is best effort
+// and is not an immediate revocation guarantee: if the delete fails, the row
+// stays valid until its expires_at (GetTaskTokenByHash filters on it), so the
+// failure is logged and, for an autopilot run, recorded as
+// result.token_revoke_failed. Neither the log nor the record carries a token.
+func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQueue) {
+	err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID)
+	if err == nil {
+		return
+	}
+	slog.Error("task end: failed to delete task tokens; they stay valid until expiry",
+		"task_id", util.UUIDToString(task.ID), "error", err)
+	if !task.AutopilotRunID.Valid {
+		return
+	}
+	// The caller's ctx may be the reason the delete failed (cancelled request).
+	if mergeErr := s.Queries.MergeAutopilotRunResult(context.WithoutCancel(ctx), db.MergeAutopilotRunResultParams{
+		ID: task.AutopilotRunID, Patch: []byte(`{"token_revoke_failed":true}`),
+	}); mergeErr != nil {
+		slog.Error("task end: failed to record token deletion failure",
+			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
 }

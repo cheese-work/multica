@@ -2631,6 +2631,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrRunBudgetExhausted) {
 		return ReasonRunBudgetExhausted
 	}
+	if errors.Is(err, service.ErrReviewHeadAnswered) {
+		return ReasonReviewHeadAnswered
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
 	}
@@ -3193,11 +3196,7 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		if actorType == "agent" && wakePolicyEnabled {
 			return h.resolveAgentCommentMentions(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 		}
-		triggers, targets := h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
-		if actorType == "member" {
-			triggers = h.withBlockedAssignee(ctx, issue, triggers, actorType, actorID, opts)
-		}
-		return triggers, targets
+		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -3232,8 +3231,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
-	// Member input on a blocked issue reaches its assignee as well as the
-	// thread's existing recipients, wherever the comment sits in the tree.
+	// Untagged member input on a blocked issue reaches its assignee as well as
+	// the thread's existing recipients, wherever the comment sits in the tree.
+	// A tagged comment wakes only the tagged targets (handled above).
 	return h.withBlockedAssignee(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
 }
 
