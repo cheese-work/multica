@@ -7575,10 +7575,7 @@ func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
 // be recorded, and the caller then starts a fresh session instead, since a
 // resume that is not marked would run with a grant the transcript has not earned.
 func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
-	taint, err := h.Queries.InheritSessionTaint(ctx, db.InheritSessionTaintParams{
-		ID:        task.ID,
-		SessionID: sessionID,
-	})
+	taint, err := h.inheritSessionTaintLocked(ctx, task, sessionID)
 	if err != nil {
 		slog.Warn("daemon claim: could not record session taint; starting fresh",
 			"task_id", uuidToString(task.ID), "error", err)
@@ -7586,6 +7583,28 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// inheritSessionTaintLocked takes the issue row lock before it updates the
+// task: the update fires the task's taint trigger, which locks the issue, and
+// every other path that touches the runs of an issue takes the issue first.
+func (h *Handler) inheritSessionTaintLocked(ctx context.Context, task *db.AgentTaskQueue, sessionID string) ([]string, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if task.IssueID.Valid {
+		if _, err := qtx.LockIssueRunBudget(ctx, task.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+	taint, err := qtx.InheritSessionTaint(ctx, db.InheritSessionTaintParams{ID: task.ID, SessionID: sessionID})
+	if err != nil {
+		return nil, err
+	}
+	return taint, tx.Commit(ctx)
 }
 
 // recordChatTaint is the single path by which a DM task takes the taint of chat

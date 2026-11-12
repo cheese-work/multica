@@ -8717,12 +8717,17 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryCovered, nil
 		}
 
-		if merged, err := s.Queries.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
-			CommentID:      target.comment.ID,
-			TriggerSummary: s.buildCommentTriggerSummary(ctx, s.Queries, target.issue.WorkspaceID, target.comment.ID),
-			IssueID:        target.issue.ID,
-			AgentID:        target.agent.ID,
-		}); err == nil {
+		var merged db.AgentTaskQueue
+		err = s.underIssueLock(ctx, target.issue.ID, func(q *db.Queries) (e error) {
+			merged, e = q.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
+				CommentID:      target.comment.ID,
+				TriggerSummary: s.buildCommentTriggerSummary(ctx, q, target.issue.WorkspaceID, target.comment.ID),
+				IssueID:        target.issue.ID,
+				AgentID:        target.agent.ID,
+			})
+			return e
+		})
+		if err == nil {
 			slog.Info("delegated failure recovery merged into pending coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(merged.ID),
@@ -8783,11 +8788,16 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		// its claim payload is immutable. Register the comment as undelivered so
 		// its completion reconciliation creates the successor. Running tasks do
 		// not own that slot, so they took the durable queued-successor path above.
-		if active, err := s.Queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
-			CommentID: target.comment.ID,
-			IssueID:   target.issue.ID,
-			AgentID:   target.agent.ID,
-		}); err == nil {
+		var active db.RegisterPlannedCommentForActiveTaskRow
+		err = s.underIssueLock(ctx, target.issue.ID, func(q *db.Queries) (e error) {
+			active, e = q.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
+				CommentID: target.comment.ID,
+				IssueID:   target.issue.ID,
+				AgentID:   target.agent.ID,
+			})
+			return e
+		})
+		if err == nil {
 			slog.Info("delegated failure recovery registered behind dispatched coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(active.ID),
@@ -8922,6 +8932,31 @@ func (s *TaskService) runInPgxTx(ctx context.Context, fn func(*db.Queries, pgx.T
 		// transaction and the pool write below would wait on it.
 		_ = tx.Rollback(ctx)
 		return s.recordStageRefusal(ctx, err)
+	}
+	return tx.Commit(ctx)
+}
+
+// underIssueLock runs fn in one transaction that holds the issue row lock
+// first. A write to a run's taint-bearing columns fires the run's taint
+// trigger, which locks the issue; every other path that touches the runs of an
+// issue takes the issue first, so such a write takes it first too. A missing
+// issue is tolerated (the trigger does not lock then). Like runInTx, a service
+// built without a TxStarter (some tests) runs fn on the plain handle.
+func (s *TaskService) underIssueLock(ctx context.Context, issueID pgtype.UUID, fn func(*db.Queries) error) error {
+	if s.TxStarter == nil {
+		return fn(s.Queries)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	q := s.Queries.WithTx(tx)
+	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err := fn(q); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

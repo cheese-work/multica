@@ -1,12 +1,17 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -48,6 +53,28 @@ type agentSkillsUnknown struct {
 	Skills *[]AgentSkillSummary `json:"skills,omitempty"`
 }
 
+const maxPauseReasonChars = 500
+
+// readPauseReason reads the optional {"reason": "..."} body of an agent pause.
+// No body, or a blank reason, means no reason. Over the limit is a 400.
+func readPauseReason(w http.ResponseWriter, r *http.Request) (pgtype.Text, bool) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return pgtype.Text{}, false
+		}
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if utf8.RuneCountInString(reason) > maxPauseReasonChars {
+		writeError(w, http.StatusBadRequest, "reason is too long")
+		return pgtype.Text{}, false
+	}
+	return pgtype.Text{String: reason, Valid: reason != ""}, true
+}
+
 func (h *Handler) PauseAgentScheduling(w http.ResponseWriter, r *http.Request) {
 	h.setAgentScheduling(w, r, true)
 }
@@ -77,7 +104,11 @@ func (h *Handler) setAgentScheduling(w http.ResponseWriter, r *http.Request, pau
 		err     error
 	)
 	if pause {
-		updated, changed, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID))
+		reason, ok := readPauseReason(w, r)
+		if !ok {
+			return
+		}
+		updated, changed, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID), reason)
 	} else {
 		updated, changed, err = h.TaskService.ResumeAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID)
 	}
