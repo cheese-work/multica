@@ -245,6 +245,7 @@ type AgentTaskQueue struct {
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
+	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 }
 
 type AgentToLabel struct {
@@ -3350,6 +3351,7 @@ type TaskSupplement struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
+	Implicit        bool               `json:"implicit"`
 }
 
 type TaskSupplementCapability struct {

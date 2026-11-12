@@ -73,7 +73,7 @@ After you send, the comment shows "Waiting for … to read it", which changes to
 
 ## Coalescing consecutive comments
 
-When the same agent already has a waiting run on the issue, new comments merge into that pending run and are handled together when it starts. If the agent is already running, each comment is handled the way you chose in the comment box; see the previous section. You can keep adding information without waiting for the agent to reply.
+When the same agent already has a waiting run on the issue, new comments merge into that pending run and are handled together when it starts. If the agent is already running, each comment is handled the way you chose in the comment box; see the previous section. A comment sent without that choice, for example from the CLI or the API, is added to the current run. You can keep adding information without waiting for the agent to reply.
 
 When one comment @-mentions several different agents, each agent gets its own run; multiple mentions resolving to the same agent keep only one.
 
