@@ -35,8 +35,8 @@ func TestHeldRetryNoBudgetGetsNoRetry(t *testing.T) {
 }
 
 // One retry only: the held child, failing with a 5xx in turn, gets no second
-// retry, through FailTask or the sweeper entry point. Its budget is spent, so
-// the budget check ends it before the lineage fence: no owner cap notice.
+// retry and the owner gets exactly one cap notice (plan r7: the lineage fence
+// runs before the attempt budget). The sweeper entry point adds neither.
 func TestHeldRetryChildFailureMintsNoSecondRetry(t *testing.T) {
 	o := newOwnerFixture(t)
 	ctx := context.Background()
@@ -52,8 +52,8 @@ func TestHeldRetryChildFailureMintsNoSecondRetry(t *testing.T) {
 
 	s := o.failWith(t, child, held5xx)
 	s.wantFailed(t, held5xx)
-	if s.children != 0 || s.reservations != 0 {
-		t.Fatalf("second failure children=%d reservations=%d, want 0, 0", s.children, s.reservations)
+	if s.children != 0 || s.reservations != 0 || s.notices != 1 {
+		t.Fatalf("second failure children=%d reservations=%d notices=%d, want 0, 0, 1", s.children, s.reservations, s.notices)
 	}
 	parent, err := o.q.GetAgentTask(ctx, parseTestUUID(t, child))
 	if err != nil {
@@ -62,8 +62,8 @@ func TestHeldRetryChildFailureMintsNoSecondRetry(t *testing.T) {
 	if got, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent); err != nil || got != nil {
 		t.Fatalf("MaybeRetryFailedTask child=%v err=%v, want none", got, err)
 	}
-	if n := o.retryChildren(t, child); n != 0 {
-		t.Fatalf("after sweeper replay children=%d, want 0", n)
+	if n, notices := o.retryChildren(t, child), o.countNotices(t, child); n != 0 || notices != 1 {
+		t.Fatalf("after sweeper replay children=%d notices=%d, want 0, 1", n, notices)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestHeldRetryRecoveryLineageGetsNoRetryAndOneNotice(t *testing.T) {
 // run): the failure commits and nothing is reserved, created or announced.
 func TestHeldRetryOwnerNoneGetsNoRetryAndNoNotice(t *testing.T) {
 	o := newOwnerFixture(t)
-	triage := o.Issue(t, "triage", testutil.Cols{"triage_state": "pending"})
+	triage := o.Issue(t, "triage", testutil.Cols{"triage_state": "pending", "assignee_type": "agent", "assignee_id": o.agentID})
 	o.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id=$1", triage)
 	for name, cols := range map[string]testutil.Cols{
 		"no issue":               {"issue_id": nil},
