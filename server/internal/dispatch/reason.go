@@ -100,6 +100,10 @@ const (
 	// is listed as queued and runs when a slot frees; nothing is lost. A property
 	// of the stage, not of the target, so it is enumeration-safe.
 	ReasonStageQueueFull ReasonCode = "stage_queue_full"
+	// ReasonReviewHeadAnswered: the reviewer agent already posted a verdict,
+	// BLOCKED or NOT-RUN for the PR head the run would review (CHE-4649), so no
+	// run starts. A property of the issue and its head; a new head runs again.
+	ReasonReviewHeadAnswered ReasonCode = "review_head_answered"
 	// ReasonAdmissionDeferred: the reviewer run was held back because the PR
 	// head is not admissible (CHE-4650): an admission check is failing, pending
 	// or missing, or the PR has a merge conflict. The deferral is on record for

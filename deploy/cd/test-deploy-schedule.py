@@ -12,8 +12,8 @@ JOBS = WORKFLOW["jobs"]
 # yaml reads the bare key `on` as True.
 TRIGGERS = WORKFLOW.get("on", WORKFLOW.get(True))
 FIRST = "schedule-resolve"
-# 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 ICT.
-CRON = "0 1,5,9,13,17,21 * * *"
+# 00:17, 04:17, 08:17, 12:17, 16:17, 20:17 ICT. Off the hour: GitHub drops top-of-hour schedules under load.
+CRON = "17 1,5,9,13,17,21 * * *"
 
 
 def needs_of(job):

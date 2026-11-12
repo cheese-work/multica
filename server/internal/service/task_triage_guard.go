@@ -143,6 +143,10 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
+	// Before the budget: a skipped run is no task row and takes no stage slot.
+	if err := guardReviewHeadAnswered(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	// Before the budget: a loop is refused whatever the budget has left.
 	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
