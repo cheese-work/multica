@@ -448,6 +448,27 @@ func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e servi
 	}
 }
 
+// onReviewRunSkipped records a reviewer run the review-head guard refused
+// (CHE-4649) on the issue's activity, which is where the skip is read. The
+// skipped run is no task row, so nothing else would show it.
+func (h *Handler) onReviewRunSkipped(ctx context.Context, e service.ReviewRunSkipped) {
+	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
+	if err != nil {
+		slog.Warn("review run skipped: load issue failed", "err", err, "issue_id", uuidToString(e.IssueID))
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"reason": string(ReasonReviewHeadAnswered), "agent_id": uuidToString(e.Target.AgentID),
+		"head_sha": e.Head, "trigger": e.Target.Trigger,
+	})
+	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
+		Action: "run_skipped", Details: body,
+	}); err != nil {
+		slog.Warn("review run skipped: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+}
+
 // exhaustedNoticeText is the exhaustion comment: what was refused, whether the
 // issue was blocked by it, and the raise a person approves in the web app.
 func exhaustedNoticeText(refused string, raise, leaves int, e service.RunBudgetExhausted, blocked bool) string {
