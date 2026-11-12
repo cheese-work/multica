@@ -58,13 +58,10 @@ func agentDecisionOutcome(gate string) string {
 }
 
 // Classes that stay with Cheese, whoever the decider is.
+var agentDecisionExcludedClasses = []string{"irreversible", "design_direction", "architecture", "high_level"}
+
 func agentDecisionClassExcluded(class string) bool {
-	switch class {
-	case "irreversible", "design_direction", "architecture", "high_level":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(agentDecisionExcludedClasses, class)
 }
 
 var agentDecisionEvidenceKinds = []string{"characterization_test", "manual_repro", "static_check", "review_only"}

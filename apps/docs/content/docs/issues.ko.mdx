@@ -93,6 +93,8 @@ import { DeliverablesDemo } from "@/components/demos/deliverables-demo";
 
 멤버와 에이전트는 상태를 직접 바꿀 수 있습니다. 프로젝트가 [워크플로](/workflows)를 사용하면 그 안의 단계에서 선택합니다. 인계가 있는 단계로 옮기면 담당자가 바뀌고 에이전트에게 작업을 요청할 수 있습니다.
 
+태스크가 `blocked`에 다시 진입하면 워크스페이스 설정 `blocked_dispatch_dedup.mode`가 변경되지 않은 Tofu 실행을 제어합니다. 기본값은 `block`입니다. `warn`은 건너뛸 실행을 기록하지만 실행은 시작하고, `off`는 검사를 비활성화합니다. 멤버가 시작한 전환은 항상 실행을 시작합니다.
+
 에이전트는 작업 진행에 따라 태스크 상태를 업데이트합니다. 기본적으로 작업을 시작하면 `in_progress`로, 결과를 전달하면 `in_review`로 바꿉니다. 프로젝트에 워크플로가 있다면 해당 단계와 인계 지침을 따릅니다.
 
 <Callout type="info">

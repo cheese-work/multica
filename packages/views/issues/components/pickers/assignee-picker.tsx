@@ -14,6 +14,7 @@ import { ActorAvatar } from "../../../common/actor-avatar";
 import { DeferredPopup } from "../../../common/deferred-popup";
 import {
   PropertyPicker,
+  PickerPanel,
   PickerItem,
   PickerSection,
   PickerEmpty,
@@ -109,47 +110,8 @@ function AssigneePickerImpl({
   const open = controlledOpen ?? internalOpen;
   const setOpen = controlledOnOpenChange ?? setInternalOpen;
   const [filter, setFilter] = useState("");
-  const user = useAuthStore((s) => s.user);
-  const wsId = useWorkspaceId();
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
-  // Ranking only matters inside the popover; a closed picker skips the request.
-  const { data: frequency = [] } = useQuery({ ...assigneeFrequencyOptions(wsId), enabled: open });
+  const choices = useAssigneeChoices(filter, open);
   const { getActorName } = useActorName();
-
-  const currentMember = members.find((m) => m.user_id === user?.id);
-  const memberRole = currentMember?.role;
-
-  // Build a lookup map from frequency data for sorting.
-  const freqMap = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const entry of frequency) {
-      map.set(`${entry.assignee_type}:${entry.assignee_id}`, entry.frequency);
-    }
-    return map;
-  }, [frequency]);
-
-  const getFreq = (type: string, id: string) => freqMap.get(`${type}:${id}`) ?? 0;
-
-  const query = filter.trim().toLowerCase();
-  const filteredMembers = members
-    .filter((m) => m.name.toLowerCase().includes(query) || matchesPinyin(m.name, query))
-    .sort((a, b) => getFreq("member", b.user_id) - getFreq("member", a.user_id));
-  const filteredAgents = agents
-    .filter((a) => !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
-    .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id));
-  const filteredSquads = squads
-    .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(query) || matchesPinyin(s.name, query)))
-    .sort((a, b) => getFreq("squad", b.id) - getFreq("squad", a.id));
-  const runnableAgentIds = new Set(
-    agents
-      .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
-      .map((agent) => agent.id),
-  );
-
-  const isSelected = (type: string, id: string) =>
-    assigneeType === type && assigneeId === id;
 
   const triggerLabel =
     assigneeType && assigneeId
@@ -181,16 +143,147 @@ function AssigneePickerImpl({
         )
       }
     >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        mixed={mixed}
+        onPick={(updates) => {
+          onUpdate(updates);
+          setOpen(false);
+        }}
+      />
+    </PropertyPicker>
+  );
+}
+
+/**
+ * The assignee picker's search box and list without the popover, for hosting
+ * inside a menu. `onPicked` runs after the choice is applied so the host can
+ * close itself.
+ */
+export function AssigneePickerPanel({
+  assigneeType,
+  assigneeId,
+  onUpdate,
+  onPicked,
+}: {
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  onUpdate: (updates: Partial<UpdateIssueRequest>) => void;
+  onPicked: () => void;
+}) {
+  const { t } = useT("issues");
+  const [filter, setFilter] = useState("");
+  // The panel only mounts while its menu is open.
+  const choices = useAssigneeChoices(filter, true);
+
+  return (
+    <PickerPanel
+      searchable
+      autoFocusSearch
+      searchPlaceholder={t(($) => $.pickers.assignee.search_placeholder)}
+      onSearchChange={setFilter}
+    >
+      <AssigneeOptions
+        choices={choices}
+        filter={filter}
+        assigneeType={assigneeType}
+        assigneeId={assigneeId}
+        onPick={(updates) => {
+          onUpdate(updates);
+          onPicked();
+        }}
+      />
+    </PickerPanel>
+  );
+}
+
+// `rankingEnabled`: ranking only matters inside the open popover; a closed
+// picker skips the frequency request.
+function useAssigneeChoices(filter: string, rankingEnabled: boolean) {
+  const user = useAuthStore((s) => s.user);
+  const wsId = useWorkspaceId();
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  const { data: frequency = [] } = useQuery({
+    ...assigneeFrequencyOptions(wsId),
+    enabled: rankingEnabled,
+  });
+
+  const currentMember = members.find((m) => m.user_id === user?.id);
+  const memberRole = currentMember?.role;
+
+  // Build a lookup map from frequency data for sorting.
+  const freqMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const entry of frequency) {
+      map.set(`${entry.assignee_type}:${entry.assignee_id}`, entry.frequency);
+    }
+    return map;
+  }, [frequency]);
+
+  const getFreq = (type: string, id: string) => freqMap.get(`${type}:${id}`) ?? 0;
+
+  const query = filter.trim().toLowerCase();
+  const filteredMembers = members
+    .filter((m) => m.name.toLowerCase().includes(query) || matchesPinyin(m.name, query))
+    .sort((a, b) => getFreq("member", b.user_id) - getFreq("member", a.user_id));
+  const filteredAgents = agents
+    .filter((a) => !a.archived_at && (a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query)))
+    .sort((a, b) => getFreq("agent", b.id) - getFreq("agent", a.id));
+  const filteredSquads = squads
+    .filter((s) => !s.archived_at && (s.name.toLowerCase().includes(query) || matchesPinyin(s.name, query)))
+    .sort((a, b) => getFreq("squad", b.id) - getFreq("squad", a.id));
+  const runnableAgentIds = new Set(
+    agents
+      .filter((agent) => !agent.archived_at && isAgentRuntimeBound(agent))
+      .map((agent) => agent.id),
+  );
+
+  return {
+    userId: user?.id ?? null,
+    memberRole,
+    filteredMembers,
+    filteredAgents,
+    filteredSquads,
+    runnableAgentIds,
+  };
+}
+
+function AssigneeOptions({
+  choices,
+  filter,
+  assigneeType,
+  assigneeId,
+  mixed = false,
+  onPick,
+}: {
+  choices: ReturnType<typeof useAssigneeChoices>;
+  filter: string;
+  assigneeType: IssueAssigneeType | null;
+  assigneeId: string | null;
+  mixed?: boolean;
+  onPick: (updates: Partial<UpdateIssueRequest>) => void;
+}) {
+  const { t } = useT("issues");
+  const { userId, memberRole, filteredMembers, filteredAgents, filteredSquads, runnableAgentIds } =
+    choices;
+
+  const isSelected = (type: string, id: string) =>
+    assigneeType === type && assigneeId === id;
+
+  return (
+    <>
       {/* Unassigned — always the first row, search active or not. Every
           picker in the app puts the empty value there, so "clear this field"
           never moves. */}
       <PickerItem
         emptyValue
         selected={!mixed && !assigneeType && !assigneeId}
-        onClick={() => {
-          onUpdate({ assignee_type: null, assignee_id: null });
-          setOpen(false);
-        }}
+        onClick={() => onPick({ assignee_type: null, assignee_id: null })}
       >
         <UserMinus className="h-3.5 w-3.5 text-muted-foreground" />
         <span className="text-muted-foreground">{t(($) => $.pickers.assignee.trigger_unassigned)}</span>
@@ -203,13 +296,12 @@ function AssigneePickerImpl({
             <PickerItem
               key={m.user_id}
               selected={isSelected("member", m.user_id)}
-              onClick={() => {
-                onUpdate({
+              onClick={() =>
+                onPick({
                   assignee_type: "member",
                   assignee_id: m.user_id,
-                });
-                setOpen(false);
-              }}
+                })
+              }
             >
               <ActorAvatar actorType="member" actorId={m.user_id} size="sm" />
               <span className="truncate">{m.name}</span>
@@ -223,7 +315,7 @@ function AssigneePickerImpl({
         <PickerSection label={t(($) => $.pickers.assignee.agents_group)}>
           {filteredAgents.map((a) => {
             const decision = canAssignAgentToIssue(a, {
-              userId: user?.id ?? null,
+              userId,
               role:
                 memberRole === "owner" ||
                 memberRole === "admin" ||
@@ -247,11 +339,10 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!allowed) return;
-                  onUpdate({
+                  onPick({
                     assignee_type: "agent",
                     assignee_id: a.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
@@ -283,11 +374,10 @@ function AssigneePickerImpl({
                 }
                 onClick={() => {
                   if (!runtimeBound) return;
-                  onUpdate({
+                  onPick({
                     assignee_type: "squad",
                     assignee_id: s.id,
                   });
-                  setOpen(false);
                 }}
               >
                 <ActorAvatar actorType="squad" actorId={s.id} size="sm" />
@@ -302,6 +392,6 @@ function AssigneePickerImpl({
         filteredAgents.length === 0 &&
         filteredSquads.length === 0 &&
         filter && <PickerEmpty />}
-    </PropertyPicker>
+    </>
   );
 }

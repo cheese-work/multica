@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -205,5 +206,46 @@ func TestCardActionStaysAfterTheActionLeavesPending(test *testing.T) {
 	card := action.cardAction(test)
 	if card == nil || card.State != "executed" || card.Preview != nil || card.ID != action.actionID {
 		test.Fatalf("executed action on the card: %+v", card)
+	}
+}
+
+// A config-change action carries the stored server preview and its digest, so
+// the approver is shown exactly what approve checks (CHE-3483).
+func TestCardConfigChangeCarriesTheStoredPreview(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	card := request.action.cardAction(test)
+	if card == nil || card.ConfigChange == nil {
+		test.Fatalf("config-change card has no preview: %+v", card)
+	}
+	stored := request.preconditions(test)
+	if card.ConfigChange.SHA256 != stored["preview_sha256"] {
+		test.Fatalf("preview sha256 = %s; want the stored %v", card.ConfigChange.SHA256, stored["preview_sha256"])
+	}
+	shown := card.ConfigChange
+	if shown.Field != "workflow.instructions" || shown.TargetID != request.workflowID || shown.DiffKind == "" || len(shown.Diff) == 0 {
+		test.Fatalf("config change = %+v", shown)
+	}
+	if shown.BeforeSHA256 != request.base || shown.AfterSHA256 != afterDigest(test, request.workflowID, request.set) {
+		test.Fatalf("config change digests = %+v", shown)
+	}
+	if shown.After == nil {
+		test.Fatalf("config change lacks the value it would write: %+v", shown)
+	}
+	if card.Preview != nil || !card.OwnerOnly {
+		test.Fatalf("config change is owner-only and has no field preview: %+v", card)
+	}
+}
+
+func TestCardConfigChangeLeavesWithTheAction(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET state = 'executed', executed_at = now() WHERE id = $1`, request.action.actionID)
+	if card := request.action.cardAction(test); card == nil || card.ConfigChange != nil || card.State != "executed" {
+		test.Fatalf("executed config change keeps no preview: %+v", card)
+	}
+}
+
+func TestCardOwnerOnlyIsFalseForAnAgentAction(test *testing.T) {
+	if card := newPendingAction(test).cardAction(test); card == nil || card.OwnerOnly || card.ConfigChange != nil {
+		test.Fatalf("env patch is not owner-only: %+v", card)
 	}
 }

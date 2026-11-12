@@ -1807,6 +1807,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// disconnect are admin-gated in the group below.
 					r.Get("/vcs/connections", h.ListVCSConnections)
 					r.Get("/background-agents", h.GetBackgroundAgents)
+					r.Get("/me/background-agents", h.GetMyBackgroundAgents)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -2169,8 +2170,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
+				r.Get("/urgent-orphans", h.ListUrgentOrphanIssues)
 				r.Get("/children", h.ListChildrenByParents)
 				r.Get("/grouped", h.ListGroupedIssues)
+				// The caller's issues with an agent result they have not seen
+				// yet; backs the sidebar's unread dot.
+				r.Get("/unread", h.ListIssueUnread)
 				r.Get("/", h.ListIssues)
 				// POST twin of GET /api/issues for oversized filter sets
 				// (agents-working ids facet) — see QueryIssues.
@@ -2189,11 +2194,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
+					r.Post("/route", h.RouteIssue)
 					r.Delete("/", h.DeleteIssue)
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
+					r.Get("/description/history", h.ListIssueDescriptionRevisions)
+					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
@@ -2214,6 +2222,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/progress-follow", h.UnfollowIssueProgress)
 					r.Post("/progress-follow/mute", h.MuteIssueProgress)
 					r.Post("/progress-follow/unmute", h.UnmuteIssueProgress)
+					r.Post("/read", h.MarkIssueRead)
+					r.Post("/unread", h.MarkIssueUnread)
 					r.Get("/wakeups", h.ListIssueWakeups)
 					r.Post("/wakeups", h.CreateIssueWakeup)
 					r.Put("/wakeups/{wakeupID}", h.CreateIssueWakeup)
@@ -2699,6 +2709,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/read", h.MarkChatSessionRead)
 					r.Post("/unread", h.MarkChatSessionUnread)
 					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.
+					r.With(humanOnly).Get("/attention", h.GetChatSessionAttention)
 					r.With(humanOnly).Post("/attention/xong", h.ChatAttentionXong)
 					r.With(humanOnly).Post("/attention/later", h.ChatAttentionLater)
 					// Deferred-cancellation draft restores (#5219):
@@ -2759,6 +2770,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
 				r.Post("/ask", h.AskDecision)
+				r.Post("/ci", h.CreateCIDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
 				r.Get("/feed", h.ListDecisionFeed)

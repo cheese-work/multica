@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -292,6 +293,7 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSource = a.AttentionSource
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
+		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
 	}
 	return nil
 }
@@ -1245,7 +1247,7 @@ func (h *Handler) preflightChatSend(w http.ResponseWriter, r *http.Request, sess
 	// Shared verdict: an unbound agent and a machine whose CLI cannot run are
 	// both refusals here, with their own codes. A merely offline runtime is not
 	// checked at all — chat messages queue for it, as they always have.
-	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && (verdict.Blocked() || verdict.Reason == dispatch.ReasonProviderBreaker) {
 		h.writeDispatchBlocked(w, http.StatusConflict, verdict.Reason)
 		return db.Agent{}, "", "", false
 	}
@@ -2314,8 +2316,11 @@ type ChatSessionResponse struct {
 	AttentionSince  *string `json:"attention_since"`
 	StaleLevel      string  `json:"stale_level"`
 	NextChangeAt    *string `json:"next_change_at"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
+	// collapsed, never coloured or aged, and not counted in stale_level.
+	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
+	CreatedAt                 string   `json:"created_at"`
+	UpdatedAt                 string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {

@@ -924,6 +924,8 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
@@ -4270,6 +4272,8 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -7147,5 +7151,16 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 	out := stderr.read()
 	if !strings.Contains(out, "old-1 superseded and resolved") || !strings.Contains(out, "old-2 superseded, left open (human_reply)") {
 		t.Fatalf("stderr should report each superseded thread, got %q", out)
+	}
+}
+
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
+		usage := cmd.Flags().Lookup("no-start").Usage
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
+		}
 	}
 }

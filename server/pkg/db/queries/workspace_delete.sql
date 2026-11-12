@@ -401,6 +401,10 @@ deleted_ask_guard_events AS (
 deleted_system1_observations AS (
     DELETE FROM system1_observation WHERE workspace_id = $1
 ),
+-- CHE-4470 System 1 labels: workspace-owned leaf, no FK.
+deleted_system1_labels AS (
+    DELETE FROM system1_label WHERE workspace_id = $1
+),
 -- CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 -- budget tables are per App installation, have no workspace_id, and stay.
 deleted_ci_watch_configs AS (
@@ -819,6 +823,9 @@ WITH deleted_wakeup_pr_events AS (
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
+),
+deleted_unread AS (
+ DELETE FROM issue_unread WHERE workspace_id=$1
 ),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1

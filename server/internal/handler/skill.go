@@ -19,6 +19,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	skillpkg "github.com/multica-ai/multica/server/internal/skill"
@@ -2555,7 +2556,13 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sf, err := h.Queries.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
+	tx, qtx, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
 		Content: sanitizeNullBytes(req.Content),
@@ -2563,6 +2570,10 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("upsert skill file failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 
@@ -2584,18 +2595,54 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tx, qtx, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	// Verify the file belongs to the parent skill we just authorized — guards
 	// against deleting a file owned by a different skill via the URL param.
-	file, err := h.Queries.GetSkillFile(r.Context(), fileUUID)
+	// Read under the skill lock so a concurrent writer cannot change it first.
+	file, err := qtx.GetSkillFile(r.Context(), fileUUID)
 	if err != nil || uuidToString(file.SkillID) != uuidToString(skill.ID) {
 		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
-	if err := h.Queries.DeleteSkillFile(r.Context(), file.ID); err != nil {
+	if err := qtx.DeleteSkillFile(r.Context(), file.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// beginSkillFileWrite opens the transaction of a single skill-file write and
+// takes the parent skill row lock first, held to commit. The lock conflicts
+// with the FOR SHARE snapshot lock of an agent.skills.set approval, so a file
+// edit, add or remove cannot change the file set while an approval holds it.
+// Lock order: the skill row only, no other row lock after it.
+func (h *Handler) beginSkillFileWrite(w http.ResponseWriter, r *http.Request, skill db.Skill) (pgx.Tx, *db.Queries, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockSkillForFileWrite(r.Context(), db.LockSkillForFileWriteParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID}); err != nil {
+		_ = tx.Rollback(r.Context())
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "skill not found")
+			return nil, nil, false
+		}
+		slog.Warn("lock skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to lock skill")
+		return nil, nil, false
+	}
+	return tx, qtx, true
 }
 
 // --- Agent-Skill junction ---
@@ -2624,6 +2671,61 @@ func (h *Handler) ListAgentSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// beginAgentSkillWrite opens the transaction every agent_skill writer on an
+// existing agent runs in. It takes the agent row lock first
+// (LockAgentForSkillWrite) and checks manager state against the locked row, so
+// the manager check and the write see the same agent an approved action sees.
+// The workspace role is read before the transaction starts: a read through the
+// pool while the transaction holds a connection can exhaust the pool. On false
+// the response is written and the transaction is already rolled back.
+func (h *Handler) beginAgentSkillWrite(w http.ResponseWriter, r *http.Request, agent db.Agent) (pgx.Tx, *db.Queries, db.Agent, bool) {
+	member, ok := h.requireWorkspaceRole(w, r, uuidToString(agent.WorkspaceID), "agent not found", "owner", "admin", "member")
+	if !ok {
+		return nil, nil, agent, false
+	}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, agent, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	locked, err := qtx.LockAgentForSkillWrite(r.Context(), db.LockAgentForSkillWriteParams{ID: agent.ID, WorkspaceID: agent.WorkspaceID})
+	if err == nil && (roleAllowed(member.Role, "owner", "admin") || uuidToString(locked.OwnerID) == requestUserID(r)) {
+		return tx, qtx, locked, true
+	}
+	tx.Rollback(r.Context())
+	switch {
+	case err == nil:
+		writeError(w, http.StatusForbidden, "only the agent owner can manage this agent")
+	case errors.Is(err, pgx.ErrNoRows):
+		writeError(w, http.StatusNotFound, "agent not found")
+	case isLockNotAvailable(err):
+		writeError(w, http.StatusServiceUnavailable, "agent is being changed, retry")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to lock agent")
+	}
+	return nil, nil, agent, false
+}
+
+// rejectQoderSkillOverrides is rejectQoderOverrides for a caller inside a
+// transaction: the runtime lookup goes through qtx, never the pool.
+func rejectQoderSkillOverrides(w http.ResponseWriter, r *http.Request, qtx *db.Queries, agent db.Agent, skills int) bool {
+	rt, err := qtx.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{ID: agent.RuntimeID, WorkspaceID: agent.WorkspaceID})
+	if err != nil || rt.Provider != "qoder_cloud" {
+		return false
+	}
+	if err := (qoderOverrides{skills: skills}).validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	return false
+}
+
+func isLockNotAvailable(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
 func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	agent, ok := h.loadAgentForUser(w, r, id)
@@ -2646,18 +2748,17 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
 		return
 	}
-	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
-		return
-	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+	// The request body is fully read above: the agent row lock is never held
+	// while a client controls the pace (CWE-400).
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
 	defer tx.Rollback(r.Context())
-
-	qtx := h.Queries.WithTx(tx)
+	if len(skillUUIDs) > 0 && rejectQoderSkillOverrides(w, r, qtx, agent, len(skillUUIDs)) {
+		return
+	}
 
 	beforeSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
 	if err != nil {
@@ -2723,18 +2824,18 @@ func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
 		return
 	}
-	if len(skillUUIDs) > 0 && h.rejectQoderOverrides(w, r, agent, qoderOverrides{skills: len(skillUUIDs)}) {
-		return
-	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+	// The request body is fully read above: the agent row lock is never held
+	// while a client controls the pace (CWE-400).
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	if len(skillUUIDs) > 0 && rejectQoderSkillOverrides(w, r, qtx, agent, len(skillUUIDs)) {
+		return
+	}
 
-	qtx := h.Queries.WithTx(tx)
 	beforeSkills, err := agentSkillsAuditField(r.Context(), qtx, agent.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load agent skills")
@@ -2793,7 +2894,13 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	rows, err := h.Queries.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
+
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+	rows, err := qtx.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
 		Enabled: *req.Enabled,
@@ -2806,6 +2913,10 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent skill not found")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 
 	h.writeUpdatedAgentSkills(w, r, agent)
 }
@@ -2816,18 +2927,24 @@ func (h *Handler) RemoveAgentSkill(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !h.canManageAgent(w, r, agent) {
+	tx, qtx, agent, ok := h.beginAgentSkillWrite(w, r, agent)
+	if !ok {
 		return
 	}
+	defer tx.Rollback(r.Context())
 	skillID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "skillId"), "skill_id")
 	if !ok {
 		return
 	}
-	if err := h.Queries.RemoveAgentSkill(r.Context(), db.RemoveAgentSkillParams{
+	if err := qtx.RemoveAgentSkill(r.Context(), db.RemoveAgentSkillParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove agent skill")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 	h.writeUpdatedAgentSkills(w, r, agent)

@@ -563,3 +563,16 @@ func TestChatAttentionXong_NoncanonicalIdsAreCanonicalized(t *testing.T) {
 		t.Fatal("the ask named by its uppercase id must be resolved")
 	}
 }
+
+// CHE-4151 (L7): `multica chat later` reads the keys the server shows for the chain before it snoozes them.
+func TestGetChatSessionAttention_ReturnsDisplayedKeys(t *testing.T) {
+	f := newAttnFx(t)
+	ask := f.item("ask", testUserID, 5*time.Hour)
+
+	rec := f.call(testHandler.GetChatSessionAttention, "/api/chat/sessions/"+f.sessionID+"/attention", nil, "sessionId", f.sessionID)
+	wantAttentionCode(t, rec, http.StatusOK)
+	view, _ := attnOne(t, rec)
+	if !has(view.Keys, service.ItemKey(ask)) || view.StaleLevel != "yellow" {
+		t.Fatalf("open ask must be listed as yellow: %+v", view)
+	}
+}

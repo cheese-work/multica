@@ -50,6 +50,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 每个事件保留创建时的模式，因此从 `warn` 切换到 `block` 不会让之前的事件变成恢复工作。如果事件无法写入，操作会以 `503` 和 `Retry-After` 头失败，且不会写入任何内容。
 
+守卫也覆盖智能体注册人可触发的唤醒。用 `--decision` 绑定、标记 `--purpose observe`，或限定为仅智能体；见[唤醒](/cli#wakeups)。
+
 ## 切换和离开
 
 一个账号可以加入多个工作区。切换工作区只换了你正在看的范围，数据不会移动。

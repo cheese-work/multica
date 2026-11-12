@@ -1079,6 +1079,49 @@ func (q *Queries) GetLastAssistantMessageBefore(ctx context.Context, arg GetLast
 	return id, err
 }
 
+const getLatestPlainDM = `-- name: GetLatestPlainDM :one
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = $1 AND session.creator_id = $2
+  AND session.agent_id = $3 AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 1
+`
+
+type GetLatestPlainDMParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// The plain DM a person used most recently with one agent (CHE-5253).
+func (q *Queries) GetLatestPlainDM(ctx context.Context, arg GetLatestPlainDMParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestPlainDM, arg.WorkspaceID, arg.CreatorID, arg.AgentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const hasOpenDecisionRequestForIssue = `-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2 AND status = 'open'
+)::boolean
+`
+
+type HasOpenDecisionRequestForIssueParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) HasOpenDecisionRequestForIssue(ctx context.Context, arg HasOpenDecisionRequestForIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenDecisionRequestForIssue, arg.WorkspaceID, arg.IssueID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const holdDecisionAnswerForClass = `-- name: HoldDecisionAnswerForClass :one
 WITH hold AS (SELECT clock_timestamp() + interval '10 minutes' AS held_until)
 UPDATE decision_answer answer SET
@@ -1134,6 +1177,79 @@ func (q *Queries) HoldDecisionAnswerForClass(ctx context.Context, arg HoldDecisi
 		&i.HindsightAckedVersion,
 	)
 	return i, err
+}
+
+const listCIDecisionRequests = `-- name: ListCIDecisionRequests :many
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request
+WHERE workspace_id = $1 AND issue_id = $2
+  AND request_fingerprint LIKE 'server:ci:%'
+ORDER BY created_at, id
+`
+
+type ListCIDecisionRequestsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// Every card a CI job opened on the issue, any status. The fingerprint carries
+// the candidate SHA and its commit time; the caller holds the workspace lock.
+func (q *Queries) ListCIDecisionRequests(ctx context.Context, arg ListCIDecisionRequestsParams) ([]DecisionRequest, error) {
+	rows, err := q.db.Query(ctx, listCIDecisionRequests, arg.WorkspaceID, arg.IssueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionRequest{}
+	for rows.Next() {
+		var i DecisionRequest
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.HumanUserID,
+			&i.ChatSessionID,
+			&i.PingMessageID,
+			&i.IssueCommentID,
+			&i.Ask,
+			&i.EscalationClass,
+			&i.Status,
+			&i.Origin,
+			&i.DecisionIntentID,
+			&i.CancelReason,
+			&i.CancelNoticePostedAt,
+			&i.PingNotifiedAt,
+			&i.ReaskDeliveredAt,
+			&i.ReaskOutcome,
+			&i.CreatedAt,
+			&i.SourceCommentID,
+			&i.SourceContentSnapshot,
+			&i.RequestFingerprint,
+			&i.WithdrawReason,
+			&i.WithdrawnAt,
+			&i.WithdrawnByTaskID,
+			&i.WithdrawnByUserID,
+			&i.Options,
+			&i.AskIdentity,
+			&i.AskJson,
+			&i.Authority,
+			&i.ProjectID,
+			&i.Kind,
+			&i.ExpiresAt,
+			&i.ProposalFingerprint,
+			&i.AnswerRevision,
+			&i.WakeSeq,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listChatDecisionContext = `-- name: ListChatDecisionContext :many
@@ -1233,6 +1349,83 @@ func (q *Queries) ListChatDecisionReferences(ctx context.Context, arg ListChatDe
 			return nil, err
 		}
 		items = append(items, content)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSessionDecisionRecords = `-- name: ListChatSessionDecisionRecords :many
+SELECT answer.id AS answer_id, answer.created_at AS answered_at,
+       LEFT(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                 ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END, $1::int)::text AS words,
+       octet_length(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                         ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::int AS words_bytes,
+       (count(*) OVER ())::int AS total_count,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $2 AND answer.disclaimed_at IS NULL
+  AND answer.source_chat_session_id = $3
+ORDER BY answer.created_at DESC, answer.id DESC
+LIMIT $4::int
+`
+
+type ListChatSessionDecisionRecordsParams struct {
+	WordsMaxChars int32       `json:"words_max_chars"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	SessionID     pgtype.UUID `json:"session_id"`
+	RowLimit      int32       `json:"row_limit"`
+}
+
+type ListChatSessionDecisionRecordsRow struct {
+	AnswerID   pgtype.UUID        `json:"answer_id"`
+	AnsweredAt pgtype.Timestamptz `json:"answered_at"`
+	Words      string             `json:"words"`
+	WordsBytes int32              `json:"words_bytes"`
+	TotalCount int32              `json:"total_count"`
+	IssueKey   string             `json:"issue_key"`
+}
+
+// The standing answers of a DM, newest first: the answers
+// whose source message lives in this DM. An agent record quotes a DM message;
+// a card answer is written into its card's DM; either way source_chat_session_id
+// is that DM, so a request asked in one DM and answered in another belongs to
+// the answering DM. A disclaimed answer is gone. A card answer's words are the
+// whole snapshot (chosen option and note); other records quote the human's own
+// words without pasted context. Feeds the "Decisions in this DM" block that
+// compaction adds (CHE-4447). Retrieval is bounded: at most row_limit rows, each
+// with its words cut to words_max_chars characters; words_bytes is the full
+// size and total_count the number of standing answers, so the block can state
+// every omission.
+func (q *Queries) ListChatSessionDecisionRecords(ctx context.Context, arg ListChatSessionDecisionRecordsParams) ([]ListChatSessionDecisionRecordsRow, error) {
+	rows, err := q.db.Query(ctx, listChatSessionDecisionRecords,
+		arg.WordsMaxChars,
+		arg.WorkspaceID,
+		arg.SessionID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSessionDecisionRecordsRow{}
+	for rows.Next() {
+		var i ListChatSessionDecisionRecordsRow
+		if err := rows.Scan(
+			&i.AnswerID,
+			&i.AnsweredAt,
+			&i.Words,
+			&i.WordsBytes,
+			&i.TotalCount,
+			&i.IssueKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
