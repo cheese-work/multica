@@ -17,6 +17,14 @@ multica decision feed ack <answer-id> --version <n>
 multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible
 ```
 
+- `decision get` on an answered request carries `answer`: `answered_by_user_id`,
+  `answer_source`, `chosen_option_index` (null for a text-only answer),
+  `content_snapshot` (the person's words), `created_at` and `disclaimed_at`.
+  `status: answered` with no `answer` means a batch card covered it: read
+  `answered_by_batch_request_id`. A text-only answer on an
+  option card is still an answer: read `content_snapshot`, do not treat the
+  card as open.
+
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
   `recommendation`, `recommended_option` (the exact label of the recommended
   option; required with two or more options, the server puts it first),
@@ -191,9 +199,38 @@ multica decision propose <action-type> --version 1 --issue <issue> --params-file
   `--param`.
 - It works only with a task token. The output prints the card link
   `<web>/<workspace>/issues/<issue-id>?approve=<action-id>`; give that link to
-  the person.
+  the person. That link opens the approval only for a run-budget action; for
+  any other action the approve page links to the card in the chat.
+- Never send a change that needs a passkey as a plain option card
+  (`multica decision request` without `--action-file`). Approve only
+  records the answer. The server cannot read intent, so it does not refuse:
+  when the decision or an option reads like a workflow, agent, squad,
+  workspace or budget change (or names an allowlisted action type), the
+  response carries an advisory hint. Heed it.
 - A refusal prints the server's status and error code, for example
   `503 proposals_unavailable`. Report it; do not retry with a PAT.
 - `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
   `issue.run_budget.top_up` takes `issue_id`, `window_id`. Prefer
   `multica issue budget raise|top-up`, which fills these for you.
+
+## Proposing a config change
+
+`multica config propose` writes the action file for a workspace config change:
+it reads the live value, computes `before_sha256` and `after_sha256`, and the
+file goes to `multica decision request --action-file`. It sends nothing.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --dry-run
+multica config propose workspace.settings --set compact_prompt="..." --out ./action.json
+```
+
+- Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`,
+  `workspace.context`, `workflow.steps <workflow-id>`,
+  `workflow.step.instructions <workflow-id> --status-key <key>`,
+  `workspace.settings --set key=value|key:=<json>`.
+- `--dry-run` prints both digests and the action and writes nothing.
+  `--out` is required otherwise.
+- Any other field or settings key is refused as `denylisted` before a read.
+- `workflow.steps` takes the steps array as the workflow GET returns it; the
+  server refuses a differently normalized array (`after_digest_mismatch`).

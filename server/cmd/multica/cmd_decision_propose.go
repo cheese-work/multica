@@ -161,8 +161,9 @@ func printActionProposal(ctx context.Context, cmd *cobra.Command, client *cli.AP
 		return cli.PrintJSON(os.Stdout, raw)
 	}
 	var resp struct {
-		ID     string `json:"id"`
-		Action struct {
+		ID            string `json:"id"`
+		ChatSessionID string `json:"chat_session_id"`
+		Action        struct {
 			ID string `json:"id"`
 		} `json:"action"`
 	}
@@ -179,5 +180,8 @@ func printActionProposal(ctx context.Context, cmd *cobra.Command, client *cli.AP
 	}
 	fmt.Fprintf(os.Stdout, "proposed %s on %s (request %s); the person approves with a passkey at:\n%s/issues/%s?approve=%s\n",
 		actionType, issue.Display, resp.ID, prefix, issue.ID, resp.Action.ID)
+	if resp.ChatSessionID != "" {
+		fmt.Fprintf(os.Stdout, "the card also sits in the DM at:\n%s/chat?session=%s\n", prefix, resp.ChatSessionID)
+	}
 	return nil
 }

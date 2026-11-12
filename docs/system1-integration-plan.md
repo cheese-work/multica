@@ -28,6 +28,16 @@ One row per event in `system1_observation` (migrations `936` to `939`).
 | `choice_key`, `chosen_index`, `answered_at`, `time_to_answer_ms` | Chosen handler (`agent:<id>` or `member:<id>`) | The human answer. `choice_key` is `recommended`, `other`, `option` or `free_text`. |
 | `reversed_at` | A person reassigned the issue within 1 hour | The answer was disclaimed |
 
+### Route label (CHE-4439 S1)
+
+Kind `route` is the routing agent's own pick, written in the issue write's
+transaction. `class` is `<workflow>/<from status>`, `choice_key` is
+`<to status>|<owner type>:<owner id>`, `decision_source` is `agent` or `human`,
+and `inputs.via` is `route` (`issue route`) or `status` (the fallback).
+`event_id` is the id of the `status_changed` activity row the label belongs to.
+An owner-only route changes no status and keeps `event_id` NULL.
+`inputs.routing_exit` is false for a route from a step with no routing agent.
+
 ### Test-first waiver ask (CHE-4383 B2a)
 
 A waiver ask is an ordinary decision ask with a closed contract. System 1
@@ -145,6 +155,35 @@ CLI: `multica decision shadow-report` (JSON output; any workspace member).
   coverage by class at that point.
 - Precision = agreed / predicted. Coverage = predicted / decided.
 
+#### Route block (CHE-4439 S6)
+
+`since` and `until` (RFC 3339; default: the last 24 hours, `until` defaults to
+now) set the window `[since, until)`. They apply to the `route` block only.
+The `decision` and `routing` blocks stay all-time. A bad time or `since` after
+`until` is a 400. The CLI takes `--since` and `--until`.
+
+Coverage and adoption use one event population, joined by `event_id`:
+
+- `eligible_exits`: agent `status_changed` rows in the window with
+  `details.routing_exit = true`. The mark is written at apply time, so a later
+  setting change does not move past numbers.
+- `matched_labels`: eligible events with at least one route row with
+  `decision_source = agent`. `label_coverage = matched_labels / eligible_exits`,
+  at most 1. A fallback capture failure is an eligible exit with no match.
+- `via_route_share`: matched events whose earliest agent route row has
+  `via = route`, divided by `matched_labels`.
+- `duplicate_labels`: agent route rows in the window that share a non-null
+  `event_id` with an earlier row. Target 0. One task leaving the same step
+  twice is two events, not duplicates.
+- Outside coverage and adoption: `labels_total` (agent route rows in the
+  window), `owner_only_labels` (`event_id` NULL), `non_routing_labels` (non-null
+  `event_id` and `inputs.routing_exit = false`, so it does not overlap
+  `owner_only_labels`).
+- `overridden`: agent route rows in the window with `reversed_at` set.
+  `override_rate = overridden / labels_total`.
+- Per class: `decided`, `predicted`, `agreed`, `coverage`, `precision` over
+  route rows created in the window, from every decision source.
+
 ## Where System 1 plugs in
 
 All three stay behind the same function, so each is a small change.
@@ -198,6 +237,20 @@ Predict(precedents []string) Prediction
   admin-set names, not user input.
 - Training or fine-tune data is built from this table plus public ask fields.
   DM contents never enter it. Export is a separate, reviewed step.
+
+## Jev availability (slice B0 probe, 8 Nov 2026 02:41 to 02:44 ICT)
+
+Read-only probe for the burn-in plan (CHE-4383, slice CHE-4467). Result: Jev
+is **not available**, so no `jev@<version>` predictor runs in burn-in.
+
+| Check | Command | Exit | Result |
+| --- | --- | --- | --- |
+| Jev registration | `multica workspace get --output json` (read `settings`) | 0 | No `agent_decisions_jev` key: Jev delegation is off, no agent id, no mode. |
+| Brief | `multica decision brief` | 0 | `enabled: true`, 0 decisions, 0 pilot runs. |
+| sub2api model list | `GET /v1/models` with the `hindsight-x99` key (key not recorded) | 0 | HTTP 200, 12 models, none contains `jev`. `jev-latest` is not served for this key group. |
+
+- Same as the 1 Nov 2026 finding (CHE-2946): sub2api does not serve `jev-latest`.
+- To enable Jev later: the owner registers the agent with `PUT /api/agent-decisions/jev`, and sub2api must serve `jev-latest` for the key group. Re-run this probe then.
 
 ## Fine-tune criteria
 

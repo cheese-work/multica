@@ -2556,7 +2556,13 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sf, err := h.Queries.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
+	tx, qtx, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
 		Content: sanitizeNullBytes(req.Content),
@@ -2564,6 +2570,10 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("upsert skill file failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
 	}
 
@@ -2585,18 +2595,54 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tx, qtx, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	// Verify the file belongs to the parent skill we just authorized — guards
 	// against deleting a file owned by a different skill via the URL param.
-	file, err := h.Queries.GetSkillFile(r.Context(), fileUUID)
+	// Read under the skill lock so a concurrent writer cannot change it first.
+	file, err := qtx.GetSkillFile(r.Context(), fileUUID)
 	if err != nil || uuidToString(file.SkillID) != uuidToString(skill.ID) {
 		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
-	if err := h.Queries.DeleteSkillFile(r.Context(), file.ID); err != nil {
+	if err := qtx.DeleteSkillFile(r.Context(), file.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
 	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// beginSkillFileWrite opens the transaction of a single skill-file write and
+// takes the parent skill row lock first, held to commit. The lock conflicts
+// with the FOR SHARE snapshot lock of an agent.skills.set approval, so a file
+// edit, add or remove cannot change the file set while an approval holds it.
+// Lock order: the skill row only, no other row lock after it.
+func (h *Handler) beginSkillFileWrite(w http.ResponseWriter, r *http.Request, skill db.Skill) (pgx.Tx, *db.Queries, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockSkillForFileWrite(r.Context(), db.LockSkillForFileWriteParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID}); err != nil {
+		_ = tx.Rollback(r.Context())
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "skill not found")
+			return nil, nil, false
+		}
+		slog.Warn("lock skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to lock skill")
+		return nil, nil, false
+	}
+	return tx, qtx, true
 }
 
 // --- Agent-Skill junction ---

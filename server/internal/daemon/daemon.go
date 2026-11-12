@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/internal/selfexec"
@@ -284,6 +285,8 @@ type terminalTaskReport struct {
 	// contextTokens / contextWindow: see TaskResult. Complete reports only.
 	contextTokens int64
 	contextWindow int64
+	// initContext: see TaskResult. Complete reports only.
+	initContext *initctx.Report
 }
 
 type terminalReportSendFunc func(context.Context, terminalTaskReport, []time.Duration) error
@@ -2152,6 +2155,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		"ws_claim_poll_interval", d.cfg.WSClaimPollInterval,
 		"heartbeat_interval", d.cfg.HeartbeatInterval,
 		"agent_timeout", d.cfg.AgentTimeout,
+		"codex_agent_timeout", d.cfg.CodexAgentTimeout,
 		"idle_watchdog", d.cfg.AgentIdleWatchdog,
 		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
 		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
@@ -6381,6 +6385,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			retiredSessionID:      result.RetiredSessionID,
 			contextTokens:         result.ContextTokens,
 			contextWindow:         result.ContextWindow,
+			initContext:           result.InitContext,
 		})
 		if err == nil {
 			return
@@ -6524,7 +6529,7 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 	}
 	switch report.kind {
 	case terminalTaskReportComplete:
-		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, schedule)
+		return d.client.completeTaskWithRetrySchedule(ctx, report.taskID, report.output, report.branchName, report.sessionID, report.workDir, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, report.contextTokens, report.contextWindow, report.initContext, schedule)
 	case terminalTaskReportFail:
 		return d.client.failTaskWithRetrySchedule(ctx, report.taskID, report.errorMessage, report.sessionID, report.workDir, report.branchName, report.failureReason, report.sessionRolloutMissing, report.retiredSessionID, report.durableWorkDir, schedule)
 	default:
@@ -7849,6 +7854,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
 
+	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
+	if task.Script != nil {
+		return d.runScriptTask(ctx, task, taskLog)
+	}
+
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
 	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
 	prepareComplete := false
@@ -8757,6 +8767,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		binDir := filepath.Dir(selfBin)
 		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
+	// failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
 	if env.CodexHome != "" {
@@ -8901,6 +8916,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		runtimeBrief = freshBrief
 		prompt = BuildPrompt(task, provider, promptOptions...)
 	}
+	// Built after the clock-guard rebuild so the byte counts describe the
+	// brief and prompt actually launched.
+	initContext := buildInitContext(runtimeBrief, prompt)
 	backend, err := agent.ResolveBackend(provider, backendConfig)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("create agent backend: %w", err)
@@ -8990,7 +9008,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		Cwd:                        env.WorkDir,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.AgentTimeout,
+		Timeout:                    d.cfg.agentTimeoutFor(provider),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,
@@ -9253,6 +9271,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	defer func() {
 		taskResult.SessionRolloutMissing = sessionRolloutMissing
 		taskResult.ContextTokens, taskResult.ContextWindow = result.ContextTokens, result.ContextWindow
+		taskResult.InitContext = initContext
 	}()
 
 	switch result.Status {
@@ -9315,7 +9334,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// goes through the FailTask path that forwards session info.
 		comment := result.Error
 		if comment == "" {
-			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.AgentTimeout)
+			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.agentTimeoutFor(provider))
 		}
 		failureReason := "timeout"
 		if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {

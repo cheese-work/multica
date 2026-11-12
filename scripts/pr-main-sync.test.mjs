@@ -127,11 +127,30 @@ test("taskOwner: the branch's agent, else the issue assignee, else a loud failur
   assert.throws(() => taskOwner("ghost", agents, {}), /no owner/);
 });
 
-test("workflow: every live path (Main Build call or dispatch with dry_run=false) is behind PR_MAIN_SYNC_ENABLED", () => {
+test("workflow: every live path (Main Build workflow_run or dispatch with dry_run=false) is behind PR_MAIN_SYNC_ENABLED", () => {
   const yml = readFileSync(new URL("../.github/workflows/pr-main-sync.yml", import.meta.url), "utf8");
   const jobIf = yml.match(/^ {4}if: (.*)$/m)[1];
   const dryRun = yml.match(/^ {10}DRY_RUN: (.*)$/m)[1];
   assert.match(jobIf, /PR_MAIN_SYNC_ENABLED == 'true'/);
   // Forced dry-run whenever the switch is off, regardless of the dispatch input.
   assert.match(dryRun, /PR_MAIN_SYNC_ENABLED != 'true'/);
+});
+
+test("a draft PR behind main is skipped; a ready PR is synced (CHE-4963)", async () => {
+  const f = fakes({ prs: [pr(7, { draft: true }), pr(8, { draft: false })] });
+  await run(f);
+  assert.deepEqual(f.log.updates, [[8, "sha8"]]);
+});
+
+test("a dry run that finds a conflict still reports the task it would open (CHE-4963)", async () => {
+  const f = fakes({ prs: [pr(9), pr(10)], update: { 9: "would-conflict", 10: "would-merge" } });
+  await run(f);
+  assert.deepEqual(f.log.created, [[9, "CHE-9"]]); // createConflictTask only prints in a dry run
+});
+
+test("mergeOutcome reads GitHub's mergeable flag and refuses an unknown one", async () => {
+  const { mergeOutcome } = await load();
+  assert.equal(mergeOutcome(true), "would-merge");
+  assert.equal(mergeOutcome(false), "would-conflict");
+  assert.throws(() => mergeOutcome(null), /not computed/);
 });

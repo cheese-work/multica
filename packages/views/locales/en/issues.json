@@ -226,6 +226,8 @@
     "relation_assigned": "Assigned to me",
     "relation_created": "Created by me",
     "relation_my_agents": "Assigned to my agents",
+    "section_agent_status": "Agent status",
+    "agent_status_running": "Running",
     "operator_label": "Match",
     "operator_is": "is",
     "operator_is_not": "is not",
@@ -463,7 +465,8 @@
   },
   "list": {
     "empty_status": "No issues",
-    "add_issue_tooltip": "Add issue"
+    "add_issue_tooltip": "Add issue",
+    "unread_mention": "Unread mention"
   },
   "swimlane": {
     "no_parent": "No parent",
@@ -850,6 +853,9 @@
     "hover_header_queued_other": "{{count}} queued agents",
     "status_running": "Working",
     "status_queued": "Queued",
+    "unread_completed": "{{agent}} finished · {{time}}",
+    "unread_failed": "{{agent}}'s run failed · {{time}}",
+    "unread_manual": "Marked as unread",
     "empty_hover": "No agents working right now",
     "unknown_hover": "Agents working: not loaded yet",
     "filter_active_label": "Viewing issues with agents working",
@@ -1056,9 +1062,14 @@
     "open_in_new_tab": "Open in new tab",
     "pin_to_sidebar": "Pin to sidebar",
     "unpin_from_sidebar": "Unpin from sidebar",
+    "mark_read": "Mark as read",
+    "mark_unread": "Mark as unread",
     "copy_link": "Copy link",
     "copy_workdir_path": "Copy local workdir path",
     "copy_project_directory_path": "Copy project directory path",
+    "copy_identifier": "Copy identifier",
+    "identifier_copied": "Copied {{identifier}}",
+    "stop_agent_run": "Stop {{name}}’s run",
     "relations": "Relations",
     "create_sub_issue": "Create sub-issue",
     "set_parent_issue": "Set parent issue...",
@@ -1687,6 +1698,9 @@
       "name": "Name",
       "name_placeholder": "e.g. Delivery",
       "description": "Description",
+      "max_runs": "Max runs per issue",
+      "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
+      "include_child_prs": "Include child PRs",
       "steps": "Steps",
       "add_step": "Add step",
       "start": "Start",
@@ -1792,8 +1806,6 @@
       "picker_more": "Create more workflows in Settings → Workflows."
     },
     "picker": {
-      "header": "{{workflow}} · from project “{{project}}”",
-      "header_no_project": "{{workflow}} statuses · no project",
       "footer": "Only this issue’s workflow statuses are shown. The right side is who entering the status hands it to."
     },
     "confirm": {
