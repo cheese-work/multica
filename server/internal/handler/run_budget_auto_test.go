@@ -1,0 +1,185 @@
+package handler
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
+)
+
+// autoRun is one finished run seeded into an issue's open window.
+type autoRun struct {
+	status    string
+	err       string
+	delivered bool
+	tokens    int64
+}
+
+type autoCase struct {
+	c       edgeCase
+	agentID string
+	since   time.Time
+	seq     *int // runs seeded so far: each run gets its own 3-minute slot so comments match one run only
+}
+
+// newAutoCase is a budgeted issue (cap 5) in a window that opened an hour ago.
+func newAutoCase(t *testing.T) autoCase {
+	t.Helper()
+	c := newEdgeCase(t, 2226900, mergeEdgeSteps)
+	agentID := seededReadyAgentID(t)
+	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID)
+	dbfx.Exec(t, `UPDATE issue SET status='in_progress', assignee_type='agent', assignee_id=$2 WHERE id=$1`, c.issueID, agentID)
+	return autoCase{c: c, agentID: agentID, since: time.Now().Add(-time.Hour), seq: new(int)}
+}
+
+func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
+	t.Helper()
+	for _, r := range runs {
+		done := time.Now().Add(-time.Duration(5+3**a.seq) * time.Minute)
+		*a.seq++
+		taskID := dbfx.Task(t, a.agentID, testutil.Cols{
+			"issue_id": issueID, "status": r.status, "error": r.err,
+			"created_at": done.Add(-time.Minute), "started_at": done.Add(-time.Minute), "completed_at": done,
+		})
+		if r.delivered {
+			dbfx.Comment(t, issueID, "did the work", testutil.Cols{"author_type": "agent", "author_id": a.agentID, "created_at": done})
+		}
+		if r.tokens > 0 {
+			dbfx.Insert(t, "task_usage", testutil.Cols{"task_id": taskID, "model": "m", "input_tokens": r.tokens})
+		}
+	}
+}
+
+func (a autoCase) verdict(t *testing.T) service.RunBudgetAutoVerdict {
+	t.Helper()
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(a.c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := service.EvaluateRunBudgetAuto(context.Background(), testHandler.Queries, issue, a.since, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func setAutoSettings(t *testing.T, settingsJSON string) {
+	t.Helper()
+	var previous string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&previous)
+	dbfx.Exec(t, `UPDATE workspace SET settings=settings || $2::jsonb WHERE id=$1`, testWorkspaceID, settingsJSON)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `UPDATE workspace SET settings=$2::jsonb WHERE id=$1`, testWorkspaceID, previous)
+	})
+}
+
+func goodRuns(n int) []autoRun {
+	runs := make([]autoRun, n)
+	for i := range runs {
+		runs[i] = autoRun{status: "completed", delivered: true, tokens: 1000}
+	}
+	return runs
+}
+
+func TestRunBudgetAutoApprovesAWindowWithProgress(t *testing.T) {
+	a := newAutoCase(t)
+	a.seed(t, a.c.issueID, goodRuns(5)...)
+	v := a.verdict(t)
+	if !v.Approve || v.Anomaly != "" || v.Runs != 5 {
+		t.Fatalf("verdict = %+v, want approve of 5 runs", v)
+	}
+}
+
+func TestRunBudgetAutoHoldsAWindowWithoutRuns(t *testing.T) {
+	a := newAutoCase(t)
+	v := a.verdict(t)
+	if v.Approve || v.Anomaly != "" || v.Reason != "no_progress" {
+		t.Fatalf("verdict = %+v, want a no_progress hold", v)
+	}
+}
+
+func TestRunBudgetAutoEscalatesEachAnomalyKind(t *testing.T) {
+	failing := func(n int) []autoRun {
+		runs := goodRuns(1)
+		for i := 0; i < n; i++ {
+			runs = append(runs, autoRun{status: "failed", err: fmt.Sprintf("go test ./x: exit status %d", i+1), delivered: false, tokens: 1000})
+		}
+		return runs
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, a autoCase)
+		want  string
+	}{
+		{"loop", func(t *testing.T, a autoCase) { a.seed(t, a.c.issueID, failing(3)...) }, service.RunBudgetAnomalyLoop},
+		{"noop", func(t *testing.T, a autoCase) {
+			a.seed(t, a.c.issueID, goodRuns(1)...)
+			a.seed(t, a.c.issueID, autoRun{status: "completed"}, autoRun{status: "completed"}, autoRun{status: "completed"}, autoRun{status: "completed"})
+		}, service.RunBudgetAnomalyNoop},
+		{"spike", func(t *testing.T, a autoCase) {
+			other := dbfx.Issue(t, "baseline runs")
+			a.seed(t, other, goodRuns(9)...)
+			a.seed(t, a.c.issueID, autoRun{status: "completed", delivered: true, tokens: 60000}, autoRun{status: "completed", delivered: true, tokens: 60000}, autoRun{status: "completed", delivered: true, tokens: 60000})
+		}, service.RunBudgetAnomalySpike},
+		{"churn", func(t *testing.T, a autoCase) {
+			a.seed(t, a.c.issueID, goodRuns(4)...)
+			for i := 0; i < 3; i++ {
+				dbfx.Insert(t, "activity_log", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": a.c.issueID, "actor_type": "member", "actor_id": testUserID, "action": "run_budget_top_up", "created_at": time.Now().Add(-time.Duration(i+2) * time.Hour)})
+			}
+		}, service.RunBudgetAnomalyChurn},
+		{"openai_pool", func(t *testing.T, a autoCase) {
+			a.seed(t, a.c.issueID, goodRuns(4)...)
+			dbfx.Exec(t, `UPDATE agent SET model='gpt-6.1-sol' WHERE id=$1`, a.agentID)
+			t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `UPDATE agent SET model='' WHERE id=$1`, a.agentID) })
+			setAutoSettings(t, `{"provider_holds":[{"provider":"OpenAI","text":"Stop all routing to OpenAI based agents"}]}`)
+		}, service.RunBudgetAnomalyOpenAIPool},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAutoCase(t)
+			tc.setup(t, a)
+			v := a.verdict(t)
+			if v.Approve || v.Anomaly != tc.want {
+				t.Fatalf("verdict = %+v, want anomaly %q and no approval", v, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunBudgetAutoEnvelopeStopsApproval(t *testing.T) {
+	a := newAutoCase(t)
+	a.seed(t, a.c.issueID, goodRuns(5)...)
+	// 296 granted today plus this window's 5 passes the 300-run envelope; a
+	// grant from two days ago does not count.
+	for _, row := range []struct {
+		runs int
+		ago  time.Duration
+	}{{296, time.Minute}, {1000, 48 * time.Hour}} {
+		dbfx.Insert(t, "activity_log", testutil.Cols{
+			"workspace_id": testWorkspaceID, "actor_type": "system", "action": "run_budget_top_up",
+			"details": fmt.Sprintf(`{"auto":%q,"runs":%d}`, service.RunBudgetAutoRule, row.runs), "created_at": time.Now().Add(-row.ago),
+		})
+	}
+	v := a.verdict(t)
+	if v.Approve || v.Anomaly != "" || v.Reason != "envelope" {
+		t.Fatalf("verdict = %+v, want an envelope hold", v)
+	}
+	setAutoSettings(t, `{"run_budget_auto":{"daily_envelope":400}}`)
+	if v := a.verdict(t); !v.Approve {
+		t.Fatalf("with a 400-run envelope verdict = %+v, want approve", v)
+	}
+}
+
+func TestRunBudgetAutoKillSwitchHolds(t *testing.T) {
+	a := newAutoCase(t)
+	a.seed(t, a.c.issueID, goodRuns(5)...)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":false}}`)
+	v := a.verdict(t)
+	if v.Approve || v.Anomaly != "" || v.Reason != "disabled" {
+		t.Fatalf("verdict = %+v, want a disabled hold", v)
+	}
+}
+
