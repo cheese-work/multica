@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -30,6 +32,10 @@ var (
 	errResumeCrashed = errors.New("run budget: resume stopped before commit")
 	// errResumeRelinked: a newer approval linked the refusal after the worker read it.
 	errResumeRelinked = errors.New("run budget: the refusal was linked by a newer approval")
+	// errResumeSurvivorHeld: a pending run holds the slot but is not the refused
+	// work and cannot take the stored comment now. The refusal stays resume_pending
+	// and the sweep retries it once that run has started or finished.
+	errResumeSurvivorHeld = errors.New("run budget: a pending run for another comment holds the slot")
 )
 
 // resumeSuperseded ends the refusal: it no longer applies.
@@ -168,6 +174,9 @@ func (h *Handler) resumeRefusal(ctx context.Context, id pgtype.UUID) {
 			return
 		case errors.Is(err, errResumeRelinked):
 			continue
+		case errors.Is(err, errResumeSurvivorHeld):
+			slog.Info("run budget: resume waits for the pending run", "refusal_id", uuidToString(id))
+			return
 		case errors.As(err, &superseded):
 			h.failResume(ctx, row, "superseded", superseded.reason)
 			return
@@ -200,11 +209,13 @@ func (h *Handler) resumeOnce(ctx context.Context, row db.RunBudgetRefusal) (func
 	if err != nil {
 		return nil, err
 	}
-	if row.SourceWakeupID.Valid || row.SourceTaskID.Valid {
-		return h.resumeSource(ctx, row, issue)
-	}
+	// A blocked refusal always ends in the restore, whatever its source: the
+	// restored status owes its own run, never the source's.
 	if row.Blocked {
 		return h.resumeBlocked(ctx, row, issue)
+	}
+	if row.SourceWakeupID.Valid || row.SourceTaskID.Valid {
+		return h.resumeSource(ctx, row, issue)
 	}
 	return h.resumeDirect(ctx, row, issue)
 }
@@ -247,9 +258,6 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 		if edge.RunRefused != nil && !errors.Is(edge.RunRefused, service.ErrDuplicatePendingTask) {
 			return &resumeRefused{cause: edge.RunRefused}
 		}
-		if row.SourceWakeupID.Valid || row.SourceTaskID.Valid {
-			return releaseSourceBlock(ctx, q, fresh, edge)
-		}
 		return finishResume(ctx, q, fresh, edge.TaskID, false)
 	})
 	if err != nil {
@@ -258,42 +266,13 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 	return func(ctx context.Context) { edge.AfterCommit(ctx) }, nil
 }
 
-// releaseSourceBlock ends the restore of a refusal that still owes its own
-// source's run: the status is back, so the refusal is no longer blocked and
-// waits in the occurrence the restore recorded. The run the move admitted
-// carries the refusal's taint.
-func releaseSourceBlock(ctx context.Context, q *db.Queries, fresh db.RunBudgetRefusal, edge edgeMove) error {
-	if edge.TaskID.Valid && len(fresh.TaintIds) > 0 {
-		if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: edge.TaskID, Taint: fresh.TaintIds}); err != nil {
-			return err
-		}
-	}
-	if err := q.ReleaseRunBudgetRefusalBlock(ctx, db.ReleaseRunBudgetRefusalBlockParams{ID: fresh.ID, OccurrenceActivityID: edge.StatusActivityID}); err != nil {
-		return err
-	}
-	if runBudgetResumeAt("before_commit") {
-		return errResumeCrashed
-	}
-	return nil
-}
-
 // resumeSource runs again the native dispatch a refusal stopped: a wakeup tick,
 // a system wakeup or a retry (CHE-2860). The dispatch, not the worker, builds
 // the run, so its evidence, attribution and receipts are the ones it would have
 // had; it binds the refusal to the run in its own transaction (bindRefusedRun),
-// together with the receipts or retry it consumes. A status the hook hid is
-// restored first, in its own transaction.
+// together with the receipts or retry it consumes. A refusal that blocked the
+// issue never comes here (resumeOnce).
 func (h *Handler) resumeSource(ctx context.Context, row db.RunBudgetRefusal, issue db.Issue) (func(context.Context), error) {
-	var after func(context.Context)
-	if row.Blocked {
-		var err error
-		if after, err = h.resumeBlocked(ctx, row, issue); err != nil {
-			return nil, err
-		}
-		if row, err = h.Queries.GetRunBudgetRefusal(ctx, row.ID); err != nil || row.State != "resume_pending" {
-			return after, err
-		}
-	}
 	if err := h.kickSource(ctx, row); isRunRefusal(err) {
 		return nil, &resumeRefused{cause: err}
 	} else if err != nil {
@@ -305,7 +284,7 @@ func (h *Handler) resumeSource(ctx context.Context, row db.RunBudgetRefusal, iss
 		return nil, err
 	case bound.State != "resume_pending":
 		// run_queued: the dispatch delivered the run and bound the refusal to it.
-		return after, nil
+		return nil, nil
 	}
 	// Nothing was delivered. The budget still refusing is a later approval's to
 	// answer; otherwise the source no longer has the work (its receipts were
@@ -362,8 +341,10 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 	if issue.AssigneeType.String == "agent" {
 		overlay = h.TaskService.PrepareIssueRunOverlay(ctx, issue, pgtype.UUID{})
 	}
+	prep := h.prepareBind(ctx, row, issue)
 	var after func()
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
+		after = nil
 		q := h.Queries.WithTx(tx)
 		fresh, err := lockResume(ctx, q, row.ID, issue.ID, row.ActionID)
 		if err != nil {
@@ -378,7 +359,12 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		var taskID pgtype.UUID
 		taskID, after, err = h.enqueueRefusedRun(service.WithTaint(ctx, fresh.TaintIds), q, fresh, locked, overlay)
 		switch {
-		case err == nil, errors.Is(err, service.ErrDuplicatePendingTask):
+		case err == nil:
+		case errors.Is(err, service.ErrDuplicatePendingTask):
+			// The pending run is the refused work only if it takes the stored comment.
+			if after, err = h.bindSurvivor(ctx, q, fresh, taskID, prep); err != nil {
+				return err
+			}
 		case isRunRefusal(err):
 			return &resumeRefused{cause: err}
 		default:
@@ -393,6 +379,125 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		return nil, nil
 	}
 	return func(context.Context) { after() }, nil
+}
+
+// bindPrep is what folding the stored comment into a surviving run needs. It is
+// read before the transaction: the overlay is a network call that must not run
+// under the issue lock.
+type bindPrep struct {
+	agent  db.Agent
+	attr   attribution.Result
+	params db.MergeCommentIntoQueuedIssueTaskParams
+}
+
+// prepareBind reads the re-attribution the stored comment would stamp on a
+// surviving run. Nil when the refusal stored no comment or the agent or the
+// attribution cannot be read; bindSurvivor then holds the refusal if it needs it.
+func (h *Handler) prepareBind(ctx context.Context, row db.RunBudgetRefusal, issue db.Issue) *bindPrep {
+	if !row.TriggerCommentID.Valid {
+		return nil
+	}
+	agentID := row.AgentID
+	switch {
+	case agentID.Valid:
+	case issue.AssigneeType.String == "agent":
+		agentID = issue.AssigneeID
+	case issue.AssigneeType.String == "squad":
+		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return nil
+		}
+		agentID = squad.LeaderID
+	default:
+		return nil
+	}
+	agent, err := h.Queries.GetAgent(ctx, agentID)
+	if err != nil {
+		return nil
+	}
+	attr, err := h.TaskService.AttributionForMergedComment(ctx, issue.WorkspaceID, row.TriggerCommentID, row.Trigger == "mention", agent)
+	if err != nil {
+		return nil
+	}
+	mcp, apps := h.TaskService.BuildRuntimeMCPOverlayForMerge(ctx, attr.UserID, agent)
+	return &bindPrep{agent: agent, attr: attr, params: db.MergeCommentIntoQueuedIssueTaskParams{
+		NewTriggerCommentID:     row.TriggerCommentID,
+		NewTriggerSummary:       h.TaskService.BuildCommentTriggerSummary(ctx, issue.WorkspaceID, row.TriggerCommentID),
+		NewOriginatorUserID:     attr.UserID,
+		NewAccountableUserID:    attr.AccountableUserID,
+		NewOriginatorSource:     pgtype.Text{String: attr.Source.String(), Valid: true},
+		NewDelegatedFromTaskID:  attr.DelegatedFromTaskID,
+		NewRuleVersionID:        attr.RuleVersionID,
+		NewTriggerEvidenceKind:  pgtype.Text{String: string(attr.EvidenceKind), Valid: attr.EvidenceKind != ""},
+		NewTriggerEvidenceRefID: attr.EvidenceRefID,
+		NewRuntimeMcpOverlay:    mcp,
+		NewRuntimeConnectedApps: apps,
+		IssueID:                 issue.ID,
+		AgentID:                 agent.ID,
+		HeadSha:                 h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+	}}
+}
+
+// bindSurvivor decides whether the pending run that held the slot is the refused
+// work, in the resume transaction. It is when the refusal stored no comment, when
+// the run already answers the stored comment, or when this transaction adds that
+// comment to it: folded into a queued run with the refusal's attribution, or
+// registered as planned input of a started one. Otherwise the run answers
+// something else and ending the refusal on it would lose the refused comment:
+// errResumeSurvivorHeld, and the refusal stays resume_pending.
+func (h *Handler) bindSurvivor(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, survivor pgtype.UUID, prep *bindPrep) (func(), error) {
+	if !row.TriggerCommentID.Valid {
+		return nil, nil
+	}
+	task, err := q.GetAgentTask(ctx, survivor)
+	if err != nil {
+		return nil, err
+	}
+	if task.TriggerCommentID == row.TriggerCommentID || slices.Contains(task.CoalescedCommentIds, row.TriggerCommentID) {
+		return nil, nil
+	}
+	if prep == nil || prep.agent.ID != task.AgentID {
+		return nil, errResumeSurvivorHeld
+	}
+	var merged db.AgentTaskQueue
+	switch task.Status {
+	case "queued":
+		params := prep.params
+		params.TargetTaskID = survivor
+		params.SquadID = task.SquadID
+		folded, err := q.MergeCommentIntoQueuedIssueTask(ctx, params)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errResumeSurvivorHeld
+		}
+		if err != nil {
+			return nil, err
+		}
+		merged = task
+		merged.CoalescedCommentIds = folded.CoalescedCommentIds
+	case "dispatched", "running", "waiting_local_directory":
+		// Only a run of the same thread takes planned input.
+		planned, err := q.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
+			CommentID:    row.TriggerCommentID,
+			IssueID:      task.IssueID,
+			AgentID:      task.AgentID,
+			TargetTaskID: survivor,
+			HeadSha:      prep.params.HeadSha,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errResumeSurvivorHeld
+		}
+		if err != nil {
+			return nil, err
+		}
+		merged = task
+		merged.CoalescedCommentIds = planned.CoalescedCommentIds
+	default:
+		return nil, errResumeSurvivorHeld
+	}
+	return func() {
+		h.TaskService.RecordHumanDelegation(ctx, prep.attr)
+		h.TaskService.BroadcastTaskCoalesced(ctx, merged)
+	}, nil
 }
 
 // enqueueRefusedRun queues the run the refusal stored. An assignment-level or

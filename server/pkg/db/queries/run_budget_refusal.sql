@@ -186,10 +186,3 @@ WHERE issue_id = @issue_id::uuid AND state = 'resume_pending' AND blocked = fals
     OR (sqlc.narg('source_task_id')::uuid IS NOT NULL AND source_task_id = sqlc.narg('source_task_id')::uuid))
 RETURNING taint_ids;
 
--- name: ReleaseRunBudgetRefusalBlock :exec
--- The status the hook hid is back (the worker's restore): the refusal is no
--- longer blocked, in the occurrence the restore recorded, and still waits for
--- its own source to run.
-UPDATE run_budget_refusal
-SET blocked = false, occurrence_activity_id = COALESCE(sqlc.narg('occurrence_activity_id')::uuid, occurrence_activity_id), updated_at = now()
-WHERE id = @id::uuid AND state = 'resume_pending';

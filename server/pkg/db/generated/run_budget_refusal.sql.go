@@ -551,25 +551,6 @@ func (q *Queries) NewestIssueStatusChange(ctx context.Context, issueID pgtype.UU
 	return i, err
 }
 
-const releaseRunBudgetRefusalBlock = `-- name: ReleaseRunBudgetRefusalBlock :exec
-UPDATE run_budget_refusal
-SET blocked = false, occurrence_activity_id = COALESCE($1::uuid, occurrence_activity_id), updated_at = now()
-WHERE id = $2::uuid AND state = 'resume_pending'
-`
-
-type ReleaseRunBudgetRefusalBlockParams struct {
-	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
-	ID                   pgtype.UUID `json:"id"`
-}
-
-// The status the hook hid is back (the worker's restore): the refusal is no
-// longer blocked, in the occurrence the restore recorded, and still waits for
-// its own source to run.
-func (q *Queries) ReleaseRunBudgetRefusalBlock(ctx context.Context, arg ReleaseRunBudgetRefusalBlockParams) error {
-	_, err := q.db.Exec(ctx, releaseRunBudgetRefusalBlock, arg.OccurrenceActivityID, arg.ID)
-	return err
-}
-
 const retireRunBudgetRefusalHook = `-- name: RetireRunBudgetRefusalHook :exec
 UPDATE run_budget_refusal
 SET hook_phase = 'retired', hook_reason = $1::text, updated_at = now()

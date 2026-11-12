@@ -41,12 +41,39 @@ func (r sourceRef) pending(t *testing.T) int {
 // refusal's intent the way the hook's first transaction does.
 func refuseNative(t *testing.T, installationID int64, src nativeSource) (budgetCase, pgtype.UUID, sourceRef) {
 	t.Helper()
+	c, e, ref := captureNative(t, installationID, src, "in_progress")
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	return c, refusalIDs(t, c)[0], ref
+}
+
+// blockNative runs the whole hook for the refused native trigger: the issue is
+// Blocked and the refusal remembers status.
+func blockNative(t *testing.T, installationID int64, src nativeSource, status string) (budgetCase, pgtype.UUID, sourceRef) {
+	t.Helper()
+	c, e, ref := captureNative(t, installationID, src, status)
+	testHandler.onRunBudgetExhausted(context.Background(), e)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("issue is %s, want blocked", got)
+	}
+	id := refusalIDs(t, c)[0]
+	if r, err := testHandler.Queries.GetRunBudgetRefusal(context.Background(), id); err != nil || !r.Blocked || !(r.SourceWakeupID.Valid || r.SourceTaskID.Valid) {
+		t.Fatalf("refusal = %+v, %v, want blocked with a native source", r, err)
+	}
+	return c, id, ref
+}
+
+func captureNative(t *testing.T, installationID int64, src nativeSource, status string) (budgetCase, service.RunBudgetExhausted, sourceRef) {
+	t.Helper()
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	seedTestCatalog(t)
 	c := newBudgetCase(t, installationID, recoverySteps(seededReadyAgentID(t)), 2)
-	recordOccurrence(t, c, "in_progress")
+	if status != "in_progress" {
+		c.enter(t, status)
+	}
+	recordOccurrence(t, c, status)
 	c.spend(t, 2)
 	events := make(chan service.RunBudgetExhausted, 4)
 	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
@@ -61,9 +88,7 @@ func refuseNative(t *testing.T, installationID int64, src nativeSource) (budgetC
 	if e.Target.Trigger != src.trigger {
 		t.Fatalf("refused trigger = %q, want %q", e.Target.Trigger, src.trigger)
 	}
-	crashAt(t, "after_intent")
-	testHandler.onRunBudgetExhausted(context.Background(), e)
-	return c, refusalIDs(t, c)[0], ref
+	return c, e, ref
 }
 
 func fireWakeup(t *testing.T, c budgetCase) sourceRef {
@@ -248,6 +273,97 @@ func TestRunBudgetResumeRollsBackANativeDispatchThatCrashesBeforeCommit(t *testi
 			testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
 			testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(2*time.Minute))
 			wantOneDelivery(t, c, id, ref)
+		})
+	}
+}
+
+// A blocked refusal always ends in the restore transaction, whatever its source:
+// the resume admits the run the restored status owes and leaves the source's
+// native state (receipts, retry lineage) untouched.
+func nativeOwed(t *testing.T, c budgetCase, ref sourceRef, pendingBefore int) {
+	t.Helper()
+	if q, s := deliveries(t, c, ref); q != 1 || s != 0 {
+		t.Fatalf("queued runs = %d, of the source = %d, want 1 (the owed run) and 0", q, s)
+	}
+	if got := ref.pending(t); got != pendingBefore {
+		t.Fatalf("pending receipts = %d, want %d (not consumed)", got, pendingBefore)
+	}
+}
+
+func TestRunBudgetResumeBlockedNativeRefusalAdmitsTheRunTheStatusOwes(t *testing.T) {
+	for i, src := range nativeSources {
+		t.Run(src.trigger, func(t *testing.T) {
+			c, id, ref := blockNative(t, int64(2860230+i), src, "in_review")
+			action := linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			pendingBefore := ref.pending(t)
+			resume(t, id)
+			resume(t, id)
+			r := wantResume(t, id, "run_queued", "")
+			nativeOwed(t, c, ref, pendingBefore)
+			if got := refusedRunOf(t, c).Review; r.TaskID != got {
+				t.Fatalf("refusal ends on task %s, want the owed run %s", uuidToString(r.TaskID), uuidToString(got))
+			}
+			if got := c.status(t); got != "in_review" || restoreRows(t, c, action) != 1 {
+				t.Fatalf("issue %s, restore rows %d: want in_review, 1", got, restoreRows(t, c, action))
+			}
+		})
+	}
+}
+
+func TestRunBudgetResumeBlockedNativeRefusalThatOwesNoRunRestoresTheStatus(t *testing.T) {
+	for i, src := range nativeSources {
+		t.Run(src.trigger, func(t *testing.T) {
+			c, id, ref := blockNative(t, int64(2860240+i), src, "in_progress")
+			action := linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			pendingBefore := ref.pending(t)
+			resume(t, id)
+			resume(t, id)
+			wantResume(t, id, "status_restored", "")
+			if q, s := deliveries(t, c, ref); q != 0 || s != 0 {
+				t.Fatalf("queued runs = %d, of the source = %d, want 0 and 0", q, s)
+			}
+			if got := ref.pending(t); got != pendingBefore {
+				t.Fatalf("pending receipts = %d, want %d (not consumed)", got, pendingBefore)
+			}
+			if got := c.status(t); got != "in_progress" || restoreRows(t, c, action) != 1 {
+				t.Fatalf("issue %s, restore rows %d: want in_progress, 1", got, restoreRows(t, c, action))
+			}
+		})
+	}
+}
+
+func TestRunBudgetResumeBlockedNativeRefusalRollsBackTogetherOnACrashBeforeCommit(t *testing.T) {
+	for i, src := range nativeSources {
+		t.Run(src.trigger, func(t *testing.T) {
+			c, id, ref := blockNative(t, int64(2860250+i), src, "in_review")
+			action := linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			pendingBefore := ref.pending(t)
+			runBudgetResumeAt = func(stage string) bool {
+				if stage != "before_commit" {
+					return false
+				}
+				runBudgetResumeAt = func(string) bool { return false }
+				return true
+			}
+			t.Cleanup(func() { runBudgetResumeAt = func(string) bool { return false } })
+			resume(t, id)
+			wantResume(t, id, "resume_pending", "")
+			if got := resumeRowOf(t, id).TaskID; got.Valid {
+				t.Fatalf("the crashed resume left task %s on the refusal", uuidToString(got))
+			}
+			if got := c.status(t); got != "blocked" || restoreRows(t, c, action) != 0 {
+				t.Fatalf("after the crash: issue %s, restore rows %d, want blocked, 0", got, restoreRows(t, c, action))
+			}
+			if q, s := deliveries(t, c, ref); q != 0 || s != 0 {
+				t.Fatalf("after the crash: queued runs = %d, of the source = %d, want 0 and 0", q, s)
+			}
+			testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
+			testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(2*time.Minute))
+			wantResume(t, id, "run_queued", "")
+			nativeOwed(t, c, ref, pendingBefore)
 		})
 	}
 }
