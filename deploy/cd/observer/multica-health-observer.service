@@ -1,0 +1,9 @@
+[Unit]
+Description=Multica post-deploy health sample (CHE-5175)
+ConditionPathExists=@STATE_DIR@/health-observer/active
+
+[Service]
+Type=oneshot
+User=@USER@
+TimeoutStartSec=90
+ExecStart=@NODE@ @STATE_DIR@/health-observer/bin/health-window.mjs tick --dir @STATE_DIR@/health-observer --source timer
