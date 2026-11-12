@@ -146,6 +146,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 var concurrentIndexCleanups = map[string]string{
 	"99997_skill_version_index":                                 "idx_skill_version_skill_version",
 	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
+	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",

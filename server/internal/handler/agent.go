@@ -2769,7 +2769,7 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pendingMovedTo.Valid {
-		h.TaskService.NotifyRuntimeMayHaveWork(pendingMovedTo)
+		h.TaskService.NotifyRuntimeMayHaveWork(pendingMovedTo, "")
 	}
 
 	resp, ok := h.updatedAgentResponse(w, r, updated)

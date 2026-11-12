@@ -9315,12 +9315,6 @@ func (s *TaskService) NotifyRuntimeCapacityChanged(runtimeID pgtype.UUID) {
 	s.notifyRuntimeMayHaveWork(runtimeID, "")
 }
 
-// NotifyRuntimeMayHaveWork wakes a runtime's daemon after queued work was
-// moved onto it outside an enqueue, such as an agent runtime switch.
-func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
-	s.notifyRuntimeMayHaveWork(runtimeID, "")
-}
-
 // notifyTasksFinished is the batch form used by bulk terminal transitions.
 // Coalesce by runtime so cancelling many tasks on one machine produces one
 // cache bump and one websocket hint rather than a burst of identical work.
