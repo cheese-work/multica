@@ -7,6 +7,7 @@
     "no_run": "没有活动的运行。"
   },
   "needs_you": {
+    "chip_other": "{{count}} 个决定等你处理",
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",
@@ -457,6 +458,7 @@
     "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
     "answer_hint": "{{shortcut}} 发送",
     "answer_too_long": "回答超过 8 KB。缩短后才能发送。",
+    "answer_upload_cancelled": "由于离开了此卡片，上传已取消。请重新添加文件。",
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",

@@ -160,7 +160,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  # CHE-4385: both ran as separate workflow runs per push to main; as called workflows they add jobs only.
+  # CHE-4385: ran as a separate workflow run per push to main; as a called workflow it adds a job only.
   # Cache maintenance runs after every completed build, as its old `workflow_run` trigger did.
   cache-maintenance:
     needs: [push-go-cache-warm, push-turbo-cache-warm, daemon-artifact]
@@ -169,8 +169,3 @@ jobs:
       contents: read
       actions: write
     uses: ./.github/workflows/cache-maintenance.yml
-
-  pr-main-sync:
-    permissions:
-      contents: read
-    uses: ./.github/workflows/pr-main-sync.yml

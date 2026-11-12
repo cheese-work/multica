@@ -89,8 +89,9 @@ exit 1
 			}
 			task.PriorWorkDir = prepared.WorkDir
 			d.handleTask(context.Background(), task, 0)
+			var report map[string]any
 			select {
-			case report := <-reports:
+			case report = <-reports:
 				if report["retired_session_id"] != "ses-old" {
 					t.Fatalf("retirement missing from terminal callback: %+v", report)
 				}
@@ -121,9 +122,40 @@ exit 1
 				if !strings.Contains(string(prompt), "Session Continuity Notice") {
 					t.Fatalf("cold-start continuity notice missing: %s", prompt)
 				}
+				// The init-context report must describe what was launched, not
+				// the pre-guard brief and prompt (CHE-3000 review P2).
+				file, err := os.ReadFile(filepath.Join(report["work_dir"].(string), "AGENTS.md"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Strip the managed-block markers the writer adds around the brief.
+				_, brief, _ := strings.Cut(string(file), "<!-- BEGIN MULTICA-RUNTIME (auto-managed; do not edit) -->\n")
+				brief, _, _ = strings.Cut(brief, "<!-- END MULTICA-RUNTIME -->")
+				brief = strings.TrimRight(brief, "\n")
+				var sum int
+				for _, p := range initContextParts(t, report) {
+					sum += int(p["bytes"].(float64))
+				}
+				// The writer trims trailing newlines off the brief; allow for them.
+				if want := len(brief) + len(prompt); sum < want || sum > want+2 {
+					t.Fatalf("init_context part bytes = %d, want launched brief+prompt = %d", sum, want)
+				}
 			}
 		})
 	}
+}
+
+func initContextParts(t *testing.T, report map[string]any) []map[string]any {
+	t.Helper()
+	ic, ok := report["init_context"].(map[string]any)
+	if !ok {
+		t.Fatalf("init_context missing from terminal callback: %+v", report)
+	}
+	var parts []map[string]any
+	for _, p := range ic["parts"].([]any) {
+		parts = append(parts, p.(map[string]any))
+	}
+	return parts
 }
 
 func TestOpenCodeClockSkewClassification(t *testing.T) {

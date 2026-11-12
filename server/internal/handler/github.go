@@ -1459,17 +1459,28 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	// A rollup held PENDING only by the security-gate verdict is green for the
+	// wake (CHE-4938); the workflow move below still waits for a real SUCCESS.
+	checksGreen := pr.ChecksRollupState.String == "SUCCESS"
+	verdictPending := false
+	if pr.ChecksRollupState.String == "PENDING" {
+		rollup, err := service.PRChecksRollupIgnoringVerdict(ctx, h.DB, pr.ID)
+		if err != nil {
+			slog.Warn("github: failed to read verdict-pending checks rollup", "err", err, "pr_id", uuidToString(pr.ID))
+		}
+		verdictPending = rollup == "SUCCESS"
+	}
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && (checksGreen || verdictPending) &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
+			if checksGreen && h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
-				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: "SUCCESS",
 				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
