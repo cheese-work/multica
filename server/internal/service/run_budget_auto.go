@@ -51,8 +51,10 @@ const (
 var runBudgetAutoZone = time.FixedZone("ICT", 7*3600)
 
 // RunBudgetAutoConfig is the workspace setting under settings.run_budget_auto.
-// Absent, the auto-approver is on with the default envelope. Enabled false is
-// the kill switch: every spent window then goes to a person's card as before.
+// Absent, the auto-approver is off (CHE-5331: it stays off until the
+// check-completeness follow-up lands) with the default envelope. Enabled true
+// turns it on; false is the kill switch: every spent window goes to a person's
+// card as before.
 type RunBudgetAutoConfig struct {
 	Enabled       bool `json:"enabled"`
 	DailyEnvelope int  `json:"daily_envelope"`
@@ -61,7 +63,7 @@ type RunBudgetAutoConfig struct {
 // RunBudgetAutoConfigFromSettings reads the setting. Malformed settings read as
 // the kill switch off: a spend rule never acts on a document it cannot parse.
 func RunBudgetAutoConfigFromSettings(settings []byte) (RunBudgetAutoConfig, error) {
-	cfg := RunBudgetAutoConfig{Enabled: true, DailyEnvelope: runBudgetAutoDefaultEnvelope}
+	cfg := RunBudgetAutoConfig{DailyEnvelope: runBudgetAutoDefaultEnvelope}
 	if len(settings) == 0 {
 		return cfg, nil
 	}

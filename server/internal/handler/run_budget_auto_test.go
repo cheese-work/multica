@@ -231,7 +231,7 @@ func TestRunBudgetAutoEnvelopeStopsApproval(t *testing.T) {
 	if v.Approve || v.Anomaly != "" || v.Reason != "envelope" {
 		t.Fatalf("verdict = %+v, want an envelope hold", v)
 	}
-	setAutoSettings(t, `{"run_budget_auto":{"daily_envelope":400}}`)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"daily_envelope":400}}`)
 	if v := a.verdict(t); !v.Approve {
 		t.Fatalf("with a 400-run envelope verdict = %+v, want approve", v)
 	}
