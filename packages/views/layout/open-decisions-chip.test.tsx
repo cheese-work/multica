@@ -62,14 +62,14 @@ describe("OpenDecisionsChip", () => {
     ]);
     renderChip();
     const link = await screen.findByRole("link", { name: /2 decisions need you/i });
-    expect(link.getAttribute("href")).toBe("/test-ws/issues/issue-1#comment-comment-1");
+    expect(link.getAttribute("href")).toBe("/test-ws/issues/CHE-1#comment-comment-1");
   });
 
   it("falls back to the issue when the card has no comment", async () => {
     listOpen.mockResolvedValue([request("1")]);
     renderChip();
     const link = await screen.findByRole("link", { name: /1 decision needs you/i });
-    expect(link.getAttribute("href")).toBe("/test-ws/issues/issue-1");
+    expect(link.getAttribute("href")).toBe("/test-ws/issues/CHE-1");
   });
 
   it("stays off the chat route, where the DM header shows the badge", async () => {

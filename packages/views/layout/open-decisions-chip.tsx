@@ -20,7 +20,9 @@ export function OpenDecisionsChip() {
   const { data } = useQuery(openDecisionRequestsOptions(wsId));
   if (!slug || !data?.length || pathname.startsWith(paths.workspace(slug).chat())) return null;
   const oldest = [...data].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0]!;
-  const issue = paths.workspace(slug).issueDetail(oldest.issue_id);
+  // The identifier, not the UUID: a UUID link is rewritten to the identifier
+  // after load, which remounts the issue page and throws the landing away.
+  const issue = paths.workspace(slug).issueDetail(oldest.issue_identifier || oldest.issue_id);
   const href = oldest.source_comment_id ? `${issue}#comment-${oldest.source_comment_id}` : issue;
   return (
     <AppLink
