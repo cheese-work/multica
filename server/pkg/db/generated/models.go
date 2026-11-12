@@ -3003,13 +3003,16 @@ type RecoveryClaim struct {
 }
 
 type ReviewAdmissionDeferral struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	AgentID   pgtype.UUID        `json:"agent_id"`
-	Trigger   string             `json:"trigger"`
-	HeadSha   string             `json:"head_sha"`
-	Reasons   []string           `json:"reasons"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	HeadSha          string             `json:"head_sha"`
+	Reasons          []string           `json:"reasons"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
 }
 
 type RunBudgetNotice struct {
