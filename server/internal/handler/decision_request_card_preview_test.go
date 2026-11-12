@@ -236,6 +236,52 @@ func TestCardConfigChangeCarriesTheStoredPreview(test *testing.T) {
 	}
 }
 
+// Every registered config-change type returns its stored preview and the digest approve compares (CHE-4489).
+func TestCardCarriesTheStoredPreviewForEveryConfigChangeType(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	stored := request.preconditions(test)
+	if len(configChanges) < 2 {
+		test.Fatalf("config change registry has %d types", len(configChanges))
+	}
+	for actionType := range configChanges {
+		dbfx.Exec(test, `UPDATE decision_action SET action_type = $2 WHERE id = $1`, request.action.actionID, actionType)
+		card := request.action.cardAction(test)
+		if card == nil || card.ActionType != actionType || card.ConfigChange == nil || card.ConfigChange.SHA256 != stored["preview_sha256"] {
+			test.Fatalf("%s: card = %+v; want the stored preview with digest %v", actionType, card, stored["preview_sha256"])
+		}
+	}
+}
+
+// A preview stored before diff_kind existed is the json kind (E0b): the card says so, so the client can still approve it.
+func TestCardConfigChangeOfAnOlderPreviewIsTheJSONKind(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET preconditions = jsonb_set(preconditions, '{preview}', (preconditions->'preview') - 'diff_kind') WHERE id = $1`, request.action.actionID)
+	card := request.action.cardAction(test)
+	if card == nil || card.ConfigChange == nil || card.ConfigChange.DiffKind != "json" {
+		test.Fatalf("older preview on the card = %+v; want diff_kind json", card)
+	}
+	if card.ConfigChange.SHA256 != request.preconditions(test)["preview_sha256"] {
+		test.Fatalf("digest changed: %+v", card.ConfigChange)
+	}
+}
+
+// With no stored preview the field is absent from the payload, so an old client's fallback is unchanged.
+func TestCardConfigChangeIsAbsentWithoutAStoredPreview(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET preconditions = preconditions - 'preview' - 'preview_sha256' WHERE id = $1`, request.action.actionID)
+	card := request.action.cardAction(test)
+	if card == nil || card.ConfigChange != nil {
+		test.Fatalf("card without a stored preview = %+v", card)
+	}
+	raw, err := json.Marshal(card)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if strings.Contains(string(raw), "config_change") {
+		test.Fatalf("payload names config_change: %s", raw)
+	}
+}
+
 func TestCardConfigChangeLeavesWithTheAction(test *testing.T) {
 	request, _ := requestConfig(test, http.StatusCreated, nil)
 	dbfx.Exec(test, `UPDATE decision_action SET state = 'executed', executed_at = now() WHERE id = $1`, request.action.actionID)

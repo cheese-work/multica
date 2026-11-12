@@ -113,6 +113,7 @@ func init() {
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
 	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.skills.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
 }
 
 // Types lists every allowlisted action type, sorted and without versions.
