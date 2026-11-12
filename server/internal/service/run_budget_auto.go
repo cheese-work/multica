@@ -154,8 +154,13 @@ func runBudgetAutoAnomaly(ctx context.Context, q *db.Queries, issue db.Issue, se
 	var notDelivered, tokens int64
 	openAI := false
 	for _, r := range runs {
+		// A failed run's error, or the failure a completed run reported in its comment.
+		failure := strings.TrimSpace(r.Evidence)
 		if r.Status == "failed" && strings.TrimSpace(r.Error) != "" {
-			failures[runBudgetAutoErrorKey(r.Error)]++
+			failure = r.Error
+		}
+		if failure != "" {
+			failures[runBudgetAutoErrorKey(failure)]++
 		}
 		if !r.Delivered {
 			notDelivered++

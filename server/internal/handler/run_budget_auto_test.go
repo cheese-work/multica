@@ -14,7 +14,10 @@ import (
 type autoRun struct {
 	status    string
 	err       string
-	delivered bool
+	delivered bool   // the agent commented "did the work"
+	comment   string // the agent's comment text, instead of the default
+	prUpdate  bool   // a linked PR changed while the run ran
+	move      bool   // the agent moved the issue's status while the run ran
 	tokens    int64
 }
 
@@ -47,8 +50,24 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 			"issue_id": issueID, "status": r.status, "error": r.err,
 			"created_at": done.Add(-time.Minute), "started_at": done.Add(-time.Minute), "completed_at": done,
 		})
-		if r.delivered {
-			dbfx.Comment(t, issueID, "did the work", testutil.Cols{"author_type": "agent", "author_id": a.agentID, "created_at": done})
+		text := r.comment
+		if text == "" && r.delivered {
+			text = "did the work"
+		}
+		if text != "" {
+			dbfx.Comment(t, issueID, text, testutil.Cols{"author_type": "agent", "author_id": a.agentID, "created_at": done})
+		}
+		if r.prUpdate {
+			prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+				"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "test", "repo_name": "auto",
+				"pr_number": testutil.Raw("(floor(random() * 1000000000))::int"), "title": "auto", "state": "open",
+				"html_url": "https://example.test/pr", "pr_created_at": done.Add(-time.Hour), "pr_updated_at": done,
+			})
+			dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, issueID, prID)
+			t.Cleanup(func() { _, _ = testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, prID) })
+		}
+		if r.move {
+			dbfx.Insert(t, "activity_log", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": issueID, "actor_type": "agent", "actor_id": a.agentID, "action": "status_changed", "details": `{"from":"todo","to":"in_progress"}`, "created_at": done})
 		}
 		if r.tokens > 0 {
 			dbfx.Insert(t, "task_usage", testutil.Cols{"task_id": taskID, "model": "m", "input_tokens": r.tokens})
@@ -186,3 +205,47 @@ func TestRunBudgetAutoKillSwitchHolds(t *testing.T) {
 	}
 }
 
+// A comment that says nothing was done is not progress; a PR change or a status
+// move by the agent is, with or without a comment.
+func TestRunBudgetAutoProgressSignals(t *testing.T) {
+	noop := func(n int) []autoRun {
+		runs := make([]autoRun, n)
+		for i := range runs {
+			runs[i] = autoRun{status: "completed", comment: "No changes needed, nothing to do. Waiting."}
+		}
+		return runs
+	}
+	cases := []struct {
+		name string
+		runs []autoRun
+		want bool
+	}{
+		{"no-op comments only", noop(5), false},
+		{"pr updated, no comment", []autoRun{{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}}, true},
+		{"status moved, no comment", []autoRun{{status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}}, true},
+		{"no-op comment with a pr update", []autoRun{{status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAutoCase(t, 2226900)
+			a.seed(t, a.c.issueID, tc.runs...)
+			if v := a.verdict(t); v.Approve != tc.want {
+				t.Fatalf("verdict = %+v, want approve %v", v, tc.want)
+			}
+		})
+	}
+}
+
+// Completed runs that keep reporting the same failing check are a loop, even
+// though every run ended well and commented.
+func TestRunBudgetAutoLoopsOnRepeatedFailingChecks(t *testing.T) {
+	a := newAutoCase(t, 2226900)
+	a.seed(t, a.c.issueID, goodRuns(2)...)
+	a.seed(t, a.c.issueID,
+		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 1"},
+		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 2"},
+		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 3"})
+	if v := a.verdict(t); v.Approve || v.Anomaly != service.RunBudgetAnomalyLoop {
+		t.Fatalf("verdict = %+v, want a loop anomaly", v)
+	}
+}

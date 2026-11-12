@@ -88,12 +88,31 @@ func (q *Queries) ListRunBudgetAutoDecisionsSince(ctx context.Context, arg ListR
 
 const listRunBudgetWindowRuns = `-- name: ListRunBudgetWindowRuns :many
 SELECT t.id, t.status, COALESCE(t.error, '')::text AS error, COALESCE(a.model, '')::text AS model,
-       (t.status = 'completed' AND EXISTS (
-           SELECT 1 FROM comment c
-           WHERE c.issue_id = t.issue_id AND c.author_type = 'agent' AND c.author_id = t.agent_id
-             AND c.created_at >= COALESCE(t.started_at, t.created_at)
-             AND c.created_at <= COALESCE(t.completed_at, now()) + interval '1 minute'
+       (t.status = 'completed' AND (
+           EXISTS (
+               SELECT 1 FROM comment c
+               WHERE c.issue_id = t.issue_id AND c.author_type = 'agent' AND c.author_id = t.agent_id
+                 AND c.created_at >= COALESCE(t.started_at, t.created_at) AND c.created_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+                 AND c.content !~* '(no[ -]?op|nothing (to do|changed|new|left)|no (further|new|more) (action|work|changes?)|no changes?( needed| required)?|already (done|complete|up to date))'
+           )
+           OR EXISTS (
+               SELECT 1 FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id
+               WHERE ip.issue_id = t.issue_id AND p.pr_updated_at >= COALESCE(t.started_at, t.created_at) AND p.pr_updated_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+           )
+           OR EXISTS (
+               SELECT 1 FROM activity_log al
+               WHERE al.issue_id = t.issue_id AND al.action = 'status_changed'
+                 AND al.actor_type = 'agent' AND al.actor_id = t.agent_id
+                 AND al.created_at >= COALESCE(t.started_at, t.created_at) AND al.created_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+           )
        ))::boolean AS delivered,
+       COALESCE((
+           SELECT c.content FROM comment c
+           WHERE c.issue_id = t.issue_id AND c.author_type = 'agent' AND c.author_id = t.agent_id
+             AND c.created_at >= COALESCE(t.started_at, t.created_at) AND c.created_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+             AND c.content ~* '\m(fail(ed|ing|s|ure)?|error|red)\M'
+           ORDER BY c.created_at DESC LIMIT 1
+       ), '')::text AS evidence,
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
 JOIN agent a ON a.id = t.agent_id
@@ -112,11 +131,15 @@ type ListRunBudgetWindowRunsRow struct {
 	Error     string      `json:"error"`
 	Model     string      `json:"model"`
 	Delivered bool        `json:"delivered"`
+	Evidence  string      `json:"evidence"`
 	Tokens    int64       `json:"tokens"`
 }
 
 // The finished runs of an issue's open window, for the auto-approver. A run
-// delivered when it completed and its agent commented on the issue while it ran.
+// delivered when it completed and, while it ran, its agent left a comment that
+// is not a "nothing to do" note, a linked PR changed, or the agent moved the
+// issue's status. evidence is the agent's last comment that reports a failure;
+// it lets a loop show across completed runs, not only failed ones.
 func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudgetWindowRunsParams) ([]ListRunBudgetWindowRunsRow, error) {
 	rows, err := q.db.Query(ctx, listRunBudgetWindowRuns, arg.IssueID, arg.Since)
 	if err != nil {
@@ -132,6 +155,7 @@ func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudget
 			&i.Error,
 			&i.Model,
 			&i.Delivered,
+			&i.Evidence,
 			&i.Tokens,
 		); err != nil {
 			return nil, err
