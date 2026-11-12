@@ -60,6 +60,7 @@ vi.mock("@multica/core/issues/queries", () => ({
 vi.mock("@multica/core/workspace/mutations", () => ({
   useLeaveWorkspace: () => ({ mutateAsync: vi.fn() }),
   useDeleteWorkspace: () => ({ mutateAsync: vi.fn() }),
+  useSetWorkspaceScheduling: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@multica/core/api", () => ({
