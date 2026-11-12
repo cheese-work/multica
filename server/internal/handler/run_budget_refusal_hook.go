@@ -149,9 +149,11 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		// original refusal's, which the block's history row names. A block that
 		// names none (made before refusals were recorded) has no status to give
 		// back: the row ends unknown_origin and only the notice goes out.
+		source := db.SetRunBudgetRefusalSourceParams{SourceWakeupID: e.Target.SourceWakeupID, SourceTaskID: e.Target.SourceTaskID}
 		if issue.Status == issuestatus.Blocked {
 			if prev, ok := h.blockingRefusal(ctx, q, newest); ok {
 				in.Status, in.AgentID, in.Trigger, in.Blocked = prev.Status, prev.AgentID, prev.Trigger, true
+				source = db.SetRunBudgetRefusalSourceParams{SourceWakeupID: prev.SourceWakeupID, SourceTaskID: prev.SourceTaskID}
 				in.ActorUserID, in.TriggerCommentID = prev.ActorUserID, prev.TriggerCommentID
 			} else {
 				in.Status, in.Blocked = pgtype.Text{}, true
@@ -174,6 +176,10 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 				return fmt.Errorf("insert refusal: %w", err)
 			}
 			id, generation, ok = row.ID, row.HookGeneration, true
+		}
+		source.ID = id
+		if err := q.SetRunBudgetRefusalSource(ctx, source); err != nil {
+			return err
 		}
 		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
 	})

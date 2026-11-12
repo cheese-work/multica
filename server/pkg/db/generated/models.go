@@ -3049,6 +3049,8 @@ type RunBudgetRefusal struct {
 	TaskID               pgtype.UUID        `json:"task_id"`
 	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
 	TriggerCommentID     pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID       pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
 }
 
 type RunCapabilityGrant struct {

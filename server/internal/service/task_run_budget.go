@@ -63,6 +63,11 @@ type RunTarget struct {
 	// run under the same attribution (CHE-3611).
 	ActorUserID      pgtype.UUID
 	TriggerCommentID pgtype.UUID
+	// SourceWakeupID is the wakeup rule, and SourceTaskID the failed run, whose
+	// own dispatch the refusal stopped. The refusal keeps them so the resume
+	// runs that dispatch again and binds to what it delivers (CHE-2860).
+	SourceWakeupID pgtype.UUID
+	SourceTaskID   pgtype.UUID
 }
 
 // ReviewGate is what the guard hands the enqueue: the PR head the run reviews
@@ -372,4 +377,46 @@ func reviewHeadOf(ctx context.Context, q *db.Queries, issue db.Issue, target Run
 	}
 	admitted, err = q.HasIssueReviewAdmission(ctx, db.HasIssueReviewAdmissionParams{IssueID: issue.ID, HeadSha: head})
 	return head, admitted, err
+}
+
+// RunBudgetBindAt runs inside a native dispatch's transaction right after it
+// bound a refusal to the run it delivered, before the commit. A test returns
+// true to stop there, as a crash would; the dispatch then rolls back.
+var RunBudgetBindAt = func(stage string) bool { return false }
+
+// ErrRunBudgetBindCrashed is what a dispatch returns when RunBudgetBindAt stopped it.
+var ErrRunBudgetBindCrashed = errors.New("run budget: dispatch stopped before commit")
+
+// bindRefusedRun ends the refusal an approval linked on the run a native
+// dispatch (a wakeup tick, a system wakeup or a retry) just delivered for the
+// source the refusal stopped (CHE-2860). It runs in the dispatch's transaction,
+// under the issue lock the dispatch holds, so the run, the receipts or retry
+// it consumed and the refusal end together or not at all. A dispatch no
+// refusal waits on binds nothing. The refusal's taint joins the run (the task
+// trigger keeps it monotonic).
+func bindRefusedRun(ctx context.Context, q *db.Queries, issueID, wakeupID, parentTaskID, taskID pgtype.UUID) error {
+	if !wakeupID.Valid && !parentTaskID.Valid {
+		return nil
+	}
+	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
+		return err
+	}
+	taints, err := q.BindRunBudgetRefusalToRun(ctx, db.BindRunBudgetRefusalToRunParams{
+		IssueID: issueID, TaskID: taskID, SourceWakeupID: wakeupID, SourceTaskID: parentTaskID,
+	})
+	if err != nil || len(taints) == 0 {
+		return err
+	}
+	for _, taint := range taints {
+		if len(taint) == 0 {
+			continue
+		}
+		if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: taskID, Taint: taint}); err != nil {
+			return err
+		}
+	}
+	if RunBudgetBindAt("after_bind") {
+		return ErrRunBudgetBindCrashed
+	}
+	return nil
 }

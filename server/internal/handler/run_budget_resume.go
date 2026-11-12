@@ -200,6 +200,9 @@ func (h *Handler) resumeOnce(ctx context.Context, row db.RunBudgetRefusal) (func
 	if err != nil {
 		return nil, err
 	}
+	if row.SourceWakeupID.Valid || row.SourceTaskID.Valid {
+		return h.resumeSource(ctx, row, issue)
+	}
 	if row.Blocked {
 		return h.resumeBlocked(ctx, row, issue)
 	}
@@ -244,12 +247,96 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 		if edge.RunRefused != nil && !errors.Is(edge.RunRefused, service.ErrDuplicatePendingTask) {
 			return &resumeRefused{cause: edge.RunRefused}
 		}
+		if row.SourceWakeupID.Valid || row.SourceTaskID.Valid {
+			return releaseSourceBlock(ctx, q, fresh, edge)
+		}
 		return finishResume(ctx, q, fresh, edge.TaskID, false)
 	})
 	if err != nil {
 		return nil, err
 	}
 	return func(ctx context.Context) { edge.AfterCommit(ctx) }, nil
+}
+
+// releaseSourceBlock ends the restore of a refusal that still owes its own
+// source's run: the status is back, so the refusal is no longer blocked and
+// waits in the occurrence the restore recorded. The run the move admitted
+// carries the refusal's taint.
+func releaseSourceBlock(ctx context.Context, q *db.Queries, fresh db.RunBudgetRefusal, edge edgeMove) error {
+	if edge.TaskID.Valid && len(fresh.TaintIds) > 0 {
+		if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: edge.TaskID, Taint: fresh.TaintIds}); err != nil {
+			return err
+		}
+	}
+	if err := q.ReleaseRunBudgetRefusalBlock(ctx, db.ReleaseRunBudgetRefusalBlockParams{ID: fresh.ID, OccurrenceActivityID: edge.StatusActivityID}); err != nil {
+		return err
+	}
+	if runBudgetResumeAt("before_commit") {
+		return errResumeCrashed
+	}
+	return nil
+}
+
+// resumeSource runs again the native dispatch a refusal stopped: a wakeup tick,
+// a system wakeup or a retry (CHE-2860). The dispatch, not the worker, builds
+// the run, so its evidence, attribution and receipts are the ones it would have
+// had; it binds the refusal to the run in its own transaction (bindRefusedRun),
+// together with the receipts or retry it consumes. A status the hook hid is
+// restored first, in its own transaction.
+func (h *Handler) resumeSource(ctx context.Context, row db.RunBudgetRefusal, issue db.Issue) (func(context.Context), error) {
+	var after func(context.Context)
+	if row.Blocked {
+		var err error
+		if after, err = h.resumeBlocked(ctx, row, issue); err != nil {
+			return nil, err
+		}
+		if row, err = h.Queries.GetRunBudgetRefusal(ctx, row.ID); err != nil || row.State != "resume_pending" {
+			return after, err
+		}
+	}
+	if err := h.kickSource(ctx, row); isRunRefusal(err) {
+		return nil, &resumeRefused{cause: err}
+	} else if err != nil {
+		return nil, err
+	}
+	bound, err := h.Queries.GetRunBudgetRefusal(ctx, row.ID)
+	switch {
+	case err != nil:
+		return nil, err
+	case bound.State != "resume_pending":
+		// run_queued: the dispatch delivered the run and bound the refusal to it.
+		return after, nil
+	}
+	// Nothing was delivered. The budget still refusing is a later approval's to
+	// answer; otherwise the source no longer has the work (its receipts were
+	// consumed, its rule ended, a run already holds the slot).
+	since, err := refusalSince(bound)
+	if err != nil {
+		return nil, err
+	}
+	if still, err := service.RunBudgetStillRefuses(ctx, h.Queries, bound.IssueID, since); err != nil {
+		return nil, err
+	} else if still {
+		return nil, &resumeRefused{cause: service.ErrRunBudgetExhausted}
+	}
+	return nil, &resumeSuperseded{reason: "source_not_delivered"}
+}
+
+// kickSource runs the source's dispatch once with the hook suppressed. A
+// dispatch that refuses returns that refusal.
+func (h *Handler) kickSource(ctx context.Context, row db.RunBudgetRefusal) error {
+	if row.SourceWakeupID.Valid {
+		return (&service.IssueWakeupService{Tasks: h.TaskService}).DispatchRule(ctx, row.WorkspaceID, row.SourceWakeupID)
+	}
+	parent, err := h.Queries.GetAgentTask(ctx, row.SourceTaskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = h.TaskService.MaybeRetryFailedTask(ctx, parent)
+	return err
 }
 
 // isPermanentRestoreError reports whether the move that restores the hidden
@@ -315,11 +402,11 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, issue db.Issue, overlay *service.PreparedRuntimeMCPOverlay) (pgtype.UUID, func(), error) {
 	th := h.onQueries(q)
 	// A wakeup or a retry keeps its evidence in the wakeup rule or the failed
-	// task, not in the refusal: restoring it here would re-admit it as a mention.
-	// Its own tick or retry runs it again.
+	// task (resumeSource runs it). A refusal recorded before the source was kept
+	// has none to run, and re-admitting it here would make it a mention.
 	switch row.Trigger {
 	case "wakeup", "system wakeup", "retry":
-		return pgtype.UUID{}, nil, &resumeSuperseded{reason: "trigger_not_resumable"}
+		return pgtype.UUID{}, nil, &resumeSuperseded{reason: "source_unknown"}
 	}
 	agentID, viaSquad := row.AgentID, row.Trigger == "squad leader callback"
 	switch {

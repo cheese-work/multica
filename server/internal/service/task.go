@@ -6481,7 +6481,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry", SourceTaskID: t.ID}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -7172,7 +7172,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry", SourceTaskID: parent.ID}); err != nil {
 		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
@@ -7250,6 +7250,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	if child.Status == "queued" {
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
+			return nil, err
+		}
+	}
+	if parent.IssueID.Valid {
+		if err := bindRefusedRun(ctx, qtx, parent.IssueID, pgtype.UUID{}, parent.ID, child.ID); err != nil {
 			return nil, err
 		}
 	}

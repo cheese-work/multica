@@ -768,22 +768,6 @@ func TestRunBudgetRefusalRecordsTheTriggerCommentAndActor(t *testing.T) {
 	}
 }
 
-func TestRunBudgetResumeDoesNotRestoreAWakeupOrRetryByHand(t *testing.T) {
-	for _, trigger := range []string{"wakeup", "system wakeup", "retry"} {
-		t.Run(trigger, func(t *testing.T) {
-			c, id := intentCase(t, 2860150)
-			dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger=$3 WHERE id=$1`, id, secondAgent(t), trigger)
-			linkRefusal(t, id, resumeRowOf(t, id).Window)
-			raiseCap(t, c)
-			resume(t, id)
-			wantResume(t, id, "superseded", "trigger_not_resumable")
-			if got := queuedAgents(t, c); len(got) != 0 {
-				t.Fatalf("queued runs for %v, want none: a %s is not a mention", got, trigger)
-			}
-		})
-	}
-}
-
 func TestRunBudgetResumeBlockedRestoreToAnArchivedHandlerSupersedesIt(t *testing.T) {
 	c, id := reviewBlockedCase(t, 2860160)
 	linkRefusal(t, id, resumeRowOf(t, id).Window)

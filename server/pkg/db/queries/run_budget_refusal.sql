@@ -166,3 +166,30 @@ WHERE id = @id::uuid AND state = 'resume_pending' AND action_id = @action_id::uu
 UPDATE agent_task_queue
 SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || @taint::text[]) AS t ORDER BY t)
 WHERE id = @id::uuid AND NOT taint_ids @> @taint::text[];
+
+-- name: SetRunBudgetRefusalSource :exec
+-- The native source a refusal stopped (CHE-2860): a derived wakeup rule or a
+-- failed run. Written with the insert or the revive, NULLs included.
+UPDATE run_budget_refusal
+SET source_wakeup_id = sqlc.narg('source_wakeup_id')::uuid, source_task_id = sqlc.narg('source_task_id')::uuid
+WHERE id = @id::uuid;
+
+-- name: BindRunBudgetRefusalToRun :many
+-- A native dispatch (wakeup tick, system wakeup, retry) delivered the run the
+-- refusal stopped, in the dispatch's own transaction: the refusal ends
+-- run_queued on that exact run. Only a refusal the approval already linked is
+-- bound; the taint it held is returned for the run.
+UPDATE run_budget_refusal
+SET state = 'run_queued', task_id = @task_id::uuid, state_reason = NULL, updated_at = now()
+WHERE issue_id = @issue_id::uuid AND state = 'resume_pending' AND blocked = false
+  AND ((sqlc.narg('source_wakeup_id')::uuid IS NOT NULL AND source_wakeup_id = sqlc.narg('source_wakeup_id')::uuid)
+    OR (sqlc.narg('source_task_id')::uuid IS NOT NULL AND source_task_id = sqlc.narg('source_task_id')::uuid))
+RETURNING taint_ids;
+
+-- name: ReleaseRunBudgetRefusalBlock :exec
+-- The status the hook hid is back (the worker's restore): the refusal is no
+-- longer blocked, in the occurrence the restore recorded, and still waits for
+-- its own source to run.
+UPDATE run_budget_refusal
+SET blocked = false, occurrence_activity_id = COALESCE(sqlc.narg('occurrence_activity_id')::uuid, occurrence_activity_id), updated_at = now()
+WHERE id = @id::uuid AND state = 'resume_pending';
