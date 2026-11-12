@@ -364,7 +364,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		}()
 
 		startTime := time.Now()
-		finalStatus := "completed"
+		var finalStatus string
 		var finalError string
 		var finalOutput string
 		var sessionID string

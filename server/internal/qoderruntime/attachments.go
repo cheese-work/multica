@@ -112,7 +112,7 @@ func (b *Bridge) attachIssueFiles(ctx context.Context, taskAPI *api, attachments
 				return fmt.Errorf("upload attachment %s to Qoder: %w", name, err)
 			}
 			if file.ID == "" {
-				return fmt.Errorf("Qoder file upload returned no file ID")
+				return fmt.Errorf("qoder file upload returned no file ID")
 			}
 			mountPath := attachmentMountDir + name
 			r.Files = append(r.Files, map[string]any{"type": "file", "file_id": file.ID, "mount_path": mountPath})
