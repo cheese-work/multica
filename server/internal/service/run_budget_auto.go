@@ -84,7 +84,14 @@ func RunBudgetAutoDayStart(now time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, runBudgetAutoZone)
 }
 
-var runBudgetAutoDigits = regexp.MustCompile(`[0-9]+`)
+var (
+	runBudgetAutoDigits  = regexp.MustCompile(`[0-9]+`)
+	runBudgetAutoFailure = regexp.MustCompile(`(?i)\b(fail(ed|ing|s|ure)?|error|red)\b`)
+	// The names a failure report points at: a quoted span, a Go test, an
+	// exception type, or a dashed, dotted or slashed identifier such as a CI
+	// check (go-test) or a file path.
+	runBudgetAutoCheckName = regexp.MustCompile("`([^`\\n]+)`|\\bTest[A-Za-z0-9_]+|\\b[A-Za-z]+(?:Error|Exception)\\b|[A-Za-z0-9_]+(?:[-_./][A-Za-z0-9_]+)+")
+)
 
 // runBudgetAutoErrorKey makes errors that differ only in numbers (exit codes,
 // line numbers, ids) the same failure.
@@ -94,6 +101,41 @@ func runBudgetAutoErrorKey(msg string) string {
 		key = key[:120]
 	}
 	return key
+}
+
+// runBudgetAutoFailureKeys reduces a run's failure-reporting comments to the
+// failing checks and errors they name, so a loop is the same check failing again
+// and not the same prose. A failure line names its checks; a line that names
+// none is keyed by its own text. Each key is returned once.
+func runBudgetAutoFailureKeys(evidence string) []string {
+	seen := map[string]bool{}
+	var keys []string
+	add := func(k string) {
+		if len(k) >= 4 && !seen[k] {
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	for _, line := range strings.Split(evidence, "\n") {
+		if !runBudgetAutoFailure.MatchString(line) {
+			continue
+		}
+		named := false
+		for _, m := range runBudgetAutoCheckName.FindAllStringSubmatch(line, -1) {
+			name := m[0]
+			if m[1] != "" {
+				name = m[1]
+			}
+			if k := runBudgetAutoErrorKey(name); strings.ContainsAny(k, "abcdefghijklmnopqrstuvwxyz") {
+				add(k)
+				named = true
+			}
+		}
+		if !named {
+			add(runBudgetAutoErrorKey(line))
+		}
+	}
+	return keys
 }
 
 // EvaluateRunBudgetAuto judges the spent window that opened at since. It only
@@ -154,13 +196,18 @@ func runBudgetAutoAnomaly(ctx context.Context, q *db.Queries, issue db.Issue, se
 	var notDelivered, tokens int64
 	openAI := false
 	for _, r := range runs {
-		// A failed run's error, or the failure a completed run reported in its comment.
-		failure := strings.TrimSpace(r.Evidence)
+		// The failing checks a run reported, and a failed run's own error; each
+		// counts once per run.
+		keys := runBudgetAutoFailureKeys(r.Evidence)
 		if r.Status == "failed" && strings.TrimSpace(r.Error) != "" {
-			failure = r.Error
+			keys = append(keys, runBudgetAutoErrorKey(r.Error))
 		}
-		if failure != "" {
-			failures[runBudgetAutoErrorKey(failure)]++
+		seen := map[string]bool{}
+		for _, k := range keys {
+			if !seen[k] {
+				seen[k] = true
+				failures[k]++
+			}
 		}
 		if !r.Delivered {
 			notDelivered++

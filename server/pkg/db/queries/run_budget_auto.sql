@@ -1,20 +1,31 @@
 -- name: ListRunBudgetWindowRuns :many
 -- The finished runs of an issue's open window, for the auto-approver. A run
--- delivered when it completed and, while it ran, its agent left a comment that
--- is not a "nothing to do" note, a linked PR changed, or the agent moved the
--- issue's status. evidence is the agent's last comment that reports a failure;
--- it lets a loop show across completed runs, not only failed ones.
+-- delivered when it completed and, while it ran, one of: the agent moved the
+-- issue's status; a linked PR's head, state or draft flag changed (an
+-- issue_pr_event, so a PR comment does not count); the run's shell committed (a
+-- git commit result in its tool output, so no PR is needed); or the agent
+-- commented that it did something and did not say it is stuck. A comment that
+-- is stuck, a no-op, or says neither is not delivery. evidence is every
+-- failure-reporting comment of the run, which the engine reduces to the failing
+-- checks and errors, so a loop shows across completed runs, not only failed ones.
 SELECT t.id, t.status, COALESCE(t.error, '')::text AS error, COALESCE(a.model, '')::text AS model,
        (t.status = 'completed' AND (
            EXISTS (
                SELECT 1 FROM comment c
                WHERE c.issue_id = t.issue_id AND c.author_type = 'agent' AND c.author_id = t.agent_id
                  AND c.created_at >= COALESCE(t.started_at, t.created_at) AND c.created_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
-                 AND c.content !~* '(no[ -]?op|nothing (to do|changed|new|left)|no (further|new|more) (action|work|changes?)|no changes?( needed| required)?|already (done|complete|up to date))'
+                 AND c.content ~* '\m(done|completed?|implemented|fixed|added|merged|pushed|committed|opened|created|updated|resolved|shipped|delivered|released|refactored|removed|renamed|wrote|published)\M'
+                 AND c.content !~* '(no[ -]?op|nothing (to do|changed|new|left)|no (further|new|more) (action|work|changes?|progress)|no changes?( needed| required)?|already (done|complete|up to date)|\m(still|remains?|remaining|is|am|are) (blocked|stuck)\M|\m(blocked|stuck|waiting|awaiting|unable|cannot|can''t)\M|need(s|ed)? (input|a decision|approval|clarification|access))'
            )
            OR EXISTS (
-               SELECT 1 FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id
-               WHERE ip.issue_id = t.issue_id AND p.pr_updated_at >= COALESCE(t.started_at, t.created_at) AND p.pr_updated_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+               SELECT 1 FROM issue_pr_event e
+               WHERE e.issue_id = t.issue_id AND e.kind IN ('head_changed', 'ready', 'draft', 'merged', 'closed')
+                 AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+           )
+           OR EXISTS (
+               SELECT 1 FROM task_message m
+               WHERE m.task_id = t.id AND m.type = 'tool_result'
+                 AND m.output ~ '(^|\n)\[[^\]\n]+ [0-9a-f]{7,40}\] '
            )
            OR EXISTS (
                SELECT 1 FROM activity_log al
@@ -24,11 +35,10 @@ SELECT t.id, t.status, COALESCE(t.error, '')::text AS error, COALESCE(a.model, '
            )
        ))::boolean AS delivered,
        COALESCE((
-           SELECT c.content FROM comment c
+           SELECT left(string_agg(c.content, E'\n' ORDER BY c.created_at), 20000) FROM comment c
            WHERE c.issue_id = t.issue_id AND c.author_type = 'agent' AND c.author_id = t.agent_id
              AND c.created_at >= COALESCE(t.started_at, t.created_at) AND c.created_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
              AND c.content ~* '\m(fail(ed|ing|s|ure)?|error|red)\M'
-           ORDER BY c.created_at DESC LIMIT 1
        ), '')::text AS evidence,
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
