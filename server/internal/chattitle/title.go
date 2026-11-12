@@ -6,7 +6,12 @@ import (
 	"unicode"
 )
 
-const deterministicTitleLimit = 80
+const (
+	deterministicTitleLimit = 80
+	// minWordCut: a word boundary is used only when it keeps at least 2/3 of
+	// the limit; otherwise a long token (a URL) would be dropped whole.
+	minWordCut = deterministicTitleLimit * 2 / 3
+)
 
 var (
 	markdownFence = regexp.MustCompile("```.*?```")
@@ -17,7 +22,7 @@ var (
 
 // Derive is the deterministic DM title: first non-empty line, Markdown and
 // whitespace cleaned, at most 80 Unicode code points, cut at a word boundary
-// when one exists. It never adds an ellipsis; the UI truncates at the container
+// when that keeps at least 2/3 of the limit (else a hard cut). It never adds an ellipsis; the UI truncates at the container
 // edge. Twin: deriveChatTitle in packages/core/chat/title.ts.
 func Derive(body string) string {
 	line := ""
@@ -38,7 +43,8 @@ func Derive(body string) string {
 }
 
 // Cut limits an already cleaned single-line title to 80 code points at a word
-// boundary when one exists, without an ellipsis.
+// boundary when that keeps at least 2/3 of the limit (else a hard cut), without
+// an ellipsis.
 func Cut(line string) string {
 	runes := []rune(line)
 	if len(runes) <= deterministicTitleLimit {
@@ -47,7 +53,7 @@ func Cut(line string) string {
 	cut := runes[:deterministicTitleLimit]
 	// Whitespace right after the cut means the last word is whole.
 	if !unicode.IsSpace(runes[deterministicTitleLimit]) {
-		if i := lastSpace(cut); i > 0 {
+		if i := lastSpace(cut); i >= minWordCut {
 			cut = cut[:i]
 		}
 	}

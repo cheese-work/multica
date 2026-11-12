@@ -26,3 +26,13 @@ describe("deriveChatTitle", () => {
     expect(deriveChatTitle("a".repeat(80))).toBe("a".repeat(80));
   });
 });
+
+describe("deriveChatTitle long URL", () => {
+  it("hard-cuts a long URL instead of dropping it", () => {
+    const msg =
+      "tôi muốn adopt ý tưởng này https://github.com/cheese-work/multica/blob/main/docs/some/very/long/path/README.md";
+    const t = deriveChatTitle(msg);
+    expect(Array.from(t)).toHaveLength(80);
+    expect(msg.startsWith(t)).toBe(true);
+  });
+});

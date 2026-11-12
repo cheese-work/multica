@@ -39,3 +39,16 @@ func TestDeriveKeepsShortAndFirstLine(t *testing.T) {
 		t.Fatalf("80-char title was altered: %q", got)
 	}
 }
+
+// A long URL right after a short prefix must not be dropped whole: the word
+// boundary only applies when it keeps a reasonable part of the limit.
+func TestDeriveLongURLHardCutsInsteadOfDroppingIt(t *testing.T) {
+	msg := "tôi muốn adopt ý tưởng này https://github.com/cheese-work/multica/blob/main/docs/some/very/long/path/README.md"
+	got := Derive(msg)
+	if n := utf8.RuneCountInString(got); n != 80 {
+		t.Fatalf("title has %d code points, want 80: %q", n, got)
+	}
+	if !strings.HasPrefix(msg, got) {
+		t.Fatalf("title %q is not a prefix of the message", got)
+	}
+}
