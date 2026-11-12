@@ -290,8 +290,19 @@ func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []Ch
 		sessions[i].AttentionSince = formatAttentionTime(a.AttentionSince)
 		sessions[i].NextChangeAt = formatAttentionTime(a.NextChangeAt)
 		sessions[i].AttentionUnclassifiedKeys = a.Unclassified
+		sessions[i].AttentionKeys = a.Keys
+		sessions[i].AttentionAskIDs = askIDsFromKeys(a.AskKeys)
 	}
 	return nil
+}
+
+// askIDsFromKeys turns `item:<uuid>` ask keys into the ids `ask_ids` takes on send.
+func askIDsFromKeys(keys []string) []string {
+	ids := make([]string, 0, len(keys))
+	for _, k := range keys {
+		ids = append(ids, strings.TrimPrefix(k, "item:"))
+	}
+	return ids
 }
 
 func formatAttentionTime(t *time.Time) *string {
@@ -2322,8 +2333,13 @@ type ChatSessionResponse struct {
 	// AttentionUnclassifiedKeys: visible untyped-turn subject keys. Listed
 	// collapsed, never coloured or aged, and not counted in stale_level.
 	AttentionUnclassifiedKeys []string `json:"attention_unclassified_keys"`
-	CreatedAt                 string   `json:"created_at"`
-	UpdatedAt                 string   `json:"updated_at"`
+	// AttentionKeys: every displayed subject key. Xong, Để sau and Xong tất cả send these
+	// back as the snapshot (plan r4). AttentionAskIDs: the displayed asks that still need a
+	// reply, the targets of the reply-to-ask control (`ask_ids` on send).
+	AttentionKeys   []string `json:"attention_keys"`
+	AttentionAskIDs []string `json:"attention_ask_ids"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
 }
 
 type ChatSessionChannelSourceResponse struct {
