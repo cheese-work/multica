@@ -585,6 +585,7 @@ export interface Agent {
   /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
   scheduling_paused_at?: string | null;
   scheduling_paused_by?: string | null;
+  scheduling_paused_reason?: string | null;
   /**
    * Empty string when the agent is unbound: it kept its configuration, chats and
    * task history when its runtime was deleted, and needs a new runtime before it

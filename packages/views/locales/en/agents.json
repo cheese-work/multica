@@ -1107,6 +1107,11 @@
     "keep": "Keep as is",
     "paused_toast": "Agent paused",
     "resumed_toast": "Agent resumed",
-    "failed_toast": "Could not change agent scheduling"
+    "failed_toast": "Could not change agent scheduling",
+    "reason_label": "Reason (optional)",
+    "reason_placeholder": "Reason (optional)",
+    "paused_by_note": "Paused by {{name}} · {{time}}",
+    "paused_at_note": "Paused {{time}}",
+    "paused_reason_note": "Reason: {{reason}}"
   }
 }

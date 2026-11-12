@@ -2209,8 +2209,11 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
-  async pauseAgent(id: string): Promise<Agent> {
-    return this.fetch(`/api/agents/${id}/pause`, { method: "POST" });
+  async pauseAgent(id: string, reason?: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/pause`, {
+      method: "POST",
+      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+    });
   }
 
   async resumeAgent(id: string): Promise<Agent> {

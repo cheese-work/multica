@@ -1080,6 +1080,11 @@
     "keep": "그대로 두기",
     "paused_toast": "에이전트를 일시 중지했습니다",
     "resumed_toast": "에이전트를 재개했습니다",
-    "failed_toast": "에이전트 스케줄링을 변경할 수 없습니다"
+    "failed_toast": "에이전트 스케줄링을 변경할 수 없습니다",
+    "reason_label": "사유 (선택)",
+    "reason_placeholder": "사유 (선택)",
+    "paused_by_note": "{{name}} 님이 일시 중지 · {{time}}",
+    "paused_at_note": "일시 중지 {{time}}",
+    "paused_reason_note": "사유: {{reason}}"
   }
 }

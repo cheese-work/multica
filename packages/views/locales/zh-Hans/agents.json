@@ -1080,6 +1080,11 @@
     "keep": "保持不变",
     "paused_toast": "智能体已暂停",
     "resumed_toast": "智能体已恢复",
-    "failed_toast": "无法更改智能体调度"
+    "failed_toast": "无法更改智能体调度",
+    "reason_label": "原因（可选）",
+    "reason_placeholder": "原因（可选）",
+    "paused_by_note": "{{name}} 已暂停 · {{time}}",
+    "paused_at_note": "已暂停 {{time}}",
+    "paused_reason_note": "原因：{{reason}}"
   }
 }

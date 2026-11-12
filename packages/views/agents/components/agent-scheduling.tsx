@@ -3,11 +3,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import type { Agent } from "@multica/core/types";
+import type { Agent, MemberWithUser } from "@multica/core/types";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { agentListOptions, workspaceKeys } from "@multica/core/workspace/queries";
 import { Badge } from "@multica/ui/components/ui/badge";
+import { Input } from "@multica/ui/components/ui/input";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
   AlertDialog,
@@ -19,13 +20,37 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import { useT } from "../../i18n";
+import { useT, useTimeAgo } from "../../i18n";
 
 /** Shown only while an owner/admin has paused claims for the agent. */
 export function AgentPausedBadge({ agent }: { agent: Pick<Agent, "scheduling_paused_at"> }) {
   const { t } = useT("agents");
   if (!agent.scheduling_paused_at) return null;
   return <Badge variant="outline">{t(($) => $.scheduling.paused_badge)}</Badge>;
+}
+
+/** Who paused the agent, when and why. Renders nothing for a running agent. */
+export function AgentPauseNote({
+  agent,
+  members,
+}: {
+  agent: Pick<Agent, "scheduling_paused_at" | "scheduling_paused_by" | "scheduling_paused_reason">;
+  members: Pick<MemberWithUser, "user_id" | "name">[];
+}) {
+  const { t } = useT("agents");
+  const timeAgo = useTimeAgo();
+  if (!agent.scheduling_paused_at) return null;
+  const by = members.find((m) => m.user_id === agent.scheduling_paused_by)?.name;
+  return (
+    <p className="text-xs text-muted-foreground">
+      {by
+        ? t(($) => $.scheduling.paused_by_note, { name: by, time: timeAgo(agent.scheduling_paused_at!) })
+        : t(($) => $.scheduling.paused_at_note, { time: timeAgo(agent.scheduling_paused_at!) })}
+      {agent.scheduling_paused_reason
+        ? ` ${t(($) => $.scheduling.paused_reason_note, { reason: agent.scheduling_paused_reason })}`
+        : ""}
+    </p>
+  );
 }
 
 /** Same badge, looked up by agent id: issue assignee and squad member rows only carry the id. */
@@ -59,6 +84,7 @@ export function AgentSchedulingDialog({
   const wsId = useWorkspaceId();
   const qc = useQueryClient();
   const [cancelActive, setCancelActive] = useState(false);
+  const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const isPause = action === "pause";
 
@@ -74,17 +100,19 @@ export function AgentSchedulingDialog({
     setBusy(true);
     try {
       if (isPause) {
-        await api.pauseAgent(agent.id);
+        await api.pauseAgent(agent.id, reason.trim() || undefined);
         if (cancelActive) await api.cancelAgentTasks(agent.id);
       } else {
         await api.resumeAgent(agent.id);
       }
-      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
       toast.success(t(($) => (isPause ? $.scheduling.paused_toast : $.scheduling.resumed_toast)));
       onClose();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t(($) => $.scheduling.failed_toast));
       setBusy(false);
+    } finally {
+      // A pause that succeeded before a failed cancel still changed the agent.
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
     }
   };
 
@@ -120,6 +148,14 @@ export function AgentSchedulingDialog({
                 <li>{t(($) => $.scheduling.impact_wakeups, { count: data.enabled_wakeups })}</li>
               </ul>
             )}
+            <Input
+              value={reason}
+              maxLength={500}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder={t(($) => $.scheduling.reason_placeholder)}
+              aria-label={t(($) => $.scheduling.reason_label)}
+              disabled={busy}
+            />
             <label className="flex items-start gap-2">
               <Checkbox
                 checked={cancelActive}

@@ -105,7 +105,7 @@ func TestAgentSchedulingPauseBlocksClaimNotEnqueue(t *testing.T) {
 		"runtime_id": util.UUIDToString(a.runtimeID), "issue_id": issue3, "status": "running",
 	})
 
-	if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID); err != nil {
+	if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{}); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 
@@ -156,7 +156,7 @@ func TestSchedulingResumeRestoresClaim(t *testing.T) {
 	t.Run("agent", func(t *testing.T) {
 		f := newPauseFixture(t, 1)
 		a := f.agents[0]
-		if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID); err != nil {
+		if _, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{}); err != nil {
 			t.Fatalf("pause: %v", err)
 		}
 		if candidates := f.candidates(t, a); candidates != 0 {
@@ -283,11 +283,11 @@ func TestSecondPauseKeepsFirstActorAndTime(t *testing.T) {
 	a := f.agents[0]
 	otherActor := util.MustParseUUID(f.fx.User(t, fmt.Sprintf("second-%d", time.Now().UnixNano()), fmt.Sprintf("second-%d@example.com", time.Now().UnixNano())))
 
-	first, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID)
+	first, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, f.actorID, pgtype.Text{})
 	if err != nil {
 		t.Fatalf("first pause: %v", err)
 	}
-	second, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, otherActor)
+	second, _, err := f.svc.PauseAgentScheduling(ctx, f.workspaceID, a.id, otherActor, pgtype.Text{})
 	if err != nil {
 		t.Fatalf("second pause: %v", err)
 	}
