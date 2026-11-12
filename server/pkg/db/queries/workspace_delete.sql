@@ -107,12 +107,11 @@ LIMIT $3;
 -- name: ListTaskIDsByAgentFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByAgentPage :many
 -- One owner key per call, one keyset-paged chunk per call.
@@ -133,55 +132,87 @@ FOR UPDATE;
 -- the agent's entire task set in front of every page, so a busy agent costs
 -- roughly O(N² / page) for the sweep.
 --
--- FOR UPDATE is load-bearing for correctness, not throughput. It locks the rows
--- this page is about to delete, and under READ COMMITTED PostgreSQL re-checks the
--- WHERE clause after acquiring each lock: a task a concurrent committed UPDATE
--- has already moved to another owner no longer matches and is skipped, and one we
--- did lock cannot be moved away before we delete it.
+-- The page takes no row lock. Locking the run rows before the issues they touch
+-- inverts the order of AuthorizeElevatedOp (issue, then run), so the sweep locks
+-- the issues of the page first and then the rows, through LockTaskBatch.
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
 
 -- name: ListTaskIDsByIssueFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByIssuePage :many
 -- Uses idx_agent_task_queue_issue_id_keyset (migration 279). See
--- ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+-- ListTaskIDsByAgentPage for the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
 
 -- name: ListTaskIDsByRuntimeFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE runtime_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByRuntimePage :many
 -- Uses idx_agent_task_queue_runtime_id (migration 273, (runtime_id, id)); before
 -- it every runtime_id index was partial, so this path had none at all. See
--- ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+-- ListTaskIDsByAgentPage for the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE runtime_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
+
+-- name: ListIssueIDsOfTaskBatch :many
+-- Issues the deletion of a task batch touches: the issue of each task and the
+-- issue of each child that names a task as parent. Nulling parent_task_id re-runs
+-- the taint inheritance trigger on each child, whose issue-taint trigger locks the
+-- child's issue FOR NO KEY UPDATE. Ascending, so callers can lock in this order.
+SELECT t.issue_id AS id
+FROM (
+    SELECT p.issue_id FROM agent_task_queue p
+    WHERE p.id = ANY(@task_ids::uuid[])
+    UNION
+    SELECT c.issue_id FROM agent_task_queue c
+    WHERE c.parent_task_id = ANY(@task_ids::uuid[])
+) t
+WHERE t.issue_id IS NOT NULL
+ORDER BY t.issue_id;
+
+-- name: LockIssuesByID :exec
+-- AuthorizeElevatedOp takes the issue lock first and then waits on the run row, so
+-- teardown takes the issue locks before any run row it deletes or updates, or
+-- Postgres aborts one side (40P01). Ascending id, so two teardowns cannot cross.
+SELECT 1 FROM issue i
+WHERE i.id = ANY(@issue_ids::uuid[])
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
+-- name: LockTaskBatch :many
+-- Locks the rows of one task page, after the issues of the page are locked. Under
+-- READ COMMITTED PostgreSQL re-checks the WHERE clause after acquiring each lock:
+-- a task a concurrent committed UPDATE has already moved to another owner no
+-- longer matches and is skipped, and a row that is gone is not returned. A task
+-- we did lock cannot be moved away before we delete it. The owner id is that of
+-- the agent, issue or runtime the page was listed for; the three id spaces are
+-- disjoint.
+SELECT q.id FROM agent_task_queue q
+WHERE q.id = ANY(@task_ids::uuid[])
+  AND (q.agent_id = @owner_id OR q.issue_id = @owner_id OR q.runtime_id = @owner_id)
+ORDER BY q.id
+FOR UPDATE OF q;
 
 -- name: DetachTaskBatchReferences :exec
 -- Break inbound references to a task batch before deleting it, in the
@@ -482,6 +513,9 @@ deleted_issue_taints AS (
 ),
 deleted_issue_taint_clears AS (
     DELETE FROM issue_taint_clear WHERE workspace_id = $1
+),
+deleted_issue_run_taints AS (
+    DELETE FROM issue_run_taint WHERE workspace_id = $1
 ),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
@@ -796,6 +830,19 @@ deleted_channel_installations AS (
     WHERE channel_installation.workspace_id = $1
 )
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
+
+-- name: LockIssuesOfWorkspaceCommentTasks :exec
+-- Runs before DeleteWorkspaceComments. A run can name one of the workspace's
+-- comments from an issue of a neighbour workspace, and nulling that trigger
+-- locks the run's issue. Take those issues first, in ascending id order.
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = @workspace_id AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
 
 -- name: DeleteWorkspaceComments :exec
 DELETE FROM comment WHERE comment.workspace_id = $1;

@@ -1117,6 +1117,12 @@ var workspaceDeleteOwnerPageSize int32 = 500
 // tenant with rows left behind.
 const workspaceDeleteVerifyPasses = 3
 
+// workspaceDeleteIssueLockPasses caps how often one task page may widen its set of
+// locked issues because a run created after the lock query named a task of the
+// page as its parent. Hitting the cap fails the teardown; it never proceeds with
+// issues unlocked.
+const workspaceDeleteIssueLockPasses = 5
+
 // deleteWorkspaceTasks removes every agent_task_queue row a workspace owns,
 // together with the rows that hang off those tasks, in bounded keyset pages.
 //
@@ -1238,6 +1244,9 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 			for _, ownerID := range owners {
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
+					func(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
+						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids)
+					},
 					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
 					return err
 				}
@@ -1256,6 +1265,60 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 	return nil
 }
 
+// lockTaskPageIssuesFirst locks one task page in the order every other writer
+// uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
+// issue and then waits on the run row, so a page that held the run rows and then
+// asked for the issue of a child would be aborted with 40P01 against it.
+//
+//  1. The page ids come from a plain SELECT; no row is locked yet.
+//  2. The issues of the page's tasks and of their children are locked, ascending.
+//  3. The task rows are locked; a row that moved to another owner or is gone drops
+//     out of the returned ids.
+//  4. The children of the locked rows are read again. A child created after step 2
+//     can name an issue that is not locked yet; that issue is added and step 2
+//     runs again, up to workspaceDeleteIssueLockPasses times. Past the cap the
+//     teardown fails rather than proceed with an issue unlocked.
+//
+// A retry locks the added issue after issues it already holds, so a concurrent
+// writer that holds the added issue and waits for one of them can still abort one
+// side; the retry only runs when a child appeared during the page.
+func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of task page: %w", err)
+	}
+	held := make(map[pgtype.UUID]struct{}, len(need))
+	var heldIDs []pgtype.UUID
+	for pass := 1; pass <= workspaceDeleteIssueLockPasses; pass++ {
+		for _, id := range need {
+			held[id] = struct{}{}
+			heldIDs = append(heldIDs, id)
+		}
+		if err := qtx.LockIssuesByID(ctx, heldIDs); err != nil {
+			return nil, fmt.Errorf("lock issues of task page: %w", err)
+		}
+		locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
+		if err != nil {
+			return nil, fmt.Errorf("lock task page: %w", err)
+		}
+		current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
+		if err != nil {
+			return nil, fmt.Errorf("list issues of locked task page: %w", err)
+		}
+		need = need[:0]
+		for _, id := range current {
+			if _, ok := held[id]; !ok {
+				need = append(need, id)
+			}
+		}
+		if len(need) == 0 {
+			return locked, nil
+		}
+	}
+	return nil, fmt.Errorf("issues of a task page kept changing after %d lock passes; refusing to proceed with an issue unlocked",
+		workspaceDeleteIssueLockPasses)
+}
+
 // sweepTasksForOwner deletes one owner's tasks, then re-verifies that owner.
 //
 // Each pass walks the owner's tasks by keyset and deletes each page. A pass that
@@ -1269,6 +1332,7 @@ func sweepTasksForOwner(
 	ownerID pgtype.UUID,
 	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
 	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	lockPage func(context.Context, []pgtype.UUID) ([]pgtype.UUID, error),
 	detach func(context.Context, []pgtype.UUID) error,
 	deletePage func(context.Context, []pgtype.UUID) error,
 ) error {
@@ -1279,13 +1343,19 @@ func sweepTasksForOwner(
 			return fmt.Errorf("list tasks by %s: %w", label, err)
 		}
 		for len(taskIDs) > 0 {
-			if err := detach(ctx, taskIDs); err != nil {
-				return fmt.Errorf("detach task page references: %w", err)
+			locked, err := lockPage(ctx, taskIDs)
+			if err != nil {
+				return fmt.Errorf("lock task page: %w", err)
 			}
-			if err := deletePage(ctx, taskIDs); err != nil {
-				return fmt.Errorf("delete task page: %w", err)
+			if len(locked) > 0 {
+				if err := detach(ctx, locked); err != nil {
+					return fmt.Errorf("detach task page references: %w", err)
+				}
+				if err := deletePage(ctx, locked); err != nil {
+					return fmt.Errorf("delete task page: %w", err)
+				}
+				deleted += len(locked)
 			}
-			deleted += len(taskIDs)
 			if taskIDs, err = taskPage(ctx, ownerID, taskIDs[len(taskIDs)-1], workspaceDeleteTaskPageSize); err != nil {
 				return fmt.Errorf("list tasks by %s: %w", label, err)
 			}
@@ -1557,7 +1627,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			name: "delete comments",
-			run:  func() error { return qtx.DeleteWorkspaceComments(ctx, requester.WorkspaceID) },
+			run:  func() error { return deleteWorkspaceComments(ctx, qtx, requester.WorkspaceID) },
 		},
 		{
 			// Teardown mode keeps the triggers from logging the deletes above
@@ -1684,4 +1754,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deleteWorkspaceComments deletes the workspace's comments after it locks the
+// issues of the runs that name them: the delete nulls those runs' trigger, which
+// locks each run's issue, and that issue comes before the run row on every path.
+func deleteWorkspaceComments(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	if err := qtx.LockIssuesOfWorkspaceCommentTasks(ctx, workspaceID); err != nil {
+		return err
+	}
+	return qtx.DeleteWorkspaceComments(ctx, workspaceID)
 }
