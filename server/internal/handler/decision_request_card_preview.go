@@ -205,6 +205,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
 		return handler.agentCopyPreview(ctx, action, viewer)
+	case agentPauseAction, agentResumeAction:
+		return handler.agentSchedulingPreview(ctx, action, viewer)
 	}
 	return nil, nil
 }
