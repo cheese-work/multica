@@ -1695,3 +1695,53 @@ func isEnvRootBookkeeping(name string) bool {
 	return strings.HasPrefix(name, envRootOwnerTempPrefix) &&
 		strings.HasSuffix(name, envRootOwnerTempSuffix)
 }
+
+// PrepareBackground creates the environment of an output_only background run
+// (CHE-4101): a new empty workdir under a claimed env root. Unlike Prepare it
+// writes no context file, brief, skill, MCP config, provider home or task
+// marker, and it checks out no repo. The scratch dirs and task-local config
+// directory exist only so the GC and the root-ownership claim work as for any
+// other task.
+func PrepareBackground(params PrepareParams, logger *slog.Logger) (*Environment, error) {
+	if params.WorkspacesRoot == "" {
+		return nil, fmt.Errorf("execenv: workspaces root is required")
+	}
+	if params.WorkspaceID == "" {
+		return nil, fmt.Errorf("execenv: workspace ID is required")
+	}
+	if params.TaskID == "" {
+		return nil, fmt.Errorf("execenv: task ID is required")
+	}
+	envRoot, err := ResolveRootDir(RootDirParams{
+		WorkspacesRoot: params.WorkspacesRoot,
+		WorkspaceID:    params.WorkspaceID,
+		WorkspaceSlug:  params.WorkspaceSlug,
+		TaskID:         params.TaskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	lock, reset, err := claimEnvRoot(envRoot, params.WorkspaceID, params.TaskID)
+	if err != nil {
+		return nil, fmt.Errorf("execenv: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			releaseLockFile(lock)
+		}
+	}()
+	if reset {
+		if err := resetEnvRootContents(envRoot); err != nil {
+			return nil, fmt.Errorf("execenv: reset existing env: %w", err)
+		}
+	}
+	workDir := filepath.Join(envRoot, "workdir")
+	for _, dir := range []string{workDir, filepath.Join(envRoot, "output"), filepath.Join(envRoot, "logs")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("execenv: create directory %s: %w", dir, err)
+		}
+	}
+	ok = true
+	return &Environment{RootDir: envRoot, WorkDir: workDir, logger: logger, lockFile: lock}, nil
+}

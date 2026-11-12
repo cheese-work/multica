@@ -149,3 +149,24 @@ func TestWorkspaceEligible(t *testing.T) {
 		}
 	}
 }
+
+// CHE-4101: an output_only job skips an agent whose runtime provider can read
+// files or workspace content, like any other ineligible agent.
+func TestResolveSkipsAgentOnIneligibleProvider(t *testing.T) {
+	providers := map[string]string{a: "codex", b: "claude"}
+	agent := db.Agent{Visibility: "workspace", RuntimeID: pgtype.UUID{Valid: true}}
+	eligible := func(_ Source, id string) bool { return Eligible(DMTitle, agent, providers[id]) }
+
+	got := Resolve(DMTitle, nil, Config{DMTitle: {AgentID: a, FallbackAgentID: b}}, eligible)
+	if len(got.Chain) != 1 || got.Chain[0] != (Candidate{Fallback, b}) {
+		t.Fatalf("want only the claude fallback, got %+v", got)
+	}
+	got = Resolve(DMTitle, nil, Config{DMTitle: {AgentID: a}}, eligible)
+	if len(got.Chain) != 0 {
+		t.Fatalf("a lone codex agent must resolve to the no-agent path, got %+v", got)
+	}
+	// Routing is not an output_only job: the provider gate does not apply.
+	if !Eligible(Routing, agent, "codex") {
+		t.Fatal("routing must not be gated on provider")
+	}
+}
