@@ -103,8 +103,8 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
 ### Labeller writes (CHE-4383 B4a)
 
 `POST /api/system1/labels` body `{observation_id, kind, label, supersedes?}`.
-Migrations `99967_system1_label_writes` (`source` gains `labeller`; columns
-`task_id`, `agent_id`, `supersedes`) and `99968_system1_label_labeller_key_idx`
+Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
+`task_id`, `agent_id`, `supersedes`) and `99970_system1_label_labeller_key_idx`
 (unique index, concurrent).
 
 - **Who writes:** an agent task token only. Agent and task come from the token
