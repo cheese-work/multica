@@ -769,6 +769,7 @@
     "add": "Ajouter une clé d'accès",
     "code_hint": "Nous vous avons envoyé un code par e-mail. Saisissez-le, puis suivez l'invite de votre navigateur pour créer la clé d'accès.",
     "code_label": "Code reçu par e-mail",
+    "attempt_tag": "Tentative {{tag}} : utilisez l’e-mail dont l’objet se termine par [{{tag}}].",
     "confirm": "Confirmer",
     "cancel": "Annuler",
     "empty": "Aucune clé d'accès pour le moment.",

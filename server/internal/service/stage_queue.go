@@ -167,17 +167,23 @@ func markStageWaiting(ctx context.Context, q *db.Queries, r *stageFullError) err
 	return nil
 }
 
-// recordStageRefusal runs after a transaction that ended in a stage refusal has
-// rolled back, taking the mark the guard wrote inside it. It writes the mark
-// again on the pool. A write failure replaces the refusal, so the caller sees
-// an error instead of a run that is neither started nor queued.
+// recordStageRefusal runs after a transaction that ended in a stage refusal or
+// an admission deferral has rolled back, taking the mark the guard wrote inside
+// it. It writes the mark again on the pool. A write failure replaces the
+// refusal, so the caller sees an error instead of a run that is neither started
+// nor queued.
 func (s *TaskService) recordStageRefusal(ctx context.Context, err error) error {
 	var full *stageFullError
-	if !errors.As(err, &full) {
-		return err
-	}
-	if merr := markStageWaiting(ctx, s.Queries, full); merr != nil {
-		return merr
+	var deferred *admissionDeferredError
+	switch {
+	case errors.As(err, &full):
+		if merr := markStageWaiting(ctx, s.Queries, full); merr != nil {
+			return merr
+		}
+	case errors.As(err, &deferred):
+		if merr := markAdmissionDeferred(ctx, s.Queries, deferred); merr != nil {
+			return merr
+		}
 	}
 	return err
 }

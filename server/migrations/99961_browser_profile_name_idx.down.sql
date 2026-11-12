@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS browser_profile_workspace_name_uidx;

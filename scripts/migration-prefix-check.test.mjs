@@ -154,7 +154,7 @@ test("PR-only scanner runs in parallel and required backend-tests fails closed",
   assert.match(job("backend-test-shards"), /^    needs: \[changes, migration-prefix-check\]$/m);
   assert.match(job("backend-tests"), /^    needs: \[changes, migration-prefix-check, backend-test-shards\]$/m);
   for (const name of ["backend-test-shards", "backend-tests"]) {
-    assert.match(job(name), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_full == 'true' \}\}$/m);
+    assert.match(job(name), /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_backend == 'true' \}\}$/m);
   }
   const guard = job("backend-test-shards").match(/      - name: Require migration prefix result[\s\S]*?        run: \|\n((?:          .*\n)+)/)?.[1];
   assert.ok(guard, "required check must validate the scanner result before expensive steps");

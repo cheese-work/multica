@@ -330,3 +330,15 @@ multica daemon start --foreground
 - [데몬과 런타임](/daemon-runtimes) — 런타임 등록과 온라인 상태 메커니즘을 알아봅니다.
 - [실행](/tasks) — 상태, timeout, 실패 원인을 확인합니다.
 - [환경 변수](/environment-variables) — 자체 호스팅 설정 전체를 참고합니다.
+
+## 공급자 차단기로 인한 보류
+
+공급자 차단기가 새 작업을 보류하면 이슈 작업은 영구적인 `provider_hold` 표시와 함께 연기됩니다. 타이머나 미디어 준비 완료로 시작되지 않습니다. 명시적으로 해제할 때는 표시를 제거하기 전에 차단기 상태를 다시 확인해야 합니다. 채팅과 빠른 생성 요청은 `provider_breaker`로 거부됩니다.
+
+워크스페이스 설정 `provider_breaker_max_hold_seconds`의 기본값은 **21600초(6시간)**입니다. 새 보류에 적용되며, 설정을 변경해도 기존 기한은 연장되지 않습니다. CLI로 설정 제안을 만든 다음 일반 설정 승인 절차를 따르세요.
+
+```bash
+multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json
+```
+
+기한에 도달하면 작업은 `provider_breaker_hold_expired`로 실패하고 책임 있는 워크스페이스 구성원의 받은 편지함에 조치가 필요한 알림을 하나 만듭니다. 이 실패는 자동으로 재시도하지 않습니다. 이슈를 다시 실행하기 전에 공급자를 확인하세요. 런타임 재연결 재시도 동작은 유지됩니다.

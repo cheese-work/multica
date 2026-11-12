@@ -69,6 +69,37 @@ curl https://api.multica.ai/api/issues \
 
 In scripts, take the token from a secret manager or a protected environment variable — never hardcode it. On self-hosted instances, replace the domain with your own public API address.
 
+## Scoped tokens for CI
+
+A PAT can be created with a `scopes` list. A scoped PAT opens only the routes of its scope and nothing else. The server reads the scope from the token row on every call, so a revoked or re-scoped token stops at once. The PAT user must own the workspace.
+
+| Scope | Opens |
+| --- | --- |
+| `decisions:feed` | `GET /api/decisions/feed` and its acknowledgement |
+| `decisions:ci_request` | `POST /api/decisions/ci` |
+
+`decisions:ci_request` lets a CI job, which has no running agent task, open one decision card. The card is always class `deploy`, for the named issue and the named member (`for`). The body carries a structured `ask`, a `candidate_sha` (7 to 64 hex digits) and a `candidate_at` (RFC 3339 commit time). It carries no `action` and no covered cards.
+
+```bash
+curl -X POST https://api.multica.ai/api/decisions/ci \
+  -H "Authorization: Bearer $MULTICA_CI_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "issue_id": "<issue-id>",
+    "for": "<member-user-id>",
+    "ask": { ... },
+    "candidate_sha": "<commit-sha>",
+    "candidate_at": "2026-11-10T07:32:29Z"
+  }'
+```
+
+- The first call for a SHA returns `201` with the new card.
+- The same SHA again returns `200` with the existing card, not a duplicate.
+- A newer SHA (by `candidate_at`) withdraws the older open card on that issue.
+- An older SHA after a newer one returns `409` and creates nothing.
+- Any other credential, a PAT without the scope, or a PAT whose user does not own the workspace returns `403`.
+
 ## Logging out and revocation
 
 `multica auth logout` only deletes the PAT saved in the current CLI profile; logging out on the web only deletes the current browser's cookies. Neither revokes the personal access token on the server.

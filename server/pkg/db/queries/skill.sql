@@ -100,6 +100,15 @@ ON CONFLICT (skill_id, path) DO UPDATE SET
     updated_at = now()
 RETURNING *;
 
+-- Every writer of an existing skill's files takes this lock first and holds it
+-- to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+-- agent.skills.set approval, which row locks on skill_file could not do for an
+-- insert. It waits under the transaction lock timeout.
+-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
+
 -- name: DeleteSkillFile :exec
 DELETE FROM skill_file WHERE id = $1;
 

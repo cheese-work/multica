@@ -190,6 +190,7 @@ import {
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
+import { useMarkIssueReadWhileViewing } from "../hooks/use-mark-issue-read-while-viewing";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { useLocale, useTimeAgo } from "../../i18n";
 import {
@@ -1635,6 +1636,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
+  useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -3834,7 +3836,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           Hides itself when there are no runs to show. */}
       <ExecutionLogSection issueId={id} identifier={issue.identifier} issueTitle={issue.title} />
 
-      <StatusHistoryButton issueId={id} wsId={wsId} />
+      <StatusHistoryButton issueId={id} wsId={wsId} projectId={issue.project_id} workflowId={issue.workflow_id} />
 
       {/* Details — creator and timestamps. Sits below the execution log
           because it is the least-read block in the sidebar: the values
