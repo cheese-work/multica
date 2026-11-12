@@ -1,12 +1,12 @@
 # CHE-5314 Auto-merge on a required review status
 
-Status: plan, revision 2. No code yet. Changed since revision 1: the review of head `1e62865961f1b5c7ff53b652effc8d9ec55d6754` (3 P1) is answered in full. New: a revocation mechanism for green checks (section "Revocation"), an ordered rollback, and an authenticated publisher that binds each result to an explicit commit (section "Publisher and timer"). The plan is one page; revision 1 need not be read. Read live on 12 Nov 2026 (ICT): `cheese-work/multica` rulesets, `skills/multica-cheese-work-github` and `scripts/agent_merge_eligibility.py` at `multica-dotfiles` `ada5f8a`, server webhook code at `e2141667bc`. Review: x99-codex-terra (gate path, cross-lab).
+Status: plan, revision 3. No code yet. Changed since revision 2: the review of head `61d2e9e9c62fc7976e4a3d99cace695dd6226074` (4 P1) is answered in full. The server, not a workflow, now holds the key, reads the verdict and publishes the result. A green result for a queued commit exists only after a live server has re-read every fact seconds before (section "Merge-time authority"). Revocation is now cleanup, not the control. The timer reads the stored original PASS time (section "Timer"). The Actions workflow holds no secret (section "Evaluation workflow"). Rollback fences re-arming with `allow_auto_merge=false`, and step c2 depends on the rollback script and a drill. The plan is one page; earlier revisions need not be read. Read live on 12 Nov 2026 (ICT): `cheese-work/multica` rulesets, `skills/multica-cheese-work-github` and `scripts/agent_merge_eligibility.py` at `multica-dotfiles` `ada5f8a`, server webhook code at `e2141667bc`. Review: x99-codex-terra (gate path, cross-lab).
 
 ## Problem
 
 After the work is done, an agent merge takes 3 to 4 model runs: reviewer PASS, a merge run that waits for checks, a re-armed wakeup, the merge. Each hop is a wakeup. On 12 Nov, #1391 sat green 44 min after a PASS (CHE-5313: `checks_finished` wakeups did not fire), #1243 waited on a stale rule, #1250 and #1326 hit the run budget.
 
-Goal: after the last required fact turns true, GitHub merges with no agent run. Every fact that turns false before the merge must stop it.
+Goal: after the last required fact turns true, GitHub merges with no agent run. Every fact that turns false before the merge must stop it, except in the seconds-wide window stated in section "Merge-time authority" (decision D1).
 
 ## What is already live (read back, not assumed)
 
@@ -25,184 +25,172 @@ So the queue and auto-merge exist. What is missing is a **required check that is
 
 ## Difference from the issue's proposal
 
-The issue asks for a server-written `review-pass` commit status as the required check. With a merge queue that fails: the queue tests a temporary `gh-readonly-queue/...` commit with a different SHA, and a status posted on the PR head does not exist there. The queue would wait until the 30 min timeout and drop the PR. (GitHub's queue docs confirm only that CI must report on the merge-group commit; they name no status-versus-check rule, so the spike proves the behaviour.)
+The issue asks for a server-written `review-pass` commit status as the required check. With a merge queue that fails: the queue tests a temporary `gh-readonly-queue/...` commit with a different SHA, and a status posted on the PR head does not exist there. The queue would wait until the 30 min timeout and drop the PR. (GitHub's queue docs confirm only that CI must report on the merge-group commit; the spike proves the rest.)
 
-Chosen design, three parts:
+Chosen design:
 
-1. **`review-pass` status (server, narrow, not required).** Written on the PR head. It says one thing: a cross-lab, non-author PASS exists for this exact head, with no later FAIL or veto. It carries the PASS time.
-2. **`merge-eligible` check run (required, pinned to a gate App).** An Actions workflow reads `review-pass`, runs the existing `agent_merge_eligibility.py` unchanged, and publishes the result **as a check run on an explicit SHA** through the Checks API, with the gate App's token. The ruleset pins this App's `integration_id`. The same context is required on the PR head and on the merge-group commit.
-3. **Revoker (server).** Turns a green result red, disarms auto-merge and dequeues when a fact flips after green. See "Revocation".
+1. **Verdict record (server).** Table `review_verdict` (no foreign keys): PR, head SHA, verdict, original `signed_at`, reviewer agent id and lab, and a per-PR `generation` that every verdict, veto, close or new head increments. The server refuses an author or same-lab PASS. A `review-pass` status is also written on the PR head for display. **No gate reads that status.**
+2. **`merge-eligible` check run (required, published only by the server).** The server holds the GitHub App key, the same way it already does for webhooks and snapshots. The ruleset pins this App's `integration_id`, so no workflow, token or other actor can post that name.
+3. **Evaluation workflow (no secret).** A `workflow_dispatch` workflow defined on `main` runs the existing `agent_merge_eligibility.py` unchanged against facts and reports the answer to the server. It publishes nothing to GitHub.
+4. **Revoker (server).** Early cleanup after a veto. Not the control.
 
-Why not the all-server variant: it needs a Go port of the eligibility rules that can drift from the script, and it depends on the webhook intake path that CHE-5313 shows losing events. The Actions variant reuses the script. The server still owns what only the server knows (verdicts, timers) and the revoker.
+Why not the all-server variant: it needs a Go port of the eligibility rules that can drift from the script. The script keeps running in Actions. The server owns what only the server knows (verdicts, generation, timer) and the only write path to the required check.
 
 ```mermaid
 flowchart LR
-  R[Reviewer: multica review verdict PASS, exact SHA] --> S[Server: record verdict, refuse author or same-lab]
-  S -->|post| RP[review-pass status on PR head]
-  S -->|timer at PASS+24h: re-post| RP
-  RP -->|status event| EV[Actions evaluate: merge-eligible.yml]
-  PU[push / ready / merge_group / dispatch] --> EV
-  EV -->|runs| EL[agent_merge_eligibility.py on live facts]
-  EL -->|gate App token, explicit SHA| CR[check run merge-eligible on head or group commit]
-  CR --> AM[auto-merge enqueues; queue merges]
-  A[Author: gh pr merge --auto at ready] --> AM
-  S -->|veto / FAIL / close| RV[Revoker]
-  RV -->|PATCH check run to failure, disarm, dequeue| CR
-  AM --> MR[Server on merged event: merge receipt]
+  V[Reviewer PASS, FAIL or veto] --> S[Server: verdict row, generation++]
+  S --> D[Server dispatches evaluate workflow on main, eval_id]
+  D --> W[Workflow: facts from GitHub and server, runs eligibility script]
+  W -->|OIDC token, ref main| R[Server: accept result for eval_id once]
+  R --> A[Attest: re-read generation, PR state, labels, variables, other checks]
+  A -->|all hold| G[App publishes merge-eligible success on head or group SHA]
+  A -->|any read error or change| X[No green: red or silence]
+  G --> Q[Queue merges when all required checks pass]
+  S -->|veto| RV[Revoker: PATCH to failure, disarm, dequeue]
 ```
 
-## Publisher and timer (answers finding 3)
+## Merge-time authority (answers finding 1)
 
-**Rule: no result is published by its own workflow commit.** A scheduled run reports on its workflow commit and a `status` run reports on the default-branch commit, so neither can serve as the required result. Every result goes through one publisher step that calls `POST /repos/{repo}/check-runs` with `head_sha` set to the **explicit target**: the PR head for PR events, the merge-group commit (`github.sha` of the `merge_group` event) for queue events. The step stores the check run id and later updates that same run with `PATCH` (never a second run with the same name, whose precedence is unproven: probe U8).
+**The control is the attestation, not the revoker.** The `merge-eligible` result on a merge-group commit is published only by a live server, as the last act before the queue can merge:
 
-**Why a gate App.** A required check pinned to the Actions app (integration 15368) can be forged by any workflow on a PR branch that declares `checks: write` and posts a check named `merge-eligible`. Pinning to a separate gate App closes that. Its private key is stored only as an Actions **environment** secret (`merge-gate`) that deployment-branch rules limit to `main`, so a PR-branch workflow cannot read it. Which App to use is decision D3.
+1. The server sees a queue entry (GraphQL poll of the merge queue every 30 s, plus the `merge_group` webhook when subscribed; a lost event costs at most one poll interval). It waits (bounded to 20 min, below the 30 min queue timeout) until every other required check on the group SHA has completed.
+2. It dispatches the evaluation (`eval_id`, PR, group SHA) and accepts the result once.
+3. **Attest.** Immediately before publishing, the server re-reads, in this order: the verdict and `generation` (its own database, one query), the PR state and labels, the two pause variables, and that the group is still queued. Any read error, any change since the evaluation or a generation different from the one the evaluation saw: no green.
+4. It posts the check run `success` on the group SHA with `head_sha` set explicitly and the `generation` and `signed_at` in the output. Then it re-reads the generation. If it changed, it PATCHes that run to `failure` and runs the revoker.
 
-**Triggers.** Two workflow files, neither with a job named `merge-eligible` (a skipped job named like a required check counts as passing, so no job may carry that name):
+**Fail-closed by construction.** Green exists only after a live server wrote it. If the server is down, the worker is down or a webhook is lost, no green is published: the required check is missing, the queue times out and drops the group. A veto recorded in the database is read in step 3 whether or not any GitHub effect ever ran, so an outage cannot hide it. A veto never needs to reach GitHub before it takes effect on the queue path.
 
-| Trigger | Target SHA | Workflow definition used |
-|---|---|---|
-| `pull_request_target` (opened, synchronize, reopened, ready_for_review, labeled, unlabeled), `status` (context `review-pass`), `workflow_dispatch` (PR number), `schedule` every 10 min | PR head, read from the PR, never from the event commit | `main` (a PR cannot edit it) |
-| `merge_group` (`checks_requested`) | merge-group commit | the group commit (it includes the PR's edits; defended below) |
+**Fence for an in-flight evaluator.** Let `tv` be the commit time of the veto (generation bump) and `tp` the time of the green `POST`. If `tp < tv`, the revoker, which lists the check runs on the PR head and group SHA by name after `tv`, finds and PATCHes it. If `tp > tv`, the re-read after the `POST` sees the new generation and PATCHes it. A stale result (generation older than current) is dropped on arrival. This needs read-your-writes on the check-run listing (probe U8).
 
-**Defence for the group workflow.** A PR cannot enter the queue until the **head** check is green. The head check is produced by the trusted `main` definition and the script refuses any PR that edits the workflow files, the ruleset files or the script (step b2). So a PR that rewrites the group workflow never reaches the queue. The group check then re-evaluates live facts as a second line, for drift on the base branch and for facts that changed since the head check.
+**The head check is not binding.** It exists so auto-merge can enqueue. A stale green on the head cannot merge anything: with the queue enabled and no bypass actor, a merge happens only on a green group. The head check is published by the same attest sequence. Probe U2 proves that a green head with no group result cannot merge.
 
-**Timer for the gate-path wait.** The 24 h wait is set by the server, not by a cron. At PASS time the server stores a row in a `review_gate_timer` table (no foreign keys) with `fire_at = PASS time + 24 h`. The server's periodic loop (every 30 s) fires due rows by re-posting `review-pass` on the same SHA with description `gate-wait-elapsed`. That produces a `status` event, the evaluate workflow runs and publishes `merge-eligible` on the PR head. The evaluator computes `gate_veto_elapsed` from the status timestamp, never from the event time. While the security gate is `disabled` the wait is 0 and no timer row is written (same as the script today). The `schedule` run every 10 min is a safety net only: it re-evaluates every open PR that has `review-pass` and no green result, and raises an alert for every PR it turns green that the timer missed.
+**Residual window, stated and put to Cheese (D1).** Between the final `POST` and the queue's merge call a veto can arrive and lose. The group result is the last required check, so this is GitHub's own latency, seconds, and it does not grow with an outage. Today's manual lane has the same window (the agent reads facts, then runs `gh pr merge`). A revoke that finds the PR already merged is logged as `revoked-after-merge` with both timestamps and raises an alert.
 
-Stale cases:
+**Revoker (cleanup).** On a verdict, veto, close or new head, in one transaction with the generation bump, the server writes an outbox row. A worker then: (1) lists and PATCHes every `merge-eligible` run on the PR head and the group SHA to `failure`; (2) `disablePullRequestAutoMerge`; (3) `dequeuePullRequest` if queued; (4) reads back (no auto-merge request, no queue entry), up to 3 tries with backoff; (5) alerts Cheese on failure (not an agent run). A 60 s reconcile loop lists every open PR with an auto-merge request or a queue entry and revokes any whose recorded state is not "cleared". This covers a crash between the verdict row and the GitHub call.
 
-- New push to a waiting PR: new head, no `review-pass` on it, red. The old timer row is keyed to the old SHA and fires into nothing (the re-post is skipped when the PR head differs).
-- Merge-group commit that has been created: the timer never targets a group commit. A group commit gets only the live evaluation at `checks_requested` and, if a fact flips, the revoker.
+## Evaluation workflow (answers finding 3)
+
+**No secret in Actions.** The key stays in the server. The workflow `merge-eligible-eval.yml` runs only on `workflow_dispatch`, from the definition on `main`, with `id-token: write` and `contents: read`. It never runs on `merge_group` and never on a queue ref, so it never needs an environment secret that a queue ref might not satisfy.
+
+- **Trust of the result.** The workflow sends its answer to the server with its GitHub OIDC token. The server accepts it only if the token's `ref` is `refs/heads/main`, `job_workflow_ref` is this workflow file at `refs/heads/main`, `event_name` is `workflow_dispatch`, the audience matches, and the body names an `eval_id` the server issued, still pending and not yet used. A workflow on a PR branch or on a `gh-readonly-queue/...` ref gets a token with that ref and is rejected. Probe U5 checks both: a real run from `main` is accepted, and runs from a hostile branch and from a queue-named branch are rejected.
+- **What the workflow reads.** PR files, labels, other checks and the tier receipt come from the GitHub API on the explicit SHA. Verdict facts (`cross_lab_pass`, `gate_veto_elapsed`, `gate_vetoed`, `merger_is_author`) come from one server query and carry `generation` and `signed_at`. It checks out only `main` and a pinned `multica-dotfiles` SHA. It never checks out or runs PR code. `merger_is_author` is the server's refusal of an author or same-lab PASS. `scope_classified` is true only when the receipt has `coverage_complete`.
+- **Job names.** No job is named `merge-eligible` (a skipped job named like a required check counts as passing). The check run with that name comes only from the App.
+- **Cost of the hop.** Dispatch plus runner start is tens of seconds. The group path dispatches after the other required checks finish, so this adds to merge latency; the Measure section counts it.
+
+## Timer (answers finding 2)
+
+**Rule: the wait is computed from the stored original PASS time, never from a status timestamp.** The server keeps `signed_at` on the verdict row. The script's `gate_veto_elapsed` fact is computed by the server as `now >= signed_at + 24 h` from the **current** verdict, read in the same query as `generation` and the verdict itself. A re-post or a refresh of any status cannot move it. A new PASS (new head or a PASS after a FAIL) has a new `signed_at` and restarts the wait; that is intended.
+
+**Firing.** A table `review_gate_timer` (no foreign keys) holds `fire_at = signed_at + 24 h` per verdict row. The server loop (every 30 s) claims due rows (row claim, so two instances fire once) and starts an evaluation. It posts nothing itself. The evaluation re-reads the verdict atomically: a veto, FAIL, new head or close before firing makes the fact false and the check stays red. A timer that fires after a veto therefore cannot turn anything green. While the security gate is `disabled` the wait is 0 and no row is written (the script skips the wait; the veto fact stays). A `schedule` run every 10 min in Actions is a safety net: it asks the server for waiting PRs it has not evaluated and raises an alert for each one the timer missed.
 
 ## Mapping of each gate to a check state
 
 | Today (agent judgement) | After |
 |---|---|
-| Signed cross-lab PASS on the exact head | `review-pass` status. A new push has no status on the new SHA, so it is red by construction |
-| Tier receipt valid, classifier trusted, coverage complete | The evaluator runs `mechanical_tier.py verify` from a pinned `multica-dotfiles` SHA |
-| Other required checks green | The evaluator reads them on the target SHA (it excludes itself) |
-| `AGENT_MERGE_PAUSED`, `MAIN_RED_PAUSED` | The evaluator reads the two repo variables. Absent = green. A read error = red. A pause set later stops new evaluations and new arming. It does not cancel a PR already queued or armed: this is the **existing** rule and it is not changed here |
-| Escalation paths and labels (migration, c00-config, design, two-signer) | The script refuses them, so the check stays red and Cheese merges |
-| Gate-path 24 h wait | Server timer (above) |
-| Gate-path veto (Cheese closes the PR or posts FAIL) | `multica review veto` by a member, or PR closed, or FAIL. The revoker acts at once, also on a queued PR |
-| Author is not the merger | The server refuses a PASS from the PR's author agent or the same lab. The shared bot arms auto-merge, so the merger identity no longer carries the control |
-| `scope_classified` (a human read the diff) | True only when the receipt has `coverage_complete`. Anything unassessed keeps the check red |
+| Signed cross-lab PASS on the exact head | Verdict row with the exact SHA. A new push has no verdict on the new SHA, so it is red |
+| Tier receipt valid, classifier trusted, coverage complete | The evaluation runs `mechanical_tier.py verify` from a pinned `multica-dotfiles` SHA |
+| Other required checks green | Group path: the server waits for them to complete first. Head path: the evaluation reads them on the SHA, excluding itself |
+| `AGENT_MERGE_PAUSED`, `MAIN_RED_PAUSED` | Read by the evaluation and again by the attestation. Absent = green. A read error = no green. A pause set later stops new evaluations and new arming. It does not cancel a PR already queued or armed: this is the **existing** rule and it is not changed here |
+| Escalation paths and labels | The script refuses them, so the check stays red and Cheese merges |
+| Gate-path 24 h wait and veto | Timer section; veto bumps `generation`, so the attestation fails |
+| Author is not the merger | The server refuses a PASS from the PR's author agent or the same lab. The shared bot arms auto-merge, so the control no longer sits on the merger's name |
+| Same-lab break-glass (CHE-4960, ends 13 Nov 2026 17:00 ICT) | Not accepted by the server. Such a PR stays a manual merge |
 
-## Revocation (answers finding 1)
-
-**Principle.** A green result on a queued commit stays valid until it is overwritten or the PR leaves the queue. So every fact that can flip must reach the revoker, and the revoker must act on the green run itself.
-
-Facts that flip after green, and who sees them:
-
-| Fact | Seen by | How it reaches the revoker |
-|---|---|---|
-| Veto, FAIL verdict | Server (the CLI call is recorded there) | Immediate, in the same transaction as the verdict row |
-| PR closed, converted to draft, new head pushed, labelled with an escalation label | GitHub webhook; reconcile loop | Webhook intake plus the reconcile loop below (the loop covers lost events, as in CHE-5313) |
-| Required check on the target turned red | GitHub | Native: the queue fails the group |
-| Pause variable set | Not revoked (existing rule), see mapping | - |
-| Writer outage | Server | Outbox below |
-
-**Revoker actions, in this order, for each affected PR:**
-
-1. `PATCH` the stored `merge-eligible` check run (head and, if queued, group commit) to `failure`.
-2. `disablePullRequestAutoMerge` (GraphQL).
-3. `dequeuePullRequest` if the PR is in the queue.
-4. Read back: `autoMergeRequest` is null and no `mergeQueueEntry`. Record the result. Repeat 1 to 3 up to 3 times with backoff.
-5. If the read back still shows an entry after the retries: alert Cheese (not an agent run) and stop. A failed revocation is never silent.
-
-**Reconcile loop.** The server lists every open PR that has an `autoMergeRequest` or a `mergeQueueEntry`, every 60 s. For each PR it compares the recorded verdict state with GitHub. Any PR whose state is not "cleared" gets the revoker actions. This covers lost events and a crash between the verdict row and the GitHub call.
-
-**Outbox.** A verdict row and its pending GitHub effect (status write, revoke) are written together in one transaction. A worker applies the effect, marks it done after the read back, and retries on failure. A server outage therefore delays the effect and never drops it. While the worker is down, `review-pass` cannot become newly green (it is written by the same worker), so only revocation is delayed; the reconcile loop completes it on restart.
-
-**Ordering that shrinks the race.** The group-commit evaluator waits (bounded to 20 min, below the 30 min queue timeout, as one Actions job and not an agent run) until the other required checks on that commit have completed, then reads live facts last and publishes. With this order the open window is the time between the final publish and the queue's merge call, which is seconds, not the length of the test run.
-
-**Residual race, stated.** A revoke that arrives after the final publish and before the queue's merge call can lose. Today's manual lane has the same window (the agent reads facts, then runs `gh pr merge`). The plan does not claim to close it. It makes the window seconds and records it: a revoke that finds the PR already merged is logged as `revoked-after-merge` with both timestamps and raises an alert.
-
-## Steps
+## Steps (answers finding 4)
 
 | # | Step | Depends on | Estimate | Stage |
 |---|---|---|---|---|
-| s0 | **Spike on a scratch repo** (below). Output: a table of U1 to U9 answers | - | 2 h | 1 |
-| a1 | Server: `review_verdict` table, `multica review verdict` and `multica review veto`; agent identity from the authenticated task, never parsed comment text; cross-lab and non-author check; outbox table; no FK | s0 | 2 h | 2 |
-| a2 | Server: post `review-pass` on the PR head on verdict, veto and new head (`pending`: "no PASS on <sha7>"); PR author agent and lab resolved server-side | a1 | 2 h | 2 |
-| a3 | Server: `review_gate_timer` rows and the 30 s firing loop | a2 | 1.5 h | 2 |
-| a4 | Server: revoker (check-run PATCH, disarm, dequeue, read back) and the 60 s reconcile loop | a1, s0 | 2 h | 2 |
-| b1 | `merge-eligible.yml` (head triggers) and `merge-eligible-group.yml` (merge_group) with the publisher step, in shadow (publishing a differently named check, `merge-eligible-shadow`) in `cheese-work/multica`; script and classifier pinned to a `multica-dotfiles` SHA | s0 | 2 h | 2 |
-| b2 | Add the workflow files, ruleset files and the script path to `CHEESE_PATH_RES` in the script (a PR that edits the gate stays Cheese's) | b1 | 1 h | 2 |
-| c1 | Shadow period, 7 days: compare `merge-eligible-shadow` against each real agent merge decision. Pass: zero green-where-agents-refused, at most 5 % red-where-agents-merged, each explained | a2, a3, b1 | 7 days wait | 3 |
-| c2 | Ruleset change (Cheese, one decision card): new ruleset `merge-eligible` that only adds the required check, pinned to the gate App | c1, a4 | 15 min | 3 |
-| d1 | Skill and workflow text: author runs `gh pr merge <n> --auto --match-head-commit <sha>` when marking ready; delete the merge-run and re-armed-wakeup text (CHE-3683) | c2 | 1 h | 4 |
-| d2 | Server: merge receipt on the `merged` event, replacing the agent-posted receipt; digest source unchanged | c2 | 2 h | 4 |
-| e1 | Measure panel and alert (below) | a2 | 1.5 h | 3 |
-| r1 | `scripts/automerge-revoke-all` (GraphQL: disarm and dequeue every armed or queued PR, then read back) used by the rollback; tested in the scratch repo | a4 | 1 h | 3 |
+| s0 | **Spike on a scratch repo** (below). Output: a table of U1 to U10 answers | - | 2 h | 1 |
+| a1 | Server: `review_verdict` (with `signed_at`, `generation`), `multica review verdict` and `multica review veto`; agent identity from the authenticated task, never from comment text; cross-lab and non-author refusal; outbox table; no FK | s0 | 2 h | 2 |
+| a2 | Server: OIDC verification and the `eval` table (`eval_id`, PR, SHA, kind, state; one-time use); facts endpoint (one query: verdict, `generation`, `signed_at`, computed booleans) | a1 | 2 h | 2 |
+| a3 | Server: publisher (check run create and PATCH on an explicit `head_sha`, `review-pass` display status) and the attestation sequence with the generation fence | a2 | 2 h | 2 |
+| a4 | Server: queue poller (30 s), wait for the other required checks, dispatch, head-path triggers and the 60 s head reconcile | a3 | 2 h | 2 |
+| a5 | Server: `review_gate_timer` rows and the 30 s firing loop | a3 | 1.5 h | 2 |
+| a6 | Server: revoker (list by name, PATCH, disarm, dequeue, read back, alert) and the 60 s reconcile loop | a1, s0 | 2 h | 2 |
+| b1 | `merge-eligible-eval.yml` (`workflow_dispatch` only, OIDC, no secret); script and classifier pinned to a `multica-dotfiles` SHA. In shadow the server publishes `merge-eligible-shadow` | s0, a2 | 2 h | 2 |
+| b2 | Add the workflow files, ruleset files and the script path to `CHEESE_PATH_RES` (a PR that edits the gate stays Cheese's) | b1 | 1 h | 2 |
+| r1 | `scripts/automerge-revoke-all` and `scripts/automerge-rollback` (the ordered rollback below, with verified gates) | a6 | 2 h | 2 |
+| r2 | **Rollback drill** on the scratch repo, whole script, including a concurrent re-arm during the run (U10); evidence attached to the issue | r1 | 1 h | 3 |
+| c1 | Shadow period, 7 days: compare `merge-eligible-shadow` with each real agent merge decision. Pass: zero green-where-agents-refused, at most 5 % red-where-agents-merged, each explained | a3, a4, a5, b1 | 7 days wait | 3 |
+| c2 | Ruleset change (Cheese, one decision card): new ruleset `merge-eligible` that only adds the required check, pinned to the App | c1, a6, **r1, r2** | 15 min | 3 |
+| d1 | Skill and workflow text: the author runs `gh pr merge <n> --auto --match-head-commit <sha>` when marking ready; delete the merge-run and re-armed-wakeup text (CHE-3683) | c2 | 1 h | 4 |
+| d2 | Server: merge receipt on the `merged` event, replacing the agent-posted receipt | c2 | 2 h | 4 |
+| e1 | Measure panel and alert (below) | a3 | 1.5 h | 3 |
 
-Each code step is a test-first PR built on X99. Step c1 waits on a time condition, so it ends the run with a wakeup, never a poll.
+Each code step is a test-first PR built on X99. Step c1 waits on a time condition, so it ends the run with a wakeup, never a poll. Step c2 stays blocked until r1 and r2 are done: no enforcement without a tested way back.
 
-## Spike (s0): nine unknowns, each with a probe
+## Spike (s0): ten unknowns, each with a probe
 
 | # | Unknown | Probe | If the answer is no |
 |---|---|---|---|
-| U1 | Does the Multica App have `statuses: write`, `checks: write`, and pull-request write for the disarm and dequeue mutations? | Call each endpoint with an installation token | Cheese approves a permission upgrade on the App (D3) |
-| U2 | Is a required check missing on the PR head enough to stop auto-merge from enqueuing, and does a check run published for the head by `pull_request_target` satisfy it? | Throwaway ruleset on the scratch repo | Use `pull_request` plus a required-workflows rule pinned to the base branch |
-| U3 | Does an armed PR keep auto-merge after a new head push, and after queue removal? | Scratch PR, push, force a dequeue | Author re-arms in the ready flow; CHE-4230's dequeue wake covers removal |
-| U4 | Does `merge_group` give the group commit as `github.sha` and the PR number from `head_ref` (`gh-readonly-queue/main/pr-N-<sha>`)? | Read `github.event.merge_group` on a scratch run | Look the PR up by the queue's `head_sha` parents |
-| U5 | Can `GITHUB_TOKEN` read repo Actions variables? | `gh variable list` in a workflow | Use the gate App token for the read |
-| U6 | Does a required context pinned to `integration_id` reject a check run or status from another actor? | Post the same context as a different actor | Reject results whose creator is not the gate App inside the evaluator |
-| U7 | Can a check run be created for an arbitrary `head_sha` (a PR head and a group commit) by the gate App from a scheduled or dispatched workflow, and does the queue accept it? | Create it from a `schedule` and a `workflow_dispatch` run | Server publishes instead (needs the `merge_group` webhook subscription) |
-| U8 | If a check run is `PATCH`ed from `success` to `failure` while the group is waiting in the queue, does the queue drop the group? Which run counts when two runs share a name? | Scratch queue with a slow second check | Revoker falls back to disarm and dequeue only; document the wider race |
-| U9 | Does the environment `merge-gate` secret stay unreadable from a workflow on a PR branch, including a branch named `gh-readonly-queue/main/...`? | Workflow on such branches tries to read it | Add a ruleset that restricts creation of `gh-readonly-queue/**` refs; if that fails, the group workflow does not mint tokens and only the head check is required |
+| U1 | Does the Multica App have `checks: write`, `actions: write` (dispatch), pull-request write (disarm, dequeue) and repository-variables read? | Call each endpoint with an installation token | Cheese approves a permission upgrade on the App (D3) |
+| U2 | Is a required check, pinned to the App, enough to stop auto-merge enqueuing when it is missing on the head? Does a green head with a missing or red group result fail to merge? | Throwaway ruleset on the scratch repo | Publish only on the group; the head carries no required check and auto-merge arms after the head's other checks |
+| U3 | Does an armed PR keep auto-merge after a new head push and after queue removal? | Scratch PR, push, force a dequeue | Author re-arms in the ready flow; CHE-4230's dequeue wake covers removal |
+| U4 | Does the GraphQL queue listing give the group commit and every PR in the group? Does the `merge_group` webhook carry the same? | Scratch queue with two PRs | Poll only |
+| U5 | Does a run from `main` mint an OIDC token the server accepts (`ref`, `job_workflow_ref`, `event_name`), and do tokens from a hostile branch and from a `gh-readonly-queue/main/...`-named branch carry their own ref and get rejected? | Real runs from all three refs against a scratch verifier | Reject all and publish nothing: the plan stops here and returns to review |
+| U6 | Does a required context pinned to `integration_id` reject a check run or status from another actor, including the Actions app? | Post the same name as a different actor | Reject in the attestation by creator and add a periodic audit |
+| U7 | Can the App create a check run on the PR head and on the group commit, and does the queue accept it as the required result? | Create both on the scratch queue | Subscribe the App to `merge_group` and report from its event |
+| U8 | If a check run is `PATCH`ed from `success` to `failure` while the group is queued, does the queue drop it? Does a list by name see a run created a moment earlier (read-your-writes)? | Scratch queue with a slow second check; create then list in a loop | Revoker falls back to disarm and dequeue; the fence re-reads until the list shows the run |
+| U9 | Does the server read the two repo variables with the App token? | Read both | Read them in the evaluation workflow instead and have the attestation use that value |
+| U10 | Does `allow_auto_merge=false` block arming at once, clear or keep an armed PR, and still allow a manual `gh pr merge` into the queue? | Scratch repo | Rollback fence changes to the evaluator-red flag only, and R4 waits for two empty readbacks 60 s apart |
 
-## Rollback (answers finding 2)
+## Rollback
 
-**The ordering matters.** Disabling the new ruleset or the writer does not turn an existing green result red. A PR that is already armed or queued would then merge without the new gate. So rollback is a script with a verified gate between steps. Do not skip a step or reorder.
+**The ordering matters.** Disabling the ruleset or the server does not turn an existing green result red. A PR armed or queued at that moment would then merge without the new gate. A re-arm between the zero readback and the ruleset change would do the same. So rollback is one script with a verified gate between steps, and arming is blocked by GitHub itself before anything is removed. Do not skip a step or reorder.
 
 | Step | Action | Verify before the next step |
 |---|---|---|
-| R1 | Authors stop arming: revert the d1 text, or set the repo flag `AUTO_MERGE_ARMING_OFF`. The evaluator publishes red for every PR while the flag exists | New PRs show a red `merge-eligible` |
-| R2 | Run `automerge-revoke-all`: PATCH the stored check runs to `failure`, disarm auto-merge, dequeue every queued PR | - |
-| R3 | Read back with GraphQL: zero open PRs with `autoMergeRequest` and zero with a `mergeQueueEntry`. If not zero, repeat R2 up to 3 times; if still not zero, **stop and alert** (do not continue) | The count is 0 |
+| R1 | Set repo `allow_auto_merge=false`. GitHub now refuses to arm any PR, so no actor can re-arm. Also set the flag `AUTO_MERGE_ARMING_OFF` (the evaluation then answers red for every PR) | Readback shows `allow_auto_merge=false`; a test arm fails |
+| R2 | `automerge-revoke-all`: PATCH every `merge-eligible` run to `failure`, disarm auto-merge, dequeue every queued PR | - |
+| R3 | GraphQL readback: zero open PRs with `autoMergeRequest`, zero with a `mergeQueueEntry`. Not zero: repeat R2 up to 3 times; still not zero: **stop and alert** (the fence in R1 stays on) | Count 0, twice, 60 s apart |
 | R4 | Set `enforcement: disabled` on the `merge-eligible` ruleset (one call). The queue and the existing required checks are untouched | Ruleset readback shows `disabled` |
-| R5 | Turn the server writer and timer off by feature flag. The revoker and the reconcile loop stay on in disarm-only mode until the d1 revert has merged, so a stray armed PR is still caught | Writer idle; reconcile loop reports 0 |
+| R5 | Revert the d1 text. Then restore `allow_auto_merge=true` (its state before this plan). Turn the server publisher and timer off by feature flag; the revoker stays in disarm-only mode until the revert has merged | Readback shows `true`; writer idle; reconcile reports 0 |
 | R6 | Agents return to the CHE-2008 manual merge | - |
 
-Time: R1 to R4 take under 10 min when the script works. Failure mode that matters: the server is down. Nothing new turns green (the writer is the server), the alert fires, and R2 to R4 can run from X99 without the server because `automerge-revoke-all` uses only the GitHub API.
+The fence in R1 is why no re-arm can occur between R3 and R4. If probe U10 shows R1 does not work, the fallback in the spike table applies and this table is revised before c2.
+
+Time: R1 to R4 take under 10 min when the script works. If the server is down, R1 to R4 run from X99 with GitHub calls only. A down server publishes no green (section "Merge-time authority"), so a server outage never needs the script to be safe; the script is for leaving the design.
 
 ## Test-first list (red before green, per Test-First Practice)
 
 | Step | Tests |
 |---|---|
-| a1 | PASS from the author agent → refused; PASS from the same lab → refused; PASS for an old SHA → no effect on the new head; verdict row keyed to the authenticated agent id, comment text ignored; veto by a non-member → refused; verdict row and outbox row commit together or neither does |
-| a2 | PASS → `success` on that SHA only; new push → `pending` on the new SHA; FAIL after PASS → `failure`; veto → `failure`; status write error → retried by the outbox, then alert (never a silent skip) |
-| a3 | Fire at 23 h 59 min 30 s → not fired; at 24 h 00 min 30 s → fired once; two server instances → one post (row claim); head changed before fire → no post; wait is 0 when the security gate is disabled; server down at 24 h → fires on restart |
-| a4 | Veto on a queued PR with a green group run → run patched to `failure`, auto-merge disarmed, dequeued, read back clean; revoke call fails twice then succeeds → retried; fails 3 times → alert, no silent success; PR already merged when the revoke lands → `revoked-after-merge` logged and alerted; webhook lost → the 60 s reconcile loop revokes within 90 s; crash between verdict row and GitHub call → effect applied after restart |
-| b1 | Evaluator on fixture PRs: Tier 0 docs PR with PASS → exit 0 and publisher called with the PR head SHA (not the event SHA); no `review-pass` → red; `review-pass` created by a different actor → red; either pause variable present → red; variable read error → red; migration path → red; mixed PR with one escalation path → red; gate-path PR at 23 h → red, at 25 h → green (only when the security gate is not disabled); `schedule` run publishes to each waiting PR head, never to its own commit; publisher error → job fails closed |
-| b1 (group) | Group commit with PASS and green checks → green on the group SHA; a fact flipped between head and group evaluation → red; other required check still running → evaluator waits, then reads facts last; wait exceeds 20 min → red |
+| a1 | PASS from the author agent → refused; PASS from the same lab → refused; PASS for an old SHA → no effect on the new head; identity from the authenticated agent id, comment text ignored; veto by a non-member → refused; verdict row, generation bump and outbox row commit together or none does |
+| a2 | Token from a PR branch → rejected; token from a `gh-readonly-queue/...` ref → rejected; token from `main` with a wrong workflow file → rejected; result for an unknown, used or expired `eval_id` → rejected; facts endpoint returns verdict, `generation` and `signed_at` from one snapshot |
+| a3 | Result with an older `generation` → no publish; veto lands between attest and `POST` (injected hook) → run PATCHed to `failure`; veto lands after the `POST` → same; any attestation read error (verdict, PR, labels, variables, queue state) → no green; green carries `head_sha` set explicitly, never the event SHA |
+| a4 | Server down while the group is queued, veto already in the database, server restarts → no green, queue times out; webhook lost → the 30 s poll finds the entry; other required check still running → wait, then evaluate; wait over 20 min → red; two PRs in one group, one ineligible → red |
+| a5 | PASS at T, firing at T + 23 h 59 min 30 s → not fired; at T + 24 h 00 min 30 s → fired once; evaluation computes the wait from stored `signed_at` and ignores every status timestamp (a status re-posted at T + 24 h does not move it); veto at T + 23 h 59 min 59 s then the timer fires → red; new head before firing → no result for the old SHA; two server instances → one claim; server down at 24 h → fires on restart; wait is 0 while the security gate is disabled |
+| a6 | Veto on a queued PR with a green group run → PATCHed, disarmed, dequeued, read back clean; revoke call fails twice then succeeds → retried; fails 3 times → alert, no silent success; PR already merged when the revoke lands → `revoked-after-merge` logged and alerted; webhook lost → the 60 s reconcile revokes within 90 s; crash between verdict row and GitHub call → effect applied after restart |
+| b1 | Evaluation on fixture PRs: Tier 0 docs PR with PASS → eligible; no verdict → red; either pause variable present → red; variable read error → red; migration path → red; mixed PR with one escalation path → red; gate-path PR at 23 h → red, at 25 h → green (only while the security gate is not disabled); the workflow never checks out PR code |
 | b2 | A PR that edits a workflow file, a ruleset file or the script → red |
-| c2 | A job named `merge-eligible` that is skipped does not satisfy the ruleset (fixture workflow with a skipped job); a check run from the Actions app with the same name is rejected by the `integration_id` pin |
-| r1 | Fixture: 2 armed PRs, 1 queued PR, 1 plain open PR → after the script, 0 armed or queued and the plain PR untouched; writer shutdown before the script → armed PRs stay revocable; read-back count of 1 → exit non-zero and no ruleset change |
+| c2 | A skipped job named `merge-eligible` does not satisfy the ruleset; a check run from the Actions app with the same name is rejected by the `integration_id` pin; **c2 refuses to start while r1 or r2 evidence is missing** (checklist in the decision card) |
+| r1 | Fixture: 2 armed PRs, 1 queued PR, 1 plain open PR → after the script, 0 armed or queued and the plain PR untouched; arm attempt after R1 → fails; readback count of 1 → exit non-zero, no ruleset change, fence stays on; server stopped before the script → still completes |
+| r2 | Drill in the scratch repo: a second process re-arms during R2 to R4 → every attempt is refused; end state equals the pre-plan state (`allow_auto_merge=true`, no new ruleset, no armed PR) |
 | d2 | `merged` event → one receipt with PR URL, head SHA, tier, checks, PASS link, merge method, merge SHA; replayed event → no second receipt |
 
 ## Risks (1 low to 5 high)
 
 | Axis | Score | Why and mitigation |
 |---|---|---|
-| Technical | 4 | Nine unknowns, all probed in s0 before any change to `multica`. U7 and U8 decide whether the Actions publisher works; the fallback is the server publisher with a new webhook subscription |
-| Security | 4 | A forged green `merge-eligible` merges anything. Mitigations: required check pinned to a gate App whose key sits in a `main`-only environment, head check produced by a `main` workflow, script and classifier from a pinned SHA, the gate files in the escalation list, `review-pass` creator checked. This plan is a gate path: cross-lab review, and the ruleset change and the App choice are Cheese's |
-| Rollback | 2 | Ordered script with verified gates; the dangerous step order is the one the script forbids. Needs `automerge-revoke-all` tested (r1) |
+| Technical | 4 | Ten unknowns, all probed in s0 before any change to `multica`. U5, U7 and U8 decide whether the design works as written. U5 failing stops the plan |
+| Security | 4 | A forged green `merge-eligible` merges anything. Mitigations: the check is posted only by the server's App and pinned by `integration_id`; no key or secret in Actions; evaluation results accepted only with an OIDC token from `main`'s workflow file and a one-time `eval_id`; PR code is never run; gate files in the escalation list. This plan is a gate path: cross-lab review, and the ruleset change and the App permissions are Cheese's |
+| Availability | 3 | The server is now on the critical path of every agent merge. A server outage stops agent merges (fail-closed) and agents fall back to the manual lane. Alert on a queued group with no result after 10 min |
+| Rollback | 2 | Ordered script with a GitHub-enforced fence, tested in a drill before enforcement |
 | Conflict | 3 | CHE-5313 (wakeups) is fixed separately and this removes the dependency; CHE-4230 dequeue wake stays; CHE-3123 author-is-not-merger changes as stated above |
-| Cost | 1 | One lightweight Actions job per PR event, one bounded wait job per queued PR; fewer model runs |
-| Single agent | 2 | Server steps (a1 to a4, r1) and workflow steps (b1, b2) are independent |
+| Cost | 1 | One lightweight dispatch per evaluation; fewer model runs |
+| Single agent | 2 | Server steps and workflow steps are independent |
 
 ## Decisions for Cheese (one card, after Terra's review)
 
-1. **D1, policy.** The author's run may arm auto-merge. Reviewer independence moves from "the merger is not the author" to "the server refused a same-lab or author PASS". Recommend yes: the control is checked by code, not by a name.
-2. **D2, ruleset.** Add the `merge-eligible` required check after the shadow period passes. Recommend yes. Rollback is the ordered script.
-3. **D3, gate App and its secret.** Which GitHub App publishes `merge-eligible`, and who stores its key in the `merge-gate` environment. Recommend a new App with `checks: write` only. This is an owner-only action. Also covers any permission upgrade if U1 says no.
+1. **D1, policy.** The author's run may arm auto-merge. Reviewer independence moves from "the merger is not the author" to "the server refused a same-lab or author PASS". Cheese also accepts the residual window: seconds between the last publish and the queue's merge call, the same shape as today's manual lane. Recommend yes: the control is checked by code, and the window does not grow with an outage.
+2. **D2, ruleset.** Add the `merge-eligible` required check after the shadow period passes and r1 and r2 evidence exists. Recommend yes. Rollback is the ordered script with a GitHub-enforced fence.
+3. **D3, App permissions.** The Multica App gets the permissions U1 shows missing (expected: `checks: write`, `actions: write`, repository-variables read). An owner-only action. No new secret is stored in Actions.
 
 ## Measure
 
-- **Latency:** minutes from `max(PASS time, last required check finish, PASS time + 24 h on a gate path)` to `merged_at`. Target under 10 min. Baseline: the last 20 agent-merged PRs, measured in s0. The timer adds at most about 1 min (30 s loop plus one evaluation).
+- **Latency:** minutes from `max(PASS time, last required check finish, PASS time + 24 h on a gate path)` to `merged_at`. Target under 10 min. Baseline: the last 20 agent-merged PRs, measured in s0. The queue-poll interval (30 s) and the dispatch hop (tens of seconds) count in the number.
 - **Model runs per merged PR:** task runs on the linked issue after the PASS. Target 0. Baseline from the same 20 PRs.
-- **Stall alert:** an open PR with a PASS and all other checks green but no green `merge-eligible` after 10 min.
-- **Revocation counters:** revokes per week, revoke-read-back failures (target 0), `revoked-after-merge` (target 0, each one reviewed).
+- **Stall alert:** an open PR with a PASS and all other checks green but no green `merge-eligible` after 10 min; a queued group with no result after 10 min.
+- **Safety counters:** revokes per week, revoke read-back failures (target 0), `revoked-after-merge` (target 0, each one reviewed), attestations that refused a green (each one logged with its reason).
 - **Assumption on "3X":** the issue text does not define it. I read it as three times fewer model runs and a latency at least three times lower than baseline. Reviewer: correct this if it means something else.
 - **Before/after panel:** the existing daily digest gets one line per merge with both numbers.
