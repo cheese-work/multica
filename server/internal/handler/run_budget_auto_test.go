@@ -20,6 +20,7 @@ type autoRun struct {
 	checks    []string // failed check names on the head the run pushed (needs prUpdate)
 	ci        string   // a ci_failure_event workflow on the head the run pushed (needs prUpdate)
 	prUpdate  bool     // a linked PR's head moved while the run ran
+	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported) and no CI failure event
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -82,6 +83,10 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				})
 				for i, name := range r.checks {
 					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, $3, $4, 'completed', 'failure')`, prID, head, i, name)
+				}
+				if len(r.checks) == 0 && r.ci == "" && !r.noChecks {
+					// A head whose results are retained and all passed.
+					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 0, 'go-test', 'completed', 'success')`, prID, head)
 				}
 				t.Cleanup(func() {
 					_, _ = testPool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, prID)
@@ -360,6 +365,44 @@ func TestRunBudgetAutoLoopKeysAreStructured(t *testing.T) {
 			v := a.verdict(t)
 			if got := v.Anomaly == service.RunBudgetAnomalyLoop; got != tc.want {
 				t.Fatalf("verdict = %+v, want loop %v", v, tc.want)
+			}
+		})
+	}
+}
+
+// A head that a run pushed has no retained check results once the PR moved on,
+// and CI failure events exist only while the ci_watcher flag is on. Three runs
+// that each pushed a head whose results are gone could all have failed the same
+// check, so the window is not approved.
+func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
+	cases := []struct {
+		name string
+		runs []autoRun
+		want bool
+	}{
+		{"three pushed heads with no retained results", []autoRun{
+			{status: "completed", prUpdate: true, noChecks: true}, {status: "completed", prUpdate: true, noChecks: true}, {status: "completed", prUpdate: true, noChecks: true},
+		}, false},
+		{"one pushed head with no retained results among passing ones", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, noChecks: true}, {status: "completed", prUpdate: true},
+		}, false},
+		{"pushed heads whose results are retained and passed", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true},
+		}, true},
+		{"no push at all needs no check history", []autoRun{
+			{status: "completed", commit: true}, {status: "completed", commit: true}, {status: "completed", commit: true},
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAutoCase(t, 2226900)
+			a.seed(t, a.c.issueID, tc.runs...)
+			v := a.verdict(t)
+			if v.Approve != tc.want {
+				t.Fatalf("verdict = %+v, want approve %v", v, tc.want)
+			}
+			if !tc.want && v.Reason != "ci_unknown" {
+				t.Fatalf("verdict = %+v, want reason ci_unknown", v)
 			}
 		})
 	}

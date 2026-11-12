@@ -145,6 +145,13 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
                  AND cf.workflow_name <> ''
            ) f
        ), '{}')::text[] AS failures,
+       EXISTS (
+           SELECT 1 FROM issue_pr_event e
+           WHERE e.issue_id = t.issue_id AND e.kind = 'head_changed'
+             AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
+             AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha)
+             AND NOT EXISTS (SELECT 1 FROM ci_failure_event cf WHERE cf.workspace_id = e.workspace_id AND cf.head_sha = e.head_sha)
+       )::boolean AS ci_unknown,
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
 JOIN agent a ON a.id = t.agent_id
@@ -164,6 +171,7 @@ type ListRunBudgetWindowRunsRow struct {
 	Model     string      `json:"model"`
 	Delivered bool        `json:"delivered"`
 	Failures  []string    `json:"failures"`
+	CiUnknown bool        `json:"ci_unknown"`
 	Tokens    int64       `json:"tokens"`
 }
 
@@ -174,7 +182,10 @@ type ListRunBudgetWindowRunsRow struct {
 // comment does not count); or the run's shell committed (a git commit result in
 // its tool output, so no PR is needed). failures are the run's loop keys beyond
 // its own error: the failed check names and the CI failure workflows recorded
-// for the heads it pushed, so a loop shows across completed runs.
+// for the heads it pushed, so a loop shows across completed runs. ci_unknown
+// is set when a head the run pushed has neither: check results are kept only
+// for a PR's current head and CI failure events only while the ci_watcher flag
+// is on, so nothing says whether that head failed.
 func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudgetWindowRunsParams) ([]ListRunBudgetWindowRunsRow, error) {
 	rows, err := q.db.Query(ctx, listRunBudgetWindowRuns, arg.IssueID, arg.Since)
 	if err != nil {
@@ -191,6 +202,7 @@ func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudget
 			&i.Model,
 			&i.Delivered,
 			&i.Failures,
+			&i.CiUnknown,
 			&i.Tokens,
 		); err != nil {
 			return nil, err
