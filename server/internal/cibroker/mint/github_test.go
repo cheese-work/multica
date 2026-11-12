@@ -32,6 +32,7 @@ type fakeGitHub struct {
 	mintResponse func(body map[string]any) map[string]any
 	rate         string
 	rateStatus   int
+	revokeStatus int
 }
 
 func newFakeGitHub(t *testing.T) (*fakeGitHub, *GitHubMinter) {
@@ -72,7 +73,12 @@ func newFakeGitHub(t *testing.T) (*fakeGitHub, *GitHubMinter) {
 	mux.HandleFunc("DELETE /installation/token", func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		g.revokes = append(g.revokes, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		status := g.revokeStatus
 		g.mu.Unlock()
+		if status != 0 {
+			w.WriteHeader(status)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /rate_limit", func(w http.ResponseWriter, r *http.Request) {
@@ -199,6 +205,43 @@ func TestGitHubMintRevokesATokenItRefuses(t *testing.T) {
 	}
 	if len(g.revokes) != 1 || g.revokes[0] != "ghs_toobroad" {
 		t.Fatalf("revokes = %v, want the refused token revoked", g.revokes)
+	}
+}
+
+func TestGitHubMintAcceptsMetadataReadAddedByGitHub(t *testing.T) {
+	g, m := newFakeGitHub(t)
+	g.mintResponse = func(b map[string]any) map[string]any {
+		return map[string]any{"token": "ghs_withmeta", "expires_at": "2026-11-12T11:00:00Z",
+			"permissions":          map[string]any{"contents": "read", "metadata": "read"},
+			"repository_selection": "selected", "repositories": []map[string]any{{"id": 42}}}
+	}
+	if _, err := m.Mint(context.Background(), 42, Permissions{"contents": "read"}); err != nil {
+		t.Fatalf("metadata:read must be accepted: %v", err)
+	}
+	if len(g.revokes) != 0 {
+		t.Fatalf("revokes = %v, want none", g.revokes)
+	}
+	g.mintResponse = func(b map[string]any) map[string]any {
+		return map[string]any{"token": "ghs_metawrite", "expires_at": "2026-11-12T11:00:00Z",
+			"permissions":          map[string]any{"contents": "read", "metadata": "write"},
+			"repository_selection": "selected", "repositories": []map[string]any{{"id": 42}}}
+	}
+	if _, err := m.Mint(context.Background(), 42, Permissions{"contents": "read"}); err == nil {
+		t.Fatal("metadata:write must be refused")
+	}
+}
+
+func TestGitHubRefusedTokenWithFailedRevokeIsFlagged(t *testing.T) {
+	g, m := newFakeGitHub(t)
+	g.revokeStatus = 500
+	g.mintResponse = func(b map[string]any) map[string]any {
+		return map[string]any{"token": "ghs_toobroad", "expires_at": "2026-11-12T11:00:00Z",
+			"permissions":          map[string]any{"contents": "write"},
+			"repository_selection": "selected", "repositories": []map[string]any{{"id": 42}}}
+	}
+	_, err := m.Mint(context.Background(), 42, Permissions{"contents": "read"})
+	if err == nil || !strings.Contains(err.Error(), "revoke failed") || strings.Contains(err.Error(), "ghs_") {
+		t.Fatalf("err = %v, want a flagged failed revoke with no token", err)
 	}
 }
 

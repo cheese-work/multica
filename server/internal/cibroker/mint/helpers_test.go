@@ -53,14 +53,15 @@ func reading(now time.Time, core, graphql int) Reading {
 
 // fakeMinter records mint and revoke calls and the highest concurrency seen.
 type fakeMinter struct {
-	mu       sync.Mutex
-	minted   []mintCall
-	revoked  []string
-	inflight atomic.Int32
-	maxSeen  atomic.Int32
-	err      error
-	seq      int
-	hold     time.Duration
+	mu        sync.Mutex
+	minted    []mintCall
+	revoked   []string
+	inflight  atomic.Int32
+	maxSeen   atomic.Int32
+	err       error
+	revokeErr error
+	seq       int
+	hold      time.Duration
 }
 
 type mintCall struct {
@@ -96,7 +97,7 @@ func (m *fakeMinter) Revoke(_ context.Context, token Secret) error {
 	m.mu.Lock()
 	m.revoked = append(m.revoked, token.Reveal())
 	m.mu.Unlock()
-	return nil
+	return m.revokeErr
 }
 
 type memAudit struct {

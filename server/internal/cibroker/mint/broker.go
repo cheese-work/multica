@@ -103,8 +103,9 @@ const sideEffectTimeout = 5 * time.Second
 
 // Issue serves one request. It returns a token, or a *Refusal (403 no usable
 // permission, 429 throttle or quota cutoff, 503 quota unreadable, mint or audit
-// failure). Every request writes one audit row; a token whose row cannot be
-// written is revoked and refused, so no token exists without an audit row.
+// failure). Every request that gets the lock writes one audit row; a request
+// cancelled while it waits for the lock writes none. A token whose row cannot
+// be written is revoked and refused, so no token exists without an audit row.
 func (b *Broker) Issue(ctx context.Context, req Request) (Token, error) {
 	select {
 	case b.sem <- struct{}{}:
@@ -140,8 +141,12 @@ func (b *Broker) Issue(ctx context.Context, req Request) (Token, error) {
 	if err := b.record(ctx, req, perms, "issued", ""); err != nil {
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sideEffectTimeout)
 		defer cancel()
-		_ = b.minter.Revoke(rctx, tok.Value)
-		b.log.Error("ci broker audit write failed; token revoked", "repository_id", req.RepositoryID, "run_id", req.RunID)
+		if rerr := b.minter.Revoke(rctx, tok.Value); rerr != nil {
+			b.log.Error("ci broker audit write failed and token revoke failed; a live token has no audit row",
+				"repository_id", req.RepositoryID, "run_id", req.RunID, "revoke_error", rerr.Error())
+		} else {
+			b.log.Error("ci broker audit write failed; token revoked", "repository_id", req.RepositoryID, "run_id", req.RunID)
+		}
 		return Token{}, &Refusal{Status: http.StatusServiceUnavailable, Reason: "audit_unavailable", RetryAfter: 30 * time.Second}
 	}
 	b.throttle.Record(req.RepositoryID, req.RunID, req.RunAttempt)

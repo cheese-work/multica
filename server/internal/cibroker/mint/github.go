@@ -157,10 +157,13 @@ func (m *GitHubMinter) mint(ctx context.Context, op string, repoIDs []int64, per
 	}
 	tok := Token{Value: Secret(res.Token), ExpiresAt: res.ExpiresAt, Permissions: res.Permissions}
 	if res.Token == "" || !scopeMatches(res, repoIDs, perms) {
+		opName := op + " scope"
 		if res.Token != "" {
-			_ = m.Revoke(context.WithoutCancel(ctx), tok.Value)
+			if err := m.revokeBounded(ctx, tok.Value); err != nil {
+				opName += "; revoke failed, token may be live"
+			}
 		}
-		return Token{}, &UpstreamError{Op: op + " scope", Status: http.StatusCreated}
+		return Token{}, &UpstreamError{Op: opName, Status: http.StatusCreated}
 	}
 	return tok, nil
 }
@@ -177,15 +180,25 @@ func scopeMatches(res accessTokenResponse, repoIDs []int64, perms Permissions) b
 			}
 		}
 	}
-	if len(res.Permissions) != len(perms) {
-		return false
-	}
 	for name, got := range res.Permissions {
+		// GitHub may add metadata:read to a repository-scoped token. It grants
+		// no repository content, so it is the one accepted extra.
+		if _, asked := perms[name]; !asked && name == "metadata" && got == "read" {
+			continue
+		}
 		if permRank(got) == 0 || permRank(got) > permRank(perms[name]) {
 			return false
 		}
 	}
 	return true
+}
+
+// revokeBounded revokes after the caller's context is done, with its own
+// deadline so a stuck call cannot hold the broker lock.
+func (m *GitHubMinter) revokeBounded(ctx context.Context, token Secret) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sideEffectTimeout)
+	defer cancel()
+	return m.Revoke(ctx, token)
 }
 
 // Revoke deletes an installation token (DELETE /installation/token).
@@ -215,7 +228,7 @@ func (m *GitHubMinter) RateLimit(ctx context.Context) (Reading, error) {
 	if err != nil {
 		return Reading{}, err
 	}
-	defer func() { _ = m.Revoke(context.WithoutCancel(ctx), probe.Value) }()
+	defer func() { _ = m.revokeBounded(ctx, probe.Value) }()
 	var rl rateLimitResponse
 	if err := m.do(ctx, "rate_limit", http.MethodGet, "/rate_limit", probe.Value.Reveal(), nil, &rl, http.StatusOK); err != nil {
 		return Reading{}, err

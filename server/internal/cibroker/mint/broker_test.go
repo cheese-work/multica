@@ -199,6 +199,21 @@ func TestIssueMintFailureIs503(t *testing.T) {
 	}
 }
 
+func TestIssueAuditFailureWithFailedRevokeLogsALiveToken(t *testing.T) {
+	e := newEnv(t)
+	e.audit.err = errBoom
+	e.min.revokeErr = errBoom
+	_, err := e.b.Issue(context.Background(), req("1"))
+	wantRefusal(t, err, http.StatusServiceUnavailable, "audit_unavailable")
+	logs := e.logs.String()
+	if !strings.Contains(logs, "revoke failed") || strings.Contains(logs, "token revoked") {
+		t.Fatalf("log must report the failed revoke and not claim a revoke:\n%s", logs)
+	}
+	if strings.Contains(logs, "ghs_SECRETTOKEN") {
+		t.Fatalf("token in logs:\n%s", logs)
+	}
+}
+
 func TestIssueAuditFailureRevokesTokenAndRefuses(t *testing.T) {
 	e := newEnv(t)
 	e.audit.err = errBoom

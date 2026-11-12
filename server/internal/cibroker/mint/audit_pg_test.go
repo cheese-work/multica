@@ -27,7 +27,9 @@ func TestPGAuditRecordsRowWithoutTokenColumn(t *testing.T) {
 		t.Skip("ci_broker_audit migration not applied")
 	}
 	const repoID = int64(990_000_001)
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM ci_broker_audit WHERE repository_id=$1`, repoID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM ci_broker_audit WHERE repository_id=$1`, repoID)
+	})
 
 	err = NewPGAudit(pool).Record(context.Background(), Row{
 		At: time.Now(), RepositoryID: repoID, Repository: "o/r", RunID: "1", RunAttempt: "1",

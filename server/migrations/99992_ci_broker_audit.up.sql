@@ -16,5 +16,3 @@ CREATE TABLE IF NOT EXISTS ci_broker_audit (
     result             TEXT        NOT NULL CHECK (result IN ('issued', 'refused')),
     reason             TEXT        NOT NULL DEFAULT ''
 );
-
-CREATE INDEX IF NOT EXISTS ci_broker_audit_repo_at_idx ON ci_broker_audit (repository_id, at DESC);
