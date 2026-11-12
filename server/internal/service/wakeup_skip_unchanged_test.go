@@ -106,6 +106,42 @@ func TestPRWatchdogSkipsWhenPRStateUnchangedSinceLastRun(t *testing.T) {
 	}
 }
 
+func TestPRWatchdogIgnoresItsOwnFinalCommentWhenComparingInputs(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.checksFailed(t, "e1")
+	var taskID pgtype.UUID
+	e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+	e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+		VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+	e.finishRuns(t, "completed")
+	e.checksFailed(t, "e2")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 1 {
+		t.Fatalf("runs after unchanged PR and its own final comment = %d, want 1", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities after the run's own final comment = %d, want 1", got)
+	}
+}
+
+func TestPRWatchdogStillRunsWhenItsOwnFinalCommentIsEdited(t *testing.T) {
+	e := newSkipEnv(t, true)
+	e.checksFailed(t, "e1")
+	var taskID, commentID string
+	e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+	e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+		VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+	e.f.QueryRow(t, `SELECT id FROM comment WHERE source_task_id=$1`, taskID).Scan(&commentID)
+	e.finishRuns(t, "completed")
+	e.f.Exec(t, `UPDATE comment SET content='The PR now needs attention', revision=revision+1, updated_at=clock_timestamp() WHERE id=$1`, commentID)
+	e.checksFailed(t, "e2")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 2 {
+		t.Fatalf("runs after the run's final comment was edited = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 0 {
+		t.Fatalf("skip activities after the run's final comment was edited = %d, want 0", got)
+	}
+}
+
 func TestPRAttentionWatchdogSkipsWhenPRStateUnchangedSinceLastRun(t *testing.T) {
 	e := newSkipEnv(t, true)
 	e.conflict(t, "main")
