@@ -123,7 +123,7 @@ test("Part of does not hide a conflicting completion target", () => {
 });
 
 test("the workflow uses trusted checker code with read-only credentials", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/pr-close-target-check.yml", import.meta.url), "utf8");
+  const workflow = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   assert.match(workflow, /pull_request_target:/);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.match(workflow, /persist-credentials: false/);

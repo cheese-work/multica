@@ -165,3 +165,167 @@ func TestRedactOverlongLineDoesNotStoreCutCredential(t *testing.T) {
 		t.Errorf("lost trailing line: %q", got)
 	}
 }
+
+// A nested BEGIN must not replace the open key's label (CHE-4274 review P1, round 3).
+func TestRedactNestedBeginKeepsOuterKeyOpen(t *testing.T) {
+	cases := map[string]string{
+		"separate lines": "-----BEGIN " + "PRIVATE KEY-----\n-----BEGIN " + "PUBLIC KEY-----\n-----END PUBLIC KEY-----\n" + pemBody + "\n",
+		"one line":       "-----BEGIN " + "PRIVATE KEY----- -----BEGIN " + "PUBLIC KEY----- -----END PUBLIC KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+	// The outer END cannot be told apart from the inner one, so the key stays open to EOF.
+	got := redact(t, "-----BEGIN "+"PRIVATE KEY-----\n-----BEGIN "+"PUBLIC KEY-----\n"+pemBody+"\n-----END PRIVATE KEY-----\n"+pemBody+"\n", false)
+	noLeak(t, got, pemBody)
+}
+
+// Two BEGINs and one END must not close the outer key (CHE-4274 review P1, round 4).
+func TestRedactSameLabelNestedBeginFailsClosed(t *testing.T) {
+	cases := map[string]string{
+		"separate lines": "-----BEGIN " + "PRIVATE KEY-----\n-----BEGIN " + "PRIVATE KEY-----\n-----END PRIVATE KEY-----\n" + pemBody + "\n",
+		"one line":       "-----BEGIN " + "PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY----- -----END PRIVATE KEY-----\n" + pemBody + "\n",
+	}
+	for name, in := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", name, oneByte), func(t *testing.T) {
+				noLeak(t, redact(t, in, oneByte), pemBody)
+			})
+		}
+	}
+}
+
+// Generic and provider credentials follow the shared server/pkg/redact rules (CHE-4274 review P2).
+func TestRedactAppliesSharedCredentialRules(t *testing.T) {
+	got := redact(t, "DB_PASSWORD=hunter2planted\nAPI_KEY: abcplantedsecret99\nkept line\n", false)
+	noLeak(t, got, "hunter2planted", "abcplantedsecret99")
+	if !strings.Contains(got, "kept line") {
+		t.Errorf("lost plain line: %q", got)
+	}
+}
+
+// A provider-token-shaped username must not defeat URL-credential redaction:
+// replacing the username first would leave the password behind.
+func TestRedactURLCredentialsWithProviderShapedUsername(t *testing.T) {
+	const pw = "plantedPASSWORD99"
+	in := "git clone https://" + ghToken + ":" + pw + "@example.com/org/repo.git\n" +
+		"fetch https://" + awsKey + ":" + pw + "@example.com/x\n"
+	for _, oneByte := range []bool{false, true} {
+		got := redact(t, in, oneByte)
+		noLeak(t, got, pw, ghToken, awsKey)
+		if !strings.Contains(got, "@example.com/org/repo.git") {
+			t.Errorf("host/path must survive: %s", got)
+		}
+	}
+}
+
+// Every key/value form a CI log can carry a credential in, for each key class.
+func TestRedactCredentialKeyValueForms(t *testing.T) {
+	const secret = "plantedVALUE42xyz"
+	forms := map[string]string{
+		"json":                  `{"%[1]s":"%[2]s"}`,
+		"json spaced":           `{"%[1]s": "%[2]s"}`,
+		"single quoted":         `'%[1]s': '%[2]s'`,
+		"bare colon":            `%[1]s: %[2]s`,
+		"bare equals":           `%[1]s=%[2]s`,
+		"inside longer json":    `{"id":7,"%[1]s":"%[2]s","ok":true,"name":"build"}`,
+		"escaped quote value":   `{"%[1]s":"head\"%[2]s\"tail"}`,
+		"json inside a string":  `msg="{\"%[1]s\":\"%[2]s\"}"`,
+		"value with spaces":     `{"%[1]s":"%[2]s and more"}`,
+		"quoted bare colon":     `%[1]s: "%[2]s and more"`,
+		"lower case key in url": `?%[1]s=%[2]s&x=1`,
+	}
+	keys := []string{"DB_PASSWORD", "API_KEY", "token", "secret"}
+	for name, form := range forms {
+		for _, key := range keys {
+			for _, oneByte := range []bool{false, true} {
+				in := "prefix line\n" + fmt.Sprintf(form, key, secret) + "\nsuffix line\n"
+				got := redact(t, in, oneByte)
+				noLeak(t, got, secret, "plantedVALUE", "and more", "tail")
+				if !strings.Contains(got, key) {
+					t.Errorf("%s/%s: key name must stay visible: %s", name, key, got)
+				}
+			}
+		}
+	}
+}
+
+func TestRedactKeepsHarmlessJSON(t *testing.T) {
+	in := `{"id":7,"name":"build","tokens_used":0,"ok":true}` + "\n"
+	if got := redact(t, in, false); got != strings.TrimSuffix(in, "\n") {
+		t.Errorf("harmless JSON changed: %s", got)
+	}
+}
+
+// One rule: credential-like key (bare, single- or double-quoted), then : or =,
+// then a value of any type. The value is masked whatever its shape.
+func TestRedactCredentialValueTypes(t *testing.T) {
+	cases := []struct{ in, planted string }{
+		{`"password": hunter2planted`, "hunter2planted"},
+		{`{"password":123456789}`, "123456789"},
+		{`{"password":true}`, "true"},
+		{`{"password":null}`, "null"},
+		{`{"password":-1.5e3}`, "1.5e3"},
+		{`'password': hunter2planted`, "hunter2planted"},
+		{`password: "x planted y"`, "planted"},
+		{`password = hunter2planted`, "hunter2planted"},
+		{`password=hunter2planted&next=1`, "hunter2planted"},
+		{`{"a":1,"API_KEY": 99887766,"b":2}`, "99887766"},
+		{`secret: [planted1, planted2]`, "planted1"},
+		{`token: Bearer plantedBEARERvalue1`, "plantedBEARERvalue1"},
+		{`{"token":"a\"planted\"b"}`, "planted"},
+	}
+	for _, tc := range cases {
+		for _, oneByte := range []bool{false, true} {
+			got := redact(t, "before\n"+tc.in+"\nafter\n", oneByte)
+			noLeak(t, got, tc.planted)
+			if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+				t.Errorf("%q: neighbour lines lost: %s", tc.in, got)
+			}
+		}
+	}
+}
+
+func TestRedactKeepsNonCredentialKeysWithCredentialSubstrings(t *testing.T) {
+	in := `{"max_tokens":4096,"tokens_used":12,"password_policy":"strict"}`
+	if got := redact(t, in+"\n", false); got != in {
+		t.Errorf("changed: %s", got)
+	}
+}
+
+// Values that nest or sit on a later line: masking tracks depth, quotes and
+// lines, and an unterminated value masks to EOF.
+func TestRedactCredentialValuesSpanNestingAndLines(t *testing.T) {
+	cases := []struct {
+		name, in string
+		planted  []string
+		keep     []string // lines that must survive
+	}{
+		{"nested object", `{"password":{"nested":{"x":1},"raw":"planted1"},"id":7}`, []string{"planted1"}, []string{`"id":7`}},
+		{"brace inside string", `{"password":"a}b\"planted1"}`, []string{"planted1"}, nil},
+		{"value on next line", "\"password\":\nplanted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"yaml indented next line", "password:\n    planted1 planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"blank line between", "password:\n\nplanted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"object body on later lines", "\"password\": {\n  \"user\": \"planted1\",\n  \"inner\": {\"k\": \"planted2\"}\n}\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"list across lines", "secret: [\n  planted1,\n  planted2\n]\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"unterminated object masks to EOF", "password: {\nplanted1\nplanted2\n", []string{"planted1", "planted2"}, nil},
+		{"unterminated list masks to EOF", "token = [\nplanted1\n", []string{"planted1"}, nil},
+		{"unterminated string stays on its line", "password: \"planted1 planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"value then more json", `{"password":{"a":1},"id":7}` + "\nafter", nil, []string{`"id":7`, "after"}},
+	}
+	for _, tc := range cases {
+		for _, oneByte := range []bool{false, true} {
+			got := redact(t, "before\n"+tc.in+"\n", oneByte)
+			noLeak(t, got, tc.planted...)
+			for _, k := range append([]string{"before"}, tc.keep...) {
+				if !strings.Contains(got, k) {
+					t.Errorf("%s: %q lost: %s", tc.name, k, got)
+				}
+			}
+		}
+	}
+}

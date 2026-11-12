@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "패스키로 승인",
+    "reject": "거부",
+    "reject_error": "거부하지 못했습니다. 다시 시도하세요.",
     "waiting": "패스키를 기다리는 중…",
     "state": {
       "executed": "실행됨",
@@ -150,12 +152,39 @@
       "stale_cap": "더 높은 한도가 이미 적용되어 있습니다.",
       "stale_window": "예산 기간이 변경되었습니다. 새 요청을 시작하세요.",
       "not_budgeted": "이 이슈는 더 이상 예산이 적용되지 않습니다.",
-      "other": "실패: {{code}}"
+      "other": "실패: {{code}}",
+      "stale_base": "요청 이후 대상이 변경되었습니다. 다시 요청하세요."
     },
+    "refusal": {
+      "class_needs_owner": "이 변경은 워크스페이스 소유자만 승인할 수 있습니다.",
+      "payload_mismatch": "승인한 변경이 요청된 변경과 다릅니다. 다시 요청하세요.",
+      "preview_required": "표시된 미리보기를 기준으로 승인하세요. 카드를 새로 고치세요.",
+      "precondition_drift": "요청 이후 대상이 변경되었습니다. 다시 요청하세요.",
+      "busy_retry": "다른 변경이 진행 중입니다. 다시 시도하세요.",
+      "not_permitted": "이 변경을 할 권한이 없습니다.",
+      "action_not_executable": "이런 종류의 변경은 아직 승인할 수 없습니다.",
+      "approval_proof_unavailable": "이 서버는 아직 패스키 승인을 확인할 수 없습니다.",
+      "other": "거부됨: {{code}}"
+    },
+    "owner_only": "이 변경은 워크스페이스 소유자만 승인할 수 있습니다.",
     "no_passkey": "승인하기 전에 패스키를 추가하세요.",
     "add_passkey": "패스키 추가",
     "error": "패스키 승인이 완료되지 않았습니다. 다시 시도하세요.",
     "lost": "응답이 손실되었습니다. 작업은 다시 승인되지 않습니다. 결과를 확인하세요.",
-    "check": "결과 확인"
+    "check": "결과 확인",
+    "outcome": {
+      "cap_applied": "한도 적용됨",
+      "run_queued": "실행 대기 중",
+      "still_blocked": "여전히 차단됨: {{reason}}"
+    },
+    "panel": {
+      "title": "실행 예산 요청",
+      "raise_cap": "이 기간에 {{issue}}의 실행 한도를 {{cap}}회로 올립니다.",
+      "top_up": "이 기간에 {{issue}}의 실행 예산을 충전합니다.",
+      "settled": "이 승인은 이미 '{{state}}' 상태입니다. 아직 필요하면 에이전트에게 다시 제안해 달라고 요청하세요.",
+      "mismatch": "이 승인은 이 이슈의 실행 예산 요청이 아닙니다. DM 또는 받은편지함에서 카드를 열어 결정하세요.",
+      "open_card": "카드 열기",
+      "unreadable": "이 승인은 사용할 수 없거나 더 이상 존재하지 않습니다. 에이전트에게 다시 제안해 달라고 요청하세요."
+    }
   }
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -149,6 +150,9 @@ func (handler *Handler) RejectDecisionAction(writer http.ResponseWriter, request
 		writeDecisionActionError(writer, err)
 		return
 	}
+	if err := handler.publishDecisionActionCardUpdated(context.WithoutCancel(ctx), action); err != nil {
+		slog.Warn("decision action: card update not published", "action_id", uuidToString(action.ID), "error", err)
+	}
 	handler.DecisionWorker.Notify()
 	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))
 }
@@ -171,6 +175,35 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 		return
 	}
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+}
+
+// GetDecisionAction returns the card view of one action to the request's
+// human, so the approval page can show what it asks and name its payload hash.
+func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *http.Request) {
+	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
+	if !ok {
+		return
+	}
+	action, err := handler.Queries.GetDecisionAction(request.Context(), db.GetDecisionActionParams{WorkspaceID: caller.workspaceID, ID: caller.actionID})
+	var decisionRequest db.DecisionRequest
+	if err == nil {
+		decisionRequest, err = handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: action.DecisionRequestID})
+	}
+	if err == nil && decisionRequest.HumanUserID != caller.userID {
+		err = errNotTheHuman
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = errNotTheHuman
+	}
+	if err != nil {
+		writeDecisionActionError(writer, err)
+		return
+	}
+	view := newDecisionActionResponse(action)
+	if decisionRequest.ChatSessionID.Valid {
+		view.ChatSessionID = uuidToString(decisionRequest.ChatSessionID)
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) bool {

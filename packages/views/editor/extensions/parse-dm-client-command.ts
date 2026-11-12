@@ -1,12 +1,12 @@
 import { parseChatCommandInput } from "@multica/core/chat/commands";
 
 /** DM commands the surface answers itself; none takes an argument. */
-export type DmClientCommandName = "statistic" | "archive" | "pin" | "unarchive";
+export type DmClientCommandName = "statistic" | "archive" | "pin" | "unarchive" | "unseen";
 
 /**
  * Classifies composer text as one of the argument-less DM commands: the whole
- * text, trimmed and case-insensitively, is `/statistic`, `/archive`, `/pin`
- * or `/unarchive`.
+ * text, trimmed and case-insensitively, is `/statistic`, `/archive`, `/pin`,
+ * `/unseen` or `/unarchive`.
  */
 export function parseDmClientCommand(text: string): DmClientCommandName | null {
   const parsed = parseChatCommandInput(text);

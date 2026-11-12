@@ -473,6 +473,9 @@ func (d *Daemon) runForkUpdate() (string, error) {
 		return "", fmt.Errorf("fork update unavailable, installed daemon unchanged: %w", err)
 	}
 	d.logger.Info("updating CLI from the server", "build", u.String())
+	if rep := d.updateProgress.Load(); rep != nil {
+		u.Progress = rep.progress()
+	}
 	out, err := applyForkUpdate(ctx, u, cli.DefaultUpdateDownloadTimeout)
 	if err != nil {
 		return out, fmt.Errorf("fork update failed, installed daemon unchanged: %w", err)

@@ -573,8 +573,16 @@ func (h *Handler) StopQoderConnection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "cannot revoke runtime credential")
 		return
 	}
-	_, err = tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws)
-	if err != nil || tx.Commit(r.Context()) != nil {
+	tag, err := tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws)
+	if err != nil {
+		writeError(w, 500, "cannot stop Qoder Cloud Agents runtime")
+		return
+	}
+	if err := h.writeQoderStopAudit(r, tx, ws, tag.RowsAffected()); err != nil {
+		writeAuditFailure(w, r, err, "qoder.stop")
+		return
+	}
+	if tx.Commit(r.Context()) != nil {
 		writeError(w, 500, "cannot stop Qoder Cloud Agents runtime")
 		return
 	}

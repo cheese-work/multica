@@ -116,6 +116,16 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	askIDs := r.URL.Query()["jev_ask"]
+	if len(askIDs) > agentDecisionBriefMaxJevAsks {
+		writeError(w, http.StatusBadRequest, "too many jev_ask ids")
+		return
+	}
+	for _, id := range askIDs {
+		if _, ok := parseUUIDOrBadRequest(w, id, "jev_ask"); !ok {
+			return
+		}
+	}
 	ctx := r.Context()
 	fail := func(err error) {
 		slog.Warn("agent decision brief failed", "error", err)
@@ -236,6 +246,21 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
+	waivers, err := h.agentDecisionWaivers(ctx, workspaceID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	jev, err := h.agentDecisionJevMetrics(ctx, workspaceID)
+	if err != nil {
+		fail(err)
+		return
+	}
+	jevAsks, err := h.agentDecisionJevAsks(ctx, workspaceID, askIDs)
+	if err != nil {
+		fail(err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":             parsed.Enabled,
 		"stopped":             parsed.Stopped,
@@ -243,7 +268,102 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		"decisions":           records,
 		"notice_failures":     failures,
 		"pilot":               pilot,
+		"waivers":             waivers,
+		"jev":                 jev,
+		"jev_asks":            jevAsks,
 	})
+}
+
+// Most ids the CLI may ask about in one call.
+const agentDecisionBriefMaxJevAsks = 1000
+
+type agentDecisionWaiverCount struct {
+	AgentID string `json:"agent_id"`
+	Agent   string `json:"agent"`
+	Count   int    `json:"count"`
+}
+
+// Waivers per agent: live test_first_red settlements, counted for the agent whose
+// work was waived. A WAIVED record is never a PASS, so it is counted apart.
+func (h *Handler) agentDecisionWaivers(ctx context.Context, workspaceID pgtype.UUID) ([]agentDecisionWaiverCount, error) {
+	rows, err := h.DB.Query(ctx, `SELECT sc.proposer_agent_id::text,coalesce(a.name,''),count(*)
+        FROM decision_agent_settlement s
+        JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
+        LEFT JOIN agent a ON a.id=sc.proposer_agent_id AND a.workspace_id=s.workspace_id
+        WHERE s.workspace_id=$1 AND s.revoked_at IS NULL AND sc.waived_gate=$2
+        GROUP BY 1,2 ORDER BY 3 DESC,2`, workspaceID, agentDecisionGateTestFirstRed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []agentDecisionWaiverCount{}
+	for rows.Next() {
+		var c agentDecisionWaiverCount
+		if err := rows.Scan(&c.AgentID, &c.Agent, &c.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+type agentDecisionJevMetrics struct {
+	Decisions int     `json:"decisions"`
+	Vetoed    int     `json:"vetoed"`
+	VetoRate  float64 `json:"veto_rate"`
+	// Must stay zero: an excluded class is refused at propose time.
+	ExcludedClassDecisions int `json:"excluded_class_decisions"`
+}
+
+func (h *Handler) agentDecisionJevMetrics(ctx context.Context, workspaceID pgtype.UUID) (agentDecisionJevMetrics, error) {
+	var m agentDecisionJevMetrics
+	err := h.DB.QueryRow(ctx, `SELECT count(*),count(*) FILTER (WHERE s.revoked_at IS NOT NULL),
+        count(*) FILTER (WHERE sc.scope->'Proposal'->>'decision_class' = ANY($3))
+        FROM decision_agent_settlement s
+        JOIN decision_agent_scope sc ON sc.instance_id=s.instance_id AND sc.workspace_id=s.workspace_id
+        WHERE s.workspace_id=$1 AND sc.scope->'Proposal'->>'decider'=$2`,
+		workspaceID, agentDecisionDeciderJev, agentDecisionExcludedClasses).
+		Scan(&m.Decisions, &m.Vetoed, &m.ExcludedClassDecisions)
+	if err != nil {
+		return m, err
+	}
+	if m.Decisions > 0 {
+		m.VetoRate = float64(m.Vetoed) / float64(m.Decisions)
+	}
+	return m, nil
+}
+
+type agentDecisionJevAsk struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	// The option label Cheese chose; empty while the ask is open.
+	Answer string `json:"answer"`
+}
+
+// For each ask id from the Jev shadow log: when it was asked and what Cheese chose.
+func (h *Handler) agentDecisionJevAsks(ctx context.Context, workspaceID pgtype.UUID, ids []string) ([]agentDecisionJevAsk, error) {
+	out := []agentDecisionJevAsk{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := h.DB.Query(ctx, `SELECT r.id::text,r.created_at,coalesce(r.ask_json->'options'->(a.chosen_option_index)::int->>'label','')
+        FROM decision_request r
+        LEFT JOIN decision_answer a ON a.decision_request_id=r.id AND a.disclaimed_at IS NULL
+        WHERE r.workspace_id=$1 AND r.id = ANY($2::uuid[]) ORDER BY r.created_at`, workspaceID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var a agentDecisionJevAsk
+		var created time.Time
+		if err := rows.Scan(&a.ID, &created, &a.Answer); err != nil {
+			return nil, err
+		}
+		a.CreatedAt = created.UTC().Format(time.RFC3339)
+		out = append(out, a)
+	}
+	return out, rows.Err()
 }
 
 // The line names the reader as undo owner, so pasting it needs no edit.

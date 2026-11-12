@@ -13,6 +13,11 @@ export interface OpenDecisionRequest {
   message_id: string | null;
   source_comment_id?: string | null;
   options?: DecisionRequestOption[];
+  /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
+  covers_request_ids?: string[];
+  covered_cards?: DecisionCoveredCard[];
+  /** The pending executable action behind the card, so a page can find a budget request (CHE-5285). */
+  action?: DecisionRequestAction;
 }
 
 /** One answer button on an open decision card. */
@@ -46,6 +51,69 @@ export interface DecisionRequestCard {
   record_comment_id?: string | null;
   /** Latest answer, kept after a disclaim so the card can say so. */
   answer?: DecisionRequestAnswer;
+  /** The pending executable action behind an open request, if any. */
+  action?: DecisionRequestAction;
+  /** A batch card: the per-issue cards its answer also closes. */
+  covers_request_ids?: string[];
+  /** What each covered card asks, so the human sees every decision the batch answer closes. */
+  covered_cards?: DecisionCoveredCard[];
+  /** Set when a batch card's answer closed this card. */
+  answered_by_batch_request_id?: string | null;
+}
+
+/** One per-issue card a batch card covers, with the decision it asks. */
+export interface DecisionCoveredCard {
+  id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  decision: string;
+  /** The covered card's own options with their meanings. */
+  options?: DecisionRequestOption[];
+}
+
+/** What an executable action would change, rendered by the server from the values its executor checks. */
+export interface DecisionActionPreview {
+  fields: { label: string; current: string; proposed: string }[];
+  sha256: string;
+}
+
+/** One hunk of a config-change diff; every line starts with `+`, `-` or a space. */
+export interface DecisionConfigDiffHunk {
+  old_start: number;
+  new_start: number;
+  lines: string[];
+}
+
+/** The stored server preview of a config-change action: what the approver is shown and approves against. */
+export interface DecisionConfigChange {
+  field: string;
+  target_id: string;
+  keys: string[];
+  /** `json`, `text` or `lines`; a newer server may send another kind, which this client cannot approve. */
+  diff_kind: "json" | "text" | "lines" | (string & {});
+  diff: DecisionConfigDiffHunk[];
+  /** The value the change writes. A string for text, an array of lines for lines, JSON otherwise. */
+  after: unknown;
+  before_sha256: string;
+  after_sha256: string;
+  meta?: Record<string, unknown>;
+  /** Digest of the stored preview; sent back as `preview_sha256` on approval. */
+  sha256: string;
+}
+
+export interface DecisionRequestAction {
+  id: string;
+  action_type: string;
+  payload_sha256: string;
+  /** Action state. Only a pending action carries a preview; an older server omits it. */
+  state?: string;
+  /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
+  preview?: DecisionActionPreview;
+  /** Set for a config-change action; absent when the preview is malformed, so the card offers no approval. */
+  config_change?: DecisionConfigChange;
+  /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
+  owner_only?: boolean;
 }
 
 /** The run that resumed the issue after the answer was recorded. */

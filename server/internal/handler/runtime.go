@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -46,10 +47,13 @@ type AgentRuntimeResponse struct {
 	SharedWith []string `json:"shared_with"`
 	// ProfileID is set when this runtime is an instance of a custom
 	// runtime_profile (MUL-3284); null for built-in runtimes.
-	ProfileID  *string `json:"profile_id"`
-	LastSeenAt *string `json:"last_seen_at"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
+	ProfileID *string `json:"profile_id"`
+	// MaxConcurrentTasks caps tasks running at once across every agent bound
+	// to this runtime (GitHub #9626); null means no runtime-wide cap.
+	MaxConcurrentTasks *int32  `json:"max_concurrent_tasks"`
+	LastSeenAt         *string `json:"last_seen_at"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
 	// Commit-based update verdict (CHE-2641), computed by runtimeResponse from
 	// the loaded daemon build manifest. UpdateReason is empty when the verdict
 	// is firm; see runtimeUpdateStatus.
@@ -75,24 +79,25 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 	}
 
 	return AgentRuntimeResponse{
-		ID:           uuidToString(rt.ID),
-		WorkspaceID:  uuidToString(rt.WorkspaceID),
-		DaemonID:     textToPtr(rt.DaemonID),
-		Name:         rt.Name,
-		CustomName:   textToPtr(rt.CustomName),
-		RuntimeMode:  rt.RuntimeMode,
-		Provider:     rt.Provider,
-		LaunchHeader: agent.LaunchHeader(rt.Provider),
-		Status:       rt.Status,
-		DeviceInfo:   rt.DeviceInfo,
-		Metadata:     metadata,
-		OwnerID:      uuidToPtr(rt.OwnerID),
-		Visibility:   rt.Visibility,
-		SharedWith:   runtimeSharedWithStrings(rt.SharedWith),
-		ProfileID:    uuidToPtr(rt.ProfileID),
-		LastSeenAt:   timestampToPtr(rt.LastSeenAt),
-		CreatedAt:    timestampToString(rt.CreatedAt),
-		UpdatedAt:    timestampToString(rt.UpdatedAt),
+		ID:                 uuidToString(rt.ID),
+		WorkspaceID:        uuidToString(rt.WorkspaceID),
+		DaemonID:           textToPtr(rt.DaemonID),
+		Name:               rt.Name,
+		CustomName:         textToPtr(rt.CustomName),
+		RuntimeMode:        rt.RuntimeMode,
+		Provider:           rt.Provider,
+		LaunchHeader:       agent.LaunchHeader(rt.Provider),
+		Status:             rt.Status,
+		DeviceInfo:         rt.DeviceInfo,
+		Metadata:           metadata,
+		OwnerID:            uuidToPtr(rt.OwnerID),
+		Visibility:         rt.Visibility,
+		SharedWith:         runtimeSharedWithStrings(rt.SharedWith),
+		ProfileID:          uuidToPtr(rt.ProfileID),
+		MaxConcurrentTasks: int4ToPtr(rt.MaxConcurrentTasks),
+		LastSeenAt:         timestampToPtr(rt.LastSeenAt),
+		CreatedAt:          timestampToString(rt.CreatedAt),
+		UpdatedAt:          timestampToString(rt.UpdatedAt),
 	}
 }
 
@@ -491,6 +496,27 @@ type UpdateAgentRuntimeRequest struct {
 	// runtime per provider) instead of just this one. Ignored when the
 	// runtime has no daemon_id.
 	ApplyToMachine bool `json:"apply_to_machine,omitempty"`
+	// MaxConcurrentTasks sets the runtime-wide concurrency cap (GitHub
+	// #9626): an integer in the agent limit range, or null to remove the
+	// cap. Absent leaves it unchanged. Owner / workspace admin only.
+	MaxConcurrentTasks json.RawMessage `json:"max_concurrent_tasks,omitempty"`
+	maxConcurrentTasks pgtype.Int4
+}
+
+// parseRuntimeMaxConcurrentTasks decodes the tri-state PATCH field: JSON null
+// clears the cap, an integer within the agent limit range sets it.
+func parseRuntimeMaxConcurrentTasks(raw json.RawMessage) (pgtype.Int4, error) {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return pgtype.Int4{}, nil
+	}
+	var v int32
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return pgtype.Int4{}, errors.New("max_concurrent_tasks must be an integer or null")
+	}
+	if err := agentconfig.ValidateMaxConcurrentTasks(v); err != nil {
+		return pgtype.Int4{}, fmt.Errorf("max_concurrent_tasks %w", err)
+	}
+	return pgtype.Int4{Int32: v, Valid: true}, nil
 }
 
 // maxRuntimeCustomNameLen caps a runtime's custom name. Default names are
@@ -550,13 +576,33 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if req.MaxConcurrentTasks != nil {
+		req.maxConcurrentTasks, err = parseRuntimeMaxConcurrentTasks(req.MaxConcurrentTasks)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	changed := false
 
-	if req.Visibility != nil || req.SharedWith != nil {
-		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), rt, member, req)
+	// Access and rename (and their audit rows) commit together or not at all.
+	var tx pgx.Tx
+	var qtx *db.Queries
+	if req.Visibility != nil || req.SharedWith != nil || req.CustomName != nil {
+		tx, err = h.TxStarter.Begin(r.Context())
 		if err != nil {
-			if writeRuntimeRevocationBusy(w, err) {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx = h.Queries.WithTx(tx)
+	}
+
+	if req.Visibility != nil || req.SharedWith != nil {
+		updated, plan, didChange, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, qtx, rt, member, req)
+		if err != nil {
+			if failedAudit(w, r, err, "runtime.access.update") || writeRuntimeRevocationBusy(w, err) {
 				return
 			}
 			if errors.Is(err, errRuntimeOwnerChanged) {
@@ -585,6 +631,23 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSpace(*req.CustomName)
 		customName := pgtype.Text{String: trimmed, Valid: trimmed != ""}
 
+		// The row lock makes the audited before-name the one this rename replaces.
+		current, err := qtx.LockAgentRuntimeForAccessChange(r.Context(), runtimeUUID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusNotFound, "runtime not found")
+				return
+			}
+			slog.Error("lock runtime for rename failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		audit := auditInput{
+			Kind: "runtime.rename", WorkspaceID: rt.WorkspaceID, TargetID: runtimeUUID,
+			Before: map[string]any{"custom_name": auditText(current.CustomName)},
+			After:  map[string]any{"custom_name": auditText(customName)},
+		}
+
 		if req.ApplyToMachine && rt.DaemonID.Valid {
 			// Non-admins may only relabel their own runtimes on the machine;
 			// owners/admins rename every runtime sharing the daemon_id. A NULL
@@ -593,7 +656,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 			if !roleAllowed(member.Role, "owner", "admin") {
 				ownerFilter = member.UserID
 			}
-			rows, err := h.Queries.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
+			rows, err := qtx.UpdateAgentRuntimeCustomNameByDaemon(r.Context(), db.UpdateAgentRuntimeCustomNameByDaemonParams{
 				CustomName:  customName,
 				WorkspaceID: rt.WorkspaceID,
 				DaemonID:    rt.DaemonID,
@@ -604,6 +667,9 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "failed to update runtime")
 				return
 			}
+			// One row on the addressed runtime plus the fan-out count keeps the
+			// rename atomic without a row per machine runtime.
+			audit.After["runtimes_renamed"] = len(rows)
 			// The actor always owns (or admins) the runtime addressed by :id,
 			// so it is among the updated rows — surface it in the response.
 			for _, row := range rows {
@@ -612,9 +678,8 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
-			changed = true
 		} else {
-			updated, err := h.Queries.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
+			updated, err := qtx.UpdateAgentRuntimeCustomName(r.Context(), db.UpdateAgentRuntimeCustomNameParams{
 				CustomName: customName,
 				ID:         runtimeUUID,
 			})
@@ -624,7 +689,34 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			rt = updated
-			changed = true
+		}
+		if err := h.writeAudit(r.Context(), qtx, r, audit); err != nil {
+			writeAuditFailure(w, r, err, "runtime.rename")
+			return
+		}
+		changed = true
+	}
+	if tx != nil {
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+	}
+
+	if req.MaxConcurrentTasks != nil {
+		updated, err := h.updateRuntimeMaxConcurrentTasks(r.Context(), runtimeUUID, req.maxConcurrentTasks)
+		if err != nil {
+			slog.Error("UpdateAgentRuntimeMaxConcurrentTasks failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		rt = updated
+		changed = true
+		// Raising or removing the cap can make queued work claimable right
+		// away; nudge the runtime's daemon instead of waiting for its next
+		// poll.
+		if h.TaskService != nil {
+			h.TaskService.NotifyRuntimeCapacityChanged(rt.ID)
 		}
 	}
 
@@ -638,6 +730,35 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.runtimeResponse(rt))
+}
+
+// updateRuntimeMaxConcurrentTasks writes the runtime-wide cap and then waits
+// on the runtime claim lock before committing. Claims read the cap only after
+// taking that lock, so once this returns no claim can still commit against
+// the old value (a claim queued behind the lock reads the new one). The row
+// is updated before the lock is taken; see LockRuntimeClaimCapacity for why
+// that order cannot deadlock with claims or runtime teardown.
+func (h *Handler) updateRuntimeMaxConcurrentTasks(ctx context.Context, runtimeID pgtype.UUID, limit pgtype.Int4) (db.AgentRuntime, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateAgentRuntimeMaxConcurrentTasks(ctx, db.UpdateAgentRuntimeMaxConcurrentTasksParams{
+		MaxConcurrentTasks: limit,
+		ID:                 runtimeID,
+	})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	if err := qtx.LockRuntimeClaimCapacity(ctx, runtimeID); err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("lock runtime claim capacity: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
 }
 
 func canEditRuntime(member db.Member, rt db.AgentRuntime) bool {
@@ -701,17 +822,11 @@ func (p runtimeWorkspaceAccessRevocationPlan) hasDependencies() bool {
 // updateRuntimeAccessIfNoDependencies applies grants without disrupting work.
 // Binding writers take the same runtime lock and recheck access.
 //
-// A non-empty plan is deliberately returned without committing. The caller
+// The caller owns the transaction and commits it. A non-empty plan is
+// deliberately returned without committing. The caller
 // turns it into the same confirmation response used by the disruptive path;
 // the confirmed endpoint will take a fresh locked snapshot before revoking.
-func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
-
+func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, qtx *db.Queries, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, error) {
 	lockedRuntime, err := qtx.LockAgentRuntimeForAccessChange(ctx, rt.ID)
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("lock runtime: %w", err)
@@ -765,8 +880,11 @@ func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("update runtime visibility: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, fmt.Errorf("commit transaction: %w", err)
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "runtime.access.update", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: runtimeAccessAuditFields(updated),
+	}); err != nil {
+		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, auditWriteError{err}
 	}
 	return updated, runtimeWorkspaceAccessRevocationPlan{}, true, nil
 }
@@ -1145,6 +1263,17 @@ func (h *Handler) RevokeRuntimeWorkspaceAccess(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to revoke runtime access")
 		return
 	}
+	revokeAfter := runtimeAccessAuditFields(updated)
+	revokeAfter["agents_unbound"] = len(result.UnboundAgents)
+	revokeAfter["tasks_cancelled"] = len(result.CancelledTasks)
+	revokeAfter["autopilots_paused"] = len(result.PausedAutopilots)
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.access.revoke", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: revokeAfter,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.access.revoke")
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit runtime privacy change")
@@ -1397,6 +1526,13 @@ func (h *Handler) DeleteAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
 		return
@@ -1615,6 +1751,13 @@ func (h *Handler) UnbindAgentsAndDeleteRuntime(w http.ResponseWriter, r *http.Re
 	// Finally delete the runtime row itself.
 	if err := qtx.DeleteAgentRuntime(r.Context(), rt.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete runtime")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "runtime.delete", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		Before: runtimeAuditFields(rt), External: []string{auditExternalRuntimeGone},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "runtime.delete")
 		return
 	}
 

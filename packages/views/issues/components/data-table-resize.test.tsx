@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import {
   getCoreRowModel,
   useReactTable,
@@ -6,7 +6,7 @@ import {
   type ColumnSizingState,
 } from "@tanstack/react-table";
 import * as React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DataTable } from "@multica/ui/components/ui/data-table";
 
 type Row = { status: string; owner: string };
@@ -88,6 +88,20 @@ function setup() {
 }
 
 describe("DataTable column resize", () => {
+  // The virtualizer debounces scroll-end by 150ms and never clears that timer
+  // on unmount. Left pending, it fires after the test environment is torn down
+  // and fails the whole run with "window is not defined".
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  const settleScroll = () => act(() => void vi.advanceTimersByTime(150));
+  afterEach(() => {
+    cleanup();
+    const pending = vi.getTimerCount();
+    vi.useRealTimers();
+    expect(pending).toBe(0);
+  });
+
   it("commits nothing when the handle is clicked without dragging", () => {
     const { onSizingChange, handle } = setup();
 
@@ -251,6 +265,7 @@ describe("DataTable column resize", () => {
       scroller.dispatchEvent(new Event("scroll"));
     });
     expect(shadow()).toBeNull();
+    settleScroll();
   });
 
   it("places the shadow at the frozen block's measured edge", () => {
@@ -278,6 +293,7 @@ describe("DataTable column resize", () => {
         '[data-slot="data-table-pinned-shadow"]',
       )!.style.left,
     ).toBe("200px");
+    settleScroll();
   });
 
   it("covers the viewport with a cursor layer only while dragging", () => {

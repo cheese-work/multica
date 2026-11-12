@@ -152,7 +152,16 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 				}
 			}
 		}
-		if askingID.Valid {
+		// A need_decision issue belongs to its assignee; the asking agent (often
+		// the routing agent that posted the card) must not take the wake.
+		ownedByAssignee, assigneeDenied := false, false
+		if snapshot.issue.Status == "need_decision" && agentID.Valid {
+			if ownedByAssignee, err = handler.personMayInvoke(ctx, queries, agentID, request.HumanUserID, workspaceID); err != nil {
+				return snapshot, err
+			}
+			assigneeDenied = !ownedByAssignee
+		}
+		if askingID.Valid && !ownedByAssignee {
 			asking, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: askingID})
 			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return snapshot, err
@@ -161,12 +170,31 @@ func (handler *Handler) loadDecisionItem(ctx context.Context, queries *db.Querie
 				if asking.ID != agentID {
 					snapshot.squadID = pgtype.UUID{}
 				}
-				agentID = asking.ID
+				agentID, assigneeDenied = asking.ID, false
 			}
+		}
+		if assigneeDenied {
+			// Neither the owner nor the asker can take the wake: nobody runs.
+			agentID, snapshot.squadID = pgtype.UUID{}, pgtype.UUID{}
 		}
 	}
 	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, agentID)
 	return snapshot, err
+}
+
+// personMayInvoke reports whether the decision's person could run the agent
+// themselves. A wake that moves from the asking agent to the issue owner must
+// not give the person a run on an agent they cannot invoke. A missing agent is
+// not invocable. A failed lookup is an error, never a denial or an approval;
+// it reads through queries, so a caller in a transaction stays on its connection.
+func (handler *Handler) personMayInvoke(ctx context.Context, queries *db.Queries, agentID, humanID, workspaceID pgtype.UUID) (bool, error) {
+	agent, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: workspaceID, ID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return handler.invokeAgentDecisionVia(ctx, queries, agent, "member", uuidToString(humanID), "", uuidToString(workspaceID))
 }
 
 // loadDecisionRecipient reads the recipient, its active task on the issue and
@@ -399,6 +427,23 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	switch snapshot.issue.Status {
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
+	}
+	if eligible && snapshot.kind == "" && len(snapshot.requests) > 0 {
+		// An executed or declined action already did its effect; its platform
+		// comment starts no run (CHE-5287). A failed action did not, so the
+		// asker still hears of it. One plain request keeps the wake.
+		settled := true
+		for _, request := range snapshot.requests {
+			action, err := queries.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: workspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				settled = false
+			} else if err != nil {
+				return false, err
+			} else if action.State != "executed" && action.State != "rejected" {
+				settled = false
+			}
+		}
+		eligible = !settled
 	}
 	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
 	if eligible && snapshot.recipient.ID.Valid && isServerDecision(snapshot.request) {

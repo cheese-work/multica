@@ -14,6 +14,7 @@ import {
   Info,
   Pencil,
   Pin,
+  EyeOff,
   PinOff,
   Loader2,
   Square,
@@ -75,7 +76,7 @@ import {
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { useChatStore } from "@multica/core/chat";
+import { deriveChatTitle, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -351,6 +352,8 @@ export function ChatWindow() {
   useEffect(() => {
     if (!isOpen || !appForeground || !activeSessionId) return;
     if (!currentHasUnread) return;
+    // Marked unseen on purpose: stay unread until the next real open.
+    if (useChatStore.getState().autoReadSuppressedId === activeSessionId) return;
     uiLogger.info("auto markRead", { sessionId: activeSessionId });
     markRead.mutate(activeSessionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
@@ -369,7 +372,7 @@ export function ChatWindow() {
   // promise ref dedupes those races: the first caller starts the create,
   // every subsequent caller awaits the same promise until it settles.
   //
-  // titleSeed is the first 50 chars of the user's message when called from
+  // titleSeed is the user's message (title derived via deriveChatTitle) when called from
   // send; the upload path passes "" and we leave the title empty so the
   // session-dropdown's existing localized `window.untitled` fallback kicks
   // in. A follow-up task may back-fill the real title from the first user
@@ -402,7 +405,7 @@ export function ChatWindow() {
         try {
           const session = await createSession.mutateAsync({
             agent_id: activeAgent.id,
-            title: titleSeed.slice(0, 50),
+            title: deriveChatTitle(titleSeed),
             project_id: activeProjectId,
           });
           return session.id;
@@ -740,6 +743,9 @@ export function ChatWindow() {
       if (next) handleSelectSession(next);
       else setActiveSession(null);
     },
+    onUnseen: (unseenSession) => {
+      if (useChatStore.getState().activeSessionId === unseenSession.id) setActiveSession(null);
+    },
     onRename: handleRename,
     onFork: canForkSession(currentSession) ? handleFork : undefined,
   });
@@ -929,6 +935,7 @@ export function ChatWindow() {
             onUnarchiveSession={dm.unarchive}
             onOpenMessageHit={(session, messageId) => openMessageHit(session.id, messageId)}
             onTogglePin={dm.togglePin}
+            onMarkUnseen={dm.markUnseen}
             onOpenStatistics={(session) => dm.openStatistics(session.id)}
           />
         </div>
@@ -1271,6 +1278,7 @@ export function SessionDropdown({
   onUnarchiveSession,
   onOpenMessageHit,
   onTogglePin,
+  onMarkUnseen,
   onOpenStatistics,
   renameRequest,
 }: {
@@ -1284,6 +1292,7 @@ export function SessionDropdown({
   /** Open a chat at a matching message; the owner pushes the history entry that scrolls there. */
   onOpenMessageHit: (session: ChatSession, messageId: string) => void;
   onTogglePin: (session: ChatSession) => unknown;
+  onMarkUnseen: (session: ChatSession) => unknown;
   onOpenStatistics: (session: ChatSession) => void;
   renameRequest: number;
 }) {
@@ -1514,6 +1523,19 @@ export function SessionDropdown({
                 ),
                 label: session.pinned ? t(($) => $.list.unpin) : t(($) => $.list.pin),
                 onSelect: () => void onTogglePin(session),
+              },
+            ];
+          }
+          if (item.id === "unseen") {
+            return [
+              {
+                key: "unseen",
+                icon: <EyeOff className="size-3.5" />,
+                label: t(($) => $.list.unseen),
+                onSelect: () => {
+                  setIsHistoryOpen(false);
+                  void onMarkUnseen(session);
+                },
               },
             ];
           }

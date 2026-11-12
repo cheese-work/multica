@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
@@ -73,7 +72,7 @@ func newChatHistoryTask(t *testing.T, chatSession bool) string {
 	var taskID string
 	if err := testPool.QueryRow(context.Background(), `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, 'completed', 0, $3)
+		VALUES ($1, $2, 'running', 0, $3)
 		RETURNING id
 	`, agentID, runtimeID, sessionArg).Scan(&taskID); err != nil {
 		t.Fatalf("insert chat history task: %v", err)
@@ -88,14 +87,15 @@ func newChatHistoryTask(t *testing.T, chatSession bool) string {
 // session and returns the task id.
 func newChatHistoryTaskForSession(t *testing.T, sessionID string) string {
 	t.Helper()
-	agentID := createHandlerTestAgent(t, "ChatHistorySessionAgent-"+uuid.NewString(), []byte("[]"))
 	runtimeID := handlerTestRuntimeID(t)
 	var taskID string
+	// A chat task runs as the session's own agent, the shared authority check's
+	// ordinary path (CHE-2909).
 	if err := testPool.QueryRow(context.Background(), `
 		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, chat_session_id)
-		VALUES ($1, $2, 'completed', 0, $3)
+		SELECT agent_id, $1, 'running', 0, id FROM chat_session WHERE id = $2
 		RETURNING id
-	`, agentID, runtimeID, sessionID).Scan(&taskID); err != nil {
+	`, runtimeID, sessionID).Scan(&taskID); err != nil {
 		t.Fatalf("insert chat history task for session: %v", err)
 	}
 	t.Cleanup(func() {
@@ -112,6 +112,13 @@ func taskActorReq(target, taskID string) *http.Request {
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Task-ID", taskID)
 	return req
+}
+
+// historyReq is taskActorReq plus the workspace the auth middleware stamps on a
+// task-token request; the shared authority check requires it (CHE-2909).
+func historyReq(t *testing.T, target, taskID string) *http.Request {
+	t.Helper()
+	return withChatTestWorkspaceCtx(t, taskActorReq(target, taskID))
 }
 
 func withSlackHistory(t *testing.T, r ChatChannelHistoryReader) {
@@ -137,7 +144,7 @@ func TestGetChatChannelHistory_Success(t *testing.T) {
 	withSlackHistory(t, fake)
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history?limit=10", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history?limit=10", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -166,7 +173,7 @@ func TestGetChatThread_CurrentThread(t *testing.T) {
 	withSlackHistory(t, fake)
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
+	testHandler.GetChatThread(w, historyReq(t, "/api/chat/thread", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -188,7 +195,7 @@ func TestGetChatThread_ByID(t *testing.T) {
 	withSlackHistory(t, fake)
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatThread(w, taskActorReq("/api/chat/thread?id=70.0", taskID))
+	testHandler.GetChatThread(w, historyReq(t, "/api/chat/thread?id=70.0", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -210,7 +217,7 @@ func TestGetChatHistory_NoSlackBindingFallsBackToTranscript(t *testing.T) {
 	withSlackHistory(t, &fakeChatHistoryReader{err: slack.ErrNoSlackSession})
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -243,7 +250,7 @@ func TestGetChatHistory_NoSlackBindingReadsStoredTranscript(t *testing.T) {
 	insertChatVisibilityMessage(t, sessionID, "second user turn", "message", true, base.Add(3*time.Second))
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -286,7 +293,7 @@ func TestGetChatHistory_NilReaderServesTranscript(t *testing.T) {
 	withSlackHistory(t, nil)
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -317,7 +324,7 @@ func TestGetChatHistory_NilReaderServesStoredTranscript(t *testing.T) {
 	insertChatMessageRole(t, sessionID, "assistant", "and my reply", "message", true, base.Add(time.Second))
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -369,7 +376,7 @@ func TestGetChatHistory_TranscriptNamesItsChannel(t *testing.T) {
 
 	// Empty read first: this leg already named the platform before this change.
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 	var empty ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &empty)
 
@@ -377,7 +384,7 @@ func TestGetChatHistory_TranscriptNamesItsChannel(t *testing.T) {
 	insertChatVisibilityMessage(t, sessionID, "a wecom turn", "message", true, base)
 
 	w = httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
@@ -409,7 +416,7 @@ func TestGetChatHistory_WebOnlyTranscriptHasNoChannelType(t *testing.T) {
 	insertChatVisibilityMessage(t, sessionID, "a web turn", "message", true, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC))
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 
 	var resp ChatChannelHistoryResponse
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
@@ -483,7 +490,7 @@ func TestGetChatHistory_ChannelTaskCannotReadEarlierContextGeneration(t *testing
 	}
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
@@ -496,7 +503,7 @@ func TestGetChatHistory_ChannelTaskCannotReadEarlierContextGeneration(t *testing
 	}
 
 	w = httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", legacyTaskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", legacyTaskID))
 	if w.Code != http.StatusOK {
 		t.Fatalf("legacy status = %d, want 200: %s", w.Code, w.Body.String())
 	}
@@ -539,7 +546,7 @@ func TestGetChatHistory_TranscriptPagesWithoutDuplicatesOrGaps(t *testing.T) {
 			target += "&before=" + url.QueryEscape(before)
 		}
 		w := httptest.NewRecorder()
-		testHandler.GetChatChannelHistory(w, taskActorReq(target, taskID))
+		testHandler.GetChatChannelHistory(w, historyReq(t, target, taskID))
 		if w.Code != http.StatusOK {
 			t.Fatalf("page %d status = %d, want 200: %s", page, w.Code, w.Body.String())
 		}
@@ -639,7 +646,7 @@ func TestGetChatHistory_NonChatTask(t *testing.T) {
 	withSlackHistory(t, &fakeChatHistoryReader{})
 
 	w := httptest.NewRecorder()
-	testHandler.GetChatChannelHistory(w, taskActorReq("/api/chat/history", taskID))
+	testHandler.GetChatChannelHistory(w, historyReq(t, "/api/chat/history", taskID))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
 	}
@@ -663,7 +670,7 @@ func TestGetChatThread_WebDMServesTranscriptWithMessageKind(t *testing.T) {
 			insertChatVisibilityMessage(t, sessionID, "waive it", "message", false, base.Add(time.Second))
 
 			w := httptest.NewRecorder()
-			testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
+			testHandler.GetChatThread(w, historyReq(t, "/api/chat/thread", taskID))
 
 			if w.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
@@ -694,7 +701,7 @@ func TestGetChatThread_NoIDServesWebDMTranscript(t *testing.T) {
 			insertChatMessageRole(t, sessionID, "assistant", "1) Ship 2) Hold", "message", true, base)
 
 			w := httptest.NewRecorder()
-			testHandler.GetChatThread(w, taskActorReq("/api/chat/thread", taskID))
+			testHandler.GetChatThread(w, historyReq(t, "/api/chat/thread", taskID))
 
 			var resp ChatChannelHistoryResponse
 			_ = json.Unmarshal(w.Body.Bytes(), &resp)

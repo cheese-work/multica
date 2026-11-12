@@ -261,7 +261,7 @@ func (s *IssueWakeupService) admitCustomStart(ctx context.Context, q *db.Queries
 	if caps := cfg.aggregateCaps(); len(caps) > 0 {
 		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.DefaultRuleKey.String, FactAge: oldestReceiptAge(receipts)}, caps, now)
 		if aggregateCounterBusy(err) {
-			return false, nil // another start holds the counter; this one is retried on a later pass
+			return false, errAggregateCounterBusy // another start holds the counter; retried on a later pass
 		}
 		if err != nil {
 			return false, err

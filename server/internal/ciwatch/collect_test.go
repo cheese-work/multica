@@ -3,6 +3,7 @@ package ciwatch
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,10 +202,12 @@ func TestSupersededByGreenRunSkipsEvidence(t *testing.T) {
 	}
 }
 
-const rateLimitLog = `2026-11-06T04:50:01.1000000Z ##[group]Run gh run list --limit 100
-2026-11-06T04:50:02.2000000Z gh: API rate limit exceeded for installation. If you reach out to GitHub Support for help, please include the request ID ABCD:1234. (HTTP 403)
-2026-11-06T04:50:02.3000000Z ##[error]Process completed with exit code 1.
-`
+// Trimmed from the real job log of run 42164833838 (job 127718756968), the
+// rate-limit failure that motivated the watcher. The log was fetched with
+// "gh api repos/cheese-work/multica/actions/jobs/127718756968/logs".
+//
+//go:embed testdata/run-42164833838-job-127718756968.txt
+var rateLimitLog string
 
 const goFailLog = `=== RUN   TestRouteGate
     route_test.go:88: got "dropped" want "p0"
@@ -219,7 +222,7 @@ ELIFECYCLE  Command failed with exit code 2.
 
 func TestEvidenceFixtures(t *testing.T) {
 	cases := []struct{ name, log, want string }{
-		{"rate limit trace of run 42164833838", rateLimitLog, "API rate limit exceeded"},
+		{"rate limit trace of run 42164833838", rateLimitLog, "gh: API rate limit exceeded for installation"},
 		{"go test failure", goFailLog, "--- FAIL: TestRouteGate"},
 		{"ts type error", tsErrLog, "error TS2322"},
 	}

@@ -2,6 +2,12 @@ services:
   backend-blue: &flags_backend
     environment:
       MULTICA_FEATURE_FLAGS_FILE: /app/feature-flags.yaml
+      # Passkey approval (CHE-4787). cutover.sh replaces the deployed compose
+      # files with these, so the keys must be forwarded here or a cutover drops
+      # them and passkey.FromEnv turns approval off. Unset = off, as before.
+      MULTICA_WEBAUTHN_RP_ID: ${MULTICA_WEBAUTHN_RP_ID:-}
+      MULTICA_WEBAUTHN_ORIGINS: ${MULTICA_WEBAUTHN_ORIGINS:-}
+      MULTICA_PASSKEY_ENROLL_KEY: ${MULTICA_PASSKEY_ENROLL_KEY:-}
     volumes:
       - type: bind
         source: ${MULTICA_FEATURE_FLAGS_FILE:-${MULTICA_JEV_FLAGS_FILE:?set the absolute path of the feature-flag file}}

@@ -7,6 +7,7 @@ export {
   registerDraftCleanup,
   clearRegisteredWorkspaceDrafts,
   resetAllRegisteredDrafts,
+  DRAFT_SESSION_KEY,
   type DraftCleanupEntry,
 } from "./cleanup-registry";
 export {
@@ -36,3 +37,4 @@ export {
   type KeyedDraftStoreConfig,
 } from "./create-keyed-draft-store";
 export { usePersistedDraft } from "./use-persisted-draft";
+export { useUploadCancelledNotice } from "./upload-cancelled-notice";

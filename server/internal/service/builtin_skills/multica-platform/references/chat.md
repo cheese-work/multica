@@ -34,6 +34,17 @@ multica chat continue --fork                                # keeps this DM, ope
 - A retry of the same turn returns the same child (`--idempotency-key`
   defaults to the current chat task id).
 
+To keep the same DM instead, compact it in place:
+
+```bash
+multica chat compact --summary-file ./summary.md            # same DM id, history and URL; next turn starts from the summary
+```
+
+- The DM is never archived and no new DM is created. The summary is all the
+  next turn starts with.
+- If the server does not support in-place compaction, the command stops and
+  the DM is unchanged.
+
 ## Rename a DM
 
 ```bash
@@ -43,6 +54,21 @@ multica chat rename <session-id> <title> --output json
 Sets the DM title and posts a message announcing the new title and who
 changed it, without reading the DM's contents. JSON carries `id`, `title`,
 `previous_title` and `message_id`.
+
+## Declare the turn outcome
+
+```bash
+multica chat reply-state question --ask <ask-id>   # this turn answers/keeps one open ask
+multica chat reply-state question --new            # this turn opens a new ask
+multica chat reply-state done --ask <ask-id> [--ask <ask-id> ...]   # these asks are resolved
+multica chat reply-state info                      # nothing is owed to you
+```
+
+Runs from a DM task and tells the server what the turn leaves the human
+owing. The chat prompt lists the DM's open ask ids, oldest first, or says
+"no open asks". `done` needs at least one `--ask`; without it the CLI refuses
+and sends no request. `question` with two open asks needs `--ask <id>` or
+`--new`; otherwise the server answers 400 and the CLI prints that text.
 
 ## Unseen DMs
 

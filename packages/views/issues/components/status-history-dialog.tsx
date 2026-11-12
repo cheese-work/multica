@@ -11,8 +11,9 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import { Slider } from "@multica/ui/components/ui/slider";
-import type { TimelineEntry } from "@multica/core/types";
+import type { IssueWorkflow, Project, TimelineEntry } from "@multica/core/types";
 import { useLocale, useT } from "../../i18n";
+import { WorkflowGraph } from "../../workflows/workflow-graph";
 import { buildStatusHistory, type StatusHistoryItem } from "./status-history";
 
 export interface ResolvedStatus {
@@ -53,12 +54,17 @@ export function StatusHistoryDialog({
   entries,
   truncated,
   resolveStatus,
+  workflow = null,
+  project = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   entries: readonly TimelineEntry[];
   truncated: boolean;
   resolveStatus: (statusKey: string) => ResolvedStatus;
+  /** When given, the graph above the list shows the selected change. */
+  workflow?: Pick<IssueWorkflow, "steps"> | null;
+  project?: Pick<Project, "lead_type" | "lead_id"> | null;
 }) {
   const { t } = useT("issues");
   const locale = useLocale();
@@ -72,6 +78,22 @@ export function StatusHistoryDialog({
   const [picked, setPicked] = useState<number | null>(null);
   const last = items.length - 1;
   const selected = picked === null ? last : Math.min(picked, last);
+
+  const current = items[selected];
+  // A legacy row says nothing about how it moved, so it never claims an edge;
+  // the graph only marks its target node. A recorded move highlights its edge
+  // when the workflow still has one between the two statuses.
+  const highlightEdge = current?.recorded ? { from: current.from, to: current.to } : null;
+  const move = (delta: number) => setPicked(Math.max(0, Math.min(last, selected + delta)));
+  // The scrubber handles its own arrows; handling them here too would move twice.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if ((e.target as HTMLElement).closest('[role="slider"]')) return;
+    if (e.key === "ArrowLeft") move(-1);
+    else if (e.key === "ArrowRight") move(1);
+    else return;
+    e.preventDefault();
+  };
 
   const statusText = (key: string): string => {
     const { label, removed } = resolveStatus(key);
@@ -88,7 +110,7 @@ export function StatusHistoryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className={cn("max-w-lg", workflow && "sm:max-w-2xl")} onKeyDown={onKeyDown}>
         <DialogHeader>
           <DialogTitle>{t(($) => $.status_history.title)}</DialogTitle>
           <DialogDescription>{t(($) => $.status_history.description)}</DialogDescription>
@@ -116,6 +138,14 @@ export function StatusHistoryDialog({
                   {t(($) => $.status_history.position, { current: selected + 1, total: items.length })}
                 </span>
               </div>
+            )}
+            {workflow && current && (
+              <WorkflowGraph
+                workflow={workflow}
+                currentStatus={current.to}
+                highlightEdge={highlightEdge}
+                project={project}
+              />
             )}
             <ol className="max-h-80 space-y-1 overflow-y-auto">
               {items.map((item, i) => (

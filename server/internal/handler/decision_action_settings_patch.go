@@ -40,6 +40,7 @@ func init() {
 		Normalize: normalizeSettingsPatch,
 	})
 	registerConfigChange(settingsPatchAction, configChange{
+		Fields: []string{decisionaction.SettingsField},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
 			return err
@@ -100,6 +101,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	}
 	var err error
 	switch {
+	case key == "provider_breaker_max_hold_seconds":
+		err = validateProviderHoldSetting(map[string]any{key: value})
 	case key == "compact_prompt":
 		err = validateCompactPromptConfig(map[string]any{key: value})
 		if _, isString := value.(string); !isString && err == nil {

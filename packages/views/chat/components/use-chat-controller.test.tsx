@@ -149,7 +149,7 @@ vi.mock("../../common/use-app-foreground", () => ({
   useAppForeground: () => h.appForeground.value,
 }));
 vi.mock("@multica/core/chat", () => ({
-  CHAT_TITLE_MAX: 60,
+  deriveChatTitle: (s: string) => s.slice(0, 60),
   useChatStore: Object.assign(
     (sel: (s: typeof h.store) => unknown) => sel(h.store),
     { getState: () => h.store },
@@ -915,6 +915,16 @@ describe("useChatController auto mark-read", () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(h.markReadMutate).toHaveBeenCalledWith("sA");
+  });
+
+  it("does NOT mark read a session the viewer just marked as unseen", () => {
+    h.store.activeSessionId = "sA";
+    (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId = "sA";
+    renderHook(() => useChatController());
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(h.markReadMutate).not.toHaveBeenCalled();
+    delete (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId;
   });
 
   it("does NOT mark read a session that was only momentarily active on mount", () => {

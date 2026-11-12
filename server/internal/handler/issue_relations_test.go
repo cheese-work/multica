@@ -340,3 +340,21 @@ func TestIssueRelationsKeepsBoundaryEdgesAndMixedCaseMentions(t *testing.T) {
 		}
 	}
 }
+
+func TestIssueRelationsDependencyEdges(t *testing.T) {
+	blocked := dbfx.Issue(t, "dependency blocked")
+	blocker := dbfx.Issue(t, "dependency blocker")
+	dbfx.Insert(t, "issue_dependency", testutil.Cols{"issue_id": blocked, "depends_on_issue_id": blocker, "type": "blocked_by"})
+	// Cross-workspace dependency must be omitted like every other edge (N6).
+	foreign := dbfx.Issue(t, "dependency foreign", testutil.Cols{"workspace_id": dbfx.Workspace(t, "dependency foreign", "dependency-foreign")})
+	dbfx.Insert(t, "issue_dependency", testutil.Cols{"issue_id": blocked, "depends_on_issue_id": foreign, "type": "blocks"})
+	for _, root := range []string{blocked, blocker} {
+		graph := readRelations(t, root, "")
+		if len(graph.Nodes) != 2 || len(graph.Edges) != 1 {
+			t.Fatalf("root %s: want 2 nodes and 1 edge, got %+v", root, graph)
+		}
+		if edge := graph.Edges[0]; edge.Type != "dependency" || edge.Source != blocked || edge.Target != blocker {
+			t.Fatalf("root %s: dependency edge: %+v", root, edge)
+		}
+	}
+}

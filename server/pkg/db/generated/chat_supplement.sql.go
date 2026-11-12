@@ -378,7 +378,7 @@ func (q *Queries) ListChatTaskSupplementsByMessageIDs(ctx context.Context, arg L
 }
 
 const listDeliveredSteeredChatMessages = `-- name: ListDeliveredSteeredChatMessages :many
-SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id FROM chat_task_supplement s
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_task_supplement s
 JOIN chat_message m ON m.id = s.message_id AND m.chat_session_id = s.chat_session_id
 WHERE s.chat_session_id = $1
   AND s.workspace_id = $2
@@ -440,6 +440,7 @@ func (q *Queries) ListDeliveredSteeredChatMessages(ctx context.Context, arg List
 			&i.LineageMessageIds,
 			&i.DecisionRequestIds,
 			&i.ClientMessageID,
+			&i.ReanchoredAt,
 		); err != nil {
 			return nil, err
 		}

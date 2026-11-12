@@ -50,8 +50,22 @@ RETURNING *;
 -- turn starts a fresh session seeded from the summary. The DM id, status, pins
 -- and work_dir stay as they are.
 UPDATE chat_session
-SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now()
-WHERE id = $1
+SET compaction_epoch = compaction_epoch + 1, session_id = NULL, runtime_id = NULL, updated_at = now(),
+    segment_floor_at = (SELECT m.created_at FROM chat_message m WHERE m.id = sqlc.arg('divider_id')),
+    segment_floor_id = sqlc.arg('divider_id')
+WHERE chat_session.id = sqlc.arg('id')
+RETURNING *;
+
+-- name: CreateChatCompactionDivider :one
+-- The divider of an in-place compaction. Caller holds the DM lock, so the max
+-- read is stable: the divider sorts strictly after every committed message and
+-- two dividers never tie (CHE-2819 Rule P). Not subject to Rule W: it defines
+-- the floor instead of obeying it.
+INSERT INTO chat_message (id, chat_session_id, role, content, task_id, message_kind, sent_via, created_at)
+SELECT sqlc.arg('id'), cs.id, 'assistant', sqlc.arg('content'), sqlc.narg('task_id'), 'compaction_summary', 'system',
+       GREATEST(clock_timestamp(), COALESCE((SELECT max(m.created_at) FROM chat_message m WHERE m.chat_session_id = cs.id), '-infinity') + interval '1 microsecond')
+FROM chat_session cs
+WHERE cs.id = sqlc.arg('chat_session_id')
 RETURNING *;
 
 -- name: LockAgentTaskForCompaction :one
@@ -76,6 +90,59 @@ SELECT * FROM chat_message
 WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summary'
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- name: ListChatCarryOverMessages :many
+-- Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+-- assistant messages above the DM's segment floor, newest first. A queued
+-- follow-up is not delivered yet and stays out; the claiming task's own input
+-- batch is excluded because the claim delivers it separately.
+SELECT m.* FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatSegmentTail :many
+-- Carry-over fallback when the current segment holds no assistant message yet:
+-- the last assistant message of the previous segment and the messages after it,
+-- newest first. Nothing at or before the previous divider is returned. Same
+-- exclusions as ListChatCarryOverMessages.
+WITH prev_divider AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'compaction_summary'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+)
+SELECT m.* FROM chat_message m
+JOIN prev_segment ps ON ps.id = m.id
+LEFT JOIN last_answer la ON true
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
 
 -- name: MoveUnstartedChatTasksToSession :many
 -- A continuation answers the turns still waiting in the archived DM. A task no
@@ -184,14 +251,16 @@ ORDER BY message.created_at ASC, message.id ASC;
 -- Copies source rows as history: original role, time, elapsed time and failure
 -- text; no task, no quick actions, no channel fields. The caller supplies new
 -- ids in source order and the (possibly link-rewritten) content and kind.
+-- reanchored_at is copied with the restamped created_at: a copy of a restamped
+-- message must stay refused as a decision source (CHE-2895).
 INSERT INTO chat_message (
     id, chat_session_id, role, content, task_id, created_at, failure_reason,
-    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids
+    elapsed_ms, message_kind, quick_actions, sent_via, decision_answer_id, lineage_message_ids, reanchored_at
 )
 SELECT (sqlc.arg(ids)::uuid[])[i], sqlc.arg(chat_session_id)::uuid, source.role,
        (sqlc.arg(contents)::text[])[i], NULL, source.created_at, source.failure_reason,
        source.elapsed_ms, (sqlc.arg(message_kinds)::text[])[i], '[]'::jsonb, source.sent_via, source.decision_answer_id,
-       source.lineage_message_ids || source.id
+       source.lineage_message_ids || source.id, source.reanchored_at
 FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
 JOIN chat_message AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 
@@ -835,10 +904,13 @@ WHERE id = $1;
 -- message_kind and quick_actions default via COALESCE so every existing caller
 -- (which omits it) keeps writing ordinary messages; the empty-reply path passes
 -- 'no_response' to mark a visible turn with no text output (MUL-4351).
+-- Rule W (CHE-2819): created_at is never at or below the DM's segment floor,
+-- whatever the transaction start time, so a write that starts after a compact
+-- commits lands in the new segment. The floor is a plain read, no new lock.
 INSERT INTO chat_message (
     chat_session_id, role, content, task_id, failure_reason, elapsed_ms,
     message_kind, quick_actions, channel_media_pending_until, channel_ingested,
-    channel_context_revision, id, sent_via, decision_answer_id, client_message_id
+    channel_context_revision, id, sent_via, decision_answer_id, client_message_id, created_at
 )
 VALUES (
     $1, $2, $3, sqlc.narg(task_id), sqlc.narg(failure_reason), sqlc.narg(elapsed_ms),
@@ -858,7 +930,8 @@ VALUES (
     CASE WHEN COALESCE(sqlc.narg(channel_ingested)::boolean, FALSE) THEN 'channel'
          ELSE COALESCE(NULLIF(sqlc.narg(sent_via)::text, ''), 'system') END,
     sqlc.narg(decision_answer_id),
-    sqlc.narg(client_message_id)
+    sqlc.narg(client_message_id),
+    GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now()))
 )
 RETURNING *;
 
@@ -1401,6 +1474,57 @@ SET created_at = GREATEST(
 FROM latest_visible
 WHERE claimed_input.id = latest_visible.claimed_input_id
   AND latest_visible.prior_created_at >= latest_visible.input_created_at;
+
+-- name: ReanchorChatInputAcrossFloor :exec
+-- A retry child owns its root's input batch, which neither direct reanchor
+-- query touches. If the batch sits at or before the DM's segment floor, move it
+-- just after the latest row so the question stays beside its answer. Order is
+-- kept with distinct microsecond offsets. No-op without a floor or when the
+-- batch is already above it. A batch older than a decision ask card stays put:
+-- decision answers trust "after the ask" as proof of a reply, so restamping old
+-- input past a later card would let it pass as a fresh answer. The card may sit
+-- in any DM the same human owns in the workspace, because a decision accepts a
+-- source DM other than the ask's DM. Caller runs it in the claim transaction.
+-- The card check cannot see an ask still uncommitted in a sibling DM, so each
+-- moved row is also stamped reanchored_at; a decision record refuses it as a
+-- source (CHE-2895).
+WITH batch AS (
+    SELECT m.id, row_number() OVER (ORDER BY m.created_at, m.id) AS n
+    FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.task_id = sqlc.arg('input_task_id')
+      AND m.role = 'user'
+      AND cs.segment_floor_id IS NOT NULL
+      AND (m.created_at, m.id) <= (cs.segment_floor_at, cs.segment_floor_id)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM chat_message card
+        JOIN chat_session card_session ON card_session.id = card.chat_session_id
+        WHERE card_session.workspace_id = cs.workspace_id
+          AND card_session.creator_id = cs.creator_id
+          AND card.created_at >= m.created_at
+          AND card.id <> m.id
+          AND (
+            cardinality(card.decision_request_ids) > 0
+            OR card.id IN (
+              SELECT request.ping_message_id
+              FROM decision_request request
+              WHERE request.workspace_id = cs.workspace_id
+                AND request.human_user_id = cs.creator_id
+                AND request.ping_message_id IS NOT NULL
+            )
+          )
+      )
+), base AS (
+    SELECT GREATEST(sqlc.arg('dispatched_at')::timestamptz, max(created_at) + interval '1 microsecond') AS at
+    FROM chat_message WHERE chat_session_id = sqlc.arg('chat_session_id')
+)
+UPDATE chat_message m
+SET created_at = base.at + (batch.n - 1) * interval '1 microsecond',
+    reanchored_at = now()
+FROM batch, base
+WHERE m.id = batch.id;
 
 -- name: ReanchorNextQueuedDirectChatInput :exec
 -- An assistant outcome can make the next queued direct task the positional
@@ -2304,7 +2428,9 @@ CROSS JOIN messages;
 -- name: MarkChatTaskCompact :one
 -- CHE-1807: flags a chat task as a compaction run. An automatic compaction
 -- carries the server-built reason and the prompt size that triggered it; a
--- manual /compact carries neither.
+-- manual /compact carries neither. It does not set purpose: both flows still run
+-- as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+-- purpose='compaction'.
 UPDATE agent_task_queue
 SET task_kind = 'compact',
     compact_reason = sqlc.narg('compact_reason'),
@@ -2356,6 +2482,45 @@ WHERE t.chat_session_id = ANY($1::uuid[])
   AND t.status = 'completed'
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ORDER BY t.chat_session_id, t.completed_at DESC, t.id DESC;
+
+-- name: CancelCompactionTasksByWorkspace :many
+-- CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
+-- task of the workspace, whichever agent it was queued for, so a task queued
+-- under the old value never delivers the transcript. The chat resume pointer is
+-- not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+-- so match either marker or it would survive A->B->A with DM access.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
+RETURNING *;
+
+-- name: LockChatSessionShared :one
+-- CHE-2909: retry admission takes the same chat_session lock a compact chain
+-- change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+-- reads the committed outcome of any change in flight.
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE;
+
+-- name: LockedClockTimestamp :one
+-- CHE-2909: wall-clock time read while a settings write holds its locks. The
+-- activity row is stamped with it because now() is the transaction start, which
+-- can predate a task created and failed while the write waited for its locks.
+SELECT clock_timestamp()::timestamptz AS at;
+
+-- name: CompactChainChangedSince :one
+-- CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+-- changed after a task was created. The change sweep cancels only live tasks,
+-- so a task that had already failed would otherwise retry into the new chain
+-- (A -> B -> A included).
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed;
 
 -- name: GetLatestCompactionSummary :one
 -- The newest in-place compaction summary of a DM: the seed of its next turn

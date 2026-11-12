@@ -5,13 +5,12 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// --no-start (suppress_run) means "my own work is already underway". It must
-// not drop the run of a workflow step's handler when that handler is someone
-// other than the actor: nobody else will start it.
-func TestNoStartKeepsHandoffRunForADifferentHandler(t *testing.T) {
+// --no-start (suppress_run) starts no run, including the run of a workflow
+// step's handler, whoever the handler is (CHE-4964). Without it the handler's
+// run still starts.
+func TestNoStartSuppressesHandoffRunForEveryHandler(t *testing.T) {
 	seedTestCatalog(t)
 	handlerID := seededReadyAgentID(t)
 	actorID := dbfx.Agent(t, "no-start actor "+workflowTestSuffix(), handlerTestRuntimeID(t))
@@ -28,9 +27,9 @@ func TestNoStartKeepsHandoffRunForADifferentHandler(t *testing.T) {
 		noStart bool
 		wantRun bool
 	}{
-		{"handoff, other agent, no-start", asOther, true, true, true},
+		{"handoff, other agent, no-start", asOther, true, true, false},
 		{"handoff, other agent, start", asOther, true, false, true},
-		{"handoff, member, no-start", asMember, true, true, true},
+		{"handoff, member, no-start", asMember, true, true, false},
 		{"handoff, member, start", asMember, true, false, true},
 		{"handoff, actor is handler, no-start", asHandler, true, true, false},
 		{"handoff, actor is handler, start", asHandler, true, false, true},
@@ -74,18 +73,5 @@ func TestNoStartKeepsHandoffRunForADifferentHandler(t *testing.T) {
 				}
 			})
 		}
-	}
-}
-
-func TestWorkflowHandoffPayloadNamesWhyTheRunStarted(t *testing.T) {
-	hand := &workflowHandoff{}
-	hand.def.Name = "Delivery pilot"
-	forced := workflowHandoffPayload(db.Issue{}, hand, "", true, handoffRunReasonTargetDiffers)
-	if forced["run"] != "true" || forced["run_reason"] != handoffRunReasonTargetDiffers {
-		t.Fatalf("forced payload = %v, want run=true and run_reason=%s", forced, handoffRunReasonTargetDiffers)
-	}
-	plain := workflowHandoffPayload(db.Issue{}, hand, "", true, "")
-	if _, ok := plain["run_reason"]; ok {
-		t.Fatalf("plain payload = %v, want no run_reason", plain)
 	}
 }

@@ -105,7 +105,7 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
 `
 
 type CreateDefaultIssueWorkflowParams struct {
@@ -139,6 +139,7 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.RunBudgetSince,
 			&i.RunBudgetTokenAllowance,
 			&i.RunBudgetTokenReserve,
+			&i.StartStatusKey,
 		); err != nil {
 			return nil, err
 		}
@@ -162,7 +163,7 @@ VALUES (
     NULLIF($7::int, 0),
     COALESCE($8::boolean, true)
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
 `
 
 type CreateIssueWorkflowParams struct {
@@ -204,6 +205,7 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }
@@ -239,7 +241,7 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 }
 
 const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
@@ -263,12 +265,13 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }
 
 const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
@@ -297,6 +300,7 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }
@@ -356,7 +360,7 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 
 const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
@@ -390,6 +394,7 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.RunBudgetSince,
 			&i.RunBudgetTokenAllowance,
 			&i.RunBudgetTokenReserve,
+			&i.StartStatusKey,
 		); err != nil {
 			return nil, err
 		}
@@ -877,10 +882,16 @@ UPDATE issue_workflow SET
         ELSE NULLIF($5::int, 0)
     END,
     include_child_prs = COALESCE($6::boolean, include_child_prs),
+    -- A start status left out of the write keeps its value; '' clears it back
+    -- to todo.
+    start_status_key = CASE
+        WHEN $7::text IS NULL THEN start_status_key
+        ELSE NULLIF($7::text, '')
+    END,
     updated_at = now()
-WHERE id = $7::uuid
-  AND workspace_id = $8::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve
+WHERE id = $8::uuid
+  AND workspace_id = $9::uuid
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
 `
 
 type UpdateIssueWorkflowParams struct {
@@ -890,6 +901,7 @@ type UpdateIssueWorkflowParams struct {
 	Steps            []byte      `json:"steps"`
 	MaxRunsPerIssue  pgtype.Int4 `json:"max_runs_per_issue"`
 	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
+	StartStatusKey   pgtype.Text `json:"start_status_key"`
 	ID               pgtype.UUID `json:"id"`
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 }
@@ -902,6 +914,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		arg.Steps,
 		arg.MaxRunsPerIssue,
 		arg.IncludeChildPrs,
+		arg.StartStatusKey,
 		arg.ID,
 		arg.WorkspaceID,
 	)
@@ -922,6 +935,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.RunBudgetSince,
 		&i.RunBudgetTokenAllowance,
 		&i.RunBudgetTokenReserve,
+		&i.StartStatusKey,
 	)
 	return i, err
 }

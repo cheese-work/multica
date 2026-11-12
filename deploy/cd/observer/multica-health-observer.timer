@@ -1,0 +1,10 @@
+[Unit]
+Description=Sample C00 health every few seconds while a deploy is observed (CHE-5175)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

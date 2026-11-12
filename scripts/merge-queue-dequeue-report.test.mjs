@@ -42,6 +42,13 @@ test("buildStatus names the base and the first failing test, within 140 chars", 
   );
 });
 
+test("buildStatus never says 'unknown': falls back to the failed job, then to GitHub's reason", async () => {
+  const { buildStatus } = await load();
+  const base = { baseSha: "a".repeat(40), targetUrl: "u" };
+  assert.equal(buildStatus({ ...base, lines: [], jobs: ["backend-tests"] }).description, "failed in merge queue on main@aaaaaaa: backend-tests");
+  assert.equal(buildStatus({ ...base, lines: [] }).description, "failed in merge queue on main@aaaaaaa: failed_checks");
+});
+
 function extractLines() {
   return ["route_write_scope_audit_test.go:192: x", "--- FAIL: TestRouterWriteRoutesAuditedAgainstTaskWriteScope (0.02s)"];
 }
@@ -72,16 +79,27 @@ test("buildComment carries marker, SHAs, jobs, failing lines, run URL and attemp
   }
 });
 
-const fakeApi = (reason, { timeline, existingComment = false } = {}) => {
+// timelines: one timeline per graphql call (last one repeats); heads likewise. A null runState is an empty run list.
+const fakeApi = (reason, { timeline, timelines, heads, existingComment = false, runStates = [{ status: "completed", conclusion: "failure" }] } = {}) => {
   const writes = [];
-  const run = { id: 7, html_url: "https://example/run/7", conclusion: "failure", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
+  let polls = 0;
+  let queries = 0;
+  const nth = (list, i) => list[Math.min(i, list.length - 1)];
+  const run = { id: 7, html_url: "https://example/run/7", head_branch: "gh-readonly-queue/main/pr-842-" + "c".repeat(40) };
   return {
     writes,
-    graphql: async () => ({
-      repository: { pullRequest: { headRefOid: "h".repeat(40), timelineItems: { nodes: timeline ?? [push, removal(reason)] } } },
-    }),
+    graphql: async () => {
+      const i = queries++;
+      return { repository: { pullRequest: {
+        headRefOid: heads ? nth(heads, i) : "h".repeat(40),
+        timelineItems: { nodes: timelines ? nth(timelines, i) : timeline ?? [push, removal(reason)] },
+      } } };
+    },
     get: async (path) => {
-      if (path.includes("/actions/runs?")) return { workflow_runs: [run] };
+      if (path.includes("/actions/runs?")) {
+        const state = nth(runStates, polls++);
+        return { workflow_runs: state ? [{ ...run, ...state }] : [] };
+      }
       if (path.includes("/jobs?")) return { jobs: [{ id: 9, name: "backend-tests", conclusion: "failure", html_url: "https://example/job/9" }, { id: 10, name: "lint", conclusion: "success", html_url: "u" }] };
       if (path.includes("/issues/842/comments")) return existingComment ? [{ id: 55, body: "<!-- merge-queue-dequeue-report -->\nold" }] : [];
       throw new Error("unexpected GET " + path);
@@ -98,6 +116,89 @@ test("report: failed_checks writes one sticky comment and one head status", asyn
   assert.deepEqual(api.writes.map((w) => `${w.method} ${w.path}`), ["POST /repos/o/r/issues/842/comments", `POST /repos/o/r/statuses/${"h".repeat(40)}`]);
   assert.equal(api.writes[1].body.state, "failure");
   assert.ok(api.writes[0].body.body.includes("TestRouterWriteRoutesAuditedAgainstTaskWriteScope"));
+});
+
+test("report: queue run still in progress at dequeue time is waited for, not reported as unknown", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [{ status: "in_progress", conclusion: null }, { status: "in_progress", conclusion: null }, { status: "completed", conclusion: "failure" }] });
+  const sleeps = [];
+  await report({ api, repo: "o/r", pr: 842, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 2);
+  assert.match(api.writes[1].body.description, /TestRouterWriteRoutesAuditedAgainstTaskWriteScope/);
+  assert.doesNotMatch(api.writes[1].body.description, /unknown/);
+});
+
+test("report: a run that never finishes still reports its already-failed jobs, never 'unknown'", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [{ status: "in_progress", conclusion: null }] });
+  await report({ api, repo: "o/r", pr: 842, sleep: async () => {} });
+  assert.doesNotMatch(api.writes[1].body.description, /unknown/);
+  assert.match(api.writes[1].body.description, /TestRouter/);
+});
+
+test("report: timeout names the wait and links the run, never 'unknown'", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [{ status: "in_progress", conclusion: null }] });
+  const sleeps = [];
+  await report({ api, repo: "o/r", pr: 842, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 20);
+  const [comment, status] = api.writes.map((w) => w.body);
+  assert.match(status.description, /merge_group run still running after 10 min/);
+  assert.equal(status.target_url, "https://example/run/7");
+  assert.match(comment.body, /merge_group run still running after 10 min/);
+  assert.match(comment.body, /https:\/\/example\/run\/7/);
+});
+
+test("report: a completed run has no timeout wording", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks");
+  await report({ api, repo: "o/r", pr: 842, sleep: async () => {} });
+  assert.doesNotMatch(api.writes[1].body.description, /still running/);
+  assert.doesNotMatch(api.writes[0].body.body, /still running/);
+});
+
+test("report: an empty run list at dequeue time keeps polling until the run appears", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [null, null, { status: "completed", conclusion: "failure" }] });
+  const sleeps = [];
+  await report({ api, repo: "o/r", pr: 842, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 2);
+  assert.match(api.writes[1].body.description, /TestRouterWriteRoutesAuditedAgainstTaskWriteScope/);
+});
+
+test("report: no merge_group run ever appears: says so with the queue commit link", async () => {
+  const { report } = await load();
+  const api = fakeApi("failed_checks", { runStates: [null] });
+  const sleeps = [];
+  await report({ api, repo: "o/r", pr: 842, sleep: async (ms) => sleeps.push(ms) });
+  assert.equal(sleeps.length, 20);
+  const [comment, status] = api.writes.map((w) => w.body);
+  assert.match(status.description, /no merge_group run found after 10 min/);
+  assert.equal(status.target_url, `https://github.com/o/r/commit/${"q".repeat(40)}`);
+  assert.match(comment.body, /no merge_group run found after 10 min/);
+  assert.doesNotMatch(status.description, /unknown/);
+});
+
+test("report: a push, a later removal or a moved head during the wait writes nothing", async () => {
+  const { report } = await load();
+  const running = [{ status: "in_progress", conclusion: null }, { status: "completed", conclusion: "failure" }];
+  const base = [push, removal("failed_checks")];
+  for (const opts of [
+    { timelines: [base, [...base, push]] },
+    { timelines: [base, [...base, forcePush]] },
+    { timelines: [base, [...base, removal("manual")]] },
+    { timelines: [base, [push, removal("failed_checks", { beforeCommit: { oid: "z".repeat(40) } })]] },
+    { heads: ["h".repeat(40), "n".repeat(40)] },
+  ]) {
+    const api = fakeApi("failed_checks", { runStates: running, ...opts });
+    await report({ api, repo: "o/r", pr: 842, sleep: async () => {} });
+    assert.deepEqual(api.writes, [], JSON.stringify(Object.keys(opts)));
+  }
+});
+
+test("job logs are fetched with --allow-escape-sequences (newer gh refuses ANSI logs; clean() strips them)", async () => {
+  const { logArgs } = await load();
+  assert.deepEqual(logArgs("/repos/o/r/actions/jobs/1/logs"), ["api", "--allow-escape-sequences", "/repos/o/r/actions/jobs/1/logs"]);
 });
 
 test("report: manual removal writes nothing", async () => {
