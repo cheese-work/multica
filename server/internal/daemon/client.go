@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -212,6 +213,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
 		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 
@@ -729,10 +731,10 @@ func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID strin
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, nil, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, schedule []time.Duration) error {
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, initContext *initctx.Report, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -754,6 +756,9 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	}
 	if contextTokens > 0 && contextWindow > 0 {
 		body["context"] = map[string]int64{"tokens": contextTokens, "window": contextWindow}
+	}
+	if initContext != nil {
+		body["init_context"] = initContext
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }
@@ -1515,6 +1520,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

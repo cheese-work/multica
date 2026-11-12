@@ -1,0 +1,171 @@
+# ci-policy: class=main-build
+name: Main Build
+
+# Post-merge work only. The merge queue fast-forwards main to the SHA its
+# merge-group CI run already tested, so ci.yml has no push trigger (CHE-3325).
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: main-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Same signal the push run of ci.yml used: this SHA's merge-group CI run passed.
+  merge-group:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      merge_group_green: ${{ steps.green.outputs.merge_group_green }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Look up the merge-group run for this SHA
+        id: green
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          CI_PUSH_FULL: ${{ vars.CI_PUSH_FULL }}
+        run: node scripts/ci-scope.mjs merge-group-green
+
+  push-go-cache-warm:
+    needs: merge-group
+    if: ${{ needs.merge-group.outputs.merge_group_green == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      CI: "true"
+      GOFLAGS: -count=1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        id: go
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache: false
+      - name: Restore Go module cache
+        uses: actions/cache@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+      - name: Resolve Go build cache key
+        id: gocache
+        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
+      - name: Restore Go build cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
+      - name: Mark Go build cache epoch
+        id: goepoch
+        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
+      - name: Compile race test binaries without executing TestMain
+        working-directory: server
+        run: ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -run '^$' -exec /bin/true ./...
+      - name: Prune Go build cache to this run's entries
+        if: ${{ !cancelled() && steps.goepoch.outcome == 'success' }}
+        run: |
+          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
+            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
+      - name: Save Go build cache
+        if: ${{ !cancelled() && steps.gocache.outcome == 'success' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/go-build
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  push-turbo-cache-warm:
+    needs: merge-group
+    if: ${{ needs.merge-group.outputs.merge_group_green == 'true' }}
+    runs-on: ubuntu-24.04
+    env:
+      TURBO_CACHE_DIR: .turbo/cache
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install
+      - name: Resolve runtime for cache key
+        id: runtime
+        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
+      - name: Restore turbo cache
+        uses: actions/cache@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
+      - name: Warm build, type check, and lint cache
+        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
+
+  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
+  # now, but a daemon still on the earlier GitHub-based updater reaches its
+  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
+  # holding one file named `multica`. Delete this job once every host runs a
+  # server-only build.
+  daemon-artifact:
+    runs-on: ${{ vars.RUNNER_DAEMON_ARTIFACT || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # commit history for version/commit stamping
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Build daemon binary
+        working-directory: server
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+        # main.version uses <upstream>-YYYYMMDD-hhmm from UPSTREAM_VERSION and
+        # commit timestamp so capability gates accept it (scripts/daemon-artifact-version.sh
+        # fails closed otherwise); the exact full commit goes separately into
+        # main.commit, which the updater requires the candidate's `--version` to report.
+        run: |
+          mkdir -p ../dist
+          version=$(cd .. && scripts/daemon-artifact-version.sh)
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o ../dist/multica ./cmd/multica
+      - name: Upload daemon artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: multica-daemon-linux-${{ matrix.goarch }}
+          path: dist/multica
+          if-no-files-found: error
+          retention-days: 30
+
+  # CHE-4385: ran as a separate workflow run per push to main; as a called workflow it adds a job only.
+  # Cache maintenance runs after every completed build, as its old `workflow_run` trigger did.
+  cache-maintenance:
+    needs: [push-go-cache-warm, push-turbo-cache-warm, daemon-artifact]
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/cache-maintenance.yml

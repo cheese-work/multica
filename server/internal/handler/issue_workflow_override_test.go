@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Per-issue workflow override (CHE-1986).
@@ -128,6 +130,77 @@ func TestIssueOutsideAProjectHasNoWorkflowWithoutAnOverride(t *testing.T) {
 		t.Fatalf("an issue with no project and no override got a workflow brief:\n%s", got.Brief)
 	}
 	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+}
+
+// A stored Default (MUL-8250) limits issues outside a project, but an
+// override on such an issue is the workflow that judges it. Taking the
+// upstream resolution unchanged would judge it by the Default and let the
+// move through. (CHE-3459)
+func TestOverrideBeatsStoredDefaultOutsideAProject(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	wf := createTestWorkflow(t, "Beats Default "+workflowTestSuffix(), "in_review")
+	issueID := dbfx.Issue(t, "override beats default", testutil.Cols{"status": "todo"})
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+	updateIssueForTest(t, issueID, map[string]any{"status": "todo"}).Want(http.StatusOK)
+	setIssueOverride(t, issueID, wf.ID)
+
+	if code := updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusBadRequest).Map()["code"]; code != "status_not_in_workflow" {
+		t.Fatalf("code = %v, want status_not_in_workflow: the override, not the stored Default, judges the move", code)
+	}
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+}
+
+// On create, outside a project, an override lists the statuses the new issue
+// may take, not the stored Default: a status only the override lists is
+// accepted, and one only the Default lists is refused. (CHE-3459)
+func TestCreateOutsideAProjectJudgesByTheOverrideNotTheStoredDefault(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	key := "only_override"
+	createTestCustomStatus(t, key, "started")
+	wf := createTestWorkflow(t, "Create beats Default "+workflowTestSuffix(), key)
+	// Store the Default, then take key out of it: only the override lists key.
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	if err := testHandler.Queries.RemoveStatusFromDefaultIssueWorkflow(context.Background(), db.RemoveStatusFromDefaultIssueWorkflowParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID), StatusKey: key,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	create := func(body map[string]any) *testutil.Response {
+		return testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, body))
+	}
+
+	var created struct {
+		ID string `json:"id"`
+	}
+	create(map[string]any{"title": "listed only by the override " + workflowTestSuffix(), "status": key, "workflow_id": wf.ID}).
+		Want(http.StatusCreated).JSON(&created)
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, created.ID) })
+	if got := issueOverride(t, created.ID); got != wf.ID {
+		t.Fatalf("stored override = %q, want %q", got, wf.ID)
+	}
+	// No override: the stored Default still judges, and it does not list key.
+	create(map[string]any{"title": "no override " + workflowTestSuffix(), "status": key}).
+		Want(http.StatusBadRequest)
+}
+
+// Creating with an override that omits the requested status is an error, not
+// the silent restart on todo a Default or project workflow gets. (CHE-3459)
+func TestServiceCreateWithOverrideRefusesAnUnlistedStatus(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	wf := createTestWorkflow(t, "Create unlisted "+workflowTestSuffix())
+	_, err := testHandler.IssueService.Create(context.Background(), service.IssueCreateParams{
+		WorkspaceID: util.MustParseUUID(testWorkspaceID), Title: "override omits status " + workflowTestSuffix(),
+		Status: "in_progress", Priority: "none", CreatorType: "member", CreatorID: util.MustParseUUID(testUserID),
+		WorkflowID: util.MustParseUUID(wf.ID),
+	}, service.IssueCreateOpts{})
+	if err == nil {
+		t.Fatal("create with an override that omits in_progress succeeded; want a status_not_in_workflow error")
+	}
 }
 
 // Outside a project an override still applies its status list, but a handler
@@ -381,4 +454,51 @@ func TestCIGreenAdvancesByTheIssuesOverrideWorkflow(t *testing.T) {
 	snap.set(t, prNumber, "green-ovr-a", "SUCCESS")
 	refresh()
 	wantIssueStatus(t, fx.child.ID, "in_review")
+}
+
+// A sub-issue created from a captured comment honours the workflow override the
+// dialog sends, through the same validation as an ordinary create.
+func TestCommentSubIssueWithAWorkflowOverride(t *testing.T) {
+	seedTestCatalog(t)
+	syncIssueCounter(t)
+	wf := createTestWorkflow(t, "Comment override "+workflowTestSuffix(), "in_progress")
+	limited := createTestWorkflow(t, "Comment limited "+workflowTestSuffix())
+	sourceID := dbfx.Issue(t, "comment override source", testutil.Cols{"status": "todo"})
+	anchorID := dbfx.Comment(t, sourceID, "anchor comment")
+	syncIssueCounter(t)
+	build, err := service.BuildSourceContext(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), util.MustParseUUID(anchorID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := func(issue map[string]any) *testutil.Response {
+		req := withURLParam(newRequest("POST", "/api/comments/"+anchorID+"/sub-issues?workspace_id="+testWorkspaceID, map[string]any{
+			"mode": "manual", "capture_token": build.Token, "issue": issue,
+		}), "commentId", anchorID)
+		return testutil.Call(t, testHandler.CreateCommentSubIssue, req)
+	}
+
+	var created struct {
+		ID         string  `json:"id"`
+		WorkflowID *string `json:"workflow_id"`
+	}
+	create(map[string]any{"title": "comment override " + workflowTestSuffix(), "status": "in_progress", "workflow_id": wf.ID}).
+		Want(http.StatusCreated).JSON(&created)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_source_context WHERE issue_id = $1`, util.MustParseUUID(created.ID))
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, util.MustParseUUID(created.ID))
+	})
+	if created.WorkflowID == nil || *created.WorkflowID != wf.ID {
+		t.Fatalf("response workflow_id = %v, want %s", created.WorkflowID, wf.ID)
+	}
+	if got := issueOverride(t, created.ID); got != wf.ID {
+		t.Fatalf("stored override = %q, want %q", got, wf.ID)
+	}
+
+	// The same rejections as an ordinary create.
+	create(map[string]any{"title": "comment reject " + workflowTestSuffix(), "status": "in_progress", "workflow_id": limited.ID}).
+		Want(http.StatusBadRequest)
+	create(map[string]any{"title": "comment missing " + workflowTestSuffix(), "workflow_id": "00000000-0000-0000-0000-000000000001"}).
+		Want(http.StatusBadRequest)
+	create(map[string]any{"title": "comment bad " + workflowTestSuffix(), "workflow_id": "not-a-uuid"}).
+		Want(http.StatusBadRequest)
 }

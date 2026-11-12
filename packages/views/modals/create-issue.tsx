@@ -64,8 +64,9 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useProjectWithWorkflow, useProjectWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
+import { useProjectWithWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
 import { stepHandlerActor, useStepHandlerLabel } from "../workflows/step-handler";
+import { WorkflowChoicePill } from "../workflows/workflow-choice-pill";
 import { useIssueDraftStore, type IssueCreateDraft } from "@multica/core/issues/stores/draft-store";
 import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
 import { useQuickCreateStore } from "@multica/core/issues/stores/quick-create-store";
@@ -201,16 +202,16 @@ function CreateRunHint({
  * Names who a new issue will be handed to when its project's workflow starts
  * it on a step with a handler and no assignee was picked. (MUL-7420)
  */
-function WorkflowHandoffHint({ projectId, status }: { projectId?: string; status: IssueStatus }) {
+function WorkflowHandoffHint({ projectId, workflowId, status }: { projectId?: string; workflowId: string | null; status: IssueStatus }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
-  const { workflow, project, resolved, loading, retry } = useProjectWithWorkflow(wsId, projectId);
+  const { workflow, project, resolved, loading, retry } = useProjectWithWorkflow(wsId, projectId, workflowId);
   const handlerLabel = useStepHandlerLabel(project);
   const step = workflowStep(workflow, status);
   const label = handlerLabel(step);
   // The server hands the new issue to the workflow's handler whatever this form
   // shows, so a catalog that cannot say must not read as "nobody gets it".
-  if (projectId && !resolved && !loading) {
+  if ((projectId || workflowId) && !resolved && !loading) {
     return (
       <div aria-live="polite" className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground">
         <span className="truncate">{t(($) => $.workflows.create_handoff_unchecked)}</span>
@@ -319,6 +320,9 @@ export function ManualCreatePanel({
     }
     return draft.shared.projectId;
   });
+  // This one issue's own workflow; null follows the project. Not drafted: it is
+  // a per-issue choice that should not outlive the dialog. (CHE-2822)
+  const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [parentIssueId, setParentIssueId] = useState<string | undefined>(
     (data?.parent_issue_id as string) || undefined,
   );
@@ -424,9 +428,11 @@ export function ManualCreatePanel({
     setParentIssueId(id);
     setStage(null);
   };
-  // A project using a named workflow only accepts its columns: a status it
-  // does not list moves to todo, which every workflow keeps. (MUL-7420)
-  const createWorkflow = useProjectWorkflow(wsId, projectId);
+  // An issue only takes its workflow's columns — its override's, its project's,
+  // or Default's outside a project: a status it does not list moves to todo,
+  // which every workflow keeps. (MUL-7420, MUL-8250)
+  const { workflow: issueWorkflow, defaultWorkflow: workspaceDefault } = useProjectWithWorkflow(wsId, projectId, workflowId);
+  const createWorkflow = projectId || workflowId ? issueWorkflow : workspaceDefault;
   useEffect(() => {
     if (createWorkflow && !workflowAllowsStatus(createWorkflow, status)) {
       setStatus("todo");
@@ -474,6 +480,7 @@ export function ManualCreatePanel({
     setPropertyErrorId(null);
     setUnavailablePropertyRemoved(false);
     setProjectId(undefined);
+    setWorkflowId(null);
     setChildIssues([]);
     // Keep status and assignee in this batch. Parent and stage stay in local
     // state, while other manual and shared fields reset for the next issue.
@@ -569,6 +576,7 @@ export function ManualCreatePanel({
               ...(Object.keys(propertyValues).length > 0 ? { properties: propertyValues } : {}),
               stage: parentIssueId && stage != null ? stage : undefined,
               project_id: projectId,
+              workflow_id: workflowId ?? undefined,
             },
           },
         });
@@ -594,6 +602,7 @@ export function ManualCreatePanel({
           // Stage is only meaningful for a sub-issue (relative to its siblings).
           stage: parentIssueId && stage != null ? stage : undefined,
           project_id: projectId,
+          workflow_id: workflowId ?? undefined,
         });
       }
 
@@ -1057,7 +1066,7 @@ export function ManualCreatePanel({
             {assigneeId ? (
               <CreateRunHint assigneeType={assigneeType} assigneeId={assigneeId} status={status} />
             ) : (
-              <WorkflowHandoffHint projectId={projectId} status={status} />
+              <WorkflowHandoffHint projectId={projectId} workflowId={workflowId} status={status} />
             )}
 
             {/* Property toolbar — each field renders per the Settings → Preferences → Issue creation
@@ -1068,6 +1077,7 @@ export function ManualCreatePanel({
                 <StatusPicker
                   status={status}
                   projectId={projectId ?? null}
+                  workflowId={workflowId}
                   onUpdate={(u) => { if (u.status) updateStatus(u.status); }}
                   triggerRender={<PillButton />}
                   tooltip={tIssues(($) => $.detail.prop_status)}
@@ -1140,6 +1150,9 @@ export function ManualCreatePanel({
                   onOpenChange={(open) => setFieldPickerOpen(open ? "project" : null)}
                 />
               )}
+
+              {/* Workflow — only for people who may switch it; follows the project until chosen */}
+              <WorkflowChoicePill projectId={projectId ?? null} workflowId={workflowId} onChange={setWorkflowId} />
 
               {/* Stage — only relevant when creating a sub-issue under a parent */}
               {parentIssueId && (

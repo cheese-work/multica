@@ -28,6 +28,12 @@ import (
 // run_budget_exhausted; background callers log it and drop the trigger.
 var ErrRunBudgetExhausted = errors.New("the issue used its workflow's run budget, so nothing derived from it runs")
 
+// ErrStageQueueFull is returned by an enqueue path when the PR's bottleneck
+// stage already runs its capacity of PRs (CHE-3611). The PR waits in the stage
+// queue; handlers render it as 409 stage_queue_full and background callers
+// drop the trigger, which the stage's next free slot re-issues.
+var ErrStageQueueFull = errors.New("the stage is at capacity, so the PR is queued")
+
 // statusMerged is the "Code Accepted" status: a linked PR merged. It sits in the
 // started category, so the budget names it besides the done and closed ones.
 const statusMerged = "merged"
@@ -35,6 +41,9 @@ const statusMerged = "merged"
 // statusAgentReview is the Default workflow's agent review step, a custom
 // started status that hands the issue to its reviewer.
 const statusAgentReview = "agent_review"
+
+// statusNeedDecision is the workflow step an issue waits in for a decision answer.
+const statusNeedDecision = "need_decision"
 
 // RunTarget is the run an enqueue asks for: the agent that would receive it
 // and what asked (comment, mention, retry...). The guard needs both to tell the
@@ -45,6 +54,11 @@ type RunTarget struct {
 	AgentID   pgtype.UUID
 	Trigger   string
 	ReviewRun bool
+	// ActorUserID and TriggerCommentID name who asked for the run and the
+	// comment that asked. A stage refusal keeps them so the release starts the
+	// run under the same attribution (CHE-3611).
+	ActorUserID      pgtype.UUID
+	TriggerCommentID pgtype.UUID
 }
 
 // ReviewGate is what the guard hands the enqueue: the PR head the run reviews
@@ -78,7 +92,8 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 		return db.AgentTaskQueue{}, err
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
-	task, err := q.CreateAgentTask(ctx, p)
+	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
+	task, err := createProviderHeldAgentTask(ctx, q, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}
@@ -181,7 +196,8 @@ func noteRunInserted(ctx context.Context, q *db.Queries, issueID, taskID pgtype.
 	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
 	xid, _ := q.CurrentXactID(ctx)
-	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid})
+	event := RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid}
+	goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), event) })
 	return nil
 }
 
@@ -253,10 +269,11 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	if hook := onRunBudgetExhausted.Load(); hook != nil {
 		// The guard runs inside the enqueue transaction; the hook writes the
 		// issue on its own connection after the caller is done with it.
-		go (*hook)(context.WithoutCancel(ctx), RunBudgetExhausted{
+		exhausted := RunBudgetExhausted{
 			IssueID: issue.ID, Runs: runs, Max: max, Balance: balance, Since: usage.Since,
 			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
-		})
+		}
+		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), exhausted) })
 	}
 	return ReviewGate{}, ErrRunBudgetExhausted
 }

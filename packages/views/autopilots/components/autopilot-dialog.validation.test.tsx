@@ -106,6 +106,7 @@ vi.mock("../pickers/timezone-picker", () => ({
   TimezonePicker: ({ value }: { value: string }) => <div data-testid="timezone-picker">{value}</div>,
 }));
 
+import { useAutopilotDialogDraftStore } from "@multica/core/autopilots/stores";
 import { AutopilotDialog } from "./autopilot-dialog";
 
 function renderCreateDialog() {
@@ -122,6 +123,7 @@ const assigneeTrigger = () => screen.getByRole("button", { name: /Select agent o
 
 describe("AutopilotDialog required-field feedback", () => {
   beforeEach(() => {
+    useAutopilotDialogDraftStore.setState({ drafts: {} });
     mockCreateAutopilot.mockReset();
     mockCreateTrigger.mockReset();
   });

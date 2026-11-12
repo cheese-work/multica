@@ -7,6 +7,8 @@ what counts as needing one is workspace policy, not platform behavior.
 
 ```bash
 multica decision request --issue <issue> --for <user-id> --class <class> --ask-file ./ask.json
+multica agent decision ask --class <class> --ask-file ./ask.json   # in a run: no issue, no --for
+multica decision ask --class <class> --ask-file ./ask.json          # same command
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
@@ -16,10 +18,15 @@ multica issue human-in-charge <issue> --output json   # who to address; `human` 
 ```
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
-  `recommendation`, `default_if_no_reply`, `source_issue_id`,
-  `source_comment_id`. An ask that approves a file adds `subject:
+  `recommendation`, `recommended_option` (the exact label of the recommended
+  option; required with two or more options, the server puts it first),
+  `default_if_no_reply`, `source_issue_id`, `source_comment_id`. An ask that approves a file adds `subject:
   "artifact_approval"` and `artifacts[]` (`attachment_id`, `label`, `sha256`);
   the server checks each hash.
+- `agent decision ask` is the one-step form for a running task: the task names
+  the issue, and the server picks the issue's requester (or a member creator)
+  and the DM lane. With no such person it refuses; use `decision request --for`.
+  The MCP tool `decision_ask` takes the same ask.
 - `--class` takes one of the classes `decision request --help` lists. Which
   class a situation belongs to is workspace policy.
 - `issue human-in-charge` needs a running task on the issue. It returns the
@@ -54,7 +61,14 @@ issue (status or a wakeup on the answer) and end the run; do not poll.
 
 ## Recording the answer
 
-When the person answers in a DM, record it on the issue:
+Only a `reversible` answer is recorded this way. For every other class
+(`spend`, `deploy`, `publish`, `irreversible`, `product_direction`) the person
+answers on the decision card. The server refuses `--decision-record` for them,
+whether the source is a DM message or a member comment, and whether the record
+is asked or unprompted. The error carries the card URL when a card exists. Do
+not retry with another class: a record cannot change the request's class.
+
+When the person answers a `reversible` ask in a DM, record it on the issue:
 
 ```bash
 multica issue comment add <issue> --decision-record \
@@ -79,8 +93,8 @@ multica issue comment add <issue> --decision-record \
 ## Record states
 
 A record is pending until the agent is woken, then effective, or disclaimed
-by the person. `reversible` records wake at once. Every other class waits 10
-minutes. The person can disclaim while it is pending and after it is
+by the person. `reversible` records wake at once. No other class has a record
+(see above), so there is no 10-minute wait to plan for. The person can disclaim while it is pending and after it is
 effective; an effective record sends the agent a retraction. A disclaim
 reopens a live asked request, and cancels the request of an unprompted record
 or an archived DM. Times shown to people
@@ -157,3 +171,51 @@ multica workspace update <id> --context-file ./c.md --expected-before-digest <he
   run-rule flag. `--decision-id` and `--vote-issue` are alternatives.
 - 409 means the live value moved or the decision was used: read it again and
   ask for a new decision. The CLI never retries.
+
+## Proposing an action (task token)
+
+An agent proposes a governed action; a person approves it with a passkey on a
+card. The proposal changes nothing itself.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue <issue> \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue <issue> --params-file ./params.json
+```
+
+- `--version` and `--issue` are required. `--for` names the person; leave it
+  out only when an open intent already names one.
+- `--param k=v` sends a string. `--param k:=<json>` sends raw JSON (a number,
+  boolean, array or object). Repeat the flag per key; a duplicate key is
+  refused. `--params-file` is one JSON object and cannot be mixed with
+  `--param`.
+- It works only with a task token. The output prints the card link
+  `<web>/<workspace>/issues/<issue-id>?approve=<action-id>`; give that link to
+  the person.
+- A refusal prints the server's status and error code, for example
+  `503 proposals_unavailable`. Report it; do not retry with a PAT.
+- `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
+  `issue.run_budget.top_up` takes `issue_id`, `window_id`. Prefer
+  `multica issue budget raise|top-up`, which fills these for you.
+
+## Proposing a config change
+
+`multica config propose` writes the action file for a workspace config change:
+it reads the live value, computes `before_sha256` and `after_sha256`, and the
+file goes to `multica decision request --action-file`. It sends nothing.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --dry-run
+multica config propose workspace.settings --set compact_prompt="..." --out ./action.json
+```
+
+- Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`,
+  `workspace.context`, `workflow.steps <workflow-id>`,
+  `workflow.step.instructions <workflow-id> --status-key <key>`,
+  `workspace.settings --set key=value|key:=<json>`.
+- `--dry-run` prints both digests and the action and writes nothing.
+  `--out` is required otherwise.
+- Any other field or settings key is refused as `denylisted` before a read.
+- `workflow.steps` takes the steps array as the workflow GET returns it; the
+  server refuses a differently normalized array (`after_digest_mismatch`).

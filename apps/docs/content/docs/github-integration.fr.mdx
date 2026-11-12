@@ -76,6 +76,8 @@ Resolves MUL-123
 
 Une simple mention dans la description, comme `Related to MUL-123`, n'associe pas du tout la PR à cette tâche. Les messages de commit et les commentaires de PR ne déclenchent pas non plus l'association.
 
+Une PR issue d'un fork s'associe automatiquement seulement si le fork a le même propriétaire que le dépôt de base. La fusion d'une telle PR ne fait pas avancer la tâche. Associez à la main les PR issues de forks d'autres propriétaires.
+
 Vous pouvez aussi associer une PR à la main : dans le bloc **Pull requests** de la tâche, cliquez sur **+** et collez l'URL de la PR. Pour retirer une PR d'une tâche, ouvrez le menu **⋯** de sa ligne et choisissez **Retirer de la tâche** ; Multica ne la réassociera plus à partir de son titre ou de sa branche.
 
 ## Voir les PR d'une tâche
@@ -124,6 +126,12 @@ Si un même identifiant correspond à une tâche dans plusieurs des espaces de t
 Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramètres → Code**, supprime seulement la relation entre l'espace de travail Multica courant et l'installation ; cela ne désinstalle pas l'App de GitHub à votre place. Les enregistrements de PR existants sont conservés, et les nouveaux événements cessent d'arriver dans cet espace de travail.
 
 Pour révoquer l'autorisation d'accès aux dépôts côté GitHub, désinstallez l'App ou ajustez son périmètre de dépôts depuis la page des installations de GitHub Apps de votre compte personnel ou de votre organisation. Après la désinstallation, tous les espaces de travail Multica liés à cette installation cessent de recevoir des événements.
+
+## Réveils sur vérifications réussies
+
+Définissez `github_wake_on_ci_success` à `true` dans les paramètres de l'espace de travail pour lancer une exécution lorsque les vérifications d'une PR ouverte ou brouillon liée réussissent sur son commit courant. Ce paramètre est désactivé par défaut. Une PR dont la seule vérification non terminée est le statut de verdict `security-gate` compte comme réussie. Un nouveau commit réveille à nouveau. Une exécution en échec relancée jusqu'au vert sur le même commit réveille une fois de plus. La même réussite livrée de nouveau ne réveille pas.
+
+L'exécution va à l'agent auteur de la PR, déterminé comme pour les réveils sur conflit et sur échec de vérifications. Si l'auteur est inconnu, elle va à l'assigné de la tâche. Si l'assigné est une personne et qu'aucun agent auteur n'est connu, la personne reçoit une notification.
 
 ## Attendre une exécution GitHub Actions
 
@@ -187,12 +195,21 @@ Permissions de dépôt (Repository permissions) :
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
+| Actions | Read-only ; nécessaire aux réveils `--until-gh-run` |
 | Checks | Read-only ; sert à afficher le statut CI |
 | Commit statuses | Read-only ; sert à agréger la CI basée sur les statuts hérités (legacy statuses) |
+
+Permissions d'organisation (Organization permissions) :
+
+| Permission | Niveau |
+|---|---|
+| Members | Read-only ; nécessaire pour vérifier que l'utilisateur qui se connecte est un admin actif de l'organisation |
 
 Abonnez-vous à ces événements :
 
 - **Pull request** ;
+- **Pull request review**, **Pull request review comment** et **Issue comment**, si des réveils sur revue humaine sont configurés ;
+- **Workflow run** et **Workflow job**, nécessaires aux réveils `--until-gh-run` ;
 - **Check suite**, **Check run** et **Status**, qui déclenchent l'actualisation de la CI et de la possibilité de fusion.
 
 Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire.
@@ -225,6 +242,16 @@ GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and ne
 
 Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, les PR sont toujours reflétées et les tâches toujours associées automatiquement et changées de statut à la fusion ; la carte de PR n'affiche simplement ni CI ni état de fusion.
 
+Si vous ajoutez la permission Members ou Actions à une App déjà installée, approuvez le changement de permission dans chaque organisation cible avant de la connecter à un nouvel espace de travail. Les installations existantes doivent accepter la nouvelle permission ; tant qu'elles ne l'ont pas fait, les réveils `--until-gh-run` ne reçoivent aucun événement de workflow.
+
+Définissez éventuellement `GITHUB_ALLOWED_ACCOUNT_IDS` avec une liste d'ID numériques de comptes GitHub séparés par des virgules (l'`id` de l'utilisateur ou de l'organisation, pas son login). Non définie ou vide, tout compte qui passe la vérification ci-dessus peut se connecter. Une fois définie, Multica refuse de lier une installation dont l'ID de compte n'est pas listé : le callback de configuration redirige avec `github_error=installation_not_allowed` et ne crée aucune liaison. Un callback **Redirect on update** sans code est évalué avec l'ID de compte déjà stocké pour cette liaison. Une liaison sans ID de compte stocké est refusée (échec fermé). Une valeur mal formée, comme un login, arrête le serveur au démarrage.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+Les événements GitHub `deleted` et `suspend` suppriment toujours la liaison, quelle que soit la liste.
+
 </Step>
 <Step>
 
@@ -245,6 +272,7 @@ Redémarrez le serveur API, puis effectuez la connexion dans **Paramètres → C
 
 - **Bouton de connexion désactivé** : vérifiez que `GITHUB_APP_SLUG` et `GITHUB_WEBHOOK_SECRET` parviennent bien au processus de l'API.
 - **Le webhook renvoie 401** : vérifiez que la GitHub App et l'API utilisent le même secret de webhook, puis relancez la livraison depuis **Recent Deliveries** sur GitHub.
+- **PR toujours ouverte dans Multica après sa fusion sur GitHub** : le webhook `closed` a été perdu. Si `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY` sont configurés, la prochaine actualisation CI lit la PR sur GitHub et enregistre la fusion ou la fermeture comme si le webhook était arrivé. Ouvrez la tâche pour lancer une actualisation, ou attendez l'actualisation périodique en arrière-plan. Sans ces identifiants, relancez la livraison depuis **Recent Deliveries**.
 - **PR non associée** : vérifiez que le dépôt fait partie du périmètre autorisé de l'App, que l'association automatique est activée, que l'identifiant appartient à l'espace de travail courant et que personne n'a retiré la PR de la tâche.
 - **Identifiant dans la description, mais PR non associée** : placez-le juste après un mot-clé de clôture (`Closes MUL-123`), ou dans le nom de branche ou le titre de la PR, ou associez la PR à la main.
 - **Aucun statut CI** : vérifiez que `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY` sont configurées, et que l'App dispose des permissions Pull requests, Checks et Commit statuses en lecture seule, avec les événements correspondants souscrits. La permission Contents n'est pas nécessaire. Après l'ajout de permissions à une App déjà installée, le propriétaire de chaque installation doit les approuver sur GitHub pour qu'elles prennent effet.

@@ -49,7 +49,8 @@
   "list": {
     "empty": "没有符合筛选条件的任务",
     "count_other": "{{count}} 个任务",
-    "search_placeholder": "搜索任务和项目"
+    "search_placeholder": "搜索任务和项目",
+    "unread_mention": "未读的提及"
   },
   "detail": {
     "properties": "属性",
@@ -112,7 +113,9 @@
   },
   "errors": {
     "create_failed": "创建任务失败",
-    "load_failed": "任务加载失败：{{message}}"
+    "load_failed": "任务加载失败：{{message}}",
+    "data_error": "此任务的数据应用无法读取。",
+    "not_found": "未找到该任务。"
   },
   "empty": {
     "filtered": "没有符合当前筛选条件的任务。",
@@ -293,6 +296,11 @@
   "comments.composer_pill": "添加评论，输入 @ 提及...",
   "resources.branch_hint": "运行会从这个分支开始，并针对它创建 Pull Request。留空则使用仓库默认分支。",
   "resources.commit": "这是提交 ID，不是分支。运行会回传到起始分支。如需一次性修订，请给 multica repo checkout 传入 --ref。",
+  "workflow": {
+    "title": "工作流",
+    "follow_project": "跟随项目",
+    "failed_title": "无法更改工作流"
+  },
   "workflow_handoff": {
     "check_failed_title": "无法确认交接",
     "check_failed_message": "没有做任何修改。{{message}}",

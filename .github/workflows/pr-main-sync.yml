@@ -1,0 +1,58 @@
+name: PR main sync
+
+# Merges `main` into open PR branches that are behind it, so a PR does not wait for an author run
+# only to update its base. Conflicts push nothing and open one task for the PR author.
+#
+# Trust boundary: runs only the default-branch script (workflow_run / manual dispatch on main), never PR code.
+# It holds the c00-multicado App key, so it must be a workflow_run or schedule definition (CHE-4251 guard).
+# It follows each completed Main Build push run, whatever its conclusion, so a ready PR is synced after every main push (CHE-4963).
+# Runs on the X99 runner because it needs the `multica` CLI; pushes use the App token, so CI starts on the PR.
+on:
+  workflow_run:
+    workflows: ["Main Build"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Print what would happen without pushing or creating tasks
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# A newer run supersedes a running sync; it sees the newest main anyway.
+concurrency:
+  group: pr-main-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    # C3 (diff-keyed evidence, CHE-3610) shipped, so a merge of main no longer voids PASS evidence. Draft PRs are skipped (CHE-4963).
+    # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch runs without it,
+    # but only as a forced dry run: no live merge happens while the switch is off.
+    if: github.event_name == 'workflow_dispatch' || (vars.PR_MAIN_SYNC_ENABLED == 'true' && github.event.workflow_run.event == 'push')
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 10
+    # The App key lives in this environment (branch policy: main only), so a dry run needs the default branch: dispatch with --ref main.
+    environment: ci-app-token
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Mint the c00-multicado write token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
+          private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
+          repositories: multica
+          permission-contents: write
+          permission-pull-requests: read
+      - name: Merge main into behind PR branches
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          DRY_RUN: ${{ (vars.PR_MAIN_SYNC_ENABLED != 'true' || (github.event_name == 'workflow_dispatch' && inputs.dry_run)) && '--dry-run' || '' }}
+        run: node scripts/pr-main-sync.mjs --repo "$GITHUB_REPOSITORY" --base "${{ github.event.repository.default_branch }}" $DRY_RUN

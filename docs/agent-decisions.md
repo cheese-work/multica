@@ -43,6 +43,68 @@ hex) and identical, nonempty `base_failed_checks` and `candidate_failed_checks`
 arrays of distinct check names. These are attested evidence references; C1 does
 not fetch or independently verify remote evidence.
 
+Allowlist version 2 adds `test_first_red`: a waiver of the test-first red step. Its
+record is WAIVED, never PASS. The proposal also carries `reviewer_agent_id` (one of the
+two signers, from a different lab than the author), `red_impossible_reason`,
+`weaker_evidence_kind` (`characterization_test`, `manual_repro`, `static_check` or
+`review_only`) and `followup_check`. Only the cosign route is allowed. The reviewer's
+opinion repeats the reason in a `red_impossible_reason` header, which must match the
+proposal. A version 1 record stays valid and never gains the new gate.
+
+Every `test_first_red` waiver owes its follow-up check. When the record becomes
+effective, the same transaction creates one wakeup on the waived issue (a timed,
+one-shot `issue_wakeup` for the author, 7 days after the record took effect). Its
+instruction carries the reason, the weaker evidence and the proposal's `followup_check`,
+and asks for one comment starting `Follow-up result (<decision instance>):` on the waived issue. A failed
+check or a worse crash rate reopens the work (`in_progress`, new PR). The wakeup is
+marked with `followup_instance_id` (unique per record), so closing the issue does not
+disable it: the check is meant to run after release. A proposal may add
+`crash_signature` (a Crashlytics issue id: 1-128 letters, digits, `.`, `:`, `_`, `-`);
+the instruction then tells the author to read the Crashlytics crash rate for that
+signature after the release (firebase-crashlytics MCP). A closed issue accepts no new
+wakeup, so a crash-fix check is not one-shot: it repeats every 72 hours, with no run cap,
+until the result is recorded. The result comment starts with
+`Follow-up result (<decision instance>):`, posted by the agent that runs the check from a run
+this wakeup dispatched; the platform then disables that waiver's wakeup before the next run.
+A marker from a member, another agent, an unrelated run of the same agent or no run ends
+nothing. Another waiver's result on the same issue does not end this
+check. A run that finds the fix unreleased posts nothing. If the change will never ship,
+the author records that as the result.
+`followup_check` is limited to 2000 bytes. A refused or unsettled proposal creates no
+wakeup.
+
+Waiver candidate for a PR (CHE-4326): an agent decision (Jev, once live) uses the PR's own diff digest as
+`candidate_sha256`. Print it with this command in a code block:
+
+```sh
+python3 scripts/security-gate/security_gate.py --github <owner/repo> --pr <n> --default-branch main --print-digest
+```
+
+The server matches the candidate exactly. A main-only merge (no change to any PR file) keeps the same digest, so the
+lookup still finds the record. Any change to a PR file gives a new digest and the lookup reports `not decided`. A
+candidate that is a head SHA instead voids the record on every head change. A record here is never human
+authorization: while Jev is not live, Cheese decides and the waiver is a human decision record (see
+`decision-records.md`, "Waiver scope line").
+
+Every new proposal must carry `decision_class: "reversible_gate"`, the only in-scope
+class. A missing or unrecognised class is refused (fail closed, no stop rule). A class of
+`irreversible`, `design_direction`, `architecture` or `high_level` is refused as an
+excluded category and trips the stop rule, for any decider. Records made before this
+check keep their stored scope.
+
+A proposal may set `decider: "Jev for Cheese"` with a `confidence` in (0, 1]. It is a
+label on an agent decision: the brief shows it, and no answer from Cheese is created.
+The label is only accepted from the agent registered in the workspace setting
+`agent_decisions_jev` (`{"agent_id", "mode"}`), checked against the task-verified
+proposer. Without that setting, with another agent, or with a mode other than `shadow`
+or `live`, the proposal is refused. In `shadow` mode the record is kept but never
+settles, even with `agent_decisions_enabled` on. In `live` mode it settles under the
+same rules as any agent decision. The owner sets it with `PUT /api/agent-decisions/jev`
+(`{"agent_id": "<uuid>", "mode": "shadow"|"live"|"off"}`; human owner only, task tokens
+get 403). The generic workspace settings save (`PATCH`/`PUT /api/workspaces/{id}`) drops this key and keeps the stored value, so it cannot register, change or erase Jev. Moving `shadow` to `live` is the owner's call after the 7-day shadow and
+qualification. Settling an already-recorded Jev decision re-reads the mode, but reliance
+on a record that has already settled is not re-gated if the mode later returns to `shadow`.
+
 The co-sign route freezes two distinct non-author agents of known, different
 labs. At least one lab differs from the author's lab. The casting task's lab must
 match the frozen signer lab. No signer replacement is supported.
@@ -103,9 +165,12 @@ Use `route: "adjudicate"`, omit `signers`, and provide an `adjudication` object:
 
 The verdict and rebuttal must equal the original, unedited task-authored comments
 on this issue. Both bodies bind `Disputed-point: <point>` and `Gate: <waived_gate>`
-on complete lines. The reviewer body begins `Verdict: BLOCK` and includes
-`Block-category: reversible_gate`. Security, excluded gates, missing evidence,
-protected gates and co-signer splits cannot be adjudicated.
+on complete lines. The reviewer body begins `Verdict: BLOCK` and carries typed
+header lines (`Key: value`, up to the first line that is not one): `Gate:` must be
+on the allowlist and `Block-category:` must be `reversible_gate`. Any other,
+missing, unknown or repeated value is excluded and fails closed. Prose is never
+read, in any language: a word such as "deploy" in the text neither excludes the
+decision nor turns the setting off. Co-signer splits cannot be adjudicated.
 
 The one adjudicator must differ from both disputants and their labs. Its frozen
 opinion uses the same commit/reveal protocol, plus `disputed_point: <point>` and
@@ -202,7 +267,8 @@ stop.
 
 Stop rule: one excluded-category decision turns the setting off and stores
 `settings.agent_decisions_stopped {reason, at}`. Triggers: a proposal whose gate
-is outside the allowlist, an adjudication BLOCK in an excluded category, and a
+is outside the allowlist, an adjudication BLOCK whose typed `Gate:` or
+`Block-category:` is excluded, missing or unknown, and a
 stored record whose gate left the allowlist reaching settlement. Existing
 records stay vetoable because veto never reads the setting. Not covered: a
 reliance on a record whose gate later left the allowlist is refused and does not
@@ -225,6 +291,20 @@ reader is the undo owner when they paste it.
 With the setting off and nothing to show (no record, no stop, no failed notice)
 the command prints nothing, so the brief omits the section. Records made
 earlier stay vetoable, so with any of them the section still prints.
+
+Waiver and Jev metrics (CHE-3262, slice 6 of CHE-3239): the feed adds `waivers`
+(live `test_first_red` records per agent; a waiver is WAIVED, never PASS), `jev`
+(`decisions`, `vetoed`, `veto_rate`, `excluded_class_decisions`; the last must be 0
+because an excluded class is refused at propose time) and `jev_asks`. The server
+cannot read the Jev shadow log, so `multica decision brief --jev-shadow-log
+<jsonl>` reads it, sends the Jev-routed ask ids as repeated `jev_ask` query
+parameters (at most 1000) and gets back each ask's `created_at` and Cheese's
+chosen option label (empty while open). The CLI then prints shadow agreement with
+Cheese (answered Jev-routed asks where `pick` equals Cheese's choice), the share
+of in-scope asks (any row whose reason is not `excluded`) that Jev decided within
+10 minutes of the ask, and whether the live-mode gate holds: agreement of at
+least 90% on at least 20 asks. Without the flag the section says the log was not
+given. With `--format json` the same figures are under `jev_shadow`.
 
 The daily brief is a Multica autopilot (6f676b71, "Cheese evening brief"). Its
 prompt change, "run `multica decision brief --format markdown` and paste its

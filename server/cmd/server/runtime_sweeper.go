@@ -173,6 +173,11 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
 	sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
+	if failed, err := taskSvc.FailExpiredProviderHolds(ctx, time.Now(), reconnectRetryExpireBatchSize); err != nil {
+		slog.Warn("runtime sweeper: failed to expire provider holds", "error", err)
+	} else {
+		taskSvc.HandleFailedTasks(ctx, failed)
+	}
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
@@ -728,7 +733,11 @@ func broadcastFailedTasks(ctx context.Context, queries *db.Queries, taskSvc *ser
 				if effectiveStatus == "in_progress" && !processedIssues[issueKey] {
 					processedIssues[issueKey] = true
 					if hasActive, herr := queries.HasActiveTaskForIssue(ctx, t.IssueID); herr == nil && !hasActive {
-						queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: t.IssueID, Status: "todo", WorkspaceID: issue.WorkspaceID})
+						// ponytail: no TxStarter on this test-only path, so the status and its
+						// history row are not atomic here; TaskService's reset is.
+						if _, _, err := service.ResetIssueForFailedTask(ctx, queries, issue, t); err != nil {
+							slog.Warn("sweeper: reset stuck issue failed", "issue_id", issueKey, "error", err)
+						}
 					}
 				}
 			}

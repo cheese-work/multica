@@ -180,6 +180,21 @@ func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	}
 }
 
+func TestEncodeStepsKeepsTheHumanInChargeHandler(t *testing.T) {
+	steps := []Step{{StatusKey: "need_decision", Handler: Handler{Type: HandlerHumanInCharge}}}
+	if steps[0].HandsOff() {
+		t.Fatal("human_in_charge must not hand the issue off by itself")
+	}
+	raw, err := EncodeSteps(steps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeSteps(raw)
+	if err != nil || !reflect.DeepEqual(got, steps) {
+		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, steps)
+	}
+}
+
 func TestNextStatusFallsBackToTheNextColumn(t *testing.T) {
 	def := devDefinition()
 	if got := def.NextStatus("implement"); got != "code_review" {
@@ -289,9 +304,21 @@ func TestCheckStatusListsAllowedKeys(t *testing.T) {
 		t.Fatalf("an issue outside projects accepts any status, got %v", err)
 	}
 	if err := CheckStatus(&Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, "code_review"); err != nil {
-		t.Fatalf("Default accepts any status, got %v", err)
+		t.Fatalf("a Default the workspace never stored accepts any status, got %v", err)
 	}
-	err := CheckStatus(&def, "in_review")
+	stored := Definition{ID: pgtype.UUID{Bytes: [16]byte{1}, Valid: true}, Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}
+	if err := CheckStatus(&stored, "in_review"); err != nil {
+		t.Fatalf("stored Default rejected a status it lists: %v", err)
+	}
+	err := CheckStatusOutsideProject(&stored, "code_review")
+	var outside *NotInWorkflowError
+	if !errors.As(err, &outside) || !outside.OutsideProject {
+		t.Fatalf("CheckStatusOutsideProject = %v, want NotInWorkflowError outside a project", err)
+	}
+	if !strings.Contains(err.Error(), "issues outside a project") {
+		t.Fatalf("error %q should say the issue is outside a project", err)
+	}
+	err = CheckStatus(&def, "in_review")
 	var notIn *NotInWorkflowError
 	if !errors.As(err, &notIn) {
 		t.Fatalf("CheckStatus = %v, want NotInWorkflowError", err)
@@ -519,5 +546,39 @@ func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
 	}
 	if err := CheckAgentMove(def, "in_review", "cancelled"); err != nil {
 		t.Errorf("in_review → cancelled refused: %v", err)
+	}
+}
+
+func TestResolveHandlerRoutingAgentReplacesAgentHandlerOnly(t *testing.T) {
+	var routed pgtype.UUID
+	if err := routed.Scan("11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	humans := Humans{RoutingAgent: routed}
+	agent := Step{StatusKey: "todo", Handler: Handler{Type: HandlerAgent, ID: testAgentID}}
+	if typ, id, ok := ResolveHandler(agent, db.Project{}, "", pgtype.UUID{}, humans); !ok || typ != HandlerAgent || id != routed {
+		t.Fatalf("agent handler = %s %v %v, want the routing agent", typ, id, ok)
+	}
+	member := Step{StatusKey: "todo", Handler: Handler{Type: HandlerMember, ID: testAgentID}}
+	if _, id, _ := ResolveHandler(member, db.Project{}, "", pgtype.UUID{}, humans); id == routed {
+		t.Fatal("routing agent replaced a member handler")
+	}
+}
+
+func TestStepLintFieldsRoundTrip(t *testing.T) {
+	in := []Step{{
+		StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, DynamicAssignment: true,
+		LintWaive: []LintWaiver{{Rule: "WF002", Reason: "assigned at run time"}},
+	}}
+	raw, err := EncodeSteps(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeSteps(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip lost lint fields: want %+v, got %+v", in, out)
 	}
 }

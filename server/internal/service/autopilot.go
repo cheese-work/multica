@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,8 +24,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -228,7 +232,7 @@ func (s *AutopilotService) AdmitAutopilotWebhookDelivery(
 	}
 
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 	run, _, err := s.createAutopilotRunWithQuota(ctx, autopilot.WorkspaceID, "webhook", "webhook:"+util.UUIDToString(deliveryID), db.CreateAutopilotRunParams{
@@ -301,7 +305,7 @@ func (s *AutopilotService) DispatchAutopilotForWebhookDelivery(
 	// A run_only task may have committed immediately before the process died
 	// while linking task_id back to the run. Repair that linkage and wake the
 	// daemon; otherwise continue the same partial run below.
-	if autopilot.ExecutionMode == "run_only" && !run.TaskID.Valid {
+	if isTaskOnlyMode(autopilot.ExecutionMode) && !run.TaskID.Valid {
 		repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, *run)
 		if repairErr != nil {
 			return run, fmt.Errorf("dispatch for webhook delivery: %w", repairErr)
@@ -479,7 +483,7 @@ func (s *AutopilotService) DispatchAutopilotForPlan(
 		return &existing, nil
 
 	case err == nil:
-		if autopilot.ExecutionMode == "run_only" && !existing.TaskID.Valid {
+		if isTaskOnlyMode(autopilot.ExecutionMode) && !existing.TaskID.Valid {
 			repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, existing)
 			if repairErr != nil {
 				return nil, fmt.Errorf("dispatch for plan: %w", repairErr)
@@ -581,6 +585,9 @@ func (s *AutopilotService) dispatchAutopilot(
 		active, activeErr := s.Queries.FindActiveScheduledAutopilotRunForTrigger(ctx, db.FindActiveScheduledAutopilotRunForTriggerParams{
 			TriggerID: scope.TriggerID, ConditionKey: scope.ConditionKey,
 		})
+		if activeErr == nil && s.supersedeBreakerHeldRun(ctx, autopilot, active) {
+			activeErr = pgx.ErrNoRows
+		}
 		if activeErr == nil {
 			reason := "equivalent scheduled run is already active: " + util.UUIDToString(active.ID)
 			skipped, skipErr := s.recordSkippedRun(ctx, autopilot, triggerID, source, payload, plannedAt, webhookDeliveryID, reason, dispatch.ReasonAlreadyActive)
@@ -606,7 +613,7 @@ func (s *AutopilotService) dispatchAutopilot(
 
 	// Determine initial status based on execution mode.
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 
@@ -654,20 +661,26 @@ func (s *AutopilotService) dispatchAutopilotRun(
 		triggerTimezone := s.resolveAutopilotTriggerTimezone(ctx, triggerID)
 		if err := s.dispatchCreateIssue(ctx, autopilot, run, triggerTimezone, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
+				// The dispatch transaction is rolled back by now; a cap notice written
+				// inside it would be lost.
+				s.TaskSvc.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return skipped, code, nil
 			}
 			s.failRun(ctx, run.ID, err.Error())
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
 			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch create_issue: %w", err)
 		}
-	case "run_only":
+	case "run_only", "script":
 		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
+				// The dispatch transaction is rolled back by now; a cap notice written
+				// inside it would be lost.
+				s.TaskSvc.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return skipped, code, nil
 			}
 			s.failRun(ctx, run.ID, err.Error())
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
-			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch run_only: %w", err)
+			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch %s: %w", autopilot.ExecutionMode, err)
 		}
 	default:
 		s.failRun(ctx, run.ID, "unknown execution_mode: "+autopilot.ExecutionMode)
@@ -771,7 +784,16 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("allocate issue number: %w", err)
 	}
 
-	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, "todo")
+	// The issue starts where the project's workflow says (CHE-3113); a project
+	// without a workflow, or one with no start status, keeps todo.
+	startStatus := issueworkflow.StartStatus
+	if workflow, _, err := issueworkflow.ForIssue(ctx, qtx, ap.WorkspaceID, pgtype.UUID{}, projectID); err != nil {
+		return fmt.Errorf("resolve project workflow: %w", err)
+	} else if workflow != nil {
+		startStatus = workflow.Start()
+	}
+
+	newPosition, err := issueposition.NextTopPosition(ctx, tx, ap.WorkspaceID, startStatus)
 	if err != nil {
 		return fmt.Errorf("get next issue position: %w", err)
 	}
@@ -781,7 +803,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		WorkspaceID:  ap.WorkspaceID,
 		Title:        title,
 		Description:  description,
-		Status:       "todo",
+		Status:       startStatus,
 		Priority:     "none",
 		AssigneeType: pgtype.Text{String: ap.AssigneeType, Valid: true},
 		AssigneeID:   ap.AssigneeID,
@@ -1053,11 +1075,11 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		}
 		return fmt.Errorf("resolve leader: %w", err)
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
-	if !verdict.Ready() {
+	if !verdict.Ready() && !providerBreakerHold(verdict) {
 		return &errDispatchSkipped{reason: formatAdmissionReason(ap, verdict.Detail), code: verdict.Reason}
 	}
 
@@ -1298,6 +1320,7 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to complete autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunCompleted(autopilot, updatedRun)
 		s.publishRunDone(wsID, updatedRun, "completed")
 	case "failed", "cancelled":
@@ -1310,8 +1333,74 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to fail autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunFailed(autopilot, updatedRun, updatedRun.Source, reason)
 		s.publishRunDone(wsID, updatedRun, "failed")
+	}
+}
+
+// scriptArgvSHA256 hashes a script's argv for the audit record. The argv itself
+// is never stored.
+func scriptArgvSHA256(args []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(args, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// RecordScriptClaim stores the script a daemon was handed at claim as
+// result.script {name, argv_sha256} on the run. The daemon runs exactly what
+// the claim response carried, so the audit is bound to that and not to the
+// autopilot config as it stands at settlement. A later claim of the same run
+// (redelivery) replaces the earlier one. Best effort: a failed write is logged
+// and never fails the claim. CHE-5094.
+func (s *AutopilotService) RecordScriptClaim(ctx context.Context, runID pgtype.UUID, name string, args []string) {
+	patch, err := json.Marshal(map[string]any{"script": map[string]any{
+		"name": name, "argv_sha256": scriptArgvSHA256(args), "exit_code": nil, "duration_ms": nil,
+	}})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: runID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record claim", "run_id", util.UUIDToString(runID), "error", err)
+	}
+}
+
+// recordScriptAudit completes result.script for a settled script-mode run:
+// the exit code and the wall-clock duration are added to the name and argv
+// SHA-256 recorded at claim (RecordScriptClaim). claimed is the run as read
+// before settlement, since a completed run's result is replaced by the task
+// result. Without a recorded claim, name and argv_sha256 are null: the live
+// autopilot config is never used. exit_code is null when no process exit was
+// observed (rejected, timed out, cancelled); duration_ms is null without both
+// timestamps. Best effort: a failed write is logged and never unsettles the
+// run. CHE-5094.
+func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilot, claimed db.AutopilotRun, task db.AgentTaskQueue) {
+	var prior struct {
+		Script struct {
+			Name       *string `json:"name"`
+			ArgvSHA256 *string `json:"argv_sha256"`
+		} `json:"script"`
+	}
+	_ = json.Unmarshal(claimed.Result, &prior) // not an object: no claim was recorded
+	// A recorded claim marks a script run even if the autopilot's mode was
+	// changed after it, so the audit is not lost.
+	if ap.ExecutionMode != "script" && prior.Script.Name == nil {
+		return
+	}
+	audit := map[string]any{"name": prior.Script.Name, "argv_sha256": prior.Script.ArgvSHA256, "exit_code": nil, "duration_ms": nil}
+	if task.Status == "completed" {
+		audit["exit_code"] = 0
+	} else if code, ok := agent.ScriptExitCode(task.Error.String); ok {
+		audit["exit_code"] = code
+	}
+	if task.StartedAt.Valid && task.CompletedAt.Valid {
+		audit["duration_ms"] = task.CompletedAt.Time.Sub(task.StartedAt.Time).Milliseconds()
+	}
+	patch, err := json.Marshal(map[string]any{"script": audit})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: claimed.ID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record", "run_id", util.UUIDToString(claimed.ID), "error", err)
 	}
 }
 
@@ -1674,7 +1763,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// chance to succeed.
 		return "", "", false
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		slog.Warn("autopilot admission: failed to load runtime",
 			"autopilot_id", util.UUIDToString(ap.ID),
@@ -1688,7 +1777,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// written server-side and the run waits for the laptop to come back. An
 		// unusable runtime does not qualify — nothing there can run until a
 		// human repairs it, so a doomed issue-create is not an improvement.
-		if ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable {
+		if (ap.ExecutionMode == "create_issue" && verdict.Availability == AgentWaitable) || providerBreakerHold(verdict) {
 			slog.Info("autopilot admission: allowing create_issue dispatch for offline runtime",
 				"autopilot_id", util.UUIDToString(ap.ID),
 				"runtime_id", util.UUIDToString(agent.RuntimeID),
@@ -1724,6 +1813,90 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// isTaskOnlyMode reports modes that dispatch a bare agent task with no issue.
+func isTaskOnlyMode(mode string) bool { return mode == "run_only" || mode == "script" }
+
+// agentReadinessFor picks the readiness check for the autopilot's mode. Script
+// mode runs no model, so it skips the model-only gates (provider hold, provider
+// breaker); every other mode keeps all of them (CHE-5092).
+func (s *AutopilotService) agentReadinessFor(ctx context.Context, ap db.Autopilot, agent db.Agent) (AgentVerdict, error) {
+	if ap.ExecutionMode == "script" {
+		return ScriptAgentReadiness(ctx, s.runtimeLookup(), agent)
+	}
+	return AgentReadiness(ctx, s.runtimeLookup(), agent)
+}
+
+// supersedeBreakerHeldRun retires a run_only run whose task is still queued
+// behind an open provider breaker, so the next schedule tick replaces it and a
+// long outage leaves no stale run to start after recovery (CHE-4460). A queued
+// task with the breaker closed is about to start; it stays and the tick dedupes.
+// Reports whether the run was retired.
+func (s *AutopilotService) supersedeBreakerHeldRun(ctx context.Context, ap db.Autopilot, active db.AutopilotRun) bool {
+	if ap.ExecutionMode != "run_only" || !active.TaskID.Valid {
+		return false
+	}
+	task, err := s.Queries.GetAgentTask(ctx, active.TaskID)
+	if err != nil || task.Status != "queued" {
+		return false
+	}
+	agent, _, err := s.resolveAutopilotLeader(ctx, ap)
+	if err != nil {
+		return false
+	}
+	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	if err != nil || !providerBreakerHold(verdict) {
+		return false
+	}
+	retired, err := s.retireQueuedBreakerHeldRun(ctx, active, task.ID)
+	if err != nil {
+		slog.Warn("failed to retire breaker-held autopilot run", "run_id", util.UUIDToString(active.ID), "error", err)
+		return false
+	}
+	return retired
+}
+
+// retireQueuedBreakerHeldRun cancels the run's task and marks the run skipped in
+// one transaction: a failed second write rolls the cancel back, so no run is
+// left running behind a cancelled task. The cancel applies only to a task that
+// is still queued. A claim that wins the race moves the task to dispatched, the
+// update then matches no row, and the run stays untouched (it is starting).
+func (s *AutopilotService) retireQueuedBreakerHeldRun(ctx context.Context, run db.AutopilotRun, taskID pgtype.UUID) (bool, error) {
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin breaker-held run retirement: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id = $1 AND status = 'queued'`, taskID)
+	if err != nil {
+		return false, fmt.Errorf("cancel queued task: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if _, err := s.Queries.WithTx(tx).UpdateAutopilotRunTerminalWithQuota(ctx, db.UpdateAutopilotRunTerminalWithQuotaParams{
+		TerminalStatus: "skipped",
+		FailureReason:  pgtype.Text{String: "superseded by the next scheduled run while the provider breaker held it", Valid: true},
+		ReasonCode:     pgtype.Text{String: string(dispatch.ReasonProviderBreaker), Valid: true},
+		RunID:          run.ID,
+	}); err != nil {
+		return false, fmt.Errorf("skip run: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit breaker-held run retirement: %w", err)
+	}
+	return true, nil
+}
+
+// providerBreakerHold reports a wait on an open provider breaker. Every mode
+// queues through it: the claim gate holds the task until the probe is due, and
+// a skipped scheduled run would not come back (CHE-4460).
+func providerBreakerHold(v AgentVerdict) bool {
+	return v.Availability == AgentWaitable && v.Reason == dispatch.ReasonProviderBreaker
 }
 
 // formatAdmissionReason rewrites the generic AgentReadiness reason into the

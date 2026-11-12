@@ -1361,7 +1361,7 @@ describe("ChatMessageList onboarding starter cards", () => {
 describe("ChatMessageList compact notice", () => {
   const notice = {
     id: "notice", chat_session_id: "44444444-4444-4444-8444-444444444444", role: "assistant" as const,
-    content: "Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.",
+    content: "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.",
     message_kind: "compact_notice", task_id: null, created_at: "2026-10-16T00:00:00Z",
   } as unknown as ChatMessage;
 
@@ -1379,8 +1379,84 @@ describe("ChatMessageList compact notice", () => {
     );
 
     const note = screen.getByRole("note");
-    expect(note).toHaveTextContent("Auto-compacted: context 164k of 200k tokens (82%) reached the 80% threshold. Continuing in a new DM.");
+    expect(note).toHaveTextContent("Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below.");
     expect(note).toHaveClass("text-muted-foreground");
+  });
+
+  // CHE-4438: a full-width divider marks the compaction point; above it is the
+  // old session, below it the new one.
+  it("draws a divider labelled with time and tokens at the compaction point", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[notice]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const divider = screen.getByRole("separator");
+    expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
+    expect(divider).toHaveClass("w-full");
+  });
+
+  it.each([
+    "Preset set to fast for the next run.",
+    "Auto-compact failed (failed). Type /compact to retry.",
+  ])("draws no divider on a notice that is not a compaction: %s", (content) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.queryByRole("separator")).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent(content);
+  });
+});
+
+describe("ChatMessageList row keys (CHE-3329)", () => {
+  // A compact turn persists two assistant messages under one task_id: the
+  // compaction summary and the reply.
+  const pair = [
+    {
+      id: "summary", chat_session_id: "s", role: "assistant" as const, content: "SUMMARY-TEXT",
+      message_kind: "compaction_summary", task_id: TASK_ID, created_at: "2026-10-16T00:00:00Z",
+    },
+    {
+      id: "reply", chat_session_id: "s", role: "assistant" as const, content: "REPLY-TEXT",
+      message_kind: "message", task_id: TASK_ID, created_at: "2026-10-16T00:00:01Z",
+    },
+  ] as unknown as ChatMessage[];
+
+  it("gives two assistant messages sharing a task_id distinct row keys", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(new Set(keys).size).toBe(keys.length);
+    // CHE-4438: the summary is folded behind a row; the reply stays visible.
+    expect(screen.queryByText("SUMMARY-TEXT")).toBeNull();
+    expect(screen.getByRole("button", { name: /Summary for the agent/ })).toBeInTheDocument();
+    expect(screen.getByText("REPLY-TEXT")).toBeInTheDocument();
+    expect(error.mock.calls.filter(([m]) => String(m).includes("same key"))).toHaveLength(0);
+    error.mockRestore();
+  });
+
+  it("keeps the task key on the one reply that inherits the live row", () => {
+    const { container } = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={pair} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const keys = [...container.querySelectorAll("[data-row-key]")].map((el) => el.getAttribute("data-row-key"));
+    expect(keys).toEqual(["summary", `task:${TASK_ID}`]);
   });
 });
 

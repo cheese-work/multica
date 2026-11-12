@@ -110,6 +110,9 @@ type ExecOptions struct {
 	CustomArgs       []string        // per-agent CLI arguments appended after ExtraArgs
 	QwenpawWorkspace string          // per-task QwenPaw workspace directory (passed as --workspace to qwenpaw acp); empty when not applicable
 	McpConfig        json.RawMessage // if non-nil, MCP server config to pass via --mcp-config
+	// DisableProviderWebTools turns the provider's server-side web tools off for
+	// this run (elevated profile, CHE-2216 plan 3.3). Claude and Codex only.
+	DisableProviderWebTools bool
 	// ThinkingLevel is the runtime-native reasoning/effort value (e.g.
 	// Claude's "low|medium|high|xhigh|max", Codex's "none|minimal|low|
 	// medium|high|xhigh", OpenCode's model variant names). Empty means
@@ -147,6 +150,10 @@ type ExecOptions struct {
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
 	ClaudeSettingsPath string
+	// AppendSystemPromptFile (CHE-3706, managed harness profile) is passed as
+	// --append-system-prompt-file so the runtime brief rides the cached system
+	// prompt instead of a workdir CLAUDE.md. Claude only; empty = unchanged.
+	AppendSystemPromptFile string
 	// CursorHookCommand is the argv of the multica hook relay (the daemon's own
 	// binary followed by CursorHookHelperArg). The cursor backend needs it, with
 	// EnableTaskSupplement, to accept additional messages; other providers
@@ -386,6 +393,9 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
+	// Script, when set, selects the model-less script backend: New returns it
+	// for any agentType and never reaches the provider switch.
+	Script *ScriptSpec
 }
 
 // New creates a Backend for the given agent type.
@@ -500,6 +510,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// would accept a fixed_args `--output-format text` and break its own
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
+
+	if cfg.Script != nil {
+		return newScriptBackend(cfg), nil
+	}
 
 	switch agentType {
 	case "claude":

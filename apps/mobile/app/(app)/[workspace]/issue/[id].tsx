@@ -10,7 +10,7 @@
  * Stack.Screen with title "Issue". We override that here once the data
  * lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -39,10 +39,19 @@ import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
 import { useAuthStore } from "@/data/auth-store";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { inboxListOptions } from "@/data/queries/inbox";
+import { useMarkInboxRead } from "@/data/mutations/inbox";
+import {
+  createReadRequestTracker,
+  requestMentionReads,
+} from "@multica/core/inbox/unread-mention-items";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
-import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { classifyIssueLoadError } from "@/lib/issue-load-error";
 import { useT } from "@/lib/i18n";
+
+// The route id is a UUID when opened from lists; the identifier is unknown after a failed load.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function IssueDetail() {
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
@@ -78,14 +87,33 @@ export default function IssueDetail() {
     }
   }, [wsId, id]);
 
-  // Screen-scoped composer state — clear on unmount so re-entering the
-  // issue starts from a clean slate (no stale text-selection comment id,
-  // no stale "Replying to X" target). Both stores are singletons used by
-  // the long-press action sheet.
+  // Opening the thread reads the viewer's mentions on it, so the list badge
+  // clears. Same rule as web's `useMarkMentionsReadOnOpen`.
+  const { data: inboxItems } = useQuery(inboxListOptions(wsId));
+  const markInboxRead = useMarkInboxRead().mutate;
+  const [mentionReads] = useState(createReadRequestTracker);
+  // A failed read rolls the cache back to the same unread items, so `inboxItems`
+  // may not change; this bump re-runs the effect so the retry happens.
+  const [mentionReadFailures, setMentionReadFailures] = useState(0);
+  useEffect(() => {
+    if (!inboxItems || !id) return;
+    requestMentionReads(inboxItems, id, mentionReads, (itemId, settle) =>
+      markInboxRead(itemId, {
+        onSettled: (_result, error) => {
+          settle(error !== null);
+          if (error) setMentionReadFailures((n) => n + 1);
+        },
+      }),
+    );
+  }, [inboxItems, id, markInboxRead, mentionReads, mentionReadFailures]);
+
+  // Screen-scoped state — clear on unmount so re-entering the issue starts
+  // from a clean slate (no stale text-selection comment id). The "Replying
+  // to X" target is cleared by the composer, which saves it in the issue's
+  // draft first; clearing it here would be saved as a discard.
   useEffect(() => {
     return () => {
       useCommentSelectStore.getState().clear();
-      useReplyTargetStore.getState().clear();
     };
   }, []);
 
@@ -97,6 +125,7 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const issue = detail.data;
+  const loadErrorKind = classifyIssueLoadError(detail.error);
   const deleteIssue = useDeleteIssue();
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const { data: pins } = useQuery(pinListOptions(wsId, userId));
@@ -199,13 +228,17 @@ export default function IssueDetail() {
         </View>
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
+          {loadErrorKind === "data" && !UUID_RE.test(id) && (
+            <Text className="text-sm font-medium text-center">{id}</Text>
+          )}
           <Text className="text-sm text-destructive text-center">
-            {t("errors.load_failed", {
-              message:
-                detail.error instanceof Error
-                  ? detail.error.message
-                  : "not found",
-            })}
+            {loadErrorKind === "data"
+              ? t("errors.data_error")
+              : loadErrorKind === "not_found"
+                ? t("errors.not_found")
+                : t("errors.load_failed", {
+                    message: detail.error instanceof Error ? detail.error.message : "",
+                  })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
             <Text>{t("common:actions.retry")}</Text>
