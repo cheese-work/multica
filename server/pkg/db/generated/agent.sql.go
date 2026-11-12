@@ -11894,7 +11894,8 @@ WHERE r.id = t.runtime_id
   AND t.stop_unconfirmed_at IS NULL
   AND t.dispatched_at IS NOT NULL
   AND t.dispatched_at < $2
-  AND NOT (t.id = ANY($3::uuid[]))
+  AND t.dispatched_at >= $3
+  AND NOT (t.id = ANY($4::uuid[]))
   AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
 RETURNING t.id, t.issue_id
 `
@@ -11902,6 +11903,7 @@ RETURNING t.id, t.issue_id
 type ReleaseStopsAttestedByDaemonParams struct {
 	RuntimeID        pgtype.UUID        `json:"runtime_id"`
 	DispatchedBefore pgtype.Timestamptz `json:"dispatched_before"`
+	DispatchedAfter  pgtype.Timestamptz `json:"dispatched_after"`
 	LiveTaskIds      []pgtype.UUID      `json:"live_task_ids"`
 }
 
@@ -11913,13 +11915,19 @@ type ReleaseStopsAttestedByDaemonRow struct {
 // CHE-3114 part 2: the claiming runtime's daemon reported its live task set. A
 // gate-arming cancelled run of that runtime that is not in the set, and was
 // dispatched before the grace cutoff (so a claim still in flight to the daemon
-// is not mistaken for a stopped run), is proven stopped: stamp cancel_acked_at
+// is not mistaken for a stopped run) and since the daemon process booted (a
+// restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
 // with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
 // rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
 // reports a pending process cleanup is not released: only a cleanup-confirmed
 // cancel-ack settles those. The first ack wins.
 func (q *Queries) ReleaseStopsAttestedByDaemon(ctx context.Context, arg ReleaseStopsAttestedByDaemonParams) ([]ReleaseStopsAttestedByDaemonRow, error) {
-	rows, err := q.db.Query(ctx, releaseStopsAttestedByDaemon, arg.RuntimeID, arg.DispatchedBefore, arg.LiveTaskIds)
+	rows, err := q.db.Query(ctx, releaseStopsAttestedByDaemon,
+		arg.RuntimeID,
+		arg.DispatchedBefore,
+		arg.DispatchedAfter,
+		arg.LiveTaskIds,
+	)
 	if err != nil {
 		return nil, err
 	}

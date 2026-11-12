@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -65,15 +66,15 @@ func (h *Handler) supersedeStaleReviews(ctx context.Context, prID pgtype.UUID) {
 // replacement reviews those gates were holding. A daemon that does not report a
 // live set (nil) attests nothing. Best effort: a failure keeps the gate closed
 // and the next heartbeat retries, so it never fails the heartbeat.
-func (h *Handler) reconcileStopsFromHeartbeat(ctx context.Context, runtimeID string, live *[]string) {
-	if live == nil {
+func (h *Handler) reconcileStopsFromHeartbeat(ctx context.Context, runtimeID string, live *[]string, uptimeMs *int64) {
+	if live == nil || uptimeMs == nil || *uptimeMs < 0 {
 		return
 	}
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
 		return
 	}
-	issueIDs, err := service.ReleaseStopsAttestedByDaemon(ctx, h.Queries, runtimeUUID, *live)
+	issueIDs, err := service.ReleaseStopsAttestedByDaemon(ctx, h.Queries, runtimeUUID, *live, time.Duration(*uptimeMs)*time.Millisecond)
 	if err != nil {
 		slog.Warn("daemon stop reconcile failed; stop gate stays closed", "runtime_id", runtimeID, "error", err)
 		return

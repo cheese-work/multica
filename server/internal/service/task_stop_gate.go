@@ -55,17 +55,24 @@ const daemonReconcileGrace = 2 * time.Minute
 // returns the issues whose gate it opened. Only an online runtime attests; the
 // caller passes a set only from a daemon that reports one (a daemon that does
 // not report it must not call this: an empty set means idle, not unknown).
+// Only runs dispatched since the daemon process booted (daemonUptime ago) are
+// attested: a restarted daemon starts with an empty set while the runner of a
+// run it did not start can outlive it (independent process groups). The boot
+// time is derived from the uptime on the server clock; transit delay can only
+// move it later, which keeps more runs unattested.
 // An id that does not parse is dropped, which can only keep the gate closed.
-func ReleaseStopsAttestedByDaemon(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, liveTaskIDs []string) ([]pgtype.UUID, error) {
+func ReleaseStopsAttestedByDaemon(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, liveTaskIDs []string, daemonUptime time.Duration) ([]pgtype.UUID, error) {
 	live := make([]pgtype.UUID, 0, len(liveTaskIDs))
 	for _, id := range liveTaskIDs {
 		if u, err := util.ParseUUID(id); err == nil {
 			live = append(live, u)
 		}
 	}
+	now := time.Now()
 	rows, err := q.ReleaseStopsAttestedByDaemon(ctx, db.ReleaseStopsAttestedByDaemonParams{
 		RuntimeID:        runtimeID,
-		DispatchedBefore: pgtype.Timestamptz{Time: time.Now().Add(-daemonReconcileGrace), Valid: true},
+		DispatchedBefore: pgtype.Timestamptz{Time: now.Add(-daemonReconcileGrace), Valid: true},
+		DispatchedAfter:  pgtype.Timestamptz{Time: now.Add(-daemonUptime), Valid: true},
 		LiveTaskIds:      live,
 	})
 	if err != nil {

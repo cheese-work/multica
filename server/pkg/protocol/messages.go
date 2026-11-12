@@ -467,6 +467,11 @@ type DaemonHeartbeatRequestPayload struct {
 	// that does not report it, which proves nothing; an empty non-nil set is a
 	// real "holds none".
 	LiveTaskIDs *[]string `json:"live_task_ids,omitempty"`
+	// DaemonUptimeMs is how long this daemon process has been up, sent with
+	// LiveTaskIDs. A restarted daemon starts with an empty set while the runner
+	// of a run it did not start can still be alive, so the server attests only
+	// runs dispatched since the process booted. Nil attests nothing.
+	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

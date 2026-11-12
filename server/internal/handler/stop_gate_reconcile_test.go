@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -23,7 +24,7 @@ func reconcileRuntime(t *testing.T, status string) (agentID, runtimeID string) {
 
 func reconcile(t *testing.T, runtimeID string, live []string) {
 	t.Helper()
-	if _, err := service.ReleaseStopsAttestedByDaemon(context.Background(), testHandler.Queries, parseUUID(runtimeID), live); err != nil {
+	if _, err := service.ReleaseStopsAttestedByDaemon(context.Background(), testHandler.Queries, parseUUID(runtimeID), live, time.Hour); err != nil {
 		t.Fatalf("ReleaseStopsAttestedByDaemon: %v", err)
 	}
 }
@@ -95,6 +96,7 @@ func heartbeatLiveSet(t *testing.T, runtimeID string, live *[]string) {
 	body := map[string]any{"runtime_id": runtimeID}
 	if live != nil {
 		body["live_task_ids"] = *live
+		body["daemon_uptime_ms"] = time.Hour.Milliseconds()
 	}
 	testutil.Decode[heartbeatJSON](t, testHandler.DaemonHeartbeat, newOwnerDaemonRequest(http.MethodPost, "/api/daemon/heartbeat", body), http.StatusOK)
 }
@@ -119,4 +121,68 @@ func TestStopGateReconcile_HeartbeatLiveSetOpensGateOnlyWhenReported(t *testing.
 	none := []string{}
 	heartbeatLiveSet(t, runtimeID, &none)
 	stopGateOpen(t, issueID)
+}
+
+// heartbeatLiveSetUptime posts a heartbeat that reports the live set and how
+// long the daemon process has been up (nil = not reported).
+func heartbeatLiveSetUptime(t *testing.T, runtimeID string, live []string, uptimeMs *int64) {
+	t.Helper()
+	body := map[string]any{"runtime_id": runtimeID, "live_task_ids": live}
+	if uptimeMs != nil {
+		body["daemon_uptime_ms"] = *uptimeMs
+	}
+	testutil.Decode[heartbeatJSON](t, testHandler.DaemonHeartbeat, newOwnerDaemonRequest(http.MethodPost, "/api/daemon/heartbeat", body), http.StatusOK)
+}
+
+// A restarted daemon starts with an empty live set, but the runner of a run it
+// did not start may still be alive (independent process group). The run was
+// dispatched (10 min ago) before this daemon booted (1 min ago): not attested.
+func TestStopGateReconcile_RunFromBeforeDaemonRestartKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "reconcile restart", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	oneMinute := int64(60_000)
+	heartbeatLiveSetUptime(t, runtimeID, []string{}, &oneMinute)
+
+	stopGateClosedFor(t, issueID, run)
+	if _, ok := cancelAckedAt(t, run); ok {
+		t.Fatal("a daemon that booted after the run was dispatched attested it stopped")
+	}
+}
+
+// The same run is attested once the daemon that reports its absence has been up
+// since before the run was dispatched (up 30 min, dispatched 10 min ago).
+func TestStopGateReconcile_RunDispatchedSinceDaemonBootOpensGate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "reconcile since boot", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	thirtyMinutes := int64(30 * 60_000)
+	heartbeatLiveSetUptime(t, runtimeID, []string{}, &thirtyMinutes)
+
+	stopGateOpen(t, issueID)
+	if _, ok := cancelAckedAt(t, run); !ok {
+		t.Fatal("cancel_acked_at not set")
+	}
+}
+
+// Without an uptime the server cannot tell a restart from a long-lived daemon.
+func TestStopGateReconcile_LiveSetWithoutUptimeKeepsGateClosed(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID, runtimeID := reconcileRuntime(t, "online")
+	issueID := dbfx.Issue(t, "reconcile no uptime", testutil.Cols{"status": "todo"})
+	run := supersededRun(t, agentID, runtimeID, issueID, "todo")
+
+	heartbeatLiveSetUptime(t, runtimeID, []string{}, nil)
+
+	stopGateClosedFor(t, issueID, run)
 }

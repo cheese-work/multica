@@ -193,10 +193,16 @@ func (d *Daemon) heartbeatRequest(rid string) protocol.DaemonHeartbeatRequestPay
 	req := protocol.DaemonHeartbeatRequestPayload{RuntimeID: rid, SupportsBatchImport: true, InFlightTasks: &inFlight}
 	// The live task set lets the server treat a cancelled run absent from it as
 	// stopped (CHE-3114 part 2). After an unconfirmed process cleanup this daemon
-	// cannot vouch for what is missing, so it reports nothing.
+	// cannot vouch for what is missing, so it reports nothing. The flag is read
+	// after the snapshot: a task stores it before it leaves the set, so a task
+	// missing from the snapshot has already made the flag visible here.
+	live := d.inflight.ids()
 	if !d.cleanupUnconfirmed.Load() {
-		live := d.inflight.ids()
 		req.LiveTaskIDs = &live
+		if !d.startedAt.IsZero() {
+			up := time.Since(d.startedAt).Milliseconds()
+			req.DaemonUptimeMs = &up
+		}
 	}
 	if d.hostSampler != nil {
 		req.HostSample = d.hostSampler.Latest()
