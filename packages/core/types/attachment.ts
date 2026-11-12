@@ -46,4 +46,23 @@ export interface Attachment {
   content_type: string;
   size_bytes: number;
   created_at: string;
+  /**
+   * 1 for a first upload; higher when a later upload replaced it (CHE-5295).
+   * Optional: a server older than revision chains omits it.
+   */
+  revision?: number;
+  /** Id of the previous revision of this file, null for the first. */
+  revision_of?: string | null;
+  sha256?: string;
+}
+
+/** `GET /api/attachments/{id}/diff` — a text diff, or the binary fallback. */
+export interface AttachmentRevisionDiff {
+  from: number;
+  to: number;
+  binary: boolean;
+  /** Unified diff text; empty for a binary file or two equal revisions. */
+  diff: string;
+  /** Binary fallback line, e.g. "binary, sizes and SHA differ". */
+  message: string;
 }

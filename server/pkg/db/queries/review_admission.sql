@@ -17,9 +17,12 @@ SELECT name, status, conclusion FROM github_pull_request_check_run
 WHERE pr_id = $1 AND head_sha = $2;
 
 -- name: MarkReviewAdmissionDeferred :exec
-INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, reasons, created_at, expires_at)
+-- A repeat keeps the latest non-null actor and comment and only adds taint, as
+-- MarkStageWaiting does.
+INSERT INTO review_admission_deferral (issue_id, agent_id, trigger, head_sha, reasons, created_at, expires_at, actor_user_id, trigger_comment_id, taint_ids)
 VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('agent_id')::uuid, sqlc.arg('trigger')::text,
-        sqlc.arg('head_sha')::text, sqlc.arg('reasons')::text[], now(), now() + interval '24 hours')
+        sqlc.arg('head_sha')::text, sqlc.arg('reasons')::text[], now(), now() + interval '24 hours',
+        sqlc.narg('actor_user_id')::uuid, sqlc.narg('trigger_comment_id')::uuid, sqlc.arg('taint_ids')::text[])
 -- A repeat on the same head keeps the first deadline, so repeated triggers
 -- cannot postpone recovery; a new head starts a new window.
 ON CONFLICT (issue_id, agent_id) DO UPDATE SET
@@ -28,4 +31,30 @@ ON CONFLICT (issue_id, agent_id) DO UPDATE SET
                     THEN review_admission_deferral.created_at ELSE EXCLUDED.created_at END,
   expires_at = CASE WHEN review_admission_deferral.head_sha = EXCLUDED.head_sha
                     THEN review_admission_deferral.expires_at ELSE EXCLUDED.expires_at END,
-  head_sha = EXCLUDED.head_sha;
+  head_sha = EXCLUDED.head_sha,
+  actor_user_id = COALESCE(EXCLUDED.actor_user_id, review_admission_deferral.actor_user_id),
+  trigger_comment_id = COALESCE(EXCLUDED.trigger_comment_id, review_admission_deferral.trigger_comment_id),
+  taint_ids = (SELECT COALESCE(array_agg(DISTINCT t ORDER BY t), '{}')
+                 FROM unnest(review_admission_deferral.taint_ids || EXCLUDED.taint_ids) AS t);
+
+-- name: ListReviewAdmissionDeferrals :many
+-- The records the release evaluates: all of them (fallback tick), or those of
+-- the given issues (a GitHub event for their PR).
+SELECT issue_id, agent_id, trigger, head_sha, expires_at, actor_user_id, trigger_comment_id, taint_ids
+FROM review_admission_deferral
+WHERE sqlc.narg('issue_ids')::uuid[] IS NULL OR issue_id = ANY(sqlc.narg('issue_ids')::uuid[])
+ORDER BY created_at;
+
+-- name: GetReviewAdmissionDeferralExpiry :one
+-- When the stored deferral of an issue, agent and PR head runs out. No row when
+-- there is none for that head: a deadline never carries over to another head.
+SELECT expires_at FROM review_admission_deferral
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id')::uuid
+  AND head_sha = sqlc.arg('head_sha')::text;
+
+-- name: DeleteReviewAdmissionDeferral :exec
+-- Deletes the exact record the caller read: a replacement the guard wrote for a
+-- new head meanwhile has another head or deadline and stays.
+DELETE FROM review_admission_deferral
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND agent_id = sqlc.arg('agent_id')::uuid
+  AND head_sha = sqlc.arg('head_sha')::text AND expires_at = sqlc.arg('expires_at')::timestamptz;

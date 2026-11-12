@@ -137,9 +137,11 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		// mention naming an agent still starts it.
 		// ponytail: wakeups only, a named mention stays unrefused by design.
 		if origin == OriginNamed && (target.Trigger == "wakeup" || target.Trigger == "system wakeup") {
-			if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
+			decision, err := guardReviewAdmission(ctx, q, issueID, target)
+			if err != nil {
 				return ReviewGate{}, err
 			}
+			return admittedGate(ctx, ReviewGate{}, decision)
 		}
 		return ReviewGate{}, nil
 	}
@@ -167,13 +169,31 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	}
 	// After the budget, before the stage queue: a PR head that is not
 	// admissible neither starts nor takes a stage slot (CHE-4650).
-	if err := guardReviewAdmission(ctx, q, issueID, target); err != nil {
+	decision, err := guardReviewAdmission(ctx, q, issueID, target)
+	if err != nil {
 		return ReviewGate{}, err
 	}
 	// After the budget: a run the budget refuses never takes a stage slot.
 	if err := guardStageQueue(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
 	}
+	return admittedGate(ctx, gate, decision)
+}
+
+// admittedGate folds the admission decision into the gate the enqueue applies,
+// so the task row names the head the admission judged and carries the expiry
+// reason only for a validated expiry. The budget and the admission must have
+// read one head: a gate that names another head means the PR moved between
+// the two reads, and the run is refused so the caller judges the new head.
+func admittedGate(ctx context.Context, gate ReviewGate, d admissionDecision) (ReviewGate, error) {
+	if d.Head == "" {
+		return gate, nil
+	}
+	if gate.Head != "" && gate.Head != d.Head {
+		return ReviewGate{}, ErrReviewHeadMoved
+	}
+	gate.Expired = d.Expired
+	gate.Pin = d.Head
 	return gate, nil
 }
 

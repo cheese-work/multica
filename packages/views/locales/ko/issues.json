@@ -2018,5 +2018,16 @@
       "system": "시스템"
     },
     "open": "상태 기록"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 이전 {{earlier}}개",
+    "diff": "비교",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "v{{from}}에서 v{{to}}까지의 변경, 변경된 부분만",
+    "show_full": "전체 보기",
+    "show_changes": "변경만 보기",
+    "loading": "변경 내용을 불러오는 중",
+    "load_failed": "변경 내용을 불러오지 못했습니다.",
+    "no_changes": "텍스트 변경 사항이 없습니다."
   }
 }

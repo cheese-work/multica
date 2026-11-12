@@ -1416,6 +1416,12 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
 		issueIDs = nil
 	}
+	// A deferred reviewer run starts once the new head is admissible (CHE-4651).
+	if len(issueIDs) > 0 {
+		if err := h.TaskService.ReleaseAdmissionDeferrals(ctx, issueIDs); err != nil {
+			slog.Warn("github: failed to release deferred reviewer runs", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so
 	// mergeable=CONFLICTING counts as DIRTY.

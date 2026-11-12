@@ -648,7 +648,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | `user` | `profile get/update` | View or update the current user's profile | |
 | `login` | — | Sign in via the browser and configure all workspaces automatically | `--token` (prompts interactively in the terminal when passed without a value) |
 | `setup` | `cloud` (default), `self-host` | Save the server address, complete sign-in, and start the daemon | `self-host`: `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Download or upload attachments | `download`: `--output-dir`; `upload`: `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Download or upload attachments; list a file's revisions; diff two revisions | `download`: `--output-dir`; `upload`: `--task`, `--issue`, `--replaces <attachment-id>` (the new file becomes the next revision of that attachment); `diff`: `--from`, `--to` (revision numbers) |
 | `config` | `show`, `set <key> <value>` | View or edit the current profile's local configuration | Precedence: command-line flags > environment variables > `config.json` > built-in defaults; set an empty string to clear a value |
 | `update` | — | Update the CLI to the latest version | |
 | `version` | — | Print version information | `--output` (`text` or `json`) |
