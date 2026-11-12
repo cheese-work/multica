@@ -169,6 +169,10 @@ func TestTextDiffFlagsLineEndingChangesAlongsideHunks(test *testing.T) {
 		{"lf to crlf", "a\nb", "a\r\nc", true},
 		{"same endings", "a\nb\n", "a\nc\n", false},
 		{"same crlf endings", "a\r\nb", "a\r\nc", false},
+		{"crlf file, line added", "a\r\nb\r\n", "a\r\nb\r\nc\r\n", false},
+		{"crlf file, line removed", "a\r\nb\r\nc\r\n", "a\r\nc\r\n", false},
+		{"lf file, line added", "a\nb\n", "a\nb\nc\n", false},
+		{"crlf to mixed", "a\r\nb\r\n", "a\r\nc\n", true},
 	}
 	for _, c := range cases {
 		test.Run(c.name, func(test *testing.T) {

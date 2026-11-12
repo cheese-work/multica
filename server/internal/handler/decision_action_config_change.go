@@ -301,8 +301,7 @@ func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk
 		return meta
 	}
 	before, after := *read.BeforeText, *read.AfterText
-	endingsChanged := strings.Count(before, "\r\n") != strings.Count(after, "\r\n") ||
-		strings.HasSuffix(before, "\n") != strings.HasSuffix(after, "\n")
+	endingsChanged := strings.HasSuffix(before, "\n") != strings.HasSuffix(after, "\n") || lineEndingStyleChanged(before, after)
 	if !endingsChanged && len(hunks) > 0 {
 		return meta
 	}
@@ -316,6 +315,21 @@ func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk
 		meta["whitespace_only"] = true
 	}
 	return meta
+}
+
+// lineEndingStyleChanged compares the style (CRLF, bare LF or both), never the
+// count: adding or removing a line in a CRLF file changes no line ending. A text
+// with no line ending has no style, so it never counts as a change.
+func lineEndingStyleChanged(before, after string) bool {
+	style := func(text string) (crlf, lf bool) {
+		return strings.Contains(text, "\r\n"), strings.Contains(strings.ReplaceAll(text, "\r\n", ""), "\n")
+	}
+	beforeCRLF, beforeLF := style(before)
+	afterCRLF, afterLF := style(after)
+	if !beforeCRLF && !beforeLF || !afterCRLF && !afterLF {
+		return false
+	}
+	return beforeCRLF != afterCRLF || beforeLF != afterLF
 }
 
 // executeConfigChange runs in the approval savepoint. It takes the try-lock and
