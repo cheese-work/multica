@@ -1633,6 +1633,8 @@
       "description": "설명",
       "max_runs": "이슈당 최대 실행 횟수",
       "max_runs_invalid": "1~{{max}} 사이의 정수를 입력하세요. 비워 두면 기본값({{default}})이 적용됩니다.",
+      "budget_request_pending": "이 워크플로의 실행 한도 변경이 소유자 승인을 기다리고 있습니다.",
+      "budget_request_pending_cap": "이슈당 실행 한도를 {{cap}}회로 바꾸는 요청이 소유자 승인을 기다리고 있습니다.",
       "include_child_prs": "하위 PR 포함",
       "steps": "단계",
       "add_step": "단계 추가",

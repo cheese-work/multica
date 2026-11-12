@@ -16,6 +16,8 @@ export interface OpenDecisionRequest {
   /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
   covers_request_ids?: string[];
   covered_cards?: DecisionCoveredCard[];
+  /** The pending executable action behind the card, so a page can find a budget request (CHE-5285). */
+  action?: DecisionRequestAction;
 }
 
 /** One answer button on an open decision card. */

@@ -1699,6 +1699,8 @@
       "description": "Description",
       "max_runs": "Exécutions max par ticket",
       "max_runs_invalid": "Saisissez un nombre entier de 1 à {{max}}, ou laissez vide pour la valeur par défaut ({{default}}).",
+      "budget_request_pending": "Une modification du plafond de runs de ce workflow attend l'approbation d'un propriétaire.",
+      "budget_request_pending_cap": "Un plafond de {{cap}} runs par ticket attend l'approbation d'un propriétaire.",
       "include_child_prs": "Inclure les PR des sous-tickets",
       "steps": "Étapes",
       "add_step": "Ajouter une étape",
