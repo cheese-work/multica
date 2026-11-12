@@ -33,11 +33,21 @@ def blob_changed_files(github: str, pr_files: list[str], old: str, new: str) -> 
     return [f for i, f in enumerate(pr_files) if oid(f"a{i}") != oid(f"b{i}")]
 
 
-def delta(compare_files: list[str], pr_files: list[str], cases: dict[str, str]) -> tuple[list[str], dict[str, bool]]:
-    """PR files that also changed between the two heads (sorted by compare order), and per case whether its file is among them."""
+def parse_compare(lines: list[str]) -> list[tuple[str, str]]:
+    """Compare lines are `filename` or `filename<TAB>previous_filename` (a rename between the two heads)."""
+    return [(n, prev) for n, _, prev in (line.partition("\t") for line in lines if line)]
+
+
+def delta(compare: list[tuple[str, str]], pr_files: list[str], cases: dict[str, str]) -> tuple[list[str], dict[str, bool | None]]:
+    """PR files that also changed between the two heads (compare order), and per case: True if its path is among them
+    (current or pre-rename name), False if the path was seen and is not, None (unknown) if the path is neither a PR file
+    nor in the compare, e.g. a waived file renamed or removed where the compare cannot show it."""
     in_pr = set(pr_files)
-    changed = [f for f in compare_files if f in in_pr]
-    return changed, {name: path in changed for name, path in cases.items()}
+    hit = [(n, prev) for n, prev in compare if n in in_pr or prev in in_pr]
+    changed = [n for n, _ in hit]
+    names = {x for pair in hit for x in pair if x}
+    seen = names | in_pr | {x for pair in compare for x in pair if x}
+    return changed, {name: True if path in names else (False if path in seen else None) for name, path in cases.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,13 +64,14 @@ def main(argv: list[str] | None = None) -> int:
         if not (sep and name.strip() and path.strip()):
             ap.error(f"--case needs NAME=PATH, got {c!r}")
         cases[name.strip()] = path.strip()
-    compare = _gh(f"repos/{a.github}/compare/{a.old}...{a.new}", "--paginate", "--jq", ".files[]?.filename").splitlines()
+    compare = _gh(f"repos/{a.github}/compare/{a.old}...{a.new}", "--paginate", "--jq", ".files[]? | [.filename, (.previous_filename // \"\")] | @tsv").splitlines()
     pr_files = _gh(f"repos/{a.github}/pulls/{a.pr}/files", "--paginate", "--jq", ".[].filename").splitlines()
+    compare = parse_compare(compare)
     changed, marks = delta(compare, pr_files, cases)
     capped, how = len(compare) >= COMPARE_FILE_CAP, "compare"
     if capped:
         try:
-            changed, marks = delta(blob_changed_files(a.github, pr_files, a.old, a.new), pr_files, cases)
+            changed, marks = delta([(f, "") for f in blob_changed_files(a.github, pr_files, a.old, a.new)], pr_files, cases)
             capped, how = False, f"blob ids (compare hit the {COMPARE_FILE_CAP}-file cap)"
         except (subprocess.CalledProcessError, KeyError, TypeError, ValueError) as e:
             print(f"blob-id read failed: {type(e).__name__}", file=sys.stderr)
@@ -71,8 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"INCOMPLETE: compare returned {len(compare)} files, the GitHub cap. The list may miss PR files; case marks are unknown.")
     else:
         print("Waived cases:")
-        print("\n".join(f"- {n}: {'CHANGED' if hit else 'not in the list'} ({cases[n]})" for n, hit in marks.items()) or "- none given")
-    print(f"Command: gh api repos/{a.github}/compare/{a.old}...{a.new} --paginate --jq '.files[]?.filename'"
+        print("\n".join(f"- {n}: { {True: 'CHANGED', False: 'not in the list', None: 'UNKNOWN'}[hit] } ({cases[n]})" for n, hit in marks.items()) or "- none given")
+    print(f"Command: gh api repos/{a.github}/compare/{a.old}...{a.new} --paginate --jq '.files[]? | [.filename, (.previous_filename // \"\")] | @tsv'"
           + ("; then one GraphQL `object(expression: \"<sha>:<path>\") { oid }` pair per PR file" if "blob" in how else ""))
     return 2 if capped else 0
 

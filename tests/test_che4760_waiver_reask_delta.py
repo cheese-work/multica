@@ -44,13 +44,13 @@ def fake_gh(compare, pr_files, blob_changed=()):
 
 class Delta(unittest.TestCase):
     def test_changed_pr_files_only_and_marks_hit_case(self):
-        changed, marks = rd.delta(COMPARE, PR_FILES, CASES)
+        changed, marks = rd.delta(rd.parse_compare(COMPARE), PR_FILES, CASES)
         self.assertEqual(changed, ["packages/core/api/client.ts", SCHEMAS, "packages/core/api/schemas.test.ts", "packages/core/package.json"])
         self.assertTrue(marks["lazy schema gate"])
         self.assertFalse(marks["handoff guard"])
 
     def test_case_file_not_in_pr_never_marked(self):
-        _, marks = rd.delta([MENU], [SCHEMAS], CASES)
+        _, marks = rd.delta(rd.parse_compare([MENU]), [SCHEMAS], CASES)
         self.assertEqual(marks, {"lazy schema gate": False, "handoff guard": False})
 
 
@@ -91,6 +91,26 @@ class Cli(unittest.TestCase):
             code = rd.main(["--github", "o/r", "--pr", "1", "--old", "a", "--new", "b", "--case", f"x={SCHEMAS}"])
         self.assertEqual(code, 2)
         self.assertIn("INCOMPLETE", out.getvalue())
+        self.assertNotIn("not in the list", out.getvalue())
+
+    def test_renamed_waived_file_is_marked_changed_not_clean(self):
+        # Waived case names old.py (its path at the waived head). Main renamed it to new.py; the PR file list shows new.py only.
+        pr_files = ["pkg/new.py", MENU]
+        compare = ["pkg/new.py\tpkg/old.py", "AGENTS.md"]  # compare line: filename TAB previous_filename
+        out = io.StringIO()
+        with mock.patch.object(rd, "_gh", fake_gh(compare, pr_files)), redirect_stdout(out):
+            code = rd.main(["--github", "o/r", "--pr", "1", "--old", "a", "--new", "b", "--case", "renamed=pkg/old.py", "--case", f"guard={MENU}"])
+        self.assertEqual(code, 0)
+        self.assertIn("- renamed: CHANGED (pkg/old.py)", out.getvalue())
+        self.assertIn(f"- guard: not in the list ({MENU})", out.getvalue())
+
+    def test_case_path_missing_from_pr_files_and_compare_is_unknown(self):
+        # Capped compare + blob read: a waived path that is no longer a PR file (renamed or removed) cannot be resolved.
+        capped = [f"f{i}.txt" for i in range(300)]
+        out = io.StringIO()
+        with mock.patch.object(rd, "_gh", fake_gh(capped, PR_FILES)), redirect_stdout(out):
+            rd.main(["--github", "o/r", "--pr", "1", "--old", "a", "--new", "b", "--case", "gone=pkg/old.py"])
+        self.assertIn("- gone: UNKNOWN (pkg/old.py)", out.getvalue())
         self.assertNotIn("not in the list", out.getvalue())
 
     def test_case_without_path_is_a_usage_error(self):
