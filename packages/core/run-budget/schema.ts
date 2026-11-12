@@ -20,6 +20,9 @@ const schema = z
     window_started_at: z.string(),
     blocking: z.array(z.string()),
     can_raise: z.boolean(),
+    // The suggested raise. A malformed preview drops to null instead of
+    // failing the meter: the raise button hides, the numbers stay.
+    raise_preview: z.object({ add_runs: z.number().int(), limit_after: z.number().int() }).nullish().catch(null),
   })
   // The server sets state for every budgeted snapshot; without it the meter
   // would lose its exhaustion state, so treat the response as malformed.
@@ -34,6 +37,7 @@ const schema = z
     windowStartedAt: v.window_started_at,
     blocking: v.blocking,
     canRaise: v.can_raise,
+    raisePreview: v.raise_preview ? { addRuns: v.raise_preview.add_runs, limitAfter: v.raise_preview.limit_after } : null,
   }));
 export type RunBudget = z.output<typeof schema>;
 
@@ -49,9 +53,20 @@ export const UNBUDGETED: RunBudget = {
   windowStartedAt: "",
   blocking: [],
   canRaise: false,
+  raisePreview: null,
 };
 
 export function parseRunBudget(data: unknown): RunBudget {
   const parsed = parseWithFallback(data, schema, UNBUDGETED, { endpoint: "GET /api/issues/{id}/run-budget" });
   return parsed.budgeted ? parsed : UNBUDGETED;
+}
+
+// Mirrors handler.RunBudgetActionResponse: the first link at top level, every link in `requests`.
+const linkSchema = z.object({ request_id: z.string(), action_id: z.string(), approve_url: z.string().optional() });
+const actionResponseSchema = z.object({ requests: z.array(linkSchema).min(1) });
+export type RunBudgetActionResponse = z.output<typeof actionResponseSchema>;
+
+/** Throws on a malformed answer: the request may have been created, so the caller must not read it as success. */
+export function parseRunBudgetActionResponse(data: unknown): RunBudgetActionResponse {
+  return actionResponseSchema.parse(data);
 }
