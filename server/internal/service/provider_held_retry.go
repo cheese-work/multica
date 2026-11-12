@@ -40,9 +40,9 @@ type heldProviderRetry struct {
 	holdSeconds  pgtype.Int4
 }
 
-// isHeldProviderRetryReason names the two reasons the held retry covers. They
-// are deliberately not added to retryableReasons: that map drives the generic
-// retry paths, which must not mint a second child for them.
+// isHeldProviderRetryReason names the two reasons the held retry covers.
+// retryShape and the held path both read it; 5xx is deliberately not in
+// retryableReasons, and 429 is, so failTask mints one successor, not two.
 func isHeldProviderRetryReason(reason string) bool {
 	return reason == taskfailure.ReasonAgentProviderServerError.String() ||
 		reason == taskfailure.ReasonAgentProviderCapacityOrRateLimit.String()
@@ -112,21 +112,9 @@ func createHeldProviderRetry(ctx context.Context, qtx *db.Queries, tx pgx.Tx, fa
 	if !plan.maxAttempts.Valid || tx == nil {
 		return skip("not planned", nil)
 	}
-	if err := requireActiveTaskProject(ctx, qtx, failed); err != nil {
-		return skip("project is not active", err)
-	}
-	if successor, err := hasRunnableSuccessor(ctx, qtx, failed); err != nil || successor {
-		return skip("a successor is already pending or unreadable", err)
-	}
-	if err := guardIssueRunAllowed(ctx, qtx, failed.IssueID, OriginDerived, RunTarget{AgentID: failed.AgentID, Trigger: "retry"}); err != nil {
-		return skip("issue does not run", err)
-	}
-	if allowed, err := qtx.GetProviderHeldRetryFence(ctx, failed.ID); err != nil || !allowed {
-		return skip("newer run, terminal issue or reassignment", err)
-	}
-	triggerKind, triggerID, err := providerFailureTrigger(ctx, qtx, failed.ID)
-	if err != nil {
-		return skip("trigger unreadable", err)
+	triggerKind, triggerID, why, err := heldRetryPreChecks(ctx, tx, failed)
+	if err != nil || why != "" {
+		return skip(why, err)
 	}
 	failedAt := failed.CompletedAt
 	if !failedAt.Valid {
@@ -174,4 +162,34 @@ func createHeldProviderRetry(ctx context.Context, qtx *db.Queries, tx pgx.Tx, fa
 		return nil, decision, nil
 	}
 	return &child, decision, nil
+}
+
+// heldRetryPreChecks runs the read-only refusals in a savepoint that always
+// rolls back: a server-side SQL error there must not abort the failing
+// transaction, which carries the failed status. why is empty when the retry may
+// go ahead.
+func heldRetryPreChecks(ctx context.Context, tx pgx.Tx, failed db.AgentTaskQueue) (kind string, id pgtype.UUID, why string, err error) {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return "", pgtype.UUID{}, "pre-check savepoint failed", err
+	}
+	defer func() { _ = sp.Rollback(ctx) }()
+	q := db.New(sp)
+	if err := requireActiveTaskProject(ctx, q, failed); err != nil {
+		return "", pgtype.UUID{}, "project is not active", err
+	}
+	if successor, err := hasRunnableSuccessor(ctx, q, failed); err != nil || successor {
+		return "", pgtype.UUID{}, "a successor is already pending or unreadable", err
+	}
+	if err := guardIssueRunAllowed(ctx, q, failed.IssueID, OriginDerived, RunTarget{AgentID: failed.AgentID, Trigger: "retry"}); err != nil {
+		return "", pgtype.UUID{}, "issue does not run", err
+	}
+	if allowed, err := q.GetProviderHeldRetryFence(ctx, failed.ID); err != nil || !allowed {
+		return "", pgtype.UUID{}, "newer run, terminal issue or reassignment", err
+	}
+	kind, id, err = providerFailureTrigger(ctx, q, failed.ID)
+	if err != nil {
+		return "", pgtype.UUID{}, "trigger unreadable", err
+	}
+	return kind, id, "", nil
 }
