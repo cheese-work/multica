@@ -2110,6 +2110,7 @@
     "top_up": "Recharger",
     "asked": "Demande envoyée au propriétaire de l'espace de travail.",
     "chip": "Budget utilisé",
+    "open_request": "Demande ouverte ci-dessous",
     "request_failed": "La demande n'a pas abouti. Réessayez."
   },
   "attachment_revision": {

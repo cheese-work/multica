@@ -2028,6 +2028,7 @@
     "top_up": "충전",
     "asked": "워크스페이스 소유자에게 승인을 요청했습니다.",
     "chip": "예산 소진",
+    "open_request": "아래의 열린 요청",
     "request_failed": "요청을 보내지 못했습니다. 다시 시도하세요."
   },
   "attachment_revision": {

@@ -2110,6 +2110,7 @@
     "top_up": "Top up",
     "asked": "Asked the workspace owner to approve.",
     "chip": "Budget used",
+    "open_request": "Open request below",
     "request_failed": "The request did not go through. Try again."
   },
   "attachment_revision": {

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
+import { openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { runBudgetKeys, runBudgetTone, useRunBudget } from "@multica/core/run-budget";
 import { memberListOptions } from "@multica/core/workspace/queries";
@@ -39,6 +40,9 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
   const { data: budget } = useRunBudget(wsId, issueId);
   const qc = useQueryClient();
   const { data: members } = useQuery(memberListOptions(wsId));
+  // An open request on this issue sits in the decision banner below: link to it instead of opening a second one.
+  const { data: openRequests } = useQuery(openDecisionRequestsOptions(wsId));
+  const hasOpenRequest = (openRequests ?? []).some((r) => r.issue_id === issueId);
   const userId = useAuthStore((s) => s.user?.id);
   const [asked, setAsked] = useState<Asked>({ kind: "idle" });
   const windowId = budget?.windowId ?? null;
@@ -76,6 +80,11 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
       </div>
       {budget.state === "near" && <p className="text-caption text-warning">{t(($) => $.run_budget.near)}</p>}
       {exhausted && <p className="text-caption text-destructive">{t(($) => $.run_budget.exhausted)}</p>}
+      {hasOpenRequest ? (
+        <a href="#issue-decision-banner" className="inline-block text-caption underline focus-visible:outline-2 focus-visible:outline-ring">
+          {t(($) => $.run_budget.open_request)}
+        </a>
+      ) : (
       <div className="flex gap-1.5">
         {budget.canRaise && budget.raisePreview && (
           <Button size="sm" variant="outline" disabled={!canAsk} onClick={() => void request("raise")}>
@@ -86,6 +95,7 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
           {t(($) => $.run_budget.top_up)}
         </Button>
       </div>
+      )}
       {asked.kind === "failed" && (
         <p role="alert" className="text-caption text-destructive">{t(($) => $.run_budget.request_failed)}</p>
       )}

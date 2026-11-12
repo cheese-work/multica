@@ -2028,6 +2028,7 @@
     "top_up": "補充",
     "asked": "已請求工作區擁有者核准。",
     "chip": "預算已用完",
+    "open_request": "見下方未決請求",
     "request_failed": "請求未成功，請重試。"
   },
   "attachment_revision": {
