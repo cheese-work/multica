@@ -6276,7 +6276,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// retryFence: set when the task is in a provider-failure recovery
 		// lineage (CHE-1773); no retry is minted and the owner is told once.
 		retryFence providerFailureOwnerDecision
-		// heldRetry: a provider 5xx/429 retry that is reserved and created as a
+		// heldRetry: a provider 5xx retry that is reserved and created as a
 		// held row inside the failing transaction (CHE-1736 M1.2) instead of
 		// through the generic wantRetry path. The load is done here, before
 		// the transaction, like the overlay above.
