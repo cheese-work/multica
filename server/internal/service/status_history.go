@@ -149,6 +149,10 @@ func settleRefusalsOnStatusChange(ctx context.Context, qtx *db.Queries, issue db
 		return qtx.MarkRunBudgetRefusalBlocked(ctx, db.MarkRunBudgetRefusalBlockedParams{ID: id, OccurrenceActivityID: row.ID})
 	case trigger.Cause.Kind == StatusCauseWorkflowRemap:
 		return nil
+	case trigger.Cause.Kind == StatusCauseRunBudget && trigger.Cause.Ref["action_id"] != "":
+		// The resume worker's own restore: it ends the refusal itself, in the
+		// same transaction.
+		return nil
 	}
 	return qtx.SupersedeRunBudgetRefusalsOnStatusChange(ctx, issue.ID)
 }
