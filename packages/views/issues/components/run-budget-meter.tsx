@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useRunBudget } from "@multica/core/run-budget";
+import { runBudgetKeys, useRunBudget } from "@multica/core/run-budget";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { Button } from "@multica/ui/components/ui/button";
 import { DecisionActionApproval } from "../../common/decision-action-approval";
@@ -22,14 +22,14 @@ type Kind = "raise" | "top_up";
 type Asked = { kind: "idle" } | { kind: "busy" } | { kind: "failed" } | { kind: "asked"; actionId: string };
 
 /** The action a request opened, approved in place with a passkey. The server accepts only an owner. */
-function InlineApproval({ actionId }: { actionId: string }) {
+function InlineApproval({ actionId, onOutcome }: { actionId: string; onOutcome: () => void }) {
   const { data } = useQuery({
     queryKey: ["decision-action", actionId],
     queryFn: () => api.getDecisionAction(actionId),
     retry: false,
   });
   if (!data) return null;
-  return <DecisionActionApproval actionId={data.id} payloadSha256={data.payload_sha256} />;
+  return <DecisionActionApproval actionId={data.id} payloadSha256={data.payload_sha256} onOutcome={onOutcome} />;
 }
 
 /**
@@ -42,12 +42,17 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const { data: budget } = useRunBudget(wsId, issueId);
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const qc = useQueryClient();
+  const { data: members } = useQuery(memberListOptions(wsId));
   const userId = useAuthStore((s) => s.user?.id);
   const [asked, setAsked] = useState<Asked>({ kind: "idle" });
+  const windowId = budget?.windowId ?? null;
+  // A new window is a new budget: an earlier request no longer applies.
+  useEffect(() => setAsked({ kind: "idle" }), [windowId]);
   if (!budget || !budget.budgeted) return null;
 
-  const isOwner = members.some((m) => m.user_id === userId && m.role === "owner");
+  const refresh = () => void qc.invalidateQueries({ queryKey: runBudgetKeys.issue(wsId, issueId) });
+  const isOwner = (members ?? []).some((m) => m.user_id === userId && m.role === "owner");
   const exhausted = budget.state === "at_limit" || budget.state === "over";
   const canAsk = budget.windowId !== null && asked.kind !== "busy";
 
@@ -89,9 +94,9 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
       {asked.kind === "failed" && (
         <p role="alert" className="text-caption text-destructive">{t(($) => $.run_budget.request_failed)}</p>
       )}
-      {asked.kind === "asked" &&
+      {asked.kind === "asked" && members !== undefined &&
         (isOwner ? (
-          <InlineApproval actionId={asked.actionId} />
+          <InlineApproval actionId={asked.actionId} onOutcome={refresh} />
         ) : (
           <p className="text-caption text-muted-foreground">{t(($) => $.run_budget.asked)}</p>
         ))}

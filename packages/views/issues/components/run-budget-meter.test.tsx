@@ -9,6 +9,7 @@ import { renderWithI18n } from "../../test/i18n";
 import { RunBudgetMeter } from "./run-budget-meter";
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: vi.fn().mockResolvedValue({ credential: { id: "k" } }) }));
 vi.mock("@multica/core/auth", () => ({
   useAuthStore: (select: (s: { user: { id: string } }) => unknown) => select({ user: { id: "user-1" } }),
 }));
@@ -29,8 +30,12 @@ describe("RunBudgetMeter (CHE-2861)", () => {
   const requestRunBudgetAction = vi.fn();
   const listMembers = vi.fn();
   const getDecisionAction = vi.fn();
+  const getDecisionActionOutcome = vi.fn();
+  const challengeDecisionAction = vi.fn();
+  const approveDecisionAction = vi.fn();
 
   beforeEach(() => {
+    sessionStorage.clear();
     getIssueRunBudget.mockReset().mockResolvedValue(snapshot());
     requestRunBudgetAction.mockReset().mockResolvedValue({ requests: [{ request_id: "r1", action_id: "act-1" }] });
     listMembers.mockReset().mockResolvedValue([{ user_id: "user-1", role: "member" }]);
@@ -38,9 +43,12 @@ describe("RunBudgetMeter (CHE-2861)", () => {
       id: "act-1", action_type: "issue.run_budget.raise", action_version: 1,
       params: { issue_id: issueId, window_id: "w1", new_cap: 55 }, payload_sha256: "abc", state: "pending",
     });
+    getDecisionActionOutcome.mockReset().mockResolvedValue({ id: "act-1", state: "pending" });
+    challengeDecisionAction.mockReset().mockResolvedValue({ challenge_id: "ch", options: { publicKey: {} }, expires_at: "t" });
+    approveDecisionAction.mockReset().mockResolvedValue({ id: "act-1", state: "executed", result: { outcome: "cap_applied" } });
     setApiInstance({
       getIssueRunBudget, requestRunBudgetAction, listMembers, getDecisionAction,
-      getDecisionActionOutcome: vi.fn().mockResolvedValue({ id: "act-1", state: "pending" }),
+      getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction,
     } as unknown as ApiClient);
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
@@ -136,6 +144,40 @@ describe("RunBudgetMeter (CHE-2861)", () => {
       expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeTruthy();
       expect(getDecisionAction).toHaveBeenCalledWith("act-1");
       expect(screen.queryByText("Asked the workspace owner to approve.")).toBeNull();
+    });
+  });
+
+  describe("refresh", () => {
+    it("reads the budget again once the inline approval is decided", async () => {
+      listMembers.mockResolvedValue([{ user_id: "user-1", role: "owner" }]);
+      getIssueRunBudget.mockResolvedValueOnce(snapshot({ runs_used: 40, runs_left: 0, state: "at_limit" }));
+      getIssueRunBudget.mockResolvedValue(snapshot({ runs_used: 40, runs_left: 15, runs_limit: 55, state: "ok" }));
+      view();
+      expect(await screen.findByText("Run budget used up")).toBeTruthy();
+      await userEvent.click(await screen.findByRole("button", { name: "Raise" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Approve with passkey" }));
+      expect(await screen.findByText("Runs 40 / 55")).toBeTruthy();
+      expect(screen.queryByText("Run budget used up")).toBeNull();
+      expect(getIssueRunBudget).toHaveBeenCalledTimes(2);
+    });
+
+    it("drops the asked note when the budget moves to a new window", async () => {
+      view();
+      await userEvent.click(await screen.findByRole("button", { name: "Top up" }));
+      expect(await screen.findByText("Asked the workspace owner to approve.")).toBeTruthy();
+      getIssueRunBudget.mockResolvedValue(snapshot({ window_id: "w2", runs_used: 0, runs_left: 40 }));
+      await qc.invalidateQueries();
+      await waitFor(() => expect(screen.queryByText("Asked the workspace owner to approve.")).toBeNull());
+    });
+
+    it("does not tell an owner to wait before the member list has arrived", async () => {
+      let resolveMembers: (v: unknown) => void = () => {};
+      listMembers.mockReturnValue(new Promise((r) => { resolveMembers = r; }));
+      view();
+      await userEvent.click(await screen.findByRole("button", { name: "Raise" }));
+      expect(screen.queryByText("Asked the workspace owner to approve.")).toBeNull();
+      resolveMembers([{ user_id: "user-1", role: "owner" }]);
+      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeTruthy();
     });
   });
 });
