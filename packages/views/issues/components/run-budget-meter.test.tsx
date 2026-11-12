@@ -86,6 +86,18 @@ describe("RunBudgetMeter (CHE-2861)", () => {
       expect(await screen.findByText("Run budget used up")).toBeTruthy();
     });
 
+    it.each([
+      ["ok", { runs_used: 20, runs_left: 5, runs_limit: 25 }, "text-foreground"],
+      ["near", { runs_used: 20, runs_left: 5, runs_limit: 25 }, "text-warning"],
+      ["at_limit", { runs_used: 25, runs_left: 0, runs_limit: 25 }, "text-destructive"],
+      ["over", { runs_used: 27, runs_left: -2, runs_limit: 25 }, "text-destructive"],
+    ])("colours the runs line for %s", async (state, counts, cls) => {
+      getIssueRunBudget.mockResolvedValue(snapshot({ ...counts, state }));
+      view();
+      const line = await screen.findByText(`Runs ${counts.runs_used} / 25`);
+      expect(line.className).toContain(cls);
+    });
+
     it("renders nothing for an unbudgeted issue and for a malformed response", async () => {
       getIssueRunBudget.mockResolvedValue(parseRunBudget({ budgeted: false }));
       const { container } = view();

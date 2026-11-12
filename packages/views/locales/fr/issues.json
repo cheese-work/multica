@@ -2109,6 +2109,7 @@
     "raise": "Augmenter",
     "top_up": "Recharger",
     "asked": "Demande envoyée au propriétaire de l'espace de travail.",
+    "chip": "Budget utilisé",
     "request_failed": "La demande n'a pas abouti. Réessayez."
   },
   "attachment_revision": {

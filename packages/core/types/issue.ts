@@ -202,6 +202,8 @@ export interface Issue {
    * server always sends the field. (MUL-6749)
    */
   status_name?: string;
+  /** True while the run budget, not a person, holds this issue in blocked. Absent when false. (CHE-5285) */
+  run_budget_blocked?: boolean;
   priority: IssuePriority;
   assignee_type: IssueAssigneeType | null;
   assignee_id: string | null;

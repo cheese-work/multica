@@ -5,18 +5,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { runBudgetKeys, useRunBudget } from "@multica/core/run-budget";
+import { runBudgetKeys, runBudgetTone, useRunBudget } from "@multica/core/run-budget";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { Button } from "@multica/ui/components/ui/button";
 import { DecisionActionApproval } from "../../common/decision-action-approval";
 import { useT } from "../../i18n";
 
-const STATE_CLASS = {
-  ok: "text-foreground",
-  near: "text-warning",
-  at_limit: "text-destructive",
-  over: "text-destructive",
-} as const;
+const TONE_CLASS = { ok: "text-foreground", warn: "text-warning", danger: "text-destructive" } as const;
 
 type Kind = "raise" | "top_up";
 type Asked = { kind: "idle" } | { kind: "busy" } | { kind: "failed" } | { kind: "asked"; actionId: string };
@@ -74,7 +69,7 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
   return (
     <div className="space-y-1.5 px-2" data-testid="run-budget-meter">
       <div className="flex items-baseline justify-between gap-2 text-caption">
-        <span className={`font-medium ${STATE_CLASS[budget.state ?? "ok"]}`}>
+        <span className={`font-medium ${TONE_CLASS[runBudgetTone(budget.state)]}`}>
           {t(($) => $.run_budget.runs, { used: budget.runsUsed, limit: budget.runsLimit })}
         </span>
         <span className="text-muted-foreground">{t(($) => $.run_budget.left, { count: Math.max(budget.runsLeft, 0) })}</span>
