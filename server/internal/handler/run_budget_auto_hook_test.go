@@ -37,7 +37,7 @@ func waitForCount(t *testing.T, want int, query string, args ...any) int {
 }
 
 func (a autoCase) perIssueCards(t *testing.T) int {
-	return dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget:%'`, a.c.issueID)
+	return dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget_action:%'`, a.c.issueID)
 }
 
 func TestRunBudgetAutoApprovesAnExhaustedWindowWithProgress(t *testing.T) {
@@ -161,7 +161,7 @@ func TestRunBudgetAutoEnvelopeFallsBackToThePerIssueCard(t *testing.T) {
 	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"daily_envelope":3}}`)
 	a.seed(t, a.c.issueID, goodRuns(5)...)
 	a.exhaust(t)
-	if n := waitForCount(t, 1, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget:%'`, a.c.issueID); n != 1 {
+	if n := waitForCount(t, 1, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget_action:%'`, a.c.issueID); n != 1 {
 		t.Fatalf("per-issue cards = %d, want 1: a spent envelope hands the window to a person", n)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_top_up'`, a.c.issueID); n != 0 {

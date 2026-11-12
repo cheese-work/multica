@@ -313,12 +313,20 @@ func (h *Handler) publishRunBudgetAudit(issue db.Issue, comment db.Comment, revi
 // runBudgetAnomalyAsk is the batch card: the first anomaly of the ICT day opens
 // it; later ones are added to its chat, and the brief lists them all.
 func runBudgetAnomalyAsk(issue db.Issue, notice db.Comment, kind string) decisiontx.Ask {
-	ask := runBudgetDecisionAsk(issue, notice)
-	ask.ContextELI10 = fmt.Sprintf("The run-budget auto-approver held back a top-up on %q: %s. It never approves an anomaly.", issue.Title, runBudgetAnomalyText[kind])
-	ask.AgentDid = "The platform refused a new run on this issue and did not approve a new window. This is the day's one card for such anomalies; later ones arrive as messages in this chat, and the brief lists them all."
-	ask.StakesIfWrong = "If you reopen a looping or idle issue it can spend a full new window of runs and tokens. If you do nothing, the issue stays stopped."
-	ask.Recommendation = "Read the issue's last comments. Reopen it only when you see why the anomaly is harmless."
-	return ask
+	return decisiontx.Ask{
+		ContextELI10:  fmt.Sprintf("The run-budget auto-approver held back a top-up on %q: %s. It never approves an anomaly.", issue.Title, runBudgetAnomalyText[kind]),
+		AgentDid:      "The platform refused a new run on this issue and did not approve a new window. This is the day's one card for such anomalies; later ones arrive as messages in this chat, and the brief lists them all.",
+		Decision:      "Do you want to open a new run window for this issue?",
+		StakesIfWrong: "If you reopen a looping or idle issue it can spend a full new window of runs and tokens. If you do nothing, the issue stays stopped.",
+		Options: []decisiontx.AskOption{
+			{Label: "Move the status", WhatHappens: "You move the issue to another status on the board. That opens a new run window and the workflow runs again.", Pros: []string{"No command needed"}, Cons: []string{"Runs start at once"}, CostOrTime: "One click, then a new window of runs"},
+			{Label: "No action", WhatHappens: "Nothing changes. The issue stays stopped.", Pros: []string{"No new spend"}, Cons: []string{"The work stays stopped"}, CostOrTime: "Free"},
+		},
+		Recommendation:   "Read the issue's last comments. Reopen it only when you see why the anomaly is harmless.",
+		DefaultIfNoReply: "No action. The issue stays stopped and nothing runs on it.",
+		SourceIssueID:    uuidToString(issue.ID),
+		SourceCommentID:  uuidToString(notice.ID),
+	}
 }
 
 // runBudgetAutoBrief is the auto-approver's audit line for the brief: what it

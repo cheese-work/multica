@@ -106,6 +106,8 @@ export interface AttachmentProps {
   layout?: "block" | "card";
   /** Card layout only — rendered after the file name, e.g. a version badge. */
   badge?: ReactNode;
+  /** Card layout only — always-visible actions beside the hover ones, e.g. Diff. */
+  actions?: ReactNode;
   className?: string;
 }
 
@@ -278,6 +280,7 @@ export function Attachment({
   onDelete,
   layout = "block",
   badge,
+  actions,
   className,
 }: AttachmentProps) {
   const { resolveAttachment, openByUrl } = useAttachmentDownloadResolver();
@@ -389,6 +392,7 @@ export function Attachment({
           canDownload={!!shareUrl || !!state.attachmentId}
           uploading={state.uploading}
           badge={badge}
+          actions={actions}
           onPreview={openPreview}
           onDownload={handleDownload}
           onDelete={editable ? onDelete : undefined}
