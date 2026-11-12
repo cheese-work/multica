@@ -303,6 +303,45 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("steps.deploy.outputs.decision != 'skip'", outcome["if"])
 
 
+class MainRedPauseGuardTests(unittest.TestCase):
+    """CHE-4500 (CHE-3625 item 2): no scheduled auto-deploy while the repo variable MAIN_RED_PAUSED exists."""
+
+    def setUp(self):
+        self.jobs = yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
+
+    def runs(self, job, event_name, paused, backup=""):
+        """Dry-evaluate a job's `if:` for an event, with MAIN_RED_PAUSED set or cleared."""
+        class Ctx:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        ctx = {
+            "github": Ctx(event_name=event_name),
+            "needs": Ctx(**{"schedule-resolve": Ctx(outputs=Ctx(sha="abc123"))}),
+            "inputs": Ctx(schedule_backup=backup),
+            "vars": Ctx(MAIN_RED_PAUSED="abc123 backend notice=sent" if paused else ""),
+        }
+        expr = self.jobs[job]["if"].replace("always()", "True").replace("&&", " and ").replace("||", " or ")
+        expr = expr.replace("needs.schedule-resolve.outputs.sha", 'needs.__dict__["schedule-resolve"].outputs.sha')
+        return bool(eval(expr, {"__builtins__": {}}, ctx))  # trusted: our own workflow file
+
+    def test_auto_deploy_skipped_while_paused(self):
+        self.assertFalse(self.runs("candidate-preflight", "schedule", paused=True))
+
+    def test_auto_deploy_runs_when_cleared(self):
+        self.assertTrue(self.runs("candidate-preflight", "schedule", paused=False))
+
+    def test_schedule_backup_dispatch_follows_the_pause(self):
+        self.assertFalse(self.runs("candidate-preflight", "workflow_dispatch", paused=True, backup="true"))
+        self.assertTrue(self.runs("candidate-preflight", "workflow_dispatch", paused=False, backup="true"))
+
+    def test_every_c00_job_hangs_off_the_guarded_preflight(self):
+        # Skipping candidate-preflight leaves eligible empty, so the notice and deploy chain is skipped.
+        for name in ["notify-approval", "prepare-release-candidate", "admission", "deploy"]:
+            with self.subTest(job=name):
+                self.assertIn("candidate-preflight", DeployApprovalTests.ancestors(self, name) | set(needs(self.jobs[name])))
+
+
 class LockModel:
     """GitHub's documented concurrency rules for cancel-in-progress: false.
     queue=single: one running job, one pending job; a job that joins evicts the
