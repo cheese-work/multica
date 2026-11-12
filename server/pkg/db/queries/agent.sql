@@ -1959,6 +1959,33 @@ SET cancel_acked_at = now()
 WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
   AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
 
+-- name: ReleaseStopsAttestedByDaemon :many
+-- CHE-3114 part 2: the claiming runtime's daemon reported its live task set. A
+-- gate-arming cancelled run of that runtime that is not in the set, and was
+-- dispatched before the grace cutoff (so a claim still in flight to the daemon
+-- is not mistaken for a stopped run) and since the daemon process booted (a
+-- restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
+-- with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
+-- rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
+-- reports a pending process cleanup is not released: only a cleanup-confirmed
+-- cancel-ack settles those. The first ack wins.
+UPDATE agent_task_queue t
+SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+FROM agent_runtime r
+WHERE r.id = t.runtime_id
+  AND r.status = 'online'
+  AND t.runtime_id = sqlc.arg('runtime_id')
+  AND t.status = 'cancelled'
+  AND t.failure_reason IN ('superseded_head', 'pr_merged', 'pr_closed')
+  AND t.cancel_acked_at IS NULL
+  AND t.stop_unconfirmed_at IS NULL
+  AND t.dispatched_at IS NOT NULL
+  AND t.dispatched_at < sqlc.arg('dispatched_before')
+  AND t.dispatched_at >= sqlc.arg('dispatched_after')
+  AND NOT (t.id = ANY(sqlc.arg('live_task_ids')::uuid[]))
+  AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
+RETURNING t.id, t.issue_id;
+
 -- name: ListLiveReviewRunsForPR :many
 -- Live review runs of the PR stamped with a head other than the PR's current
 -- one, at the step their issue is still in. Author runs carry a different
