@@ -1518,7 +1518,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	// the skip consumes the whole batch, not only its newest fact.
 	if !holdsDraftReturn(receipts) &&
 		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
-		if inputFingerprint, prStates, commentFingerprint, err = prStateFingerprint(ctx, tx, issue.ID, w.SystemRule.String); err != nil {
+		if inputFingerprint, prStates, commentFingerprint, err = prStateFingerprint(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String); err != nil {
 			return err
 		}
 		// An edited rule (instruction or settings) is not what the last run answered.

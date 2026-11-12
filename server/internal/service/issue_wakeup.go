@@ -1521,7 +1521,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		// CHE-4984: a scheduled conflict heartbeat over a PR that is as it was
 		// when the last heartbeat run started adds nothing, so it starts no run.
 		if scheduled && custom == nil && isConflictHeartbeat(w) {
-			if heartbeatFP, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+			if heartbeatFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID)); err != nil {
 				return err
 			}
 			if heartbeatFP != "" {
