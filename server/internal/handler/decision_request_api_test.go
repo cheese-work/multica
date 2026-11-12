@@ -382,13 +382,16 @@ func TestDecisionPingToFormerMemberIsRecordedNotRetried(test *testing.T) {
 	}
 }
 
-// An option card cannot carry an action: Approve on it only records an answer and
-// the change never applies (CHE-5229). A plain card that names an allowlisted
-// action type is refused, with the command that attaches the action.
-func TestDecisionRequestAPIRefusesPlainCardForAllowlistedAction(test *testing.T) {
+// A plain option card cannot apply a change: Approve only records the answer,
+// so the change never applies (CHE-5229). The server cannot know intent, so it
+// answers 201 with an advisory hint when the decision or an option reads like a
+// workflow, agent, squad, workspace or budget change. Text from the recorded
+// CHE-5175 card (decision 45a5d5cb), which names no action type.
+func TestDecisionRequestAPIHintsAtPlainCardForConfigChange(test *testing.T) {
 	fixture := newRequestCoreFixture(test, false)
 	ask := fixture.structuredAsk()
-	ask.Decision = "Approve workflow.steps.set on the Default workflow?"
+	ask.Decision = "Restore x99-codex-sol as the Default workflow Agent Review handler?"
+	ask.Options[0].WhatHappens = "The agent_review step hands reviews to x99-codex-sol again and the expired saving-mode text is removed. Reversible: the old steps can be set back."
 	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
 		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
 		"ask": ask, "escalation_class": fixture.input().EscalationClass,
@@ -396,9 +399,24 @@ func TestDecisionRequestAPIRefusesPlainCardForAllowlistedAction(test *testing.T)
 	request.Header.Set("X-Actor-Source", "task_token")
 	request.Header.Set("X-Agent-ID", fixture.agentID)
 	request.Header.Set("X-Task-ID", fixture.taskID)
-	response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
-	if text := response.Text(); !strings.Contains(text, "workflow.steps.set") || !strings.Contains(text, "multica decision propose") {
-		test.Fatalf("refusal does not name the action type and the command: %s", text)
+	response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
+	if text := response.Text(); !strings.Contains(text, "multica decision propose") {
+		test.Fatalf("no hint names the command that attaches the action: %s", text)
 	}
-	fixture.assertCounts(test, 0)
+}
+
+// A card that only mentions an action type string, with no change to apply
+// (decision df8ee3fa on CHE-5229), is never refused.
+func TestDecisionRequestAPIAllowsPlainCardMentioningActionType(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	ask := fixture.structuredAsk()
+	ask.AgentDid = "Fixed bug 1 and checked that workflow.steps.set cards still read as answered."
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
+		"ask": ask, "escalation_class": fixture.input().EscalationClass,
+	})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusCreated)
 }

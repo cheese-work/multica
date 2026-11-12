@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -93,10 +94,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	if input.Action == nil && kind == decisiontx.KindDecision {
-		if refusal := plainCardForAction(ask); refusal != nil {
-			writeError(writer, refusal.status, refusal.message)
-			return
-		}
+		hints = append(hints, plainCardConfigHints(parsed)...)
 	}
 	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
 		writeDecisionError(writer, err, "decision request")
@@ -144,16 +142,30 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	handler.writeDecisionResult(writer, request, issue, result, hints)
 }
 
-// plainCardForAction refuses an option card that names an allowlisted action type.
-// Approve on an option card only records an answer; the change would never apply
-// and the person would be sent a second link (CHE-5229).
-func plainCardForAction(ask string) *decisionIntentRefusal {
-	for _, actionType := range decisionaction.Types() {
-		if strings.Contains(ask, actionType) {
-			return &decisionIntentRefusal{http.StatusBadRequest, "this card names the action " + actionType + ", and an option card cannot apply it. Send it with `multica decision propose` (or `multica decision request --action-file`) so one approval applies the change"}
-		}
+// configChangeWords matches a decision or option that reads like a change to
+// a workflow, agent, squad, workspace or budget in plain words.
+var configChangeWords = regexp.MustCompile(`(?i)\b(?:workflow|squad|agent|workspace)\b.{0,80}\b(?:handler|instructions?|steps?|context|env(?:ironment)?|budget|prompt)\b|\bbudget\b.{0,40}\b(?:raise|top.?up|increase)|\b(?:raise|top.?up|increase)\b.{0,40}\bbudget\b`)
+
+// plainCardConfigHints returns an advisory hint when an option card reads like
+// a change an allowlisted action applies. Approve on an option card only
+// records an answer, so the change would never apply and the person would be
+// sent a second link (CHE-5229). The server cannot read intent, so this never
+// refuses: it scans the decision and the options (not the agent_did detail)
+// for an action type string or plain words naming such a change.
+func plainCardConfigHints(ask decisiontx.Ask) []string {
+	texts := []string{ask.Decision}
+	for _, option := range ask.Options {
+		texts = append(texts, option.Label, option.WhatHappens)
 	}
-	return nil
+	text := strings.Join(texts, "\n")
+	matched := configChangeWords.MatchString(text)
+	for _, actionType := range decisionaction.Types() {
+		matched = matched || strings.Contains(text, actionType)
+	}
+	if !matched {
+		return nil
+	}
+	return []string{"the decision or an option reads like a change to a workflow, agent, squad, workspace or budget; Approve on an option card only records the answer and applies nothing. If one approval should apply the change, send it with `multica decision propose` (or `multica decision request --action-file`)"}
 }
 
 // writeDecisionResult answers a replay with 200, or publishes the events of a

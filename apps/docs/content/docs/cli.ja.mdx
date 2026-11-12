@@ -511,7 +511,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。許可リストにあるアクション種別を本文に含むカードはサーバーが拒否するため、その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
+`--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
 
 ## 別のコーディングエージェントから Multica を操作する
 
