@@ -97,6 +97,10 @@ Dans les scripts, utilisez `--to-id <uuid>` pour éviter de cibler un mauvais ob
 
 Utilisez `--no-start` lorsque l'assignation doit enregistrer le responsable sans créer de nouvelle exécution — par exemple lorsque le même agent traite déjà la tâche depuis une autre exécution. La même option est disponible sur `issue update` et `issue status`. Si un flux qui ne fait qu'enregistrer le responsable modifie à la fois l'assignation et le statut, passez-la aux deux commandes : neutraliser le déclenchement de l'assignation ne neutralise pas une exécution déclenchée ensuite par le changement de statut.
 
+## Agents en pause
+
+Assigner ou @-mentionner un agent en pause est refusé avec `agent_paused` ; choisissez un autre agent selon son rôle. Les réveils d'un agent en pause sont ignorés et journalisés, et un créneau récurrent manqué n'est pas rejoué. Un propriétaire ou un administrateur de l'espace de travail met un agent en pause ou le reprend via une carte de décision (`agent.pause`, `agent.resume`) qui indique les exécutions en cours, les exécutions en file, les tickets ouverts assignés et les réveils activés concernés par la pause.
+
 ## Étapes suivantes
 
 - [@mentionner des agents dans les commentaires](/mentioning-agents) — traitez une nouvelle question sans changer l'assigné.
