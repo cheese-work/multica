@@ -214,7 +214,7 @@ func TestOlderPendingRetractionBlocksCorrectedAnswerDespiteUUIDOrder(test *testi
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := recordDecisionWakeEvent(ctx, testHandler.Queries, request, "retracted", recordedA.Answer.ID, pgtype.UUID{Bytes: [16]byte{1}, Valid: true}); err != nil {
+	if err := testHandler.recordDecisionWakeEvent(ctx, testHandler.Queries, request, "retracted", recordedA.Answer.ID, pgtype.UUID{Bytes: [16]byte{1}, Valid: true}); err != nil {
 		test.Fatal(err)
 	}
 	dbfx.Exec(test, `UPDATE decision_request SET status = 'open' WHERE id = $1`, fixture.decision.ID)

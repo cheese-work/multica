@@ -15,10 +15,16 @@ import (
 // edgeMove is what moveIssueOnEdgeTx leaves for the caller.
 type edgeMove struct {
 	Issue db.Issue
+	// StatusActivityID is the history row the move wrote; invalid when none.
+	StatusActivityID pgtype.UUID
 	// RunRefused is why the next step's run was not inserted (budget, triage,
 	// a pending run already holds the slot). The move is written regardless; a
 	// caller that needs both or neither rolls back on it.
 	RunRefused error
+	// TaskID is the run that carries the move: the one the move inserted, or the
+	// pending run that held the slot (a duplicate). Invalid when no run was
+	// started or found (CHE-2860).
+	TaskID pgtype.UUID
 	// AfterCommit publishes the move and runs the work that follows a commit;
 	// it reports whether a run for the next step's handler now exists. Call it
 	// only after the caller's transaction committed.
@@ -62,6 +68,15 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 	write.system = true
 	rec := &statusRecord{workspaceID: issue.WorkspaceID, trigger: statusTriggerFromSystem(edgeMoveCause(source))}
+	// The block an exhausted budget causes names its refusal, so a later refusal
+	// can find the status and target the block hid.
+	if id, ok := extra["refusal_id"].(string); ok && source == "run_budget" {
+		rec.trigger.Cause.Ref = map[string]string{"refusal_id": id}
+	}
+	// An approved action's restore names the action that paid for it.
+	if id, ok := extra["action_id"].(string); ok && source == "run_budget" {
+		rec.trigger.Cause.Ref = map[string]string{"action_id": id}
+	}
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
@@ -95,10 +110,18 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 
 	var (
 		runAfter     func()
+		runTaskID    pgtype.UUID
 		runRefused   error
 		cancelAfter  func()
 		duplicateRun bool
 	)
+	// A handler step whose agent is archived runs nothing: the caller that needs
+	// the run (a budget resume) sees why and rolls the move back.
+	if handoff != nil && startHandler && !willRun && updated.AssigneeType.String == "agent" {
+		if agent, err := q.GetAgent(ctx, updated.AssigneeID); err == nil && agent.ArchivedAt.Valid {
+			runRefused = service.ErrAgentArchived
+		}
+	}
 	if willRun {
 		var notConfirmed *service.StopNotConfirmedError
 		if err := service.StopGate(ctx, q, updated.ID); errors.As(err, &notConfirmed) {
@@ -108,19 +131,25 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 			return edgeMove{}, err
 		}
 		if trigger.AssigneeType == "agent" {
-			runAfter, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{}, overlay)
-			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
+			runTaskID, runAfter, err = th.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{}, pgtype.UUID{}, overlay)
 		} else {
-			runAfter, err = th.enqueueSquadLeaderRunInTx(ctx, q, updated)
+			runTaskID, runAfter, err = th.enqueueSquadLeaderRunInTx(ctx, q, updated)
 		}
+		duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrIssueInTriage),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrAgentPaused),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
 			return edgeMove{}, err
 		}
+	}
+
+	if errors.Is(runRefused, service.ErrStageQueueFull) && handoffDetails != nil {
+		handoffDetails["run"] = "false"
+		handoffDetails["run_reason"] = handoffRunReasonStageQueueFull
+		delete(handoffDetails, "note")
 	}
 
 	payload := map[string]any{
@@ -168,7 +197,11 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 		return ranHandler
 	}
-	return edgeMove{Issue: updated, RunRefused: runRefused, AfterCommit: afterCommit}, nil
+	var activityID pgtype.UUID
+	if rec.activity != nil {
+		activityID = rec.activity.ID
+	}
+	return edgeMove{Issue: updated, StatusActivityID: activityID, RunRefused: runRefused, TaskID: runTaskID, AfterCommit: afterCommit}, nil
 }
 
 // prepareEdgeRunOverlay builds, outside any transaction, the Composio overlay
@@ -202,27 +235,27 @@ var errSquadLeaderNotAdmitted = errors.New("squad leader run not admitted")
 // enqueueSquadLeaderRunInTx is the in-transaction form of
 // enqueueSquadLeaderTaskOutcome for the platform as the actor: the leader's
 // access gate and the run insert both read and write through q.
-func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue) (func(), error) {
-	return h.enqueueSquadLeaderRunAsInTx(ctx, q, issue, "system", "")
+func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue) (pgtype.UUID, func(), error) {
+	return h.enqueueSquadLeaderRunAsInTx(ctx, q, issue, pgtype.UUID{}, "system", "")
 }
 
 // enqueueSquadLeaderRunAsInTx is enqueueSquadLeaderRunInTx for a caller: a
 // member who moves the issue is the leader run's accountable human, so the gate
 // judges that member, never the issue's creator (mirrors
 // enqueueSquadLeaderTaskOutcome).
-func (h *Handler) enqueueSquadLeaderRunAsInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorType, actorID string) (func(), error) {
+func (h *Handler) enqueueSquadLeaderRunAsInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, actorType, actorID string) (pgtype.UUID, func(), error) {
 	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
-		return nil, errSquadLeaderNotAdmitted
+		return pgtype.UUID{}, nil, errSquadLeaderNotAdmitted
 	}
 	originator := actorID
 	if actorType != "member" {
-		originator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
+		originator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, triggerCommentID))
 	}
 	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, actorType, actorID, originator, uuidToString(issue.WorkspaceID)) {
-		return nil, errSquadLeaderNotAdmitted
+		return pgtype.UUID{}, nil, errSquadLeaderNotAdmitted
 	}
-	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, memberActorUserID(actorType, actorID))
+	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, triggerCommentID, memberActorUserID(actorType, actorID))
 }
 
 // onQueries is a handler whose reads go through q, the queries of a

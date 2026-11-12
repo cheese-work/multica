@@ -89,6 +89,100 @@ func TestPRChecksPassedWakesOwnerOncePerHead(t *testing.T) {
 	}
 }
 
+// contexts replaces the check runs the snapshot reports for the head.
+func (g *greenSnapshot) contexts(cs ...ghsnapshot.CheckContext) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.current.Contexts = cs
+}
+
+var (
+	buildDone    = ghsnapshot.CheckContext{Name: "build", Status: "completed", Conclusion: "success"}
+	buildRunning = ghsnapshot.CheckContext{Name: "build", Status: "in_progress"}
+	verdictWait  = ghsnapshot.CheckContext{Name: "security-gate", Status: "in_progress", IsStatusContext: true}
+)
+
+// The security-gate status stays PENDING until a verdict exists, so a head whose
+// only unfinished context is that status counts as green (CHE-4938). The verdict
+// arriving later turns the rollup SUCCESS on the same head and wakes nobody twice.
+func TestPRChecksPassedWakesWhileOnlyVerdictPending(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 1966002
+	const prNumber int32 = 196602
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "verdict pending wake", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	linkedPRForWakeup(t, fx, installationID, prNumber, "verdict-head-a")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_success", true)
+	snap := newGreenSnapshot("verdict-head-a")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	count := func() int { return prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_passed") }
+
+	snap.set(t, prNumber, "verdict-head-a", "PENDING")
+	snap.contexts(buildRunning, verdictWait)
+	refresh()
+	if got := count(); got != 0 {
+		t.Fatalf("another check still running woke the owner: %d wakeups, want 0", got)
+	}
+
+	snap.contexts(buildDone, verdictWait)
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("only the verdict pending queued %d wakeups, want 1", got)
+	}
+
+	snap.set(t, prNumber, "verdict-head-a", "SUCCESS")
+	snap.contexts(buildDone, ghsnapshot.CheckContext{Name: "security-gate", Status: "completed", Conclusion: "success", IsStatusContext: true})
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("verdict arriving on the same head woke again: %d wakeups, want 1", got)
+	}
+}
+
+// A red run re-run to green on the same head is a new green (CHE-4938); the
+// same green delivered again is not.
+func TestPRChecksPassedWakesAgainAfterRedOnSameHead(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 1966003
+	const prNumber int32 = 196603
+	fx := newPRMergeWebhookFixture(t, installationID)
+	agentID := createHandlerTestAgent(t, "rerun green wake", nil)
+	setIssueAssigneeDirect(t, fx.child.ID, "agent", agentID)
+	linkedPRForWakeup(t, fx, installationID, prNumber, "rerun-head")
+	setWorkspacePRWakeSetting(t, "github_enabled", true)
+	setWorkspacePRWakeSetting(t, "github_wake_on_ci_success", true)
+	snap := newGreenSnapshot("rerun-head")
+	refresh := startSnapshotRefresh(t, installationID, prNumber, snap.get)
+	count := func() int { return prRuleWakeups(t, fx.child.ID, agentID, "pr_checks_passed") }
+	finish := func() {
+		testPool.Exec(context.Background(), `UPDATE agent_task_queue SET status='completed',completed_at=clock_timestamp() WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, fx.child.ID)
+	}
+
+	refresh()
+	if got := count(); got != 1 {
+		t.Fatalf("green head queued %d wakeups, want 1", got)
+	}
+	finish()
+	snap.set(t, prNumber, "rerun-head", "FAILURE")
+	refresh()
+	finish()
+	snap.set(t, prNumber, "rerun-head", "SUCCESS")
+	refresh()
+	if got := count(); got != 2 {
+		t.Fatalf("red then green on one head queued %d green wakeups in total, want 2", got)
+	}
+	finish()
+	refresh()
+	if got := count(); got != 2 {
+		t.Fatalf("the re-run green delivered again woke again: %d, want 2", got)
+	}
+}
+
 func TestCIGreenAdvancesWorkflowExactlyOneStep(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")

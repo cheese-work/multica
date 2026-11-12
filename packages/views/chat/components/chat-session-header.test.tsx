@@ -74,6 +74,20 @@ describe("ChatSessionHeader breadcrumb", () => {
     ).toBeTruthy();
   });
 
+  it("renders a long title in full: no fixed character cap, full text in the tooltip", async () => {
+    const longTitle = "tôi muốn adopt ý tưởng này vào hệ thống chat của chúng ta để tiêu đề hiển thị đầy đủ hơn ".repeat(2).trim();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={{ ...session, title: longTitle }} agent={null} />
+      </I18nProvider>,
+    );
+    const button = screen.getByRole("button", { name: longTitle });
+    expect(button.textContent).toBe(longTitle);
+    expect(button.className).toContain("truncate");
+    act(() => button.focus());
+    expect((await screen.findAllByText(longTitle)).length).toBeGreaterThan(1);
+  });
+
   it("shows only the title when the chat's agent is unavailable", () => {
     render(
       <I18nProvider locale="en" resources={TEST_RESOURCES}>

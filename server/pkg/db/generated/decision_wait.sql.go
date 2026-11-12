@@ -266,6 +266,12 @@ WHERE wait.closed_at IS NULL
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
                    AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+                   AND (
+                       moved.action = 'run_budget_top_up'
+                       OR moved.created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+                       OR (moved.details->'trigger'->>'auth_source' = 'interactive_jwt' AND moved.details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+                   )
              ) OR EXISTS (
                  SELECT 1 FROM issue_workflow flow
                  WHERE flow.workspace_id = issue.workspace_id AND flow.run_budget_since > wait.suspended_at
@@ -283,6 +289,7 @@ WHERE wait.closed_at IS NULL
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
                    AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
              )
          )))
   )

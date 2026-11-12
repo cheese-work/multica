@@ -291,7 +291,7 @@ func (s *TaskService) maybeAutoCompact(ctx context.Context, task db.AgentTaskQue
 }
 
 // settleCompactionTask is the failure guard: a compaction task that reaches any
-// terminal state without having continued the DM leaves the DM as it was, so an
+// terminal state without having continued or summarised the DM leaves the DM as it was, so an
 // automatic one says so and the person can retry with /compact. It runs inside
 // SettleTerminalTaskState, the single entry point of every terminal path.
 func settleCompactionTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {

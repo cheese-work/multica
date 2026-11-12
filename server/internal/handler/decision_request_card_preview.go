@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -45,6 +46,28 @@ type DecisionRequestCardAction struct {
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
+	// OwnerOnly: only the workspace owner may approve (the server refuses
+	// anyone else with needs_owner); the card hides the approve button.
+	OwnerOnly bool `json:"owner_only,omitempty"`
+	// ConfigChange is the stored server preview of a pending config change,
+	// the exact text whose digest approve checks. Absent for other actions.
+	ConfigChange *ConfigChangeCard `json:"config_change,omitempty"`
+}
+
+// ConfigChangeCard is a config change's stored preview and its digest.
+type ConfigChangeCard struct {
+	Field    string                `json:"field"`
+	TargetID string                `json:"target_id"`
+	Keys     []string              `json:"keys"`
+	DiffKind string                `json:"diff_kind"`
+	Diff     []decisiontx.DiffHunk `json:"diff"`
+	// After is the value approve would write, as the server read it: a string
+	// for text, a list of lines, or a JSON value.
+	After        any            `json:"after"`
+	BeforeSHA256 string         `json:"before_sha256"`
+	AfterSHA256  string         `json:"after_sha256"`
+	Meta         map[string]any `json:"meta,omitempty"`
+	SHA256       string         `json:"sha256"`
 }
 
 // previewDigest is the digest of a preview's canonical fields.
@@ -77,8 +100,12 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		slog.WarnContext(ctx, "decision card action unreadable", "request_id", uuidToString(requestID), "error", err)
 		return nil
 	}
-	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State}
+	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State, OwnerOnly: actionOwnerOnly(action)}
 	if action.State != "pending" {
+		return card
+	}
+	if _, configured := configChanges[action.ActionType]; configured {
+		card.ConfigChange = handler.cardConfigChange(ctx, action)
 		return card
 	}
 	fields, err := handler.cardPreviewFields(ctx, action)
@@ -90,6 +117,44 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		card.Preview = nil
 	}
 	return card
+}
+
+// cardConfigChange reads the preview stored with the action, the one approve
+// checks by digest. It quotes agent settings, so it is withheld for an agent
+// the card's human could not view. Any unreadable part gives no preview, and the
+// client then offers no approve.
+func (handler *Handler) cardConfigChange(ctx context.Context, action db.DecisionAction) *ConfigChangeCard {
+	var stored struct {
+		Preview       ConfigChangeCard `json:"preview"`
+		PreviewSHA256 string           `json:"preview_sha256"`
+	}
+	if err := json.Unmarshal(action.Preconditions, &stored); err != nil || stored.PreviewSHA256 == "" || stored.Preview.Field == "" {
+		slog.WarnContext(ctx, "decision card config change unreadable", "action_id", uuidToString(action.ID), "error", err)
+		return nil
+	}
+	if strings.HasPrefix(stored.Preview.Field, "agent.") {
+		request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+		if err == nil {
+			_, err = handler.agentForAction(ctx, action.WorkspaceID, stored.Preview.TargetID, request.HumanUserID)
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "decision card config change withheld", "action_id", uuidToString(action.ID), "error", err)
+			return nil
+		}
+	}
+	card := stored.Preview
+	card.SHA256 = stored.PreviewSHA256
+	if card.Keys == nil {
+		card.Keys = []string{}
+	}
+	// A preview stored before diff_kind existed is the json kind.
+	if card.DiffKind == "" {
+		card.DiffKind = "json"
+	}
+	if card.Diff == nil {
+		card.Diff = []decisiontx.DiffHunk{}
+	}
+	return &card
 }
 
 // cardPreviewFields renders the preview for the request's human, the only
@@ -140,6 +205,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
 		return handler.agentCopyPreview(ctx, action, viewer)
+	case agentPauseAction, agentResumeAction:
+		return handler.agentSchedulingPreview(ctx, action, viewer)
 	}
 	return nil, nil
 }
@@ -205,7 +272,7 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 	if err != nil {
 		return nil, fmt.Errorf("copy target runtime: %w", err)
 	}
-	target, err := handler.Queries.GetAgentRuntime(ctx, runtimeID)
+	target, err := handler.runtimeForAction(ctx, action.WorkspaceID, runtimeID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -321,6 +388,24 @@ func avatarLabel(requested *string) string {
 		return "random emoji"
 	}
 	return *requested
+}
+
+// runtimeForAction reads the target runtime as the executor accepts it: in the
+// card's workspace and usable by the viewer. Anything else is an error, so the
+// card shows "details unavailable" and names nothing about the runtime.
+func (handler *Handler) runtimeForAction(ctx context.Context, workspaceID, runtimeID, viewer pgtype.UUID) (db.AgentRuntime, error) {
+	runtime, err := handler.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: runtimeID, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	member, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: viewer, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	if !canUseRuntimeForAgent(member, runtime) {
+		return db.AgentRuntime{}, errors.New("the card's recipient cannot use the action's runtime")
+	}
+	return runtime, nil
 }
 
 func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string, viewer pgtype.UUID) (db.Agent, error) {
