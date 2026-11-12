@@ -176,12 +176,14 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
           RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_TOKEN: ${{ github.token }}
+          # Only the token is a secret. The other values are public defaults; a secret of the same name overrides them.
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
-          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
           MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}
-          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID }}
-          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE }}
-          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID || 'f2b734e0-b6de-4414-8a27-a2f69b0ef843' }}
+          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE || '01a1bff0-6ccc-7873-9ac8-580037bc5206' }}
+          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID || 'f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff' }}
+          MULTICA_NOTIFY_SOURCE_COMMENT: ${{ secrets.C00_APPROVAL_MULTICA_SOURCE_COMMENT || '01a1bff1-cdf8-7856-ad05-da57f3a396f2' }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
