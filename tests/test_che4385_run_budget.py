@@ -129,7 +129,8 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual((run["workflows"], run["types"], run["branches"]), (["Main Build"], ["completed"], ["main"]))
         gate = doc["jobs"]["sync"]["if"]
         self.assertIn("github.event.workflow_run.event == 'push'", gate)
-        self.assertIn("github.event.workflow_run.conclusion == 'success'", gate)
+        # A failed or cancelled Main Build still has a main push to sync after, as the old job had no needs (CHE-4963).
+        self.assertNotIn("conclusion", gate)
         self.assertNotIn("pr-main-sync", load("main-build.yml")["jobs"])
 
     def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):

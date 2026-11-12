@@ -5,7 +5,7 @@ name: PR main sync
 #
 # Trust boundary: runs only the default-branch script (workflow_run / manual dispatch on main), never PR code.
 # It holds the c00-multicado App key, so it must be a workflow_run or schedule definition (CHE-4251 guard).
-# It follows each successful Main Build push run, so a ready PR is synced on the next main push (CHE-4963).
+# It follows each completed Main Build push run, whatever its conclusion, so a ready PR is synced after every main push (CHE-4963).
 # Runs on the X99 runner because it needs the `multica` CLI; pushes use the App token, so CI starts on the PR.
 on:
   workflow_run:
@@ -32,7 +32,7 @@ jobs:
     # C3 (diff-keyed evidence, CHE-3610) shipped, so a merge of main no longer voids PASS evidence. Draft PRs are skipped (CHE-4963).
     # Enable with the repository variable PR_MAIN_SYNC_ENABLED=true. Manual dispatch runs without it,
     # but only as a forced dry run: no live merge happens while the switch is off.
-    if: github.event_name == 'workflow_dispatch' || (vars.PR_MAIN_SYNC_ENABLED == 'true' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    if: github.event_name == 'workflow_dispatch' || (vars.PR_MAIN_SYNC_ENABLED == 'true' && github.event.workflow_run.event == 'push')
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
     # The App key lives in this environment (branch policy: main only), so a dry run needs the default branch: dispatch with --ref main.
