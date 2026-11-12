@@ -50,6 +50,11 @@ describe("approvableConfigChange", () => {
     expect(approvableConfigChange(action({ config_change: { ...change, meta } }))).toBeUndefined();
   });
 
+  it("accepts a workflow run-budget change (CHE-5285)", () => {
+    const budget = { ...change, field: "workflow.budget", diff_kind: "json" as const, after: { max_runs_per_issue: 40, include_child_prs: true }, meta: { workflow_name: "Production flow" } };
+    expect(approvableConfigChange(action({ action_type: "workflow.budget.set", config_change: budget }))).toEqual(budget);
+  });
+
   it("does not need a workflow name for another field", () => {
     expect(approvableConfigChange(action({ config_change: { ...change, field: "agent.instructions", meta: undefined } }))).toBeDefined();
   });

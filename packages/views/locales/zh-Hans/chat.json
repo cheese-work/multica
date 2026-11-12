@@ -482,7 +482,8 @@
       "field_workspace_context": "工作区上下文",
       "field_workflow_steps": "工作流步骤",
       "field_workflow_instructions": "工作流步骤指令",
-      "field_workspace_settings": "工作区设置"
+      "field_workspace_settings": "工作区设置",
+      "field_workflow_budget": "工作流运行预算"
     },
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",

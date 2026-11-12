@@ -27,12 +27,12 @@ export function approvablePreview(action: Pick<DecisionRequestAction, "action_ty
 /** Scope A: the only fields this client shows and approves. Anything else is newer than this client or denied. */
 export const CONFIG_CHANGE_FIELDS = [
   "agent.instructions", "squad.instructions", "workspace.context",
-  "workflow.steps", "workflow.instructions", "workspace.settings",
+  "workflow.steps", "workflow.instructions", "workspace.settings", "workflow.budget",
 ] as const;
 
 const CONFIG_CHANGE_ACTION_TYPES = [
   "agent.instructions.set", "squad.instructions.set", "workspace.context.set",
-  "workflow.steps.set", "workflow.step.instructions.set", "workspace.settings.patch",
+  "workflow.steps.set", "workflow.step.instructions.set", "workspace.settings.patch", "workflow.budget.set",
 ] as const;
 
 export function isConfigChangeActionType(type: string): boolean {

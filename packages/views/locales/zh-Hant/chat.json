@@ -447,7 +447,8 @@
       "field_workspace_context": "工作區脈絡",
       "field_workflow_steps": "工作流程步驟",
       "field_workflow_instructions": "工作流程步驟指令",
-      "field_workspace_settings": "工作區設定"
+      "field_workspace_settings": "工作區設定",
+      "field_workflow_budget": "工作流程執行預算"
     },
     "agent_note": "代理備註（未驗證）",
     "answer_send_passkey": "使用通行金鑰傳送",
