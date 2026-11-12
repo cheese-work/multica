@@ -29,8 +29,9 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// prStateFingerprint hashes what a PR watchdog reads: head, mergeable state and
-// required-check rollup of every PR linked to the issue. "" when none is linked.
+// prStateFingerprint hashes linked PR state and issue comments, ignoring
+// unchanged comments from the agent's completed runs for this wakeup.
+// It returns "" when no PR is linked.
 func prStateFingerprint(ctx context.Context, db rowQuerier, issueID, agentID pgtype.UUID, ctxKey, ctxValue string) (string, json.RawMessage, string, error) {
 	var fp, commentFingerprint string
 	var prStates json.RawMessage
