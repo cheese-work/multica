@@ -129,7 +129,7 @@ func (h *Handler) autoApproveRunBudget(ctx context.Context, issue db.Issue, e se
 		if fresh.Status != refusedStatus || fresh.AssigneeType.String != "agent" || fresh.AssigneeID != target.AgentID {
 			return nil, errAutoNotApproved
 		}
-		afterCommit, err := h.TaskService.EnqueueIssueRunInTx(ctx, q, fresh, target.ActorUserID, overlay)
+		_, afterCommit, err := h.TaskService.EnqueueIssueRunInTx(ctx, q, fresh, pgtype.UUID{}, target.ActorUserID, overlay)
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
 			return nil, nil
 		}
