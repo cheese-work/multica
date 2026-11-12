@@ -6323,14 +6323,18 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if !retryShape(failureReason, parent) {
+		} else if !retryRoutable(parent) {
 			// Not retryable: nothing to mint.
 		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
 			// Fail closed: an unreadable lineage must not mint a generic retry.
 			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
 				"task_id", util.UUIDToString(taskID), "error", ferr)
 		} else if fence.Capped() {
+			// Before the attempt budget: a failed held retry has spent its budget
+			// and still owes the owner its one cap notice (CHE-1736 plan r7).
 			retryFence = fence
+		} else if parent.Attempt >= retryAttemptCeiling(failureReason, parent.MaxAttempts) {
+			// Budget exhausted: nothing to mint.
 		} else if plan, ok := s.planHeldProviderRetry(ctx, failureReason, parent); ok {
 			heldRetry = plan
 		} else if !retryableReasons[failureReason] {
@@ -6988,8 +6992,14 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 // retried outside retryableReasons (the held provider retry, CHE-1736 M1.2)
 // shares the same budget, autopilot, triage and link rules.
 func retryShape(failureReason string, t db.AgentTaskQueue) bool {
-	return t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
-		!t.AutopilotRunID.Valid &&
+	return t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) && retryRoutable(t)
+}
+
+// retryRoutable is retryShape without the attempt budget: the task kind and
+// link rules only. The recovery-lineage fence runs between the two, so a task
+// that spent its budget inside a recovery lineage is still announced once.
+func retryRoutable(t db.AgentTaskQueue) bool {
+	return !t.AutopilotRunID.Valid &&
 		!IsTriageTask(t) &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
@@ -7150,24 +7160,10 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryableReasons[reason] {
 		return nil, nil
 	}
-	// Use the reason-aware ceiling, not the raw max_attempts column, so an
-	// orphaned provider_network task recovered on its 2nd attempt is still
-	// allowed its deferred 3rd attempt (retryAttemptCeiling raises the ceiling
-	// to 3). Kept in sync with retryEligible below, which applies the same
-	// ceiling to the primary FailTask path.
-	if parent.Attempt >= retryAttemptCeiling(reason, parent.MaxAttempts) {
-		slog.Info("task auto-retry skipped: budget exhausted",
-			"task_id", util.UUIDToString(parent.ID),
-			"attempt", parent.Attempt,
-			"max_attempts", parent.MaxAttempts,
-			"ceiling", retryAttemptCeiling(reason, parent.MaxAttempts),
-		)
-		return nil, nil
-	}
 	// Autopilot has its own retry semantics (don't double-trigger) and a task
-	// with no issue/chat link has nowhere to report its retry — retryEligible
+	// with no issue/chat link has nowhere to report its retry — retryRoutable
 	// covers both, keeping this sweeper path in sync with FailTask's in-tx retry.
-	if !retryEligible(reason, parent) {
+	if !retryRoutable(parent) {
 		return nil, nil
 	}
 	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
@@ -7178,6 +7174,21 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	if fence.Capped() {
 		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
+
+	// Use the reason-aware ceiling, not the raw max_attempts column, so an
+	// orphaned provider_network task recovered on its 2nd attempt is still
+	// allowed its deferred 3rd attempt (retryAttemptCeiling raises the ceiling
+	// to 3). Runs after the lineage fence so a spent budget still notifies once;
+	// FailTask applies the same ceiling in the same order.
+	if parent.Attempt >= retryAttemptCeiling(reason, parent.MaxAttempts) {
+		slog.Info("task auto-retry skipped: budget exhausted",
+			"task_id", util.UUIDToString(parent.ID),
+			"attempt", parent.Attempt,
+			"max_attempts", parent.MaxAttempts,
+			"ceiling", retryAttemptCeiling(reason, parent.MaxAttempts),
+		)
 		return nil, nil
 	}
 
