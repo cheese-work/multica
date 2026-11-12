@@ -91,7 +91,7 @@ import {
 import { AgentInstructionsSection } from "./agent-instructions-section";
 import { AgentPropertiesPanel } from "./agent-properties-panel";
 import { describeCancelImpact } from "./agent-row-actions";
-import { AgentPausedBadge, AgentSchedulingDialog } from "./agent-scheduling";
+import { AgentPausedBadge, AgentSchedulingDialog, canScheduleAgent } from "./agent-scheduling";
 import { AgentSkillsSection } from "./agent-skills-section";
 import { AgentWorkDialog } from "./agent-work-dialog";
 import { AgentWorkSections } from "./tabs/activity-tab";
@@ -438,7 +438,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
   // Pause / resume is owner-or-admin only; an agent owner who is a plain member
   // cannot do it (the API refuses it too).
   const myRole = members.find((m) => m.user_id === currentUser?.id)?.role;
-  const canSchedule = !isArchived && (myRole === "owner" || myRole === "admin");
+  const canSchedule = canScheduleAgent(myRole, isArchived);
 
   // Chat shares the invocation gate with assignment (MUL-3963): starting a
   // chat triggers agent runs. The button stays visible either way — a denied

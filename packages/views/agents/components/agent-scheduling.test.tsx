@@ -21,11 +21,27 @@ const api = vi.hoisted(() => ({
   })),
 }));
 
+const agents = vi.hoisted(() => ({
+  list: [] as Array<{ id: string; scheduling_paused_at: string | null }>,
+}));
+
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/workspace/queries", () => ({
+  workspaceKeys: { agents: (ws: string) => ["workspaces", ws, "agents"] },
+  agentListOptions: (ws: string) => ({
+    queryKey: ["workspaces", ws, "agents"],
+    queryFn: async () => agents.list,
+  }),
+}));
 vi.mock("@multica/core/api", () => ({ api }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-import { AgentPausedBadge, AgentSchedulingDialog } from "./agent-scheduling";
+import {
+  AgentPausedBadge,
+  AgentPausedBadgeById,
+  AgentSchedulingDialog,
+  canScheduleAgent,
+} from "./agent-scheduling";
 
 const agent = {
   id: "a-1",
@@ -96,5 +112,37 @@ describe("AgentPausedBadge", () => {
       </I18nProvider>,
     );
     expect(screen.getByText("Paused")).toBeTruthy();
+  });
+});
+
+describe("AgentPausedBadgeById (issue assignee, squad members)", () => {
+  it("shows Paused for a paused agent and nothing for a running or unknown one", async () => {
+    agents.list = [
+      { id: "paused", scheduling_paused_at: "2026-11-12T00:00:00Z" },
+      { id: "running", scheduling_paused_at: null },
+    ];
+    const { container, rerender } = renderWithProviders(<AgentPausedBadgeById agentId="paused" />);
+    expect(await screen.findByText("Paused")).toBeTruthy();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    for (const id of ["running", "missing"]) {
+      rerender(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={qc}>
+            <AgentPausedBadgeById agentId={id} />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      await waitFor(() => expect(container.textContent).toBe(""));
+    }
+  });
+});
+
+describe("canScheduleAgent", () => {
+  it("allows workspace owner and admin only, and never an archived agent", () => {
+    expect(canScheduleAgent("owner", false)).toBe(true);
+    expect(canScheduleAgent("admin", false)).toBe(true);
+    expect(canScheduleAgent("member", false)).toBe(false);
+    expect(canScheduleAgent(undefined, false)).toBe(false);
+    expect(canScheduleAgent("owner", true)).toBe(false);
   });
 });

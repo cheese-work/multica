@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import type { Agent } from "@multica/core/types";
 import { api } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { workspaceKeys } from "@multica/core/workspace/queries";
+import { agentListOptions, workspaceKeys } from "@multica/core/workspace/queries";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
@@ -26,6 +26,19 @@ export function AgentPausedBadge({ agent }: { agent: Pick<Agent, "scheduling_pau
   const { t } = useT("agents");
   if (!agent.scheduling_paused_at) return null;
   return <Badge variant="outline">{t(($) => $.scheduling.paused_badge)}</Badge>;
+}
+
+/** Same badge, looked up by agent id: issue assignee and squad member rows only carry the id. */
+export function AgentPausedBadgeById({ agentId }: { agentId: string }) {
+  const wsId = useWorkspaceId();
+  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const agent = agents.find((a) => a.id === agentId);
+  return agent ? <AgentPausedBadge agent={agent} /> : null;
+}
+
+/** Pause / resume is for a workspace owner or admin; the API refuses anyone else. */
+export function canScheduleAgent(role: string | undefined, isArchived: boolean): boolean {
+  return !isArchived && (role === "owner" || role === "admin");
 }
 
 /**
