@@ -104,6 +104,7 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
+  AttachmentRevisionDiff,
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
@@ -295,6 +296,7 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -4565,6 +4567,22 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
+  // unchanged line instead of folding them.
+  async getAttachmentRevisionDiff(
+    id: string,
+    from: number,
+    to: number,
+    full = false,
+  ): Promise<AttachmentRevisionDiff> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (full) q.set("full", "1");
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
+    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
+      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 
