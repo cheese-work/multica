@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -6730,7 +6731,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			// agent mention would enqueue a run for a failure notice.
 			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
 		}
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
+		// CHE-4579: also drop mentions of an agent that cannot act.
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, s.failureNoticeText(ctx, task.AgentID, notice), "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
@@ -7999,7 +8001,7 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			// Same terminal-failure comment FailTaskWithTransition posts, so
 			// swept tasks are not silent on their issue.
 			if t.IssueID.Valid && t.Error.String != "" {
-				s.createAgentComment(ctx, t.IssueID, t.AgentID, redact.Text(t.Error.String), "system", t.TriggerCommentID, t.ID)
+				s.createAgentComment(ctx, t.IssueID, t.AgentID, s.failureNoticeText(ctx, t.AgentID, redact.Text(t.Error.String)), "system", t.TriggerCommentID, t.ID)
 			}
 		}
 
@@ -9632,6 +9634,32 @@ func commentEventFields(c db.Comment) map[string]any {
 		"created_at":     util.TimestampToString(c.CreatedAt),
 	}
 }
+
+// failureNoticeText keeps a terminal-failure notice on the timeline but, when the
+// failing agent cannot act (archived, no runtime, or unreadable), makes the
+// (untrusted) error text's agent/squad/member/@all mention links inert, so the
+// notice never points a wake or a notification at anyone. Issue links stay.
+// Pass 1 flattens links to plain @labels. Labels may hold brackets, so that pass
+// can assemble a new link from the leftovers; pass 2 then renames the scheme of
+// every non-issue link left. Two passes, never a loop: a loop is quadratic on deep nesting.
+func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID, text string) string {
+	if !strings.Contains(text, "mention://") {
+		return text
+	}
+	if agent, err := s.Queries.GetAgent(ctx, agentID); err == nil && !agent.ArchivedAt.Valid && agent.RuntimeID.Valid {
+		return text
+	}
+	text = util.MentionRe.ReplaceAllStringFunc(text, func(m string) string {
+		if sub := util.MentionRe.FindStringSubmatch(m); sub[2] != "issue" {
+			return "@" + sub[1]
+		}
+		return m
+	})
+	// Pass 2: rename every non-issue scheme left, assembled link or not.
+	return nonIssueMentionScheme.ReplaceAllString(text, "](mention-removed://$1/")
+}
+
+var nonIssueMentionScheme = regexp.MustCompile(`\]\(mention://(member|agent|squad|all)/`)
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
 	if content == "" {

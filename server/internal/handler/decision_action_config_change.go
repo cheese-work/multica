@@ -72,6 +72,11 @@ type configChange struct {
 	// StaleBaseCode, when set, turns drift at approval into a failed action with
 	// this code (HTTP 200) instead of the 409 precondition_drift refusal.
 	StaleBaseCode string
+	// AfterMismatchIsDrift makes an after-digest mismatch at approval answer
+	// precondition_drift: the claim matched at request time, so the server's
+	// own after value moving since is a changed target, not a wrong claim.
+	// The request still refuses a mismatch as after_digest_mismatch.
+	AfterMismatchIsDrift bool
 	// CatalogLock makes an approval take the status catalog lock before any other
 	// lock, in the order a workflow save does, because the change validates against
 	// the catalog.
@@ -147,6 +152,8 @@ type configChangeClaim struct {
 }
 
 // configChangeWant is the field, target and live digest the change was built on.
+const afterDigestMismatchCode = "after_digest_mismatch"
+
 type configChangeWant struct{ Field, TargetID, Before string }
 
 // checkConfigChange applies the rules shared by the request and the approval,
@@ -174,7 +181,7 @@ func checkConfigChange(fields []string, read configChangeRead, claim configChang
 		return errPreconditionDrift
 	}
 	if read.AfterSHA256 != claim.AfterSHA256 {
-		return decisionIntentRefusal{status, "after_digest_mismatch: after_sha256 is not the digest of the change the server computes"}
+		return decisionIntentRefusal{status, afterDigestMismatchCode + ": after_sha256 is not the digest of the change the server computes"}
 	}
 	return nil
 }
@@ -343,6 +350,10 @@ func executeConfigChange(ctx context.Context, change configChange, execution dec
 		claim.AfterSHA256 = read.AfterSHA256
 	}
 	if err := checkConfigChange(change.Fields, read, claim, configChangeWant{stored.Field, stored.TargetID, stored.BeforeSHA256}, http.StatusConflict, change.StaleBaseCode != ""); err != nil {
+		var refusal decisionIntentRefusal
+		if change.AfterMismatchIsDrift && errors.As(err, &refusal) && strings.HasPrefix(refusal.message, afterDigestMismatchCode+":") {
+			err = errPreconditionDrift
+		}
 		return nil, change.staleBase(err)
 	}
 	if err := authorizeConfigChange(ctx, change, queries, action.WorkspaceID, action.RequestedByAgentID, action.Params, read); err != nil {

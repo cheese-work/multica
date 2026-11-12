@@ -1631,8 +1631,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			}
 			return commit()
 		}
-		// A paused agent's wakeup is skipped and logged, not retried: it fires
-		// again on its own schedule once the agent is resumed (CHE-5066).
+		// A paused agent's wakeup is skipped and logged, not retried. A
+		// recurring wakeup fires again on its next schedule after a resume; a
+		// one-shot or condition wakeup is consumed here and does not fire after
+		// a resume (CHE-5066).
 		if pausedErr := guardAgentNotPaused(ctx, q, w.AgentID); errors.Is(pausedErr, ErrAgentPaused) {
 			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 				return err

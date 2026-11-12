@@ -475,7 +475,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch", agentInstructionsAction, agentPauseAction, agentResumeAction:
+	case "agent.env.patch", agentInstructionsAction, agentSkillsAction, agentPauseAction, agentResumeAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
