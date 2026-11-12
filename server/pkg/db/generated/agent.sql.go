@@ -4139,17 +4139,25 @@ SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     CASE WHEN $2::timestamptz IS NOT NULL THEN 'deferred' ELSE 'queued' END,
     CASE WHEN p.chat_session_id IS NOT NULL THEN GREATEST(p.priority, 3) ELSE p.priority END,
-    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
+    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary,
+    -- A held retry (CHE-1736 M1.2) is stamped with the M3c provider_hold marker in
+    -- the same INSERT, so the row is never promotable before it is marked.
+    CASE WHEN $3::text IS NOT NULL
+        THEN COALESCE(p.context, '{}'::jsonb) || jsonb_build_object('provider_hold', jsonb_build_object(
+            'provider', $3::text,
+            'since', now(),
+            'max_hold_until', now() + make_interval(secs => COALESCE($4::int, 21600))))
+        ELSE p.context END,
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
     p.work_dir,
-    p.attempt + 1, COALESCE($3::int, p.max_attempts), p.id,
+    p.attempt + 1, COALESCE($5::int, p.max_attempts), p.id,
     p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
     p.is_leader_task,
     p.squad_id,
     p.originator_user_id,
     p.accountable_user_id,
-    $4,
-    $5,
+    $6,
+    $7,
     p.originator_source, p.delegated_from_task_id, p.rule_version_id,
     p.trigger_evidence_kind, p.trigger_evidence_ref_id, p.id,
     p.chat_input_task_id, $2,
@@ -4162,7 +4170,7 @@ SELECT
     -- A retry is for what its parent was for (CHE-2894 ENG-3).
     p.purpose,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.
-    COALESCE($6::uuid, gen_random_uuid())
+    COALESCE($8::uuid, gen_random_uuid())
 FROM agent_task_queue p
 WHERE p.id = $1
   -- One successor per failed task (CHE-4581). A pending slot only dedupes
@@ -4181,6 +4189,8 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 type CreateRetryTaskParams struct {
 	ID                   pgtype.UUID        `json:"id"`
 	FireAt               pgtype.Timestamptz `json:"fire_at"`
+	HoldProvider         pgtype.Text        `json:"hold_provider"`
+	ProviderHoldSeconds  pgtype.Int4        `json:"provider_hold_seconds"`
 	MaxAttempts          pgtype.Int4        `json:"max_attempts"`
 	RuntimeMcpOverlay    []byte             `json:"runtime_mcp_overlay"`
 	RuntimeConnectedApps []byte             `json:"runtime_connected_apps"`
@@ -4203,10 +4213,13 @@ type CreateRetryTaskParams struct {
 // Chat retry priority keeps older input ahead of newer turns. A non-NULL fire_at
 // defers dispatch until promotion. max_attempts optionally persists the effective
 // ceiling; it does not re-enable tasks whose retry budget was disabled.
+// A non-NULL hold_provider stamps the context.provider_hold marker (M3c).
 func (q *Queries) CreateRetryTask(ctx context.Context, arg CreateRetryTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, createRetryTask,
 		arg.ID,
 		arg.FireAt,
+		arg.HoldProvider,
+		arg.ProviderHoldSeconds,
 		arg.MaxAttempts,
 		arg.RuntimeMcpOverlay,
 		arg.RuntimeConnectedApps,

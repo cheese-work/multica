@@ -44,6 +44,7 @@
     "./issue-statuses/hooks": "./issue-statuses/hooks.ts",
     "./issue-statuses/mutations": "./issue-statuses/mutations.ts",
     "./issue-workflows": "./issue-workflows/index.ts",
+    "./run-budget": "./run-budget/index.ts",
     "./issue-workflows/queries": "./issue-workflows/queries.ts",
     "./issue-workflows/hooks": "./issue-workflows/hooks.ts",
     "./issue-workflows/mutations": "./issue-workflows/mutations.ts",
