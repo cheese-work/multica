@@ -515,7 +515,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `user` | `profile get/update` | Consulter ou mettre à jour le profil de l'utilisateur actuel | |
 | `login` | — | Se connecter via le navigateur et configurer automatiquement tous les espaces de travail | `--token` (demande la saisie de façon interactive dans le terminal lorsque l'option est passée sans valeur) |
 | `setup` | `cloud` (par défaut), `self-host` | Enregistrer l'adresse du serveur, finaliser la connexion et démarrer le daemon | `self-host` : `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Télécharger ou envoyer des pièces jointes | `download` : `--output-dir` ; `upload` : `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Télécharger ou envoyer des pièces jointes ; lister les révisions d'un fichier ; comparer deux révisions | `download` : `--output-dir` ; `upload` : `--task`, `--issue`, `--replaces <attachment-id>` (le nouveau fichier devient la révision suivante de cette pièce jointe) ; `diff` : `--from`, `--to` (numéros de révision) |
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |

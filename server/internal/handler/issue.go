@@ -5068,6 +5068,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	})
 }
 
+// errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
+// after the invoke gate, so a caller who may not use the agent never learns its
+// pause state.
+const errAgentPaused = "agent_paused: this agent is paused; pick another agent by role"
+
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
 // sub-workflow child) judges the human it acts for. Every other check, and the
@@ -5116,6 +5121,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// mode (MUL-6380 / GH #7180).
 			return http.StatusForbidden, "you do not have permission to assign work to this agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
+		}
 		return 0, ""
 	case "squad":
 		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -5136,6 +5144,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
 		}
 		return 0, ""
 	default:

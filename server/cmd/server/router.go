@@ -2515,6 +2515,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// (MUL-3130). The handler self-resolves the workspace
 			// from the attachment row.
 			r.Get("/api/attachments/{id}/content", h.GetAttachmentContent)
+			r.Get("/api/attachments/{id}/history", h.ListAttachmentRevisions)
+			r.Get("/api/attachments/{id}/diff", h.DiffAttachmentRevisions)
 			r.Delete("/api/attachments/{id}", h.DeleteAttachment)
 
 			// Comments

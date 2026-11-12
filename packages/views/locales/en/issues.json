@@ -2099,5 +2099,16 @@
       "system": "System"
     },
     "open": "Status history"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · {{earlier}} earlier",
+    "diff": "Diff",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "Changes from v{{from}} to v{{to}}, changed hunks only",
+    "show_full": "Show full",
+    "show_changes": "Show changes only",
+    "loading": "Loading changes",
+    "load_failed": "Could not load the changes.",
+    "no_changes": "No text changes."
   }
 }

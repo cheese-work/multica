@@ -57,6 +57,13 @@ var (
 	// PRs watched by a "wake on merge conflict" rule stay in the sweep even
 	// when decided, re-fetched once their snapshot is older than this.
 	defaultWatchTTL = 5 * time.Minute
+	// A PR a checks_finished rule waits on is re-fetched after a minute, and
+	// the sweep runs every 30s, so a missed webhook costs about a minute.
+	defaultChecksWatchTTL      = time.Minute
+	defaultChecksWatchInterval = 30 * time.Second
+	// One refresh makes a few GitHub calls and a short write; two minutes is
+	// far above that and frees a worker stuck on a hung call or lock.
+	defaultProcessTimeout = 2 * time.Minute
 	// After a merge into a repository, GitHub recomputes the other PRs'
 	// mergeability asynchronously and may still answer with the old verdict
 	// at first, so watched PRs are fetched after each of these delays.
@@ -84,10 +91,17 @@ type Manager struct {
 	recheckTTL    time.Duration
 	catchUp       time.Duration
 	watchTTL      time.Duration
-	mergeDelays   []time.Duration
-	chaseBackoff  []time.Duration
-	now           func() time.Time
-	jitter        func() time.Duration
+	// checksWatchTTL / checksWatchInterval drive the fast sweep for PRs a
+	// "wake when checks finish" rule waits on (CHE-5313).
+	checksWatchTTL      time.Duration
+	checksWatchInterval time.Duration
+	// processTimeout bounds one refresh so a hung fetch or write cannot hold a
+	// worker forever (CHE-5313). Zero means unbounded.
+	processTimeout time.Duration
+	mergeDelays    []time.Duration
+	chaseBackoff   []time.Duration
+	now            func() time.Time
+	jitter         func() time.Duration
 	// fetch is the snapshot fetcher, a seam so tests can drive the queue /
 	// backoff without a live GitHub. Defaults to FetchPRSnapshot.
 	fetch func(ctx context.Context, c *Client, installationID int64, owner, repo string, number int32) (*PRSnapshot, error)
@@ -115,8 +129,9 @@ type Manager struct {
 	// this cursor and wraps, preventing a fixed first page from starving later
 	// installations when early addresses repeatedly fail.
 	sweepAfter address
-	// The same rotation for the conflict-watch sweep.
-	watchAfter address
+	// The same rotation for the conflict-watch and checks-watch sweeps.
+	watchAfter       address
+	checksWatchAfter address
 	// Secondary rate limits are scoped to the installation whose token incurred
 	// them. One customer must never pause every other installation.
 	rateUntil map[int64]time.Time
@@ -148,30 +163,33 @@ func NewManagerWithFetcher(client *Client, queries *db.Queries, pool TxBeginner,
 
 func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error), onApplied func(ctx context.Context, prID pgtype.UUID)) *Manager {
 	manager := &Manager{
-		client:        client,
-		queries:       queries,
-		readSelector:  dbreader.NewPrimaryOnly(queries),
-		pool:          pool,
-		onApplied:     onApplied,
-		concurrency:   defaultConcurrency,
-		viewTTL:       defaultViewTTL,
-		sweepTTL:      defaultSweepTTL,
-		sweepInterval: defaultSweepInterval,
-		sweepMaxRows:  defaultSweepMaxRows,
-		recheckTTL:    defaultRecheckTTL,
-		catchUp:       defaultCatchUp,
-		watchTTL:      defaultWatchTTL,
-		mergeDelays:   defaultMergeWatchDelays,
-		chaseBackoff:  defaultChaseBackoff,
-		now:           time.Now,
-		jitter:        func() time.Duration { return time.Duration(rand.Int63n(int64(250 * time.Millisecond))) },
-		fetch:         fetch,
-		queue:         make(chan address, queueBuffer),
-		active:        map[address]bool{},
-		inFlight:      map[address]bool{},
-		trailing:      map[address]bool{},
-		attempts:      map[address]int{},
-		rateUntil:     map[int64]time.Time{},
+		client:              client,
+		queries:             queries,
+		readSelector:        dbreader.NewPrimaryOnly(queries),
+		pool:                pool,
+		onApplied:           onApplied,
+		concurrency:         defaultConcurrency,
+		viewTTL:             defaultViewTTL,
+		sweepTTL:            defaultSweepTTL,
+		sweepInterval:       defaultSweepInterval,
+		sweepMaxRows:        defaultSweepMaxRows,
+		recheckTTL:          defaultRecheckTTL,
+		catchUp:             defaultCatchUp,
+		watchTTL:            defaultWatchTTL,
+		checksWatchTTL:      defaultChecksWatchTTL,
+		checksWatchInterval: defaultChecksWatchInterval,
+		processTimeout:      defaultProcessTimeout,
+		mergeDelays:         defaultMergeWatchDelays,
+		chaseBackoff:        defaultChaseBackoff,
+		now:                 time.Now,
+		jitter:              func() time.Duration { return time.Duration(rand.Int63n(int64(250 * time.Millisecond))) },
+		fetch:               fetch,
+		queue:               make(chan address, queueBuffer),
+		active:              map[address]bool{},
+		inFlight:            map[address]bool{},
+		trailing:            map[address]bool{},
+		attempts:            map[address]int{},
+		rateUntil:           map[int64]time.Time{},
 	}
 	manager.listRows = manager.listGitHubPRRowsByAddress
 	return manager
@@ -265,6 +283,7 @@ func (manager *Manager) Start(ctx context.Context) {
 		go manager.worker(ctx)
 	}
 	go manager.sweepLoop(ctx)
+	go manager.checksWatchLoop(ctx)
 }
 
 // Enqueue schedules a refresh for a PR address. Repeated events coalesce, but
@@ -351,10 +370,21 @@ func (manager *Manager) worker(ctx context.Context) {
 			manager.mu.Lock()
 			manager.inFlight[addr] = true
 			manager.mu.Unlock()
-			manager.process(ctx, addr)
+			manager.processBounded(ctx, addr)
 			manager.finish(addr)
 		}
 	}
+}
+
+// processBounded runs one refresh under processTimeout, so a hung GitHub call
+// or database lock cannot hold a worker forever (CHE-5313).
+func (manager *Manager) processBounded(ctx context.Context, addr address) {
+	if manager.processTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, manager.processTimeout)
+		defer cancel()
+	}
+	manager.process(ctx, addr)
 }
 
 func (manager *Manager) process(ctx context.Context, addr address) {
@@ -865,6 +895,56 @@ func (manager *Manager) sweepConflictWatched(ctx context.Context) {
 		last := rows[len(rows)-1]
 		manager.mu.Lock()
 		manager.watchAfter = address{InstallationID: last.InstallationID, Owner: last.RepoOwner, Repo: last.RepoName, Number: last.PrNumber}
+		manager.mu.Unlock()
+	}
+	for _, r := range rows {
+		manager.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+	}
+}
+
+// checksWatchLoop runs the fast sweep for PRs a checks_finished rule waits on.
+func (manager *Manager) checksWatchLoop(ctx context.Context) {
+	if !sleepCtx(ctx, manager.catchUp) {
+		return
+	}
+	ticker := time.NewTicker(manager.checksWatchInterval)
+	defer ticker.Stop()
+	for {
+		manager.sweepChecksWatched(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// sweepChecksWatched re-fetches open PRs with running checks that an enabled
+// "wake when checks finish" rule waits on, once their snapshot is checksWatchTTL
+// old. It is the safety net for a check_suite webhook that never arrived or a
+// refresh that stalled (CHE-5313): the snapshot catches up on its own and the
+// rule fires on its next poll.
+func (manager *Manager) sweepChecksWatched(ctx context.Context) {
+	manager.mu.Lock()
+	after := manager.checksWatchAfter
+	manager.mu.Unlock()
+
+	rows, err := manager.queries.ListStaleChecksWatchedGitHubPRs(ctx, db.ListStaleChecksWatchedGitHubPRsParams{
+		OlderThan:           tsFromTime(manager.now().Add(-manager.checksWatchTTL)),
+		AfterInstallationID: after.InstallationID,
+		AfterRepoOwner:      after.Owner,
+		AfterRepoName:       after.Repo,
+		AfterPrNumber:       after.Number,
+		MaxRows:             manager.sweepMaxRows,
+	})
+	if err != nil {
+		slog.Warn("ghsnapshot: checks-watch sweep query failed", "err", err.Error())
+		return
+	}
+	if len(rows) > 0 {
+		last := rows[len(rows)-1]
+		manager.mu.Lock()
+		manager.checksWatchAfter = address{InstallationID: last.InstallationID, Owner: last.RepoOwner, Repo: last.RepoName, Number: last.PrNumber}
 		manager.mu.Unlock()
 	}
 	for _, r := range rows {

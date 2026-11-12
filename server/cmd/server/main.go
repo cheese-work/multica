@@ -905,6 +905,9 @@ func main() {
 			slog.Warn("run admission reconcile after restart failed", "error", err)
 		}
 	}()
+	if err := schedulerMgr.Register(scheduler.AdmissionDeferralReleaseJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register admission deferral release", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}

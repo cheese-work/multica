@@ -89,40 +89,6 @@ func init() {
 			return nil
 		},
 	})
-	registerConfigChange("workspace.context.set", configChange{
-		Fields: []string{"workspace.context"},
-		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
-			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
-			return err
-		},
-		Read: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) (configChangeRead, error) {
-			set, err := textSetParams(params, "workspace_id", "context")
-			if err != nil {
-				return configChangeRead{}, err
-			}
-			workspace, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusBadRequest, false)
-			if err != nil {
-				return configChangeRead{}, err
-			}
-			return textSetRead("workspace.context", uuidToString(workspace.ID), workspace.Context.String, set.Content), nil
-		},
-		Apply: func(ctx context.Context, execution decisionActionExecution, read configChangeRead) error {
-			set, err := textSetParams(execution.Action.Params, "workspace_id", "context")
-			if err != nil {
-				return err
-			}
-			_, err = execution.Queries.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: execution.Action.WorkspaceID, Context: pgtype.Text{String: set.Content, Valid: true}})
-			return err
-		},
-		Publish: func(ctx context.Context, handler *Handler, action db.DecisionAction) error {
-			workspace, err := handler.Queries.GetWorkspace(ctx, action.WorkspaceID)
-			if err != nil {
-				return err
-			}
-			handler.publish(protocol.EventWorkspaceUpdated, uuidToString(action.WorkspaceID), "member", uuidToString(action.ApprovedByUserID), map[string]any{"workspace": handler.workspaceToResponse(workspace)})
-			return nil
-		},
-	})
 }
 
 // squadInstructionsWithinLimit is the ordinary edit's rule: text over the token

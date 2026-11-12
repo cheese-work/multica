@@ -2018,5 +2018,16 @@
       "system": "系統"
     },
     "open": "狀態歷史"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 先前 {{earlier}} 個",
+    "diff": "差異",
+    "title": "{{name}}：v{{from}} → v{{to}}",
+    "region": "v{{from}} 到 v{{to}} 的變更，僅顯示改動部分",
+    "show_full": "顯示全部",
+    "show_changes": "僅顯示變更",
+    "loading": "正在載入變更",
+    "load_failed": "無法載入變更。",
+    "no_changes": "文字沒有變化。"
   }
 }
