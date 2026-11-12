@@ -52,7 +52,7 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	dbfx.Task(t, busy, testutil.Cols{"status": "running", "runtime_id": rt})
 
 	owner := dbfx.Agent(t, "Reviewer", rt)
-	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, false); strings.Contains(got, "## Stage Queue") {
+	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, leaderNoWorkflow, false); strings.Contains(got, "## Stage Queue") {
 		t.Fatalf("no stage is full, briefing has a Stage Queue section:\n%s", got)
 	}
 
@@ -73,7 +73,7 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 		}
 	}
 
-	got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, false)
+	got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, leaderNoWorkflow, false)
 	for _, want := range []string{
 		"## Stage Queue",
 		queued,
@@ -94,7 +94,7 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 	// A squad that owns no queued PR gets no directive.
 	otherLeader := dbfx.Agent(t, "Other leader", rt)
 	otherSquad := seedSquadForBriefing(t, otherLeader, fmt.Sprintf("Other squad %d", time.Now().UnixNano()), "")
-	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, otherSquad, true, false); strings.Contains(got, "## Stage Queue") {
+	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, otherSquad, true, leaderNoWorkflow, false); strings.Contains(got, "## Stage Queue") {
 		t.Errorf("unrelated squad got a Stage Queue directive:\n%s", got)
 	}
 	if strings.Contains(got, "No push task is open") == false {
@@ -103,7 +103,7 @@ func TestSquadLeaderBriefingRoutesIdleMemberToQueuedPR(t *testing.T) {
 
 	// Once an author's push task is open on the queued PR, say so.
 	dbfx.Task(t, idle, testutil.Cols{"issue_id": queued, "status": "queued", "runtime_id": rt})
-	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, false); !strings.Contains(got, "push task open") {
+	if got := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true, leaderNoWorkflow, false); !strings.Contains(got, "push task open") {
 		t.Errorf("open push task not shown:\n%s", got)
 	}
 }

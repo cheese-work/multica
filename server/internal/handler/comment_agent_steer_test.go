@@ -301,8 +301,8 @@ func TestSquadSteerRuleFollowsTheDaemonsCLI(t *testing.T) {
 		t.Skip("database not available")
 	}
 	squad := db.Squad{Name: "Steer rule"}
-	with := buildSquadLeaderBriefing(t.Context(), testHandler.Queries, squad, false, true)
-	without := buildSquadLeaderBriefing(t.Context(), testHandler.Queries, squad, false, false)
+	with := buildSquadLeaderBriefing(t.Context(), testHandler.Queries, squad, false, leaderNoWorkflow, true)
+	without := buildSquadLeaderBriefing(t.Context(), testHandler.Queries, squad, false, leaderNoWorkflow, false)
 	if !strings.Contains(with, "--steer-active") || strings.Contains(without, "--steer") {
 		t.Fatalf("steer rule: with=%v without=%v", strings.Contains(with, "--steer-active"), strings.Contains(without, "--steer"))
 	}

@@ -603,7 +603,8 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)
-	if workflowStepMoved(def, issue.Status, task) {
+	stepMoved := workflowStepMoved(def, issue.Status, task)
+	if stepMoved {
 		in.BoundStep = task.WorkflowStep.String
 		in.MovedBy = h.lastIssueStatusMover(ctx, issue)
 	} else if !taskRunsForAssignee(issue, task) {
@@ -612,7 +613,7 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			in.AssigneeName = h.actorDisplayName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 		}
 	}
-	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def)}
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def), stepMoved: stepMoved}
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left

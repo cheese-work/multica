@@ -344,9 +344,16 @@ const squadSteerRule = `- A worker already running on this issue gets a new comm
 // ReconciliationKey's actual behavior — this is the executable seam: a
 // leader's briefing text cannot diverge from ReconciliationKey's precedence
 // because it is rendered by calling it, not by a second hand-maintained copy.
-func squadOperatingProtocolFor(ownsIssueStatus bool) string {
+func squadOperatingProtocolFor(ownsIssueStatus bool, workflow leaderWorkflow) string {
 	status := squadParentStatusNotOwned
-	if ownsIssueStatus {
+	switch {
+	case ownsIssueStatus && workflow == leaderWorkflowStepMoved:
+		status = squadParentStatusStepMoved
+	case ownsIssueStatus && workflow == leaderWorkflowCurrentDaemon:
+		status = squadParentStatusOwnedInWorkflow
+	case ownsIssueStatus && workflow == leaderWorkflowLegacyDaemon:
+		status = squadParentStatusOwnedInWorkflow + squadParentStatusWorkflowOverridesRuntime
+	case ownsIssueStatus:
 		status = squadParentStatusOwned
 	}
 	header := strings.Replace(squadOperatingProtocolHeader, "{{RECONCILIATION_KEYING_PARAGRAPH}}", reconciliationKeyingParagraph(), 1)
@@ -373,9 +380,9 @@ func squadOperatingProtocolFor(ownsIssueStatus bool) string {
 // loaded (deleted user/agent races, FK weirdness) are also skipped silently.
 //
 // steer adds the rule for steering a running worker; see squadSteerRule.
-func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad, ownsIssueStatus bool, steer bool) string {
+func buildSquadLeaderBriefing(ctx context.Context, q *db.Queries, squad db.Squad, ownsIssueStatus bool, workflow leaderWorkflow, steer bool) string {
 	var sb strings.Builder
-	sb.WriteString(squadOperatingProtocolFor(ownsIssueStatus))
+	sb.WriteString(squadOperatingProtocolFor(ownsIssueStatus, workflow))
 	if steer {
 		sb.WriteString("\n")
 		sb.WriteString(squadSteerRule)
