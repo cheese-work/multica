@@ -61,6 +61,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
     const answered = cards.filter((card) => card.state === "answered").length;
     return (
       <section
+        id="issue-decision-banner"
         aria-label={title}
         className={cn("mt-8 space-y-2 rounded-xl border p-2", pending > 0 ? "border-warning/40 bg-warning/5" : "border-surface-border bg-surface/50")}
       >

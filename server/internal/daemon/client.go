@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -730,10 +731,10 @@ func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID strin
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, nil, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, schedule []time.Duration) error {
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, initContext *initctx.Report, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -756,6 +757,9 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	if contextTokens > 0 && contextWindow > 0 {
 		body["context"] = map[string]int64{"tokens": contextTokens, "window": contextWindow}
 	}
+	if initContext != nil {
+		body["init_context"] = initContext
+	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }
 
@@ -765,6 +769,21 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
 		"usage": usage,
+	}, nil)
+}
+
+// ReportTaskUsageSnapshot posts the same rows mid-run, as a cumulative snapshot
+// of what the agent has spent so far (STOE-30). UpsertTaskUsage overwrites per
+// (task_id, provider, model), so snapshots cannot accumulate; the flag is what
+// keeps the server's additive metrics counter and per-run log on the terminal
+// report, where they would otherwise bill each flush against the last.
+func (c *Client) ReportTaskUsageSnapshot(ctx context.Context, taskID string, usage []TaskUsageEntry) error {
+	if len(usage) == 0 {
+		return nil
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
+		"usage":    usage,
+		"snapshot": true,
 	}, nil)
 }
 

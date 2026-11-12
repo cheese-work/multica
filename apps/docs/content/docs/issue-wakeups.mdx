@@ -60,7 +60,7 @@ In the issue below, Ops helper has asked suppliers for quotes and is waiting for
 | Linked | Another issue's status | Another issue is done, done or cancelled, or moves to In Review. |
 | | Custom events | Pick from the 25 raw events, such as reactions, attachments, edited comments, or resolved threads. |
 
-Multica checks field, sub-issue, PR, and other-issue conditions itself. If the condition already holds when you create the rule, the next check (within about 30 seconds) wakes the agent. CI is the exception: it ignores checks that finished on an older push, but checks already finished on the PR's current head wake the agent within about 30 seconds.
+Multica checks field, sub-issue, PR, and other-issue conditions itself. If the condition already holds when you create the rule, the next check (within about 30 seconds) wakes the agent. CI is the exception: it ignores checks that finished on an older push, but checks already finished on the PR's current head wake the agent within about 30 seconds. An agent cannot create a second CI-finished rule on a PR head whose earlier CI-finished rule from the same agent already fired: the request returns `409` (`wakeup_head_unchanged`) with `head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`. Push a new head, or wait on the status instead.
 
 Every condition other than time waits for something to happen, and has three more settings:
 

@@ -202,7 +202,7 @@ func TestProposalToAnotherRecipientIsAnotherRequest(test *testing.T) {
 	}
 }
 
-func TestProposalInAnotherLaneIsAnotherRequest(test *testing.T) {
+func TestProposalForAnotherIssueIsAnotherRequestInTheSameDM(test *testing.T) {
 	useProposalGuard(test)
 	fixture := newProposalFixture(test)
 	other := otherIssueFixture(test, fixture)
@@ -211,8 +211,9 @@ func TestProposalInAnotherLaneIsAnotherRequest(test *testing.T) {
 	first := fixture.propose(test, body, http.StatusCreated)
 	body["issue_id"] = other.issueID
 	second := other.propose(test, body, http.StatusCreated)
-	if second.ID == first.ID || second.ChatSessionID == first.ChatSessionID {
-		test.Fatalf("lanes %s and %s share a request or a lane", first.ChatSessionID, second.ChatSessionID)
+	// Both ask the same person through the same agent: one DM, two requests (CHE-5253).
+	if second.ID == first.ID || second.ChatSessionID != first.ChatSessionID {
+		test.Fatalf("requests %s and %s in DMs %s and %s, want two requests in one DM", first.ID, second.ID, first.ChatSessionID, second.ChatSessionID)
 	}
 }
 

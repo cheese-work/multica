@@ -7,7 +7,7 @@ import {
   type ReactElement,
   type ReactNode,
 } from "react";
-import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -216,8 +216,9 @@ vi.mock("../navigation/context", () => ({
   useNavigation: () => ({ push: mockPush }),
 }));
 
+const mockWorkspaceSettings = vi.hoisted(() => ({ value: {} as Record<string, unknown> }));
 vi.mock("@multica/core/paths", () => ({
-  useCurrentWorkspace: () => ({ name: "Test Workspace" }),
+  useCurrentWorkspace: () => ({ name: "Test Workspace", settings: mockWorkspaceSettings.value }),
   useWorkspacePaths: () => ({
     issueDetail: (id: string) => `/ws-test/issues/${id}`,
     settings: () => "/ws-test/settings",
@@ -2381,6 +2382,45 @@ describe("CreateIssueModal", () => {
       await user.click(screen.getByRole("button", { name: "Create Issue" }));
 
       await waitFor(() => expect(mockCreateIssue).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: "wf-review" })));
+    });
+
+    // CHE-5271: the server applies workflow_by_type when no workflow is named,
+    // so the form shows that workflow's statuses and handoff before saving.
+    describe("workflow mapped from the title type", () => {
+      const mappedId = "8394690d-632a-4b15-a333-c9f0247b0985";
+      const mappedFlow = { ...reviewFlow, id: mappedId, name: "Design flow" };
+      beforeEach(() => {
+        mockWorkspaceSettings.value = { workflow_by_type: { design: mappedId } };
+        mockListIssueWorkflows.mockResolvedValue({ workflows: [reviewFlow, mappedFlow], total: 2 });
+      });
+      afterEach(() => {
+        mockWorkspaceSettings.value = {};
+      });
+
+      it("shows the mapped workflow's statuses and handoff for a mapped title", async () => {
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "design(x): new screen" } });
+
+        await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", mappedId));
+        expect(await screen.findByText("Will be handed to Agent")).toBeInTheDocument();
+      });
+
+      it("keeps the project workflow for an unmapped title", async () => {
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "feat(x): thing" } });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "");
+      });
+
+      it("lets an explicit workflow choice win over the mapped one", async () => {
+        const user = userEvent.setup();
+        renderPanel();
+        fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "design(x): new screen" } });
+        await chooseReviewFlow(user);
+
+        await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
+      });
     });
 
     it("names the chosen workflow's handler for the opening status", async () => {

@@ -2,11 +2,13 @@
 WITH inserted AS (
   INSERT INTO attachment (
     id, workspace_id, issue_id, comment_id, chat_session_id, task_id, source_context_id,
-    uploader_type, uploader_id, filename, url, content_type, size_bytes, external_read
+    uploader_type, uploader_id, filename, url, content_type, size_bytes, external_read,
+    revision, revision_of, revision_root, sha256
   )
   VALUES (
     $1, $2, sqlc.narg(issue_id), sqlc.narg(comment_id), sqlc.narg(chat_session_id), sqlc.narg(task_id), sqlc.narg(source_context_id),
-    $3, $4, $5, $6, $7, $8, COALESCE(sqlc.narg(external_read)::boolean, false)
+    $3, $4, $5, $6, $7, $8, COALESCE(sqlc.narg(external_read)::boolean, false),
+    COALESCE(sqlc.narg(revision)::int, 1), sqlc.narg(revision_of), sqlc.narg(revision_root), COALESCE(sqlc.narg(sha256)::text, '')
   )
   RETURNING *
 ), bumped_issue AS (
@@ -347,3 +349,23 @@ JOIN attachment AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
 SELECT EXISTS (
   SELECT 1 FROM attachment WHERE workspace_id = $1 AND url = $2
 );
+
+-- name: ListAttachmentChain :many
+-- Every revision of one document, oldest first. The chain id is revision 1's id.
+SELECT * FROM attachment
+WHERE workspace_id = $1
+  AND (id = sqlc.arg(chain_id) OR revision_root = sqlc.arg(chain_id))
+ORDER BY revision ASC;
+
+-- name: GetLatestIssueAttachmentByName :one
+-- Same-name re-upload target: the newest issue-level file with this name.
+SELECT * FROM attachment
+WHERE workspace_id = $1
+  AND issue_id = $2
+  AND comment_id IS NULL
+  AND chat_session_id IS NULL
+  AND task_id IS NULL
+  AND source_context_id IS NULL
+  AND filename = $3
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

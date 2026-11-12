@@ -94,6 +94,12 @@ one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
 --start-status KEY sets the status where new issues of the workflow start (an
 unstarted or started step of the workflow; "" restores todo).
+An agent cannot change --max-runs-per-issue or --include-child-prs without a
+decision. Run the same command with --print-hash (nothing is written) to get
+before_sha256 and after_sha256, ask the owner with "multica decision request"
+for the workflow.budget field (or "multica config propose workflow.budget
+<workflow-id> --max-runs N"), then repeat the command with --decision-id. The
+owner approves one passkey card. A budget write carries no --steps-file.
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
@@ -676,8 +682,11 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	newSteps, hasSteps := body["steps"].([]any)
-	if workflowBindingRequested(cmd) && !hasSteps {
-		return errors.New("a decision-bound write carries --steps-file only")
+	_, hasCap := body["max_runs_per_issue"]
+	_, hasChildren := body["include_child_prs"]
+	budgetWrite := hasCap || hasChildren
+	if workflowBindingRequested(cmd) && hasSteps == budgetWrite {
+		return errors.New("a decision-bound write carries either --steps-file or the run budget flags, not both")
 	}
 	pairs, _ := cmd.Flags().GetStringArray("map")
 	mapping, err := parseStatusMapping(pairs)
@@ -703,7 +712,14 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workflow: %w", err)
 	}
-	if workflowBindingRequested(cmd) {
+	if workflowBindingRequested(cmd) && budgetWrite {
+		if err := bindBudgetWrite(cmd, ctx, client, id, body); err != nil {
+			return err
+		}
+		if printHashRequested(cmd) {
+			return nil
+		}
+	} else if workflowBindingRequested(cmd) {
 		live, err := getWorkflow(ctx, client, id)
 		if err != nil {
 			return err

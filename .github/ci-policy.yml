@@ -13,7 +13,7 @@ exceptions:
   - repo: cheese-work/multica
     workflow: security-gate.yml
     rule: pr-feedback-latency
-    reason: security-gate stays pending until a cross-lab reviewer posts a verdict, so it measures review wait, not CI. Baseline 29 Oct to 3 Nov 2026, 978 head SHAs, start = earliest pull_request check suite: required-set p90 430 min over the 112 heads with a success security-gate; lower bound p90 75 min with the 866 unresolved heads at their last observed time. backend-tests p90 12.4 min after CHE-2418 (PR 747, merged 1 Nov 2026).
+    reason: "security-gate stays pending until a cross-lab reviewer posts a verdict, so it measures review wait, not CI. Baseline 29 Oct to 3 Nov 2026, 978 head SHAs, start = earliest pull_request check suite: required-set p90 430 min over the 112 heads with a success security-gate; lower bound p90 75 min with the 866 unresolved heads at their last observed time. backend-tests p90 12.4 min after CHE-2418 (PR 747, merged 1 Nov 2026)."
     owner: x99-claude-sonnet-200k
     added: 2026-11-03
     expires: 2026-12-31

@@ -51,7 +51,7 @@ func SettingsDigest(workspaceID string, keys map[string]json.RawMessage) (string
 // roles, passkeys, owner transfer, secrets and the action registry out.
 var configFields = []string{
 	"agent.instructions", "squad.instructions", "workspace.context",
-	"workflow.steps", "workflow.instructions", SettingsField,
+	"workflow.steps", "workflow.instructions", "workflow.budget", SettingsField,
 	// Dedicated identities (CHE-4462 E0a): none is a settings key, so the generic
 	// patch still refuses routing_agent and delegated_governed_writes.
 	"workspace.routing_agent", "workspace.delegated_writes", "agent.skills",
@@ -70,7 +70,11 @@ var settingsKeys = []string{
 	"github_wake_on_pr_merge", "github_wake_on_ci_failure", "github_wake_on_ci_success", "github_wake_on_pr_attention",
 	"pr_event_capture", "system_wakeup_child_done", "system_wakeup_child_done_instruction",
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
+	"provider_breaker_max_hold_seconds",
 }
+
+// SettingsKeys lists the allow table keys.
+func SettingsKeys() []string { return slices.Clone(settingsKeys) }
 
 // CheckConfigChange refuses, with CodeDenylisted, a field outside the allow
 // list, a settings patch that names no key or any key outside the allow table,

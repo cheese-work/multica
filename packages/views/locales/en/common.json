@@ -155,18 +155,36 @@
       "other": "Failed: {{code}}",
       "stale_base": "The target changed after the request. Ask again."
     },
+    "refusal": {
+      "class_needs_owner": "Only the workspace owner can approve this change.",
+      "payload_mismatch": "The approved change is not the change that was requested. Ask again.",
+      "preview_required": "Approve against the preview you were shown. Reload the card.",
+      "precondition_drift": "The target changed since the request. Ask again.",
+      "busy_retry": "Another change is in progress. Try again.",
+      "not_permitted": "You may not make this change.",
+      "action_not_executable": "This kind of change cannot be approved yet.",
+      "approval_proof_unavailable": "This server cannot verify a passkey approval yet.",
+      "other": "Refused: {{code}}"
+    },
+    "owner_only": "Only the workspace owner can approve this change.",
     "no_passkey": "Add a passkey before you approve.",
     "add_passkey": "Add a passkey",
     "error": "Passkey approval did not complete. Try again.",
     "lost": "The response was lost. The action is not approved again. Check the outcome.",
     "check": "Check outcome",
-    "outcome": { "cap_applied": "Cap applied", "run_queued": "Run queued", "still_blocked": "Still blocked: {{reason}}" },
+    "outcome": {
+      "cap_applied": "Cap applied",
+      "run_queued": "Run queued",
+      "still_blocked": "Still blocked: {{reason}}"
+    },
     "panel": {
       "title": "Run-budget request",
       "raise_cap": "Raise the run cap on {{issue}} to {{cap}} runs for this window.",
       "top_up": "Top up the run budget on {{issue}} for this window.",
-      "mismatch": "This approval is not a run-budget request for this issue, so it cannot be approved here.",
-      "unreadable": "This approval is not available to you, or it no longer exists."
+      "settled": "This approval is already {{state}}. If you still need it, ask the agent to propose it again.",
+      "mismatch": "This approval is not a run-budget request for this issue. Open the card in your DM or Inbox to decide it.",
+      "open_card": "Open the card",
+      "unreadable": "This approval is not available to you, or it no longer exists. Ask the agent to propose it again."
     }
   }
 }

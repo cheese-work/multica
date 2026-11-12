@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { IssueDecisionBanner } from "./issue-decision-banner";
 
 vi.mock("@multica/core/hooks", async (importActual) => ({
@@ -50,6 +51,7 @@ function show(status = "in_progress", ownerAgentId: string | null = "owner") {
 describe("IssueDecisionBanner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     api.listDecisionArtifacts.mockResolvedValue([]);
     api.listIssueDecisionCards.mockResolvedValue([]);
     api.listTasksByIssue.mockResolvedValue([]);

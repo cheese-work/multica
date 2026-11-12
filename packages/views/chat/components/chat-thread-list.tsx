@@ -415,7 +415,7 @@ function ChatThreadListBody({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
-            <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
               {titleText}
             </span>
             <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
