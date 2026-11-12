@@ -35,6 +35,9 @@ func init() {
 		Apply:      applyAgentSkills,
 		Publish:    publishAgentSkillsSet,
 		QueueField: agentSkillsField,
+		// A file of a skill being added can change after the request; the
+		// proposer's claim was right when it was made.
+		AfterMismatchIsDrift: true,
 	})
 }
 

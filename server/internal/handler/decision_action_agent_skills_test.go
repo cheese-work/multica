@@ -9,11 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -290,7 +292,7 @@ func TestAgentSkillsSetApproveRefusals(test *testing.T) {
 		scenario := newSkillsScenario(test, false, []int{0}, nil)
 		request, _ := scenario.propose(test, http.StatusCreated, nil, 0, 1)
 		dbfx.Exec(test, `INSERT INTO skill_file (skill_id, path, content) VALUES ($1, 'n.md', 'new')`, scenario.skills[1])
-		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "after_digest_mismatch")
+		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "precondition_drift")
 		request.assertNotApplied(test)
 		scenario.wantLive(test, 0)
 	})
@@ -473,13 +475,133 @@ func TestAgentSkillsSetBusyWhileAWriterHoldsALock(test *testing.T) {
 		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "busy_retry")
 		request.assertNotApplied(test)
 	})
-	test.Run("a skill file writer holds the skill row", func(test *testing.T) {
-		scenario := newSkillsScenario(test, false, []int{0}, nil)
-		request, _ := scenario.propose(test, http.StatusCreated, nil, 0, 1)
-		holdRow(test, `SELECT id FROM skill WHERE id = $1 FOR NO KEY UPDATE`, scenario.skills[1])
-		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "busy_retry")
-		request.assertNotApplied(test)
+}
+
+// skillFileCase is one skill-file writer against the skill of an approval: the
+// skill is either already assigned (kept) or the one being added.
+type skillFileCase struct {
+	scenario skillsScenario
+	request  skillsRequest
+	file     skillWriterFixture
+}
+
+// newSkillFileCase puts a file a.md ("old") on the skill before the request,
+// so the request's digests include it.
+func newSkillFileCase(test *testing.T, assigned bool) skillFileCase {
+	test.Helper()
+	scenario := newSkillsScenario(test, false, []int{0}, nil)
+	index, after := 1, []int{0, 1}
+	if assigned {
+		index, after = 0, []int{0, 2}
+	}
+	skillID := scenario.skills[index]
+	fileID := dbfx.Insert(test, "skill_file", testutil.Cols{"skill_id": skillID, "path": "a.md", "content": "old"})
+	request, _ := scenario.propose(test, http.StatusCreated, nil, after...)
+	return skillFileCase{scenario, request, skillWriterFixture{skillID: skillID, fileID: fileID}}
+}
+
+func eachSkillFileCase(test *testing.T, body func(test *testing.T, writer skillWriter, c skillFileCase)) {
+	for _, assigned := range []bool{true, false} {
+		kind := "a skill being added"
+		if assigned {
+			kind = "an assigned skill"
+		}
+		for _, writer := range skillFileWriters() {
+			test.Run(kind+"/"+writer.name, func(test *testing.T) {
+				body(test, writer, newSkillFileCase(test, assigned))
+			})
+		}
+	}
+}
+
+// Writer first: the approval answers busy_retry while the writer is in flight,
+// and precondition_drift once the writer has committed (CHE-4484 carry-over).
+func TestAgentSkillsSetApprovalAfterASkillFileWriter(test *testing.T) {
+	eachSkillFileCase(test, func(test *testing.T, writer skillWriter, c skillFileCase) {
+		release := writer.blockOn(test, c.file)
+		done := runAsync(test, writer, c.file)
+		waitForSkillFileLockWaiter(test)
+		mustContain(test, c.request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "busy_retry")
+		c.request.assertNotApplied(test)
+		release()
+		if status := <-done; status != writer.wantStatus {
+			test.Fatalf("%s status = %d, want %d", writer.name, status, writer.wantStatus)
+		}
+		if !writer.settled(test, c.file) {
+			test.Fatalf("%s change not visible after commit", writer.name)
+		}
+		mustContain(test, c.request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "precondition_drift")
+		c.request.assertNotApplied(test)
 	})
+}
+
+// Approval first: a real approval is parked inside its transaction, after it
+// took its locks and read the skill. The writer waits and commits after the
+// approval, which applied the assignment it was asked for.
+func TestAgentSkillsSetSkillFileWriterWaitsForTheApproval(test *testing.T) {
+	eachSkillFileCase(test, func(test *testing.T, writer skillWriter, c skillFileCase) {
+		original, executor := configChanges[agentSkillsAction], decisionActionExecutors[agentSkillsAction]
+		entered, proceed := make(chan struct{}), make(chan struct{})
+		parked := original
+		parked.Apply = func(ctx context.Context, execution decisionActionExecution, read configChangeRead) error {
+			close(entered)
+			<-proceed
+			return original.Apply(ctx, execution, read)
+		}
+		decisionActionExecutors[agentSkillsAction] = func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error) {
+			return executeConfigChange(ctx, parked, execution)
+		}
+		test.Cleanup(func() { decisionActionExecutors[agentSkillsAction] = executor })
+		makeApproverOwner(test, c.request.action, "owner")
+		claim := c.request.claim(test)
+		approved := make(chan int, 1)
+		go func() {
+			status, body := approveClaim(test, withVerifier(acceptingVerifier), agentInstructionRequest{action: c.request.action}, claim)
+			if status != http.StatusOK {
+				test.Errorf("approval status = %d (%s), want 200", status, body)
+			}
+			approved <- status
+		}()
+		select {
+		case <-entered:
+		case status := <-approved:
+			test.Fatalf("approval answered %d without reaching the write", status)
+		}
+		done := runAsync(test, writer, c.file)
+		select {
+		case status := <-done:
+			test.Fatalf("%s returned %d while the approval held the skill", writer.name, status)
+		case <-time.After(300 * time.Millisecond):
+		}
+		close(proceed)
+		if status := <-approved; status != http.StatusOK {
+			test.Fatalf("approval status = %d, want 200", status)
+		}
+		if status := <-done; status != writer.wantStatus {
+			test.Fatalf("%s status = %d, want %d", writer.name, status, writer.wantStatus)
+		}
+		if !writer.settled(test, c.file) {
+			test.Fatalf("%s change not visible after both committed", writer.name)
+		}
+		if n := c.request.action.activityCount(test, "config_change_applied"); n != 1 {
+			test.Fatalf("config_change_applied rows = %d, want 1", n)
+		}
+	})
+}
+
+// The card quotes the agent's skills, so it is withheld for an agent the
+// request's human cannot view.
+func TestAgentSkillsSetCardPreviewIsWithheldForAnAgentTheHumanCannotSee(test *testing.T) {
+	scenario := newSkillsScenario(test, false, []int{0}, nil)
+	request, _ := scenario.propose(test, http.StatusCreated, nil, 0, 1)
+	if card := request.action.cardAction(test); card == nil || card.ConfigChange == nil || card.ConfigChange.Field != agentSkillsField {
+		test.Fatalf("card preview before the agent is hidden: %+v", card)
+	}
+	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, scenario.target, testUserID)
+	dbfx.Exec(test, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, request.action.humanID)
+	if card := request.action.cardAction(test); card == nil || card.ConfigChange != nil {
+		test.Fatalf("card preview of an agent the human cannot view: %+v", card)
+	}
 }
 
 func TestAgentSkillsSetRunsOnce(test *testing.T) {
