@@ -67,7 +67,7 @@ func (h *Handler) chainAttachmentRevision(ctx context.Context, params *db.Create
 	head := chain[len(chain)-1]
 	params.Revision = pgtype.Int4{Int32: head.Revision + 1, Valid: true}
 	params.RevisionOf = head.ID
-	params.RevisionRoot = pgtype.UUID{Bytes: chain[0].ID.Bytes, Valid: true}
+	params.RevisionRoot = chainID(head)
 	return 0, ""
 }
 

@@ -611,6 +611,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 				return q.CreateAttachment(r.Context(), params)
 			})
 		}
+		if err != nil && params.Revision.Valid && isUniqueViolation(err) {
+			// Another upload took this revision number first.
+			h.deleteS3Objects(r.Context(), []string{link})
+			writeError(w, http.StatusConflict, "another revision was uploaded at the same time, retry")
+			return
+		}
 		if err != nil {
 			slog.Error("failed to create attachment record", "error", err)
 			// S3 upload succeeded but DB record failed — still return the link

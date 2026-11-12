@@ -222,3 +222,29 @@ func TestAttachmentDiffFullKeepsEveryUnchangedLine(t *testing.T) {
 		t.Fatalf("full diff should keep first and last lines:\n%s", full)
 	}
 }
+
+func TestAttachmentChainSurvivesDeletedFirstRevision(t *testing.T) {
+	withMockStorage(t)
+	issueID := dbfx.Issue(t, "deleted v1", nil)
+	_, v1 := uploadRev(t, issueID, "keep.md", "a\n", "")
+	_, v2 := uploadRev(t, issueID, "keep.md", "b\n", "")
+	if _, err := testPool.Exec(context.Background(), `DELETE FROM attachment WHERE id = $1`, v1.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, v3 := uploadRev(t, issueID, "keep.md", "c\n", "")
+	if v3.Revision != 3 || v3.RevisionOf == nil || *v3.RevisionOf != v2.ID {
+		t.Fatalf("upload after deleting v1 = %+v, want revision 3 of %s", v3, v2.ID)
+	}
+	w := attachmentGet(t, testHandler.ListAttachmentRevisions, v2.ID, "/api/attachments/"+v2.ID+"/history").Want(http.StatusOK)
+	var hist struct {
+		Revisions []struct {
+			ID string `json:"id"`
+		} `json:"revisions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &hist); err != nil {
+		t.Fatal(err)
+	}
+	if len(hist.Revisions) != 2 || hist.Revisions[0].ID != v2.ID || hist.Revisions[1].ID != v3.ID {
+		t.Fatalf("history from v2 = %+v, want [v2 v3]", hist.Revisions)
+	}
+}
