@@ -2099,5 +2099,16 @@
       "system": "System"
     },
     "open": "Status history"
+  },
+  "run_budget": {
+    "runs": "Runs {{used}} / {{limit}}",
+    "left_one": "{{count}} left",
+    "left_other": "{{count}} left",
+    "near": "80 % used",
+    "exhausted": "Run budget used up",
+    "raise": "Raise",
+    "top_up": "Top up",
+    "asked": "Asked the workspace owner to approve.",
+    "request_failed": "The request did not go through. Try again."
   }
 }

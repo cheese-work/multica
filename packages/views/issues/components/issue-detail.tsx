@@ -1,5 +1,6 @@
 "use client";
 
+import { RunBudgetMeter } from "./run-budget-meter";
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -3588,6 +3589,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
           the Parent issue section and the Relations graph button. */}
       <IssueHierarchy key={issue.id} issue={issue} />
+
+      <RunBudgetMeter key={issue.id} issueId={issue.id} />
 
       {/* Properties */}
       <div>
