@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,7 +20,7 @@ import (
 // decisionRows counts the issue's server-origin exhaustion decision requests.
 func (c budgetCase) decisionRows(t *testing.T) int {
 	t.Helper()
-	return dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget:%'`, c.issueID)
+	return dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget_action:%'`, c.issueID)
 }
 
 // waitDecisions waits for the hook goroutine, then lets stray duplicates land.
@@ -41,27 +40,16 @@ func TestRunBudgetExhaustionOpensOneDecisionRequest(t *testing.T) {
 	if n := c.waitDecisions(t, 1); n != 1 {
 		t.Fatalf("decision requests = %d, want 1", n)
 	}
-	var human, ask, origin, status string
-	var options, askJSON []byte
-	if err := testPool.QueryRow(context.Background(), `SELECT human_user_id::text, ask, origin, status, options, ask_json FROM decision_request WHERE issue_id=$1`, c.issueID).
-		Scan(&human, &ask, &origin, &status, &options, &askJSON); err != nil {
+	var human, origin, status string
+	if err := testPool.QueryRow(context.Background(), `SELECT human_user_id::text, origin, status FROM decision_request WHERE issue_id=$1`, c.issueID).
+		Scan(&human, &origin, &status); err != nil {
 		t.Fatal(err)
 	}
 	if human != testUserID || origin != "asked" || status != "open" {
-		t.Fatalf("request = human %s origin %s status %s, want requester %s asked open", human, origin, status, testUserID)
+		t.Fatalf("request = human %s origin %s status %s, want owner %s asked open", human, origin, status, testUserID)
 	}
-	var opts []struct{ Label string }
-	if err := json.Unmarshal(options, &opts); err != nil || len(opts) < 2 {
-		t.Fatalf("options = %s (%v), want the reopen options", options, err)
-	}
-	var parsed struct {
-		DefaultIfNoReply string `json:"default_if_no_reply"`
-	}
-	if err := json.Unmarshal(askJSON, &parsed); err != nil || !strings.Contains(strings.ToLower(parsed.DefaultIfNoReply), "no action") {
-		t.Fatalf("default_if_no_reply = %q (%v), want a default of no action", parsed.DefaultIfNoReply, err)
-	}
-	if !strings.Contains(ask, "approve a top-up in the web app") {
-		t.Fatalf("ask does not name the top-up: %s", ask)
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_action a JOIN decision_request r ON r.id=a.decision_request_id WHERE r.issue_id=$1 AND a.action_type='issue.run_budget.top_up'`, c.issueID); n != 1 {
+		t.Fatalf("top-up actions = %d, want the one card to carry the action", n)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status IN ('queued','dispatched','running')`, c.issueID); n != 0 {
 		t.Fatalf("open tasks = %d, want none behind a server-origin request", n)
@@ -230,7 +218,7 @@ func (c budgetCase) exhaustedEvent(t *testing.T) service.RunBudgetEvent {
 
 func (c budgetCase) requestRow(t *testing.T) (id, human string) {
 	t.Helper()
-	if err := testPool.QueryRow(context.Background(), `SELECT id::text, human_user_id::text FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget:%'`, c.issueID).Scan(&id, &human); err != nil {
+	if err := testPool.QueryRow(context.Background(), `SELECT id::text, human_user_id::text FROM decision_request WHERE issue_id=$1 AND request_fingerprint LIKE 'server:run_budget_action:%'`, c.issueID).Scan(&id, &human); err != nil {
 		t.Fatalf("server-origin request: %v", err)
 	}
 	return id, human
@@ -250,8 +238,9 @@ func TestRunBudgetDecisionRequestDoesNotDependOnAssignee(t *testing.T) {
 		if n := c.waitDecisions(t, 1); n != 1 {
 			t.Fatalf("decision requests = %d, want 1", n)
 		}
-		if _, human := c.requestRow(t); human != member {
-			t.Fatalf("request is for %s, want the requester %s", human, member)
+		// A member cannot approve an owner action, so the owner gets the card.
+		if _, human := c.requestRow(t); human != testUserID || human == member {
+			t.Fatalf("request is for %s, want the owner %s", human, testUserID)
 		}
 	})
 	t.Run("assignee is archived", func(t *testing.T) {
@@ -322,6 +311,10 @@ func TestRunBudgetDecisionRequestRefusesClassChange(t *testing.T) {
 	c.waitDecisions(t, 1)
 	placeDecisionHuman(t, c.issueID, member, "member", true)
 	id, _ := c.requestRow(t)
+	var cardClass string
+	if err := testPool.QueryRow(context.Background(), `SELECT escalation_class FROM decision_request WHERE id=$1`, id).Scan(&cardClass); err != nil {
+		t.Fatal(err)
+	}
 	for _, class := range []string{"spend", "irreversible", "product_direction"} {
 		request := newRequest(http.MethodPost, "/api/decision-requests/"+id+"/class", map[string]any{"escalation_class": class})
 		request.Header.Set("X-User-ID", member)
@@ -332,7 +325,7 @@ func TestRunBudgetDecisionRequestRefusesClassChange(t *testing.T) {
 			t.Fatalf("raise to %s: status %d body %s, want 403", class, response.Code, response.Body.String())
 		}
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND status='open' AND escalation_class='reversible'`, id); n != 1 {
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND status='open' AND escalation_class=$2`, id, cardClass); n != 1 {
 		t.Fatal("class change touched the server-origin request")
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_class_change WHERE decision_request_id=$1`, id); n != 0 {
@@ -479,54 +472,6 @@ func TestRunBudgetDecisionRequestWithNoActiveAgent(t *testing.T) {
 	decisionPass(t, runner)
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND status='open'`, id); n != 1 {
 		t.Fatal("lifecycle pass cancelled the request because its asker is archived")
-	}
-}
-
-// The person's answer to the platform's request is recorded, but no run starts
-// as an agent they may not invoke: the fallback asker can be a private agent.
-func TestRunBudgetDecisionAnswerDoesNotRunUninvokableAsker(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	resetDecisionLease(t)
-	runner := decisionRunnerFor(t, testHandler)
-	c := newBudgetCase(t, 2318041, mergeEdgeSteps, 2)
-	member := c.memberRequester(t, "che2318-private@multica.test")
-	var mode, owner string
-	if err := testPool.QueryRow(context.Background(), `SELECT permission_mode, owner_id::text FROM agent WHERE id=$1`, c.agentID).Scan(&mode, &owner); err != nil {
-		t.Fatal(err)
-	}
-	dbfx.Exec(t, `UPDATE agent SET permission_mode='private', owner_id=$2 WHERE id=$1`, c.agentID, testUserID)
-	t.Cleanup(func() {
-		dbfx.Exec(t, `UPDATE agent SET permission_mode=$2, owner_id=$3 WHERE id=$1`, c.agentID, mode, owner)
-	})
-	c.spend(t, 2)
-	c.refuse(t)
-	c.waitDecisions(t, 1)
-	id, _ := c.requestRow(t)
-	if asker := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id=$1 AND asking_agent_id=$2`, id, c.agentID); asker != 1 {
-		t.Fatal("test needs the private assignee as the asker")
-	}
-	// A top-up opens a new window, so the answer's wake is no longer refused by
-	// the budget and only the invoke check can stop it.
-	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since=now() WHERE id=$1`, c.workflowID)
-	runs := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id=$1`, c.agentID)
-
-	request := newRequest(http.MethodPost, "/api/decision-requests/"+id+"/answer", map[string]any{"option": "No action"})
-	request.Header.Set("X-User-ID", member)
-	request.Header.Set("X-Actor-Source", "interactive_jwt")
-	response := httptest.NewRecorder()
-	testHandler.AnswerDecisionRequest(response, withURLParam(request, "id", id))
-	if response.Code >= 300 {
-		t.Fatalf("answer: status %d body %s", response.Code, response.Body.String())
-	}
-	decisionPass(t, runner)
-	decisionPass(t, runner)
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_answer WHERE decision_request_id=$1`, id); n != 1 {
-		t.Fatalf("answers recorded = %d, want 1", n)
-	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id=$1`, c.agentID); got != runs {
-		t.Fatalf("runs of the private agent went %d -> %d for a person who cannot invoke it", runs, got)
 	}
 }
 

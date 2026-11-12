@@ -55,6 +55,8 @@ func routeRefusal(err error) (string, bool) {
 		return "stage_queue_full", true
 	case errors.Is(err, service.ErrIssueInTriage):
 		return "issue_in_triage", true
+	case errors.Is(err, service.ErrAgentPaused):
+		return "agent_paused", true
 	case errors.Is(err, service.ErrRecoveryCaused):
 		return "recovery_caused", true
 	case errors.Is(err, errSquadLeaderNotAdmitted):

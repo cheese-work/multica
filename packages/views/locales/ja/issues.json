@@ -2051,5 +2051,26 @@
       "system": "システム"
     },
     "open": "ステータス履歴"
+  },
+  "run_budget": {
+    "runs": "実行 {{used}} / {{limit}}",
+    "left_other": "残り {{count}}",
+    "near": "80 % 使用",
+    "exhausted": "実行予算を使い切りました",
+    "raise": "上限を上げる",
+    "top_up": "追加する",
+    "asked": "ワークスペースのオーナーに承認を依頼しました。",
+    "request_failed": "リクエストを送信できませんでした。もう一度お試しください。"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 以前 {{earlier}} 件",
+    "diff": "差分",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "v{{from}} から v{{to}} への変更、変更箇所のみ",
+    "show_full": "全体を表示",
+    "show_changes": "変更のみ表示",
+    "loading": "変更を読み込み中",
+    "load_failed": "変更を読み込めませんでした。",
+    "no_changes": "テキストの変更はありません。"
   }
 }

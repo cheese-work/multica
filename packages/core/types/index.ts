@@ -31,6 +31,7 @@ export type {
 } from "./issue-workflow";
 export type {
   Agent,
+  AgentSchedulingImpact,
   AgentConversationStarter,
   AgentStatus,
   AgentRuntimeMode,
@@ -185,7 +186,7 @@ export type {
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
-export type { Attachment } from "./attachment";
+export type { Attachment, AttachmentRevisionDiff } from "./attachment";
 export {
   attachmentDownloadPath,
   attachmentIdFromDownloadURL,

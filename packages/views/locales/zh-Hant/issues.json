@@ -2051,5 +2051,26 @@
       "system": "系統"
     },
     "open": "狀態歷史"
+  },
+  "run_budget": {
+    "runs": "執行 {{used}} / {{limit}}",
+    "left_other": "剩餘 {{count}}",
+    "near": "已用 80 %",
+    "exhausted": "執行預算已用完",
+    "raise": "提高上限",
+    "top_up": "補充",
+    "asked": "已請求工作區擁有者核准。",
+    "request_failed": "請求未成功，請重試。"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 先前 {{earlier}} 個",
+    "diff": "差異",
+    "title": "{{name}}：v{{from}} → v{{to}}",
+    "region": "v{{from}} 到 v{{to}} 的變更，僅顯示改動部分",
+    "show_full": "顯示全部",
+    "show_changes": "僅顯示變更",
+    "loading": "正在載入變更",
+    "load_failed": "無法載入變更。",
+    "no_changes": "文字沒有變化。"
   }
 }

@@ -1123,5 +1123,31 @@
     "hint": "Leave a field empty to use the workspace value.",
     "inherit_placeholder": "Workspace default",
     "save_failed": "Could not save the auto-compact setting."
+  },
+  "scheduling": {
+    "paused_badge": "Paused",
+    "pause_action": "Pause agent",
+    "resume_action": "Resume agent",
+    "pause_title": "Pause {{name}}?",
+    "pause_description": "A paused agent claims no new runs. Queued work waits until you resume.",
+    "impact_running": "{{count}} running",
+    "impact_queued": "{{count}} queued",
+    "impact_issues": "{{count}} open issues",
+    "impact_wakeups": "{{count}} enabled wakeups",
+    "impact_loading": "Checking what this leaves waiting…",
+    "impact_failed": "Could not read the impact. You can still pause.",
+    "cancel_active": "Also cancel active runs now",
+    "cancel_active_hint": "Off: running runs finish. On: running and queued runs are cancelled after the pause.",
+    "resume_title": "Resume {{name}}?",
+    "resume_description": "The agent claims runs again, including work queued while it was paused.",
+    "keep": "Keep as is",
+    "paused_toast": "Agent paused",
+    "resumed_toast": "Agent resumed",
+    "failed_toast": "Could not change agent scheduling",
+    "reason_label": "Reason (optional)",
+    "reason_placeholder": "Reason (optional)",
+    "paused_by_note": "Paused by {{name}} · {{time}}",
+    "paused_at_note": "Paused {{time}}",
+    "paused_reason_note": "Reason: {{reason}}"
   }
 }

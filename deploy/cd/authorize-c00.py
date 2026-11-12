@@ -21,7 +21,7 @@ import subprocess
 import sys
 
 OWNER = "congvc-dev"
-DEPLOY_JOBS = ("deploy", "readback")
+DEPLOY_JOBS = ("deploy", "readback", "readback-delay", "readback-confirm")
 RUNS_PER_PAGE = 100
 RUN_PAGES = 5
 

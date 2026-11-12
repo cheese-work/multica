@@ -101,8 +101,13 @@ type AttachmentResponse struct {
 	// resolved when the document origin proxied /api to the API host.
 	MarkdownURL string `json:"markdown_url"`
 	ContentType string `json:"content_type"`
-	SizeBytes   int64  `json:"size_bytes"`
-	CreatedAt   string `json:"created_at"`
+	// Revision is 1 for a first upload; RevisionOf is the previous revision's
+	// id (CHE-5295).
+	Revision   int     `json:"revision"`
+	RevisionOf *string `json:"revision_of"`
+	SHA256     string  `json:"sha256,omitempty"`
+	SizeBytes  int64   `json:"size_bytes"`
+	CreatedAt  string  `json:"created_at"`
 	// Displayed image dimensions, absent for non-images and older uploads.
 	Width  *int32 `json:"width,omitempty"`
 	Height *int32 `json:"height,omitempty"`
@@ -171,6 +176,12 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 		ContentType:  a.ContentType,
 		SizeBytes:    a.SizeBytes,
 		CreatedAt:    a.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
+		Revision:     int(a.Revision),
+		SHA256:       a.Sha256,
+	}
+	if a.RevisionOf.Valid {
+		s := uuidToString(a.RevisionOf)
+		resp.RevisionOf = &s
 	}
 	// Only CloudFront mode overrides the stable path here; the presign and proxy
 	// modes already leave DownloadURL as the stable path and resolve it at
@@ -390,7 +401,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	err := parseUploadForm(w, r)
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 	if err != nil {
 		var sizeErr *http.MaxBytesError
@@ -576,6 +587,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			params.Width = pgtype.Int4{Int32: dimensions.Width, Valid: true}
 			params.Height = pgtype.Int4{Int32: dimensions.Height, Valid: true}
 		}
+
+		if status, msg := h.chainAttachmentRevision(r.Context(), &params, r.FormValue("replaces"), data); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+
 		link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)
 		if err != nil {
 			slog.Error("file upload failed", "error", err)
@@ -603,6 +620,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			att, err = wakeupWrite(h, r, func(q *db.Queries) (db.CreateAttachmentRow, error) {
 				return q.CreateAttachment(r.Context(), params)
 			})
+		}
+		if err != nil && params.Revision.Valid && isUniqueViolation(err) {
+			// Another upload took this revision number first.
+			h.deleteS3Objects(r.Context(), []string{link})
+			writeError(w, http.StatusConflict, "another revision was uploaded at the same time, retry")
+			return
 		}
 		if err != nil {
 			slog.Error("failed to create attachment record", "error", err)
