@@ -255,6 +255,11 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, works
 // refusal, and a finish written in between (CHE-2226) must stay. An issue in a
 // review status is blocked only by a refusal of its reviewer.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
+	// The auto-approver settles a window that made progress before the issue
+	// stops: the top-up resumes the refused run, and nothing is blocked.
+	if h.autoApproveExhausted(ctx, e) {
+		return
+	}
 	var issue db.Issue
 	var refused string
 	moved := false

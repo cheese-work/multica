@@ -28,24 +28,6 @@ func (q *Queries) CountRunBudgetTopUpsSince(ctx context.Context, arg CountRunBud
 	return column_1, err
 }
 
-const countWorkspaceDecisionsByFingerprint = `-- name: CountWorkspaceDecisionsByFingerprint :one
-SELECT COUNT(*)::bigint FROM decision_request
-WHERE workspace_id = $1::uuid AND request_fingerprint = $2::text
-`
-
-type CountWorkspaceDecisionsByFingerprintParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Fingerprint string      `json:"fingerprint"`
-}
-
-// Requests the workspace already holds under one server fingerprint; the anomaly batch card opens once per day.
-func (q *Queries) CountWorkspaceDecisionsByFingerprint(ctx context.Context, arg CountWorkspaceDecisionsByFingerprintParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWorkspaceDecisionsByFingerprint, arg.WorkspaceID, arg.Fingerprint)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const listRunBudgetAutoDecisionsSince = `-- name: ListRunBudgetAutoDecisionsSince :many
 SELECT CASE WHEN action = 'run_budget_top_up' THEN 'approved' ELSE COALESCE(details->>'kind', 'unknown') END::text AS kind,
        COUNT(*)::bigint AS n
@@ -76,6 +58,46 @@ func (q *Queries) ListRunBudgetAutoDecisionsSince(ctx context.Context, arg ListR
 	for rows.Next() {
 		var i ListRunBudgetAutoDecisionsSinceRow
 		if err := rows.Scan(&i.Kind, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunBudgetAutoEscalationsSince = `-- name: ListRunBudgetAutoEscalationsSince :many
+SELECT COALESCE(a.details->>'kind', 'unknown')::text AS kind, i.number::bigint AS number
+FROM activity_log a JOIN issue i ON i.id = a.issue_id
+WHERE a.workspace_id = $1::uuid AND a.action = 'run_budget_auto_escalated'
+  AND a.created_at >= $2::timestamptz
+ORDER BY a.created_at DESC
+LIMIT 10
+`
+
+type ListRunBudgetAutoEscalationsSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type ListRunBudgetAutoEscalationsSinceRow struct {
+	Kind   string `json:"kind"`
+	Number int64  `json:"number"`
+}
+
+// The issues the auto-approver escalated since a time, newest first, for the brief.
+func (q *Queries) ListRunBudgetAutoEscalationsSince(ctx context.Context, arg ListRunBudgetAutoEscalationsSinceParams) ([]ListRunBudgetAutoEscalationsSinceRow, error) {
+	rows, err := q.db.Query(ctx, listRunBudgetAutoEscalationsSince, arg.WorkspaceID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRunBudgetAutoEscalationsSinceRow{}
+	for rows.Next() {
+		var i ListRunBudgetAutoEscalationsSinceRow
+		if err := rows.Scan(&i.Kind, &i.Number); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -158,6 +180,43 @@ func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudget
 			&i.Evidence,
 			&i.Tokens,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceDecisionsByFingerprint = `-- name: ListWorkspaceDecisionsByFingerprint :many
+SELECT chat_session_id, asking_agent_id, human_user_id FROM decision_request
+WHERE workspace_id = $1::uuid AND request_fingerprint = $2::text
+`
+
+type ListWorkspaceDecisionsByFingerprintParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Fingerprint string      `json:"fingerprint"`
+}
+
+type ListWorkspaceDecisionsByFingerprintRow struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+}
+
+// The requests the workspace already holds under one server fingerprint (any status): the anomaly batch card opens once per day, and later anomalies go to its chat sessions.
+func (q *Queries) ListWorkspaceDecisionsByFingerprint(ctx context.Context, arg ListWorkspaceDecisionsByFingerprintParams) ([]ListWorkspaceDecisionsByFingerprintRow, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceDecisionsByFingerprint, arg.WorkspaceID, arg.Fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListWorkspaceDecisionsByFingerprintRow{}
+	for rows.Next() {
+		var i ListWorkspaceDecisionsByFingerprintRow
+		if err := rows.Scan(&i.ChatSessionID, &i.AskingAgentID, &i.HumanUserID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

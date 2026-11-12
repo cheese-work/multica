@@ -31,10 +31,16 @@ type autoCase struct {
 // newAutoCase is a budgeted issue (cap 5) in a window that opened an hour ago.
 func newAutoCase(t *testing.T, installationID int64) autoCase {
 	t.Helper()
+	return newAutoCaseSteps(t, installationID, mergeEdgeSteps)
+}
+
+// newAutoCaseSteps is newAutoCase on a workflow with the given steps.
+func newAutoCaseSteps(t *testing.T, installationID int64, steps []map[string]any) autoCase {
+	t.Helper()
 	// The shared test workspace keeps the auto-approver off, so the per-issue
 	// card tests exercise the path the kill switch leaves.
 	setAutoSettings(t, `{"run_budget_auto":{"enabled":true}}`)
-	c := newEdgeCase(t, installationID, mergeEdgeSteps)
+	c := newEdgeCase(t, installationID, steps)
 	agentID := seededReadyAgentID(t)
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID)
 	dbfx.Exec(t, `UPDATE issue SET status='in_progress', assignee_type='agent', assignee_id=$2, requested_by_id=$3 WHERE id=$1`, c.issueID, agentID, testUserID)

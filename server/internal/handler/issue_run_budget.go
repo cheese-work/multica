@@ -169,7 +169,7 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := parseUUID(actorID)
-	max, err := h.topUpRunBudget(r.Context(), issue, actorType, actor, []byte("{}"), nil)
+	max, err := h.topUpRunBudget(r.Context(), issue, actorType, actor, []byte("{}"), nil, nil)
 	if errors.Is(err, errRunBudgetNotBudgeted) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -187,8 +187,11 @@ var errRunBudgetNotBudgeted = errors.New("the issue has no workflow run budget t
 // topUpRunBudget opens a new window for the issue, as a member's top-up or the
 // auto-approver's. guard, when set, runs under the boundary lock once the window
 // is written and before anything is forgiven; an error from it aborts the
-// top-up. It returns the run cap the new window grants.
-func (h *Handler) topUpRunBudget(ctx context.Context, issue db.Issue, actorType string, actorID pgtype.UUID, details []byte, guard func(context.Context, *db.Queries) error) (int, error) {
+// top-up. after, when set, runs in the same transaction once the new window is
+// open, so work that needs the window (the refused run) commits with it, and
+// the function it returns runs after the commit. It returns the run cap the new
+// window grants.
+func (h *Handler) topUpRunBudget(ctx context.Context, issue db.Issue, actorType string, actorID pgtype.UUID, details []byte, guard func(context.Context, *db.Queries) error, after func(context.Context, *db.Queries) (func(), error)) (int, error) {
 	// Moves and top-ups on one issue start their windows one at a time, and
 	// wait for their turn before they hold a connection.
 	leave, err := h.enterRunBudgetBoundary(ctx, issue.ID)
@@ -239,8 +242,17 @@ func (h *Handler) topUpRunBudget(ctx context.Context, issue db.Issue, actorType 
 	if _, err := service.OpenRunBudgetWindow(ctx, qtx, issue.ID); err != nil {
 		return 0, err
 	}
+	var afterCommit func()
+	if after != nil {
+		if afterCommit, err = after(ctx, qtx); err != nil {
+			return 0, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
+	}
+	if afterCommit != nil {
+		afterCommit()
 	}
 	return max, nil
 }

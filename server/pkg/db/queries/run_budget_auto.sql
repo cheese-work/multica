@@ -71,7 +71,16 @@ WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND created_at >= sqlc.arg('
   AND ((action = 'run_budget_top_up' AND details ? 'auto') OR action = 'run_budget_auto_escalated')
 GROUP BY 1;
 
--- name: CountWorkspaceDecisionsByFingerprint :one
--- Requests the workspace already holds under one server fingerprint; the anomaly batch card opens once per day.
-SELECT COUNT(*)::bigint FROM decision_request
+-- name: ListWorkspaceDecisionsByFingerprint :many
+-- The requests the workspace already holds under one server fingerprint (any status): the anomaly batch card opens once per day, and later anomalies go to its chat sessions.
+SELECT chat_session_id, asking_agent_id, human_user_id FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND request_fingerprint = sqlc.arg('fingerprint')::text;
+
+-- name: ListRunBudgetAutoEscalationsSince :many
+-- The issues the auto-approver escalated since a time, newest first, for the brief.
+SELECT COALESCE(a.details->>'kind', 'unknown')::text AS kind, i.number::bigint AS number
+FROM activity_log a JOIN issue i ON i.id = a.issue_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action = 'run_budget_auto_escalated'
+  AND a.created_at >= sqlc.arg('since')::timestamptz
+ORDER BY a.created_at DESC
+LIMIT 10;

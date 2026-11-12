@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -39,40 +40,63 @@ var runBudgetAnomalyText = map[string]string{
 	service.RunBudgetAnomalyOpenAIPool: "an OpenAI-pool agent ran while the OpenAI cut is in force",
 }
 
-// autoRunBudgetWindow lets the auto-approver act on a spent window before a
-// person is asked. It reports true when it settled the window (approved,
-// escalated, or another transaction already did) and false when the per-issue
-// card path must run: the kill switch is off, the window made no progress, the
-// daily envelope is spent, or the auto path failed. Failing closed hands the
-// window to a person, never approves it.
-func (h *Handler) autoRunBudgetWindow(ctx context.Context, issue db.Issue, e service.RunBudgetEvent) bool {
+// autoApproveExhausted lets the auto-approver settle a spent window before the
+// issue is blocked: an approved window resumes the refused run in the same
+// transaction as the top-up, so the issue never stops. It reports true when
+// the window is settled. It reports false, and the block and notice path runs,
+// when the kill switch is off, the window shows an anomaly or no progress, the
+// envelope is spent, the issue is not waiting on an agent's run it can resume,
+// or the auto path failed. Failing closed hands the window to a person.
+func (h *Handler) autoApproveExhausted(ctx context.Context, e service.RunBudgetExhausted) bool {
+	issue, ok := h.exhaustedIssue(ctx, e)
+	if !ok || issue.Status == issuestatus.Blocked || issue.AssigneeType.String != "agent" || issue.AssigneeID != e.Target.AgentID {
+		return false
+	}
+	event := service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since}
 	verdict, err := service.EvaluateRunBudgetAuto(ctx, h.Queries, issue, e.Since, time.Now())
 	if err != nil {
 		slog.Warn("run budget auto: evaluate failed", "err", err, "issue_id", uuidToString(issue.ID))
 		return false
 	}
-	var handled bool
-	switch {
-	case verdict.Approve:
-		handled, err = h.autoApproveRunBudget(ctx, issue, e, verdict)
-	case verdict.Anomaly != "":
-		handled, err = h.escalateRunBudgetAnomaly(ctx, issue, e, verdict.Anomaly)
-	default:
+	if !verdict.Approve {
 		return false
 	}
+	handled, err := h.autoApproveRunBudget(ctx, issue, event, verdict, e.Status, e.Target)
 	if err != nil {
-		slog.Warn("run budget auto: action failed, falling back to a card", "err", err, "issue_id", uuidToString(issue.ID))
+		slog.Warn("run budget auto: approve failed, falling back to a card", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 	return handled
 }
 
-func (h *Handler) autoApproveRunBudget(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, verdict service.RunBudgetAutoVerdict) (bool, error) {
+// escalateRunBudgetWindow lets the auto-approver route an anomalous window to
+// the day's batch card instead of a per-issue card. It reports true when it
+// settled the window and false when the per-issue card path must run. recovery
+// is the blocked issue's recovery run, claimed in the escalation's transaction.
+func (h *Handler) escalateRunBudgetWindow(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, recovery *service.BudgetRecoveryRun) bool {
+	verdict, err := service.EvaluateRunBudgetAuto(ctx, h.Queries, issue, e.Since, time.Now())
+	if err != nil {
+		slog.Warn("run budget auto: evaluate failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return false
+	}
+	if verdict.Anomaly == "" {
+		return false
+	}
+	handled, err := h.escalateRunBudgetAnomaly(ctx, issue, e, verdict.Anomaly, recovery)
+	if err != nil {
+		slog.Warn("run budget auto: escalation failed, falling back to a card", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+	return handled
+}
+
+func (h *Handler) autoApproveRunBudget(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, verdict service.RunBudgetAutoVerdict, refusedStatus string, target service.RunTarget) (bool, error) {
 	details, err := json.Marshal(map[string]any{"auto": service.RunBudgetAutoRule, "runs": verdict.Runs})
 	if err != nil {
 		return false, err
 	}
 	var comment db.Comment
 	var revision int64
+	// Built before the transaction, as the workflow edges do.
+	overlay := h.TaskService.PrepareIssueRunOverlay(ctx, issue, target.ActorUserID)
 	_, err = h.topUpRunBudget(ctx, issue, "system", pgtype.UUID{}, details, func(ctx context.Context, q *db.Queries) error {
 		noticeID, err := claimRunBudgetNotice(ctx, q, issue, e)
 		if err != nil {
@@ -92,9 +116,24 @@ func (h *Handler) autoApproveRunBudget(ctx context.Context, issue db.Issue, e se
 		if !v.Approve {
 			return errAutoNotApproved
 		}
-		text := fmt.Sprintf("Run budget: %s approved %d more runs. The last window made progress, showed no anomaly and the workspace daily envelope has room. To stop auto-approvals, set the workspace setting `run_budget_auto` to `{\"enabled\": false}`.", service.RunBudgetAutoRule, v.Runs)
+		text := fmt.Sprintf("Run budget: %s approved %d more runs and resumed the refused run. The last window made progress, showed no anomaly and the workspace daily envelope has room. To stop auto-approvals, set the workspace setting `run_budget_auto` to `{\"enabled\": false}`.", service.RunBudgetAutoRule, v.Runs)
 		comment, revision, err = createRunBudgetAuditComment(ctx, q, issue, noticeID, text)
 		return err
+	}, func(ctx context.Context, q *db.Queries) (func(), error) {
+		// The refused run resumes with the window: under the boundary lock the
+		// issue must still wait for that run, or the approval is not given.
+		fresh, err := q.GetIssue(ctx, issue.ID)
+		if err != nil {
+			return nil, err
+		}
+		if fresh.Status != refusedStatus || fresh.AssigneeType.String != "agent" || fresh.AssigneeID != target.AgentID {
+			return nil, errAutoNotApproved
+		}
+		afterCommit, err := h.TaskService.EnqueueIssueRunInTx(ctx, q, fresh, target.ActorUserID, overlay)
+		if errors.Is(err, service.ErrDuplicatePendingTask) {
+			return nil, nil
+		}
+		return afterCommit, err
 	})
 	switch {
 	case err == nil:
@@ -108,10 +147,12 @@ func (h *Handler) autoApproveRunBudget(ctx context.Context, issue db.Issue, e se
 	return false, err
 }
 
-func (h *Handler) escalateRunBudgetAnomaly(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, kind string) (bool, error) {
+func (h *Handler) escalateRunBudgetAnomaly(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, kind string, recovery *service.BudgetRecoveryRun) (bool, error) {
 	var comment db.Comment
 	var revision int64
 	var decisions []decisionRequestResult
+	var followUps []anomalyFollowUp
+	recovered := false
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		noticeID, err := claimRunBudgetNotice(ctx, q, issue, e)
@@ -134,6 +175,19 @@ func (h *Handler) escalateRunBudgetAnomaly(ctx context.Context, issue db.Issue, 
 		if err := runBudgetRefusalStillHolds(ctx, q, e); err != nil {
 			return err
 		}
+		// The blocked issue's recovery run commits with the escalation, as it
+		// does with a per-issue notice: both or neither.
+		if recovery != nil {
+			switch err := recovery.Claim(ctx, tx, e.Since); {
+			case err == nil:
+				recovered = true
+			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
+			case errors.Is(err, service.ErrRecoveryWindowLifted):
+				return errRefusalLifted
+			default:
+				slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+			}
+		}
 		details, err := json.Marshal(map[string]any{"kind": kind, "rule": service.RunBudgetAutoRule})
 		if err != nil {
 			return err
@@ -150,22 +204,68 @@ func (h *Handler) escalateRunBudgetAnomaly(ctx context.Context, issue db.Issue, 
 		}
 		fingerprint := anomalyBatchFingerprint(time.Now())
 		// The workspace lock planRunBudgetDecisions took serializes this check.
-		opened, err := q.CountWorkspaceDecisionsByFingerprint(ctx, db.CountWorkspaceDecisionsByFingerprintParams{WorkspaceID: issue.WorkspaceID, Fingerprint: fingerprint})
-		if err != nil || opened > 0 {
+		cards, err := q.ListWorkspaceDecisionsByFingerprint(ctx, db.ListWorkspaceDecisionsByFingerprintParams{WorkspaceID: issue.WorkspaceID, Fingerprint: fingerprint})
+		if err != nil {
 			return err
 		}
-		decisions, err = h.openRunBudgetAsk(ctx, q, issue, runBudgetAnomalyAsk(issue, comment, kind), fingerprint, plan)
+		if len(cards) == 0 {
+			decisions, err = h.openRunBudgetAsk(ctx, q, issue, runBudgetAnomalyAsk(issue, comment, kind), fingerprint, plan)
+			return err
+		}
+		// The day's card is already out, and its owner may have decided it: a
+		// later anomaly reaches them as a message in the card's chat.
+		followUps, err = h.addAnomalyToCards(ctx, q, issue, kind, cards)
 		return err
 	})
 	switch {
 	case err == nil:
+		if recovered {
+			recovery.Published(ctx)
+		}
 		h.publishRunBudgetAudit(issue, comment, revision)
 		h.publishRunBudgetDecisions(issue, decisions)
+		h.publishAnomalyFollowUps(issue, followUps)
 		return true, nil
 	case errors.Is(err, errAutoHandled), errors.Is(err, errRefusalLifted):
 		return true, nil
 	}
 	return false, err
+}
+
+type anomalyFollowUp struct {
+	agentID, humanID string
+	message          db.ChatMessage
+}
+
+// addAnomalyToCards writes the anomaly as one chat message in each card's
+// session. The issue link is the actionable reference.
+func (h *Handler) addAnomalyToCards(ctx context.Context, q *db.Queries, issue db.Issue, kind string, cards []db.ListWorkspaceDecisionsByFingerprintRow) ([]anomalyFollowUp, error) {
+	title := strings.NewReplacer("[", "(", "]", ")").Replace(issue.Title)
+	content := fmt.Sprintf("Another anomaly today, %s: [%s-%d %s](mention://issue/%s). The auto-approver did not approve a new window (%s).",
+		kind, h.getIssuePrefix(ctx, issue.WorkspaceID), issue.Number, title, uuidToString(issue.ID), runBudgetAnomalyText[kind])
+	out := make([]anomalyFollowUp, 0, len(cards))
+	for _, card := range cards {
+		message, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: card.ChatSessionID, Role: "assistant", Content: content, SentVia: pgtype.Text{String: "system", Valid: true}})
+		if err != nil {
+			return nil, fmt.Errorf("follow-up message: %w", err)
+		}
+		if err := q.TouchChatSession(ctx, card.ChatSessionID); err != nil {
+			return nil, fmt.Errorf("touch card chat: %w", err)
+		}
+		out = append(out, anomalyFollowUp{agentID: uuidToString(card.AskingAgentID), humanID: uuidToString(card.HumanUserID), message: message})
+	}
+	return out, nil
+}
+
+func (h *Handler) publishAnomalyFollowUps(issue db.Issue, followUps []anomalyFollowUp) {
+	workspaceID := uuidToString(issue.WorkspaceID)
+	for _, f := range followUps {
+		sessionID := uuidToString(f.message.ChatSessionID)
+		h.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", f.agentID, f.humanID, sessionID, protocol.ChatMessagePayload{
+			MessageKind: f.message.MessageKind, ChatSessionID: sessionID, MessageID: uuidToString(f.message.ID),
+			Role: f.message.Role, Content: f.message.Content, CreatedAt: timestampToString(f.message.CreatedAt),
+		})
+	}
 }
 
 // claimRunBudgetNotice takes the window's exhausted-notice claim, the key that
@@ -211,11 +311,11 @@ func (h *Handler) publishRunBudgetAudit(issue db.Issue, comment db.Comment, revi
 }
 
 // runBudgetAnomalyAsk is the batch card: the first anomaly of the ICT day opens
-// it; later ones only add their issue comment, and the brief counts them all.
+// it; later ones are added to its chat, and the brief lists them all.
 func runBudgetAnomalyAsk(issue db.Issue, notice db.Comment, kind string) decisiontx.Ask {
 	ask := runBudgetDecisionAsk(issue, notice)
 	ask.ContextELI10 = fmt.Sprintf("The run-budget auto-approver held back a top-up on %q: %s. It never approves an anomaly.", issue.Title, runBudgetAnomalyText[kind])
-	ask.AgentDid = "The platform refused a new run on this issue and did not approve a new window. This is the day's one card for such anomalies; later ones are only in each issue's comments and the brief."
+	ask.AgentDid = "The platform refused a new run on this issue and did not approve a new window. This is the day's one card for such anomalies; later ones arrive as messages in this chat, and the brief lists them all."
 	ask.StakesIfWrong = "If you reopen a looping or idle issue it can spend a full new window of runs and tokens. If you do nothing, the issue stays stopped."
 	ask.Recommendation = "Read the issue's last comments. Reopen it only when you see why the anomaly is harmless."
 	return ask
@@ -245,5 +345,18 @@ func (h *Handler) runBudgetAutoBrief(ctx context.Context, workspaceID pgtype.UUI
 	if len(kinds) > 0 {
 		line += " (" + strings.Join(kinds, ", ") + ")"
 	}
-	return line + ".", nil
+	line += "."
+	// The issues behind the escalations, so the brief points at work to open.
+	held, err := h.Queries.ListRunBudgetAutoEscalationsSince(ctx, db.ListRunBudgetAutoEscalationsSinceParams{
+		WorkspaceID: workspaceID, Since: pgtype.Timestamptz{Time: since, Valid: true},
+	})
+	if err != nil || len(held) == 0 {
+		return line, err
+	}
+	prefix := h.getIssuePrefix(ctx, workspaceID)
+	refs := make([]string, len(held))
+	for i, r := range held {
+		refs[i] = fmt.Sprintf("%s %s-%d", r.Kind, prefix, r.Number)
+	}
+	return line + " Held back: " + strings.Join(refs, ", ") + ".", nil
 }
