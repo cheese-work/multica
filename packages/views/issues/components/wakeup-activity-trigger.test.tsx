@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { TimelineEntry } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
-import { RESOURCES } from "../../test/i18n";
+import { getTestResources } from "../../test/i18n";
 import { useT } from "../../i18n";
 import { useWakeupText } from "./wakeup-presentation";
 import * as activity from "./wakeup-activity";
@@ -24,7 +24,7 @@ const pr = { pr_number: 252, pr_url: "https://github.com/o/r/pull/252", target_t
 function read() {
   const { result } = renderHook(() => ({ t: useT("issues").t, text: useWakeupText() }), {
     wrapper: ({ children }) => (
-      <I18nProvider locale="en" resources={RESOURCES}>
+      <I18nProvider locale="en" resources={getTestResources()}>
         {children}
       </I18nProvider>
     ),
@@ -136,7 +136,7 @@ describe("chip", () => {
   it("tags every built-in rule row as a system rule", () => {
     const { result } = renderHook(() => ({ t: useT("issues").t, text: useWakeupText() }), {
       wrapper: ({ children }) => (
-        <I18nProvider locale="en" resources={RESOURCES}>
+        <I18nProvider locale="en" resources={getTestResources()}>
           {children}
         </I18nProvider>
       ),

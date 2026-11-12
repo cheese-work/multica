@@ -700,6 +700,7 @@ func init() {
 	issueCreateCmd.Flags().Bool("allow-external-file", false, "Allow --description-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCreateCmd.Flags().String("status", "", "Issue status")
 	issueCreateCmd.Flags().String("priority", "", "Issue priority")
+	issueCreateCmd.Flags().String("pr-auto-complete", "", "Change status when linked PRs merge: on or off (saved atomically on supported servers)")
 	issueCreateCmd.Flags().String("assignee", "", "Assignee name (member, agent, or squad; fuzzy match)")
 	issueCreateCmd.Flags().String("assignee-id", "", "Assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueCreateCmd.Flags().Bool("assignee-picker", false, "Assign to the agent or squad selected in Quick Create (requires quick-create task context; mutually exclusive with --assignee and --assignee-id)")
@@ -727,6 +728,7 @@ func init() {
 	issueUpdateCmd.Flags().StringArray("attachment", nil, "Local file path to attach (one literal path per flag; repeat --attachment for multiple files); references are appended to the end of the description")
 	issueUpdateCmd.Flags().String("status", "", "New status")
 	issueUpdateCmd.Flags().String("priority", "", "New priority")
+	issueUpdateCmd.Flags().String("pr-auto-complete", "", "Change status when linked PRs merge: on or off (on takes effect at the next PR event)")
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
@@ -836,6 +838,7 @@ func init() {
 	// issue search
 	issueSearchCmd.Flags().Int("limit", 20, "Maximum number of results to return")
 	issueSearchCmd.Flags().Bool("include-closed", false, "Include done and cancelled issues")
+	issueSearchCmd.Flags().String("project", "", "Filter by project ID")
 	issueSearchCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// issue subscriber list
@@ -1170,6 +1173,9 @@ func runIssuePullRequests(cmd *cobra.Command, args []string) error {
 
 	prs, _ := result["pull_requests"].([]any)
 	printIssuePullRequestsTable(normalizePullRequestList(prs))
+	if autoComplete, ok := result["auto_complete"].(map[string]any); ok {
+		printIssuePRAutoComplete(autoComplete)
+	}
 	return nil
 }
 
@@ -1874,6 +1880,10 @@ func pickIssueCreateAssignee(ctx context.Context, client *cli.APIClient, cmd *co
 }
 
 func runIssueCreate(cmd *cobra.Command, _ []string) error {
+	prAutoCompleteDisabled, err := issuePRAutoCompleteFlag(cmd)
+	if err != nil {
+		return err
+	}
 	title, _ := cmd.Flags().GetString("title")
 	if title == "" {
 		return fmt.Errorf("--title is required")
@@ -1912,6 +1922,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 
 	body := map[string]any{"title": title}
+	if prAutoCompleteDisabled != nil {
+		body["pr_auto_complete_disabled"] = *prAutoCompleteDisabled
+	}
 	propertyFlags, _ := cmd.Flags().GetStringArray("property")
 	var createProperties map[string]json.RawMessage
 	if len(propertyFlags) > 0 {
@@ -2066,6 +2079,11 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 		}
 		return fmt.Errorf("create issue: %w", err)
 	}
+	if prAutoCompleteDisabled != nil {
+		if err := confirmCreatedIssuePRAutoComplete(ctx, client, result, *prAutoCompleteDisabled); err != nil {
+			return err
+		}
+	}
 	if err := verifyIssueCreateProperties(createProperties, result); err != nil {
 		return fmt.Errorf("issue %s was created, but the server did not confirm its custom properties; review it before retrying: %w", issueDisplayKey(result), err)
 	}
@@ -2162,6 +2180,10 @@ func revisionConflictMessage(err error) (string, bool) {
 }
 
 func runIssueUpdate(cmd *cobra.Command, args []string) error {
+	prAutoCompleteDisabled, err := issuePRAutoCompleteFlag(cmd)
+	if err != nil {
+		return err
+	}
 	attachmentPaths, err := issueAttachmentPaths(cmd)
 	if err != nil {
 		return err
@@ -2337,7 +2359,7 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 			body["expected_revision"] = int64(revision)
 		}
 	}
-	if len(body) == 0 && len(attachmentPaths) == 0 {
+	if len(body) == 0 && len(attachmentPaths) == 0 && prAutoCompleteDisabled == nil {
 		if workflowChanged {
 			return printIssueUpdateResult(cmd, result)
 		}
@@ -2349,7 +2371,7 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(body) == 0 && len(pending) == 0 {
+	if len(body) == 0 && len(pending) == 0 && prAutoCompleteDisabled == nil {
 		return fmt.Errorf("no local attachments to update; --attachment accepts file paths, not URLs")
 	}
 	desc, changed := body["description"].(string)
@@ -2379,23 +2401,40 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 		body["description"] = appendAttachmentReferences(desc, attachmentRefs)
 		body["attachment_ids"] = attachmentIDs
 	}
-	if noStart {
+	if noStart && len(body) > 0 {
 		body["suppress_run"] = true
 	}
 
-	if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
-		if msg, ok := revisionConflictMessage(err); ok {
-			return errors.New(msg)
+	if len(body) > 0 {
+		if err := client.PutJSON(ctx, "/api/issues/"+issueRef.ID, body, &result); err != nil {
+			if msg, ok := revisionConflictMessage(err); ok {
+				return errors.New(msg)
+			}
+			if len(attachmentIDs) > 0 {
+				return fmt.Errorf("update issue (uploaded IDs: %v): %w", attachmentIDs, err)
+			}
+			return fmt.Errorf("update issue: %w", err)
 		}
-		if len(attachmentIDs) > 0 {
-			return fmt.Errorf("update issue (uploaded IDs: %v): %w", attachmentIDs, err)
+	} else if result == nil {
+		// Keep issue update's response shape without issuing an empty update.
+		result, err = fetchIssue(ctx, client, issueRef.ID)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("update issue: %w", err)
 	}
 	if duplicateOf != "" {
 		if _, err := recordedDuplicateOf(result, duplicateOf); err != nil {
 			return err
 		}
+	}
+	if prAutoCompleteDisabled != nil {
+		if err := setIssuePRAutoComplete(ctx, client, issueRef.ID, *prAutoCompleteDisabled); err != nil {
+			if len(body) > 0 {
+				return fmt.Errorf("issue %s fields were updated, but PR auto-complete was not confirmed; retry with issue update %s --pr-auto-complete %s: %w", issueRef.ID, issueRef.ID, prAutoCompleteValue(*prAutoCompleteDisabled), err)
+			}
+			return err
+		}
+		result["pr_auto_complete_disabled"] = *prAutoCompleteDisabled
 	}
 
 	return printIssueUpdateResult(cmd, result)
@@ -3835,6 +3874,18 @@ func runIssueSearch(cmd *cobra.Command, args []string) error {
 	}
 	if v, _ := cmd.Flags().GetBool("include-closed"); v {
 		params.Set("include_closed", "true")
+	}
+	if projectInput, _ := cmd.Flags().GetString("project"); projectInput != "" {
+		if client.WorkspaceID == "" {
+			if _, err := requireWorkspaceID(cmd); err != nil {
+				return err
+			}
+		}
+		project, err := resolveProjectID(ctx, client, projectInput)
+		if err != nil {
+			return err
+		}
+		params.Set("project_id", project.ID)
 	}
 
 	path := "/api/issues/search?" + params.Encode()

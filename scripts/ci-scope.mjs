@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Path filtering and aggregate gates share this fail-closed decision contract.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const filters = JSON.parse(
   readFileSync(new URL("../.github/ci-paths.json", import.meta.url), "utf8"),
@@ -103,7 +103,7 @@ export function checkGate(needs, jobScopes) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   try {
     switch (process.argv[2]) {
       case "decide": {

@@ -516,7 +516,14 @@ WITH eligible_archived AS MATERIALIZED (
 )
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, i.section,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       iss.project_id AS issue_project_id,
+       iss.assignee_type AS issue_assignee_type,
+       iss.assignee_id AS issue_assignee_id,
+       iss.due_date AS issue_due_date,
+       ARRAY(SELECT il.label_id::text FROM issue_to_label il
+             WHERE iss.id IS NOT NULL AND il.issue_id = iss.id
+             ORDER BY il.label_id)::text[] AS issue_label_ids
 FROM inbox_item i
 JOIN selected_ids selected ON selected.id = i.id
 LEFT JOIN issue iss ON iss.id = i.issue_id
@@ -530,28 +537,33 @@ type ListArchivedInboxItemsParams struct {
 }
 
 type ListArchivedInboxItemsRow struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RecipientType string             `json:"recipient_type"`
-	RecipientID   pgtype.UUID        `json:"recipient_id"`
-	Type          string             `json:"type"`
-	Severity      string             `json:"severity"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Title         string             `json:"title"`
-	Body          pgtype.Text        `json:"body"`
-	Read          bool               `json:"read"`
-	Archived      bool               `json:"archived"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ActorType     pgtype.Text        `json:"actor_type"`
-	ActorID       pgtype.UUID        `json:"actor_id"`
-	Details       []byte             `json:"details"`
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
-	DedupeKey     pgtype.Text        `json:"dedupe_key"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	Section       pgtype.Text        `json:"section"`
-	IssueStatus   pgtype.Text        `json:"issue_status"`
-	IssuePriority pgtype.Text        `json:"issue_priority"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RecipientType     string             `json:"recipient_type"`
+	RecipientID       pgtype.UUID        `json:"recipient_id"`
+	Type              string             `json:"type"`
+	Severity          string             `json:"severity"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	Title             string             `json:"title"`
+	Body              pgtype.Text        `json:"body"`
+	Read              bool               `json:"read"`
+	Archived          bool               `json:"archived"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	ActorType         pgtype.Text        `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	Details           []byte             `json:"details"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID     pgtype.UUID        `json:"chat_message_id"`
+	DedupeKey         pgtype.Text        `json:"dedupe_key"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Section           pgtype.Text        `json:"section"`
+	IssueStatus       pgtype.Text        `json:"issue_status"`
+	IssuePriority     pgtype.Text        `json:"issue_priority"`
+	IssueProjectID    pgtype.UUID        `json:"issue_project_id"`
+	IssueAssigneeType pgtype.Text        `json:"issue_assignee_type"`
+	IssueAssigneeID   pgtype.UUID        `json:"issue_assignee_id"`
+	IssueDueDate      pgtype.Date        `json:"issue_due_date"`
+	IssueLabelIds     []string           `json:"issue_label_ids"`
 }
 
 // Archived counterpart of ListInboxItems, backing the inbox's "Archived"
@@ -607,6 +619,11 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 			&i.Section,
 			&i.IssueStatus,
 			&i.IssuePriority,
+			&i.IssueProjectID,
+			&i.IssueAssigneeType,
+			&i.IssueAssigneeID,
+			&i.IssueDueDate,
+			&i.IssueLabelIds,
 		); err != nil {
 			return nil, err
 		}
@@ -621,7 +638,14 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 const listInboxItems = `-- name: ListInboxItems :many
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, i.section,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       iss.project_id AS issue_project_id,
+       iss.assignee_type AS issue_assignee_type,
+       iss.assignee_id AS issue_assignee_id,
+       iss.due_date AS issue_due_date,
+       ARRAY(SELECT il.label_id::text FROM issue_to_label il
+             WHERE iss.id IS NOT NULL AND il.issue_id = iss.id
+             ORDER BY il.label_id)::text[] AS issue_label_ids
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
@@ -637,30 +661,38 @@ type ListInboxItemsParams struct {
 }
 
 type ListInboxItemsRow struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RecipientType string             `json:"recipient_type"`
-	RecipientID   pgtype.UUID        `json:"recipient_id"`
-	Type          string             `json:"type"`
-	Severity      string             `json:"severity"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Title         string             `json:"title"`
-	Body          pgtype.Text        `json:"body"`
-	Read          bool               `json:"read"`
-	Archived      bool               `json:"archived"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ActorType     pgtype.Text        `json:"actor_type"`
-	ActorID       pgtype.UUID        `json:"actor_id"`
-	Details       []byte             `json:"details"`
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
-	DedupeKey     pgtype.Text        `json:"dedupe_key"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-	Section       pgtype.Text        `json:"section"`
-	IssueStatus   pgtype.Text        `json:"issue_status"`
-	IssuePriority pgtype.Text        `json:"issue_priority"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RecipientType     string             `json:"recipient_type"`
+	RecipientID       pgtype.UUID        `json:"recipient_id"`
+	Type              string             `json:"type"`
+	Severity          string             `json:"severity"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	Title             string             `json:"title"`
+	Body              pgtype.Text        `json:"body"`
+	Read              bool               `json:"read"`
+	Archived          bool               `json:"archived"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	ActorType         pgtype.Text        `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	Details           []byte             `json:"details"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID     pgtype.UUID        `json:"chat_message_id"`
+	DedupeKey         pgtype.Text        `json:"dedupe_key"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Section           pgtype.Text        `json:"section"`
+	IssueStatus       pgtype.Text        `json:"issue_status"`
+	IssuePriority     pgtype.Text        `json:"issue_priority"`
+	IssueProjectID    pgtype.UUID        `json:"issue_project_id"`
+	IssueAssigneeType pgtype.Text        `json:"issue_assignee_type"`
+	IssueAssigneeID   pgtype.UUID        `json:"issue_assignee_id"`
+	IssueDueDate      pgtype.Date        `json:"issue_due_date"`
+	IssueLabelIds     []string           `json:"issue_label_ids"`
 }
 
+// The issue projections feed the inbox filters. Keep this column list
+// identical to ListArchivedInboxItems: the handler converts one row type into
+// the other.
 // A coalesced DM record moves to the top when a new reply updates it.
 func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) ([]ListInboxItemsRow, error) {
 	rows, err := q.db.Query(ctx, listInboxItems, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
@@ -694,6 +726,11 @@ func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) 
 			&i.Section,
 			&i.IssueStatus,
 			&i.IssuePriority,
+			&i.IssueProjectID,
+			&i.IssueAssigneeType,
+			&i.IssueAssigneeID,
+			&i.IssueDueDate,
+			&i.IssueLabelIds,
 		); err != nil {
 			return nil, err
 		}

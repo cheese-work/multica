@@ -556,7 +556,7 @@ function ChatThreadListBody({
     return (
       <>
         <NeedsYouList sessions={rows} agents={agents} />
-        <div className="px-2 py-1.5 text-caption text-muted-foreground">
+        <div className="px-3 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
         {archivedEntry}

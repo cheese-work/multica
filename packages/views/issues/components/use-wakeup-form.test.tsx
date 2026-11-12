@@ -3,7 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { ApiError } from "@multica/core/api";
-import { RESOURCES } from "../../test/i18n";
+import { getTestResources } from "../../test/i18n";
 import { useWakeupForm } from "./use-wakeup-form";
 
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
@@ -19,7 +19,7 @@ const save = vi.fn();
 const onSaved = vi.fn();
 const onBusy = vi.fn();
 const wrapper = ({ children }: { children: ReactNode }) => (
-  <I18nProvider locale="en" resources={RESOURCES}>{children}</I18nProvider>
+  <I18nProvider locale="en" resources={getTestResources()}>{children}</I18nProvider>
 );
 const setup = () =>
   renderHook(() => useWakeupForm({ workspaceId: "ws", defaultAgentId: "emacs", save, onSaved, onBusy }), { wrapper });

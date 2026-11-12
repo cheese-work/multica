@@ -4,7 +4,7 @@ import { renderHook } from "@testing-library/react";
 import type { WakeupCondition } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { SupportedLocale } from "@multica/core/i18n";
-import { RESOURCES } from "../../test/i18n";
+import { getTestResources } from "../../test/i18n";
 import { formatWakeupTime, useWakeupText } from "./wakeup-presentation";
 
 vi.mock("./wakeup-condition-names", () => ({
@@ -29,7 +29,7 @@ it("reads a github_run condition as a sentence in every locale", () => {
   const bySha: WakeupCondition = { type: "github_run", repo: "cheese-work/multica", workflow: "cd-qualification.yml", head_sha: sha, state: "completed" };
   const read = (locale: SupportedLocale) =>
     renderHook(() => useWakeupText(), {
-      wrapper: ({ children }) => createElement(I18nProvider, { locale, resources: RESOURCES, children }),
+      wrapper: ({ children }) => createElement(I18nProvider, { locale, resources: getTestResources(locale), children }),
     }).result.current;
   const en = read("en");
   expect(en.condition(byId)).toBe("When run 40343069164 of cheese-work/multica waits at an approval gate");

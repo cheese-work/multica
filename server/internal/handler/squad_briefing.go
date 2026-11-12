@@ -224,6 +224,62 @@ const squadParentStatusOwned = `6. **Own the parent issue status.** This issue i
    Never leave the parent sitting in ` + "`" + `in_progress` + "`" + ` once the goal is met —
    pick the status that matches what actually remains.`
 
+// leaderWorkflow says whether an owning leader's issue follows a project
+// workflow that came with the claim, and whether the daemon's runtime brief
+// still states the built-in in_progress / in_review rules (MUL-8145).
+type leaderWorkflow int
+
+const (
+	leaderNoWorkflow leaderWorkflow = iota
+	// leaderWorkflowCurrentDaemon: the runtime brief points at
+	// [Project workflow] and states no built-in moves.
+	leaderWorkflowCurrentDaemon
+	// leaderWorkflowLegacyDaemon: the runtime brief still says to set
+	// in_progress first and in_review on delivery, so responsibility 6 has
+	// to rule those moves out for this issue.
+	leaderWorkflowLegacyDaemon
+	// leaderWorkflowStepMoved: the run's binding no longer matches the issue,
+	// so it must leave status unchanged even when its squad owns the issue.
+	leaderWorkflowStepMoved
+)
+
+const squadParentStatusStepMoved = `6. **Leave the parent issue's status unchanged for this run.** This issue
+   is assigned to your squad, but this run's workflow binding no longer matches
+   the issue's current step. Follow the explanation in ` + "`" + `[Project workflow]` + "`" + `.
+   Keep the current status even when you confirm the overall goal is met; do
+   not change it to mark progress or delivery. This overrides the status rules
+   in your runtime instructions. Leave a comment if something needs attention;
+   a member can review the current state and explicitly rerun the work.`
+
+// squadParentStatusOwnedInWorkflow is responsibility 6 for an owning leader
+// whose issue follows a project workflow that came with the claim (MUL-8145).
+// The workflow may list neither in_progress nor in_review — the server rejects
+// a status outside it — and entering a step with a handler reassigns the
+// issue, so squadParentStatusOwned's "move to in_progress, then in_review"
+// would be refused or hand the parent away mid-dispatch. The ownership
+// boundary and the standing wrap-up authorization stay; the moves become the
+// [Project workflow] commands the runtime brief points at.
+const squadParentStatusOwnedInWorkflow = `6. **Own the parent issue status — through its project workflow.** This issue
+   is assigned to your squad and follows its project workflow, so its status
+   is yours to move (unless Agent Identity forbids status changes), using only
+   the commands in ` + "`" + `[Project workflow]` + "`" + `. Delegate only the current
+   step's work and pass its instructions and constraints to members in your
+   delegation comment; their observer brief does not include step instructions.
+   The parent stays at its
+   current step while members work — a successful dispatch is not completion.
+   On later turns, do not move it for routine progress updates. When you
+   confirm the current step's goal is met, run that block's Step done command — this
+   responsibility is itself the standing instruction that authorizes that
+   change, so do it even when no comment asked you to.`
+
+// squadParentStatusWorkflowOverridesRuntime follows
+// squadParentStatusOwnedInWorkflow for a daemon whose runtime brief still
+// states the built-in moves.
+const squadParentStatusWorkflowOverridesRuntime = `
+   This overrides the in_progress / in_review rules in your runtime
+   instructions: never set either on this issue just to mark progress or
+   delivery.`
+
 // squadParentStatusNotOwned is responsibility 6 for every other leader path:
 // an @squad mention on an issue owned by someone else (MUL-3724), and
 // quick-create, where no issue exists yet on this turn. Granting status

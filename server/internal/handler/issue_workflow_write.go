@@ -63,7 +63,7 @@ type workflowWrite struct {
 	// held the issue, so the cancellation after the commit reaches those runs
 	// and no later ones.
 	stopPrevious bool
-	stopRuns     []db.AgentTaskQueue
+	stopRuns     []db.ListAssigneeRunsForHandoffRow
 	stopFrom     service.TaskAssignee
 	// system marks a move the platform makes by itself (edge, CI, run budget).
 	// Step entry gates bind explicit status writes only.

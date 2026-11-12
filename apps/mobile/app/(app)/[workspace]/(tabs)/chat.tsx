@@ -52,7 +52,7 @@ import {
   removePendingChatTask,
 } from "@multica/core/chat/pending";
 import { deriveChatTitle } from "@multica/core/chat/title";
-import { canAssignAgentToIssue } from "@multica/core/permissions";
+import { canAssignAgentToIssue } from "@multica/core/permissions/rules";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";

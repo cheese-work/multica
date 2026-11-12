@@ -23,6 +23,7 @@ import {
 import { isImeComposing } from "@multica/core/utils";
 import { AppLink } from "../../navigation";
 import { PAGE_GUTTER } from "../../layout/page-header";
+import { WindowTitleBarProvider } from "../../platform/window-title-bar";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
 import {
@@ -166,6 +167,10 @@ const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: stri
         // Stops above the chat launcher, which owns the dashboard's
         // bottom-right corner — the panel's composer would sit under it.
         "above-chat-launcher",
+        // Floats over the top of the page, which may be the window's drag
+        // region (the Desktop issue window); without this, its header's
+        // controls would move the window instead of taking the click.
+        "[-webkit-app-region:no-drag]",
         !isPresent && "pointer-events-none",
       )}
       // Slides in from the edge it is anchored to; the exit is shorter and
@@ -183,22 +188,23 @@ const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: stri
       }}
     >
       {isPresent && <IssuePeekFollow issueId={issueId} panelRef={panelRef} />}
-      <ErrorBoundary
-        resetKeys={[issueId]}
-        // The default fallback is a bare message card; here it would be a
-        // panel with no way to close it but Esc.
-        fallback={({ error }) => (
-          <div className="flex flex-1 min-h-0 flex-col">
-            <div className={cn("flex h-12 shrink-0 items-center justify-end gap-1 border-b", PAGE_GUTTER)}>
-              <IssuePeekTrailingActions issueId={issueId} />
+      <WindowTitleBarProvider value={null}>
+        <ErrorBoundary
+          resetKeys={[issueId]}
+          // The default fallback is a bare message card; here it would be a
+          // panel with no way to close it but Esc.
+          fallback={({ error }) => (
+            <div className="flex flex-1 min-h-0 flex-col">
+              <div className={cn("flex h-12 shrink-0 items-center justify-end gap-1 border-b", PAGE_GUTTER)}>
+                <IssuePeekTrailingActions issueId={issueId} />
+              </div>
+              <div className="flex flex-1 min-h-0 items-center justify-center px-4 text-center text-body text-muted-foreground">
+                {error.message}
+              </div>
             </div>
-            <div className="flex flex-1 min-h-0 items-center justify-center px-4 text-center text-body text-muted-foreground">
-              {error.message}
-            </div>
-          </div>
-        )}
-      >
-        <Suspense fallback={null}>
+          )}
+        >
+          <Suspense fallback={null}>
           <IssueDetail
             key={issueId}
             issueId={issueId}
@@ -208,8 +214,9 @@ const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: stri
             trailingActions={<IssuePeekTrailingActions issueId={issueId} />}
             onDelete={actions.close}
           />
-        </Suspense>
-      </ErrorBoundary>
+          </Suspense>
+        </ErrorBoundary>
+      </WindowTitleBarProvider>
     </motion.aside>
   );
 });

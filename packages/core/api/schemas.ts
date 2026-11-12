@@ -1888,6 +1888,7 @@ export const ListIssuesResponseSchema = z.lazy(() => z.object({
 export const CreateIssueResponseSchema = z.lazy(() => IssueSchema.unwrap().extend({
   id: z.string().min(1),
   labels: z.array(LabelSchema).optional().catch(undefined),
+  pr_auto_complete_disabled: z.boolean().optional().catch(undefined),
 }).loose());
 
 export const EMPTY_LIST_ISSUES_RESPONSE: ListIssuesResponse = {
@@ -2487,6 +2488,8 @@ export const AgentTaskSchema = z.lazy(() => z.object({
   agent_id: z.string().default(""),
   runtime_id: z.string().default(""),
   issue_id: z.string().default(""),
+  issue_identifier: z.string().optional().catch(undefined),
+  issue_title: z.string().optional().catch(undefined),
   status: z.string().default("cancelled"),
   priority: z.number().default(0),
   dispatched_at: z.string().nullable().default(null),
@@ -3406,6 +3409,11 @@ export const InboxItemListSchema = z.lazy(() => z.array(
       body: z.string().nullish(),
       issue_status: z.string().nullish(),
       issue_priority: z.string().nullish(),
+      issue_project_id: z.string().nullish(),
+      issue_assignee_type: z.string().nullish(),
+      issue_assignee_id: z.string().nullish(),
+      issue_due_date: z.string().nullish(),
+      issue_label_ids: z.array(z.string()).nullish(),
       read: z.boolean(),
       archived: z.boolean(),
       created_at: z.string(),
@@ -3425,14 +3433,24 @@ export const ArchivedInboxPageSchema = z.lazy(() => z.object({
   (!page.has_more || page.items.length > 0))
   .transform((page) => ({ items: page.items, nextCursor: page.next_cursor, hasMore: page.has_more })));
 
+const FacetCountsSchema = z.record(z.string(), z.number().int().nonnegative());
+
+// The type / project / assignee / label counts arrived later; an older server
+// omits them, so they default to empty rather than failing the whole menu.
 export const ArchivedInboxFacetsSchema = z.lazy(() => z.object({
-  statuses: z.record(z.string(), z.number().int().nonnegative()),
-  priorities: z.record(z.string(), z.number().int().nonnegative()),
-  actors: z.record(z.string(), z.number().int().nonnegative()),
+  statuses: FacetCountsSchema,
+  priorities: FacetCountsSchema,
+  actors: FacetCountsSchema,
+  types: FacetCountsSchema.optional(),
+  projects: FacetCountsSchema.optional(),
+  assignees: FacetCountsSchema.optional(),
+  labels: FacetCountsSchema.optional(),
   unread_count: z.number().int().nonnegative(),
 }).transform((facets) => ({
   statuses: facets.statuses, priorities: facets.priorities,
-  actors: facets.actors, unreadCount: facets.unread_count,
+  actors: facets.actors, types: facets.types ?? {},
+  projects: facets.projects ?? {}, assignees: facets.assignees ?? {},
+  labels: facets.labels ?? {}, unreadCount: facets.unread_count,
 })));
 
 export const EMPTY_INBOX_ITEMS: InboxItem[] = [];
@@ -4285,6 +4303,8 @@ export const EMPTY_SKILL: Skill = {
 };
 
 export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
+// Fail-closed variant: no default, so a missing body is a parse failure, not an empty list.
+export const SkillSummaryStrictListSchema = z.lazy(() => z.array(SkillSummarySchema));
 
 const SKILL_VERSION_SOURCES = [
   "baseline",

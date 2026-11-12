@@ -15,6 +15,7 @@ import {
   FolderOpen,
   Hash,
   Link2,
+  LocateFixed,
   Network,
   Pin,
   PinOff,
@@ -121,6 +122,8 @@ interface IssueActionsMenuItemsProps {
   variant?: "full" | "sidebar";
   /** Sidebar variant: asks the parent to confirm stopping a running task. */
   onStopRun?: (task: AgentTask) => void;
+  /** Adds "Show in sidebar", for the page the issue is open on. */
+  onShowInSidebar?: () => void;
 }
 
 export function IssueActionsMenuItems({
@@ -132,6 +135,7 @@ export function IssueActionsMenuItems({
   archivedInboxItemId,
   variant = "full",
   onStopRun,
+  onShowInSidebar,
 }: IssueActionsMenuItemsProps) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
@@ -428,6 +432,12 @@ export function IssueActionsMenuItems({
         )}
         {isPinned ? t(($) => $.actions.unpin_from_sidebar) : t(($) => $.actions.pin_to_sidebar)}
       </P.Item>
+      {onShowInSidebar && (
+        <P.Item onClick={onShowInSidebar}>
+          <LocateFixed className="h-3.5 w-3.5" />
+          {t(($) => $.actions.locate_in_sidebar)}
+        </P.Item>
+      )}
       {archivedInboxItemId && <InboxRestoreMenuItem itemId={archivedInboxItemId} Item={P.Item} />}
       {sidebar &&
         (unread ? (

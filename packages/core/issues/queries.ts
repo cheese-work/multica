@@ -24,10 +24,10 @@ import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 import { isSchemaValidationError } from "../api/schema";
 
-export function issueTasksOptions(issueId: string) {
+export function issueTasksOptions(issueId: string, includeDescendants = false) {
   return queryOptions({
-    queryKey: issueKeys.tasks(issueId),
-    queryFn: () => api.listTasksByIssue(issueId),
+    queryKey: includeDescendants ? issueKeys.subtreeTasks(issueId) : issueKeys.tasks(issueId),
+    queryFn: () => api.listTasksByIssue(issueId, includeDescendants),
     enabled: !!issueId,
     staleTime: 30_000,
     refetchOnWindowFocus: true,
@@ -210,6 +210,7 @@ export const issueKeys = {
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
   commentPreview: (wsId: string, commentId: string) =>
     [...issueKeys.all(wsId), "comment-preview", commentId] as const,
+  subtreeTasks: (issueId: string) => [...issueKeys.tasks(issueId), "subtree"] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
