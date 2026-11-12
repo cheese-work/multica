@@ -1557,7 +1557,7 @@ func TestListComments_RootsOnlyReturnsThreadResolution(t *testing.T) {
 	setCommentResolvedAt(t, fx.R2a, base.Add(21*time.Minute))
 	setCommentResolvedAt(t, fx.R2b, base.Add(22*time.Minute))
 
-	_, rows = listComments(t, fx.IssueID, "roots_only=true")
+	_, rows := listComments(t, fx.IssueID, "roots_only=true")
 	m := byID(rows)
 
 	r1 := m[fx.Root1]
