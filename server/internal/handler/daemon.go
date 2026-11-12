@@ -4163,6 +4163,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.AutopilotTriggerPayload = json.RawMessage(run.TriggerPayload)
 		}
 		resp.AutopilotTitle = ap.Title
+		resp.Script = claimScriptFor(ap.ExecutionMode, ap.ScriptConfig)
 		resp.ThreadName = ap.Title
 		if ap.Description.Valid {
 			resp.AutopilotDescription = ap.Description.String
