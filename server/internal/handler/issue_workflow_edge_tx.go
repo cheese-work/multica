@@ -115,12 +115,18 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrIssueInTriage),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
 			return edgeMove{}, err
 		}
+	}
+
+	if errors.Is(runRefused, service.ErrStageQueueFull) && handoffDetails != nil {
+		handoffDetails["run"] = "false"
+		handoffDetails["run_reason"] = handoffRunReasonStageQueueFull
+		delete(handoffDetails, "note")
 	}
 
 	payload := map[string]any{
@@ -203,15 +209,26 @@ var errSquadLeaderNotAdmitted = errors.New("squad leader run not admitted")
 // enqueueSquadLeaderTaskOutcome for the platform as the actor: the leader's
 // access gate and the run insert both read and write through q.
 func (h *Handler) enqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue) (func(), error) {
+	return h.enqueueSquadLeaderRunAsInTx(ctx, q, issue, "system", "")
+}
+
+// enqueueSquadLeaderRunAsInTx is enqueueSquadLeaderRunInTx for a caller: a
+// member who moves the issue is the leader run's accountable human, so the gate
+// judges that member, never the issue's creator (mirrors
+// enqueueSquadLeaderTaskOutcome).
+func (h *Handler) enqueueSquadLeaderRunAsInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorType, actorID string) (func(), error) {
 	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
 		return nil, errSquadLeaderNotAdmitted
 	}
-	originator := uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
-	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, "system", "", originator, uuidToString(issue.WorkspaceID)) {
+	originator := actorID
+	if actorType != "member" {
+		originator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
+	}
+	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, actorType, actorID, originator, uuidToString(issue.WorkspaceID)) {
 		return nil, errSquadLeaderNotAdmitted
 	}
-	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, pgtype.UUID{})
+	return h.TaskService.EnqueueSquadLeaderRunInTx(ctx, q, issue, squad.LeaderID, squad.ID, memberActorUserID(actorType, actorID))
 }
 
 // onQueries is a handler whose reads go through q, the queries of a

@@ -113,6 +113,15 @@ UPDATE passkey_enroll_ceremony SET
 WHERE id = $1
 RETURNING attempts;
 
+-- True when the code belongs to an older, consumed ceremony of the same user and
+-- purpose: the user typed an earlier email's code.
+-- name: PasskeyEnrollCodeIsSuperseded :one
+SELECT EXISTS (
+    SELECT 1 FROM passkey_enroll_ceremony
+    WHERE user_id = $1 AND purpose = $2 AND code_hmac = $3 AND id <> $4
+      AND consumed_at IS NOT NULL AND created_at > now() - interval '1 hour'
+)::bool;
+
 -- name: ConsumePasskeyEnrollCeremony :exec
 UPDATE passkey_enroll_ceremony SET consumed_at = now() WHERE id = $1;
 

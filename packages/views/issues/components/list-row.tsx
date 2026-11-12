@@ -33,7 +33,9 @@ import {
   useIsIssuePeeked,
   useIssuePeekLinkProps,
 } from "../surface/peek-context";
-import { useLocale } from "../../i18n";
+import { AtSign } from "@multica/ui/icons";
+import { useHasUnreadMention } from "@multica/core/inbox";
+import { useLocale, useT } from "../../i18n";
 
 export interface ChildProgress {
   done: number;
@@ -64,6 +66,7 @@ function ListRowContent({
   checkboxProps?: Pick<React.HTMLAttributes<HTMLDivElement>, "onClick" | "onMouseDown" | "onPointerDown">;
 }) {
   const locale = useLocale();
+  const { t } = useT("issues");
   const selection = useIssueSurfaceSelection();
   const peeked = useIsIssuePeeked(issue.id);
   const peekLinkProps = useIssuePeekLinkProps(issue.id);
@@ -73,6 +76,7 @@ function ListRowContent({
   const storeProperties = useViewStore((s) => s.cardProperties);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
   const rowWsId = useWorkspaceId();
+  const hasUnreadMention = useHasUnreadMention(rowWsId, issue.id);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(rowWsId));
   const cardCustomProperties = cardPropertyIds
     .map((id) => workspaceProperties.find((p) => p.id === id))
@@ -133,6 +137,16 @@ function ListRowContent({
 
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="truncate">{issue.title}</span>
+            {hasUnreadMention && (
+              <span
+                role="img"
+                aria-label={t(($) => $.list.unread_mention)}
+                data-testid="unread-mention-badge"
+                className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground"
+              >
+                <AtSign className="size-2.5" aria-hidden />
+              </span>
+            )}
             {/* Keep custom names visible when this row appears outside a status section. */}
             <CustomStatusChip status={issue.status} className="shrink-0" />
             <IssueDuplicateOfMarker issue={issue} insideLink />
