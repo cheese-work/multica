@@ -65,6 +65,7 @@
     "queue_send_tooltip": "排队发送",
     "stop_tooltip": "停止",
     "send_failed_toast": "发送消息失败",
+    "send_unconfirmed_toast": "未能确认发送。草稿已保留；再次发送不会产生重复消息。",
     "compacting_toast": "此私信正在压缩。完成后请重新发送。",
     "rename_failed_toast": "重命名对话失败",
     "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",

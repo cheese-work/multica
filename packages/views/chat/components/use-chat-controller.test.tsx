@@ -148,13 +148,28 @@ vi.mock("@multica/core/chat/mutations", () => ({
 vi.mock("../../common/use-app-foreground", () => ({
   useAppForeground: () => h.appForeground.value,
 }));
-vi.mock("@multica/core/chat", () => ({
+vi.mock("@multica/core/chat", async () => {
+  // The real helper lives in core (pending-send.test.ts); here it only has to
+  // reach the mocked api with a client_message_id.
+  const { api } = await import("@multica/core/api");
+  return {
+  classifySendFailure: () => "rejected" as const,
+  sendWithPendingId: (
+    sessionId: string,
+    content: string,
+    o: { attachmentIds?: string[]; decisionRequestId?: string; askIds?: string[] } = {},
+  ) =>
+    api.sendChatMessage(sessionId, content, o.attachmentIds, o.decisionRequestId, {
+      clientMessageId: "cm-1",
+      askIds: o.askIds,
+    }),
   deriveChatTitle: (s: string) => s.slice(0, 60),
   useChatStore: Object.assign(
     (sel: (s: typeof h.store) => unknown) => sel(h.store),
     { getState: () => h.store },
   ),
-}));
+  };
+});
 vi.mock("@multica/core/realtime", () => ({
   removeChatMessageFromCaches: h.removeFromCaches,
 }));
@@ -1135,7 +1150,13 @@ describe("useChatController.handleSend — compose target tracking", () => {
     h.agents = [agentA];
     const { result } = renderHook(() => useChatController());
     await act(async () => { await result.current.handleSend("> C. CHE-2162\n\n1", undefined, vi.fn(), [], "request-2"); });
-    expect(api.sendChatMessage).toHaveBeenCalledWith(sA.id, "> C. CHE-2162\n\n1", undefined, "request-2");
+    expect(api.sendChatMessage).toHaveBeenCalledWith(
+      sA.id,
+      "> C. CHE-2162\n\n1",
+      undefined,
+      "request-2",
+      expect.objectContaining({ clientMessageId: "cm-1" }),
+    );
   });
 
   function sendFrom(activeSessionId: string | null, whileSending?: () => void) {

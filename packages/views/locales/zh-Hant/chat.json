@@ -64,6 +64,7 @@
     "queue_send_tooltip": "排隊傳送",
     "stop_tooltip": "停止",
     "send_failed_toast": "傳送訊息失敗",
+    "send_unconfirmed_toast": "無法確認傳送。草稿已保留；再次傳送不會產生重複訊息。",
     "send_blocked_toast": "訊息未傳送——你已沒有該 AI 代理的使用權限",
     "runtime_required_toast": "訊息未傳送——請先為該 AI 代理繫結執行時",
     "runtime_access_denied_toast": "訊息未傳送——該 AI 代理無法在其私有執行時上執行。請將該執行時設為公開，或將 AI 代理重新繫結/複製到其所有者可用的執行時",

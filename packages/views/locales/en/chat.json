@@ -71,6 +71,7 @@
     "queue_send_tooltip": "Queue message",
     "stop_tooltip": "Stop",
     "send_failed_toast": "Failed to send message",
+    "send_unconfirmed_toast": "Couldn't confirm the send. Your draft is kept; send again to retry safely.",
     "compacting_toast": "This DM is compacting. Send again when it finishes.",
     "rename_failed_toast": "Failed to rename chat",
     "fork_unconfirmed": "Fork could not be confirmed. Check the Forked into links before trying again.",

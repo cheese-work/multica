@@ -13,7 +13,7 @@ import { getCurrentWsId } from "@multica/core/platform";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
-import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
+import { dispatchReasonCode, errorCode } from "@multica/core/api";
 import {
   isAgentRuntimeBound as hasAgentRuntime,
   useAgentPresenceDetail,
@@ -33,7 +33,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
-import { deriveChatTitle, useChatStore } from "@multica/core/chat";
+import { classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
@@ -480,6 +480,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
       decisionRequestId?: string,
+      askIds?: string[],
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -560,9 +561,17 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, ...(decisionRequestId ? [decisionRequestId] as const : []));
+        result = await sendWithPendingId(sessionId, finalContent, { attachmentIds, decisionRequestId, askIds });
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
+        // Unknown delivery (timeout, network, 5xx): the message may be stored.
+        // Keep the draft, keep the session, and say so; the retry reuses the
+        // same client_message_id, so the server stores one message (A22).
+        if (classifySendFailure(err) === "unknown") {
+          if (isNewSession) setActiveSession(sessionId);
+          toast.error(t(($) => $.input.send_unconfirmed_toast));
+          return false;
+        }
         // Invoke permission can be revoked mid-session; the send is refused with
         // a structured 403 before anything persists (MUL-4525). Surface the
         // specific cause so the user knows it is a permission change, not a

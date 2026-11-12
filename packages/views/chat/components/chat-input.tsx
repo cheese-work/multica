@@ -63,10 +63,18 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
   return attachmentReferenceUrls(attachment).some((url) => content.includes(url));
 }
 
+const LATER_COMMAND = /^\/later(?:\s+([\s\S]*))?$/i;
+
 interface ChatInputProps {
   /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
   annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
+  /**
+   * Handles `/later [duration]` (the owner snoozes the DM; nothing is sent to
+   * the agent). Receives the raw duration text, "" for the server default. A
+   * handler that resolves `false` keeps the command in the box.
+   */
+  onLater?: (duration: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
@@ -212,6 +220,7 @@ export function ChatInput({
   annotationScope,
   onSend,
   onRename,
+  onLater,
   onFork,
   onStatistic,
   onArchive,
@@ -306,6 +315,7 @@ export function ChatInput({
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
     (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!onLater && LATER_COMMAND.test(inputDraft.trim())) ||
     (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
@@ -587,7 +597,8 @@ export function ChatInput({
         dmAttempt && !isLegacyOrdinaryArchiveNow
           ? dmCommandHandlers[dmAttempt.command]
           : undefined;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
+      const laterMatch = onLater ? LATER_COMMAND.exec(editorRef.current?.getText().trim() ?? "") : null;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler && !laterMatch)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -695,6 +706,17 @@ export function ChatInput({
         }
         setForkError(null);
         if ((await dmCommandHandler()) === false) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
+      if (onLater && laterMatch) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "later" }));
+          return false;
+        }
+        setForkError(null);
+        // The command text is cleared only once the server confirmed the snooze.
+        if (!await onLater((laterMatch[1] ?? "").trim())) return false;
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
@@ -946,6 +968,7 @@ export function ChatInput({
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
             enableUnseenCommand={!!onUnseen}
+            enableLaterCommand={!!onLater}
             enableUnarchiveCommand={!!onUnarchive}
             presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
