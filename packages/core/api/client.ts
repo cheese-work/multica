@@ -3371,9 +3371,13 @@ export class ApiClient {
 
   // Human owner/admin only; replaces the whole rule.
   async updateDelegatedWrites(workspaceId: string, rule: DelegatedWrites): Promise<DelegatedWrites> {
-    return this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
       method: "PUT",
       body: JSON.stringify(rule),
+    });
+    // The save succeeded; a malformed echo falls back to the rule that was sent.
+    return parseWithFallback<DelegatedWrites>(raw, DelegatedWritesSchema, rule, {
+      endpoint: "PUT /api/workspaces/{id}/delegated-writes",
     });
   }
 

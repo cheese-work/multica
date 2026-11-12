@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { resetAllRegisteredDrafts } from "@multica/core/drafts";
+import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
 import { renderWithI18n } from "../../test/i18n";
 import { DelegatedWritesSection } from "./delegated-writes-section";
 
@@ -106,5 +107,15 @@ describe("DelegatedWritesSection", () => {
 
     expect(await screen.findByText("No agent may write a governed field.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Set up delegation" })).toBeInTheDocument();
+  });
+
+  it("reads a persisted draft through the schema: a missing list is empty, not a render crash", async () => {
+    useWorkspaceSettingsDraftStore.getState().setDraft("ws:delegated-writes", {
+      rule: JSON.stringify({ allowed_agents: ["a1"], requires_human_decision: false }),
+    });
+    mount(true);
+
+    // Missing allowed_fields in the draft must not throw during render.
+    expect(await screen.findByText(/1 agent may write 0 fields, directly/)).toBeInTheDocument();
   });
 });

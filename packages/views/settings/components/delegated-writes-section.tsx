@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
-import type { DelegatedWrites } from "@multica/core/api/schemas";
+import { DelegatedWritesSchema, type DelegatedWrites } from "@multica/core/api/schemas";
 import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { AlertCircle, Check, Eye, Lock, X } from "@multica/ui/icons";
@@ -77,9 +77,10 @@ export function DelegatedWritesSection({ wsId, canEdit }: { wsId: string; canEdi
   let rule: DelegatedWrites = saved;
   if (dirty) {
     try {
-      rule = JSON.parse(values.rule) as DelegatedWrites;
+      const parsed = DelegatedWritesSchema.safeParse(JSON.parse(values.rule));
+      if (parsed.success) rule = parsed.data;
     } catch {
-      rule = saved; // an unreadable draft follows the saved rule
+      // an unreadable draft follows the saved rule
     }
   }
   const nameOf = (id: string) => agents.find((a) => a.id === id)?.name ?? t(($) => $.delegated_writes.unknown_agent);
