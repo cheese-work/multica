@@ -335,3 +335,19 @@ func TestHeldRetryLeavesRateLimitOnGenericRetry(t *testing.T) {
 		t.Fatalf("429 retry status=%q provider_hold=%t, want a deferred row without the marker", status, held)
 	}
 }
+
+// CHE-1736 Design: the held retry runs only while the issue is still assigned
+// to the failed task's agent or squad. A person who unassigned the issue while
+// the run was failing gets no held retry, no reservation and no receipt.
+func TestHeldRetryUnassignedIssueGetsNoHeldRetry(t *testing.T) {
+	o := newOwnerFixture(t)
+	id := o.runningTask(t, nil)
+	if _, err := o.Pool.Exec(context.Background(), `UPDATE issue SET assignee_type=NULL, assignee_id=NULL WHERE id=$1`, o.issueID); err != nil {
+		t.Fatal(err)
+	}
+	s := o.failWith(t, id, "agent_error.provider_server_error")
+	s.wantFailed(t, "agent_error.provider_server_error")
+	if s.children != 0 || s.reservations != 0 || s.receipts != 0 {
+		t.Fatalf("children=%d reservations=%d receipts=%d, want 0, 0, 0 for an unassigned issue", s.children, s.reservations, s.receipts)
+	}
+}

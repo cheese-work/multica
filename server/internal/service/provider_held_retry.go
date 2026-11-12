@@ -163,16 +163,23 @@ func createHeldProviderRetry(ctx context.Context, qtx *db.Queries, tx pgx.Tx, fa
 	return &child, decision, nil
 }
 
-// heldRetryPreChecks runs the read-only refusals in a savepoint that always
-// rolls back: a server-side SQL error there must not abort the failing
-// transaction, which carries the failed status. why is empty when the retry may
-// go ahead.
+// heldRetryPreChecks runs the refusals in a savepoint: a server-side SQL error
+// there must not abort the failing transaction, which carries the failed
+// status. A refusal or error rolls the savepoint back. When the retry may go
+// ahead (why is empty) the savepoint is released instead, so the run-budget
+// lock that guardIssueRunAllowed takes stays held until noteRunInserted debits
+// the run.
 func heldRetryPreChecks(ctx context.Context, tx pgx.Tx, failed db.AgentTaskQueue) (kind string, id pgtype.UUID, why string, err error) {
 	sp, err := tx.Begin(ctx)
 	if err != nil {
 		return "", pgtype.UUID{}, "pre-check savepoint failed", err
 	}
-	defer func() { _ = sp.Rollback(ctx) }()
+	released := false
+	defer func() {
+		if !released {
+			_ = sp.Rollback(ctx)
+		}
+	}()
 	q := db.New(sp)
 	if err := requireActiveTaskProject(ctx, q, failed); err != nil {
 		return "", pgtype.UUID{}, "project is not active", err
@@ -190,5 +197,9 @@ func heldRetryPreChecks(ctx context.Context, tx pgx.Tx, failed db.AgentTaskQueue
 	if err != nil {
 		return "", pgtype.UUID{}, "trigger unreadable", err
 	}
+	if err := sp.Commit(ctx); err != nil {
+		return "", pgtype.UUID{}, "pre-check savepoint release failed", err
+	}
+	released = true
 	return kind, id, "", nil
 }

@@ -262,8 +262,8 @@ SELECT
 
 -- CHE-1736 M1.2 fence for a held provider retry. TRUE only if the failed task is
 -- still the issue's latest run, the issue is not in a terminal status, and the
--- issue is not assigned away from the task's agent or squad. An unassigned issue
--- passes; a newer run or a reassignment means no retry.
+-- issue is still assigned to the task's agent or squad. An unassigned issue, a
+-- newer run or a reassignment means no retry.
 -- name: GetProviderHeldRetryFence :one
 SELECT (
     i.id IS NOT NULL
@@ -278,8 +278,7 @@ SELECT (
         WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')
     )
     AND (
-        i.assignee_id IS NULL
-        OR (i.assignee_type = 'agent' AND i.assignee_id = t.agent_id)
+        (i.assignee_type = 'agent' AND i.assignee_id = t.agent_id)
         OR (i.assignee_type = 'squad' AND i.assignee_id = t.squad_id)
     )
 )::boolean AS allowed
