@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -66,5 +67,29 @@ func TestApproveAgentPauseDriftsWhenAlreadyPaused(test *testing.T) {
 	body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusConflict)
 	if !strings.Contains(body, "precondition_drift") {
 		test.Fatalf("body %q lacks precondition_drift", body)
+	}
+}
+
+func TestCardPreviewForPauseShowsBlastRadius(test *testing.T) {
+	action := newPendingPause(test, "agent.pause", "owner")
+	before := previewFields(test, action.cardAction(test)) // the fixture agent already has work
+	runtimeID := dbfx.Runtime(test, "blast radius runtime")
+	onRuntime := func(status string) testutil.Cols {
+		return testutil.Cols{"status": status, "runtime_id": runtimeID}
+	}
+	dbfx.Task(test, action.agentID, onRuntime("running"))
+	dbfx.Task(test, action.agentID, onRuntime("queued"))
+	dbfx.Task(test, action.agentID, onRuntime("queued"))
+	dbfx.Issue(test, "assigned to the paused agent", testutil.Cols{"assignee_type": "agent", "assignee_id": action.agentID})
+	fields := previewFields(test, action.cardAction(test))
+	added := map[string]int{"Running runs": 1, "Queued runs": 2, "Open assigned issues": 1, "Enabled wakeups": 0}
+	for label, delta := range added {
+		base, _ := strconv.Atoi(before[label][0])
+		if want := strconv.Itoa(base + delta); fields[label] != [2]string{want, want} {
+			test.Fatalf("pause preview %q = %v, want %s on both sides (all: %v)", label, fields[label], want, fields)
+		}
+	}
+	if fields["Scheduling"] != [2]string{"active", "paused"} {
+		test.Fatalf("pause preview Scheduling = %v", fields["Scheduling"])
 	}
 }

@@ -3568,3 +3568,14 @@ UPDATE agent
 SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
+
+-- name: AgentPauseBlastRadius :one
+-- What a pause touches, for the decision card: running work finishes, queued
+-- work and wakeups wait, open assigned issues stay assigned.
+SELECT
+    (SELECT count(*) FROM agent_task_queue q WHERE q.agent_id = sqlc.arg('agent_id')::uuid AND q.status IN ('dispatched', 'running', 'waiting_local_directory'))::int AS running_runs,
+    (SELECT count(*) FROM agent_task_queue q WHERE q.agent_id = sqlc.arg('agent_id')::uuid AND q.status IN ('queued', 'deferred'))::int AS queued_runs,
+    (SELECT count(*) FROM issue i
+        WHERE i.assignee_type = 'agent' AND i.assignee_id = sqlc.arg('agent_id')::uuid
+          AND NOT EXISTS (SELECT 1 FROM issue_status s WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')))::int AS open_issues,
+    (SELECT count(*) FROM issue_wakeup w WHERE w.agent_id = sqlc.arg('agent_id')::uuid AND w.enabled)::int AS enabled_wakeups;

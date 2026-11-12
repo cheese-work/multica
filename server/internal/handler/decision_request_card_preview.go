@@ -205,8 +205,38 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
 		return handler.agentCopyPreview(ctx, action, viewer)
+	case "agent.pause", "agent.resume":
+		return handler.agentPausePreview(ctx, action, viewer)
 	}
 	return nil, nil
+}
+
+// agentPausePreview shows the flip and, for a pause, what it touches: the
+// counts are current values the approver signs, so before equals after.
+func (handler *Handler) agentPausePreview(ctx context.Context, action db.DecisionAction, viewer pgtype.UUID) ([]ActionPreviewField, error) {
+	var params decisionaction.AgentPauseParams
+	if err := json.Unmarshal(action.Params, &params); err != nil {
+		return nil, err
+	}
+	agent, err := handler.agentForAction(ctx, action.WorkspaceID, params.AgentID, viewer)
+	if err != nil {
+		return nil, err
+	}
+	if action.ActionType == "agent.resume" {
+		return []ActionPreviewField{{"Scheduling", "paused", "active"}}, nil
+	}
+	radius, err := handler.Queries.AgentPauseBlastRadius(ctx, agent.ID)
+	if err != nil {
+		return nil, err
+	}
+	count := func(n int32) string { return strconv.Itoa(int(n)) }
+	return []ActionPreviewField{
+		{"Scheduling", "active", "paused"},
+		{"Running runs", count(radius.RunningRuns), count(radius.RunningRuns)},
+		{"Queued runs", count(radius.QueuedRuns), count(radius.QueuedRuns)},
+		{"Open assigned issues", count(radius.OpenIssues), count(radius.OpenIssues)},
+		{"Enabled wakeups", count(radius.EnabledWakeups), count(radius.EnabledWakeups)},
+	}, nil
 }
 
 // openBudgetSnapshot reads the issue's run budget as the executor does, and

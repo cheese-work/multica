@@ -139,6 +139,37 @@ func (q *Queries) AcknowledgeExhaustedDelegatedFailureRecovery(ctx context.Conte
 	return i, err
 }
 
+const agentPauseBlastRadius = `-- name: AgentPauseBlastRadius :one
+SELECT
+    (SELECT count(*) FROM agent_task_queue q WHERE q.agent_id = $1::uuid AND q.status IN ('dispatched', 'running', 'waiting_local_directory'))::int AS running_runs,
+    (SELECT count(*) FROM agent_task_queue q WHERE q.agent_id = $1::uuid AND q.status IN ('queued', 'deferred'))::int AS queued_runs,
+    (SELECT count(*) FROM issue i
+        WHERE i.assignee_type = 'agent' AND i.assignee_id = $1::uuid
+          AND NOT EXISTS (SELECT 1 FROM issue_status s WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')))::int AS open_issues,
+    (SELECT count(*) FROM issue_wakeup w WHERE w.agent_id = $1::uuid AND w.enabled)::int AS enabled_wakeups
+`
+
+type AgentPauseBlastRadiusRow struct {
+	RunningRuns    int32 `json:"running_runs"`
+	QueuedRuns     int32 `json:"queued_runs"`
+	OpenIssues     int32 `json:"open_issues"`
+	EnabledWakeups int32 `json:"enabled_wakeups"`
+}
+
+// What a pause touches, for the decision card: running work finishes, queued
+// work and wakeups wait, open assigned issues stay assigned.
+func (q *Queries) AgentPauseBlastRadius(ctx context.Context, agentID pgtype.UUID) (AgentPauseBlastRadiusRow, error) {
+	row := q.db.QueryRow(ctx, agentPauseBlastRadius, agentID)
+	var i AgentPauseBlastRadiusRow
+	err := row.Scan(
+		&i.RunningRuns,
+		&i.QueuedRuns,
+		&i.OpenIssues,
+		&i.EnabledWakeups,
+	)
+	return i, err
+}
+
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
 WHERE id = $1
