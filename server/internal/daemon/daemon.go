@@ -684,6 +684,9 @@ type Daemon struct {
 	// Sticky for this process: a finished task can leave independent processes
 	// behind even after activeTasks reaches zero.
 	cleanupUnconfirmed atomic.Bool
+	// startedAt is when this process built the Daemon. Its uptime rides on the
+	// heartbeat so the server can tell a restart from a long-lived daemon.
+	startedAt time.Time
 	// runningTasks counts live provider execution sessions, beginning only after
 	// backend.Execute returns. It can briefly lag the server-side running state,
 	// which starts during preparation before provider launch. resourceWaitTasks
@@ -813,6 +816,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		startedAt:                   time.Now(),
 		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
 		repoCache:                   repocache.New(cacheRoot, logger),

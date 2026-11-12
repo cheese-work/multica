@@ -190,7 +190,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -913,7 +913,9 @@ jobs:
           # job builds no shipped binary. Raise with a golangci-lint built on 1.27.
           go-version: "~1.26.10"
           check-latest: true
-          cache-dependency-path: server/go.sum
+          # CHE-5128: this job runs on pull requests only, so main never holds a 1.26.x
+          # entry and each PR ref would save its own ~397 MB copy. Modules re-download.
+          cache: false
 
       # CHE-4877: golangci-lint-action downloads the binary on every run and failed on HTTP 504. Fetch the pinned
       # tarball ourselves (5xx retry, sha256 check on every run, so a restored cache is never trusted unverified).
@@ -1157,6 +1159,11 @@ jobs:
           python3 deploy/cd/test-deploy-job-guard.py
           python3 deploy/cd/test-deploy-schedule.py
           python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-post-deploy-confirm.py
+          python3 deploy/cd/test-health-window.py
+          python3 deploy/cd/test-install-health-observer.py
+          python3 .github/scripts/test_ci_wait_policy.py
+          python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py

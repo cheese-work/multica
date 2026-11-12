@@ -516,7 +516,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `user` | `profile get/update` | 查看或更新当前用户资料 | |
 | `login` | — | 浏览器登录并自动配置全部工作区 | `--token`（不带值时在终端交互式输入） |
 | `setup` | `cloud`（默认）、`self-host` | 保存服务地址、完成登录并启动守护进程 | `self-host`：`--server-url`、`--app-url`、`--port`、`--frontend-port` |
-| `attachment` | `download <attachment-id>`、`upload <path>` | 下载或上传附件 | `download`：`--output-dir`；`upload`：`--task` |
+| `attachment` | `download <attachment-id>`、`upload <path>`、`history <attachment-id>`、`diff <attachment-id>` | 下载或上传附件；列出文件的修订；比较两个修订 | `download`：`--output-dir`；`upload`：`--task`、`--issue`、`--replaces <attachment-id>`（新文件成为该附件的下一个修订）；`diff`：`--from`、`--to`（修订号） |
 | `config` | `show`、`set <key> <value>` | 查看或修改当前 profile 的本地配置 | 优先级：命令行 flag > 环境变量 > `config.json` > 内置默认；设为空串可清除 |
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
@@ -533,6 +533,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。
+
+### 受保护字段需要通行密钥操作
+
+任务令牌和云节点令牌不能再通过旧路由写入这些字段:`agent.instructions`、`squad.instructions`、`workspace.context`、工作流步骤及步骤说明,以及决策操作允许表中的工作区设置键(`compact_prompt`、`auto_compact`、`idle_started_guard`、`wakeups_paused`、`mermaid_orientation` 等普通运营键)。服务器返回 403,带 `code: passkey_action_required` 和 `action_type`,后者指明应改为提议的操作(`agent.instructions.set`、`squad.instructions.set`、`workspace.context.set`、`workflow.steps.set`、`workspace.settings.patch`)。已存储的值不变。投票回执、决策绑定、PASS 回执和 Hermes 例外都不再解除此拒绝。用 `multica decision propose <action-type>` 提议操作,由人用通行密钥批准。人的写入和 `project.description` 与以前相同。
 
 ## 在其他编码智能体里操作 Multica
 

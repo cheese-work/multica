@@ -588,6 +588,10 @@ export interface MikaBootstrapResponse extends Agent {
 export interface Agent {
   id: string;
   workspace_id: string;
+  /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
+  scheduling_paused_at?: string | null;
+  scheduling_paused_by?: string | null;
+  scheduling_paused_reason?: string | null;
   /**
    * Empty string when the agent is unbound: it kept its configuration, chats and
    * task history when its runtime was deleted, and needs a new runtime before it
@@ -1479,4 +1483,12 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
+}
+
+/** What pausing an agent leaves waiting; read before the pause dialog asks. */
+export interface AgentSchedulingImpact {
+  running_tasks: number;
+  queued_tasks: number;
+  open_issues: number;
+  enabled_wakeups: number;
 }

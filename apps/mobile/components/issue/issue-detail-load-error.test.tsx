@@ -46,6 +46,13 @@ vi.mock("@/data/queries/inbox", () => ({ inboxListOptions: () => ({ queryKey: ["
 vi.mock("@/data/mutations/inbox", () => ({ useMarkInboxRead: () => ({ mutate: vi.fn() }) }));
 vi.mock("@/data/queries/pins", () => ({ pinListOptions: () => ({ queryKey: ["pins"] }) }));
 vi.mock("@/data/mutations/issues", () => ({ useDeleteIssue: () => ({ mutate: vi.fn() }) }));
+vi.mock("@/data/api", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(message: string, readonly status = 0) {
+      super(message);
+    }
+  },
+}));
 vi.mock("@/data/mutations/pins", () => ({
   useCreatePin: () => ({ mutate: vi.fn() }),
   useDeletePin: () => ({ mutate: vi.fn() }),

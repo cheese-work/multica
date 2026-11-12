@@ -11,6 +11,8 @@ import {
   Lock,
   MessageSquare,
   MoreHorizontal,
+  Pause,
+  Play,
   Plus,
   RotateCcw,
   Server,
@@ -89,6 +91,7 @@ import {
 import { AgentInstructionsSection } from "./agent-instructions-section";
 import { AgentPropertiesPanel } from "./agent-properties-panel";
 import { describeCancelImpact } from "./agent-row-actions";
+import { AgentPauseNote, AgentPausedBadge, AgentSchedulingDialog, canScheduleAgent } from "./agent-scheduling";
 import { AgentSkillsSection } from "./agent-skills-section";
 import { AgentWorkDialog } from "./agent-work-dialog";
 import { AgentWorkSections } from "./tabs/activity-tab";
@@ -172,6 +175,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
 
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmCancelRuns, setConfirmCancelRuns] = useState(false);
+  const [schedulingAction, setSchedulingAction] = useState<"pause" | "resume" | null>(null);
 
   const urlView = viewFromParams(navigation.searchParams);
   const [advancedSection, setAdvancedSection] = useState<AdvancedSection | null>(
@@ -432,6 +436,10 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
   const hasActiveWork = runningCount + queuedCount > 0;
   // Multica's built-in agents cannot be archived — the server refuses it.
   const canArchive = canEdit.allowed && !isArchived && !agent.system_key;
+  // Pause / resume is owner-or-admin only; an agent owner who is a plain member
+  // cannot do it (the API refuses it too).
+  const myRole = members.find((m) => m.user_id === currentUser?.id)?.role;
+  const canSchedule = canScheduleAgent(myRole, isArchived);
 
   // Chat shares the invocation gate with assignment (MUL-3963): starting a
   // chat triggers agent runs. The button stays visible either way — a denied
@@ -546,6 +554,18 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
               {t(($) => $.row_actions.duplicate)}
             </DropdownMenuItem>
           )}
+          {canSchedule && (
+            <DropdownMenuItem
+              onClick={() =>
+                setSchedulingAction(agent.scheduling_paused_at ? "resume" : "pause")
+              }
+            >
+              {agent.scheduling_paused_at ? <Play /> : <Pause />}
+              {agent.scheduling_paused_at
+                ? t(($) => $.scheduling.resume_action)
+                : t(($) => $.scheduling.pause_action)}
+            </DropdownMenuItem>
+          )}
           {canEdit.allowed && !isArchived && hasActiveWork && (
             <DropdownMenuItem onClick={() => setConfirmCancelRuns(true)}>
               <Square />
@@ -640,6 +660,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
               profileLink={false}
             />
             <span className="truncate">{agent.name}</span>
+            <AgentPausedBadge agent={agent} />
           </span>
         }
         actions={actions}
@@ -673,6 +694,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
                 ) : null
               }
             />
+            <AgentPauseNote agent={agent} members={members} />
             {notices.length > 0 && <div className="space-y-2">{notices}</div>}
           </div>
 
@@ -713,6 +735,14 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
       />
 
       <AgentWorkDialog agent={agent} open={workOpen} onOpenChange={openWork} />
+
+      {schedulingAction && (
+        <AgentSchedulingDialog
+          agent={agent}
+          action={schedulingAction}
+          onClose={() => setSchedulingAction(null)}
+        />
+      )}
 
       {confirmCancelRuns && (
         <AlertDialog

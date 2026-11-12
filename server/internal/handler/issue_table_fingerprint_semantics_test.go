@@ -69,7 +69,7 @@ func TestIssueTableCursorRejectsChangedAdvancedPropertyValues(t *testing.T) {
 	definition := uuid.NewString()
 	issue := func(title, value string, position int) string {
 		return dbfx.Issue(t, title, testutil.Cols{
-			"properties": testutil.Raw(fmt.Sprintf(`'{"%s": %q}'::jsonb`, definition, value)),
+			"properties": testutil.Raw(fmt.Sprintf(`'{%q: %q}'::jsonb`, definition, value)),
 			"position":   position,
 		})
 	}

@@ -2120,5 +2120,27 @@
       "system": "System"
     },
     "open": "Status history"
+  },
+  "run_budget": {
+    "runs": "Runs {{used}} / {{limit}}",
+    "left_one": "{{count}} left",
+    "left_other": "{{count}} left",
+    "near": "80 % used",
+    "exhausted": "Run budget used up",
+    "raise": "Raise",
+    "top_up": "Top up",
+    "asked": "Asked the workspace owner to approve.",
+    "request_failed": "The request did not go through. Try again."
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · {{earlier}} earlier",
+    "diff": "Diff",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "Changes from v{{from}} to v{{to}}, changed hunks only",
+    "show_full": "Show full",
+    "show_changes": "Show changes only",
+    "loading": "Loading changes",
+    "load_failed": "Could not load the changes.",
+    "no_changes": "No text changes."
   }
 }

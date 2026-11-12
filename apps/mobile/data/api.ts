@@ -844,6 +844,9 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+          // Mobile has no steer receipt for issue comments, so it never takes
+          // the server's default of folding into a running turn (CHE-5286).
+          steer: false,
         }),
       },
       { endpoint: "createComment" },

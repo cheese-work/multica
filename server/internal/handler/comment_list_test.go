@@ -1544,7 +1544,7 @@ func TestListComments_RootsOnlyReturnsThreadResolution(t *testing.T) {
 	base := fx.Base
 
 	// Baseline: nothing resolved — no new fields anywhere.
-	w, rows := listComments(t, fx.IssueID, "roots_only=true")
+	w, _ := listComments(t, fx.IssueID, "roots_only=true")
 	for _, key := range []string{"thread_resolved", "resolution_id", "resolution_content", "resolution_content_truncated"} {
 		if strings.Contains(w.Body.String(), "\""+key+"\"") {
 			t.Fatalf("unresolved roots_only response must not contain %q", key)
@@ -1557,7 +1557,7 @@ func TestListComments_RootsOnlyReturnsThreadResolution(t *testing.T) {
 	setCommentResolvedAt(t, fx.R2a, base.Add(21*time.Minute))
 	setCommentResolvedAt(t, fx.R2b, base.Add(22*time.Minute))
 
-	_, rows = listComments(t, fx.IssueID, "roots_only=true")
+	_, rows := listComments(t, fx.IssueID, "roots_only=true")
 	m := byID(rows)
 
 	r1 := m[fx.Root1]

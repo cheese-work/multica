@@ -1313,6 +1313,16 @@ export const AttachmentResponseSchema = z.lazy(() => z.object({
   ...attachmentImageFields(),
 }).loose());
 
+// Parsed with parseOrThrow, not a fallback: an empty fallback diff would read as
+// "no changes" and hide a broken response.
+export const AttachmentRevisionDiffSchema = z.lazy(() => z.object({
+  from: z.number(),
+  to: z.number(),
+  binary: z.boolean(),
+  diff: z.string().optional().default(""),
+  message: z.string().optional().default(""),
+}).loose());
+
 export const EMPTY_ATTACHMENT: Attachment = {
   id: "",
   workspace_id: "",

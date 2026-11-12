@@ -89,7 +89,7 @@ func zcodeTextMessages(msgs []Message) []string {
 // zcodeEventFrame renders one scripted `printf` line that pushes a
 // session/event notification with the given seq/type/payload.
 func zcodeEventFrame(seq int, evType, payload string) string {
-	return fmt.Sprintf("      printf '{\"method\":\"session/event\",\"params\":{\"type\":\"%s\",\"seq\":%d,\"sessionId\":\"%s\",\"payload\":%s}}\\n'\n", evType, seq, fakeZcodeSessionID, payload)
+	return fmt.Sprintf("      printf '{\"method\":\"session/event\",\"params\":{\"type\":%q,\"seq\":%d,\"sessionId\":%q,\"payload\":%s}}\\n'\n", evType, seq, fakeZcodeSessionID, payload)
 }
 
 // fakeZcodeHappyScript answers session/create, session/subscribe and
