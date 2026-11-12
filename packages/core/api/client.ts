@@ -7,7 +7,7 @@ import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, Wak
 import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
-import { parseRunBudget } from "../run-budget/schema";
+import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -1779,6 +1779,18 @@ export class ApiClient {
 
   async getIssueRunBudget(issueId: string) {
     return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
+  }
+
+  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
+  async requestRunBudgetAction(
+    issueId: string,
+    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
+  ): Promise<RunBudgetActionResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseRunBudgetActionResponse(raw);
   }
 
   async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
