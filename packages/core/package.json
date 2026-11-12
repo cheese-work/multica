@@ -20,6 +20,7 @@
     "./attachments/revision-diff": "./attachments/revision-diff.ts",
     "./attachments/revision-diff-query": "./attachments/revision-diff-query.ts",
     "./api": "./api/index.ts",
+    "./appearance": "./appearance/index.ts",
     "./api/client": "./api/client.ts",
     "./api/schema": "./api/schema.ts",
     "./api/schemas": "./api/schemas.ts",

@@ -143,6 +143,7 @@ import { WakeupsSection } from "./wakeups-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
 import { PullRequestsSection } from "./pull-requests-section";
+import { IssueEnvironmentsSection } from "./issue-environments-section";
 import { useGitHubSettings } from "@multica/core/github";
 import { DeliverablesSection } from "./deliverables/deliverables-section";
 import { IssueAppsSection } from "./issue-apps-section";
@@ -3917,6 +3918,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           onOpenChange={setPullRequestsOpen}
         />
       )}
+
+      {/* Environments the issue's runs left running. Hidden until one starts. */}
+      <IssueEnvironmentsSection issueId={id} />
 
       {/* Deliverables — the files this issue's comments delivered. Hidden
           while there are none. */}

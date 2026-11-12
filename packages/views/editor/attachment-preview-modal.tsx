@@ -21,7 +21,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useReducedMotion } from "@multica/core/appearance";
 import { toast } from "sonner";
 import {
   PreviewTooLargeError,
@@ -57,7 +58,11 @@ import {
   type IconComponent,
 } from "@multica/ui/icons";
 import type { Attachment } from "@multica/core/types";
-import { attachmentIdFromStorageURL } from "@multica/core/types/attachment-url";
+import {
+  attachmentIdFromDownloadURL,
+  attachmentIdFromLocalUploadURL,
+  attachmentIdFromStorageURL,
+} from "@multica/core/types/attachment-url";
 import { useConfigStore } from "@multica/core/config";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { createShortcutChord } from "@multica/core/shortcuts";
@@ -199,7 +204,9 @@ function normalize(source: PreviewSource): PreviewState {
     filename: source.filename,
     contentType: "",
     mediaUrl: resolvePublicFileUrl(source.url) ?? source.url,
-    attachmentId: null,
+    attachmentId:
+      attachmentIdFromDownloadURL(source.url) ??
+      attachmentIdFromLocalUploadURL(source.url) ?? null,
     sizeBytes: 0,
     kind: source.forceKind ?? getPreviewKind("", source.filename),
   };
@@ -447,7 +454,7 @@ export function AttachmentPreviewModal({
 }: AttachmentPreviewModalProps & { onExitComplete?: () => void }) {
   const download = useDownloadAttachment();
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
-  const shouldReduceMotion = useReducedMotion() ?? false;
+  const shouldReduceMotion = useReducedMotion();
   const state = normalize(source);
   // useWorkspaceSlug (not useWorkspacePaths) — returns null outside a
   // workspace route instead of throwing, so the new-tab button just hides.
@@ -818,9 +825,12 @@ function GenericPreviewPanel({
   // loaded, so they get a freshly signed one rather than the record's.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
   const streamed = useFreshStreamedMediaURL(
-    state.attachmentId ?? attachmentIdFromStorageURL(state.mediaUrl, cdnDomain),
+    state.attachmentId ??
+      attachmentIdFromLocalUploadURL(state.mediaUrl) ??
+      attachmentIdFromStorageURL(state.mediaUrl, cdnDomain),
     state.mediaUrl,
     kind === "video" || kind === "audio" || kind === "pdf",
+    kind === "pdf",
   );
   const streamUrl = streamed.pending ? "" : streamed.url;
 
@@ -1116,6 +1126,8 @@ function GenericPreviewPanel({
                 source={source}
                 state={state}
                 streamUrl={streamUrl}
+                streamFailed={streamed.failed}
+                onStreamError={streamed.refreshIfExpired}
                 view={view}
                 onDownload={handleDownload}
                 downloading={downloading}
@@ -1422,6 +1434,8 @@ function PreviewContent({
   source,
   state,
   streamUrl,
+  streamFailed,
+  onStreamError,
   view,
   onDownload,
   downloading,
@@ -1432,6 +1446,8 @@ function PreviewContent({
   state: PreviewState;
   /** Where video, audio and PDF load from; empty while it is being signed. */
   streamUrl: string;
+  streamFailed: boolean;
+  onStreamError: () => Promise<boolean>;
   view: StageView;
   onDownload: () => void;
   downloading: boolean;
@@ -1476,6 +1492,9 @@ function PreviewContent({
     </DocumentSheet>
   );
 
+  if (kind === "pdf" && streamFailed) {
+    return <UnsupportedFallback message={t(($) => $.attachment.preview_failed)} onDownload={onDownload} downloading={downloading} />;
+  }
   if ((kind === "pdf" || kind === "video" || kind === "audio") && !streamUrl) {
     return <PreviewLoading />;
   }
@@ -1494,12 +1513,11 @@ function PreviewContent({
     case "video":
     case "audio":
       return (
-        // Keyed on the URL: a failure belongs to the file that failed, not
-        // to the next one the sequence pages to.
         <MediaPlayer
-          key={streamUrl}
+          key={state.attachmentId ?? state.mediaUrl}
           kind={kind}
           src={streamUrl}
+          onExpired={onStreamError}
           onDownload={onDownload}
           downloading={downloading}
         />
@@ -1701,18 +1719,45 @@ function PreviewLoading() {
 function MediaPlayer({
   kind,
   src,
+  onExpired,
   onDownload,
   downloading,
 }: {
   kind: "video" | "audio";
   src: string;
+  onExpired: () => Promise<boolean>;
   onDownload: () => void;
   downloading: boolean;
 }) {
   const { t } = useT("editor");
-  const [failed, setFailed] = useState(false);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const resumeRef = useRef<{ currentTime: number; paused: boolean; playbackRate: number } | null>(null);
 
-  if (failed) {
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media || media.getAttribute("src") === src) return;
+    // Replacing an expired capability reloads the native player. Snapshot
+    // before assigning src so renewal preserves both the seek and play state.
+    const { currentTime, paused, playbackRate } = resumeRef.current ?? media;
+    const restore = () => {
+      media.currentTime = currentTime;
+      media.playbackRate = playbackRate;
+      if (!paused) void media.play().catch(() => {});
+      resumeRef.current = null;
+    };
+    media.addEventListener("loadedmetadata", restore, { once: true });
+    media.src = src;
+    return () => media.removeEventListener("loadedmetadata", restore);
+  }, [src]);
+
+  const handleError = async () => {
+    const media = mediaRef.current;
+    if (media) resumeRef.current = { currentTime: media.currentTime, paused: media.paused, playbackRate: media.playbackRate };
+    if (!(await onExpired())) setFailedSrc(src);
+  };
+
+  if (failedSrc === src) {
     return (
       <UnsupportedFallback
         message={t(($) => $.attachment.preview_failed)}
@@ -1725,10 +1770,10 @@ function MediaPlayer({
     return (
       <div className="dark flex h-full w-full items-center justify-center p-8">
         <audio
-          src={src}
+          ref={(element) => { mediaRef.current = element; }}
           controls
           className="w-full max-w-xl"
-          onError={() => setFailed(true)}
+          onError={handleError}
         />
       </div>
     );
@@ -1736,10 +1781,10 @@ function MediaPlayer({
   return (
     <div className="flex h-full w-full items-center justify-center pb-4">
       <video
-        src={src}
+        ref={(element) => { mediaRef.current = element; }}
         controls
         className="h-full w-full object-contain"
-        onError={() => setFailed(true)}
+        onError={handleError}
       />
     </div>
   );

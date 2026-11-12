@@ -90,7 +90,6 @@ export function AuthInitializer({
           daemonAppUrl: cfg.daemon_app_url,
           daemonSetupTarget,
         });
-        configStore.getState().setStarPromptDisabled(cfg.star_prompt_disabled);
         configStore.getState().setFeatureFlags(cfg.feature_flags);
         configStore.getState().setServerVersion(cfg.server_version);
         configStore.getState().setServerBuild(cfg.server_build);
