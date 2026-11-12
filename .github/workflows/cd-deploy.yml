@@ -208,7 +208,11 @@ jobs:
 
   candidate-preflight:
     needs: schedule-resolve
-    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != ''
+    # CHE-4500 (CHE-3625 item 2): while main is red the cron sets the repo variable MAIN_RED_PAUSED (an unset
+    # variable reads as ''). A skipped preflight leaves `eligible` empty, so notice, prepare, admission and
+    # deploy are skipped. Nothing needs a rerun: the next 4-hour schedule slot re-evaluates the variable.
+    # The manual workflow_dispatch path is a deliberate human act and is not paused. A schedule_backup dispatch takes the scheduled path and is paused.
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != '' && vars.MAIN_RED_PAUSED == ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
