@@ -3071,6 +3071,8 @@ type RunBudgetRefusal struct {
 	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	HookGeneration       int32              `json:"hook_generation"`
+	TaintIds             []string           `json:"taint_ids"`
 }
 
 type RunBudgetWindowCutover struct {
