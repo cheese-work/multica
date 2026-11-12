@@ -6,9 +6,9 @@
 # and the manual-evidence flow runs unchanged. Admission, freshness and
 # quiescence still gate the result downstream.
 # CHE-5352: when the qualified candidate is behind main, say so in the job
-# summary; more than 20 commits or 2 h behind also gets a ::warning and one line
-# on the notice issue (MULTICA_SERVER_URL, MULTICA_TOKEN, MULTICA_NOTICE_ISSUE_ID;
-# best effort). This never changes which commit deploys or fails the job.
+# summary; more than 20 commits or 2 h behind also gets a ::warning and a
+# `notice=` output that the X99 job runs through post-stale-notice.sh (CHE-4960
+# line). This never changes which commit deploys or fails the job.
 set -euo pipefail
 
 notice_if_behind() {
@@ -30,17 +30,9 @@ notice_if_behind() {
   local age=$(( $(date -d "$main_at" +%s) - $(date -d "$cand_at" +%s) ))
   if [ "$behind" -gt 20 ] || [ "$age" -gt 7200 ]; then
     echo "::warning title=Stale CD candidate::$msg"
-    if [ -n "${MULTICA_SERVER_URL:-}" ] && [ -n "${MULTICA_TOKEN:-}" ] && [ -n "${MULTICA_NOTICE_ISSUE_ID:-}" ]; then
-      # The token goes through a header file, not argv.
-      local headers body
-      headers="$(mktemp)"
-      printf 'Authorization: Bearer %s\nX-Workspace-ID: %s\n' "$MULTICA_TOKEN" "${MULTICA_WORKSPACE_ID:-}" >"$headers"
-      body="$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")"
-      printf '%s' "$body" | curl -fsS --max-time 20 -H 'Content-Type: application/json' -H @"$headers" \
-        -d @- "${MULTICA_SERVER_URL%/}/api/issues/$MULTICA_NOTICE_ISSUE_ID/comments" >/dev/null \
-        || echo "::warning::could not post the stale-candidate notice to the notice issue"
-      rm -f "$headers"
-    fi
+    # Hosted runner: it cannot reach the tailnet Multica server, so the text goes
+    # out as a job output for the X99 post job (post-stale-notice.sh).
+    echo "notice=$msg" >>"$GITHUB_OUTPUT"
   fi
 }
 

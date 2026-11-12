@@ -24,6 +24,8 @@ STUB
 cat >"$tmp_dir/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB_DIR/curl-args"
+cat >/dev/null
+exit "${STUB_CURL_EXIT:-0}"
 STUB
 chmod +x "$tmp_dir/bin/curl"
 chmod +x "$tmp_dir/bin/gh"
@@ -88,24 +90,24 @@ run_case "slightly behind: summary notice only" "$newest" "" ""
 grep -qx "sha=$newest" "$tmp_dir/out" || fail "deployed sha must not change"
 grep -q "Deploying $newest (12 Nov 2026 10:04 ICT), 3 commits behind main. Newest main commit failed or has not run qualification: https://github.com/cheese-work/multica/actions/runs/43191000000." "$tmp_dir/summary" || fail "summary notice missing or wrong"
 ! grep -q '::warning' "$tmp_dir/log" || fail "no warning at 3 commits / under 2 h"
+! grep -q '^notice=' "$tmp_dir/out" || fail "no post text at 3 commits / under 2 h"
 
 notice_env "$main_fresh" 145 "https://multica.example"
 run_case "far behind by count: warning and one post" "$newest" "" ""
 [ "$status" = 0 ] || fail "expected success"
 grep -q "145 commits behind main" "$tmp_dir/summary" || fail "count missing from summary"
 grep -q '::warning' "$tmp_dir/log" || fail "expected ::warning"
-[ "$(wc -l <"$tmp_dir/curl-args")" = 1 ] || fail "expected exactly one post"
-grep -q "issues/issue-4960/comments" "$tmp_dir/curl-args" || fail "post must target the notice issue"
+grep -q '^notice=Deploying .*145 commits behind main' "$tmp_dir/out" || fail "warning case must hand the notice text to the post job"
+[ ! -e "$tmp_dir/curl-args" ] || fail "resolve-candidate runs on a hosted runner and must not post"
 
 notice_env "$main_late" 5 "https://multica.example"
 run_case "far behind by time: warning" "$newest" "" ""
 grep -q '::warning' "$tmp_dir/log" || fail "expected ::warning when more than 2 h behind"
 
 notice_env "$main_fresh" 145
-run_case "no Multica config: warning, no post, still succeeds" "$newest" "" ""
+run_case "far behind: warning, still succeeds" "$newest" "" ""
 [ "$status" = 0 ] || fail "expected success"
 grep -q '::warning' "$tmp_dir/log" || fail "expected ::warning"
-[ ! -e "$tmp_dir/curl-args" ] || fail "must not post without Multica config"
 
 notice_env "" ""
 run_case "lookup failure never blocks the deploy" "$newest" "" ""
@@ -115,5 +117,31 @@ grep -qx "sha=$newest" "$tmp_dir/out" || fail "sha must still be emitted"
 notice_env "$main_fresh" 145 "https://multica.example"
 run_case "typed SHA gets no notice" "" "$typed" ""
 [ ! -s "$tmp_dir/summary" ] || fail "typed SHA must not be annotated"
+
+# post-stale-notice.sh runs on X99 (tailnet) and posts the handed-over text once.
+# post_case <NOTICE> <server> <token> <curl exit> -> sets status
+post_case() {
+  rm -f "$tmp_dir/curl-args"; status=0
+  PATH="$tmp_dir/bin:$PATH" STUB_DIR="$tmp_dir" STUB_CURL_EXIT="$4" NOTICE="$1" \
+    MULTICA_SERVER_URL="$2" MULTICA_TOKEN="$3" MULTICA_WORKSPACE_ID=ws MULTICA_NOTICE_ISSUE_ID=issue-4960 \
+    bash deploy/cd/post-stale-notice.sh >"$tmp_dir/log" 2>&1 || status=$?
+  echo "post case: $1 (exit $status)"
+}
+post_case "Deploying abc, 145 commits behind main." "https://multica.example" tok 0
+[ "$status" = 0 ] || fail "expected success"
+[ "$(wc -l <"$tmp_dir/curl-args")" = 1 ] || fail "expected exactly one post"
+grep -q "multica.example/api/issues/issue-4960/comments" "$tmp_dir/curl-args" || fail "post must target the notice issue"
+! grep -q "tok" "$tmp_dir/curl-args" || fail "token must not appear in argv"
+
+post_case "" "https://multica.example" tok 0
+[ "$status" = 0 ] && [ ! -e "$tmp_dir/curl-args" ] || fail "empty notice must post nothing"
+
+post_case "Deploying abc, 145 commits behind main." "https://multica.example" "" 0
+[ "$status" = 0 ] && [ ! -e "$tmp_dir/curl-args" ] || fail "no token: skip, no failure"
+grep -q '::warning' "$tmp_dir/log" || fail "no token: expected ::warning"
+
+post_case "Deploying abc, 145 commits behind main." "https://multica.example" tok 22
+[ "$status" = 0 ] || fail "a failed post must not fail the job"
+grep -q '::warning' "$tmp_dir/log" || fail "failed post: expected ::warning"
 
 echo "OK"

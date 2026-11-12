@@ -751,8 +751,9 @@ An empty dispatch (no `candidate_sha`, no evidence path) deploys the newest
 picks it after `authorize-c00` and prints it in the job summary (CHE-4998); with
 none it fails. When that commit is behind `main`, the summary says how many
 commits and since when, with the newest `main` qualification run link; more than
-20 commits or 2 h behind adds a `::warning` and one line on CHE-4960 (needs the
-`CD_NOTICE_MULTICA_TOKEN` secret; skipped without it). The deployed commit is
+20 commits or 2 h behind adds a `::warning` and one line on CHE-4960, posted by
+`notify-stale-candidate` on X99 (`post-stale-notice.sh`; needs the
+`CD_NOTICE_MULTICA_TOKEN` secret, warns only without it). The deployed commit is
 unchanged (CHE-5352). An authorized qualification passes its own head SHA through the
 same job, so every job behind it reads one `sha` output.
 A dispatch with
