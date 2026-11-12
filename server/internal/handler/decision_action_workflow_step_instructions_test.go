@@ -107,6 +107,20 @@ func TestStepInstructionsSetRequestStoresTheOneStepPreview(test *testing.T) {
 	}
 }
 
+// The approver must see which workflow and step the text lands on. Both come
+// from the live row, inside the preview digest, never from the agent's ask.
+func TestStepInstructionsSetPreviewNamesTheWorkflowAndStatusKey(test *testing.T) {
+	request := newStepInstructionsRequest(test)
+	stored := request.preconditions(test)
+	shown, _ := stored["preview"].(map[string]any)
+	meta, _ := shown["meta"].(map[string]any)
+	var name string
+	dbfx.QueryRow(test, `SELECT name FROM issue_workflow WHERE id = $1`, request.workflowID).Scan(&name)
+	if meta["workflow_name"] != name || meta["status_key"] != "todo" {
+		test.Fatalf("preview meta %v; want workflow_name %q and status_key \"todo\"", meta, name)
+	}
+}
+
 func TestStepInstructionsSetRequestRefusals(test *testing.T) {
 	cases := []struct {
 		name      string

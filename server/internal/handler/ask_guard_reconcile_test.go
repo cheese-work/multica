@@ -63,7 +63,7 @@ func sorted(ids ...string) []string {
 	return out
 }
 
-func reconcile(t *testing.T) {
+func reconcileAskGuard(t *testing.T) {
 	t.Helper()
 	if err := testHandler.reconcileAskGuard(context.Background()); err != nil {
 		t.Fatal(err)
@@ -93,8 +93,8 @@ func TestAskGuardIntentTargets(t *testing.T) {
 				dbfx.Exec(t, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, member)
 			}
 			endTaskAndSeal(t, fixture, intentID)
-			reconcile(t)
-			reconcile(t) // a restart or a second pass finds the same rows
+			reconcileAskGuard(t)
+			reconcileAskGuard(t) // a restart or a second pass finds the same rows
 			got, want := targetEventMembers(t, intentID), c.want(a, b)
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Fatalf("events for %v, want %v", got, want)
@@ -113,12 +113,12 @@ func TestAskGuardIntentTargetOrdering(t *testing.T) {
 	if _, err := testHandler.SealDecisionIntent(context.Background(), parseUUID(testWorkspaceID), parseUUID(intentID)); err != nil {
 		t.Fatal(err)
 	}
-	reconcile(t)
+	reconcileAskGuard(t)
 	if got := targetEventMembers(t, intentID); len(got) != 0 {
 		t.Fatalf("events while the run is live: %v", got)
 	}
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed' WHERE id = $1`, fixture.taskID)
-	reconcile(t)
+	reconcileAskGuard(t)
 	if got := targetEventMembers(t, intentID); strings.Join(got, ",") != strings.Join(sorted(a, b), ",") {
 		t.Fatalf("events after run end: %v", got)
 	}
@@ -151,17 +151,17 @@ func TestAskGuardIntentTargetModeSnapshot(t *testing.T) {
 	fixture := newIntentFixture(t)
 	_, _, intentID := twoTargetIntent(t, fixture)
 	endTaskAndSeal(t, fixture, intentID)
-	reconcile(t)
+	reconcileAskGuard(t)
 	if got := targetEventMembers(t, intentID); len(got) != 0 {
 		t.Fatalf("off mode wrote events: %v", got)
 	}
 	setAskGuardMode(t, "warn")
-	reconcile(t)
+	reconcileAskGuard(t)
 	if n := askGuardEventCount(t, "intent_id = $1 AND mode = 'warn'", intentID); n != 2 {
 		t.Fatalf("warn events = %d, want 2", n)
 	}
 	setAskGuardMode(t, "block")
-	reconcile(t)
+	reconcileAskGuard(t)
 	if n := askGuardEventCount(t, "intent_id = $1", intentID); n != 2 {
 		t.Fatalf("switch to block replayed events: %d rows", n)
 	}
@@ -298,7 +298,7 @@ func TestAskGuardIntentTargetOutlivesAnyWindow(t *testing.T) {
 	endTaskAndSeal(t, fixture, intentID)
 	dbfx.Exec(t, `UPDATE decision_intent SET sealed_at = clock_timestamp() - interval '30 days' WHERE id = $1`, intentID)
 	dbfx.Exec(t, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() - interval '29 days' WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, a)
-	reconcile(t)
+	reconcileAskGuard(t)
 	if got := targetEventMembers(t, intentID); strings.Join(got, ",") != b {
 		t.Fatalf("events for %v, want only the unserved %v", got, b)
 	}

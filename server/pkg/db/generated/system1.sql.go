@@ -180,13 +180,17 @@ SELECT class::text AS class,
     coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY time_to_answer_ms), 0)::float8 AS median_answer_ms
 FROM system1_observation
 WHERE workspace_id = $1 AND kind = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at < $4)
 GROUP BY class
 ORDER BY class
 `
 
 type System1ReportByClassParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Kind        string      `json:"kind"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
 }
 
 type System1ReportByClassRow struct {
@@ -204,7 +208,12 @@ type System1ReportByClassRow struct {
 // Precision and coverage of the shadow predictions that preceded an answer.
 // other_* is the audit slice: answers where the human did not take the recommendation (another option, or free text).
 func (q *Queries) System1ReportByClass(ctx context.Context, arg System1ReportByClassParams) ([]System1ReportByClassRow, error) {
-	rows, err := q.db.Query(ctx, system1ReportByClass, arg.WorkspaceID, arg.Kind)
+	rows, err := q.db.Query(ctx, system1ReportByClass,
+		arg.WorkspaceID,
+		arg.Kind,
+		arg.Since,
+		arg.Until,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -231,4 +240,74 @@ func (q *Queries) System1ReportByClass(ctx context.Context, arg System1ReportByC
 		return nil, err
 	}
 	return items, nil
+}
+
+const system1RouteWindowReport = `-- name: System1RouteWindowReport :one
+WITH exits AS (
+    SELECT a.id FROM activity_log a
+    WHERE a.workspace_id = $1 AND a.action = 'status_changed' AND a.actor_type = 'agent'
+      AND a.details @> '{"routing_exit": true}'
+      AND a.created_at >= $2 AND a.created_at < $3
+), first_label AS (
+    SELECT DISTINCT ON (event_id) event_id, inputs->>'via' AS via
+    FROM system1_observation
+    WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
+      AND event_id IN (SELECT id FROM exits)
+    ORDER BY event_id, created_at, id
+), numbered AS (
+    SELECT event_id, reversed_at, inputs, created_at,
+        row_number() OVER (PARTITION BY event_id ORDER BY created_at, id) AS rn
+    FROM system1_observation
+    WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
+), labels AS (
+    SELECT event_id, reversed_at, inputs, created_at, rn FROM numbered WHERE created_at >= $2 AND created_at < $3
+)
+SELECT
+    (SELECT count(*) FROM exits)::bigint AS eligible_exits,
+    (SELECT count(*) FROM first_label)::bigint AS matched_labels,
+    (SELECT count(*) FROM first_label WHERE via = 'route')::bigint AS via_route_labels,
+    (SELECT count(*) FROM labels WHERE event_id IS NOT NULL AND rn > 1)::bigint AS duplicate_labels,
+    (SELECT count(*) FROM labels)::bigint AS labels_total,
+    (SELECT count(*) FROM labels WHERE event_id IS NULL)::bigint AS owner_only_labels,
+    (SELECT count(*) FROM labels WHERE event_id IS NOT NULL AND inputs->>'routing_exit' = 'false')::bigint AS non_routing_labels,
+    (SELECT count(*) FROM labels WHERE reversed_at IS NOT NULL)::bigint AS overridden
+`
+
+type System1RouteWindowReportParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
+}
+
+type System1RouteWindowReportRow struct {
+	EligibleExits    int64 `json:"eligible_exits"`
+	MatchedLabels    int64 `json:"matched_labels"`
+	ViaRouteLabels   int64 `json:"via_route_labels"`
+	DuplicateLabels  int64 `json:"duplicate_labels"`
+	LabelsTotal      int64 `json:"labels_total"`
+	OwnerOnlyLabels  int64 `json:"owner_only_labels"`
+	NonRoutingLabels int64 `json:"non_routing_labels"`
+	Overridden       int64 `json:"overridden"`
+}
+
+// CHE-4550: one event population for the route block. eligible_exits are the
+// agent status_changed rows marked routing_exit in [since, until); matched ones
+// have an agent route row on the same event_id (any time). via_route_share counts
+// matched events whose earliest agent route row has via = route. The label counts
+// are over agent route rows created in the window and sit outside coverage.
+// Duplicates are numbered over all time, so a twin of an earlier label counts (spec 23).
+func (q *Queries) System1RouteWindowReport(ctx context.Context, arg System1RouteWindowReportParams) (System1RouteWindowReportRow, error) {
+	row := q.db.QueryRow(ctx, system1RouteWindowReport, arg.WorkspaceID, arg.Since, arg.Until)
+	var i System1RouteWindowReportRow
+	err := row.Scan(
+		&i.EligibleExits,
+		&i.MatchedLabels,
+		&i.ViaRouteLabels,
+		&i.DuplicateLabels,
+		&i.LabelsTotal,
+		&i.OwnerOnlyLabels,
+		&i.NonRoutingLabels,
+		&i.Overridden,
+	)
+	return i, err
 }

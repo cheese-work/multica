@@ -78,13 +78,38 @@ const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
 WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+  AND (
+    action = 'run_budget_top_up'
+    OR created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+    OR (details->'trigger'->>'auth_source' = 'interactive_jwt' AND details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+  )
 ORDER BY created_at DESC LIMIT 1
 `
 
 // When a person last changed the issue's status or topped up its run budget: a
 // person who moves a blocked issue on, or tops it up, starts its run budget over.
+// After the S1d cutover only an interactive session's ui_or_api move opens a
+// window; a PAT, cli_jwt, a row with no trigger and a remap never do.
 func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
 	row := q.db.QueryRow(ctx, latestMemberStatusChange, issueID)
+	var created_at pgtype.Timestamptz
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
+const latestMemberStatusMove = `-- name: LatestMemberStatusMove :one
+SELECT created_at FROM activity_log
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+ORDER BY created_at DESC LIMIT 1
+`
+
+// When a person last moved the issue's status or topped up its run budget,
+// whatever session made the move. A refused dispatch resumes on any such move
+// (decision_wait.sql selects on the same rows); only the run-budget window is
+// limited to interactive sessions (LatestMemberStatusChange).
+func (q *Queries) LatestMemberStatusMove(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, latestMemberStatusMove, issueID)
 	var created_at pgtype.Timestamptz
 	err := row.Scan(&created_at)
 	return created_at, err
@@ -180,6 +205,11 @@ const listMemberStatusChangesAfter = `-- name: ListMemberStatusChangesAfter :man
 SELECT created_at FROM activity_log
 WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+  AND (
+    action = 'run_budget_top_up'
+    OR created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+    OR (details->'trigger'->>'auth_source' = 'interactive_jwt' AND details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+  )
   AND created_at > $2::timestamptz
 ORDER BY created_at
 `
