@@ -1816,7 +1816,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// the normal queued / deferred handling. An agent author steers only on
 	// request: its steers are capped and replayed per turn.
 	if steer.empty() && req.Steer == nil && authorType == "member" {
-		steer.All = true
+		steer.All, steer.Implicit = true, true
 	}
 	if len(attachmentIDs) > 0 {
 		steer = commentSteerRequest{}

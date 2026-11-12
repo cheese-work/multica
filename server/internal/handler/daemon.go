@@ -5782,7 +5782,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		// The replayed agent steer is now an ordinary input of the follow-up;
 		// its failed receipt would otherwise invite a member to resend it.
-		if handled && c.AuthorType == "agent" && unreadSteers[uuidToString(c.ID)] {
+		if handled && unreadSteers[uuidToString(c.ID)] {
 			if n, err := h.Queries.DeleteUndeliveredTaskSupplementForRun(ctx, db.DeleteUndeliveredTaskSupplementForRunParams{
 				CommentID: c.ID, TaskID: task.ID,
 			}); err == nil && n > 0 {

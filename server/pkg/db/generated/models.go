@@ -3344,6 +3344,7 @@ type TaskSupplement struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
+	Implicit        bool               `json:"implicit"`
 }
 
 type TaskSupplementCapability struct {
