@@ -9766,29 +9766,6 @@ func (q *Queries) LockAgentTaskStartClaim(ctx context.Context, arg LockAgentTask
 	return i, err
 }
 
-const lockIssuesOfAgentTaskChildren = `-- name: LockIssuesOfAgentTaskChildren :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT child.issue_id FROM agent_task_queue parent
-    JOIN agent_task_queue child ON child.parent_task_id = parent.id
-    WHERE parent.agent_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// Issue lock for deleting an agent. The agent's runs go with it through
-// agent_task_queue.agent_id ON DELETE CASCADE, and each removed run nulls
-// parent_task_id on its children (ON DELETE SET NULL). That update runs the
-// child's taint trigger, which locks the child's issue. AuthorizeElevatedOp takes
-// the issue lock first and then waits on the run row, so the delete must hold the
-// child's issue before it removes the parent. Issue ids are locked in ascending
-// order so two deletes cannot cross each other.
-func (q *Queries) LockIssuesOfAgentTaskChildren(ctx context.Context, agentIds []pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfAgentTaskChildren, agentIds)
-	return err
-}
-
 const lockQueuedSiblingTask = `-- name: LockQueuedSiblingTask :one
 SELECT t.id FROM agent_task_queue t
 JOIN agent_task_queue m ON m.id = $1

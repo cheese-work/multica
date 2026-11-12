@@ -5350,7 +5350,7 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	for _, issue := range issues {
 		issueIDs = append(issueIDs, issue.ID)
 	}
-	if err := qtx.LockIssuesOfIssueDelete(ctx, issueIDs); err != nil {
+	if err := service.LockIssuesBeforeIssueDelete(ctx, qtx, issueIDs); err != nil {
 		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
 	}
 

@@ -1550,25 +1550,6 @@ func (q *Queries) LockAgentRuntimeForAccessChange(ctx context.Context, id pgtype
 	return i, err
 }
 
-const lockIssuesOfSystemAgentTaskChildrenByRuntime = `-- name: LockIssuesOfSystemAgentTaskChildrenByRuntime :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT child.issue_id FROM agent a
-    JOIN agent_task_queue parent ON parent.agent_id = a.id
-    JOIN agent_task_queue child ON child.parent_task_id = parent.id
-    WHERE a.runtime_id = $1 AND a.kind = 'system' AND child.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// Issue lock for DeleteSystemAgentsByRuntime; the reason is the one on
-// LockIssuesOfAgentTaskChildren.
-func (q *Queries) LockIssuesOfSystemAgentTaskChildrenByRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfSystemAgentTaskChildrenByRuntime, runtimeID)
-	return err
-}
-
 const lockRuntimeClaimCapacity = `-- name: LockRuntimeClaimCapacity :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':runtime_claim_capacity', 0))
 `

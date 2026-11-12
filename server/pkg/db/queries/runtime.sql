@@ -497,19 +497,6 @@ RETURNING *;
 -- name: DeleteAgentRuntime :exec
 DELETE FROM agent_runtime WHERE id = $1;
 
--- name: LockIssuesOfSystemAgentTaskChildrenByRuntime :exec
--- Issue lock for DeleteSystemAgentsByRuntime; the reason is the one on
--- LockIssuesOfAgentTaskChildren.
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT child.issue_id FROM agent a
-    JOIN agent_task_queue parent ON parent.agent_id = a.id
-    JOIN agent_task_queue child ON child.parent_task_id = parent.id
-    WHERE a.runtime_id = $1 AND a.kind = 'system' AND child.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i;
-
 -- name: DeleteSystemAgentsByRuntime :exec
 -- System agents are invisible execution infrastructure (for example the Agent
 -- Builder). Remove them before deleting their runtime so the RESTRICT runtime

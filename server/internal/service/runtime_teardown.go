@@ -100,6 +100,13 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 		lockedAgentIDs[i] = agent.ID
 	}
 
+	// The system agents' runs cascade away with them and null parent_task_id on
+	// their children, so the children's issues are locked before any run row
+	// this teardown cancels or detaches.
+	if err := LockIssuesBeforeRuntimeSystemAgentsDelete(ctx, qtx, runtimeID); err != nil {
+		return out, fmt.Errorf("lock issues of system agent task children: %w", err)
+	}
+
 	if opts.CancelNonTerminalTasks {
 		cancelled, err := qtx.CancelAgentTasksByRuntimeOrAgent(ctx, db.CancelAgentTasksByRuntimeOrAgentParams{
 			RuntimeIds: []pgtype.UUID{runtimeID},
@@ -168,11 +175,6 @@ func TeardownRuntime(ctx context.Context, qtx *db.Queries, runtimeID pgtype.UUID
 	}
 	if err := pruneRuntimeSystemAgentChatDraftRestores(ctx, qtx, runtimeID); err != nil {
 		return out, fmt.Errorf("clean up chat draft restores: %w", err)
-	}
-	// The agents' runs cascade away with them and null parent_task_id on their
-	// children, so the children's issues are locked before the delete.
-	if err := qtx.LockIssuesOfSystemAgentTaskChildrenByRuntime(ctx, runtimeID); err != nil {
-		return out, fmt.Errorf("lock issues of system agent task children: %w", err)
 	}
 	if err := qtx.DeleteSystemAgentsByRuntime(ctx, runtimeID); err != nil {
 		return out, fmt.Errorf("clean up system agents: %w", err)

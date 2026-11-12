@@ -657,7 +657,11 @@ func TestSystemAgentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
 			return err
 		}
 		defer tx.Rollback(ctx)
-		if err := deleteSystemAgent(ctx, testHandler.Queries.WithTx(tx), parseUUID(carrier)); err != nil {
+		qtx := testHandler.Queries.WithTx(tx)
+		if err := service.LockIssuesBeforeSystemAgentDelete(ctx, qtx, parseUUID(carrier)); err != nil {
+			return err
+		}
+		if err := deleteSystemAgent(ctx, qtx, parseUUID(carrier)); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
