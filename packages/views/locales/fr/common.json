@@ -183,6 +183,7 @@
       "top_up": "Recharger le budget d'exécutions de {{issue}} pour cette fenêtre.",
       "settled": "Cette approbation est déjà : {{state}}. Si vous en avez encore besoin, demandez à l'agent de la proposer à nouveau.",
       "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche. Ouvrez la carte dans votre DM ou votre boîte de réception pour en décider.",
+      "open_card": "Ouvrir la carte",
       "unreadable": "Cette approbation n'est pas disponible pour vous ou n'existe plus. Demandez à l'agent de la proposer à nouveau."
     }
   }

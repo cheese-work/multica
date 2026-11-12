@@ -6,11 +6,13 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -90,6 +92,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision {
+		if refusal := plainCardForAction(ask); refusal != nil {
+			writeError(writer, refusal.status, refusal.message)
+			return
+		}
+	}
 	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -134,6 +142,18 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// plainCardForAction refuses an option card that names an allowlisted action type.
+// Approve on an option card only records an answer; the change would never apply
+// and the person would be sent a second link (CHE-5229).
+func plainCardForAction(ask string) *decisionIntentRefusal {
+	for _, actionType := range decisionaction.Types() {
+		if strings.Contains(ask, actionType) {
+			return &decisionIntentRefusal{http.StatusBadRequest, "this card names the action " + actionType + ", and an option card cannot apply it. Send it with `multica decision propose` (or `multica decision request --action-file`) so one approval applies the change"}
+		}
+	}
+	return nil
 }
 
 // writeDecisionResult answers a replay with 200, or publishes the events of a

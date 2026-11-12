@@ -518,7 +518,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
+`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Pour une action de budget d'exécutions, ce lien ouvre l'approbation sur la tâche ; pour toute autre action, il mène à la carte dans le chat, où la personne l'approuve. Une carte à options simple (`multica decision request` sans `--action-file`) ne peut pas appliquer un changement : le serveur refuse une carte dont le texte nomme un type d'action autorisé ; envoyez ce changement avec `multica decision propose`. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
 
 ## Piloter Multica depuis un autre agent de codage
 

@@ -381,3 +381,24 @@ func TestDecisionPingToFormerMemberIsRecordedNotRetried(test *testing.T) {
 		}
 	}
 }
+
+// An option card cannot carry an action: Approve on it only records an answer and
+// the change never applies (CHE-5229). A plain card that names an allowlisted
+// action type is refused, with the command that attaches the action.
+func TestDecisionRequestAPIRefusesPlainCardForAllowlistedAction(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	ask := fixture.structuredAsk()
+	ask.Decision = "Approve workflow.steps.set on the Default workflow?"
+	request := newRequest(http.MethodPost, "/api/decisions", map[string]any{
+		"issue_id": fixture.issueID, "session_id": fixture.sessionID,
+		"ask": ask, "escalation_class": fixture.input().EscalationClass,
+	})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	response := testutil.Call(test, testHandler.RequestDecision, request).Want(http.StatusBadRequest)
+	if text := response.Text(); !strings.Contains(text, "workflow.steps.set") || !strings.Contains(text, "multica decision propose") {
+		test.Fatalf("refusal does not name the action type and the command: %s", text)
+	}
+	fixture.assertCounts(test, 0)
+}

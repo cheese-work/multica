@@ -510,7 +510,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다.
+`--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 실행 예산 액션의 링크는 이슈에서 승인을 열고, 다른 액션의 링크는 채팅의 카드로 연결되어 그곳에서 승인합니다. 일반 선택지 카드(`--action-file` 없는 `multica decision request`)는 변경을 적용할 수 없습니다. 허용 목록에 있는 액션 유형을 본문에 담은 카드는 서버가 거부하므로 그 변경은 `multica decision propose`로 보내세요. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다.
 
 ## 다른 코딩 에이전트에서 Multica 조작하기
 

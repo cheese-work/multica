@@ -471,7 +471,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. For a run-budget action that link opens the approval on the issue; for any other action it links to the card in the chat, where the person approves it. A plain option card (`multica decision request` without `--action-file`) cannot apply a change: the server refuses a card whose text names an allowlisted action type, so send that change with `multica decision propose`. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
 ### Config change proposals
 

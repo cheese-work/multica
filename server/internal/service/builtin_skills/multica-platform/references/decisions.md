@@ -199,7 +199,11 @@ multica decision propose <action-type> --version 1 --issue <issue> --params-file
   `--param`.
 - It works only with a task token. The output prints the card link
   `<web>/<workspace>/issues/<issue-id>?approve=<action-id>`; give that link to
-  the person.
+  the person. That link opens the approval only for a run-budget action; for
+  any other action the approve page links to the card in the chat.
+- Never send a change that needs a passkey as a plain option card
+  (`multica decision request` without `--action-file`). The server refuses
+  a card whose text names an allowlisted action type (400, naming the type).
 - A refusal prints the server's status and error code, for example
   `503 proposals_unavailable`. Report it; do not retry with a PAT.
 - `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
