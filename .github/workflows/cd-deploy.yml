@@ -42,6 +42,11 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # The cutover controller rolls back by digest on a failed cutover, and the
 # `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
 #
+# CHE-5353: when GitHub drops a schedule slot, the freshness alarm dispatches this
+# workflow with `schedule_backup=true`. That run takes the scheduled path above
+# (resolve, preflight, merger and suspension checks), not the manual one, and
+# authorize-c00 accepts the marker only from github-actions[bot].
+#
 # A dispatch with `candidate_sha` needs one job a manual-evidence dispatch does
 # not: prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
 # admission.mjs REFUSES build-evidence for deployment — a deployable
@@ -77,6 +82,9 @@ on:
       provenance_path:
         description: "Path to the recorded image provenance JSON (backend/web digest + architecture + repository + source_sha)"
         required: false
+      schedule_backup:
+        description: "Set only by the C00 deploy freshness alarm (CHE-5353) when a schedule slot was dropped: runs the scheduled path (resolve, preflight, merger and suspension checks) instead of the manual one; authorize-c00 refuses any sender but the workflow robot"
+        required: false
       ref:
         description: "Git ref to check out (must match the manifest's source_sha)"
         required: true
@@ -104,7 +112,7 @@ jobs:
   # nothing new to deploy, so no later job starts. No environment, no secrets and
   # no concurrency group: it never queues behind a deploy.
   schedule-resolve:
-    if: github.event_name == 'schedule'
+    if: (github.event_name == 'schedule' || inputs.schedule_backup != '')
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
     outputs:
@@ -135,7 +143,7 @@ jobs:
   # ---------------------------------------------------------------------------
   authorize-c00:
     needs: schedule-resolve
-    if: always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''))
+    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.schedule_backup == '') || ((github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -158,6 +166,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
           EXTRA_AUTHORIZERS: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: python3 deploy/cd/authorize-c00.py
 
@@ -167,7 +176,7 @@ jobs:
   # reach the tailnet-only Multica server.
   notify-approval:
     needs: [schedule-resolve, candidate-preflight, authorize-c00]
-    if: always() && github.event_name == 'schedule' && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     # One notice at a time, so two candidates cannot both read "no open ask" and
@@ -199,7 +208,7 @@ jobs:
 
   candidate-preflight:
     needs: schedule-resolve
-    if: always() && github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
@@ -332,7 +341,7 @@ jobs:
   prepare-release-candidate:
     needs: [authorize-c00, candidate-preflight, resolve-candidate]
     # A dispatch names its candidate; an authorized merge needs the eligible preflight first.
-    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && ((github.event_name == 'workflow_dispatch' && inputs.schedule_backup == '') || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00

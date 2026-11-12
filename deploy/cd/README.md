@@ -660,6 +660,13 @@ there with "nothing new to deploy": no C00 runner, lock or approval is taken.
 The automatic path adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need (CHE-4582: the automatic path deploys only for an
 authorized merger, below). The resolved candidate SHA is in the `schedule-resolve` job summary.
+GitHub can drop a scheduled slot. When no `schedule` run exists 30 minutes after a slot,
+the freshness alarm (`cd-freshness-watch.yml`) stays red and sends one
+`gh workflow run cd-deploy.yml --ref main -f schedule_backup=true` (CHE-5353), skipped when any
+`cd-deploy.yml` run on `main` was created since the slot. The `schedule_backup` marker makes that
+run take the scheduled path: `schedule-resolve`, `candidate-preflight`, the merger check and the
+suspension check, exactly as a scheduled run. `authorize-c00` accepts the marker only from
+`github-actions[bot]` and refuses any other sender; the owner dispatches without the marker.
 
 `candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
