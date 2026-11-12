@@ -393,6 +393,9 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
+	// Script, when set, selects the model-less script backend: New returns it
+	// for any agentType and never reaches the provider switch.
+	Script *ScriptSpec
 }
 
 // New creates a Backend for the given agent type.
@@ -507,6 +510,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// would accept a fixed_args `--output-format text` and break its own
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
+
+	if cfg.Script != nil {
+		return newScriptBackend(cfg), nil
+	}
 
 	switch agentType {
 	case "claude":
