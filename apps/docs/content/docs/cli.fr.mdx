@@ -161,6 +161,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` retire les commentaires et garde tous les enregistrements d'activité ; `--action` ne renvoie que les actions indiquées, peut être répété et implique `--activity-only`. Le serveur limite l'historique qu'il lit ; si le résultat est tronqué, un avertissement s'affiche sur stderr, et il ne faut pas en déduire de durée.
 
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` liste les révisions enregistrées de la description d'une tâche, de la plus ancienne à la plus récente, avec le numéro de révision, l'heure (ICT) et l'auteur. `issue description diff` affiche un diff unifié entre deux d'entre elles. Le numéro de révision est le compteur de révision de la tâche. Seules existent les révisions enregistrées après la mise en service de l'historique ; pour chaque tâche, la première entrée est un état de référence de la description à ce moment-là. Une révision qui n'a pas modifié la description renvoie le dernier texte antérieur. Une révision inconnue renvoie 404. `--output json` est disponible pour les deux.
+
 ### Lire de longs fils de commentaires
 
 Sur une tâche très commentée, tout lire un par un coûte beaucoup de tokens à un agent. Parcourez d'abord les fils, puis ouvrez celui qui vous intéresse :
@@ -316,7 +323,11 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 
 `multica config propose` construit le fichier d'action pour un changement de configuration de l'espace de travail. Il lit la valeur en vigueur, calcule `before_sha256` et `after_sha256` avec les mêmes recettes que le serveur, et écrit le fichier que prend `multica decision request --action-file`. Il n'envoie rien et n'écrit aucun secret. Une personne approuve toujours avec une passkey.
 
-Champs : `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>` et `workspace.settings --set clé=valeur|clé:=<json>`. Les champs texte prennent `--file` (UTF-8, sans octet NUL). `workflow.steps` prend le tableau d'étapes tel que le renvoie le GET du workflow ; modifiez cette sortie, car le serveur refuse la demande (`after_digest_mismatch`) s'il normalise vos étapes autrement. Pour `workflow.step.instructions`, le serveur calcule l'empreinte « after » : le fichier n'a pas de `after_sha256`, et l'empreinte affichée sert seulement de comparaison. `--out <chemin>` écrit le fichier ; `--dry-run` affiche les deux empreintes et l'action sans rien écrire. `--expires-in <secondes>` fixe l'expiration.
+Champs : `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>`, `workflow.budget <workflow-id>` et `workspace.settings --set clé=valeur|clé:=<json>`. Les champs texte prennent `--file` (UTF-8, sans octet NUL). `workflow.steps` prend le tableau d'étapes tel que le renvoie le GET du workflow ; modifiez cette sortie, car le serveur refuse la demande (`after_digest_mismatch`) s'il normalise vos étapes autrement. Pour `workflow.step.instructions`, le serveur calcule l'empreinte « after » : le fichier n'a pas de `after_sha256`, et l'empreinte affichée sert seulement de comparaison. `--out <chemin>` écrit le fichier ; `--dry-run` affiche les deux empreintes et l'action sans rien écrire. `--expires-in <secondes>` fixe l'expiration.
+
+`workflow.budget <workflow-id>` prend `--max-runs <n>` (de 1 à 1000 ; 0 efface le plafond) et `--include-child-prs=<true|false>` à la place de `--file` ; indiquez-en au moins un, et un champ omis garde sa valeur enregistrée. Un agent ne peut pas écrire ces deux champs directement sur un workflow (`budget_requires_decision`) : proposez la modification, demandez la décision, et le serveur l'applique à l'approbation si le workflow correspond encore à l'empreinte lue par la CLI.
+
+L’agent peut aussi écrire lui-même la modification approuvée. Lancez `multica workflow update <workflow-id> --max-runs 40 --print-hash` (rien n’est écrit) pour lire `before_sha256` et `after_sha256`, demandez la décision pour `workflow.budget`, puis relancez la commande avec `--decision-id <id>`. Une écriture de budget n’accepte pas `--steps-file`. `multica issue update <issue> --workflow <workflow-id>` et `multica issue create --workflow <workflow-id>` acceptent les mêmes `--print-hash` et `--decision-id` (champ `issue.workflow`) quand le workflow a un budget plus large ; les deux commandes suivent une seule règle, et la session interactive d’un propriétaire n’exige aucune décision.
 
 Tout autre champ est refusé avec `denylisted` avant toute lecture : `project.description`, passkeys et porte de décision, membres et rôles, transfert de propriété, secrets d'authentification et d'intégration, suppression de l'espace de travail, registre des actions et `delegated_governed_writes`. Une clé de réglages hors de la table autorisée du serveur est refusée de la même façon, et un patch qui mêle clés autorisées et refusées est refusé en entier. Le serveur revérifie à la demande et à l'approbation.
 
@@ -324,6 +335,7 @@ Tout autre champ est refusé avec `denylisted` avant toute lecture : `project.de
 multica config propose workspace.context --file ./context.md --out ./action.json
 multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
 multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
 multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
 multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
 ```
@@ -345,6 +357,7 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 | `auth`, `login`, `setup` | Se connecter, vérifier l'état de l'authentification et initialiser une connexion |
 | `config` | Consulter ou modifier la configuration locale du profil CLI actuel |
 | `update`, `version` | Mettre à jour le CLI ou afficher la version |
+| `guard` | Vérifier les appels d'outils des agents selon la politique de l'espace de travail |
 
 `multica chat` lit **la session de messagerie externe qu'un agent traite actuellement** ; elle sert surtout aux agents des intégrations de messagerie et n'est pas une commande générale pour parcourir n'importe quelle discussion de l'espace de travail.
 
@@ -493,6 +506,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
+| `guard` | `exec <tool> -- <args>` | Exécuter un appel d'outil via le garde : `gh pr create`, `edit` et `ready` sont forcés en brouillon, étiquetés et relus ; les écritures sur les pull requests via `gh api` sont refusées | Code de sortie : celui de l'outil, 2 si le garde refuse. Env : `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
 
 ### Propositions de décision
 

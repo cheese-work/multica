@@ -663,6 +663,28 @@ SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE;
 -- (MUL-7420). See migration 557.
 UPDATE agent_task_queue SET workflow_step = @workflow_step WHERE id = @id;
 
+-- name: RestampActiveTasksWorkflowStep :exec
+-- A system move (decision unpark) puts the issue on a new step. Runs stamped
+-- with a step on either side of that move follow it, so their next status
+-- write is judged from where the system left the issue (CHE-5239).
+UPDATE agent_task_queue SET workflow_step = @to_step
+WHERE issue_id = @issue_id
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY(@from_steps::text[])
+  AND workflow_step IS DISTINCT FROM @to_step;
+
+-- name: IssueHasOpenWait :one
+-- True when an explicit wait is still armed on the issue: a wakeup someone set
+-- for another blocker (a condition, an event such as task.completed, or a
+-- time). System-rule, decision-bound and observe wakeups are not blockers
+-- (CHE-5239).
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = @issue_id AND enabled AND disabled_at IS NULL
+    AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+);
+
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
 -- an automatic retry. It preserves the immutable quick-create context JSON
@@ -826,7 +848,7 @@ SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
     WHERE agent_id = sqlc.arg('agent_id')
       AND status = 'failed'
-      AND failure_reason = 'agent_error.provider_server_error'
+      AND failure_reason IN ('agent_error.provider_server_error', 'agent_error.provider_capacity_or_rate_limit')
       AND completed_at > sqlc.arg('failed_since')::timestamptz
 );
 
@@ -902,6 +924,9 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= @min_priority::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
