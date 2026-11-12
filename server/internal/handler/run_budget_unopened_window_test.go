@@ -38,7 +38,7 @@ func TestRunBudgetTopUpKeepsTheCreditOfAnUnopenedWindow(t *testing.T) {
 	}
 }
 
-func TestRunBudgetTopUpKeepsTheDebtOfAnUnopenedWindow(t *testing.T) {
+func TestRunBudgetTopUpClearsTheDebtOfAnUnopenedWindow(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")
 	}
@@ -49,9 +49,9 @@ func TestRunBudgetTopUpKeepsTheDebtOfAnUnopenedWindow(t *testing.T) {
 	}
 	admitRun(t, c)
 
-	// 3 runs overspent in the old window take 3 off the new window's 40.
-	if got := ledgerBalance(t, c.issueID); got != 36 {
-		t.Fatalf("balance after top-up and one admission = %d, want 36 (37 before the run)", got)
+	// The 3 runs overspent in the old window are forgiven: a fresh 40, minus the run.
+	if got := ledgerBalance(t, c.issueID); got != 39 {
+		t.Fatalf("balance after top-up and one admission = %d, want 39 (40 before the run)", got)
 	}
 }
 

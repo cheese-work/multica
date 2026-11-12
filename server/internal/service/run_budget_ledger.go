@@ -34,6 +34,10 @@ const (
 	runBudgetKindRun    = "run"
 	runBudgetKindRaise  = "raise"
 	runBudgetKindCap    = "cap"
+	// forgive zeroes the debt an old window ran up, when a person's top-up
+	// opens the next one (CHE-5331): a top-up buys a fresh window, so the
+	// issue is not left "over" with runs unused.
+	runBudgetKindForgive = "forgive"
 )
 
 type readOnlyRunBudgetKey struct{}
@@ -181,6 +185,24 @@ func LockRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID
 		return "", err
 	}
 	return runBudgetWindowID(usage.Since), nil
+}
+
+// ForgiveRunBudgetDebt writes off a negative balance. The caller is a top-up
+// that already brought the old window's ledger up to date under the issue lock.
+func ForgiveRunBudgetDebt(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil || usage == nil {
+		return err
+	}
+	balance, err := runBudgetBalance(ctx, q, issueID)
+	if err != nil || balance >= 0 {
+		return err
+	}
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindForgive, runBudgetKindForgive+":"+util.UUIDToString(dbid.NewV7()), int(-balance), 0)
 }
 
 // RecordRunBudgetRaise credits the runs a person added to the issue's cap. The

@@ -199,6 +199,10 @@ func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to top up")
 		return
 	}
+	if err := service.ForgiveRunBudgetDebt(r.Context(), qtx, issue.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
+		return
+	}
 	// The transaction began before the wait for the lock, so now() would sort
 	// this boundary before any move recorded during the wait.
 	startedAt, err := qtx.RunBudgetBoundaryClock(r.Context())

@@ -36,6 +36,9 @@ func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionEx
 	if current != params.WindowID {
 		return nil, actionFailure{Code: "stale_window", Message: "the run-budget window changed since the request; ask again"}
 	}
+	if err := service.ForgiveRunBudgetDebt(ctx, queries, issueID); err != nil {
+		return nil, err
+	}
 	// The boundary is the time now, not the transaction's start, so it sorts
 	// after every move that committed while this approval waited for its locks.
 	startedAt, err := queries.RunBudgetBoundaryClock(ctx)
