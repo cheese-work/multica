@@ -66,6 +66,10 @@ La confirmation indique quelles tâches gardent leur statut. Si certaines utilis
 
 Le tableau du projet suit désormais les colonnes du workflow. Chaque tâche propose uniquement les étapes de ce workflow dans son choix de statut et indique qui prend le relais. Les projets sans autre workflow utilisent **Default** ; vous pouvez y revenir plus tard.
 
+## Choisir un workflow selon le type du titre
+
+Un propriétaire ou administrateur peut définir `workflow_by_type` dans les paramètres de l’espace de travail, par exemple `{"design": "<id du workflow>", "plan": "<id du workflow>"}`. Une nouvelle tâche dont le titre commence par un type associé, comme `design(x): …`, suit ce workflow au lieu de celui de son projet. `--workflow` (CLI) ou un choix explicite l’emporte toujours. Un type sans entrée, ou dont le workflow n’existe plus, garde le workflow du projet. `multica issue create` affiche le workflow choisi. La fenêtre de création affiche les statuts et le passage de relais du workflow choisi dès que le titre a un type associé. L’association est une règle de l’espace de travail : elle s’applique à tous les créateurs, agents compris, sans la vérification du budget d’exécutions qu’un `--workflow` explicite subit pour les appelants non interactifs. Si deux clés ne diffèrent que par la casse, la première par ordre alphabétique l’emporte. Modifier le titre plus tard ne change pas le workflow ; la réponse de mise à jour contient un `workflow_hint` d’une ligne (affiché par `multica issue update`) avec la commande qui le déplace.
+
 ## Passer à l’étape suivante
 
 Changez le statut d’une tâche ou faites glisser sa carte vers une autre colonne. Si cette étape prévoit un passage de relais, vérifiez le destinataire et, pour un agent, les consignes qu’il recevra.
