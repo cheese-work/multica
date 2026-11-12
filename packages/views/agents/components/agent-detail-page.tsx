@@ -91,7 +91,7 @@ import {
 import { AgentInstructionsSection } from "./agent-instructions-section";
 import { AgentPropertiesPanel } from "./agent-properties-panel";
 import { describeCancelImpact } from "./agent-row-actions";
-import { AgentPausedBadge, AgentSchedulingDialog, canScheduleAgent } from "./agent-scheduling";
+import { AgentPauseNote, AgentPausedBadge, AgentSchedulingDialog, canScheduleAgent } from "./agent-scheduling";
 import { AgentSkillsSection } from "./agent-skills-section";
 import { AgentWorkDialog } from "./agent-work-dialog";
 import { AgentWorkSections } from "./tabs/activity-tab";
@@ -683,6 +683,7 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
                 ) : null
               }
             />
+            <AgentPauseNote agent={agent} members={members} />
             {notices.length > 0 && <div className="space-y-2">{notices}</div>}
           </div>
 

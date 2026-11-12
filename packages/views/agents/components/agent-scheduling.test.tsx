@@ -26,6 +26,7 @@ const agents = vi.hoisted(() => ({
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+
 vi.mock("@multica/core/workspace/queries", () => ({
   workspaceKeys: { agents: (ws: string) => ["workspaces", ws, "agents"] },
   agentListOptions: (ws: string) => ({
@@ -39,6 +40,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 import {
   AgentPausedBadge,
   AgentPausedBadgeById,
+  AgentPauseNote,
   AgentSchedulingDialog,
   canScheduleAgent,
 } from "./agent-scheduling";
@@ -74,7 +76,7 @@ describe("AgentSchedulingDialog (pause)", () => {
     renderWithProviders(<AgentSchedulingDialog agent={agent} action="pause" onClose={onClose} />);
     await screen.findByText(/2 running/i);
     fireEvent.click(screen.getByRole("button", { name: /^pause agent$/i }));
-    await waitFor(() => expect(api.pauseAgent).toHaveBeenCalledWith("a-1"));
+    await waitFor(() => expect(api.pauseAgent).toHaveBeenCalledWith("a-1", undefined));
     expect(api.cancelAgentTasks).not.toHaveBeenCalled();
     await waitFor(() => expect(onClose).toHaveBeenCalled());
   });
@@ -88,6 +90,55 @@ describe("AgentSchedulingDialog (pause)", () => {
     expect(api.pauseAgent.mock.invocationCallOrder[0]).toBeLessThan(
       api.cancelAgentTasks.mock.invocationCallOrder[0]!,
     );
+  });
+});
+
+describe("AgentSchedulingDialog (pause reason)", () => {
+  it("sends the typed reason with the pause", async () => {
+    renderWithProviders(<AgentSchedulingDialog agent={agent} action="pause" onClose={() => {}} />);
+    await screen.findByText(/2 running/i);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "budget freeze" } });
+    fireEvent.click(screen.getByRole("button", { name: /^pause agent$/i }));
+    await waitFor(() => expect(api.pauseAgent).toHaveBeenCalledWith("a-1", "budget freeze"));
+  });
+
+  it("still refreshes the list when the cancel step fails after the pause", async () => {
+    api.cancelAgentTasks.mockRejectedValueOnce(new Error("cancel failed"));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={qc}>
+          <AgentSchedulingDialog agent={agent} action="pause" onClose={() => {}} />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    await screen.findByText(/2 running/i);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /^pause agent$/i }));
+    await waitFor(() => expect(api.cancelAgentTasks).toHaveBeenCalled());
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+  });
+});
+
+describe("AgentPauseNote (who, when, why)", () => {
+  it("names who paused, when and why; renders nothing for a running agent", () => {
+    const paused = {
+      scheduling_paused_at: new Date().toISOString(),
+      scheduling_paused_by: "u-1",
+      scheduling_paused_reason: "budget freeze",
+    } as never;
+    const { container, rerender } = renderWithProviders(<AgentPauseNote agent={paused} members={[{ user_id: "u-1", name: "Cheese" }]} />);
+    expect(screen.getByText(/Paused by Cheese/)).toBeTruthy();
+    expect(screen.getByText(/budget freeze/)).toBeTruthy();
+    rerender(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <AgentPauseNote agent={{ scheduling_paused_at: null } as never} members={[]} />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(container.textContent).toBe("");
   });
 });
 

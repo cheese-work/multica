@@ -1107,6 +1107,11 @@
     "keep": "Ne rien changer",
     "paused_toast": "Agent mis en pause",
     "resumed_toast": "Agent repris",
-    "failed_toast": "Impossible de modifier la planification de l'agent"
+    "failed_toast": "Impossible de modifier la planification de l'agent",
+    "reason_label": "Motif (facultatif)",
+    "reason_placeholder": "Motif (facultatif)",
+    "paused_by_note": "Mis en pause par {{name}} · {{time}}",
+    "paused_at_note": "Mis en pause {{time}}",
+    "paused_reason_note": "Motif : {{reason}}"
   }
 }

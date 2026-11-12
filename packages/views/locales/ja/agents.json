@@ -1080,6 +1080,11 @@
     "keep": "そのままにする",
     "paused_toast": "エージェントを一時停止しました",
     "resumed_toast": "エージェントを再開しました",
-    "failed_toast": "エージェントのスケジューリングを変更できませんでした"
+    "failed_toast": "エージェントのスケジューリングを変更できませんでした",
+    "reason_label": "理由（任意）",
+    "reason_placeholder": "理由（任意）",
+    "paused_by_note": "{{name}} が一時停止 · {{time}}",
+    "paused_at_note": "一時停止 {{time}}",
+    "paused_reason_note": "理由: {{reason}}"
   }
 }

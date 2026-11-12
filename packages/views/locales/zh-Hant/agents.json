@@ -1080,6 +1080,11 @@
     "keep": "保持不變",
     "paused_toast": "智慧體已暫停",
     "resumed_toast": "智慧體已恢復",
-    "failed_toast": "無法變更智慧體排程"
+    "failed_toast": "無法變更智慧體排程",
+    "reason_label": "原因（選填）",
+    "reason_placeholder": "原因（選填）",
+    "paused_by_note": "{{name}} 已暫停 · {{time}}",
+    "paused_at_note": "已暫停 {{time}}",
+    "paused_reason_note": "原因：{{reason}}"
   }
 }
