@@ -183,6 +183,7 @@
       "top_up": "Top up the run budget on {{issue}} for this window.",
       "settled": "This approval is already {{state}}. If you still need it, ask the agent to propose it again.",
       "mismatch": "This approval is not a run-budget request for this issue. Open the card in your DM or Inbox to decide it.",
+      "open_card": "Open the card",
       "unreadable": "This approval is not available to you, or it no longer exists. Ask the agent to propose it again."
     }
   }
