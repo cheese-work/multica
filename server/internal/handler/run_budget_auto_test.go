@@ -26,12 +26,15 @@ type autoCase struct {
 }
 
 // newAutoCase is a budgeted issue (cap 5) in a window that opened an hour ago.
-func newAutoCase(t *testing.T) autoCase {
+func newAutoCase(t *testing.T, installationID int64) autoCase {
 	t.Helper()
-	c := newEdgeCase(t, 2226900, mergeEdgeSteps)
+	// The shared test workspace keeps the auto-approver off, so the per-issue
+	// card tests exercise the path the kill switch leaves.
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true}}`)
+	c := newEdgeCase(t, installationID, mergeEdgeSteps)
 	agentID := seededReadyAgentID(t)
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID)
-	dbfx.Exec(t, `UPDATE issue SET status='in_progress', assignee_type='agent', assignee_id=$2 WHERE id=$1`, c.issueID, agentID)
+	dbfx.Exec(t, `UPDATE issue SET status='in_progress', assignee_type='agent', assignee_id=$2, requested_by_id=$3 WHERE id=$1`, c.issueID, agentID, testUserID)
 	return autoCase{c: c, agentID: agentID, since: time.Now().Add(-time.Hour), seq: new(int)}
 }
 
@@ -85,7 +88,7 @@ func goodRuns(n int) []autoRun {
 }
 
 func TestRunBudgetAutoApprovesAWindowWithProgress(t *testing.T) {
-	a := newAutoCase(t)
+	a := newAutoCase(t, 2226900)
 	a.seed(t, a.c.issueID, goodRuns(5)...)
 	v := a.verdict(t)
 	if !v.Approve || v.Anomaly != "" || v.Runs != 5 {
@@ -94,7 +97,7 @@ func TestRunBudgetAutoApprovesAWindowWithProgress(t *testing.T) {
 }
 
 func TestRunBudgetAutoHoldsAWindowWithoutRuns(t *testing.T) {
-	a := newAutoCase(t)
+	a := newAutoCase(t, 2226900)
 	v := a.verdict(t)
 	if v.Approve || v.Anomaly != "" || v.Reason != "no_progress" {
 		t.Fatalf("verdict = %+v, want a no_progress hold", v)
@@ -139,7 +142,7 @@ func TestRunBudgetAutoEscalatesEachAnomalyKind(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a := newAutoCase(t)
+			a := newAutoCase(t, 2226900)
 			tc.setup(t, a)
 			v := a.verdict(t)
 			if v.Approve || v.Anomaly != tc.want {
@@ -150,7 +153,7 @@ func TestRunBudgetAutoEscalatesEachAnomalyKind(t *testing.T) {
 }
 
 func TestRunBudgetAutoEnvelopeStopsApproval(t *testing.T) {
-	a := newAutoCase(t)
+	a := newAutoCase(t, 2226900)
 	a.seed(t, a.c.issueID, goodRuns(5)...)
 	// 296 granted today plus this window's 5 passes the 300-run envelope; a
 	// grant from two days ago does not count.
@@ -174,7 +177,7 @@ func TestRunBudgetAutoEnvelopeStopsApproval(t *testing.T) {
 }
 
 func TestRunBudgetAutoKillSwitchHolds(t *testing.T) {
-	a := newAutoCase(t)
+	a := newAutoCase(t, 2226900)
 	a.seed(t, a.c.issueID, goodRuns(5)...)
 	setAutoSettings(t, `{"run_budget_auto":{"enabled":false}}`)
 	v := a.verdict(t)

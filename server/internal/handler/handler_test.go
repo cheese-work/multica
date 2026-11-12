@@ -137,8 +137,8 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 
 	var workspaceID string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO workspace (name, slug, description, issue_prefix, settings)
+		VALUES ($1, $2, $3, $4, '{"run_budget_auto":{"enabled":false}}')
 		RETURNING id
 	`, "Handler Tests", handlerTestWorkspaceSlug, "Temporary workspace for handler tests", "HAN").Scan(&workspaceID); err != nil {
 		return "", "", err

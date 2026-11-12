@@ -153,6 +153,11 @@ func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 // open nothing more, and the next window's new claim re-arms it. The request is
 // asked as an agent but has no task behind it.
 func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetEvent, notice db.Comment, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
+	return h.openRunBudgetAsk(ctx, q, issue, runBudgetDecisionAsk(issue, notice), serverDecisionFingerprint+"run_budget:"+e.Since.UTC().Format(time.RFC3339Nano), plan)
+}
+
+// openRunBudgetAsk opens ask for every planned recipient under one fingerprint.
+func (h *Handler) openRunBudgetAsk(ctx context.Context, q *db.Queries, issue db.Issue, ask decisiontx.Ask, fingerprint string, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
 	if len(plan.lanes) == 0 {
 		return nil, nil
 	}
@@ -160,7 +165,6 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return nil, err
 	}
-	ask := runBudgetDecisionAsk(issue, notice)
 	if err := ask.Validate(); err != nil {
 		return nil, fmt.Errorf("budget ask: %w", err)
 	}
@@ -171,7 +175,7 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	ask.AskedBy = plan.asker.Name
 	input := decisionRequestInput{
 		Ask: ask.Content(workspace.Slug), Options: ask.Options, AskJSON: askJSON, EscalationClass: "reversible",
-		Fingerprint: serverDecisionFingerprint + "run_budget:" + e.Since.UTC().Format(time.RFC3339Nano),
+		Fingerprint: fingerprint,
 	}
 	var results []decisionRequestResult
 	for _, lane := range plan.lanes {

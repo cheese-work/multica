@@ -261,7 +261,14 @@ func (h *Handler) GetAgentDecisionBrief(w http.ResponseWriter, r *http.Request) 
 		fail(err)
 		return
 	}
+	// The run-budget auto-approver's audit line for the last day; "" when it did nothing.
+	runBudgetAuto, err := h.runBudgetAutoBrief(ctx, workspaceID, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		fail(err)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"run_budget_auto":     runBudgetAuto,
 		"enabled":             parsed.Enabled,
 		"stopped":             parsed.Stopped,
 		"review_target_hours": int(agentDecisionReviewTarget / time.Hour),

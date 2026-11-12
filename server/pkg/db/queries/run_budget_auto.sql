@@ -48,3 +48,8 @@ FROM activity_log
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND created_at >= sqlc.arg('since')::timestamptz
   AND ((action = 'run_budget_top_up' AND details ? 'auto') OR action = 'run_budget_auto_escalated')
 GROUP BY 1;
+
+-- name: CountWorkspaceDecisionsByFingerprint :one
+-- Requests the workspace already holds under one server fingerprint; the anomaly batch card opens once per day.
+SELECT COUNT(*)::bigint FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid AND request_fingerprint = sqlc.arg('fingerprint')::text;

@@ -128,6 +128,10 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
 	}
+	// The auto-approver settles a spent window before a person is asked.
+	if e.Kind == service.RunBudgetKindExhausted && h.autoRunBudgetWindow(ctx, issue, e) {
+		return
+	}
 	usage := h.runBudgetUsageNote(ctx, issue)
 	recent := ""
 	if e.Kind == service.RunBudgetKindExhausted {
