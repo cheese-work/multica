@@ -297,18 +297,46 @@ func configChangeDiff(read configChangeRead) (string, []decisiontx.DiffHunk, err
 	return kind, hunks, err
 }
 
-// previewMeta is the read's Meta plus whitespace_only: the diff splits lines
-// and drops line-ending and final-newline differences, so a text that changed
-// only there has digests that differ but no changed line to show.
+// previewMeta is the read's Meta plus two flags for what the line diff cannot
+// show, because it splits lines and drops line-ending and final-newline
+// differences: line_endings_changed when the two texts differ there (hunks or
+// not), and whitespace_only when that is the only change, so the digests
+// differ but no changed line exists.
 func previewMeta(read configChangeRead, kind string, hunks []decisiontx.DiffHunk) map[string]any {
 	meta := maps.Clone(read.Meta)
-	if kind == diffKindText && len(hunks) == 0 && *read.BeforeText != *read.AfterText {
-		if meta == nil {
-			meta = map[string]any{}
-		}
+	if kind != diffKindText || *read.BeforeText == *read.AfterText {
+		return meta
+	}
+	before, after := *read.BeforeText, *read.AfterText
+	endingsChanged := strings.HasSuffix(before, "\n") != strings.HasSuffix(after, "\n") || lineEndingStyleChanged(before, after)
+	if !endingsChanged && len(hunks) > 0 {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if endingsChanged {
+		meta["line_endings_changed"] = true
+	}
+	if len(hunks) == 0 {
 		meta["whitespace_only"] = true
 	}
 	return meta
+}
+
+// lineEndingStyleChanged compares the style (CRLF, bare LF or both), never the
+// count: adding or removing a line in a CRLF file changes no line ending. A text
+// with no line ending has no style, so it never counts as a change.
+func lineEndingStyleChanged(before, after string) bool {
+	style := func(text string) (crlf, lf bool) {
+		return strings.Contains(text, "\r\n"), strings.Contains(strings.ReplaceAll(text, "\r\n", ""), "\n")
+	}
+	beforeCRLF, beforeLF := style(before)
+	afterCRLF, afterLF := style(after)
+	if !beforeCRLF && !beforeLF || !afterCRLF && !afterLF {
+		return false
+	}
+	return beforeCRLF != afterCRLF || beforeLF != afterLF
 }
 
 // executeConfigChange runs in the approval savepoint. It takes the try-lock and
