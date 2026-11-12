@@ -101,6 +101,30 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
 - Later slices add labeller rows (`source`, task id, correction link) and
   the lookup index when a query needs it.
 
+### Waiver predictions (CHE-4383 B3)
+
+Table `system1_prediction` (migration `99968_system1_prediction`, no foreign
+key): `observation_id`, `scope`, `predictor_id`, `predictor_version`,
+`predicted_key` (NULL = abstained), `predicted_confidence`,
+`predicted_precedents`, `predicted_at`. One row per observation, predictor and
+version (unique). The version is part of the identity; a changed rule is a new
+version, never an edit.
+
+- **Written in the ask transaction**, right after the observation, so both rows
+  exist before any answer (`predicted_at` precedes `answered_at`). Only a
+  waiver ask (topic `test_first_waiver`) writes them; the legacy
+  `system1_observation.predicted_*` columns stay as they were.
+- **`waiver_rule@1`:** `refuse` when `cross_lab_pass_on_head` is false; `waive`
+  when it is true and `weaker_evidence_kind` is not `review_only`; abstains
+  otherwise.
+- **`precedent@1`:** `system1.Predict` over the earlier `waive`/`refuse`
+  labels of record in the workspace (newest 200, not superseded, `unmapped`
+  excluded). Fewer than 5 precedents abstain.
+- `jev@<version>` is not written: Jev is shadow only and needs B0's finding
+  that it is available.
+- Later slices add the epoch, the case rules and the report over these rows
+  (B5), and `ci_rules@<version>` rows for CI scopes (B6).
+
 ## Recommended option stays first
 
 - The request API (`RequireRecommendedFirst`) moves the recommended option to

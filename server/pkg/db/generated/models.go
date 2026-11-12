@@ -3328,6 +3328,19 @@ type System1Observation struct {
 	EventID             pgtype.UUID        `json:"event_id"`
 }
 
+type System1Prediction struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ObservationID       pgtype.UUID        `json:"observation_id"`
+	Scope               string             `json:"scope"`
+	PredictorID         string             `json:"predictor_id"`
+	PredictorVersion    string             `json:"predictor_version"`
+	PredictedKey        pgtype.Text        `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4      `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4        `json:"predicted_precedents"`
+	PredictedAt         pgtype.Timestamptz `json:"predicted_at"`
+}
+
 type TaskElevation struct {
 	TaskID              pgtype.UUID        `json:"task_id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
