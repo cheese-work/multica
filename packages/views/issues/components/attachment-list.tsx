@@ -11,6 +11,8 @@ import { Attachment as AttachmentRenderer } from "../../editor/attachment";
 import { AttachmentDownloadProvider } from "../../editor/attachment-download-context";
 import { useAttachmentVersions } from "./deliverables/attachment-versions";
 import { VersionBadge } from "./deliverables/version-badge";
+import { AttachmentRevisionDiffButton } from "./attachment-revision-diff";
+import { useT } from "../../i18n";
 
 // Standalone attachment list — renders attachments not already in the markdown
 
@@ -26,14 +28,20 @@ export function AttachmentList({
   onRemove?: (attachmentId: string) => void;
 }) {
   const versions = useAttachmentVersions();
+  const { t } = useT("issues");
   if (!attachments?.length) return null;
   // Skip attachments whose URL (stable or legacy) is already referenced in the
   // markdown content, and duplicates of the same file that are referenced.
   // Shared with the image-sequence builder (MUL-5752) so the cards rendered
   // here and the images the viewer pages through can't disagree — as is the
   // grouping below, so paging follows the screen (MUL-7649).
+  // A document uploaded again shows once, as its latest revision.
+  const superseded = new Set(attachments.map((a) => a.revision_of).filter(Boolean));
   const standalone = orderStandaloneAttachments(
-    selectStandaloneAttachments(content, attachments),
+    selectStandaloneAttachments(
+      content,
+      attachments.filter((a) => !superseded.has(a.id)),
+    ),
   );
   if (!standalone.length) return null;
 
@@ -41,12 +49,34 @@ export function AttachmentList({
   const files = standalone.filter((a) => standaloneAttachmentGroup(a) === "file");
   const render = (a: Attachment) => {
     const version = versions?.get(a.id);
+    const revision = a.revision ?? 1;
+    const chained = revision >= 2;
     return (
       <AttachmentRenderer
         key={a.id}
         attachment={{ kind: "record", attachment: a }}
         layout="card"
-        badge={version ? <VersionBadge version={version} /> : undefined}
+        badge={
+          chained ? (
+            <span
+              className="shrink-0 rounded-xs bg-muted px-1 text-micro font-medium tabular-nums text-muted-foreground"
+              aria-hidden
+            >
+              {t(($) => $.attachment_revision.badge, { revision, earlier: revision - 1 })}
+            </span>
+          ) : version ? (
+            <VersionBadge version={version} />
+          ) : undefined
+        }
+        actions={
+          chained ? (
+            <AttachmentRevisionDiffButton
+              attachmentId={a.id}
+              filename={a.filename}
+              revision={revision}
+            />
+          ) : undefined
+        }
         editable={!!onRemove}
         onDelete={onRemove ? () => onRemove(a.id) : undefined}
       />

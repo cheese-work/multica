@@ -142,6 +142,8 @@ Les fichiers que les membres et les agents envoient dans les commentaires sont r
 
 Envoyer de nouveau un fichier de même nom et de même type ajoute une version au même livrable. La section ne l'affiche qu'une fois, avec son numéro de version (par exemple `v2`), et chaque carte de fichier dans les commentaires indique sa version. Dans la visionneuse, cliquez sur le numéro de version pour passer à une version plus ancienne, et sur **Afficher dans les commentaires** pour revenir au commentaire qui l'a envoyée.
 
+Un fichier envoyé sur une tâche avec `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` devient la révision suivante de cette pièce jointe ; un nouvel envoi du même nom de fichier sur la même tâche aussi. La tâche n'affiche qu'une carte pour le document, par exemple `v4 · 3 antérieures`, et **Diff** ouvre les modifications depuis la révision précédente (lignes supprimées en rouge, ajoutées en vert, lignes inchangées repliées ; **Tout afficher** les conserve). Pour un fichier binaire, seule la différence de taille et de SHA-256 est indiquée. `multica attachment history <attachment-id>` liste les révisions avec l'heure, l'auteur et le SHA-256, et `multica attachment diff <attachment-id> --from 3 --to 4` affiche le diff.
+
 <DeliverablesDemo />
 
 ## Projets et sous-tâches
