@@ -479,6 +479,8 @@
     "action_unavailable": "Détails indisponibles",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
+    "recent_runs": "Runs récents",
+    "recent_runs_status": { "completed": "Terminé", "failed": "Échec", "cancelled": "Annulé", "running": "En cours", "other": "En attente" },
     "config_change": {
       "viewer_label": "Changement à approuver",
       "tab_changes": "Modifications",
@@ -496,7 +498,8 @@
       "field_workspace_context": "Contexte de l’espace de travail",
       "field_workflow_steps": "Étapes du workflow",
       "field_workflow_instructions": "Instructions d’étape du workflow",
-      "field_workspace_settings": "Paramètres de l’espace de travail"
+      "field_workspace_settings": "Paramètres de l’espace de travail",
+      "field_workflow_budget": "Budget d’exécutions du workflow"
     },
     "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",

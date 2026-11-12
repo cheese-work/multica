@@ -1633,6 +1633,8 @@
       "description": "説明",
       "max_runs": "Issue あたりの最大実行数",
       "max_runs_invalid": "1〜{{max}} の整数を入力してください。空欄の場合は既定値（{{default}}）になります。",
+      "budget_request_pending": "このワークフローの実行上限の変更が、オーナーの承認待ちです。",
+      "budget_request_pending_cap": "実行上限を課題あたり{{cap}}回に変更する申請が、オーナーの承認待ちです。",
       "include_child_prs": "子 PR を含める",
       "steps": "ステップ",
       "add_step": "ステップを追加",
@@ -2027,6 +2029,8 @@
     "raise": "上限を上げる",
     "top_up": "追加する",
     "asked": "ワークスペースのオーナーに承認を依頼しました。",
+    "chip": "予算を使い切りました",
+    "open_request": "下の未処理リクエスト",
     "request_failed": "リクエストを送信できませんでした。もう一度お試しください。"
   },
   "attachment_revision": {

@@ -479,6 +479,8 @@
     "action_unavailable": "Details unavailable",
     "action_approve": "Approve with passkey",
     "action_preview": "What approving changes",
+    "recent_runs": "Recent runs",
+    "recent_runs_status": { "completed": "Completed", "failed": "Failed", "cancelled": "Cancelled", "running": "Running", "other": "Queued" },
     "config_change": {
       "viewer_label": "Change to approve",
       "tab_changes": "Changes",
@@ -496,7 +498,8 @@
       "field_workspace_context": "Workspace context",
       "field_workflow_steps": "Workflow steps",
       "field_workflow_instructions": "Workflow step instructions",
-      "field_workspace_settings": "Workspace settings"
+      "field_workspace_settings": "Workspace settings",
+      "field_workflow_budget": "Workflow run budget"
     },
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",

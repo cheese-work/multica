@@ -60,5 +60,8 @@ func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionEx
 	if err != nil {
 		return nil, err
 	}
+	if err := linkRunBudgetRefusal(ctx, queries, issueID, params.RefusalID, execution.Action.ID, window); err != nil {
+		return nil, err
+	}
 	return json.Marshal(map[string]string{"issue_id": params.IssueID, "window_id": window})
 }
