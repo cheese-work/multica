@@ -148,6 +148,8 @@ type AgentResponse struct {
 	// holds this agent's claims. Both null when scheduling runs.
 	SchedulingPausedAt *string `json:"scheduling_paused_at"`
 	SchedulingPausedBy *string `json:"scheduling_paused_by"`
+	// SchedulingPausedReason is the optional note given when the agent was paused.
+	SchedulingPausedReason *string `json:"scheduling_paused_reason"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -251,6 +253,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
 		SchedulingPausedAt:       timestampToPtr(a.SchedulingPausedAt),
 		SchedulingPausedBy:       uuidToPtr(a.SchedulingPausedBy),
+		SchedulingPausedReason:   textToPtr(a.SchedulingPausedReason),
 	}
 }
 
@@ -1557,7 +1560,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// decoding — a plain rawFields[...] map lookup here would reintroduce
 	// the exact case-variant bypass this file's other fix already closed.
 	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), "instructions") {
+	if refuseMachineCoveredWrite(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), agentInstructionsAction) {
 		return
 	}
 
@@ -2158,13 +2161,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	workspaceID := uuidToString(existing.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
-	if voteEntered(actorType, req.Instructions != nil, rawFields) {
-		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
+	// CHE-3482: a machine identity needs a passkey-approved action; this runs
+	// before the vote-receipt entry below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, agentInstructionsAction) {
 		return
 	}
 
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
+	// CHE-1862: the vote receipt entry; only a human reaches it.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
 		return
 	}
 

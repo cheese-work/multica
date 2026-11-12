@@ -2019,6 +2019,16 @@
     },
     "open": "ステータス履歴"
   },
+  "run_budget": {
+    "runs": "実行 {{used}} / {{limit}}",
+    "left_other": "残り {{count}}",
+    "near": "80 % 使用",
+    "exhausted": "実行予算を使い切りました",
+    "raise": "上限を上げる",
+    "top_up": "追加する",
+    "asked": "ワークスペースのオーナーに承認を依頼しました。",
+    "request_failed": "リクエストを送信できませんでした。もう一度お試しください。"
+  },
   "attachment_revision": {
     "badge": "v{{revision}} · 以前 {{earlier}} 件",
     "diff": "差分",

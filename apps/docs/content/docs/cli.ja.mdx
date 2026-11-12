@@ -525,6 +525,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
 
+### 対象フィールドにはパスキー操作が必要
+
+タスクトークンとクラウドノードトークンは、旧来のルートから次のフィールドに書き込めません: `agent.instructions`、`squad.instructions`、`workspace.context`、ワークフローのステップとステップ指示、決定アクションの許可テーブルにあるワークスペース設定キー(`compact_prompt`、`auto_compact`、`idle_started_guard`、`wakeups_paused`、`mermaid_orientation` など単純な運用キー)。サーバーは 403 と `code: passkey_action_required` を返し、代わりに提案するアクションを `action_type` で示します(`agent.instructions.set`、`squad.instructions.set`、`workspace.context.set`、`workflow.steps.set`、`workspace.settings.patch`)。保存済みの値は変わりません。投票レシート、決定バインディング、PASS レシート、Hermes の例外では、この拒否は解除されません。`multica decision propose <action-type>` でアクションを提案すると、人がパスキーで承認します。人による書き込みと `project.description` は従来どおりです。
+
 ## 別のコーディングエージェントから Multica を操作する
 
 作業の多くを Codex、Claude Code、Cursor の中で進めているなら、ターミナルに切り替えずそこから Multica を操作できます。[Multica CLI skill](https://github.com/multica-ai/multica-cli) は、このページのコマンドを安全に扱う方法をそれらのエージェントに教えます。タスクとコメントスレッドをトークンを浪費せずに読み、コメントはファイル経由で書き、メンション・ステータス変更・アサインが伴う副作用を正しく扱います。

@@ -14,7 +14,7 @@ const budgeted = {
   blocking: [],
   can_raise: true,
   tokens_active: false,
-  raise_preview: { add_runs: 5 },
+  raise_preview: { add_runs: 5, balance_after: 7, limit_after: 15, max_allowed_add: 30 },
 };
 
 describe("run-budget meter response boundary (CHE-2851)", () => {
@@ -29,7 +29,14 @@ describe("run-budget meter response boundary (CHE-2851)", () => {
       windowStartedAt: "2026-11-01T05:22:54.123456789Z",
       blocking: [],
       canRaise: true,
+      raisePreview: { addRuns: 5, limitAfter: 15 },
     });
+  });
+
+  it("has no raise preview when the server sends none or a malformed one", () => {
+    const { raise_preview: _drop, ...bare } = budgeted;
+    expect(parseRunBudget(bare).raisePreview).toBeNull();
+    expect(parseRunBudget({ ...budgeted, raise_preview: { add_runs: "x" } }).raisePreview).toBeNull();
   });
 
   it("accepts every server state, including negative runs_left", () => {

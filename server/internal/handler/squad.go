@@ -247,6 +247,10 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	actorType, _ := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
+	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, squadInstructionsAction) {
+		return
+	}
 	if req.Instructions != nil {
 		if tokens := util.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
 			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
@@ -433,6 +437,12 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	// case-insensitively).
 	actorType, actorID := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
 
+	// CHE-3482: a machine identity needs a passkey-approved action; this runs
+	// before the older exceptions below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, squadInstructionsAction) {
+		return
+	}
+
 	// CHE-764: a single, human-approved, narrowly-scoped exception to the
 	// CHE-455 rule immediately above — see
 	// governed_instruction_hermes_exception.go for the full predicate and
@@ -486,13 +496,9 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	var rawFields map[string]json.RawMessage
 	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	// CHE-1862: the vote receipt entry; only a human reaches it.
 	if voteEntered(actorType, req.Instructions != nil, rawFields) {
 		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
-		return
-	}
-
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
 		return
 	}
 

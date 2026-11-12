@@ -2019,6 +2019,16 @@
     },
     "open": "状态历史"
   },
+  "run_budget": {
+    "runs": "运行 {{used}} / {{limit}}",
+    "left_other": "剩余 {{count}}",
+    "near": "已用 80 %",
+    "exhausted": "运行预算已用完",
+    "raise": "提高上限",
+    "top_up": "补充",
+    "asked": "已请求工作区所有者批准。",
+    "request_failed": "请求未成功，请重试。"
+  },
   "attachment_revision": {
     "badge": "v{{revision}} · 此前 {{earlier}} 个",
     "diff": "差异",

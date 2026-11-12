@@ -6,8 +6,10 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -126,6 +128,12 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 			if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 			}
+			if machine && settingsAllowKeyMoved(stored, incoming) {
+				return db.Workspace{}, "", activity, errSettingsPasskeyRequired
+			}
+		} else if machine && settingsAllowKeyMoved(stored, nil) {
+			// A non-object body drops every key, allow-table keys included.
+			return db.Workspace{}, "", activity, errSettingsPasskeyRequired
 		} else if machine && stored[backgroundAgentsKey] != nil {
 			// A non-object body would clear the key: a key-omitting replacement.
 			return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
@@ -165,6 +173,19 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 		return ws, "", activity, auditWriteError{err}
 	}
 	return ws, action, activity, tx.Commit(ctx)
+}
+
+// settingsAllowKeyMoved reports whether the incoming blob adds, drops or
+// changes any key on the settings allow table (CHE-3482).
+func settingsAllowKeyMoved(stored, incoming map[string]any) bool {
+	for _, key := range decisionaction.SettingsKeys() {
+		sv, sok := stored[key]
+		iv, iok := incoming[key]
+		if sok != iok || !reflect.DeepEqual(sv, iv) {
+			return true
+		}
+	}
+	return false
 }
 
 // publishWakeupsPauseActivity announces a flip's committed audit record.

@@ -67,7 +67,7 @@ class AuthorizeC00Tests(unittest.TestCase):
         self.output = directory / "output"
         self.output.write_text("")
 
-    def authorize(self, event, actor="", head_sha=SHA, candidate="", extra="", pulls=None, runs=None, current_run="99", detail_failure=False):
+    def authorize(self, event, actor="", head_sha=SHA, candidate="", extra="", pulls=None, runs=None, current_run="99", detail_failure=False, backup=""):
         """Return (returncode, outputs, stderr). `runs` is newest-first [(id, [(job, conclusion)])]; `pulls` is [pull()]."""
         pulls = pulls or []
         fixtures = {f"repos/{REPO}/commits/{head_sha}/pulls": [listed for listed, _ in pulls]}
@@ -101,6 +101,7 @@ class AuthorizeC00Tests(unittest.TestCase):
             "HEAD_SHA": head_sha,
             "INPUT_CANDIDATE_SHA": candidate,
             "EXTRA_AUTHORIZERS": extra,
+            "INPUT_SCHEDULE_BACKUP": backup,
         }
         result = subprocess.run(["python3", str(SCRIPT)], env=env, text=True, capture_output=True)
         outputs = dict(line.split("=", 1) for line in self.output.read_text().splitlines() if "=" in line)
@@ -197,6 +198,22 @@ class AuthorizeC00Tests(unittest.TestCase):
                 self.assertIn("refused", text)
 
     # -- suspension: a failed automatic deploy stops further auto-deploys ----
+    def test_a_failed_readback_delay_suspends_auto_deploy(self):
+        runs = [(4, [("deploy", "success"), ("readback", "success"), ("readback-delay", "failure"), ("readback-confirm", "skipped")]),
+                (3, [("deploy", "success"), ("readback", "success"), ("readback-delay", "success"), ("readback-confirm", "success")])]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(out["authorized"], "false")
+        self.assertIn("suspended", text)
+
+    def test_a_failed_readback_confirm_suspends_auto_deploy(self):
+        runs = [(4, [("deploy", "success"), ("readback", "success"), ("readback-confirm", "failure")]),
+                (3, [("deploy", "success"), ("readback", "success"), ("readback-confirm", "success")])]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(out["authorized"], "false")
+        self.assertIn("suspended", text)
+
     def test_latest_deploy_failure_suspends_auto_deploy(self):
         for failed in ["deploy", "readback"]:
             with self.subTest(failed=failed):
@@ -251,6 +268,34 @@ class AuthorizeC00Tests(unittest.TestCase):
         # The owner's dispatch is the way out of a suspension.
         code, out, text = self.authorize("workflow_dispatch", actor="congvc-dev", runs=[(4, [("deploy", "failure")])])
         self.assertEqual((code, out["authorized"]), (0, "true"), text)
+
+    # -- CHE-5353: the freshness alarm's backup dispatch follows the schedule rules --
+    def test_backup_dispatch_by_the_workflow_robot_follows_the_merger_rule(self):
+        code, out, text = self.authorize("workflow_dispatch", actor="github-actions[bot]", backup="true", pulls=[pull()])
+        self.assertEqual((code, out["authorized"], out["candidate_sha"]), (0, "true", SHA), text)
+
+    def test_backup_dispatch_of_a_commit_merged_by_anyone_else_builds_and_stops(self):
+        code, out, text = self.authorize("workflow_dispatch", actor="github-actions[bot]", backup="true", pulls=[pull(merged_by="someone-else")])
+        self.assertEqual((code, out["authorized"]), (0, "false"), text)
+
+    def test_backup_dispatch_is_suspended_like_a_scheduled_run(self):
+        code, out, text = self.authorize("workflow_dispatch", actor="github-actions[bot]", backup="true", pulls=[pull()], runs=[(4, [("deploy", "failure")])])
+        self.assertEqual((code, out["authorized"]), (0, "false"), text)
+        self.assertIn("suspended", text)
+
+    def test_backup_marker_from_any_other_actor_is_refused(self):
+        for actor in ["congvc-dev", "someone-else", "", "github-actions"]:
+            with self.subTest(actor=actor):
+                self.output.write_text("")
+                code, out, text = self.authorize("workflow_dispatch", actor=actor, backup="true", pulls=[pull()])
+                self.assertNotEqual(code, 0)
+                self.assertNotEqual(out.get("authorized"), "true")
+                self.assertIn("refused", text)
+
+    def test_the_robot_without_the_marker_is_still_refused(self):
+        code, out, text = self.authorize("workflow_dispatch", actor="github-actions[bot]", pulls=[pull()])
+        self.assertNotEqual(code, 0)
+        self.assertNotEqual(out.get("authorized"), "true")
 
 
 if __name__ == "__main__":

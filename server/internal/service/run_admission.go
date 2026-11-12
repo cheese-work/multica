@@ -431,8 +431,8 @@ func (s *TaskService) noteCoalesced(ctx context.Context, err error, issue db.Iss
 // noteCoalescedIn is noteCoalesced inside the caller's transaction: the
 // pre-check refused before any insert, so the transaction is still usable and
 // the stored trigger commits or rolls back with the caller's write.
-func (s *TaskService) noteCoalescedIn(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID, source string) error {
-	if err := recordCoalescedTrigger(ctx, q, issue, agentID, pgtype.UUID{}, source); err != nil {
+func (s *TaskService) noteCoalescedIn(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
+	if err := recordCoalescedTrigger(ctx, q, issue, agentID, commentID, source); err != nil {
 		return fmt.Errorf("record coalesced trigger: %w", err)
 	}
 	return ErrDuplicatePendingTask
@@ -556,7 +556,7 @@ func (s *TaskService) ResumeParkedInputs(ctx context.Context, issueID, agentID p
 			return nil
 		}
 		// A pending run already carries the held inputs when it is claimed.
-		after, err = s.TxScoped(q).EnqueueIssueRunInTx(context.WithValue(ctx, skipRunInputKey{}, true), q, issue, pgtype.UUID{}, nil)
+		_, after, err = s.TxScoped(q).EnqueueIssueRunInTx(context.WithValue(ctx, skipRunInputKey{}, true), q, issue, pgtype.UUID{}, pgtype.UUID{}, nil)
 		if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
 			return err
 		}

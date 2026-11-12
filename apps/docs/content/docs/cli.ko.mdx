@@ -525,6 +525,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 실행 예산 액션의 링크는 이슈에서 승인을 열고, 다른 액션의 링크는 채팅의 카드로 연결되어 그곳에서 승인합니다. 일반 선택지 카드(`--action-file` 없는 `multica decision request`)는 변경을 적용할 수 없습니다. 승인해도 답변만 기록됩니다. 서버는 의도를 읽을 수 없어 그런 카드를 거부하지 않고, 결정이나 선택지가 워크플로·에이전트·스쿼드·워크스페이스·예산 변경처럼 보일 때(또는 허용 목록의 액션 유형을 담을 때) 참고용 힌트를 붙입니다. 그 변경은 `multica decision propose`로 보내세요. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다.
 
+### 대상 필드는 패스키 작업이 필요합니다
+
+작업 토큰과 클라우드 노드 토큰은 기존 경로로 다음 필드에 쓸 수 없습니다: `agent.instructions`, `squad.instructions`, `workspace.context`, 워크플로 단계와 단계 지침, 결정 작업 허용 표에 있는 워크스페이스 설정 키(`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` 등 단순 운영 키). 서버는 403과 `code: passkey_action_required`를 반환하고, 대신 제안할 작업을 `action_type`으로 알려 줍니다(`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). 저장된 값은 바뀌지 않습니다. 투표 영수증, 결정 바인딩, PASS 영수증, Hermes 예외로는 이 거부가 풀리지 않습니다. `multica decision propose <action-type>`으로 작업을 제안하면 사람이 패스키로 승인합니다. 사람의 쓰기와 `project.description`은 이전과 같습니다.
+
 ## 다른 코딩 에이전트에서 Multica 조작하기
 
 작업 대부분이 Codex, Claude Code, Cursor 안에서 이루어진다면 터미널로 전환하지 않고 그곳에서 바로 Multica를 조작할 수 있습니다. [Multica CLI skill](https://github.com/multica-ai/multica-cli)은 이 페이지의 명령을 안전하게 다루는 방법을 해당 에이전트에게 가르칩니다. 토큰을 낭비하지 않고 태스크와 댓글 스레드를 읽고, 댓글은 파일을 통해 작성하며, 멘션·상태 변경·할당이 유발하는 부수 효과를 올바르게 처리합니다.
