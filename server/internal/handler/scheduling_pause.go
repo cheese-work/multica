@@ -162,3 +162,32 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// GetAgentSchedulingImpact reads what a pause would leave waiting (CHE-5334).
+// Same gate as pause: a person who owns or administers the workspace.
+func (h *Handler) GetAgentSchedulingImpact(w http.ResponseWriter, r *http.Request) {
+	wsID := h.resolveWorkspaceID(r)
+	if wsID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return
+	}
+	if _, ok := h.requireSchedulingAdmin(w, r, wsID); !ok {
+		return
+	}
+	agent, ok := h.loadAgentForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	radius, err := h.agentBlastRadius(r.Context(), agent.ID)
+	if err != nil {
+		slog.Warn("read agent scheduling impact failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to read scheduling impact")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{
+		"running_tasks":   radius.running,
+		"queued_tasks":    radius.queued,
+		"open_issues":     radius.openIssues,
+		"enabled_wakeups": radius.wakeups,
+	})
+}
