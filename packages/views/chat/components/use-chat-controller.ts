@@ -33,7 +33,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
-import { classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
+import { DRAFT_NEW_SESSION, classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
@@ -568,7 +568,12 @@ export function useChatController(opts?: { isActive?: boolean }) {
         // Keep the draft, keep the session, and say so; the retry reuses the
         // same client_message_id, so the server stores one message (A22).
         if (classifySendFailure(err) === "unknown") {
-          if (isNewSession) setActiveSession(sessionId);
+          if (isNewSession) {
+            // The draft follows the session: a retry from the empty new-chat
+            // slot would create a second DM and store the message twice.
+            useChatStore.getState().moveInputDraft(DRAFT_NEW_SESSION, sessionId);
+            setActiveSession(sessionId);
+          }
           toast.error(t(($) => $.input.send_unconfirmed_toast));
           return false;
         }

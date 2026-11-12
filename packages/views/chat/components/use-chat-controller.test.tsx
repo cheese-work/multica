@@ -25,6 +25,7 @@ const h = vi.hoisted(() => {
     setSelectedProjectId: vi.fn((id: string | null) => {
       store.selectedProjectId = id;
     }),
+    moveInputDraft: vi.fn(),
     appliedDraftRestoreIds: [] as string[],
     markDraftRestoreApplied: vi.fn((id: string) => {
       if (!store.appliedDraftRestoreIds.includes(id)) {
@@ -67,6 +68,8 @@ const h = vi.hoisted(() => {
     // Stable across renders so tests can assert on it; lazy-creates the session
     // a new chat's first send needs.
     createSessionMutate: vi.fn(async () => ({ id: "new-session" })),
+    // What the mocked classifySendFailure returns; tests flip it to "unknown".
+    sendFailure: "rejected" as "rejected" | "unknown",
     // Foreground gate for the auto mark-read effect; tests flip it.
     appForeground: { value: true },
     consumeRestoreMutate: vi.fn(),
@@ -153,7 +156,8 @@ vi.mock("@multica/core/chat", async () => {
   // reach the mocked api with a client_message_id.
   const { api } = await import("@multica/core/api");
   return {
-  classifySendFailure: () => "rejected" as const,
+  DRAFT_NEW_SESSION: "__new__",
+  classifySendFailure: () => h.sendFailure,
   sendWithPendingId: (
     sessionId: string,
     content: string,
@@ -1133,6 +1137,7 @@ describe("useChatController durable draft restores (#5219)", () => {
 describe("useChatController.handleSend — compose target tracking", () => {
   beforeEach(() => {
     h.store.setActiveSession.mockClear();
+    h.store.moveInputDraft.mockClear();
     h.createSessionMutate.mockClear();
     h.createSessionMutate.mockResolvedValue({ id: "new-session" });
     vi.mocked(api.sendChatMessage).mockClear();
@@ -1188,6 +1193,36 @@ describe("useChatController.handleSend — compose target tracking", () => {
       expect.objectContaining({ clearEditor: true, extraDraftKeys: ["new-session"] }),
     );
     expect(h.store.setActiveSession).toHaveBeenCalledWith("new-session");
+  });
+
+  it("moves the new-chat draft to the new session on unknown delivery, and a retry reuses it (A22)", async () => {
+    h.sendFailure = "unknown";
+    vi.mocked(api.sendChatMessage).mockRejectedValueOnce(new Error("timeout"));
+    try {
+      const { commitInput, send } = sendFrom(null);
+      await send();
+
+      // Draft follows the session, so the visible composer still holds it.
+      expect(h.store.moveInputDraft).toHaveBeenCalledWith("__new__", "new-session");
+      expect(h.store.setActiveSession).toHaveBeenCalledWith("new-session");
+      expect(commitInput).not.toHaveBeenCalled();
+
+      // Retry now runs from the session slot: same session, same client id.
+      h.createSessionMutate.mockClear();
+      vi.mocked(api.sendChatMessage).mockClear();
+      const retry = renderHook(() => useChatController());
+      await act(async () => { await retry.result.current.handleSend("hello", undefined, vi.fn()); });
+      expect(h.createSessionMutate).not.toHaveBeenCalled();
+      expect(api.sendChatMessage).toHaveBeenCalledWith(
+        "new-session",
+        "hello",
+        undefined,
+        undefined,
+        expect.objectContaining({ clientMessageId: "cm-1" }),
+      );
+    } finally {
+      h.sendFailure = "rejected";
+    }
   });
 
   it("does not create or send a chat for an unbound agent", async () => {
