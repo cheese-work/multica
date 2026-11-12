@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { SchemaValidationError, parseOrThrow } from "../api/schema";
 import { AttachmentRevisionDiffSchema } from "../api/schemas";
-import { parseUnifiedDiff } from "./revision-diff";
+import type { Attachment } from "../types";
+import { chainedIssueAttachments, parseUnifiedDiff } from "./revision-diff";
 
 describe("parseUnifiedDiff", () => {
   it("turns a unified diff into hunks with line prefixes and start lines", () => {
@@ -58,5 +59,25 @@ describe("AttachmentRevisionDiffSchema", () => {
     for (const body of [null, "nope", { from: "x", to: 2, binary: false }, { from: 1, to: 2, binary: false, diff: 7 }]) {
       expect(() => parseOrThrow(body, AttachmentRevisionDiffSchema, { endpoint })).toThrow(SchemaValidationError);
     }
+  });
+});
+
+describe("chainedIssueAttachments", () => {
+  const att = (id: string, over: Partial<Attachment> = {}) =>
+    ({ id, comment_id: null, revision: 1, revision_of: null, ...over }) as Attachment;
+
+  it("keeps every member of an issue-level chain", () => {
+    const all = [att("a1"), att("a2", { revision: 2, revision_of: "a1" })];
+    expect(chainedIssueAttachments(all).map((a) => a.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("drops lone uploads, comment uploads and a missing list", () => {
+    const all = [
+      att("solo"),
+      att("c1", { comment_id: "cm" }),
+      att("c2", { comment_id: "cm", revision: 2, revision_of: "c1" }),
+    ];
+    expect(chainedIssueAttachments(all)).toEqual([]);
+    expect(chainedIssueAttachments(undefined)).toEqual([]);
   });
 });

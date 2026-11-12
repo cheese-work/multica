@@ -1,3 +1,5 @@
+import type { Attachment } from "../types";
+
 export interface DiffHunk {
   old_start: number;
   new_start: number;
@@ -22,4 +24,15 @@ export function parseUnifiedDiff(text: string): DiffHunk[] {
     }
   }
   return hunks;
+}
+
+/**
+ * Issue-level uploads that belong to a revision chain. An upload bound to the
+ * issue but to no comment has no other surface; a lone first revision stays
+ * hidden as before, a chain shows (the list collapses it to its latest).
+ */
+export function chainedIssueAttachments(all: Attachment[] | undefined): Attachment[] {
+  const issueLevel = (all ?? []).filter((a) => !a.comment_id);
+  const superseded = new Set(issueLevel.map((a) => a.revision_of).filter(Boolean));
+  return issueLevel.filter((a) => (a.revision ?? 1) >= 2 || superseded.has(a.id));
 }
