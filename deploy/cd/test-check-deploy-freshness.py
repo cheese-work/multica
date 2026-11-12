@@ -158,8 +158,42 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(gh.call_count, 3)
 
 
+def sched(created):
+    return {"id": 30, "event": "schedule", "created_at": created, "html_url": "https://example.test/run/30"}
+
+
+def at(h, m=0, day=5):
+    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+
+
+class MissedSlotTest(unittest.TestCase):
+    """cd-deploy.yml slots: 01:17, 05:17, 09:17, 13:17, 17:17, 21:17 UTC (08:17 ... 04:17 ICT). CHE-5182 reopened."""
+
+    def missed(self, now, runs):
+        return fresh.missed_slot(now, runs)
+
+    def test_slot_passed_over_30_minutes_with_no_schedule_run_is_missed(self):
+        self.assertEqual(self.missed(at(13, 48), []), at(13, 17))
+
+    def test_inside_the_30_minute_grace_nothing_is_missed(self):
+        self.assertIsNone(self.missed(at(13, 46), [sched("2026-11-05T09:20:00Z")]))
+
+    def test_a_run_created_since_the_slot_clears_it(self):
+        self.assertIsNone(self.missed(at(13, 48), [sched("2026-11-05T13:22:00Z")]))
+
+    def test_a_run_from_the_previous_slot_does_not_clear_the_new_one(self):
+        self.assertEqual(self.missed(at(13, 48), [sched("2026-11-05T09:20:00Z")]), at(13, 17))
+
+    def test_slot_before_midnight_is_found_after_midnight(self):
+        self.assertEqual(self.missed(at(21, 50, day=5), []), at(21, 17))
+        self.assertEqual(self.missed(at(0, 30, day=6), []), at(21, 17, day=5))
+
+    def test_off_slot_hours_use_the_latest_slot(self):
+        self.assertEqual(self.missed(at(3, 0), []), at(1, 17))
+
+
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -173,6 +207,8 @@ class MainTest(unittest.TestCase):
                 return json.dumps(commit)
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
+            if "workflows/cd-deploy.yml/runs" in path and "event=schedule" in path:
+                return json.dumps({"workflow_runs": list(schedule_runs)})
             if "workflows/cd-deploy.yml/runs" in path:
                 self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
@@ -217,6 +253,14 @@ class MainTest(unittest.TestCase):
         rc, out, _ = self.run_main([qual("success")], [deploy("failure")], 120, log="nothing useful\n")
         self.assertEqual(rc, 1)
         self.assertIn("::error::", out)
+
+
+    def test_missed_deploy_slot_alerts_even_when_main_is_deployed(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("09:17 UTC", out)
+        self.assertIn("16:17 ICT", out)
 
 
 class WorkflowFileTest(unittest.TestCase):
