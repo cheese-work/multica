@@ -604,3 +604,113 @@ func (f *admissionFixture) budgetIssue(t *testing.T) {
 	f.Cleanup(t, `DELETE FROM issue_workflow WHERE id = $1`, workflowID)
 	f.Exec(t, `UPDATE issue SET workflow_id = $2 WHERE id = $1`, f.issue, workflowID)
 }
+
+// CHE-4651 review round 6, P1: a handoff deferral belongs to the issue's
+// current reviewer. Once the issue went back to the author, a green head must
+// not start the reviewer; the record goes.
+func TestAdmissionReleaseDropsAHandoffRecordWhenTheIssueLeftTheReviewer(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+
+	f.Exec(t, `UPDATE issue SET assignee_id = $2, status = 'in_progress' WHERE id = $1`, f.issue, f.author)
+	f.setCheck(t, "ci", "completed", "success")
+	f.release(t, svc)
+
+	f.wantTasks(t, 0, "issue is back with the author")
+	f.wantRecord(t, false, "issue is back with the author")
+}
+
+// A deferred run on an issue that was closed meanwhile never starts.
+func TestAdmissionReleaseDropsARecordOnAClosedIssue(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+
+	f.Exec(t, `UPDATE issue SET status = 'cancelled' WHERE id = $1`, f.issue)
+	f.setCheck(t, "ci", "completed", "success")
+	f.release(t, svc)
+
+	f.wantTasks(t, 0, "cancelled issue")
+	f.wantRecord(t, false, "cancelled issue")
+}
+
+// A mention deferral does not depend on the assignee: the reviewer was asked on
+// an issue another agent holds, and still starts when the head turns green.
+func TestAdmissionReleaseStartsAMentionedReviewerOnAnotherAgentsIssue(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	svc := f.service(t)
+	security := f.Agent(t, "Security reviewer", f.runtime)
+	setAdmissionReviewers(t, f.agentID, security)
+	f.check(t, "ci", "completed", "failure")
+	if err := f.guardAs(security, "mention", true); !errors.Is(err, ErrAdmissionDeferred) {
+		t.Fatalf("mention on red CI: err = %v, want ErrAdmissionDeferred", err)
+	}
+	f.Exec(t, `UPDATE issue SET assignee_id = $2, status = 'in_progress' WHERE id = $1`, f.issue, f.author)
+	f.setCheck(t, "ci", "completed", "success")
+	f.release(t, svc)
+
+	f.wantTasks(t, 1, "mentioned reviewer, green head")
+	if _, _, _, ok := f.deferralOf(t, security); ok {
+		t.Fatal("record for the mentioned reviewer is still present after the start")
+	}
+}
+
+// releaseWith runs the release with an enqueue that always returns err.
+func (f *admissionFixture) releaseWith(t *testing.T, err error) error {
+	t.Helper()
+	return releaseAdmissionDeferrals(context.Background(), f.q, nil, func(context.Context, db.Issue, pgtype.UUID, pgtype.UUID, pgtype.UUID, string) error { return err })
+}
+
+// P2: a head the agent already answered, or an issue in triage, can never start
+// the run: the record ends, with no error on every tick.
+func TestAdmissionReleaseEndsTheRecordOnARefusalThatCannotClear(t *testing.T) {
+	for _, refusal := range []error{ErrReviewHeadAnswered, ErrIssueInTriage, fmt.Errorf("wrapped: %w", ErrReviewHeadAnswered)} {
+		f := newAdmissionFixture(t, "CLEAN")
+		f.check(t, "ci", "completed", "failure")
+		f.wantDeferred(t, "ci: failing")
+		if err := f.releaseWith(t, refusal); err != nil {
+			t.Fatalf("%v: release err = %v, want nil", refusal, err)
+		}
+		f.wantRecord(t, false, refusal.Error())
+	}
+}
+
+// A run budget refusal can clear (a person raises it), so the record stays
+// until its deadline; the tick does not fail meanwhile.
+func TestAdmissionReleaseHoldsThroughABudgetRefusalUntilExpiry(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	if err := f.releaseWith(t, ErrRunBudgetExhausted); err != nil {
+		t.Fatalf("budget refusal: release err = %v, want nil", err)
+	}
+	f.wantRecord(t, true, "budget refusal before expiry")
+
+	f.Exec(t, `UPDATE review_admission_deferral SET expires_at = now() - interval '1 hour' WHERE issue_id = $1`, f.issue)
+	if err := f.releaseWith(t, ErrRunBudgetExhausted); err != nil {
+		t.Fatalf("expired budget refusal: release err = %v, want nil", err)
+	}
+	f.wantRecord(t, false, "budget refusal after expiry")
+}
+
+// Any other refusal is reported, and a record past its deadline ends anyway, so
+// one stuck record cannot fail every tick until the PR closes.
+func TestAdmissionReleaseDoesNotKeepAnExpiredRecordOnAnUnknownRefusal(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	boom := errors.New("agent is archived")
+	if err := f.releaseWith(t, boom); !errors.Is(err, boom) {
+		t.Fatalf("before expiry: err = %v, want the refusal", err)
+	}
+	f.wantRecord(t, true, "unknown refusal before expiry")
+
+	f.Exec(t, `UPDATE review_admission_deferral SET expires_at = now() - interval '1 hour' WHERE issue_id = $1`, f.issue)
+	if err := f.releaseWith(t, boom); !errors.Is(err, boom) {
+		t.Fatalf("after expiry: err = %v, want the refusal once", err)
+	}
+	f.wantRecord(t, false, "unknown refusal after expiry")
+}

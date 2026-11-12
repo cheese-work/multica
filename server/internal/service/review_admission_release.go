@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -101,6 +102,13 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		}
 		return fmt.Errorf("load issue: %w", err)
 	}
+	// A record belongs to the run it deferred. A handoff or wakeup record is
+	// the issue's own run for its assignee: once the issue left that agent, or
+	// closed, the run is stale and must not start. A mention record does not
+	// depend on the assignee, only on the issue still being open.
+	if issueClosedForRelease(ctx, q, issue) || (r.Trigger != deferralTriggerMention && issue.AssigneeID != r.AgentID) {
+		return drop()
+	}
 	ctx = withAdmissionRecovery(ctx, admissionRecovery{IssueID: r.IssueID, AgentID: r.AgentID, Head: r.HeadSha, ExpiresAt: r.ExpiresAt.Time})
 	err = enqueue(withStageTaint(ctx, r.TaintIds), issue, r.AgentID, r.ActorUserID, r.TriggerCommentID, "")
 	switch {
@@ -117,8 +125,37 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		// ends it once the run has started.
 		slog.Info("admission release: admitted, queued behind a full stage", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha)
 		return nil
+	case errors.Is(err, ErrReviewHeadAnswered), errors.Is(err, ErrIssueInTriage):
+		return drop() // never clears for this record: the agent answered the head, or the issue is in triage
+	case errors.Is(err, ErrRunBudgetExhausted):
+		// A person can raise the budget, so the record waits for its deadline
+		// and the tick does not fail meanwhile.
+		slog.Info("admission release: run budget used up", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID))
+		if r.ExpiresAt.Time.After(time.Now()) {
+			return nil
+		}
+		return drop()
+	}
+	// Any other refusal is reported. A record past its deadline ends anyway, so
+	// one stuck record (an archived agent) cannot fail every tick until the PR closes.
+	if !r.ExpiresAt.Time.After(time.Now()) {
+		if dropErr := drop(); dropErr != nil {
+			return errors.Join(err, dropErr)
+		}
 	}
 	return err
+}
+
+// deferralTriggerMention is the trigger a mention run records (see
+// enqueueMentionTask); every other trigger is the issue's own run.
+const deferralTriggerMention = "mention"
+
+// issueClosedForRelease reports whether the issue is in a done or closed
+// status category, where a deferred run no longer starts. A failed catalog read
+// reads as open: the release then judges the run as before.
+func issueClosedForRelease(ctx context.Context, q *db.Queries, issue db.Issue) bool {
+	category, _ := issuestatus.CategoryAndName(ctx, q, issue.WorkspaceID, issue.Status)
+	return category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed
 }
 
 // ReleaseAdmissionDeferrals is the entry for the GitHub event (issueIDs of the
