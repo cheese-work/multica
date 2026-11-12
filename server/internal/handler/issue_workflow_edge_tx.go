@@ -123,6 +123,12 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 	}
 
+	if errors.Is(runRefused, service.ErrStageQueueFull) && handoffDetails != nil {
+		handoffDetails["run"] = "false"
+		handoffDetails["run_reason"] = handoffRunReasonStageQueueFull
+		delete(handoffDetails, "note")
+	}
+
 	payload := map[string]any{
 		"assignee_changed": assigneeChanged,
 		"status_changed":   true,

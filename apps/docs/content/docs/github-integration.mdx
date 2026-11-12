@@ -165,6 +165,12 @@ The comment, queued run, and review receipt commit together. GitHub redelivery c
 
 After deployment, submit a review on a test PR linked to a test issue. Read back the issue comment and the author's run. Redeliver the same review and confirm that the comment/run counts do not increase. Confirm that a bot review does not queue a run, and that a request with an invalid webhook signature is rejected.
 
+## Green-checks wakeups
+
+Set `github_wake_on_ci_success` to `true` in the workspace settings to start a run when the checks of a linked open or draft PR pass on its current head. The setting is off by default. A PR whose only unfinished check is the `security-gate` verdict status counts as passed, so the run does not wait for a review verdict that the run itself may be asked to request. A new head wakes again. A failing run that is re-run to green on the same head wakes once more. The same green delivered again does not.
+
+The run goes to the PR's author agent, resolved as for conflict and failed-check wakeups. If the author is unknown, the run goes to the issue's assignee. When the assignee is a person and no author agent is known, the person gets a notification instead.
+
 ## Wait for a GitHub Actions run
 
 A wakeup can wait for a GitHub Actions run, such as a deploy that stops at an environment approval gate, without polling. The run needs no linked PR.

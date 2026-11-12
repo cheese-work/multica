@@ -147,6 +147,10 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if err := guardReviewHeadAnswered(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
 	}
+	// Before the budget: a loop is refused whatever the budget has left.
+	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	gate, err := guardRunBudget(ctx, q, issueID, target)
 	if err != nil {
 		return ReviewGate{}, err
