@@ -76,3 +76,23 @@ func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunB
 	)
 	return i, err
 }
+
+const taintBudgetRecoveryRuns = `-- name: TaintBudgetRecoveryRuns :exec
+UPDATE agent_task_queue SET taint_ids = $1::text[]
+WHERE issue_id = $2::uuid AND task_kind = 'budget_recovery'
+  AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running')
+`
+
+type TaintBudgetRecoveryRunsParams struct {
+	Taint   []string    `json:"taint"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// A requester that joined a hook after its notice committed: the recovery run
+// already exists, so it takes the requester's taint, whether it is still queued
+// waiting for a local directory, or already started (the task trigger unions it with what the run has, and a
+// started run reads its taint on every call).
+func (q *Queries) TaintBudgetRecoveryRuns(ctx context.Context, arg TaintBudgetRecoveryRunsParams) error {
+	_, err := q.db.Exec(ctx, taintBudgetRecoveryRuns, arg.Taint, arg.IssueID)
+	return err
+}

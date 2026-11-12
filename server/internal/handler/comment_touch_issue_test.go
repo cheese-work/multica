@@ -370,8 +370,10 @@ func TestCommentMutationsFollowIssueTeardownLockOrder(t *testing.T) {
 			},
 		},
 		{
-			name:      "delete",
-			queryName: "LockCommentForDelete",
+			name: "delete",
+			// The delete's first statement takes the issues, so it is the one
+			// that waits for the owner lock.
+			queryName: "LockIssuesOfCommentDelete",
 			mutate: func(ctx context.Context, commentID string) error {
 				_, err := testHandler.deleteComment(ctx, parseUUID(commentID), parseUUID(testWorkspaceID))
 				if errors.Is(err, pgx.ErrNoRows) {

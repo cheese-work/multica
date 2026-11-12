@@ -106,6 +106,23 @@ INSERT INTO agent (
 )
 RETURNING *;
 
+-- name: LockIssuesOfAgentTaskChildren :exec
+-- Issue lock for deleting an agent. The agent's runs go with it through
+-- agent_task_queue.agent_id ON DELETE CASCADE, and each removed run nulls
+-- parent_task_id on its children (ON DELETE SET NULL). That update runs the
+-- child's taint trigger, which locks the child's issue. AuthorizeElevatedOp takes
+-- the issue lock first and then waits on the run row, so the delete must hold the
+-- child's issue before it removes the parent. Issue ids are locked in ascending
+-- order so two deletes cannot cross each other.
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT child.issue_id FROM agent_task_queue parent
+    JOIN agent_task_queue child ON child.parent_task_id = parent.id
+    WHERE parent.agent_id = ANY(@agent_ids::uuid[]) AND child.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
 -- name: DeleteSystemAgentByID :exec
 -- Builder sessions own their hidden execution agent. Deleting the session
 -- removes that carrier and its task rows; the kind guard prevents this cleanup
@@ -2292,7 +2309,7 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 -- queue or is about to still reads the issue afterwards, so each takes the
 -- writer's taint (the task trigger unions it with what the run has).
 UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory');
 
 -- name: GetTaskTaintIDs :one
 SELECT taint_ids FROM agent_task_queue WHERE id = $1;

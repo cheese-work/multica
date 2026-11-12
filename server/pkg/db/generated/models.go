@@ -2228,6 +2228,12 @@ type IssueRunBudgetEntry struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueRunTaint struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaintIds    []string    `json:"taint_ids"`
+}
+
 type IssueSearchText struct {
 	IssueID            pgtype.UUID `json:"issue_id"`
 	WorkspaceID        pgtype.UUID `json:"workspace_id"`

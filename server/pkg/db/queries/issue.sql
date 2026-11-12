@@ -156,6 +156,32 @@ WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
 
+-- name: LockIssuesOfIssueDelete :exec
+-- An issue delete removes the issue's comments through comment.issue_id
+-- ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
+-- that names it, and that update runs the run's taint trigger, which locks the
+-- run's issue. Take those issues, and the deleted issues, first in one
+-- ascending-id pass: authorization holds an issue and then asks for the run row,
+-- so the delete must hold the issue before it reaches the run row.
+-- It also removes the issue's runs through agent_task_queue.issue_id ON DELETE
+-- CASCADE. Each removed run nulls parent_task_id on its children
+-- (ON DELETE SET NULL), a child can belong to another issue, and that update
+-- runs the child's taint trigger, which locks the child's issue.
+SELECT 1 FROM issue i
+WHERE i.id = ANY(@issue_ids::uuid[])
+   OR i.id IN (
+       SELECT t.issue_id FROM agent_task_queue t
+       JOIN comment c ON c.id = t.trigger_comment_id
+       WHERE c.issue_id = ANY(@issue_ids::uuid[]) AND t.issue_id IS NOT NULL
+   )
+   OR i.id IN (
+       SELECT child.issue_id FROM agent_task_queue parent
+       JOIN agent_task_queue child ON child.parent_task_id = parent.id
+       WHERE parent.issue_id = ANY(@issue_ids::uuid[]) AND child.issue_id IS NOT NULL
+   )
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
 -- name: LockIssueForDelete :one
 -- Issue deletion must collect every attachment URL after it has won the same
 -- row-lock race used by channel media binding. FOR UPDATE conflicts with the

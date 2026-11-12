@@ -2093,6 +2093,38 @@ func (q *Queries) LockIssuesForDuplicateMark(ctx context.Context, arg LockIssues
 	return items, nil
 }
 
+const lockIssuesOfIssueDelete = `-- name: LockIssuesOfIssueDelete :exec
+SELECT 1 FROM issue i
+WHERE i.id = ANY($1::uuid[])
+   OR i.id IN (
+       SELECT t.issue_id FROM agent_task_queue t
+       JOIN comment c ON c.id = t.trigger_comment_id
+       WHERE c.issue_id = ANY($1::uuid[]) AND t.issue_id IS NOT NULL
+   )
+   OR i.id IN (
+       SELECT child.issue_id FROM agent_task_queue parent
+       JOIN agent_task_queue child ON child.parent_task_id = parent.id
+       WHERE parent.issue_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
+   )
+ORDER BY i.id
+FOR NO KEY UPDATE OF i
+`
+
+// An issue delete removes the issue's comments through comment.issue_id
+// ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
+// that names it, and that update runs the run's taint trigger, which locks the
+// run's issue. Take those issues, and the deleted issues, first in one
+// ascending-id pass: authorization holds an issue and then asks for the run row,
+// so the delete must hold the issue before it reaches the run row.
+// It also removes the issue's runs through agent_task_queue.issue_id ON DELETE
+// CASCADE. Each removed run nulls parent_task_id on its children
+// (ON DELETE SET NULL), a child can belong to another issue, and that update
+// runs the child's taint trigger, which locks the child's issue.
+func (q *Queries) LockIssuesOfIssueDelete(ctx context.Context, issueIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockIssuesOfIssueDelete, issueIds)
+	return err
+}
+
 const markIssueFirstExecuted = `-- name: MarkIssueFirstExecuted :one
 UPDATE issue
 SET first_executed_at = now()
