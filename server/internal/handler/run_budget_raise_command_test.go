@@ -82,8 +82,9 @@ func TestShownRaiseLeavesThePromisedBalanceAfterARefund(t *testing.T) {
 	wantAdmitted(t, c, p.BalanceAfter)
 }
 
-// carryDebt overdraws a cap-2 issue by n runs with member mentions, then lets a
-// member top it up: the new window holds no tasks and the balance is n-2 below zero.
+// carryDebt tops up a cap-2 issue, then overdraws the new window by n runs with
+// member mentions: the balance is 2-n, below zero for n>2. A top-up itself
+// clears old debt (CHE-5331), so the debt has to be run up after it.
 func carryDebt(t *testing.T, n int) edgeCase {
 	t.Helper()
 	ctx := context.Background()
@@ -92,16 +93,16 @@ func carryDebt(t *testing.T, n int) edgeCase {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
+	}
+	settle()
 	for i := 0; i < n; i++ {
 		comment := dbfx.Comment(t, c.issueID, "@agent please look", testutil.Cols{})
 		if _, err := testHandler.enqueueSingleCommentTrigger(ctx, issue, parseUUID(comment), trigger); err != nil {
 			t.Fatalf("member mention %d at zero refused: %v", i+1, err)
 		}
 		finishRuns(t, c)
-	}
-	settle()
-	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
-		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
 	}
 	settle()
 	return c
@@ -111,7 +112,7 @@ func TestShownRaiseLeavesThePromisedBalanceUnderCarriedDebt(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("isolated database required")
 	}
-	c := carryDebt(t, 5) // balance -5, +2 from the top-up = -3, no tasks in the window
+	c := carryDebt(t, 5) // 2 from the top-up, 5 overdrawn = -3
 	if got := ledgerBalance(t, c.issueID); got != -3 {
 		t.Fatalf("balance after the top-up = %d, want -3", got)
 	}
