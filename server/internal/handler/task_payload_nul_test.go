@@ -298,3 +298,63 @@ func TestPostgresRejectsUnsanitizedTaskPayloads(t *testing.T) {
 		}
 	})
 }
+
+// The init-context report rides the complete request into result JSONB, so its
+// note strings need the same NUL scrub as every other caller-supplied string.
+func TestCompleteTaskInitContextWithNULSucceeds(t *testing.T) {
+	ctx := context.Background()
+	_, taskID := seedNULTask(t, "nul-init-context-agent")
+
+	w := httptest.NewRecorder()
+	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{
+		"output": "done",
+		"init_context": map[string]any{"parts": []map[string]any{
+			{"part": "task", "bytes": 12, "tokens": 3, "budget": 1, "notes": []string{"over budget\x00 by 2 est. tokens"}},
+		}},
+	})
+	testHandler.CompleteTask(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("CompleteTask returned %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	var storedJSON []byte
+	if err := testPool.QueryRow(ctx, `SELECT result FROM agent_task_queue WHERE id = $1`, taskID).Scan(&storedJSON); err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var stored struct {
+		InitContext *struct {
+			Parts []struct {
+				Part  string   `json:"part"`
+				Notes []string `json:"notes"`
+			} `json:"parts"`
+		} `json:"init_context"`
+	}
+	if err := json.Unmarshal(storedJSON, &stored); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if stored.InitContext == nil || len(stored.InitContext.Parts) != 1 {
+		t.Fatalf("stored result has no init_context: %s", storedJSON)
+	}
+	if got := stored.InitContext.Parts[0].Notes; len(got) != 1 || got[0] != "over budget by 2 est. tokens" {
+		t.Fatalf("stored notes = %q, want the NUL removed", got)
+	}
+}
+
+// Daemons that predate the report omit the field; the completion still lands.
+func TestCompleteTaskWithoutInitContextSucceeds(t *testing.T) {
+	ctx := context.Background()
+	_, taskID := seedNULTask(t, "no-init-context-agent")
+
+	w := httptest.NewRecorder()
+	testHandler.CompleteTask(w, daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/complete", taskID, map[string]any{"output": "done"}))
+	if w.Code != http.StatusOK {
+		t.Fatalf("CompleteTask returned %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var hasKey bool
+	if err := testPool.QueryRow(ctx, `SELECT result ? 'init_context' FROM agent_task_queue WHERE id = $1`, taskID).Scan(&hasKey); err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if hasKey {
+		t.Fatal("result carries init_context although the request had none")
+	}
+}

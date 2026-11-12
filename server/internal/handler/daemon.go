@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
@@ -5215,6 +5216,9 @@ type TaskCompleteRequest struct {
 		Tokens int64 `json:"tokens"`
 		Window int64 `json:"window"`
 	} `json:"context,omitempty"`
+	// InitContext is the daemon's first-prompt token report, stored as part of
+	// the run's result. Optional: daemons that predate it omit it.
+	InitContext *initctx.Report `json:"init_context,omitempty"`
 }
 
 // sanitizeTaskCompleteRequest / sanitizeTaskFailRequest scrub every
@@ -5232,6 +5236,15 @@ func sanitizeTaskCompleteRequest(req *TaskCompleteRequest) {
 	req.DurableWorkDir = util.SanitizeTextForPostgres(req.DurableWorkDir)
 	req.BranchName = util.SanitizeTextForPostgres(req.BranchName)
 	req.RetiredSessionID = util.SanitizeTextForPostgres(req.RetiredSessionID)
+	if req.InitContext != nil {
+		for i := range req.InitContext.Parts {
+			p := &req.InitContext.Parts[i]
+			p.Part = initctx.Part(util.SanitizeTextForPostgres(string(p.Part)))
+			for j := range p.Notes {
+				p.Notes[j] = util.SanitizeTextForPostgres(p.Notes[j])
+			}
+		}
+	}
 }
 
 func sanitizeTaskFailRequest(req *TaskFailRequest) {
