@@ -419,3 +419,36 @@ func TestCardAnswerOnNeedDecisionIssueRunsNobodyWhenTheAssigneeIsDeniedAndTheAsk
 		test.Fatalf("restricted assignee runs = %d, want 0", count)
 	}
 }
+
+// A card answer must show on the read an agent makes, or the agent keeps
+// treating the request as open (CHE-5229).
+func TestDecisionGetCarriesTheAnswerCheeseGave(test *testing.T) {
+	fixture := newCardFixture(test)
+	id := uuidToString(fixture.decision.ID)
+	var open map[string]any
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&open)
+	if _, has := open["answer"]; has {
+		test.Fatalf("open request carries an answer: %+v", open)
+	}
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "can you double check"}); err != nil {
+		test.Fatal(err)
+	}
+	var fetched struct {
+		Status string `json:"status"`
+		Answer *struct {
+			AnsweredByUserID string  `json:"answered_by_user_id"`
+			AnswerSource     string  `json:"answer_source"`
+			Text             string  `json:"content_snapshot"`
+			ChosenOption     *int    `json:"chosen_option_index"`
+			CreatedAt        string  `json:"created_at"`
+			DisclaimedAt     *string `json:"disclaimed_at"`
+		} `json:"answer"`
+	}
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&fetched)
+	if fetched.Status != "answered" || fetched.Answer == nil {
+		test.Fatalf("answered request has no answer on read: %+v", fetched)
+	}
+	if fetched.Answer.AnsweredByUserID != fixture.humanID || fetched.Answer.AnswerSource != "card" || fetched.Answer.Text != "can you double check" || fetched.Answer.ChosenOption != nil || fetched.Answer.CreatedAt == "" || fetched.Answer.DisclaimedAt != nil {
+		test.Fatalf("wrong answer on read: %+v", fetched.Answer)
+	}
+}
