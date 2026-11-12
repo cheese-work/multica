@@ -92,6 +92,12 @@ vi.mock("./routing-agent-rows", () => ({
   ),
 }));
 
+vi.mock("./delegated-writes-section", () => ({
+  DelegatedWritesSection: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="delegated-writes-section" data-can-edit={String(canEdit)} />
+  ),
+}));
+
 vi.mock("./delete-workspace-dialog", () => ({
   DeleteWorkspaceDialog: () => null,
 }));
@@ -312,6 +318,17 @@ describe("WorkspaceTab — automatic updates", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
 
     expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
+  });
+
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit delegated governed writes: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("delegated-writes-section")).toHaveAttribute("data-can-edit", canEdit);
   });
 
   it.each([

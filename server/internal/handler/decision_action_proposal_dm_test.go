@@ -157,19 +157,36 @@ func TestProposalFromChatTaskRefusesABadAnchor(test *testing.T) {
 	}
 }
 
-func TestProposalOfTheSameActionInTheIssueLaneAndTheDMAreTwoRequests(test *testing.T) {
+func TestProposalOfTheSameActionFromTheIssueTaskAndTheDMAreTwoRequestsInOneDM(test *testing.T) {
 	fixture := newDMProposalFixture(test)
 	body := fixture.proposal(test)
-	inLane := fixture.propose(test, body, http.StatusCreated)
-	inDM := fixture.dmPropose(test, fixture.dmBody(test), http.StatusCreated)
-	if inLane.ID == inDM.ID || inLane.ChatSessionID == inDM.ChatSessionID || inDM.ChatSessionID != fixture.sessionID {
-		test.Fatalf("lane request %s in %s, DM request %s in %s", inLane.ID, inLane.ChatSessionID, inDM.ID, inDM.ChatSessionID)
+	fromIssue := fixture.propose(test, body, http.StatusCreated)
+	fromDM := fixture.dmPropose(test, fixture.dmBody(test), http.StatusCreated)
+	if fromIssue.ID == fromDM.ID || fromIssue.ChatSessionID != fixture.sessionID || fromDM.ChatSessionID != fixture.sessionID {
+		test.Fatalf("issue request %s in %s, DM request %s in %s, want two requests in %s", fromIssue.ID, fromIssue.ChatSessionID, fromDM.ID, fromDM.ChatSessionID, fixture.sessionID)
 	}
 	if fixture.proposalRows(test) != 2 {
 		test.Fatalf("rows = %d, want 2", fixture.proposalRows(test))
 	}
-	if !strings.Contains(inDM.Ask, "Proposed action") {
-		test.Fatalf("ask = %q", inDM.Ask)
+	if !strings.Contains(fromDM.Ask, "Proposed action") {
+		test.Fatalf("ask = %q", fromDM.Ask)
+	}
+}
+
+// An issue task asks the person in the DM they already have with the agent,
+// the most recently active one, not in a lane they never opened (CHE-5253).
+func TestProposalFromIssueTaskLandsInTheLatestDMWithTheAgent(test *testing.T) {
+	fixture := newDMProposalFixture(test)
+	older := dbfx.ChatSession(test, fixture.agentID, testutil.Cols{"creator_id": fixture.humanID, "explicitly_created_at": testutil.Raw("now()")})
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() - interval '1 hour' WHERE id = $1`, older)
+	dbfx.Exec(test, `UPDATE chat_session SET updated_at = now() WHERE id = $1`, fixture.sessionID)
+	lanesBefore := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE creator_id = $1`, fixture.humanID)
+	view := fixture.propose(test, fixture.proposal(test), http.StatusCreated)
+	if view.ChatSessionID != fixture.sessionID {
+		test.Fatalf("card landed in %s, want the latest DM %s", view.ChatSessionID, fixture.sessionID)
+	}
+	if lanes := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE creator_id = $1`, fixture.humanID); lanes != lanesBefore {
+		test.Fatalf("a new session was created: %d -> %d", lanesBefore, lanes)
 	}
 }
 
