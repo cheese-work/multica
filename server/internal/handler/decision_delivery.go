@@ -428,6 +428,17 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
 	}
+	if eligible && snapshot.kind == "" {
+		// An approved or declined action already did its effect; its platform
+		// comment starts no run (CHE-5287). Resume after a hold is CHE-2860.
+		for _, request := range snapshot.requests {
+			if _, err := queries.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: workspaceID}); err == nil {
+				eligible = false
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				return false, err
+			}
+		}
+	}
 	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
 	if eligible && snapshot.recipient.ID.Valid && isServerDecision(snapshot.request) {
 		// The platform picked this asker, not the person, so the answer runs the
