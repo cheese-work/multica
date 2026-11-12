@@ -12,7 +12,7 @@ import (
 )
 
 const getOpenRunBudgetRefusal = `-- name: GetOpenRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at FROM run_budget_refusal
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal
 WHERE issue_id = $1 AND window_id = $2
   AND state IN ('open', 'resume_pending', 'still_blocked')
 `
@@ -44,12 +44,14 @@ func (q *Queries) GetOpenRunBudgetRefusal(ctx context.Context, arg GetOpenRunBud
 		&i.ResumeWindowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
 }
 
 const getRunBudgetRefusal = `-- name: GetRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at FROM run_budget_refusal WHERE id = $1
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1
 `
 
 func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
@@ -73,6 +75,380 @@ func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunB
 		&i.ResumeWindowID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
 	)
 	return i, err
+}
+
+const getRunBudgetRefusalByWindow = `-- name: GetRunBudgetRefusalByWindow :one
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
+`
+
+type GetRunBudgetRefusalByWindowParams struct {
+	IssueID  pgtype.UUID `json:"issue_id"`
+	WindowID string      `json:"window_id"`
+}
+
+func (q *Queries) GetRunBudgetRefusalByWindow(ctx context.Context, arg GetRunBudgetRefusalByWindowParams) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, getRunBudgetRefusalByWindow, arg.IssueID, arg.WindowID)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+	)
+	return i, err
+}
+
+const insertRunBudgetRefusal = `-- name: InsertRunBudgetRefusal :one
+INSERT INTO run_budget_refusal (
+    id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger,
+    state, state_reason, taint_ids, hook_phase)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'intent')
+ON CONFLICT (issue_id, window_id) DO NOTHING
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
+`
+
+type InsertRunBudgetRefusalParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	WorkspaceID          pgtype.UUID `json:"workspace_id"`
+	IssueID              pgtype.UUID `json:"issue_id"`
+	WindowID             string      `json:"window_id"`
+	Status               pgtype.Text `json:"status"`
+	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
+	Blocked              bool        `json:"blocked"`
+	AgentID              pgtype.UUID `json:"agent_id"`
+	Trigger              string      `json:"trigger"`
+	State                string      `json:"state"`
+	StateReason          pgtype.Text `json:"state_reason"`
+	TaintIds             []string    `json:"taint_ids"`
+}
+
+// Tx R of the exhaustion hook (CHE-2798 A1c1b): a retry finds the row already
+// there and gets no row back.
+func (q *Queries) InsertRunBudgetRefusal(ctx context.Context, arg InsertRunBudgetRefusalParams) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, insertRunBudgetRefusal,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.WindowID,
+		arg.Status,
+		arg.OccurrenceActivityID,
+		arg.Blocked,
+		arg.AgentID,
+		arg.Trigger,
+		arg.State,
+		arg.StateReason,
+		arg.TaintIds,
+	)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+	)
+	return i, err
+}
+
+const listStaleRunBudgetHooks = `-- name: ListStaleRunBudgetHooks :many
+SELECT id FROM run_budget_refusal
+WHERE hook_phase IN ('intent', 'blocked') AND updated_at < $1::timestamptz
+ORDER BY updated_at
+LIMIT 50
+`
+
+// Hooks a crashed callback left unfinished: the sweep advances them.
+func (q *Queries) ListStaleRunBudgetHooks(ctx context.Context, before pgtype.Timestamptz) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listStaleRunBudgetHooks, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockRunBudgetRefusal = `-- name: LockRunBudgetRefusal :one
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, lockRunBudgetRefusal, id)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+	)
+	return i, err
+}
+
+const markRunBudgetRefusalBlocked = `-- name: MarkRunBudgetRefusalBlocked :exec
+UPDATE run_budget_refusal
+SET hook_phase = 'blocked', blocked = true, occurrence_activity_id = $1::uuid, updated_at = now()
+WHERE id = $2::uuid AND hook_phase = 'intent'
+`
+
+type MarkRunBudgetRefusalBlockedParams struct {
+	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
+	ID                   pgtype.UUID `json:"id"`
+}
+
+// Tx B's phase advance, written in the block's own transaction: the refusal's
+// block is the status occurrence that move recorded.
+func (q *Queries) MarkRunBudgetRefusalBlocked(ctx context.Context, arg MarkRunBudgetRefusalBlockedParams) error {
+	_, err := q.db.Exec(ctx, markRunBudgetRefusalBlocked, arg.OccurrenceActivityID, arg.ID)
+	return err
+}
+
+const mergeRunBudgetRefusalTaint = `-- name: MergeRunBudgetRefusalTaint :exec
+UPDATE run_budget_refusal
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || $1::text[]) AS t ORDER BY t)
+WHERE id = $2::uuid AND NOT taint_ids @> $1::text[]
+`
+
+type MergeRunBudgetRefusalTaintParams struct {
+	Taint []string    `json:"taint"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// A later requester of the same window joins the hook that answers it: the
+// recovery run carries the taint of every request the hook answers. A subset
+// writes nothing.
+func (q *Queries) MergeRunBudgetRefusalTaint(ctx context.Context, arg MergeRunBudgetRefusalTaintParams) error {
+	_, err := q.db.Exec(ctx, mergeRunBudgetRefusalTaint, arg.Taint, arg.ID)
+	return err
+}
+
+const newestIssueStatusChange = `-- name: NewestIssueStatusChange :one
+SELECT id,
+       COALESCE(details->'trigger'->'cause'->>'kind', '')::text AS cause_kind,
+       COALESCE(details->'trigger'->'cause'->'ref'->>'refusal_id', '')::text AS refusal_id
+FROM activity_log
+WHERE issue_id = $1 AND action = 'status_changed'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type NewestIssueStatusChangeRow struct {
+	ID        pgtype.UUID `json:"id"`
+	CauseKind string      `json:"cause_kind"`
+	RefusalID string      `json:"refusal_id"`
+}
+
+// The status occurrence the issue is in: its newest status_changed row, with the
+// cause kind and the refusal a run-budget block named.
+func (q *Queries) NewestIssueStatusChange(ctx context.Context, issueID pgtype.UUID) (NewestIssueStatusChangeRow, error) {
+	row := q.db.QueryRow(ctx, newestIssueStatusChange, issueID)
+	var i NewestIssueStatusChangeRow
+	err := row.Scan(&i.ID, &i.CauseKind, &i.RefusalID)
+	return i, err
+}
+
+const retireRunBudgetRefusalHook = `-- name: RetireRunBudgetRefusalHook :exec
+UPDATE run_budget_refusal
+SET hook_phase = 'retired', hook_reason = $1::text, updated_at = now()
+WHERE id = $2::uuid AND hook_generation = $3::int AND hook_phase IN ('intent', 'blocked')
+`
+
+type RetireRunBudgetRefusalHookParams struct {
+	Reason     string      `json:"reason"`
+	ID         pgtype.UUID `json:"id"`
+	Generation int32       `json:"generation"`
+}
+
+// Ends an unfinished hook of one generation with a reason: a revived hook is
+// not retired by a step of an older one. The refusal's own state is left to the
+// supersession writers.
+func (q *Queries) RetireRunBudgetRefusalHook(ctx context.Context, arg RetireRunBudgetRefusalHookParams) error {
+	_, err := q.db.Exec(ctx, retireRunBudgetRefusalHook, arg.Reason, arg.ID, arg.Generation)
+	return err
+}
+
+const reviveRunBudgetRefusal = `-- name: ReviveRunBudgetRefusal :one
+UPDATE run_budget_refusal
+SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
+    state_reason = $7, state = $8, taint_ids = $9, hook_phase = 'intent', hook_reason = NULL,
+    hook_generation = hook_generation + 1, updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
+`
+
+type ReviveRunBudgetRefusalParams struct {
+	ID                   pgtype.UUID `json:"id"`
+	Status               pgtype.Text `json:"status"`
+	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
+	Blocked              bool        `json:"blocked"`
+	AgentID              pgtype.UUID `json:"agent_id"`
+	Trigger              string      `json:"trigger"`
+	StateReason          pgtype.Text `json:"state_reason"`
+	State                string      `json:"state"`
+	TaintIds             []string    `json:"taint_ids"`
+}
+
+// A refusal of a window whose row no longer applies (its hook ran or was
+// retired, or a status move superseded it) is a new refusal: the row starts
+// again at intent for the new occurrence. The window's notice claims stay, so
+// the notice and the recovery run are not given twice.
+func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudgetRefusalParams) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, reviveRunBudgetRefusal,
+		arg.ID,
+		arg.Status,
+		arg.OccurrenceActivityID,
+		arg.Blocked,
+		arg.AgentID,
+		arg.Trigger,
+		arg.StateReason,
+		arg.State,
+		arg.TaintIds,
+	)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+	)
+	return i, err
+}
+
+const setRunBudgetRefusalHook = `-- name: SetRunBudgetRefusalHook :exec
+UPDATE run_budget_refusal
+SET hook_phase = $1::text,
+    hook_reason = $2::text,
+    blocked = COALESCE($3::boolean, blocked),
+    occurrence_activity_id = COALESCE($4::uuid, occurrence_activity_id),
+    updated_at = now()
+WHERE id = $5::uuid
+`
+
+type SetRunBudgetRefusalHookParams struct {
+	HookPhase            string      `json:"hook_phase"`
+	HookReason           pgtype.Text `json:"hook_reason"`
+	Blocked              pgtype.Bool `json:"blocked"`
+	OccurrenceActivityID pgtype.UUID `json:"occurrence_activity_id"`
+	ID                   pgtype.UUID `json:"id"`
+}
+
+// Advances the hook. A NULL occurrence keeps the stored one.
+func (q *Queries) SetRunBudgetRefusalHook(ctx context.Context, arg SetRunBudgetRefusalHookParams) error {
+	_, err := q.db.Exec(ctx, setRunBudgetRefusalHook,
+		arg.HookPhase,
+		arg.HookReason,
+		arg.Blocked,
+		arg.OccurrenceActivityID,
+		arg.ID,
+	)
+	return err
+}
+
+const supersedeRunBudgetRefusalsExcept = `-- name: SupersedeRunBudgetRefusalsExcept :exec
+UPDATE run_budget_refusal
+SET state = 'superseded', state_reason = 'later_window',
+    hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'later_window' ELSE hook_reason END,
+    updated_at = now()
+WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked')
+`
+
+type SupersedeRunBudgetRefusalsExceptParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+// A refusal for a later window ends every earlier non-terminal refusal of the
+// issue and its unfinished hook (P2r supersession a).
+func (q *Queries) SupersedeRunBudgetRefusalsExcept(ctx context.Context, arg SupersedeRunBudgetRefusalsExceptParams) error {
+	_, err := q.db.Exec(ctx, supersedeRunBudgetRefusalsExcept, arg.IssueID, arg.ID)
+	return err
+}
+
+const supersedeRunBudgetRefusalsOnStatusChange = `-- name: SupersedeRunBudgetRefusalsOnStatusChange :exec
+UPDATE run_budget_refusal
+SET state = 'superseded', state_reason = 'status_moved',
+    hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'status_moved' ELSE hook_reason END,
+    updated_at = now()
+WHERE issue_id = $1 AND state IN ('open', 'resume_pending', 'still_blocked')
+`
+
+// A status move starts its own work: every non-terminal refusal of the issue
+// ends, and so does its unfinished hook (P2r supersession b).
+func (q *Queries) SupersedeRunBudgetRefusalsOnStatusChange(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, supersedeRunBudgetRefusalsOnStatusChange, issueID)
+	return err
 }
