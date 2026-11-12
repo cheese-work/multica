@@ -2212,6 +2212,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.With(handler.RequireHumanActor).Put("/jev", h.SetAgentDecisionJev)
 			})
 
+			// System 1 labels (CHE-4383 B4a): the assigned labeller agent writes with a
+			// task token; the owner assigns the labeller and a task token must not.
+			r.Route("/api/system1", func(r chi.Router) {
+				r.Post("/labels", h.WriteSystem1Label)
+				r.With(handler.RequireHumanActor).Put("/labellers", h.SetSystem1Labeller)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)

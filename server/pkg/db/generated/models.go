@@ -3301,6 +3301,9 @@ type System1Label struct {
 	Label         string             `json:"label"`
 	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
 type System1Observation struct {
