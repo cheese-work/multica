@@ -315,6 +315,10 @@ python3 deploy/cd/test-candidate-preflight.py
 python3 deploy/cd/test-deploy-approval.py
 python3 deploy/cd/test-authorize-c00.py
 python3 deploy/cd/test-post-deploy-readback.py
+python3 deploy/cd/test-post-deploy-confirm.py
+python3 deploy/cd/test-health-window.py
+python3 deploy/cd/test-install-health-observer.py
+python3 .github/scripts/test_ci_wait_policy.py
 python3 deploy/cd/test-rollback-failed-readback.py
 bash deploy/cd/test-isolated-qualification.sh
 bash deploy/cd/test-tuple-snapshot.sh
@@ -656,6 +660,13 @@ there with "nothing new to deploy": no C00 runner, lock or approval is taken.
 The automatic path adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need (CHE-4582: the automatic path deploys only for an
 authorized merger, below). The resolved candidate SHA is in the `schedule-resolve` job summary.
+GitHub can drop a scheduled slot. When no `schedule` run exists 30 minutes after a slot,
+the freshness alarm (`cd-freshness-watch.yml`) stays red and sends one
+`gh workflow run cd-deploy.yml --ref main -f schedule_backup=true` (CHE-5353), skipped when any
+`cd-deploy.yml` run on `main` was created since the slot. The `schedule_backup` marker makes that
+run take the scheduled path: `schedule-resolve`, `candidate-preflight`, the merger check and the
+suspension check, exactly as a scheduled run. `authorize-c00` accepts the marker only from
+`github-actions[bot]` and refuses any other sender; the owner dispatches without the marker.
 
 `candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate
@@ -720,18 +731,78 @@ job is skipped; a GitHub API error fails the job closed. Every C00-touching job
 The `c00-runtime` deployment-branch policy allows `main` only, so a dispatch
 from another ref gets no `c00-runtime` secrets.
 
-After `deploy` succeeds, `readback` (outside the C00 lock) runs
-`post-deploy-readback.sh` for 15 minutes (CHE-2365): health of the public route
-and upstream, then the running commit (the deployed one or a descendant) and the
-image digests against the admitted manifest. A failed `deploy` or `readback`
+After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
+(CHE-2365, CHE-5175), in three jobs outside the C00 lock:
+
+1. `readback` runs `post-deploy-readback.sh` and holds the C00 runner for at most
+   2 minutes. It waits for the public route and upstream to turn healthy (one
+   sample per try, `READBACK_RETRY_SECONDS` apart), then reads the running commit.
+   A descendant of the deployed commit means a newer deploy already landed: the
+   readback passes without arming, and that deploy's own journal and digest check
+   apply. Otherwise it **arms the health observer** (`health-window.mjs arm`,
+   journal `OBSERVATION_ID` = `<run id>-<attempt>`). Under the observer's lock, arm
+   re-reads the live commit (`live-application-sha.sh`); if it is no longer the
+   deployed one, arm exits 3 and touches no journal, and the readback re-reads and
+   passes for a descendant or fails. Arm records T0 (epoch seconds) and the container
+   identity, takes slot 0, and does not return until the native systemd timer has
+   taken a passing sample (`READBACK_ARM_VERIFY_SECONDS`, default 30). If the timer is
+   not installed or does not fire, the readback fails and nothing is watched
+   unobserved. It then checks the image digests against the admitted manifest, and
+   records the active colour's Docker restart count (`restart-count.sh`). T0, the
+   observation id and the restart count are job outputs.
+2. `readback-delay` is the 15-minute wait timer of the `c00-readback-delay`
+   environment. A waiting job holds no runner. It runs on a hosted runner
+   because a job can use only one environment and the C00 secrets stay in
+   `c00-runtime`.
+3. `readback-confirm` runs `post-deploy-confirm.sh` on the C00 runner for about
+   10 seconds. It verifies the journal and the events; it does not watch.
+
+The observer is `multica-health-observer.timer` on C00 (installed once by
+`install-health-observer.sh STATE_DIR RUN_USER`, which is C00 configuration and
+needs the owner's approval). Every 5 s it runs `health-window.mjs tick`, which does
+nothing until a readback arms an observation. For the armed observation it takes
+one sample per 10 s slot, T0 to T0+900 inclusive (91 samples), by running
+`ab-health-check.sh --window 0` (selected backend `/readyz`, routed API `/health`,
+routed web `/`, each with a bounded timeout). The journal is
+`$C00_STATE_DIR/health-observer/<observation>/` (`meta.json`, `samples.jsonl`,
+`state.json`); each sample records its scheduled slot, actual start and end, the
+source (`arm`, `timer` or `manual`), the systemd invocation id, the active colour,
+the container ids and the result. A failed sample stays failed after recovery. The
+observer holds no CI lock, runner or agent run.
+
+`post-deploy-confirm.sh` fails (and so suspends automatic deploys and starts the
+rollback) unless: at least `CONFIRM_WINDOW_SECONDS` (900) passed since T0; C00 runs
+the deployed commit with the admitted image digests, or runs a newer deploy that
+descends from this one (that deploy's own journal and confirm then judge its own
+window, and the older window is not judged); the journal verifies (`health-window.mjs
+verify`: present, readable, not truncated, this deploy's id and commit, not
+superseded, no replaced containers or identity change, exactly one passing sample
+in every slot including the last, each taken by the native timer, slot 0 by the arm step); the
+route answers once more; `docker events` since T0 shows no `health_status:
+unhealthy`, `die`, `oom` or `restart` for the active colour's backend and frontend;
+and the restart count did not grow. A newer deploy arms its own observation, which
+supersedes an older open journal; journals are never mixed. An older readback that
+reaches arm after a newer deploy is refused (exit 3) and never supersedes it.
+
+The wait timer starts when `readback` finishes, after T0, so the last slot (T0+900)
+is normally sampled before `readback-confirm` starts. If it is not, verify fails
+closed rather than pass an unobserved slot.
+
+`c00-readback-delay` is a repository setting, not workflow code: deployment
+branches `main` only (like `c00-runtime`), a wait timer of 15 minutes, no
+secrets and no reviewers. Create it before the first deploy after this change;
+without it the first run creates the environment with no wait timer and the
+window is not watched.
+
+A failed `deploy`, `readback`, `readback-delay` or `readback-confirm`
 suspends automatic deploys: the next `authorize-c00` walks the finished `main`
 runs of this workflow, newest first, 100 per page and at most 5 pages, until one
-had a `deploy`/`readback` job that succeeded or failed. A failure there means
+had a `deploy`/`readback`/`readback-delay`/`readback-confirm` job that succeeded or failed. A failure there means
 suspended, however many built-and-stopped runs came since. Finding no deploy in
 all 5 pages is unknown and stays suspended; a history that ends sooner (never
 deployed) is not suspended. A later successful deploy, such as the owner's
 dispatch, lifts it; a dispatch is never suspended. A failed cutover rolls back
-by digest inside `cutover.sh`. A failed `readback` also starts the `rollback`
+by digest inside `cutover.sh`. A failed `readback`, `readback-delay` or `readback-confirm` also starts the `rollback`
 job, under the C00 lock: `rollback-failed-readback.sh` runs `cutover.sh
 rollback` (retained predecessor, no down migration, no restore) and reads back
 the health and SHA. It identifies the live commit with `live-application-sha.sh`,
@@ -749,7 +820,12 @@ person. Merge-queue merges report the enqueuer or merger as
 An empty dispatch (no `candidate_sha`, no evidence path) deploys the newest
 `main` commit with a successful qualification push run: `resolve-candidate`
 picks it after `authorize-c00` and prints it in the job summary (CHE-4998); with
-none it fails. An authorized qualification passes its own head SHA through the
+none it fails. When that commit is behind `main`, the summary says how many
+commits and since when, with the newest `main` qualification run link; more than
+20 commits or 2 h behind adds a `::warning` and one line on CHE-4960, posted by
+`notify-stale-candidate` on X99 (`post-stale-notice.sh`; needs the
+`CD_NOTICE_MULTICA_TOKEN` secret, warns only without it). The deployed commit is
+unchanged (CHE-5352). An authorized qualification passes its own head SHA through the
 same job, so every job behind it reads one `sha` output.
 A dispatch with
 `candidate_sha` looks up the successful `main` push qualification run and issues

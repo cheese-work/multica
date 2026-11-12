@@ -2292,7 +2292,7 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 -- queue or is about to still reads the issue afterwards, so each takes the
 -- writer's taint (the task trigger unions it with what the run has).
 UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory');
 
 -- name: GetTaskTaintIDs :one
 SELECT taint_ids FROM agent_task_queue WHERE id = $1;
@@ -3595,12 +3595,13 @@ WHERE id = @id
 -- untouched; only ClaimAgentTask and its candidate lists skip the agent.
 UPDATE agent
 SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id),
+    scheduling_paused_reason = COALESCE(scheduling_paused_reason, sqlc.narg('reason')::text)
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
 -- name: ResumeAgentScheduling :one
 UPDATE agent
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
