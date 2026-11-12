@@ -92,6 +92,23 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("github.event_name == 'schedule'", notify["if"])
         self.assertIn("needs.authorize-c00.outputs.authorized != 'true'", notify["if"])
 
+    def test_notice_route_needs_only_the_token_secret(self):
+        # CHE-4879 reopen: only the PAT is a secret. The server URL, workspace, issue and
+        # member are plain defaults, so an unset secret never leaves the route empty. A
+        # secret of the same name still overrides the default.
+        step = next(s for s in self.jobs["notify-approval"]["steps"] if "notify-approval.sh" in s.get("run", ""))
+        env = step["env"]
+        self.assertEqual(env["MULTICA_TOKEN"], "${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}")
+        defaults = {
+            "MULTICA_SERVER_URL": ("C00_APPROVAL_MULTICA_SERVER_URL", "https://congvc-c00.taila6fa8a.ts.net:19444"),
+            "MULTICA_WORKSPACE_ID": ("C00_APPROVAL_MULTICA_WORKSPACE_ID", "f2b734e0-b6de-4414-8a27-a2f69b0ef843"),
+            "MULTICA_NOTIFY_ISSUE": ("C00_APPROVAL_MULTICA_ISSUE", "01a1bff0-6ccc-7873-9ac8-580037bc5206"),
+            "MULTICA_NOTIFY_MEMBER_ID": ("C00_APPROVAL_MULTICA_MEMBER_ID", "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff"),
+        }
+        for name, (secret, default) in defaults.items():
+            with self.subTest(env=name):
+                self.assertEqual(env[name], f"${{{{ secrets.{secret} || '{default}' }}}}")
+
     def test_notice_links_the_dispatch_page_with_the_full_candidate(self):
         notify = json.dumps(self.jobs["notify-approval"]["steps"])
         self.assertIn("actions/workflows/cd-deploy.yml", notify)
