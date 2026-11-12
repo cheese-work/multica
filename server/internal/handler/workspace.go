@@ -467,6 +467,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// struct fields case-insensitively).
 	actorType, actorID := h.resolveActor(r, requestUserID(r), id)
 
+	// CHE-3482: a machine identity needs a passkey-approved action for the
+	// context and for the settings the allow table covers. Before every older
+	// exception below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Context != nil, workspaceContextAction) {
+		return
+	}
+	if refuseMachineCoveredWrite(w, r, actorType, req.CompactPrompt != nil || req.AutoCompact != nil || req.IdleStartedGuard != nil || req.WakeupsPaused != nil, settingsPatchAction) {
+		return
+	}
+
 	// CHE-764: a single, human-approved, narrowly-scoped exception to the
 	// CHE-455 rule immediately above — see
 	// governed_instruction_hermes_exception.go for the full predicate and
@@ -515,13 +525,9 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var rawFields map[string]json.RawMessage
 	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	// CHE-1862: the vote receipt entry; only a human reaches it.
 	if voteEntered(actorType, req.Context != nil, rawFields) {
 		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
-		return
-	}
-
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
 		return
 	}
 
@@ -680,6 +686,10 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var rejected settingsRejectedError
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
+		return
+	}
+	if errors.Is(err, errSettingsPasskeyRequired) {
+		writePasskeyActionRequired(w, settingsPatchAction)
 		return
 	}
 	if errors.As(err, &rejected) {
