@@ -35,6 +35,7 @@ func TestDeliverDecisionWakeReceiptByRecipientTaskState(test *testing.T) {
 		test.Run(state, func(test *testing.T) {
 			fixture, recorded := answeredActionFixture(test)
 			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+			finalizeAnswerWake(test, fixture)
 			want := map[string]string{"queued": "merged_into_queued", "running": "planned_input", "idle": "run_enqueued"}[state]
 			var active string
 			if state != "idle" {
@@ -73,6 +74,7 @@ func TestDeliverDecisionWakeReceiptSkipsArchivedRecipientAndDeliversOther(test *
 		test.Fatal(err)
 	}
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
 	dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, leader)
 	for _, agent := range []string{leader, fixture.agentID} {
 		if err := testHandler.deliverDecisionWakeReceipt(context.Background(), receiptIDFor(test, fixture.decision.ID, agent)); err != nil {

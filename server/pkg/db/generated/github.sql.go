@@ -403,6 +403,37 @@ func (q *Queries) GetPendingGitHubInstallation(ctx context.Context, installation
 	return i, err
 }
 
+const hasAgentVerdictForHead = `-- name: HasAgentVerdictForHead :one
+SELECT EXISTS (
+    SELECT 1 FROM comment
+    WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
+      AND deleted_at IS NULL
+      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
+      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left($3::text, 7))
+)
+`
+
+type HasAgentVerdictForHeadParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	HeadSha string      `json:"head_sha"`
+}
+
+// Whether the agent already commented its verdict on the issue for this PR
+// head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
+// (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
+// "Head:" line that names the head by its first seven characters at least.
+// Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
+// verdict for another head from counting. The markers are upper case on
+// purpose, so prose such as "this may fail" is not a verdict. A comment in
+// another shape does not match, and the run starts as before.
+func (q *Queries) HasAgentVerdictForHead(ctx context.Context, arg HasAgentVerdictForHeadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasAgentVerdictForHead, arg.IssueID, arg.AgentID, arg.HeadSha)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasGitHubReviewWakeup = `-- name: HasGitHubReviewWakeup :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
@@ -808,6 +839,42 @@ func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID 
 			return nil, err
 		}
 		items = append(items, issue_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueOpenPullRequestHeads = `-- name: ListIssueOpenPullRequestHeads :many
+SELECT head_sha FROM (
+    SELECT pr.head_sha AS head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+    UNION ALL
+    SELECT pr.head_sha AS head_sha
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+) open_prs
+`
+
+// Head SHAs of the issue's linked PRs that are still open or draft, GitHub and
+// self-hosted alike. The review-head guard (CHE-4649) acts only on exactly one.
+func (q *Queries) ListIssueOpenPullRequestHeads(ctx context.Context, issueID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listIssueOpenPullRequestHeads, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var head_sha string
+		if err := rows.Scan(&head_sha); err != nil {
+			return nil, err
+		}
+		items = append(items, head_sha)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -547,6 +547,9 @@ cleared_pr_events AS (
 ),
 cleared_review_admissions AS (
     DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_unread AS (
+    DELETE FROM issue_unread WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target)
 `
@@ -1832,6 +1835,66 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.DescriptionExternalRead,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUrgentOrphanIssues = `-- name: ListUrgentOrphanIssues :many
+SELECT i.id, i.number, i.title, i.status, i.assignee_type, i.assignee_id, i.updated_at
+FROM issue i
+WHERE i.workspace_id = $1
+  AND i.priority = 'urgent'
+  AND i.status <> ALL($2::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM agent_task_queue t
+    WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL)
+ORDER BY i.updated_at, i.id
+`
+
+type ListUrgentOrphanIssuesParams struct {
+	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+	TerminalStatusKeys []string    `json:"terminal_status_keys"`
+}
+
+type ListUrgentOrphanIssuesRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Number       int32              `json:"number"`
+	Title        string             `json:"title"`
+	Status       string             `json:"status"`
+	AssigneeType pgtype.Text        `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Urgent issues nothing will pick up: not terminal, no live task, no enabled
+// wakeup. Feeds the pulse so an urgent issue cannot sit unowned.
+func (q *Queries) ListUrgentOrphanIssues(ctx context.Context, arg ListUrgentOrphanIssuesParams) ([]ListUrgentOrphanIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listUrgentOrphanIssues, arg.WorkspaceID, arg.TerminalStatusKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUrgentOrphanIssuesRow{}
+	for rows.Next() {
+		var i ListUrgentOrphanIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Number,
+			&i.Title,
+			&i.Status,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

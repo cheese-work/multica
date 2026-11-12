@@ -193,8 +193,20 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, q, issue.WorkspaceID, edges); err != nil {
 		return facts, err
 	}
+	if hasGuard(edges, issueworkflow.GuardAdoptionLinked) {
+		facts.Adoption = h.loadAdoptionFacts(ctx, q, issue)
+	}
 	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
 	return facts, err
+}
+
+func hasGuard(edges []issueworkflow.Edge, kind string) bool {
+	for _, e := range edges {
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // guardedIssueStatuses resolves the identifiers named by issue_status guards
@@ -321,6 +333,27 @@ func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e servi
 		Action: "run_budget_exhausted", Details: body,
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+}
+
+// onReviewRunSkipped records a reviewer run the review-head guard refused
+// (CHE-4649) on the issue's activity, which is where the skip is read. The
+// skipped run is no task row, so nothing else would show it.
+func (h *Handler) onReviewRunSkipped(ctx context.Context, e service.ReviewRunSkipped) {
+	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
+	if err != nil {
+		slog.Warn("review run skipped: load issue failed", "err", err, "issue_id", uuidToString(e.IssueID))
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"reason": string(ReasonReviewHeadAnswered), "agent_id": uuidToString(e.Target.AgentID),
+		"head_sha": e.Head, "trigger": e.Target.Trigger,
+	})
+	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
+		Action: "run_skipped", Details: body,
+	}); err != nil {
+		slog.Warn("review run skipped: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 }
 

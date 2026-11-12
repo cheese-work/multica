@@ -47,6 +47,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `LOG_LEVEL` | 应用默认 | 日志级别 |
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | 收到终止信号后，开始优雅退出前等待多久 |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | 运行时离线后可重新连接且不终止在途运行的宽限时间；低于 `150s` 时按 `150s` 处理 |
+| `MULTICA_REVIEW_GUARD_AGENT_IDS` | 空（关闭守卫） | 以逗号分隔的评审者智能体 ID。该智能体已针对 PR 的 head 发布 PASS、FAIL、BLOCKED 或 NOT-RUN，且 Issue 恰有一个打开的关联 PR 时，评审运行会以原因 `review_head_answered` 跳过；head 变化后会重新运行。评审结论是一行 `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN`（或以 `BLOCKED`、`NOT-RUN` 开头的一行），并带有写明 head SHA 的 `Candidate:` 或 `Head:` 行。跳过的运行会在运行列表中显示为已取消。定时检查不受影响 |
 
 在 Kubernetes 中设置 shutdown hold 时，`terminationGracePeriodSeconds` 要大于 hold 与实际退出所需时间之和。
 
@@ -115,6 +116,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `ALLOWED_EMAIL_DOMAINS` | 空 | 允许注册的邮箱域名，逗号分隔 |
 | `DISABLE_WORKSPACE_CREATION` | `false` | 禁止所有用户新建工作区；没有 owner/admin 例外 |
 | `WORKSPACE_CREATION_ALLOWED_EMAILS` | 空 | 允许新建工作区的完整邮箱地址，逗号分隔。设置后其他用户新建会返回 403。`DISABLE_WORKSPACE_CREATION=true` 优先。不授予访问其他工作区的权限 |
+| `MULTICA_SETUP_COMPONENTS` | 空 | Setup 组件 ID，逗号分隔。`adoption_linked` 关闭门禁用它校验元数据 `components` 和 `none` 交叉检查。为空时，`yes` 的 Setup change 无法关闭 |
 | `MULTICA_DEV_VERIFICATION_CODE` | 空 | 非 production 环境使用的固定 6 位测试验证码 |
 
 白名单的准确判断顺序见[登录与注册](/auth-setup#注册范围控制)。

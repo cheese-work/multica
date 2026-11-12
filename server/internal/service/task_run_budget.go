@@ -46,6 +46,9 @@ const statusMerged = "merged"
 // started status that hands the issue to its reviewer.
 const statusAgentReview = "agent_review"
 
+// statusNeedDecision is the workflow step an issue waits in for a decision answer.
+const statusNeedDecision = "need_decision"
+
 // RunTarget is the run an enqueue asks for: the agent that would receive it
 // and what asked (comment, mention, retry...). The guard needs both to tell the
 // reviewer's first run on a head from other bookkeeping, and to say what it
@@ -94,7 +97,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
 	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
-	task, err := q.CreateAgentTask(ctx, p)
+	task, err := createProviderHeldAgentTask(ctx, q, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}

@@ -103,6 +103,7 @@ func TestValidateEdges(t *testing.T) {
 		{"webhook with timeout", []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
 		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
+		{"adoption_linked is an entry gate only", []Edge{{To: "done", Guard: "adoption_linked"}}, nil, "entry gate"},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {

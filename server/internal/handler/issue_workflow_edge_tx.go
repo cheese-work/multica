@@ -133,12 +133,18 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrIssueInTriage),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
 			return edgeMove{}, err
 		}
+	}
+
+	if errors.Is(runRefused, service.ErrStageQueueFull) && handoffDetails != nil {
+		handoffDetails["run"] = "false"
+		handoffDetails["run_reason"] = handoffRunReasonStageQueueFull
+		delete(handoffDetails, "note")
 	}
 
 	payload := map[string]any{

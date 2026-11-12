@@ -140,6 +140,8 @@ type Config struct {
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
+	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
+	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex
 	// first-turn no-progress ceiling (MULTICA_CODEX_FIRST_TURN_TIMEOUT). 0 means
@@ -343,6 +345,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 	if overrides.AgentTimeout != nil {
 		agentTimeout = *overrides.AgentTimeout
+	}
+
+	codexAgentTimeout, err := durationFromEnv("MULTICA_CODEX_AGENT_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
 	}
 
 	// MULTICA_AGENT_IDLE_WATCHDOG=0 disables the per-task idle watchdog. We
@@ -687,6 +694,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
+		CodexAgentTimeout:               codexAgentTimeout,
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
@@ -1545,4 +1553,12 @@ func applyOpenclawOverride(oc *cli.OpenClawOverride) {
 			_ = os.Setenv(execenv.OpenclawCLITimeoutEnv, oc.CLITimeout)
 		}
 	}
+}
+
+// agentTimeoutFor returns the absolute run cap for provider.
+func (c Config) agentTimeoutFor(provider string) time.Duration {
+	if provider == "codex" && c.CodexAgentTimeout > 0 {
+		return c.CodexAgentTimeout
+	}
+	return c.AgentTimeout
 }
