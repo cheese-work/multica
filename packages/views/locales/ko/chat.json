@@ -7,6 +7,7 @@
     "no_run": "활성 실행 없음."
   },
   "needs_you": {
+    "chip_other": "결정 {{count}}건이 기다리고 있습니다",
     "title": "내 결정이 필요해요",
     "loading": "미응답 요청을 불러오는 중…",
     "error": "요청을 불러오지 못했습니다.",
@@ -457,6 +458,7 @@
     "answer_helper_issue": "보내기를 누르면 답변이 {{issue}}에 게시됩니다.",
     "answer_hint": "{{shortcut}}로 보내기",
     "answer_too_long": "답변이 8 KB를 넘습니다. 줄이면 보낼 수 있습니다.",
+    "answer_upload_cancelled": "이 카드를 벗어나서 업로드가 취소되었습니다. 파일을 다시 첨부하세요.",
     "answer_offline": "오프라인입니다. 답변은 유지됩니다. 다시 연결되면 보내기가 켜집니다.",
     "answer_conflict": "이 카드는 더 이상 답변을 받을 수 없습니다(예: 먼저 답변이 있었던 경우). 초안은 게시되지 않았습니다. 초안:",
     "answer_discard": "초안 삭제",

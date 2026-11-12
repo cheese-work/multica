@@ -217,7 +217,7 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | O10 | O01 | soft | CI sets CI: "true" at .github/workflows/ci.yml:527,783; server/internal/testutil/nodb.go ExitWithoutDatabase fails only when CI is set |
 | O15 | O27 | hard | apps/web/features/landing/components/changelog-page-client.tsx:22 imports ./fork-changelog (O27 file) |
 | O16 | D06 | hard | server/internal/service/provider_failure_guard.go (defined in D06's source) holds the probe/guard; service/task.go:94 ProviderFailureProbe field and handler.go:517-521 wiring need it |
-| O21 | O03 | hard | cd-deploy.yml:26-28 workflow_run on 'CD qualification build'; :372 admission.mjs verify |
+| O21 | O03 | hard | cd-deploy.yml schedule (4 h) resolving the newest 'CD qualification build' success; :372 admission.mjs verify |
 | O21 | O04 | hard | cd-deploy.yml:564-567 render-cutover-remote-script.sh runs cutover.sh |
 | O21 | O05 | hard | deploy/cd/cutover.sh:474 router.sh |
 | O21 | O06 | hard | cd-deploy.yml:153 runs candidate-preflight.sh |

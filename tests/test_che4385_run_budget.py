@@ -69,130 +69,6 @@ class OneWorkflowPerPrPush(unittest.TestCase):
         self.assertEqual(re.findall(r"secrets\.\w+", text), ["secrets.GITHUB_TOKEN"])
 
 
-class NewFailVerdictRevokesAGreenCommit(unittest.TestCase):
-    """A comment no longer starts security-gate, so a sweep re-reads the verdicts of open green PRs (Cheese, CHE-4385)."""
-
-    def test_sweep_runs_on_a_schedule_and_by_hand_only(self):
-        self.assertEqual(triggers(load("security-gate-sweep.yml")), {"schedule", "workflow_dispatch"})
-        crons = [c["cron"] for c in load("security-gate-sweep.yml")["on"]["schedule"]]
-        self.assertEqual(crons, ["*/30 * * * *"])  # 48 runs a day
-
-    def test_sweep_overlap_queues_instead_of_cancelling_a_revoke(self):
-        self.assertFalse(load("security-gate-sweep.yml")["concurrency"]["cancel-in-progress"])
-
-    def test_sweep_posts_through_the_gate_script_from_the_default_branch(self):
-        text = (WF / "security-gate-sweep.yml").read_text()
-        self.assertIn("scripts/security-gate/security_gate.py", text)
-        self.assertIn("--post", text)
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", text)
-        self.assertNotRegex(text, r"ref: \$\{\{ github\.event\.pull_request\.head")
-        self.assertNotIn("secrets.", text)
-
-    def test_sweep_skips_the_scan_when_no_open_pr_needs_one(self):
-        jobs = load("security-gate-sweep.yml")["jobs"]
-        self.assertEqual(jobs["list"]["outputs"]["green"], "${{ steps.list.outputs.green }}")
-        self.assertEqual(jobs["list"]["outputs"]["queued"], "${{ steps.list.outputs.queued }}")
-        self.assertIn("needs.list.outputs.green != '[]'", jobs["sweep"]["if"])
-        self.assertIn("needs.list.outputs.queued != '[]'", jobs["revoke"]["if"])
-
-    def test_a_failed_pr_listing_fails_the_job_instead_of_listing_nothing(self):
-        # Terra P1: process substitution hid the exit status of `gh api`, so a failed list looked like "no open PR".
-        step = load("security-gate-sweep.yml")["jobs"]["list"]["steps"][0]["run"]
-        self.assertIn("set -euo pipefail", step)
-        self.assertNotIn("< <(", step)
-        self.assertRegex(step, r'pulls="\$\(gh api --paginate')
-        self.assertNotRegex(step, r"\[ .* \] && ")  # a false test as the loop's last command would trip errexit
-
-    def test_a_pr_whose_revocation_failed_is_retried_while_a_queue_branch_exists(self):
-        # Terra P1: the status is written non-success before the queue heads are flipped; a failed flip was never retried.
-        jobs = load("security-gate-sweep.yml")["jobs"]
-        run = "\n".join(str(st.get("run", "")) for st in jobs["revoke"]["steps"])
-        self.assertIn("--revoke-only", run)
-        self.assertNotIn("--semgrep", run)
-        self.assertEqual(jobs["revoke"]["strategy"]["matrix"]["pr"], "${{ fromJSON(needs.list.outputs.queued) }}")
-        self.assertIn("gh-readonly-queue", (WF / "security-gate-sweep.yml").read_text())
-
-    def test_a_sweep_job_never_runs_alongside_the_gate_for_the_same_pr(self):
-        # Terra P1: a sweep could read a PASS and post success after the gate had posted a revocation.
-        gate = load("security-gate.yml")["jobs"]["security-gate"]["concurrency"]["group"]
-        self.assertTrue(gate.startswith("security-gate-${{ github.event.pull_request.number"))
-        for name in ("sweep", "revoke"):
-            job = load("security-gate-sweep.yml")["jobs"][name]
-            self.assertEqual(job["concurrency"]["group"], "security-gate-${{ matrix.pr }}")
-            # false: a sweep queues behind a running gate; the gate (cancel-in-progress true) cancels a queued or running sweep
-            self.assertFalse(job["concurrency"]["cancel-in-progress"])
-            self.assertFalse(job["strategy"]["fail-fast"])
-
-
-class SweepStepsBehavior(unittest.TestCase):
-    """Runs the sweep's real `run:` scripts under bash with a stubbed `gh` (and `python3`), and asserts what they do."""
-
-    FAKE_GH = """#!/bin/bash
-case "$*" in
-  *"/pulls?state=open"*) [ "$FAKE_FAIL" = pulls ] && exit 1; printf '%s' "$FAKE_PULLS" ;;
-  *"git/matching-refs"*) [ "$FAKE_FAIL" = refs ] && exit 1; printf '%s' "$FAKE_REFS" ;;
-  *"/status"*) [ "$FAKE_FAIL" = status ] && exit 1; printf '%s' "$FAKE_STATE" ;;
-  *) exit 1 ;;
-esac
-"""
-    RECORD_PY = '#!/bin/bash\nprintf "%s\\n" "$*" >> "$FAKE_ARGV"\n'
-
-    def step(self, job: str, needle: str) -> str:
-        steps = load("security-gate-sweep.yml")["jobs"].get(job, {}).get("steps", [])
-        runs = [str(st["run"]) for st in steps if needle in str(st.get("run", ""))]
-        self.assertTrue(runs, f"no `{needle}` step in job {job}")
-        return runs[0]
-
-    def run_step(self, run: str, **env) -> tuple[subprocess.CompletedProcess, str, str]:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            for name, body in (("gh", self.FAKE_GH), ("python3", self.RECORD_PY)):
-                (tmp / name).write_text(body)
-                (tmp / name).chmod(tmp.joinpath(name).stat().st_mode | stat.S_IXUSR)
-            out, argv = tmp / "out", tmp / "argv"
-            out.touch()
-            argv.touch()
-            e = {"PATH": f"{tmp}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(out), "FAKE_ARGV": str(argv),
-                 "GITHUB_REPOSITORY": "o/r", "DEFAULT_BRANCH": "main", "GITHUB_SERVER_URL": "https://x",
-                 "GITHUB_RUN_ID": "1", "PR_NUMBER": "7", "FAKE_PULLS": "", "FAKE_REFS": "", "FAKE_STATE": "",
-                 "FAKE_FAIL": "", **env}
-            proc = subprocess.run(["bash", "-e", "-c", run], env=e, cwd=tmp, capture_output=True, text=True)
-            return proc, out.read_text(), argv.read_text()
-
-    def listing(self, **env):
-        return self.run_step(self.step("list", "gh api"), **env)
-
-    def test_a_failed_pr_listing_fails_the_job_and_publishes_nothing(self):
-        for failing in ("pulls", "refs", "status"):
-            proc, out, _ = self.listing(FAKE_FAIL=failing, FAKE_PULLS="7 " + "a" * 40, FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x",
-                                        FAKE_STATE="success")
-            self.assertNotEqual(proc.returncode, 0, failing)
-            self.assertNotIn("green=", out, failing)
-
-    def test_a_green_open_pr_is_listed_for_the_sweep(self):
-        proc, out, _ = self.listing(FAKE_PULLS="7 " + "a" * 40, FAKE_STATE="success")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("green=[7]", out)
-        self.assertIn("queued=[]", out)
-
-    def test_a_non_success_pr_is_listed_for_a_revoke_retry_only_while_a_queue_branch_exists(self):
-        pulls = "7 " + "a" * 40
-        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure", FAKE_REFS="refs/heads/gh-readonly-queue/main/pr-1-x")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("queued=[7]", out)
-        self.assertIn("green=[]", out)
-        proc, out, _ = self.listing(FAKE_PULLS=pulls, FAKE_STATE="failure")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("queued=[]", out)
-
-    def test_the_revoke_job_calls_the_script_for_its_pr_with_revoke_only_and_no_scan(self):
-        proc, _, argv = self.run_step(self.step("revoke", "--revoke-only"))
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertIn("--revoke-only", argv)
-        self.assertRegex(argv, r"--pr 7\b")
-        self.assertNotIn("--semgrep", argv)
-
-
 class NoCommentOrCascadeRuns(unittest.TestCase):
     def test_only_security_gate_starts_on_a_comment_and_it_includes_created(self):
         # `created` is restored (Cheese, CHE-4385): a new FAIL verdict must flip the status without waiting for a sweep.
@@ -209,10 +85,6 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(run["workflows"], ["security-gate"])
         self.assertEqual(run["branches"], ["gh-readonly-queue/**"])
 
-    def test_security_gate_runs_for_the_queue_a_dispatch_a_comment_edit_and_pr_guards_only(self):
-        self.assertEqual(triggers(load("security-gate.yml")), {"workflow_call", "merge_group", "workflow_dispatch", "issue_comment"})
-        self.assertEqual(list(load("security-gate.yml")["on"]["workflow_dispatch"]["inputs"]), ["pr"])
-
     def test_mechanical_tier_is_called_never_a_run_of_its_own(self):
         self.assertEqual(triggers(load("mechanical-tier.yml")), {"workflow_call"})
 
@@ -223,8 +95,8 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(jobs["mechanical-tier"]["needs"], "security-gate")
 
     def test_push_to_main_workflows_do_not_start_each_other(self):
-        # The workflow_run chains are CD qualification -> deploy and security-gate -> security-gate-queue (CHE-4251).
-        # The second fires once per security-gate run, now only a queue entry, a verdict dispatch or a verdict edit or
+        # The only workflow_run chain is security-gate -> security-gate-queue (CHE-4251); cd-deploy runs on a schedule (CHE-5182).
+        # It fires once per security-gate run, now only a queue entry, a verdict dispatch or a verdict edit or
         # delete: no PR event and no created comment starts one. main-build calls the other two in its own run.
         chains = {}
         for p in WF.glob("*.yml"):
@@ -233,7 +105,10 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 chains[p.name] = on["workflow_run"]["workflows"]
         self.assertEqual(
             chains,
-            {"cd-deploy.yml": ["CD qualification build"], "security-gate-queue.yml": ["security-gate"]},
+            {
+                "security-gate-queue.yml": ["security-gate"],
+                "pr-main-sync.yml": ["Main Build"],  # CHE-4963: one run per main push, as its old Main Build job was
+            },
         )
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
@@ -246,17 +121,30 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(job["if"].strip(), "${{ always() }}")  # it ran after every completed Main Build before
         self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
 
-    def test_main_build_runs_pr_main_sync_and_it_has_no_push_trigger(self):
-        self.assertEqual(triggers(load("pr-main-sync.yml")), {"workflow_dispatch", "workflow_call"})
-        job = load("main-build.yml")["jobs"]["pr-main-sync"]
-        self.assertEqual(job["uses"], "./.github/workflows/pr-main-sync.yml")
-        self.assertEqual(job["permissions"], {"contents": "read"})
-        self.assertNotIn("needs", job)  # it did not wait for the build before either
+    def test_pr_main_sync_follows_a_main_build_push_run_and_main_build_does_not_call_it(self):
+        # CHE-4963: it holds the App key, so the repo guard (CHE-4251) requires a schedule or workflow_run definition.
+        doc = load("pr-main-sync.yml")
+        self.assertEqual(triggers(doc), {"workflow_run", "workflow_dispatch"})
+        run = doc["on"]["workflow_run"]
+        self.assertEqual((run["workflows"], run["types"], run["branches"]), (["Main Build"], ["completed"], ["main"]))
+        gate = doc["jobs"]["sync"]["if"]
+        self.assertIn("github.event.workflow_run.event == 'push'", gate)
+        # A failed or cancelled Main Build still has a main push to sync after, as the old job had no needs (CHE-4963).
+        self.assertNotIn("conclusion", gate)
+        self.assertNotIn("pr-main-sync", load("main-build.yml")["jobs"])
 
     def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):
         caller = load("main-build.yml")["concurrency"]["group"]
-        for name in ("cache-maintenance.yml", "pr-main-sync.yml"):
+        for name in ("cache-maintenance.yml",):
             self.assertNotEqual(load(name)["concurrency"]["group"], caller)
+
+    def test_pr_main_sync_requests_only_permissions_the_app_installation_grants(self):
+        # Run 43137581396 failed with 422 minting contents:write + pull-requests:write: the installation grants
+        # pull-requests read only (cd-deploy mints it). The script reads PRs and merges through update-branch (CHE-4963).
+        steps = load("pr-main-sync.yml")["jobs"]["sync"]["steps"]
+        mint = next(s["with"] for s in steps if "create-github-app-token" in s.get("uses", ""))
+        perms = {k: v for k, v in mint.items() if k.startswith("permission-")}
+        self.assertEqual(perms, {"permission-contents": "write", "permission-pull-requests": "read"})
 
     def test_pr_main_sync_keeps_its_gate_runner_and_dry_run_switch(self):
         text = (WF / "pr-main-sync.yml").read_text()

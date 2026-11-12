@@ -93,7 +93,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
 	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
-	task, err := q.CreateAgentTask(ctx, p)
+	task, err := createProviderHeldAgentTask(ctx, q, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}

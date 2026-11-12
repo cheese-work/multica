@@ -455,7 +455,8 @@
   },
   "list": {
     "empty_status": "タスクなし",
-    "add_issue_tooltip": "タスクを追加"
+    "add_issue_tooltip": "タスクを追加",
+    "unread_mention": "未読のメンション"
   },
   "swimlane": {
     "no_parent": "親タスクなし",
@@ -819,6 +820,9 @@
     "hover_header_queued_other": "待機中のエージェント {{count}} 件",
     "status_running": "作業中",
     "status_queued": "待機中",
+    "unread_completed": "{{agent}} の実行が完了 · {{time}}",
+    "unread_failed": "{{agent}} の実行が失敗 · {{time}}",
+    "unread_manual": "未読にしました",
     "empty_hover": "現在作業中のエージェントはありません",
     "unknown_hover": "作業中のエージェント: まだ読み込まれていません",
     "filter_active_label": "エージェントが作業中のタスクを表示中",
@@ -1004,6 +1008,8 @@
     "open_in_new_tab": "新しいタブで開く",
     "pin_to_sidebar": "サイドバーにピン留め",
     "unpin_from_sidebar": "サイドバーのピン留めを解除",
+    "mark_read": "既読にする",
+    "mark_unread": "未読にする",
     "copy_link": "リンクをコピー",
     "copy_workdir_path": "ローカルの作業ディレクトリのパスをコピー",
     "copy_project_directory_path": "プロジェクトディレクトリのパスをコピー",
@@ -1626,6 +1632,9 @@
       "name": "名前",
       "name_placeholder": "例：開発フロー",
       "description": "説明",
+      "max_runs": "Issue あたりの最大実行数",
+      "max_runs_invalid": "1〜{{max}} の整数を入力してください。空欄の場合は既定値（{{default}}）になります。",
+      "include_child_prs": "子 PR を含める",
       "steps": "ステップ",
       "add_step": "ステップを追加",
       "start": "開始",

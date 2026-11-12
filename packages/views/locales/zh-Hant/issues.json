@@ -412,7 +412,8 @@
   },
   "list": {
     "empty_status": "無任務",
-    "add_issue_tooltip": "新建任務"
+    "add_issue_tooltip": "新建任務",
+    "unread_mention": "未讀的提及"
   },
   "swimlane": {
     "no_parent": "無父級",
@@ -776,6 +777,9 @@
     "hover_header_queued_other": "{{count}} 個智慧體排隊中",
     "status_running": "正在工作",
     "status_queued": "排隊中",
+    "unread_completed": "{{agent}} 已完成執行 · {{time}}",
+    "unread_failed": "{{agent}} 執行失敗 · {{time}}",
+    "unread_manual": "已標為未讀",
     "empty_hover": "當前沒有智慧體在工作",
     "unknown_hover": "工作中的智慧體：尚未載入",
     "filter_active_label": "正在檢視有智慧體在工作的任務",
@@ -961,6 +965,8 @@
     "open_in_new_tab": "在新標籤頁開啟",
     "pin_to_sidebar": "固定到側邊欄",
     "unpin_from_sidebar": "從側邊欄取消固定",
+    "mark_read": "標為已讀",
+    "mark_unread": "標為未讀",
     "copy_link": "複製連結",
     "copy_workdir_path": "複製本地 workdir 路徑",
     "copy_project_directory_path": "複製專案目錄路徑",
@@ -1580,6 +1586,9 @@
       "name": "名稱",
       "name_placeholder": "例如：研發流程",
       "description": "描述",
+      "max_runs": "每個 Issue 的最大執行次數",
+      "max_runs_invalid": "請輸入 1 到 {{max}} 的整數，留空則使用預設值（{{default}}）。",
+      "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步驟",
       "add_step": "新增步驟",
       "start": "起始",

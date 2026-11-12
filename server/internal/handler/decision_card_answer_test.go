@@ -344,3 +344,111 @@ func TestCardClickOnAHeldClassWaitsTheHold(test *testing.T) {
 		test.Fatalf("chosen index = %+v, want 0", result.Answer.ChosenOptionIndex)
 	}
 }
+
+// TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce is CHE-4997: a card
+// answered while the issue waits in need_decision starts exactly one run for the
+// assignee, triggered by the "> Chose: ..." quote, and a second pass adds none.
+func TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce(test *testing.T) {
+	for _, assignee := range []string{"asker", "other_agent"} {
+		test.Run(assignee, func(test *testing.T) {
+			resetDecisionLease(test)
+			ensureParkCatalog(test)
+			fixture := newCardFixture(test)
+			assigneeID := fixture.agentID
+			if assignee == "other_agent" {
+				assigneeID = createHandlerTestAgent(test, "Need-decision owner", []byte("[]"))
+			}
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+			dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+			result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+			if err != nil {
+				test.Fatal(err)
+			}
+			_, runner := newDecisionRunnerFixture(test)
+			for range 2 {
+				decisionPass(test, runner)
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, assigneeID, result.Comment.ID); count != 1 {
+					test.Fatalf("assignee wake runs = %d, want 1", count)
+				}
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status IN ('queued', 'running')`, fixture.issueID); count != 1 {
+				test.Fatalf("active runs on the issue = %d, want exactly 1", count)
+			}
+		})
+	}
+}
+
+// Negative control: a person who cannot invoke the need_decision assignee never
+// gets that agent run by a card answer; the wake stays with the asking agent.
+func TestCardAnswerOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	assigneeID := createHandlerTestAgent(test, "Restricted owner", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = NULL WHERE id = $1`, assigneeID)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assigneeID); count != 0 {
+		test.Fatalf("restricted assignee runs = %d, want 0", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, fixture.issueID, fixture.agentID); count != 1 {
+		test.Fatalf("asking agent runs = %d, want 1", count)
+	}
+}
+
+func TestCardAnswerOnNeedDecisionIssueRunsNobodyWhenTheAssigneeIsDeniedAndTheAskerIsGone(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	assigneeID := createHandlerTestAgent(test, "Restricted owner", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, assigneeID, createEphemeralUser(test, "restricted"))
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assigneeID); count != 0 {
+		test.Fatalf("restricted assignee runs = %d, want 0", count)
+	}
+}
+
+// A card answer must show on the read an agent makes, or the agent keeps
+// treating the request as open (CHE-5229).
+func TestDecisionGetCarriesTheAnswerCheeseGave(test *testing.T) {
+	fixture := newCardFixture(test)
+	id := uuidToString(fixture.decision.ID)
+	var open map[string]any
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&open)
+	if _, has := open["answer"]; has {
+		test.Fatalf("open request carries an answer: %+v", open)
+	}
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "can you double check"}); err != nil {
+		test.Fatal(err)
+	}
+	var fetched struct {
+		Status string `json:"status"`
+		Answer *struct {
+			AnsweredByUserID string  `json:"answered_by_user_id"`
+			AnswerSource     string  `json:"answer_source"`
+			Text             string  `json:"content_snapshot"`
+			ChosenOption     *int    `json:"chosen_option_index"`
+			CreatedAt        string  `json:"created_at"`
+			DisclaimedAt     *string `json:"disclaimed_at"`
+		} `json:"answer"`
+	}
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&fetched)
+	if fetched.Status != "answered" || fetched.Answer == nil {
+		test.Fatalf("answered request has no answer on read: %+v", fetched)
+	}
+	if fetched.Answer.AnsweredByUserID != fixture.humanID || fetched.Answer.AnswerSource != "card" || fetched.Answer.Text != "can you double check" || fetched.Answer.ChosenOption != nil || fetched.Answer.CreatedAt == "" || fetched.Answer.DisclaimedAt != nil {
+		test.Fatalf("wrong answer on read: %+v", fetched.Answer)
+	}
+}

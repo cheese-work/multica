@@ -220,6 +220,19 @@ func aggregateCounterBusy(err error) bool {
 	return errors.As(err, &pg) && pg.Code == "55P03"
 }
 
+// errAggregateCounterBusy is why a start waited for a later pass; the scheduler
+// records it as the rule's reason (CHE-5252). Its text is shown to people.
+var errAggregateCounterBusy = errors.New("Waiting for a busy aggregate counter; retried on a later pass.") //nolint:staticcheck // ST1005: shown to people as a hold reason
+
+// noteAggregateBusy records the hold on the rule after the dispatch rolled
+// back. Immediate dispatch needs it too, so the reason shows before any
+// scheduler pass retries the rule.
+func (s *IssueWakeupService) noteAggregateBusy(ctx context.Context, w db.IssueWakeup) {
+	ctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_ = s.Tasks.Queries.NoteWakeupFailure(ctx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: errAggregateCounterBusy.Error(), Valid: true}})
+}
+
 // oldestReceiptAge is when the oldest of the facts arrived; zero when there are none.
 func oldestReceiptAge(receipts []db.IssueWakeupReceipt) time.Time {
 	var oldest time.Time

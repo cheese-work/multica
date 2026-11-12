@@ -676,6 +676,28 @@ func (q *Queries) ListSkillsByWorkspace(ctx context.Context, workspaceID pgtype.
 	return items, nil
 }
 
+const lockSkillForFileWrite = `-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE
+`
+
+type LockSkillForFileWriteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Every writer of an existing skill's files takes this lock first and holds it
+// to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+// agent.skills.set approval, which row locks on skill_file could not do for an
+// insert. It waits under the transaction lock timeout.
+func (q *Queries) LockSkillForFileWrite(ctx context.Context, arg LockSkillForFileWriteParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockSkillForFileWrite, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockSkillsShare = `-- name: LockSkillsShare :many
 SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id FROM skill
 WHERE workspace_id = $1 AND id = ANY($2::uuid[])
