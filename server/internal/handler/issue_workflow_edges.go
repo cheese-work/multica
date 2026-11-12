@@ -194,8 +194,20 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, q, issue.WorkspaceID, edges); err != nil {
 		return facts, err
 	}
+	if hasGuard(edges, issueworkflow.GuardAdoptionLinked) {
+		facts.Adoption = h.loadAdoptionFacts(ctx, q, issue)
+	}
 	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
 	return facts, err
+}
+
+func hasGuard(edges []issueworkflow.Edge, kind string) bool {
+	for _, e := range edges {
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // guardedIssueStatuses resolves the identifiers named by issue_status guards
