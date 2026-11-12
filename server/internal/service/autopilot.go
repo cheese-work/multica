@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -229,7 +232,7 @@ func (s *AutopilotService) AdmitAutopilotWebhookDelivery(
 	}
 
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 	run, _, err := s.createAutopilotRunWithQuota(ctx, autopilot.WorkspaceID, "webhook", "webhook:"+util.UUIDToString(deliveryID), db.CreateAutopilotRunParams{
@@ -302,7 +305,7 @@ func (s *AutopilotService) DispatchAutopilotForWebhookDelivery(
 	// A run_only task may have committed immediately before the process died
 	// while linking task_id back to the run. Repair that linkage and wake the
 	// daemon; otherwise continue the same partial run below.
-	if autopilot.ExecutionMode == "run_only" && !run.TaskID.Valid {
+	if isTaskOnlyMode(autopilot.ExecutionMode) && !run.TaskID.Valid {
 		repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, *run)
 		if repairErr != nil {
 			return run, fmt.Errorf("dispatch for webhook delivery: %w", repairErr)
@@ -480,7 +483,7 @@ func (s *AutopilotService) DispatchAutopilotForPlan(
 		return &existing, nil
 
 	case err == nil:
-		if autopilot.ExecutionMode == "run_only" && !existing.TaskID.Valid {
+		if isTaskOnlyMode(autopilot.ExecutionMode) && !existing.TaskID.Valid {
 			repaired, found, repairErr := s.repairAutopilotRunTaskLink(ctx, existing)
 			if repairErr != nil {
 				return nil, fmt.Errorf("dispatch for plan: %w", repairErr)
@@ -610,7 +613,7 @@ func (s *AutopilotService) dispatchAutopilot(
 
 	// Determine initial status based on execution mode.
 	initialStatus := "issue_created"
-	if autopilot.ExecutionMode == "run_only" {
+	if isTaskOnlyMode(autopilot.ExecutionMode) {
 		initialStatus = "running"
 	}
 
@@ -667,7 +670,7 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
 			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch create_issue: %w", err)
 		}
-	case "run_only":
+	case "run_only", "script":
 		if err := s.dispatchRunOnly(ctx, autopilot, run, actorUserID, recoveryAttempt); err != nil {
 			if skipped, code := s.handleDispatchSkip(ctx, autopilot, run, err); skipped != nil {
 				// The dispatch transaction is rolled back by now; a cap notice written
@@ -677,7 +680,7 @@ func (s *AutopilotService) dispatchAutopilotRun(
 			}
 			s.failRun(ctx, run.ID, err.Error())
 			s.captureAutopilotRunFailed(autopilot, *run, source, err.Error())
-			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch run_only: %w", err)
+			return run, dispatchFailReasonCode(err), fmt.Errorf("dispatch %s: %w", autopilot.ExecutionMode, err)
 		}
 	default:
 		s.failRun(ctx, run.ID, "unknown execution_mode: "+autopilot.ExecutionMode)
@@ -1072,7 +1075,7 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 		}
 		return fmt.Errorf("resolve leader: %w", err)
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		return fmt.Errorf("check agent readiness: %w", err)
 	}
@@ -1317,6 +1320,7 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to complete autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunCompleted(autopilot, updatedRun)
 		s.publishRunDone(wsID, updatedRun, "completed")
 	case "failed", "cancelled":
@@ -1329,8 +1333,74 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to fail autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunFailed(autopilot, updatedRun, updatedRun.Source, reason)
 		s.publishRunDone(wsID, updatedRun, "failed")
+	}
+}
+
+// scriptArgvSHA256 hashes a script's argv for the audit record. The argv itself
+// is never stored.
+func scriptArgvSHA256(args []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(args, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// RecordScriptClaim stores the script a daemon was handed at claim as
+// result.script {name, argv_sha256} on the run. The daemon runs exactly what
+// the claim response carried, so the audit is bound to that and not to the
+// autopilot config as it stands at settlement. A later claim of the same run
+// (redelivery) replaces the earlier one. Best effort: a failed write is logged
+// and never fails the claim. CHE-5094.
+func (s *AutopilotService) RecordScriptClaim(ctx context.Context, runID pgtype.UUID, name string, args []string) {
+	patch, err := json.Marshal(map[string]any{"script": map[string]any{
+		"name": name, "argv_sha256": scriptArgvSHA256(args), "exit_code": nil, "duration_ms": nil,
+	}})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: runID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record claim", "run_id", util.UUIDToString(runID), "error", err)
+	}
+}
+
+// recordScriptAudit completes result.script for a settled script-mode run:
+// the exit code and the wall-clock duration are added to the name and argv
+// SHA-256 recorded at claim (RecordScriptClaim). claimed is the run as read
+// before settlement, since a completed run's result is replaced by the task
+// result. Without a recorded claim, name and argv_sha256 are null: the live
+// autopilot config is never used. exit_code is null when no process exit was
+// observed (rejected, timed out, cancelled); duration_ms is null without both
+// timestamps. Best effort: a failed write is logged and never unsettles the
+// run. CHE-5094.
+func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilot, claimed db.AutopilotRun, task db.AgentTaskQueue) {
+	var prior struct {
+		Script struct {
+			Name       *string `json:"name"`
+			ArgvSHA256 *string `json:"argv_sha256"`
+		} `json:"script"`
+	}
+	_ = json.Unmarshal(claimed.Result, &prior) // not an object: no claim was recorded
+	// A recorded claim marks a script run even if the autopilot's mode was
+	// changed after it, so the audit is not lost.
+	if ap.ExecutionMode != "script" && prior.Script.Name == nil {
+		return
+	}
+	audit := map[string]any{"name": prior.Script.Name, "argv_sha256": prior.Script.ArgvSHA256, "exit_code": nil, "duration_ms": nil}
+	if task.Status == "completed" {
+		audit["exit_code"] = 0
+	} else if code, ok := agent.ScriptExitCode(task.Error.String); ok {
+		audit["exit_code"] = code
+	}
+	if task.StartedAt.Valid && task.CompletedAt.Valid {
+		audit["duration_ms"] = task.CompletedAt.Time.Sub(task.StartedAt.Time).Milliseconds()
+	}
+	patch, err := json.Marshal(map[string]any{"script": audit})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: claimed.ID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record", "run_id", util.UUIDToString(claimed.ID), "error", err)
 	}
 }
 
@@ -1693,7 +1763,7 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		// chance to succeed.
 		return "", "", false
 	}
-	verdict, err := AgentReadiness(ctx, s.runtimeLookup(), agent)
+	verdict, err := s.agentReadinessFor(ctx, ap, agent)
 	if err != nil {
 		slog.Warn("autopilot admission: failed to load runtime",
 			"autopilot_id", util.UUIDToString(ap.ID),
@@ -1743,6 +1813,19 @@ func (s *AutopilotService) shouldSkipDispatch(ctx context.Context, ap db.Autopil
 		return "this trigger's owner lacks access to the private assignee agent, or the trigger records no owner", dispatch.ReasonInvocationNotAllowed, true
 	}
 	return "", "", false
+}
+
+// isTaskOnlyMode reports modes that dispatch a bare agent task with no issue.
+func isTaskOnlyMode(mode string) bool { return mode == "run_only" || mode == "script" }
+
+// agentReadinessFor picks the readiness check for the autopilot's mode. Script
+// mode runs no model, so it skips the model-only gates (provider hold, provider
+// breaker); every other mode keeps all of them (CHE-5092).
+func (s *AutopilotService) agentReadinessFor(ctx context.Context, ap db.Autopilot, agent db.Agent) (AgentVerdict, error) {
+	if ap.ExecutionMode == "script" {
+		return ScriptAgentReadiness(ctx, s.runtimeLookup(), agent)
+	}
+	return AgentReadiness(ctx, s.runtimeLookup(), agent)
 }
 
 // supersedeBreakerHeldRun retires a run_only run whose task is still queued

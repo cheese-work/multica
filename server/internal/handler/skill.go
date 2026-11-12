@@ -2556,28 +2556,12 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+	tx, qtx, skill, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
 
-	// Touch the parent first so its row lock is taken before the file write,
-	// in the same order UpdateSkill takes them.
-	skill, err = qtx.TouchSkill(r.Context(), db.TouchSkillParams{
-		ID:          skill.ID,
-		WorkspaceID: skill.WorkspaceID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "skill not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update skill")
-		return
-	}
 	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
@@ -2617,32 +2601,18 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Verify the file belongs to the parent skill we just authorized — guards
-	// against deleting a file owned by a different skill via the URL param.
-	file, err := h.Queries.GetSkillFile(r.Context(), fileUUID)
-	if err != nil || uuidToString(file.SkillID) != uuidToString(skill.ID) {
-		writeError(w, http.StatusNotFound, "skill file not found")
-		return
-	}
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+	tx, qtx, skill, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
 
-	skill, err = qtx.TouchSkill(r.Context(), db.TouchSkillParams{
-		ID:          skill.ID,
-		WorkspaceID: skill.WorkspaceID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "skill not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update skill")
+	// Verify the file belongs to the parent skill we just authorized — guards
+	// against deleting a file owned by a different skill via the URL param.
+	// Read under the skill lock so a concurrent writer cannot change it first.
+	file, err := qtx.GetSkillFile(r.Context(), fileUUID)
+	if err != nil || uuidToString(file.SkillID) != uuidToString(skill.ID) {
+		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
 	if err := qtx.DeleteSkillFile(r.Context(), file.ID); err != nil {
@@ -2687,6 +2657,42 @@ func (h *Handler) publishSkillFilesChanged(r *http.Request, resp SkillWithFilesR
 	wsID := h.resolveWorkspaceID(r)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), wsID)
 	h.publish(protocol.EventSkillUpdated, wsID, actorType, actorID, map[string]any{"skill": resp})
+}
+
+// beginSkillFileWrite opens the transaction of a single skill-file write and
+// takes the parent skill row lock first, held to commit. The lock conflicts
+// with the FOR SHARE snapshot lock of an agent.skills.set approval, so a file
+// edit, add or remove cannot change the file set while an approval holds it.
+// Lock order: the skill row only, no other row lock after it.
+func (h *Handler) beginSkillFileWrite(w http.ResponseWriter, r *http.Request, skill db.Skill) (pgx.Tx, *db.Queries, db.Skill, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, skill, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockSkillForFileWrite(r.Context(), db.LockSkillForFileWriteParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID}); err != nil {
+		_ = tx.Rollback(r.Context())
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "skill not found")
+			return nil, nil, skill, false
+		}
+		slog.Warn("lock skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to lock skill")
+		return nil, nil, skill, false
+	}
+
+	// Bump the parent's updated_at in the same transaction (supporting-file
+	// writes change the skill as a whole) and return the touched row for the
+	// skill:updated payload.
+	touched, err := qtx.TouchSkill(r.Context(), db.TouchSkillParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID})
+	if err != nil {
+		_ = tx.Rollback(r.Context())
+		slog.Warn("touch skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update skill")
+		return nil, nil, skill, false
+	}
+	return tx, qtx, touched, true
 }
 
 // --- Agent-Skill junction ---

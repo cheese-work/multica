@@ -42,7 +42,7 @@ import {
   type TimelineRun,
 } from "./issue-run-timeline";
 import { RunCumulativeChart } from "./issue-runs-cumulative-chart";
-import { canRetryRun, RetryRunButton } from "./retry-run-button";
+import { canRetryRun, isSkippedRun, RetryRunButton } from "./retry-run-button";
 import { RunTriggerLabel } from "./run-trigger-label";
 import { useFormatSpend, useStatusLabel, useTriggerText } from "./task-run-labels";
 
@@ -938,12 +938,14 @@ function RunListRow({ run, issueId, costWidth }: { run: TimelineRun; issueId: st
           </>
         )}
         <span className={cn(COL.actions, "flex items-center justify-end gap-0.5 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/run-row:opacity-100 [@media(hover:hover)]:focus-within:opacity-100")}>
-          <TranscriptButton
-            task={task}
-            agentName={agentName}
-            isLive={task.status === "running"}
-            title={t(($) => $.execution_log.transcript_tooltip)}
-          />
+          {!isSkippedRun(task) && (
+            <TranscriptButton
+              task={task}
+              agentName={agentName}
+              isLive={task.status === "running"}
+              title={t(($) => $.execution_log.transcript_tooltip)}
+            />
+          )}
           {canRetryRun(task) && <RetryRunButton task={task} issueId={issueId} />}
         </span>
         <span className={cn(COL.toggle, "flex justify-end")}>

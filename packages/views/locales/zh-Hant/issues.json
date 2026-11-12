@@ -1592,6 +1592,7 @@
       "description": "描述",
       "max_runs": "每個 Issue 的最大執行次數",
       "max_runs_invalid": "請輸入 1 到 {{max}} 的整數，留空則使用預設值（{{default}}）。",
+      "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步驟",
       "add_step": "新增步驟",
       "start": "起始",

@@ -596,6 +596,7 @@ func TestProviderFailureRecoveryWriterInventory(t *testing.T) {
 		"pkg/db/queries/agent.sql#ExpireStaleQueuedTasks":             "queued_expired",
 		"pkg/db/queries/agent.sql#FailExpiredRuntimeReconnectRetries": "runtime_reconnect_timeout",
 		"pkg/db/queries/runtime.sql#FailTasksForOfflineRuntimes":      "runtime_offline",
+		"pkg/db/queries/provider_hold.sql#FailExpiredProviderHolds":   "provider_breaker_hold_expired",
 	}
 	if err := validateProviderFailureWriterInventory(actual, expected); err != nil {
 		t.Fatal(err)

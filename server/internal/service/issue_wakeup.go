@@ -133,6 +133,11 @@ type IssueWakeupService struct {
 	// and runs; empty is the production activation. Tests set their own so
 	// parallel packages never share state.
 	ActivationKey string
+	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
+	// leaves the condition pending with a diagnostic.
+	MergeFacts MergeFactsSource
+	// Now is the clock for fact freshness; nil means time.Now.
+	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
 	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
@@ -932,7 +937,10 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
 		err = s.Tasks.recordStageRefusal(ctx, err)
-		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		// A busy counter is a hold, not a failure: record why, report no error.
+		if !errors.Is(err, errAggregateCounterBusy) {
+			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		}
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		reason := err.Error()
 		if IsProjectInactive(err) {
@@ -1345,10 +1353,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err == nil && task.Status == "dispatched" {
 		// A claimed prompt is immutable. Recovery belongs to the ordinary
 		// claim/prepare lease, not a second wakeup-specific task timeout.
-		var waiting pgtype.Text
+		// CHE-5252: a held rule always says why, also inside the recovery window.
+		waiting := pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start; new trigger inputs are retained.", Valid: true}
 		if task.DispatchedAt.Valid && now.Sub(task.DispatchedAt.Time) >= claimResponseRecoveryWindow &&
 			(!task.PrepareLeaseExpiresAt.Valid || !task.PrepareLeaseExpiresAt.Time.After(now)) {
-			waiting = pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained.", Valid: true}
+			waiting.String = "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained."
 		}
 		// Persist timer progress even while waiting; do not regenerate each
 		// elapsed tick. Keep once enabled until its pending input is assigned.
@@ -1489,7 +1498,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if waiting {
 			// As while its own run is claimed: timers advance, inputs stay,
 			// and a once rule stays on until its input is handed over.
-			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
+			reason := pgtype.Text{String: "Waiting for a queued run of this agent on the issue to start; new trigger inputs are retained.", Valid: true}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastError: reason}); err != nil {
 				return err
 			}
 			if timedOut {
@@ -1597,6 +1607,29 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		origin := OriginNamed
 		if w.SourceTaskID.Valid {
 			origin = OriginDerived
+		}
+		// A reviewer that already answered the PR head needs no run for it
+		// (CHE-4649). Checked here, for named and derived event wakeups alike:
+		// the receipts are consumed rather than retried, because the head will
+		// not change by waiting. Scheduled check-ins (at, every, cron) are not
+		// review runs and always run.
+		var answered error
+		if w.Kind == "event" {
+			answered = guardReviewHeadAnswered(ctx, q, issue.ID, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", ReviewRun: true})
+		}
+		if errors.Is(answered, ErrReviewHeadAnswered) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrReviewHeadAnswered.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonReviewHeadAnswered), "reason": ErrReviewHeadAnswered.Error()}); err != nil {
+				return err
+			}
+			return commit()
 		}
 		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
 			return err

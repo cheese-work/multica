@@ -628,6 +628,7 @@ type AgentTaskResponse struct {
 	AutopilotDescription     string               `json:"autopilot_description,omitempty"`       // autopilot description used as task prompt
 	AutopilotSource          string               `json:"autopilot_source,omitempty"`            // manual, schedule, webhook, or api
 	AutopilotTriggerPayload  json.RawMessage      `json:"autopilot_trigger_payload,omitempty"`   // optional trigger payload for webhook/api runs
+	Script                   *scriptConfig        `json:"script,omitempty"`                      // script-mode autopilots only: the allowlisted script name and args; the daemon runs it with no model session
 	QuickCreatePrompt        string               `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
 	QuickCreatePriority      string               `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create

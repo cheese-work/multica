@@ -56,16 +56,16 @@ func TestWorkflowBudgetFieldsNeedInteractiveSession(t *testing.T) {
 	put("", map[string]any{"include_child_prs": false}).Want(http.StatusOK)
 }
 
-// A decision-bound task-token write that is otherwise admissible still cannot
-// carry a cap change: the cap needs an interactive session, and the refusal
-// leaves both the cap and the steps as stored.
+// A decision-bound task-token step write still cannot carry a cap change: the
+// cap has its own workflow.budget decision (CHE-5228), so a mixed body is
+// malformed and the refusal leaves both the cap and the steps as stored.
 func TestBoundWorkflowPatchCannotChangeRunCap(t *testing.T) {
 	edit := setInstructions("agent text")
 	write := newBoundWorkflowWrite(t, "workflow.instructions", edit, "workflow.instructions")
 	body := write.body(t, write.steps(t, edit))
 	body["max_runs_per_issue"] = 9
 
-	write.patch(t, body).Want(http.StatusForbidden)
+	write.patch(t, body).Want(http.StatusBadRequest)
 
 	if got := write.storedInstructions(t, "in_progress"); got == "agent text" {
 		t.Fatal("refused write changed the steps")
