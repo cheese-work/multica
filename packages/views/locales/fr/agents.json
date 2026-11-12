@@ -1087,5 +1087,31 @@
     "hint": "Laissez un champ vide pour utiliser la valeur de l’espace de travail.",
     "inherit_placeholder": "Valeur de l’espace de travail",
     "save_failed": "Impossible d’enregistrer le réglage de compactage automatique."
+  },
+  "scheduling": {
+    "paused_badge": "En pause",
+    "pause_action": "Mettre l'agent en pause",
+    "resume_action": "Reprendre l'agent",
+    "pause_title": "Mettre {{name}} en pause ?",
+    "pause_description": "Un agent en pause ne prend plus de nouvelles exécutions. Le travail en file attend la reprise.",
+    "impact_running": "{{count}} en cours",
+    "impact_queued": "{{count}} en file",
+    "impact_issues": "{{count}} tickets ouverts",
+    "impact_wakeups": "{{count}} réveils activés",
+    "impact_loading": "Vérification de l'impact…",
+    "impact_failed": "Impossible de lire l'impact. Vous pouvez quand même mettre en pause.",
+    "cancel_active": "Annuler aussi les exécutions actives maintenant",
+    "cancel_active_hint": "Désactivé : les exécutions en cours se terminent. Activé : les exécutions en cours et en file sont annulées après la pause.",
+    "resume_title": "Reprendre {{name}} ?",
+    "resume_description": "L'agent reprend des exécutions, y compris le travail mis en file pendant la pause.",
+    "keep": "Ne rien changer",
+    "paused_toast": "Agent mis en pause",
+    "resumed_toast": "Agent repris",
+    "failed_toast": "Impossible de modifier la planification de l'agent",
+    "reason_label": "Motif (facultatif)",
+    "reason_placeholder": "Motif (facultatif)",
+    "paused_by_note": "Mis en pause par {{name}} · {{time}}",
+    "paused_at_note": "Mis en pause {{time}}",
+    "paused_reason_note": "Motif : {{reason}}"
   }
 }

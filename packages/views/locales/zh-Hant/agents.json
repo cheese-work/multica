@@ -1060,5 +1060,31 @@
     "hint": "留空則使用工作區的值。",
     "inherit_placeholder": "工作區預設值",
     "save_failed": "無法儲存自動壓縮設定。"
+  },
+  "scheduling": {
+    "paused_badge": "已暫停",
+    "pause_action": "暫停智慧體",
+    "resume_action": "恢復智慧體",
+    "pause_title": "暫停 {{name}}？",
+    "pause_description": "暫停後智慧體不再領取新的執行，排隊的工作會等到恢復。",
+    "impact_running": "{{count}} 個執行中",
+    "impact_queued": "{{count}} 個排隊中",
+    "impact_issues": "{{count}} 個未完成事項",
+    "impact_wakeups": "{{count}} 個已啟用喚醒",
+    "impact_loading": "正在檢查暫停的影響…",
+    "impact_failed": "無法讀取影響，仍可暫停。",
+    "cancel_active": "同時立即取消進行中的執行",
+    "cancel_active_hint": "關閉：執行中的任務會完成。開啟：暫停後取消執行中與排隊的任務。",
+    "resume_title": "恢復 {{name}}？",
+    "resume_description": "智慧體將重新領取執行，包括暫停期間排隊的工作。",
+    "keep": "保持不變",
+    "paused_toast": "智慧體已暫停",
+    "resumed_toast": "智慧體已恢復",
+    "failed_toast": "無法變更智慧體排程",
+    "reason_label": "原因（選填）",
+    "reason_placeholder": "原因（選填）",
+    "paused_by_note": "{{name}} 已暫停 · {{time}}",
+    "paused_at_note": "已暫停 {{time}}",
+    "paused_reason_note": "原因：{{reason}}"
   }
 }

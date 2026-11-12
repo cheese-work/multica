@@ -1060,5 +1060,31 @@
     "hint": "留空则使用工作区的值。",
     "inherit_placeholder": "工作区默认值",
     "save_failed": "无法保存自动压缩设置。"
+  },
+  "scheduling": {
+    "paused_badge": "已暂停",
+    "pause_action": "暂停智能体",
+    "resume_action": "恢复智能体",
+    "pause_title": "暂停 {{name}}？",
+    "pause_description": "暂停后智能体不再领取新运行，排队的工作会等到恢复。",
+    "impact_running": "{{count}} 个运行中",
+    "impact_queued": "{{count}} 个排队中",
+    "impact_issues": "{{count}} 个未完成事项",
+    "impact_wakeups": "{{count}} 个已启用唤醒",
+    "impact_loading": "正在检查暂停的影响…",
+    "impact_failed": "无法读取影响，仍可暂停。",
+    "cancel_active": "同时立即取消活动运行",
+    "cancel_active_hint": "关闭：运行中的任务会完成。开启：暂停后取消运行中和排队的任务。",
+    "resume_title": "恢复 {{name}}？",
+    "resume_description": "智能体将重新领取运行，包括暂停期间排队的工作。",
+    "keep": "保持不变",
+    "paused_toast": "智能体已暂停",
+    "resumed_toast": "智能体已恢复",
+    "failed_toast": "无法更改智能体调度",
+    "reason_label": "原因（可选）",
+    "reason_placeholder": "原因（可选）",
+    "paused_by_note": "{{name}} 已暂停 · {{time}}",
+    "paused_at_note": "已暂停 {{time}}",
+    "paused_reason_note": "原因：{{reason}}"
   }
 }

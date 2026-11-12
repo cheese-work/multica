@@ -3595,12 +3595,13 @@ WHERE id = @id
 -- untouched; only ClaimAgentTask and its candidate lists skip the agent.
 UPDATE agent
 SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id),
+    scheduling_paused_reason = COALESCE(scheduling_paused_reason, sqlc.narg('reason')::text)
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
 -- name: ResumeAgentScheduling :one
 UPDATE agent
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
