@@ -2643,6 +2643,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrReviewHeadAnswered) {
 		return ReasonReviewHeadAnswered
 	}
+	if errors.Is(err, service.ErrAgentPaused) {
+		return ReasonAgentPaused
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
 	}

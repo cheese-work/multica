@@ -247,6 +247,16 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 	}, nil
 }
 
+type configApprovalKey struct{}
+
+// configChangeAtApproval tells an Authorize hook which phase it runs in: at
+// approval a proposer who lost a grant was allowed once and is now revoked,
+// which is a different refusal from never having been allowed.
+func configChangeAtApproval(ctx context.Context) bool {
+	at, _ := ctx.Value(configApprovalKey{}).(bool)
+	return at
+}
+
 // authorizeConfigChange runs the action's proposer policy, if it has one. The
 // proposer is the stored asking agent, never a value from params. An action
 // with a policy and no valid proposer fails closed.
@@ -344,6 +354,7 @@ func lineEndingStyleChanged(before, after string) bool {
 // transaction and writes the audit row. A readback that is not the approved
 // value fails the action, which undoes the write.
 func executeConfigChange(ctx context.Context, change configChange, execution decisionActionExecution) (json.RawMessage, error) {
+	ctx = context.WithValue(ctx, configApprovalKey{}, true)
 	action, queries := execution.Action, execution.Queries
 	var stored struct {
 		Field        string `json:"field"`
