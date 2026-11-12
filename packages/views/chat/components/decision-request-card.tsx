@@ -33,6 +33,7 @@ import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
+import { DecisionRecentRuns } from "./decision-recent-runs";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 // Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
@@ -264,7 +265,7 @@ function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: {
 // (missing, empty, malformed, bad digest, unknown action type) means the server
 // could not vouch for the action: say so, keep Approve disabled for who may approve,
 // show it to nobody else, and leave Reject to everyone.
-function ActionPreview({ action }: { action: CardAction }) {
+function ActionPreview({ action, issueId }: { action: CardAction; issueId: string }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
@@ -278,6 +279,7 @@ function ActionPreview({ action }: { action: CardAction }) {
     <div className="space-y-2">
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && <ConfigChangeViewer change={configChange} />}
+      {pending && action.action_type.startsWith("issue.run_budget.") && <DecisionRecentRuns issueId={issueId} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -542,7 +544,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AnnotatableAnswer>
         </div>
         {note && <AgentNote note={note} />}
-        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} />}
+        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} />}
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (

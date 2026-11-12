@@ -479,6 +479,8 @@
     "action_unavailable": "Détails indisponibles",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
+    "recent_runs": "Runs récents",
+    "recent_runs_status": { "completed": "Terminé", "failed": "Échec", "cancelled": "Annulé", "running": "En cours", "other": "En attente" },
     "config_change": {
       "viewer_label": "Changement à approuver",
       "tab_changes": "Modifications",

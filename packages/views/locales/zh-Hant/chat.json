@@ -430,6 +430,8 @@
     "action_unavailable": "無法顯示詳細資料",
     "action_approve": "使用通行金鑰核准",
     "action_preview": "核准後將變更的內容",
+    "recent_runs": "最近執行",
+    "recent_runs_status": { "completed": "已完成", "failed": "失敗", "cancelled": "已取消", "running": "執行中", "other": "排隊中" },
     "config_change": {
       "viewer_label": "待核准的變更",
       "tab_changes": "變更",
