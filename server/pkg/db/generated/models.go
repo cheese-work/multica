@@ -280,6 +280,10 @@ type Attachment struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
 	ExternalRead    bool               `json:"external_read"`
+	Revision        int32              `json:"revision"`
+	RevisionOf      pgtype.UUID        `json:"revision_of"`
+	RevisionRoot    pgtype.UUID        `json:"revision_root"`
+	Sha256          string             `json:"sha256"`
 }
 
 type Autopilot struct {
