@@ -729,16 +729,20 @@ After `deploy` succeeds, C00 is watched for 15 minutes without holding a runner
 
 1. `readback` runs `post-deploy-readback.sh` and holds the C00 runner for at most
    2 minutes. It waits for the public route and upstream to turn healthy (one
-   sample per try, `READBACK_RETRY_SECONDS` apart), then **arms the health
-   observer** (`health-window.mjs arm`, journal `OBSERVATION_ID` =
-   `<run id>-<attempt>`): it records T0 (epoch seconds) and the container identity,
-   takes slot 0, and does not return until the native systemd timer has taken a
-   passing sample (`READBACK_ARM_VERIFY_SECONDS`, default 30). If the timer is not
-   installed or does not fire, the readback fails and nothing is watched
-   unobserved. It then checks the running commit (the deployed one or a
-   descendant) and the image digests against the admitted manifest, and records the
-   active colour's Docker restart count (`restart-count.sh`). T0, the observation id
-   and the restart count are job outputs.
+   sample per try, `READBACK_RETRY_SECONDS` apart), then reads the running commit.
+   A descendant of the deployed commit means a newer deploy already landed: the
+   readback passes without arming, and that deploy's own journal and digest check
+   apply. Otherwise it **arms the health observer** (`health-window.mjs arm`,
+   journal `OBSERVATION_ID` = `<run id>-<attempt>`). Under the observer's lock, arm
+   re-reads the live commit (`live-application-sha.sh`); if it is no longer the
+   deployed one, arm exits 3 and touches no journal, and the readback re-reads and
+   passes for a descendant or fails. Arm records T0 (epoch seconds) and the container
+   identity, takes slot 0, and does not return until the native systemd timer has
+   taken a passing sample (`READBACK_ARM_VERIFY_SECONDS`, default 30). If the timer is
+   not installed or does not fire, the readback fails and nothing is watched
+   unobserved. It then checks the image digests against the admitted manifest, and
+   records the active colour's Docker restart count (`restart-count.sh`). T0, the
+   observation id and the restart count are job outputs.
 2. `readback-delay` is the 15-minute wait timer of the `c00-readback-delay`
    environment. A waiting job holds no runner. It runs on a hosted runner
    because a job can use only one environment and the C00 secrets stay in
@@ -770,7 +774,8 @@ in every slot including the last, each taken by the native timer, slot 0 by the 
 route answers once more; `docker events` since T0 shows no `health_status:
 unhealthy`, `die`, `oom` or `restart` for the active colour's backend and frontend;
 and the restart count did not grow. A newer deploy arms its own observation, which
-supersedes an older open journal; journals are never mixed.
+supersedes an older open journal; journals are never mixed. An older readback that
+reaches arm after a newer deploy is refused (exit 3) and never supersedes it.
 
 The wait timer starts when `readback` finishes, after T0, so the last slot (T0+900)
 is normally sampled before `readback-confirm` starts. If it is not, verify fails

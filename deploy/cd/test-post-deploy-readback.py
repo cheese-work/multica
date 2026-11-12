@@ -31,6 +31,7 @@ class ReadbackTests(unittest.TestCase):
             self.commits[name] = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.dir, text=True).strip()
         self.arm_args = self.dir / "arm-args"
         self.arm_fails = False
+        self.arm_exit = None
         self.manifest = self.dir / "manifest.json"
         self.manifest.write_text(json.dumps({"image_digests": {"backend": DIGEST, "web": DIGEST}}))
 
@@ -41,16 +42,26 @@ class ReadbackTests(unittest.TestCase):
         # health-window.mjs is stubbed: its own suite covers the journal.
         (self.dir / "deploy/cd/health-window.mjs").write_text(
             f'import fs from "node:fs";\nfs.writeFileSync("{self.arm_args}", process.argv.slice(2).join(" "));\n'
-            + ('console.error("::error::no sample from the native timer");process.exit(1);\n' if self.arm_fails else ""))
+            + ('console.error("::error::no sample from the native timer");process.exit(1);\n' if self.arm_fails else "")
+            + (f'console.error("::error::C00 no longer runs the armed commit");process.exit({self.arm_exit});\n' if self.arm_exit else ""))
         return {**os.environ, "C00_ROUTER_STATE_DIR": "/r", "C00_CUTOVER_STATE_DIR": "/c", "C00_COMPOSE_DIR": "/compose",
                 "C00_STATE_DIR": "/state", "OBSERVATION_ID": "run-7-1", **extra}
 
-    def readback(self, health_ok=True, running="deployed", digest=DIGEST, manifest=True, drop_env=None):
+    def readback(self, health_ok=True, running="deployed", digest=DIGEST, manifest=True, drop_env=None, then=None):
+        """`then` is the commit C00 runs on the second baseline read (after a newer deploy landed mid-arm)."""
         sha = self.commits["deployed"]
         self.stub("ab-health-check.sh", "exit 0\n" if health_ok else "echo '::error::unhealthy'; exit 1\n")
-        live = {"application_sha": self.commits[running],
-                "images": {"backend": {"digest": digest}, "web": {"digest": digest}}}
-        self.stub("capture-remote-baseline.sh", f"echo '{json.dumps(live)}' > \"$1\"\n")
+
+        def baseline(name):
+            live = {"application_sha": self.commits[name], "images": {"backend": {"digest": digest}, "web": {"digest": digest}}}
+            return json.dumps(live)
+
+        reads = self.dir / "reads"
+        reads.write_text("0")
+        second = baseline(then or running)
+        self.stub("capture-remote-baseline.sh",
+                  f'n=$(( $(cat {reads}) + 1 )); echo $n > {reads}\n'
+                  f'if [ "$n" -ge 2 ]; then echo \'{second}\' > "$1"; else echo \'{baseline(running)}\' > "$1"; fi\n')
         env = self.env()
         env.pop(drop_env, None)
         args = ["bash", "deploy/cd/post-deploy-readback.sh", sha, "1"] + (["manifest.json"] if manifest else [])
@@ -103,7 +114,7 @@ class ReadbackTests(unittest.TestCase):
         sha = self.commits["deployed"]
         for part in ["arm", "--dir /state/health-observer", "--id run-7-1", f"--sha {sha}", "--window 900", "--interval 10",
                      "--verify-seconds 30", "--compose-dir /compose", "--cutover-state-dir /c", "--router-state-dir /r",
-                     "--health-script deploy/cd/ab-health-check.sh"]:
+                     "--health-script deploy/cd/ab-health-check.sh", "--live-sha-script deploy/cd/live-application-sha.sh"]:
             self.assertIn(part, args)
 
     def test_a_missing_sample_from_the_native_timer_fails_the_readback(self):
@@ -116,9 +127,31 @@ class ReadbackTests(unittest.TestCase):
         self.assertNotEqual(self.readback(health_ok=False).returncode, 0)
         self.assertFalse(self.arm_args.exists())
 
-    def test_a_newer_deploy_still_arms_its_own_journal_before_the_descendant_check(self):
-        self.assertEqual(self.readback(running="newer").returncode, 0)
-        self.assertTrue(self.arm_args.exists())
+    def test_a_newer_deploy_that_already_landed_is_never_armed_over(self):
+        # CHE-5175: a delayed older readback must not supersede the newer deploy's journal.
+        result = self.readback(running="newer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.arm_args.exists())
+
+    def test_a_newer_deploy_that_lands_while_arming_passes_without_a_journal(self):
+        self.arm_exit = 3
+        result = self.readback(running="deployed", then="newer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("descendant", result.stdout)
+
+    def test_arming_refused_for_an_unrelated_commit_fails(self):
+        self.arm_exit = 3
+        result = self.readback(running="deployed", then="other")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not", result.stderr)
+
+    def test_arming_refused_while_c00_still_runs_the_deployed_commit_fails(self):
+        self.arm_exit = 3
+        self.assertNotEqual(self.readback(running="deployed", then="deployed").returncode, 0)
+
+    def test_an_unrelated_running_commit_never_arms(self):
+        self.assertNotEqual(self.readback(running="other").returncode, 0)
+        self.assertFalse(self.arm_args.exists())
 
     def test_the_observation_id_is_required(self):
         result = self.readback(drop_env="OBSERVATION_ID")

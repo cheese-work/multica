@@ -4,12 +4,14 @@
 # suspends automatic deploys, unless, within that wait:
 #   - the public route and the router-selected upstream turn healthy
 #     (ab-health-check.sh, read-only, one sample per try); and
-#   - the native health observer is armed for the whole 15-minute window and its
-#     timer has sampled once (health-window.mjs arm; install-health-observer.sh
-#     installs the timer on C00); and
-#   - C00 then runs the deployed commit, or a descendant of it (a newer deploy
-#     may have landed), and, when it runs exactly that commit, the live image
-#     digests equal the admitted manifest's.
+#   - C00 runs the deployed commit, or a descendant of it (a newer deploy may
+#     have landed; then this readback leaves the journal and the digests to
+#     that deploy and passes without arming); and
+#   - when C00 runs exactly the deployed commit, the native health observer is
+#     armed for the whole 15-minute window and its timer has sampled once
+#     (health-window.mjs arm, which re-checks the live commit under its lock;
+#     install-health-observer.sh installs the timer on C00); and
+#   - the live image digests equal the admitted manifest's.
 # The 15-minute watch is not here: the observer's timer samples C00 on the host
 # and post-deploy-confirm.sh verifies its journal after an environment wait
 # timer, so no runner is held while time passes.
@@ -46,29 +48,43 @@ until bash deploy/cd/ab-health-check.sh --router-state-dir "${C00_ROUTER_STATE_D
   sleep "$retry"
 done
 
-# Arm before the SHA check so the window starts at the first healthy sample. A newer
-# deploy that already landed arms its own journal later and supersedes this one.
-node deploy/cd/health-window.mjs arm --dir "${C00_STATE_DIR%/}/health-observer" --id "$OBSERVATION_ID" --sha "$sha" \
-  --window 900 --interval 10 --verify-seconds "${READBACK_ARM_VERIFY_SECONDS:-30}" \
-  --compose-dir "$C00_COMPOSE_DIR" --cutover-state-dir "$C00_CUTOVER_STATE_DIR" \
-  --router-state-dir "${C00_ROUTER_STATE_DIR%/}" --health-script deploy/cd/ab-health-check.sh || {
-  echo "::error title=C00 readback::the health observer is not armed and sampling (see health-window output above)" >&2
-  exit 1
-}
-
 live="$(mktemp)"
 trap 'rm -f "$live"' EXIT
-bash deploy/cd/capture-remote-baseline.sh "$live"
 field() {
   node -e 'const v=process.argv[2].split(".").reduce((a,k)=>a?.[k],JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")));process.stdout.write(v==null?"":String(v))' "$1" "$2"
 }
-running="$(field "$live" application_sha)"
-if [ "$running" != "$sha" ]; then
+# Read the live commit, then decide: a newer deploy that already landed owns the
+# journal, so this readback must not arm (a delayed older readback would
+# otherwise supersede the newer deploy's journal). Returns 0 and prints nothing
+# when C00 runs exactly $sha; exits 0 for a descendant, 1 for anything else.
+read_live() {
+  bash deploy/cd/capture-remote-baseline.sh "$live"
+  running="$(field "$live" application_sha)"
+  [ "$running" = "$sha" ] && return 0
   if git merge-base --is-ancestor "$sha" "$running" 2>/dev/null; then
-    echo "C00 runs ${running}, a descendant of the deployed ${sha}; digest check left to that deploy."
+    echo "C00 runs ${running}, a descendant of the deployed ${sha}; its own deploy arms the journal and checks the digests."
     exit 0
   fi
   echo "::error title=C00 readback::C00 runs ${running:-<unknown>}, not ${sha} or a descendant" >&2
+  exit 1
+}
+read_live
+
+# Arm only while C00 still runs $sha. health-window.mjs re-checks that under its
+# lock, in the same step that switches the journal (exit 3: a newer deploy landed
+# since the read above).
+arm_status=0
+node deploy/cd/health-window.mjs arm --dir "${C00_STATE_DIR%/}/health-observer" --id "$OBSERVATION_ID" --sha "$sha" \
+  --window 900 --interval 10 --verify-seconds "${READBACK_ARM_VERIFY_SECONDS:-30}" \
+  --compose-dir "$C00_COMPOSE_DIR" --cutover-state-dir "$C00_CUTOVER_STATE_DIR" \
+  --router-state-dir "${C00_ROUTER_STATE_DIR%/}" --health-script deploy/cd/ab-health-check.sh \
+  --live-sha-script deploy/cd/live-application-sha.sh || arm_status=$?
+if [ "$arm_status" -eq 3 ]; then
+  read_live  # a descendant exits 0 here; anything else exits 1
+  echo "::error title=C00 readback::C00 changed during arming but runs ${running} again; refusing to pass" >&2
+  exit 1
+elif [ "$arm_status" -ne 0 ]; then
+  echo "::error title=C00 readback::the health observer is not armed and sampling (see health-window output above)" >&2
   exit 1
 fi
 if [ -n "$manifest" ]; then

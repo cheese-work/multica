@@ -13,6 +13,12 @@
 // stale or foreign evidence fails closed. A newer arm supersedes the open
 // journal; journals are never mixed. Confirm leaves a newer descendant deploy
 // to that deploy's own journal before it calls verify.
+//
+// The readback runs outside the deploy lock, so a delayed older readback can
+// reach arm after a newer deploy. Under the tick lock, arm reads the commit C00
+// runs now (--live-sha-script) and refuses to touch the journals unless it is
+// the commit being armed: exit 3, nothing created, `active` untouched. The same
+// lock covers the journal switch, so an arm cannot interleave with another.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -27,6 +33,9 @@ const now = () => (process.env.HW_NOW ? Number(process.env.HW_NOW) : Math.floor(
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class UsageError extends Error {}
+// A newer deploy owns C00 now: this arm must leave its journal alone (exit 3).
+class StaleDeployError extends Error {}
+const EXIT_STALE_DEPLOY = 3;
 
 function parseArgs(argv) {
   const opts = {};
@@ -106,7 +115,10 @@ function activeColour(stateDir) {
 }
 
 function containersOf(composeDir, colour) {
-  const result = spawnSync("docker", ["compose", "ps", "-q", `backend-${colour}`, `frontend-${colour}`], {
+  // The colour services exist only in the A/B overlay; without it Compose
+  // answers "no such service: backend-blue".
+  const files = ["docker-compose.selfhost.yml", "deploy/cd/docker-compose.ab.yml"].flatMap((file) => ["-f", file]);
+  const result = spawnSync("docker", ["compose", ...files, "ps", "-q", `backend-${colour}`, `frontend-${colour}`], {
     cwd: composeDir,
     encoding: "utf8",
     timeout: 30_000,
@@ -204,8 +216,19 @@ async function tick(opts) {
   return 0;
 }
 
+function assertStillLive(opts) {
+  const result = spawnSync("bash", [opts["live-sha-script"]], {
+    encoding: "utf8",
+    timeout: 60_000,
+    env: { ...process.env, C00_COMPOSE_DIR: opts["compose-dir"], C00_CUTOVER_STATE_DIR: opts["cutover-state-dir"] },
+  });
+  const live = result.status === 0 ? result.stdout.trim() : "";
+  if (!SHA_RE.test(live)) throw new Error(`cannot read the commit C00 runs now (${opts["live-sha-script"]}); not arming`);
+  if (live !== opts.sha) throw new StaleDeployError(`C00 no longer runs ${opts.sha} (it runs ${live}); not arming ${opts.id}`);
+}
+
 async function arm(opts) {
-  need(opts, "dir", "id", "sha", "window", "interval", "compose-dir", "cutover-state-dir", "router-state-dir", "health-script");
+  need(opts, "dir", "id", "sha", "window", "interval", "compose-dir", "cutover-state-dir", "router-state-dir", "health-script", "live-sha-script");
   if (!ID_RE.test(opts.id)) throw new UsageError("--id is not a safe name");
   if (!SHA_RE.test(opts.sha)) throw new UsageError("--sha must be a 40-character commit SHA");
   const window = posInt(opts.window, "window");
@@ -220,31 +243,34 @@ async function arm(opts) {
   const containers = containersOf(opts["compose-dir"], colour);
   if (containers.length !== 2) throw new Error(`expected 2 backend/frontend containers for ${colour}, found ${containers.length}`);
 
-  fs.mkdirSync(path.join(opts.dir, "bin"), { recursive: true });
-  fs.mkdirSync(od);
+  fs.mkdirSync(opts.dir, { recursive: true });
   const t0 = now();
-  const meta = {
-    id: opts.id, sha: opts.sha, t0, window, interval, colour, containers,
-    compose_dir: path.resolve(opts["compose-dir"]),
-    cutover_state_dir: path.resolve(opts["cutover-state-dir"]),
-    router_state_dir: path.resolve(opts["router-state-dir"]),
-  };
-  fs.copyFileSync(opts["health-script"], path.join(od, "ab-health-check.sh"));
-  fs.copyFileSync(fileURLToPath(import.meta.url), path.join(opts.dir, "bin/health-window.mjs.new"));
-  fs.renameSync(path.join(opts.dir, "bin/health-window.mjs.new"), path.join(opts.dir, "bin/health-window.mjs"));
-  writeFileAtomic(path.join(od, "meta.json"), `${JSON.stringify(meta)}\n`);
-  writeFileAtomic(path.join(od, "samples.jsonl"), "");
-  setState(od, "open");
+  const first = await withLock(opts.dir, 30_000, async () => {
+    assertStillLive(opts);
+    const meta = {
+      id: opts.id, sha: opts.sha, t0, window, interval, colour, containers,
+      compose_dir: path.resolve(opts["compose-dir"]),
+      cutover_state_dir: path.resolve(opts["cutover-state-dir"]),
+      router_state_dir: path.resolve(opts["router-state-dir"]),
+    };
+    fs.mkdirSync(path.join(opts.dir, "bin"), { recursive: true });
+    fs.mkdirSync(od);
+    fs.copyFileSync(opts["health-script"], path.join(od, "ab-health-check.sh"));
+    fs.copyFileSync(fileURLToPath(import.meta.url), path.join(opts.dir, "bin/health-window.mjs.new"));
+    fs.renameSync(path.join(opts.dir, "bin/health-window.mjs.new"), path.join(opts.dir, "bin/health-window.mjs"));
+    writeFileAtomic(path.join(od, "meta.json"), `${JSON.stringify(meta)}\n`);
+    writeFileAtomic(path.join(od, "samples.jsonl"), "");
+    setState(od, "open");
 
-  const activeFile = path.join(opts.dir, "active");
-  if (fs.existsSync(activeFile)) {
-    const previous = path.join(opts.dir, fs.readFileSync(activeFile, "utf8").trim());
-    if (fs.existsSync(path.join(previous, "meta.json")) && stateOf(previous) === "open") setState(previous, "superseded");
-  }
-  writeFileAtomic(activeFile, `${opts.id}\n`);
-  if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `observation=${opts.id}\nt0=${t0}\n`);
-
-  const first = await withLock(opts.dir, 30_000, () => sampleOnce(od, "arm", 0));
+    const activeFile = path.join(opts.dir, "active");
+    if (fs.existsSync(activeFile)) {
+      const previous = path.join(opts.dir, fs.readFileSync(activeFile, "utf8").trim());
+      if (fs.existsSync(path.join(previous, "meta.json")) && stateOf(previous) === "open") setState(previous, "superseded");
+    }
+    writeFileAtomic(activeFile, `${opts.id}\n`);
+    if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `observation=${opts.id}\nt0=${t0}\n`);
+    return sampleOnce(od, "arm", 0);
+  });
   if (!first) throw new Error("could not take the first sample");
   if (!first.ok) throw new Error(`first sample is unhealthy: ${first.detail}`);
 
@@ -320,6 +346,7 @@ async function main() {
     throw new UsageError(`usage: health-window.mjs arm|tick|verify ...`);
   } catch (error) {
     console.error(`::error title=Multica health journal::${error.message}`);
+    if (error instanceof StaleDeployError) return EXIT_STALE_DEPLOY;
     return error instanceof UsageError ? 2 : 1;
   }
 }

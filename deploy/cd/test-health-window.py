@@ -13,9 +13,54 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "deploy/cd/health-window.mjs"
 SHA = "a" * 40
+NEWER = "b" * 40
 T0 = 1_700_000_000
 WINDOW, INTERVAL = 120, 10  # short window keeps the suite fast; the 900 s window has its own test
 LAST = WINDOW // INTERVAL  # final scheduled slot: T0 + WINDOW
+
+
+BASE_FILE, OVERLAY_FILE = "docker-compose.selfhost.yml", "deploy/cd/docker-compose.ab.yml"
+SERVICES = {}  # "-f a -f b" -> services the REAL Compose parser finds in those files
+
+
+def setUpModule():
+    """Parse the repository's real Compose files once per file set; the shim answers from that."""
+    docker = shutil.which("docker")
+    if docker is None or subprocess.run([docker, "compose", "version"], capture_output=True).returncode != 0:
+        raise unittest.SkipTest("docker compose is needed to parse the real A/B Compose files")
+    tmp = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(tmp.cleanup)
+    root = Path(tmp.name)
+    (root / "deploy/cd").mkdir(parents=True)
+    shutil.copy(ROOT / BASE_FILE, root)
+    shutil.copy(ROOT / OVERLAY_FILE, root / OVERLAY_FILE)
+    for files in ([BASE_FILE], [BASE_FILE, OVERLAY_FILE]):
+        args = [arg for file in files for arg in ("-f", file)]
+        out = subprocess.run([docker, "compose", *args, "config", "--services"], cwd=root, env={**os.environ, "JWT_SECRET": "x"},
+                             text=True, capture_output=True, check=True).stdout
+        SERVICES[" ".join(args)] = out.split()
+
+
+def docker_shim(containers):
+    """`docker compose ps -q` needs a daemon. This answers it from the real parse above: a command
+    that omits the A/B overlay fails exactly as on C00 ("no such service: backend-blue")."""
+    cases = "\n".join(f'  "{key}") known="{" ".join(names)}" ;;' for key, names in SERVICES.items())
+    return f"""#!/usr/bin/env bash
+[ "$1" = compose ] || exit 64
+shift
+key=""
+while [ "$1" = -f ]; do key="${{key:+$key }}-f $2"; shift 2; done
+[ "$1" = ps ] && [ "$2" = -q ] || exit 64
+shift 2
+case "$key" in
+{cases}
+  *) echo "no configuration file provided: not found" >&2; exit 1 ;;
+esac
+for service in "$@"; do
+  case " $known " in *" $service "*) ;; *) echo "no such service: $service" >&2; exit 1 ;; esac
+done
+cat "{containers}"
+"""
 
 
 class Base(unittest.TestCase):
@@ -24,14 +69,23 @@ class Base(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.dir = Path(self.temp.name)
         self.obs = self.dir / "obs"
-        for sub in ["bin", "state", "compose", "router"]:
-            (self.dir / sub).mkdir()
+        for sub in ["bin", "state", "compose", "router", "compose/deploy/cd"]:
+            (self.dir / sub).mkdir(parents=True)
+        shutil.copy(ROOT / "docker-compose.selfhost.yml", self.dir / "compose")
+        shutil.copy(ROOT / "deploy/cd/docker-compose.ab.yml", self.dir / "compose/deploy/cd")
+        self.set_live(SHA)
         (self.dir / "state/cutover-state.json").write_text(json.dumps({"active_colour": "blue"}))
         self.set_containers("c1\nc2\n")
         self.set_health(ok=True)
         stub = self.dir / "bin/docker"
-        stub.write_text(f'#!/usr/bin/env bash\ncat "{self.dir}/containers"\n')
+        stub.write_text(docker_shim(self.dir / "containers"))
         stub.chmod(0o755)
+
+    def set_live(self, sha):
+        """The commit C00's active colour runs, as live-application-sha.sh reports it."""
+        script = self.dir / "live-sha.sh"
+        script.write_text(f'#!/usr/bin/env bash\nprintf %s "{sha}"\n')
+        script.chmod(0o755)
 
     def set_containers(self, text):
         (self.dir / "containers").write_text(text)
@@ -54,7 +108,8 @@ class Base(unittest.TestCase):
     def arm_args(self, run_id="r1-1", verify=0, window=WINDOW, interval=INTERVAL, sha=SHA):
         return ["arm", "--dir", self.obs, "--id", run_id, "--sha", sha, "--window", window, "--interval", interval,
                 "--verify-seconds", verify, "--compose-dir", self.dir / "compose", "--cutover-state-dir", self.dir / "state",
-                "--router-state-dir", self.dir / "router", "--health-script", self.dir / "ab-health-check.sh"]
+                "--router-state-dir", self.dir / "router", "--health-script", self.dir / "ab-health-check.sh",
+                "--live-sha-script", self.dir / "live-sha.sh"]
 
     def seed(self, run_id="r1-1", t0=T0, window=WINDOW, interval=INTERVAL, sha=SHA):
         """Write the observation arm would write, without running the clock."""
@@ -278,7 +333,7 @@ class ArmTests(Base):
         self.addCleanup(stop.set)
         self.obs.mkdir()
         output = self.dir / "gh-output"
-        result = self.run_node(*self.arm_args(verify=15, window=4, interval=1), GITHUB_OUTPUT=output)
+        result = self.run_node(*self.arm_args(verify=25, window=30, interval=1), GITHUB_OUTPUT=output)
         self.assertEqual(result.returncode, 0, result.stderr)
         text = output.read_text()
         self.assertIn("observation=r1-1", text)
@@ -321,6 +376,35 @@ class ArmTests(Base):
         self.assertEqual(json.loads((self.obs / "old-1/state.json").read_text())["state"], "superseded")
         self.assertEqual((self.obs / "active").read_text().strip(), "new-1")
         self.assertEqual({r["slot"] for r in self.samples("old-1")}, {0, 1, 2, 3})
+
+    def test_an_older_readback_arming_after_a_newer_deploy_never_supersedes_its_journal(self):
+        # The newer deploy armed first; C00 now runs NEWER. A delayed older readback must not take over.
+        self.seed("new-1", sha=NEWER)
+        self.set_live(NEWER)
+        result = self.run_node(*self.arm_args(run_id="old-1", verify=0))
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("no longer runs", result.stderr)
+        self.assertEqual((self.obs / "active").read_text().strip(), "new-1")
+        self.assertFalse((self.obs / "old-1").exists())
+        self.assertFalse((self.obs / "new-1/state.json").exists())  # still open: never marked superseded
+
+    def test_arm_fails_closed_when_the_live_commit_cannot_be_read(self):
+        self.set_live("")
+        self.obs.mkdir()
+        result = self.run_node(*self.arm_args(verify=0))
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.obs / "active").exists())
+
+    def test_the_live_commit_check_and_the_journal_switch_are_serialized_by_the_tick_lock(self):
+        self.seed("old-1")
+        lock = self.obs / "tick.lock"
+        lock.mkdir()  # a tick or another arm holds the lock
+        started = time.time()
+        threading.Timer(1.5, lambda: shutil.rmtree(lock)).start()
+        result = self.run_node(*self.arm_args(run_id="new-1", verify=0))
+        self.assertGreaterEqual(time.time() - started, 1.4)  # arm waited for the lock before switching
+        self.assertEqual((self.obs / "active").read_text().strip(), "new-1")
+        self.assertNotEqual(result.returncode, 0)  # no timer in this test: arm itself fails after arming
 
     def test_bad_arguments_are_refused(self):
         self.obs.mkdir()
