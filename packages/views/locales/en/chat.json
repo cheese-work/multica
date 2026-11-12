@@ -7,6 +7,8 @@
     "no_run": "No active run."
   },
   "needs_you": {
+    "chip_one": "{{count}} decision needs you",
+    "chip_other": "{{count}} decisions need you",
     "title": "Needs you",
     "loading": "Loading open asks…",
     "error": "Could not load open asks.",

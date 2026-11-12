@@ -3042,6 +3042,11 @@ type RunBudgetRefusal struct {
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RunBudgetWindowCutover struct {
+	OnlyRow   bool               `json:"only_row"`
+	CutoverAt pgtype.Timestamptz `json:"cutover_at"`
+}
+
 type RunCapabilityGrant struct {
 	ID                pgtype.UUID        `json:"id"`
 	WorkspaceID       pgtype.UUID        `json:"workspace_id"`

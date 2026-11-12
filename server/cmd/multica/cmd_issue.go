@@ -704,7 +704,7 @@ func init() {
 	issueCreateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) grouping this sub-issue into an ordered barrier group under its parent; omit for unstaged. The parent assignee is woken only when every sub-issue in a stage finishes.")
 	issueCreateCmd.Flags().String("project", "", "Project ID")
 	issueCreateCmd.Flags().String("on-behalf-of", "", "Member (user ID) you are creating the issue for; defaults to the person your run acts for")
-	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
+	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead). Omit it for standard types: the workspace setting workflow_by_type maps the title type (plan, design, fix...) to a workflow, and create prints the one chosen")
 	issueCreateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
 	issueCreateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
@@ -2062,6 +2062,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		if id := strVal(result, "workflow_id"); id != "" {
+			fmt.Fprintf(os.Stdout, "Workflow: %s\n", id)
+		}
 		printWebURL(os.Stdout, result)
 		return nil
 	}
@@ -2391,6 +2394,9 @@ func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		if hint := strVal(result, "workflow_hint"); hint != "" {
+			fmt.Fprintln(os.Stdout, hint)
+		}
 		return nil
 	}
 

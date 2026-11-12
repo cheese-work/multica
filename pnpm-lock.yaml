@@ -149,6 +149,9 @@ overrides:
   expo-modules-core: 57.0.24
 
 patchedDependencies:
+  decode-uri-component@0.2.2:
+    hash: 0c11352535d9b3fe855b0e69ae94da460a28564ef9d1fc185672d6c0063a9801
+    path: patches/decode-uri-component@0.2.2.patch
   expo-modules-core@57.0.24:
     hash: 240a89952dcf4dff39762d2ea67fdd0ac56c09fcef6282188087996772793633
     path: apps/mobile/patches/expo-modules-core@57.0.24.patch
@@ -17303,7 +17306,7 @@ snapshots:
     dependencies:
       character-entities: 2.0.2
 
-  decode-uri-component@0.2.2: {}
+  decode-uri-component@0.2.2(patch_hash=0c11352535d9b3fe855b0e69ae94da460a28564ef9d1fc185672d6c0063a9801): {}
 
   decompress-response@6.0.0:
     dependencies:
@@ -21834,7 +21837,7 @@ snapshots:
 
   query-string@7.1.3:
     dependencies:
-      decode-uri-component: 0.2.2
+      decode-uri-component: 0.2.2(patch_hash=0c11352535d9b3fe855b0e69ae94da460a28564ef9d1fc185672d6c0063a9801)
       filter-obj: 1.1.0
       split-on-first: 1.1.0
       strict-uri-encode: 2.0.0

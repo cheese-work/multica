@@ -7,6 +7,7 @@
     "no_run": "没有活动的运行。"
   },
   "needs_you": {
+    "chip_other": "{{count}} 个决定等你处理",
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",

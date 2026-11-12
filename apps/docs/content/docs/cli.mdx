@@ -454,6 +454,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible \
 
 `--for` accepts the person's user ID or their member ID in the issue's workspace, including workspace owners. The server stores the canonical user ID.
 
+A running DM chat task can also ask, but only its own DM member: it must pass `--for <that member>`. Another member is refused with 403. `--session`, `--new-dm` and `--parent` are refused with 400. The card renders in the calling DM, and the request carries the decision ID, the member, the issue, the class and the expiry.
+
 One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
 
 The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
@@ -472,7 +474,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. For a run-budget action that link opens the approval on the issue; for any other action it links to the card in the chat, where the person approves it. A plain option card (`multica decision request` without `--action-file`) cannot apply a change: Approve only records the answer. The server cannot read intent, so it does not refuse such a card; when the decision or an option reads like a workflow, agent, squad, workspace or budget change (or names an allowlisted action type) it adds an advisory hint. Send that change with `multica decision propose`. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
 
 ### Config change proposals
 

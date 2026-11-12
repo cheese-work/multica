@@ -288,6 +288,8 @@ import {
   type AgentDecisionSetting,
   RoutingAgentSettingSchema,
   type RoutingAgentSetting,
+  DelegatedWritesSchema,
+  type DelegatedWrites,
   OpenDecisionRequestListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
@@ -3367,6 +3369,27 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
       method: "PUT",
       body: JSON.stringify(config),
+    });
+  }
+
+  // CHE-4617: null when the response is malformed, so a guessed rule is never
+  // shown or saved back over the real one.
+  async getDelegatedWrites(workspaceId: string): Promise<DelegatedWrites | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`);
+    return parseWithFallback<DelegatedWrites | null>(raw, DelegatedWritesSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/delegated-writes",
+    });
+  }
+
+  // Human owner/admin only; replaces the whole rule.
+  async updateDelegatedWrites(workspaceId: string, rule: DelegatedWrites): Promise<DelegatedWrites> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    });
+    // The save succeeded; a malformed echo falls back to the rule that was sent.
+    return parseWithFallback<DelegatedWrites>(raw, DelegatedWritesSchema, rule, {
+      endpoint: "PUT /api/workspaces/{id}/delegated-writes",
     });
   }
 

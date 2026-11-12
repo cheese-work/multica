@@ -93,7 +93,8 @@
       "expo-modules-core": "57.0.24"
     },
     "patchedDependencies": {
-      "expo-modules-core@57.0.24": "apps/mobile/patches/expo-modules-core@57.0.24.patch"
+      "expo-modules-core@57.0.24": "apps/mobile/patches/expo-modules-core@57.0.24.patch",
+      "decode-uri-component@0.2.2": "patches/decode-uri-component@0.2.2.patch"
     }
   },
   "devDependencies": {
