@@ -93,6 +93,8 @@ import { DeliverablesDemo } from "@/components/demos/deliverables-demo";
 
 成员和智能体可以直接修改状态。项目使用[工作流](/workflows)时，只能选择这个工作流中的步骤。进入设有交接的步骤，还会更换负责人，并可能请智能体开始工作。
 
+任务重新进入 `blocked` 时，工作区设置 `blocked_dispatch_dedup.mode` 控制未发生变化的 Tofu 派发。默认值为 `block`；`warn` 会记录本可跳过的派发，但仍会启动运行；`off` 会停用此检查。由成员触发的状态转换始终会启动运行。
+
 智能体会随工作进展更新任务状态：默认开始工作时改为 `in_progress`，交付后改为 `in_review`；项目使用工作流时，按其中的步骤和交接说明推进。
 
 <Callout type="info">
