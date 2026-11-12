@@ -122,3 +122,9 @@ func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pg
 	}
 	return updated, prev.SchedulingPausedAt.Valid != pause, nil
 }
+
+// NotifyRuntimeMayHaveWork is ResumeAgentScheduling's wake-up for a caller that
+// resumed the agent inside its own transaction (an approved decision action).
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID string) {
+	s.notifyRuntimeMayHaveWork(runtimeID, taskID)
+}

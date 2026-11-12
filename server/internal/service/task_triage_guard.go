@@ -67,6 +67,11 @@ const (
 // callers log it and drop the trigger.
 var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived from it runs")
 
+// ErrAgentPaused is returned by every enqueue path for an agent whose
+// scheduling is paused (CHE-5066). The pause already stops claims; this stops
+// the run from being queued at all, so a paused agent gains no backlog.
+var ErrAgentPaused = errors.New("agent_paused: this agent is paused; pick another agent by role")
+
 // ErrRerunSourceIsTriage is returned when a manual rerun names a triage run as
 // the task to repeat. Handlers render it as 400: the request is well-formed and
 // the issue may well be runnable — it is the target that is not an execution
@@ -102,6 +107,11 @@ func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 // task row itself: it also returns the review gate to apply to that insert.
 func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) (ReviewGate, error) {
 	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
+		return ReviewGate{}, err
+	}
+	// A paused agent takes no new run, whoever asks (CHE-5066). Before every
+	// exit below, so a named mention is refused too.
+	if err := guardAgentNotPaused(ctx, q, target.AgentID); err != nil {
 		return ReviewGate{}, err
 	}
 	// Before the OriginNamed exit: a person naming an agent does not start a
@@ -188,4 +198,23 @@ func IsTriageTask(t db.AgentTaskQueue) bool {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal(t.Context, &payload) == nil && payload.Type == TriageContextType
+}
+
+// guardAgentNotPaused refuses a run for an agent whose scheduling is paused. A
+// missing agent row is left to the insert that follows.
+func guardAgentNotPaused(ctx context.Context, q *db.Queries, agentID pgtype.UUID) error {
+	if !agentID.Valid {
+		return nil
+	}
+	agent, err := q.GetAgent(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("paused guard: load agent: %w", err)
+	}
+	if agent.SchedulingPausedAt.Valid {
+		return ErrAgentPaused
+	}
+	return nil
 }
