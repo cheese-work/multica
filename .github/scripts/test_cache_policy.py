@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import importlib.util
 import io
 import subprocess
@@ -92,6 +93,20 @@ class CachePolicyTests(unittest.TestCase):
     def test_unmanaged_archive_versions_remain_independent(self):
         caches = [dict(cache(1, 'modules'), version='one'), dict(cache(2, 'modules'), version='two')]
         self.assertEqual(policy.plan_deletions(caches), [])
+
+
+class MergeQueueRefTests(unittest.TestCase):
+    QUEUE = 'refs/heads/gh-readonly-queue/main/pr-1-' + 'a' * 40
+
+    def test_idle_merge_queue_ref_caches_are_deleted(self):
+        entry = cache(5, 'turbo-build-Linux-X64-v22-refs/heads/gh-readonly-queue/main/pr-1-x-1', ref=self.QUEUE)
+        now = datetime.datetime(2026, 10, 5, 2, tzinfo=datetime.timezone.utc)
+        self.assertEqual(policy.plan_deletions([entry], now=now), [5])
+
+    def test_recent_merge_queue_ref_caches_are_kept(self):
+        entry = cache(5, 'turbo-build-Linux-X64-v22-refs/heads/gh-readonly-queue/main/pr-1-x-1', ref=self.QUEUE)
+        now = datetime.datetime(2026, 10, 5, 0, 30, tzinfo=datetime.timezone.utc)
+        self.assertEqual(policy.plan_deletions([entry], now=now), [])
 
 
 class PullRequestOnlySetupGoTests(unittest.TestCase):
