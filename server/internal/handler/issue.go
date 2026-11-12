@@ -995,7 +995,7 @@ func searchIssueSource(wsParam string, likeParams []string, numParam string) str
 			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
 	}
 	return fmt.Sprintf(`(
-		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number, i.project_id,
 			ist.title_folded AS title, ist.description_folded AS description,
 			ist.title_accents, ist.description_accents
 		FROM (

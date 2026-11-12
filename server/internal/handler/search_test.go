@@ -618,7 +618,13 @@ func TestBuildSearchQuery_ProjectFilter(t *testing.T) {
 			if commentCTEStart == -1 {
 				t.Fatalf("missing comment_matches CTE:\n%s", filteredQuery)
 			}
-			issueMatchesSection := filteredQuery[:commentCTEStart]
+			// The fork builds comment_matches before issue_matches, because the
+			// issue source reads it.
+			issueCTEStart := strings.Index(filteredQuery, "issue_matches AS")
+			if issueCTEStart == -1 {
+				t.Fatalf("missing issue_matches CTE:\n%s", filteredQuery)
+			}
+			issueMatchesSection := filteredQuery[issueCTEStart:]
 			wantIssueWhere := fmt.Sprintf("WHERE i.workspace_id = $4 AND i.project_id = $%d", tc.wantProjectIdx)
 			if !strings.Contains(issueMatchesSection, wantIssueWhere) {
 				t.Fatalf("issue_matches CTE missing %q:\n%s", wantIssueWhere, issueMatchesSection)
@@ -629,8 +635,8 @@ func TestBuildSearchQuery_ProjectFilter(t *testing.T) {
 				wantCommentWhere += fmt.Sprintf(" AND NOT (i.status = ANY($%d::text[]))", tc.wantProjectIdx-1)
 			}
 			wantCommentExists := "AND EXISTS (SELECT 1 FROM issue i WHERE i.id = c.issue_id AND " + wantCommentWhere + ")"
-			if !strings.Contains(filteredQuery[commentCTEStart:], wantCommentExists) {
-				t.Fatalf("comment_matches CTE missing %q:\n%s", wantCommentExists, filteredQuery[commentCTEStart:])
+			if !strings.Contains(filteredQuery[commentCTEStart:issueCTEStart], wantCommentExists) {
+				t.Fatalf("comment_matches CTE missing %q:\n%s", wantCommentExists, filteredQuery[commentCTEStart:issueCTEStart])
 			}
 			if count := strings.Count(filteredQuery, "EXISTS (SELECT 1 FROM issue i"); count != 1 {
 				t.Fatalf("project and terminal-status filters should share one comment EXISTS predicate, got %d:\n%s", count, filteredQuery)
