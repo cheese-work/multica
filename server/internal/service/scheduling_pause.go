@@ -122,3 +122,9 @@ func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pg
 	}
 	return updated, prev.SchedulingPausedAt.Valid != pause, nil
 }
+
+// NotifyRuntimeMayHaveWork invalidates the empty-claim verdict of a runtime, for
+// a resume that commits outside this service (an approved decision action).
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
+	s.notifyRuntimeMayHaveWork(runtimeID, "")
+}

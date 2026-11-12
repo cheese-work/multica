@@ -112,6 +112,8 @@ func init() {
 	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
 	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
+	Register(&Definition{Type: "agent.pause", Version: 1, MinClass: "reversible", Target: TargetAgent, Normalize: normalizeAgentPause})
+	Register(&Definition{Type: "agent.resume", Version: 1, MinClass: "reversible", Target: TargetAgent, Normalize: normalizeAgentPause})
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
 }
 

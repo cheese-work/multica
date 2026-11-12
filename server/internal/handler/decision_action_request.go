@@ -119,6 +119,16 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentPauseParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		agent, err := loadAgent(params.AgentID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID, "scheduling_paused": agent.SchedulingPausedAt.Valid}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`

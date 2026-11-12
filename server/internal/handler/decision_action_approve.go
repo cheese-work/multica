@@ -72,14 +72,20 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.copy":             executeAgentCopyAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	agentPauseAction:         executeAgentPauseAction,
+	agentResumeAction:        executeAgentResumeAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
 // the approver's current role, read under the member lock: a passkey proves
 // who clicked, not that they may do this.
 func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
-	if actionType == "agent.env.patch" {
+	switch actionType {
+	case "agent.env.patch":
 		return canManageAgentEnv(target, approver)
+	case agentPauseAction, agentResumeAction:
+		// The rule of the pause endpoint: a workspace owner or admin only.
+		return roleAllowed(approver.Role, "owner", "admin")
 	}
 	return true
 }
@@ -469,7 +475,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch", agentInstructionsAction:
+	case "agent.env.patch", agentInstructionsAction, agentPauseAction, agentResumeAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -557,7 +563,15 @@ func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
 		return nil
 	}
 	var drifted bool
-	if action.ActionType == "agent.copy" {
+	if action.ActionType == agentPauseAction || action.ActionType == agentResumeAction {
+		var wanted struct {
+			SchedulingPaused bool `json:"scheduling_paused"`
+		}
+		if err := json.Unmarshal(action.Preconditions, &wanted); err != nil {
+			return err
+		}
+		drifted = agent.SchedulingPausedAt.Valid != wanted.SchedulingPaused
+	} else if action.ActionType == "agent.copy" {
 		var err error
 		if drifted, err = copyPreconditionDrifted(action, agent); err != nil {
 			return err
@@ -685,6 +699,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
+	}
+	if action.ActionType == agentPauseAction || action.ActionType == agentResumeAction {
+		return handler.publishAgentSchedulingChanged(ctx, action)
 	}
 	agentID, ok := decisionActionTarget(action)
 	if !ok {
