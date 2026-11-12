@@ -1,5 +1,5 @@
 name: CD deploy to C00
-run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.candidate_sha || inputs.ref || github.sha }}
+run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.event_name }}
 
 # D2 (CHE-530 / CHE-1923): deploys an already-admitted release-candidate tuple
 # to the live C00 self-host stack on the target-host local runner
@@ -8,13 +8,30 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.c
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
-# CHE-4495: a push to `main` builds and stops. After a SUCCESSFUL
-# cd-qualification run, this workflow only runs candidate-preflight and sends
-# the one-click notice; it never touches C00. A deploy needs a
-# `workflow_dispatch` by the owner (authorize-c00 checks the triggering actor
-# before any C00 step). GitHub's required-reviewer environments do not gate on
-# a private Team repo, so the gate is the actor check plus the main-only
-# deployment-branch policy of c00-runtime (secrets exist only on `main`).
+# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:00, 04:00,
+# 08:00, 12:00, 16:00, 20:00 ICT), not after every qualified build. The first
+# job, schedule-resolve, picks the newest main commit whose cd-qualification run
+# succeeded and ends the run with "nothing new to deploy" when C00 already runs
+# it. It uses no C00 runner, lock or environment.
+#
+# CHE-4495 / CHE-4582: the owner's merge to `main` is the deploy authorization.
+# For the scheduled candidate, authorize-c00 reads who merged the
+# pull request behind that commit. The owner (`congvc-dev`) or a login in the
+# C00_DEPLOY_AUTHORIZERS repository variable (CHE-3123 adds the agent merge
+# identity there, no workflow change) deploys automatically once
+# candidate-preflight finds the commit eligible. A merge by anyone else builds
+# and stops with the one-click notice. A `workflow_dispatch` still needs an
+# allowed actor, checked by authorize-c00 before any C00 step. GitHub's
+# required-reviewer environments do not gate on a private Team repo, so the
+# gate is the merger/actor check plus the main-only deployment-branch policy of
+# c00-runtime (secrets exist only on `main`).
+#
+# CHE-2365: after a deploy, `readback` watches health, digest and SHA for 15
+# minutes. A failed deploy or readback suspends automatic deploys: the next
+# authorize-c00 finds the latest finished run failed and builds without
+# deploying, until a later deploy succeeds (the owner's dispatch lifts it).
+# The cutover controller rolls back by digest on a failed cutover, and the
+# `rollback` job does the same after a failed readback.
 #
 # A dispatch with `candidate_sha` needs one job a manual-evidence dispatch does
 # not: prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
@@ -28,14 +45,13 @@ run-name: CD deploy to C00 · ${{ github.event.workflow_run.head_sha || inputs.c
 # provenance digests and the required checks, and still refuses
 # build-evidence.
 on:
-  workflow_run:
-    workflows: ["CD qualification build"]
-    types: [completed]
-    branches: [main]
+  schedule:
+    # 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 ICT (UTC+7).
+    - cron: "0 1,5,9,13,17,21 * * *"
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: "Full SHA of a qualified main commit to deploy; leave empty to supply the evidence paths below instead"
+        description: "Full SHA of a qualified main commit to deploy; leave empty (with the paths below empty too) to deploy the newest qualified main commit"
         required: false
       manifest_path:
         description: "Path (relative to repo root, at the checked-out ref) to the release-candidate manifest JSON"
@@ -75,34 +91,80 @@ permissions:
 # to 100 pending jobs FIFO and evicts none. `cancel-in-progress` stays off (the default): it
 # cannot be combined with `queue`, and a started deploy must never be cancelled.
 jobs:
+  # CHE-5182: scheduled runs only. Ends here with an empty `sha` when there is
+  # nothing new to deploy, so no later job starts. No environment, no secrets and
+  # no concurrency group: it never queues behind a deploy.
+  schedule-resolve:
+    if: github.event_name == 'schedule'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Resolve the newest qualified commit C00 does not run yet
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
+        run: bash deploy/cd/resolve-scheduled.sh
+
   # ---------------------------------------------------------------------------
-  # The deploy gate (CHE-4495). Only a workflow_dispatch reaches it, and it
-  # fails unless the triggering actor is the owner. It has no environment and no
-  # secrets, and every job that touches C00 needs it, so another actor's
-  # dispatch fails here, before any C00 step. A push-triggered (workflow_run)
-  # run skips it, and so skips every job behind it.
+  # The deploy gate (CHE-4495, CHE-4582). Runs for a dispatch and for a
+  # scheduled candidate. deploy/cd/authorize-c00.py fails a dispatch by an
+  # actor outside the allowlist, so every C00 job behind it never starts. For a
+  # scheduled candidate it answers `authorized=false` (no error) unless the merger of
+  # the commit's pull request is on the allowlist and no earlier automatic
+  # deploy failed. It has no environment and no secrets. The script comes from
+  # the workflow revision itself (no `ref`), never from a pull request.
   # ---------------------------------------------------------------------------
   authorize-c00:
-    if: github.event_name == 'workflow_dispatch'
+    needs: schedule-resolve
+    if: always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''))
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      authorized: ${{ steps.gate.outputs.authorized }}
+      candidate_sha: ${{ steps.gate.outputs.candidate_sha }}
     steps:
-      - name: Only the owner may deploy to C00
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: deploy/cd/authorize-c00.py
+      - name: Who may deploy to C00
+        id: gate
         env:
-          ACTOR: ${{ github.triggering_actor }}
-        run: |
-          if [ "$ACTOR" != "congvc-dev" ]; then
-            echo "::error::dispatch by '$ACTOR' refused; only congvc-dev may deploy to C00"
-            exit 1
-          fi
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
+          INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          EXTRA_AUTHORIZERS: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
+        run: python3 deploy/cd/authorize-c00.py
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead webhook never holds a deploy.
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
+  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # reach the tailnet-only Multica server.
   notify-approval:
-    needs: candidate-preflight
-    if: always() && github.event_name == 'workflow_run' && needs.candidate-preflight.outputs.eligible == 'true'
-    runs-on: ubuntu-24.04
+    needs: [schedule-resolve, candidate-preflight, authorize-c00]
+    if: always() && github.event_name == 'schedule' && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
+    runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
+    # One notice at a time, so two candidates cannot both read "no open ask" and
+    # post. The script also checks freshness at the write.
+    concurrency:
+      group: c00-approval-notice
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v6
         with:
@@ -110,14 +172,22 @@ jobs:
           sparse-checkout: deploy/cd/notify-approval.sh
       - name: Notify owner
         env:
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
+          RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ github.token }}
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
+          MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID }}
+          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE }}
+          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+    needs: schedule-resolve
+    if: always() && github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
@@ -176,10 +246,41 @@ jobs:
           # The scripts re-read the App budget before every API phase and drop to FALLBACK_TOKEN below the reserve.
           APP_TOKEN: ${{ steps.app.outputs.token }}
           FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           C00_CONFIG_URL: ${{ vars.C00_CONFIG_URL }}
           CHECKS_WAIT_SECONDS: "3600"
         run: bash deploy/cd/candidate-preflight.sh "$SOURCE_SHA" cd-checks.json
+
+  # CHE-4998: an empty dispatch (no candidate_sha, no evidence path) deploys the
+  # newest qualified main commit. Resolved after the actor check; a typed SHA or
+  # an evidence-path dispatch passes through (see deploy/cd/resolve-candidate.sh).
+  # CHE-4582: an authorized scheduled candidate passes its own SHA through the
+  # same step, so every job behind it reads one `sha` output.
+  resolve-candidate:
+    needs: authorize-c00
+    if: always() && needs.authorize-c00.outputs.authorized == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - name: Checkout the workflow revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+      - name: Resolve the candidate commit
+        id: resolve
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authorize-c00.outputs.candidate_sha }}
+          INPUT_MANIFEST: ${{ inputs.manifest_path }}
+          INPUT_BASELINE: ${{ inputs.baseline_tuple_path }}
+          INPUT_EVENT: ${{ inputs.event_path }}
+          INPUT_CHECKS: ${{ inputs.checks_path }}
+          INPUT_PROVENANCE: ${{ inputs.provenance_path }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/cd/resolve-candidate.sh
 
   # ---------------------------------------------------------------------------
   # Dispatch with candidate_sha only. Turns D1's build-evidence into a deployable
@@ -193,8 +294,9 @@ jobs:
   # and runs one SELECT.
   # ---------------------------------------------------------------------------
   prepare-release-candidate:
-    needs: authorize-c00
-    if: github.event_name == 'workflow_dispatch' && inputs.candidate_sha != ''
+    needs: [authorize-c00, candidate-preflight, resolve-candidate]
+    # A dispatch names its candidate; an authorized merge needs the eligible preflight first.
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
@@ -212,7 +314,7 @@ jobs:
         id: q
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -343,11 +445,11 @@ jobs:
     # Admission is a read-only evidence check — it never touches C00 — so it
     # can run on a regular GitHub-hosted runner. Only the deploy job below
     # needs the dedicated C00-reachable runner and secrets.
-    needs: [authorize-c00, prepare-release-candidate]
+    needs: [authorize-c00, resolve-candidate, prepare-release-candidate]
     # A dispatch with evidence paths skips prepare-release-candidate entirely
     # (its caller supplies an already-issued manifest), so this must not be
     # skipped just because that job did not run. Nothing runs without the gate.
-    if: always() && needs.authorize-c00.result == 'success' && (inputs.candidate_sha == '' || needs.prepare-release-candidate.result == 'success')
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && (needs.resolve-candidate.outputs.sha == '' || needs.prepare-release-candidate.result == 'success')
     runs-on: ubuntu-24.04
     outputs:
       source_sha: ${{ steps.verify_admission.outputs.source_sha }}
@@ -359,7 +461,7 @@ jobs:
         id: paths
         shell: bash
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          CANDIDATE_SHA: ${{ needs.resolve-candidate.outputs.sha }}
           INPUT_REF: ${{ inputs.ref }}
           INPUT_MANIFEST: ${{ inputs.manifest_path }}
           INPUT_BASELINE: ${{ inputs.baseline_tuple_path }}
@@ -404,10 +506,10 @@ jobs:
           package-manager-cache: false
 
       - name: Download the prepared evidence set
-        if: inputs.candidate_sha != ''
+        if: needs.resolve-candidate.outputs.sha != ''
         uses: actions/download-artifact@v8
         with:
-          name: cd-release-candidate-${{ inputs.candidate_sha }}
+          name: cd-release-candidate-${{ needs.resolve-candidate.outputs.sha }}
           path: cd-evidence
 
       - name: Verify admission
@@ -457,6 +559,12 @@ jobs:
 
   deploy:
     needs: admission
+    # always(): on a manual dispatch candidate-preflight is skipped, and the
+    # implicit success() is false when any job up the needs chain was skipped,
+    # so deploy, readback and rollback never ran (CHE-5147). The explicit
+    # admission result keeps the gate: admission itself needs the
+    # authorize-c00 actor check.
+    if: always() && needs.admission.result == 'success'
     # Reserved for the C00-reachable deploy runner, distinct from D1's
     # cheese-x99 build runner label. See multica-cheese-work-runtimes for the
     # current host/runner-label mapping; this label is a placeholder for
@@ -643,3 +751,89 @@ jobs:
           else
             echo "::error::Deploy of ${{ needs.admission.outputs.source_sha }} to C00 failed or required manual intervention — see deploy.sh output above for rollback status."
           fi
+
+  # CHE-2365: 15-minute health, digest and SHA readback after a deploy. It runs
+  # outside the C00 lock so the next deploy is not held for 15 minutes; a
+  # failure here suspends automatic deploys (authorize-c00 reads this job) and
+  # starts the rollback job below.
+  # CHE-5144: the job runs deploy/cd/ from the workflow revision, not the
+  # candidate ref. A candidate cut before a script existed does not have it.
+  readback:
+    needs: [admission, deploy]
+    if: always() && needs.deploy.result == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 25
+    environment: c00-runtime
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Download the admitted manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: cd-deploy-admitted-input
+          path: cutover-input
+
+      - name: Watch C00 for 15 minutes
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+          C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
+        run: bash deploy/cd/post-deploy-readback.sh "$SOURCE_SHA" 900 cutover-input/manifest.json
+
+  # CHE-2365: a failed readback rolls C00 back by digest to the retained
+  # predecessor. The failed readback job is also what suspends automatic deploys
+  # (authorize-c00 reads it), so the run stays red whatever this job does. It
+  # takes the C00 lock because it changes C00; the script skips when a newer
+  # deploy already replaced the deployed commit. A cancelled readback is a
+  # person's decision and is not rolled back.
+  # CHE-5144: it runs the workflow revision's cutover.sh and scripts, not the
+  # candidate's, for the same reason as readback.
+  rollback:
+    needs: [admission, readback]
+    if: always() && needs.readback.result == 'failure'
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 30
+    environment: c00-runtime
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    concurrency:
+      group: cd-deploy-c00
+      queue: max
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Roll C00 back to the retained predecessor
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+          C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
+          GHCR_PULL_TOKEN: ${{ github.token }}
+        run: bash deploy/cd/rollback-failed-readback.sh "$SOURCE_SHA"

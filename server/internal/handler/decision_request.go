@@ -605,6 +605,14 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
+	} else if dmID, found, dmErr := latestDM(ctx, queries, issue, input, agentID); dmErr != nil {
+		return empty, dmErr
+	} else if found {
+		// An issue task asks in the DM the person already has with the agent.
+		reuse = true
+		if session, err = lockProposalDM(ctx, queries, issue, dmID, agentID); err != nil {
+			return empty, input.Proposal.laneError(err)
+		}
 	} else if session, reuse, err = topicLane(ctx, queries, issue, topic, input.HumanUserID, agentID); err != nil {
 		return empty, input.Proposal.laneError(err)
 	}
@@ -714,4 +722,17 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	handler.DecisionWorker.Notify()
 	result.CreatedSession = createdSession
 	return result, nil
+}
+
+// latestDM finds the recipient's most recently active plain DM with the agent
+// for a proposal made from an issue task (CHE-5253).
+func latestDM(ctx context.Context, queries *db.Queries, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (pgtype.UUID, bool, error) {
+	if input.Proposal == nil {
+		return pgtype.UUID{}, false, nil
+	}
+	id, err := queries.GetLatestPlainDM(ctx, db.GetLatestPlainDMParams{WorkspaceID: issue.WorkspaceID, CreatorID: input.HumanUserID, AgentID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, false, nil
+	}
+	return id, err == nil, err
 }
