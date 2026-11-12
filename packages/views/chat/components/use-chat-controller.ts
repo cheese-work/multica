@@ -33,7 +33,7 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
-import { CHAT_TITLE_MAX, useChatStore } from "@multica/core/chat";
+import { deriveChatTitle, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
@@ -55,22 +55,6 @@ import { useAppForeground } from "../../common/use-app-foreground";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
-
-// Derive a concise session title from the first user message: first line,
-// markdown stripped, whitespace collapsed, capped. A deterministic title
-// (no LLM) — the server has no summarization model, so this is the sensible
-// default until a runtime-generated title is wired up.
-export function deriveChatTitle(content: string): string {
-  const firstLine = (content.split("\n").find((l) => l.trim()) ?? content).trim();
-  const cleaned = firstLine
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[#*`>~_]/g, "")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // markdown links/images → their text
-    .replace(/\s+/g, " ")
-    .trim();
-  if (cleaned.length <= CHAT_TITLE_MAX) return cleaned;
-  return cleaned.slice(0, CHAT_TITLE_MAX - 1).trimEnd() + "…";
-}
 
 /**
  * After a send resolves: is the user still composing to the target they sent

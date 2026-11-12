@@ -244,7 +244,7 @@ export function ChatSessionHeader({
       className="min-w-0 max-w-96 flex-1 rounded-sm bg-background px-1 py-0.5 text-body font-medium outline-none ring-1 ring-border focus-visible:ring-brand"
     />
   ) : (
-    <TooltipHint label={t(($) => $.header.rename)}>
+    <TooltipHint label={title}>
       <button
         type="button"
         onClick={startRename}

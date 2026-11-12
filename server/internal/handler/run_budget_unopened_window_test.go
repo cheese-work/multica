@@ -197,7 +197,7 @@ func TestRunBudgetMemberMoveFailsWhenTheOldWindowCannotBeWritten(t *testing.T) {
 	real := testHandler.TxStarter
 	// The first transaction takes the boundary lock; the second would write the window.
 	testHandler.TxStarter = &failFromBegin{real: real, n: 2}
-	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{"status": "in_review", "suppress_run": true}), "id", c.issueID)
+	req := memberMoveRequest(c.issueID)
 	w := httptest.NewRecorder()
 	testHandler.UpdateIssue(w, req)
 	testHandler.TxStarter = real
@@ -237,6 +237,7 @@ func TestRunBudgetSameStatusRequestChecksTheStatusUnderTheLock(t *testing.T) {
 	go func() {
 		defer close(done)
 		req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+c.issueID, map[string]any{"status": "in_progress", "suppress_run": true}), "id", c.issueID)
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
 		w := httptest.NewRecorder()
 		testHandler.UpdateIssue(w, req)
 		code = w.Code
@@ -458,7 +459,9 @@ func requireAllFinish(t *testing.T, what string, reqs []*http.Request, serve htt
 }
 
 func memberMoveRequest(issueID string) *http.Request {
-	return withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"status": "in_review", "suppress_run": true}), "id", issueID)
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"status": "in_review", "suppress_run": true}), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	return req
 }
 
 // Many requests for one issue queue on its boundary lock. A request that
