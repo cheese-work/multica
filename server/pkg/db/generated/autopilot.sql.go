@@ -1741,6 +1741,25 @@ func (q *Queries) LockAutopilotForUpdate(ctx context.Context, arg LockAutopilotF
 	return i, err
 }
 
+const mergeAutopilotRunResult = `-- name: MergeAutopilotRunResult :exec
+UPDATE autopilot_run
+SET result = CASE WHEN jsonb_typeof(result) = 'object' THEN result ELSE '{}'::jsonb END || $1::jsonb
+WHERE id = $2
+`
+
+type MergeAutopilotRunResultParams struct {
+	Patch []byte      `json:"patch"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// Adds top-level keys to a run's result without touching its status or any
+// key already there. A result that is not a JSON object is replaced, so the
+// audit record is never lost to a malformed task result. (CHE-5094)
+func (q *Queries) MergeAutopilotRunResult(ctx context.Context, arg MergeAutopilotRunResultParams) error {
+	_, err := q.db.Exec(ctx, mergeAutopilotRunResult, arg.Patch, arg.ID)
+	return err
+}
+
 const pauseAutopilotsByUnboundAgents = `-- name: PauseAutopilotsByUnboundAgents :many
 UPDATE autopilot a
 SET status = 'paused',

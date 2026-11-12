@@ -1111,7 +1111,7 @@ WHERE ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
   -- prompt an evaluation of what still holds on resume.
   OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
-ORDER BY w.updated_at,w.id LIMIT $3
+ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT $3
 `
 
 type ListDueWakeupsParams struct {
@@ -1122,6 +1122,9 @@ type ListDueWakeupsParams struct {
 
 // Scheduler lane 2: schedules, deadlines and condition checks that are due.
 // Rules already visited in this pass are skipped.
+// CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
+// updated_at, so a fresh one-shot sorted behind all older recurring rules and
+// waited out whole passes of them.
 func (q *Queries) ListDueWakeups(ctx context.Context, arg ListDueWakeupsParams) ([]IssueWakeup, error) {
 	rows, err := q.db.Query(ctx, listDueWakeups, arg.WorkspaceIds, arg.SkipIds, arg.RowLimit)
 	if err != nil {

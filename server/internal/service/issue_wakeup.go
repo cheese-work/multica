@@ -940,7 +940,10 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
 		err = s.Tasks.recordStageRefusal(ctx, err)
-		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		// A busy counter is a hold, not a failure: record why, report no error.
+		if !errors.Is(err, errAggregateCounterBusy) {
+			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		}
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		reason := err.Error()
 		if IsProjectInactive(err) {
@@ -1353,10 +1356,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err == nil && task.Status == "dispatched" {
 		// A claimed prompt is immutable. Recovery belongs to the ordinary
 		// claim/prepare lease, not a second wakeup-specific task timeout.
-		var waiting pgtype.Text
+		// CHE-5252: a held rule always says why, also inside the recovery window.
+		waiting := pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start; new trigger inputs are retained.", Valid: true}
 		if task.DispatchedAt.Valid && now.Sub(task.DispatchedAt.Time) >= claimResponseRecoveryWindow &&
 			(!task.PrepareLeaseExpiresAt.Valid || !task.PrepareLeaseExpiresAt.Time.After(now)) {
-			waiting = pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained.", Valid: true}
+			waiting.String = "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained."
 		}
 		// Persist timer progress even while waiting; do not regenerate each
 		// elapsed tick. Keep once enabled until its pending input is assigned.
@@ -1497,7 +1501,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if waiting {
 			// As while its own run is claimed: timers advance, inputs stay,
 			// and a once rule stays on until its input is handed over.
-			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
+			reason := pgtype.Text{String: "Waiting for a queued run of this agent on the issue to start; new trigger inputs are retained.", Valid: true}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastError: reason}); err != nil {
 				return err
 			}
 			if timedOut {
