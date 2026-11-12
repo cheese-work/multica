@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ArrowLeft, MessageSquare } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -106,7 +106,22 @@ export function ChatPage() {
   // `?message=` is a one-shot jump from a decision card; it only applies once
   // the list shows the session named beside it.
   const urlMessage = searchParams.get("message") || null;
+  // A cached transcript can predate the target (a card opened right after it
+  // was proposed). The first miss refetches once and re-arms the jump; only a
+  // miss on fresh data is reported.
+  const jumpKey = urlSession && urlMessage ? `${urlSession}:${urlMessage}` : null;
+  const [retriedJump, setRetriedJump] = useState<string | null>(null);
+  const [refetchingJump, setRefetchingJump] = useState(false);
   const settleJump = (outcome: "landed" | "missing") => {
+    if (outcome === "missing" && urlSession && jumpKey && retriedJump !== jumpKey) {
+      setRetriedJump(jumpKey);
+      setRefetchingJump(true);
+      void qc
+        .refetchQueries({ queryKey: chatKeys.messagesPage(urlSession), exact: true })
+        .catch(() => {})
+        .finally(() => setRefetchingJump(false));
+      return;
+    }
     if (outcome === "missing") toast.error(t(($) => $.decision.message_unavailable));
     replace(urlSession ? `${wsPaths.chat()}?session=${urlSession}` : wsPaths.chat());
   };
@@ -124,12 +139,18 @@ export function ChatPage() {
   const settledEmptyJump = useRef<string | null>(null);
   useEffect(() => {
     // Forget the target once the URL drops it, so the same hit can settle again.
-    if (!urlMessage) settledEmptyJump.current = null;
-    if (!jumpTargetsEmptyChat || settledEmptyJump.current === urlMessage) return;
-    settledEmptyJump.current = urlMessage;
+    if (!urlMessage) {
+      settledEmptyJump.current = null;
+      if (retriedJump) setRetriedJump(null);
+    }
+    if (!jumpTargetsEmptyChat || refetchingJump) return;
+    // The refetched chat settles once more: first pass retries, second reports.
+    const settleKey = `${urlMessage}:${retriedJump === jumpKey ? "retried" : "first"}`;
+    if (settledEmptyJump.current === settleKey) return;
+    settledEmptyJump.current = settleKey;
     settleJump("missing");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target
-  }, [jumpTargetsEmptyChat, urlMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- settle once per target and pass
+  }, [jumpTargetsEmptyChat, urlMessage, refetchingJump, retriedJump]);
 
   // A user navigation asks for a history entry; anything else replaces the
   // current one. The intent is one-shot: the store → URL effect consumes it.
@@ -475,7 +496,7 @@ export function ChatPage() {
           hasOlderMessages={c.hasOlderMessages}
           isFetchingOlderMessages={c.isFetchingOlderMessages}
           onLoadOlderMessages={() => void c.fetchOlderMessages()}
-          jumpToMessageId={urlSession === c.activeSessionId ? urlMessage : null}
+          jumpToMessageId={urlSession === c.activeSessionId && !refetchingJump ? urlMessage : null}
           onJumpSettled={settleJump}
           onQuickAction={(action) => c.handleSend(action.prompt)}
           quickActionsDisabled={

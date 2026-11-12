@@ -1,0 +1,54 @@
+name: Docs Verify
+
+# Typecheck, test and build apps/docs on PRs. The main CI excludes
+# @multica/docs from its turbo tasks, so a docs dependency bump (for example
+# next) otherwise gets no CI build (CHE-4663). Path-filtered like Mobile Verify.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/docs/**"
+      - "packages/ui/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/docs-verify.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/docs/**"
+      - "packages/ui/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/docs-verify.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ${{ vars.RUNNER_DOCS_VERIFY || 'ubuntu-24.04' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        run: bash scripts/setup-pnpm.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      # concurrency=2: same OOM cap as ci.yml frontend-build (CHE-731).
+      - name: Typecheck, test, and build
+        run: pnpm exec turbo typecheck test build --concurrency=2 --filter=@multica/docs
