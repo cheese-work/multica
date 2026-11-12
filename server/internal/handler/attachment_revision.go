@@ -187,7 +187,11 @@ func (h *Handler) DiffAttachmentRevisions(w http.ResponseWriter, r *http.Request
 		writeError(w, status, msg)
 		return
 	}
-	diff, err := unifiedDiff(oldText, newText, fmt.Sprintf("v%d", from), fmt.Sprintf("v%d", to))
+	ctxLines := 3
+	if r.URL.Query().Get("full") == "1" {
+		ctxLines = 1 << 24 // whole file, for the "Show full" toggle
+	}
+	diff, err := unifiedDiffContext(oldText, newText, fmt.Sprintf("v%d", from), fmt.Sprintf("v%d", to), ctxLines)
 	if errors.Is(err, errDiffTooLarge) {
 		writeError(w, http.StatusUnprocessableEntity, "file too large to diff")
 		return

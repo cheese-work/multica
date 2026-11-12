@@ -191,3 +191,34 @@ func TestAttachmentRevisionEndpointsStayInWorkspace(t *testing.T) {
 	// Another workspace never resolves the attachment.
 	testutil.Call(t, testHandler.ListAttachmentRevisions, withURLParam(req, "id", v1.ID)).Want(http.StatusNotFound)
 }
+
+func TestAttachmentDiffFullKeepsEveryUnchangedLine(t *testing.T) {
+	withMockStorage(t)
+	issueID := dbfx.Issue(t, "full diff", nil)
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, "line"+strings.Repeat("x", i))
+	}
+	old := strings.Join(lines, "\n") + "\n"
+	lines[10] = "changed"
+	_, v1 := uploadRev(t, issueID, "long.md", old, "")
+	uploadRev(t, issueID, "long.md", strings.Join(lines, "\n")+"\n", "")
+
+	get := func(q string) string {
+		w := attachmentGet(t, testHandler.DiffAttachmentRevisions, v1.ID, "/api/attachments/"+v1.ID+"/diff?from=1&to=2"+q).Want(http.StatusOK)
+		var d struct {
+			Diff string `json:"diff"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+			t.Fatal(err)
+		}
+		return d.Diff
+	}
+	if folded := get(""); strings.Contains(folded, "line"+strings.Repeat("x", 0)+"\n") {
+		t.Fatalf("default diff should fold far-away lines:\n%s", folded)
+	}
+	full := get("&full=1")
+	if !strings.Contains(full, " line\n") || !strings.Contains(full, " line"+strings.Repeat("x", 19)+"\n") {
+		t.Fatalf("full diff should keep first and last lines:\n%s", full)
+	}
+}
