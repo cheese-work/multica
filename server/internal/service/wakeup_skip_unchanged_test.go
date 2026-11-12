@@ -123,6 +123,30 @@ func TestPRWatchdogIgnoresItsOwnFinalCommentWhenComparingInputs(t *testing.T) {
 	}
 }
 
+func TestPRWatchdogSkipsAfterTwoRunsWithTheirOwnFinalComments(t *testing.T) {
+	e := newSkipEnv(t, true)
+	postFinalComment := func() {
+		t.Helper()
+		var taskID pgtype.UUID
+		e.f.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2 ORDER BY created_at DESC LIMIT 1`, e.issue, SystemRulePRChecksFailed).Scan(&taskID)
+		e.f.Exec(t, `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, source_task_id)
+			VALUES ($1, $2, 'agent', $3, 'I checked the PR and found no action to take.', $4)`, e.f.WorkspaceID, e.issue, parseTestUUID(t, e.agent), taskID)
+		e.finishRuns(t, "completed")
+	}
+	e.checksFailed(t, "e1")
+	postFinalComment()
+	e.f.Exec(t, `UPDATE github_pull_request SET head_sha='h2' WHERE id=$1`, e.prID)
+	e.checksFailed(t, "e2")
+	postFinalComment()
+	e.checksFailed(t, "e3")
+	if got := e.systemRuns(t, SystemRulePRChecksFailed); got != 2 {
+		t.Fatalf("runs after two unchanged PR runs and their final comments = %d, want 2", got)
+	}
+	if got := e.skipped(t); got != 1 {
+		t.Fatalf("skip activities after two unchanged PR runs and their final comments = %d, want 1", got)
+	}
+}
+
 func TestPRWatchdogStillRunsWhenItsOwnFinalCommentIsEdited(t *testing.T) {
 	e := newSkipEnv(t, true)
 	e.checksFailed(t, "e1")
