@@ -1631,6 +1631,23 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			}
 			return commit()
 		}
+		// A paused agent's wakeup is skipped and logged, not retried: it fires
+		// again on its own schedule once the agent is resumed (CHE-5066).
+		if pausedErr := guardAgentNotPaused(ctx, q, w.AgentID); errors.Is(pausedErr, ErrAgentPaused) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrAgentPaused.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonAgentPaused), "reason": ErrAgentPaused.Error()}); err != nil {
+				return err
+			}
+			slog.Info("issue wakeup skipped: agent paused", "wakeup_id", util.UUIDToString(w.ID), "agent_id", util.UUIDToString(w.AgentID))
+			return commit()
+		}
 		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
 			return err
 		}
