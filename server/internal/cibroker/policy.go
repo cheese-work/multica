@@ -2,6 +2,7 @@ package cibroker
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -44,7 +45,7 @@ func LoadPolicy(data []byte) (*Policy, error) {
 	var p Policy
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
-	if err := dec.Decode(&p); err != nil && err != io.EOF {
+	if err := dec.Decode(&p); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("cibroker policy: %w", err)
 	}
 	if len(p.Entries) == 0 {
