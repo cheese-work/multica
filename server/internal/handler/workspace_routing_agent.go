@@ -139,12 +139,18 @@ func (h *Handler) UpdateRoutingAgent(w http.ResponseWriter, r *http.Request) {
 // validateRoutingAgent canonicalizes next in place and returns the first
 // problem, or "".
 func (h *Handler) validateRoutingAgent(ctx context.Context, ws pgtype.UUID, next *RoutingAgentConfig) string {
+	return validateRoutingAgentQ(ctx, h.Queries, ws, next)
+}
+
+// validateRoutingAgentQ is validateRoutingAgent over any query handle, so the
+// approval transaction can run the same rules.
+func validateRoutingAgentQ(ctx context.Context, q *db.Queries, ws pgtype.UUID, next *RoutingAgentConfig) string {
 	canon := func(field, raw string) (string, string) {
 		id, err := util.ParseUUID(raw)
 		if err != nil {
 			return "", field + " must be an agent id"
 		}
-		if _, err := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws}); err != nil {
+		if _, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws}); err != nil {
 			return "", field + " not in this workspace: " + raw
 		}
 		return uuidToString(id), ""
@@ -182,7 +188,7 @@ func (h *Handler) validateRoutingAgent(ctx context.Context, ws pgtype.UUID, next
 	}
 	overrides := make(map[string]string, len(next.Overrides))
 	for key, raw := range next.Overrides {
-		if msg := h.checkOverrideKey(ctx, ws, key); msg != "" {
+		if msg := checkOverrideKey(ctx, q, ws, key); msg != "" {
 			return msg
 		}
 		if overrides[key], msg = canon("overrides."+key, raw); msg != "" {
@@ -195,7 +201,7 @@ func (h *Handler) validateRoutingAgent(ctx context.Context, ws pgtype.UUID, next
 
 // checkOverrideKey accepts "<status>" or "<workflow id>:<status>" for a
 // workflow of this workspace.
-func (h *Handler) checkOverrideKey(ctx context.Context, ws pgtype.UUID, key string) string {
+func checkOverrideKey(ctx context.Context, q *db.Queries, ws pgtype.UUID, key string) string {
 	const bad = "overrides must be keyed by <status> or <workflow id>:<status>"
 	scope, status, scoped := strings.Cut(key, ":")
 	if !scoped {
@@ -211,7 +217,7 @@ func (h *Handler) checkOverrideKey(ctx context.Context, ws pgtype.UUID, key stri
 	if err != nil {
 		return bad
 	}
-	if _, err := h.Queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: ws}); err != nil {
+	if _, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: ws}); err != nil {
 		return "overrides." + key + ": workflow not in this workspace"
 	}
 	return ""

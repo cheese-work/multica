@@ -2556,7 +2556,13 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sf, err := h.Queries.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
+	tx, qtx, skill, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
 		Content: sanitizeNullBytes(req.Content),
@@ -2566,7 +2572,17 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
 		return
 	}
+	resp, err := skillWithFilesInTx(r.Context(), qtx, skill)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
 
+	h.publishSkillFilesChanged(r, resp)
 	writeJSON(w, http.StatusOK, skillFileToResponse(sf))
 }
 
@@ -2585,18 +2601,98 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tx, qtx, skill, ok := h.beginSkillFileWrite(w, r, skill)
+	if !ok {
+		return
+	}
+	defer tx.Rollback(r.Context())
+
 	// Verify the file belongs to the parent skill we just authorized — guards
 	// against deleting a file owned by a different skill via the URL param.
-	file, err := h.Queries.GetSkillFile(r.Context(), fileUUID)
+	// Read under the skill lock so a concurrent writer cannot change it first.
+	file, err := qtx.GetSkillFile(r.Context(), fileUUID)
 	if err != nil || uuidToString(file.SkillID) != uuidToString(skill.ID) {
 		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
-	if err := h.Queries.DeleteSkillFile(r.Context(), file.ID); err != nil {
+	if err := qtx.DeleteSkillFile(r.Context(), file.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
 	}
+	resp, err := skillWithFilesInTx(r.Context(), qtx, skill)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
+
+	h.publishSkillFilesChanged(r, resp)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// skillWithFilesInTx builds the skill:updated payload from reads inside the
+// writing transaction, so the event carries exactly the state it committed.
+func skillWithFilesInTx(ctx context.Context, qtx *db.Queries, skill db.Skill) (SkillWithFilesResponse, error) {
+	files, err := qtx.ListSkillFiles(ctx, skill.ID)
+	if err != nil {
+		return SkillWithFilesResponse{}, err
+	}
+	fileResps := make([]SkillFileResponse, len(files))
+	for i, f := range files {
+		fileResps[i] = skillFileToResponse(f)
+	}
+	return SkillWithFilesResponse{
+		SkillResponse: skillToResponse(skill),
+		Files:         fileResps,
+	}, nil
+}
+
+// publishSkillFilesChanged announces a supporting-file write the same way
+// UpdateSkill announces an edit: a file change is a change to the skill, and
+// clients holding the skill (detail page, agent skill lists) must refetch it.
+func (h *Handler) publishSkillFilesChanged(r *http.Request, resp SkillWithFilesResponse) {
+	wsID := h.resolveWorkspaceID(r)
+	actorType, actorID := h.resolveActor(r, requestUserID(r), wsID)
+	h.publish(protocol.EventSkillUpdated, wsID, actorType, actorID, map[string]any{"skill": resp})
+}
+
+// beginSkillFileWrite opens the transaction of a single skill-file write and
+// takes the parent skill row lock first, held to commit. The lock conflicts
+// with the FOR SHARE snapshot lock of an agent.skills.set approval, so a file
+// edit, add or remove cannot change the file set while an approval holds it.
+// Lock order: the skill row only, no other row lock after it.
+func (h *Handler) beginSkillFileWrite(w http.ResponseWriter, r *http.Request, skill db.Skill) (pgx.Tx, *db.Queries, db.Skill, bool) {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return nil, nil, skill, false
+	}
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockSkillForFileWrite(r.Context(), db.LockSkillForFileWriteParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID}); err != nil {
+		_ = tx.Rollback(r.Context())
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "skill not found")
+			return nil, nil, skill, false
+		}
+		slog.Warn("lock skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to lock skill")
+		return nil, nil, skill, false
+	}
+
+	// Bump the parent's updated_at in the same transaction (supporting-file
+	// writes change the skill as a whole) and return the touched row for the
+	// skill:updated payload.
+	touched, err := qtx.TouchSkill(r.Context(), db.TouchSkillParams{ID: skill.ID, WorkspaceID: skill.WorkspaceID})
+	if err != nil {
+		_ = tx.Rollback(r.Context())
+		slog.Warn("touch skill for file write failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to update skill")
+		return nil, nil, skill, false
+	}
+	return tx, qtx, touched, true
 }
 
 // --- Agent-Skill junction ---
@@ -2923,13 +3019,13 @@ func (h *Handler) validateAgentSkillIDsInWorkspace(w http.ResponseWriter, r *htt
 	return true
 }
 
-func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request, agent db.Agent) {
-	skills, err := h.Queries.ListAgentSkillSummaries(r.Context(), agent.ID)
+// agentSkillResponses is the agent's assigned skills as the skills endpoint and
+// the agent:status event report them.
+func (h *Handler) agentSkillResponses(ctx context.Context, agentID pgtype.UUID) ([]SkillSummaryResponse, error) {
+	skills, err := h.Queries.ListAgentSkillSummaries(ctx, agentID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list agent skills")
-		return
+		return nil, err
 	}
-
 	resp := make([]SkillSummaryResponse, len(skills))
 	for i, s := range skills {
 		resp[i] = skillSummaryToResponse(
@@ -2937,6 +3033,15 @@ func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request
 			s.CreatedBy, s.CreatedAt, s.UpdatedAt,
 		)
 		resp[i].Enabled = &s.Enabled
+	}
+	return resp, nil
+}
+
+func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request, agent db.Agent) {
+	resp, err := h.agentSkillResponses(r.Context(), agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agent skills")
+		return
 	}
 	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(agent.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(agent.WorkspaceID), actorType, actorID, map[string]any{"agent_id": uuidToString(agent.ID), "skills": resp})

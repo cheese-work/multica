@@ -9,7 +9,7 @@ export type WorkflowDraftColumn =
 /** What entering a column does, keyed in the draft by column id. */
 export type WorkflowDraftHandoff = Pick<
   IssueWorkflowStep,
-  "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "edges"
+  "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee" | "edges"
 >;
 
 /** The workflow editor's whole editable state. */
@@ -20,6 +20,10 @@ export interface WorkflowEditorDraft {
   blocked: boolean;
   middle: WorkflowDraftColumn[];
   handoffs: Record<string, WorkflowDraftHandoff>;
+  /** Absent in a draft held before the field existed. */
+  maxRuns?: string;
+  /** Absent in a draft held before the field existed. */
+  includeChildPrs?: boolean;
 }
 
 /**

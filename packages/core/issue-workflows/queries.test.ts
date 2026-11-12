@@ -2,11 +2,13 @@
 import { describe, expect, it } from "vitest";
 import type { IssueWorkflow, IssueWorkflowStep } from "../types";
 import {
+  issueStatusWorkflow,
   projectMoveMayHandOff,
   resolveIssueWorkflow,
   resolveProjectWorkflow,
   sharedWorkflowStatusKeys,
   stepHandsOff,
+  workflowIdForTitle,
   statusAcceptsHandoff,
   workflowAllowsStatus,
   workflowMiddleKeys,
@@ -66,10 +68,36 @@ describe("project workflow resolution (MUL-7420)", () => {
   });
 });
 
+describe("issue status workflow (MUL-8250)", () => {
+  const projects = [
+    { id: "p-content", workflow_id: "wf-content" },
+    { id: "p-default", workflow_id: null },
+  ];
+
+  it("uses Default outside a project and the project's workflow inside one", () => {
+    const workflows = [defaultWorkflow, content];
+    expect(issueStatusWorkflow(workflows, projects, { project_id: null })?.id).toBe("wf-default");
+    expect(issueStatusWorkflow(workflows, projects, { project_id: "p-content" })?.id).toBe("wf-content");
+    expect(issueStatusWorkflow(workflows, projects, { project_id: "p-default" })?.id).toBe("wf-default");
+    expect(issueStatusWorkflow(workflows, undefined, { project_id: "p-content" })).toBeNull();
+    expect(issueStatusWorkflow(undefined, projects, { project_id: null })).toBeNull();
+  });
+
+  it("limits a batch to the statuses every issue's workflow lists, Default included", () => {
+    const workflows = [defaultWorkflow, content];
+    const outside = sharedWorkflowStatusKeys(workflows, projects, [{ project_id: null }]);
+    expect(outside && [...outside]).toEqual(["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"]);
+    const mixed = sharedWorkflowStatusKeys(workflows, projects, [{ project_id: null }, { project_id: "p-content" }]);
+    expect(mixed && [...mixed]).toEqual(["backlog", "todo", "blocked", "done", "cancelled"]);
+    expect(sharedWorkflowStatusKeys(undefined, projects, [{ project_id: null }])).toBeNull();
+  });
+});
+
 describe("workflow helpers (MUL-7420)", () => {
-  it("allows any status under Default and only listed ones under a named workflow", () => {
+  it("allows only the statuses a workflow lists, Default included", () => {
     expect(workflowAllowsStatus(null, "drafting")).toBe(true);
-    expect(workflowAllowsStatus(defaultWorkflow, "drafting")).toBe(true);
+    expect(workflowAllowsStatus(defaultWorkflow, "drafting")).toBe(false);
+    expect(workflowAllowsStatus(defaultWorkflow, "in_review")).toBe(true);
     expect(workflowAllowsStatus(content, "drafting")).toBe(true);
     expect(workflowAllowsStatus(content, "in_progress")).toBe(false);
   });
@@ -112,6 +140,12 @@ describe("projectMoveMayHandOff", () => {
   it("never asks without a workflow", () => {
     expect(projectMoveMayHandOff(null, "todo")).toBe(false);
   });
+
+  it("keeps the issue's status on a move into Default, listed or not", () => {
+    const reviewing = { ...defaultWorkflow, steps: defaultWorkflow.steps.map((s) => (s.status_key === "in_review" ? lead : s)) };
+    expect(projectMoveMayHandOff(reviewing, "drafting")).toBe(false);
+    expect(projectMoveMayHandOff(reviewing, "in_review")).toBe(true);
+  });
 });
 
 describe("per-issue workflow override", () => {
@@ -134,6 +168,14 @@ describe("per-issue workflow override", () => {
     expect(keys?.size).toBe(0);
   });
 
+  it("judges an issue outside a project by its override, not the stored Default (CHE-3459)", () => {
+    expect(issueStatusWorkflow(workflows, [project], { project_id: null, workflow_id: "wf-content" })?.id).toBe("wf-content");
+    expect(issueStatusWorkflow(workflows, [project], { project_id: null, workflow_id: "gone" })).toBeNull();
+    const keys = sharedWorkflowStatusKeys(workflows, [project], [{ project_id: null, workflow_id: "wf-content" }]);
+    expect(keys?.has("drafting")).toBe(true);
+    expect(keys?.has("in_progress")).toBe(false);
+  });
+
   it("intersects statuses per issue, so two issues of one project can differ", () => {
     const issues = [
       { project_id: "p1", workflow_id: null },
@@ -144,5 +186,35 @@ describe("per-issue workflow override", () => {
       ["backlog", "blocked", "cancelled", "done", "editing", "todo"],
     );
     expect(sharedWorkflowStatusKeys([...workflows, narrow], [project], [issues[0]!])?.has("drafting")).toBe(true);
+  });
+});
+
+describe("workflowIdForTitle", () => {
+  const design = "8394690d-632a-4b15-a333-c9f0247b0985";
+  const settings = { workflow_by_type: { Design: design, plan: "not-a-uuid" } };
+
+  it.each([
+    ["design(x): new screen", design],
+    ["Design: new screen", design],
+    ["design!: breaking", design],
+    ["plan(x): thing", null],
+    ["feat(x): thing", null],
+    ["design the thing", null],
+    ["no type", null],
+  ])("%s", (title, want) => {
+    expect(workflowIdForTitle(settings, title)).toBe(want);
+  });
+
+  it.each([undefined, {}, { workflow_by_type: null }, { workflow_by_type: "x" }, { workflow_by_type: [design] }])(
+    "no usable map: %j",
+    (s) => {
+      expect(workflowIdForTitle(s as Record<string, unknown> | undefined, "design: x")).toBeNull();
+    },
+  );
+
+  it("resolves keys that differ only by case in sorted order, like the server", () => {
+    const a = "00000000-0000-0000-0000-000000000001";
+    const b = "00000000-0000-0000-0000-000000000002";
+    expect(workflowIdForTitle({ workflow_by_type: { Design: b, design: a } }, "design: x")).toBe(b);
   });
 });

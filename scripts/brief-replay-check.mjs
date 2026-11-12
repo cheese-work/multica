@@ -49,10 +49,46 @@ export function compareDirs(oldDir, newDir, checklist) {
   return { ok: !emptyChecklist && !notInOld.length && fixtures.every((f) => f.ok), emptyChecklist, notInOld, fixtures };
 }
 
+// Real-brief mode. The platform keeps only each run's finished brief, not its inputs, so
+// this checks the old side against real runs: every checklist phrase must appear in at
+// least one recent real brief. A phrase no real brief has is a bad checklist.
+// Layout: <root>/<workspace>/<task>/workdir/{CLAUDE,AGENTS}.md
+export function findRecentBriefs(root, n) {
+  const dirs = (d) => readdirSync(d, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => join(d, e.name));
+  const found = [];
+  for (const ws of dirs(root)) for (const task of dirs(ws))
+    for (const f of ["CLAUDE.md", "AGENTS.md"]) {
+      const p = join(task, "workdir", f);
+      if (existsSync(p)) found.push([p, statSync(p).mtimeMs]);
+    }
+  return found.sort((x, y) => y[1] - x[1]).slice(0, n).map(([p]) => p);
+}
+
+export function checkRealBriefs(files, checklist) {
+  const flats = files.map((f) => squash(readFileSync(f, "utf8")));
+  const counts = checklist.map((p) => [p, flats.filter((t) => t.includes(p)).length]);
+  const neverSeen = counts.filter(([, c]) => !c).map(([p]) => p);
+  const [noBriefs, emptyChecklist] = [!files.length, !checklist.length];
+  return { ok: !noBriefs && !emptyChecklist && !neverSeen.length, noBriefs, emptyChecklist, briefs: files.length, counts, neverSeen };
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  if (process.argv[2] === "--real") {
+    const [listFile, root, n = "20"] = process.argv.slice(3);
+    if (!root) {
+      console.error("usage: brief-replay-check.mjs --real <checklist> <workspaces-root> [recent-count]");
+      process.exit(2);
+    }
+    const r = checkRealBriefs(findRecentBriefs(root, Number(n)), parseChecklist(readFileSync(listFile, "utf8")));
+    if (r.noBriefs) console.log("NO-BRIEFS: none found");
+    if (r.emptyChecklist) console.log("EMPTY-CHECKLIST: no rule to check");
+    for (const [p, c] of r.counts) console.log(`${c ? "seen" : "NEVER-SEEN"}: ${p}${c ? ` (${c}/${r.briefs} briefs)` : ""}`);
+    console.log(r.ok ? "PASS" : "FAIL");
+    process.exit(r.ok ? 0 : 1);
+  }
   const [oldFile, newFile, listFile] = process.argv.slice(2);
   if (!listFile) {
-    console.error("usage: brief-replay-check.mjs <old-brief> <new-brief> <checklist>");
+    console.error("usage: brief-replay-check.mjs <old-brief> <new-brief> <checklist> | --real <checklist> <root> [n]");
     process.exit(2);
   }
   const read = (f) => readFileSync(f, "utf8");

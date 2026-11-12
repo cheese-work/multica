@@ -133,6 +133,11 @@ type IssueWakeupService struct {
 	// and runs; empty is the production activation. Tests set their own so
 	// parallel packages never share state.
 	ActivationKey string
+	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
+	// leaves the condition pending with a diagnostic.
+	MergeFacts MergeFactsSource
+	// Now is the clock for fact freshness; nil means time.Now.
+	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
 	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
@@ -515,6 +520,11 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			return out, e
 		}
 		condition, in.EventTypes = normalized, hints
+		if !existingID.Valid {
+			if err := refuseRepeatChecksFinished(ctx, tx, issueID, source, condition); err != nil {
+				return out, err
+			}
+		}
 		// The scheduler evaluates the condition on its first tick.
 		next = pgtype.Timestamptz{Time: now, Valid: true}
 	}
@@ -927,7 +937,10 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
 		err = s.Tasks.recordStageRefusal(ctx, err)
-		errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		// A busy counter is a hold, not a failure: record why, report no error.
+		if !errors.Is(err, errAggregateCounterBusy) {
+			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
+		}
 		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		reason := err.Error()
 		if IsProjectInactive(err) {
@@ -1340,10 +1353,11 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err == nil && task.Status == "dispatched" {
 		// A claimed prompt is immutable. Recovery belongs to the ordinary
 		// claim/prepare lease, not a second wakeup-specific task timeout.
-		var waiting pgtype.Text
+		// CHE-5252: a held rule always says why, also inside the recovery window.
+		waiting := pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start; new trigger inputs are retained.", Valid: true}
 		if task.DispatchedAt.Valid && now.Sub(task.DispatchedAt.Time) >= claimResponseRecoveryWindow &&
 			(!task.PrepareLeaseExpiresAt.Valid || !task.PrepareLeaseExpiresAt.Time.After(now)) {
-			waiting = pgtype.Text{String: "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained.", Valid: true}
+			waiting.String = "Waiting for claimed run " + util.UUIDToString(task.ID) + " to start or recover; new trigger inputs are retained."
 		}
 		// Persist timer progress even while waiting; do not regenerate each
 		// elapsed tick. Keep once enabled until its pending input is assigned.
@@ -1448,6 +1462,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		enabled = false
 		next = pgtype.Timestamptz{}
 	}
+	heartbeatFP := ""
 	// A firing the agent already knows about starts no run. One that a run of
 	// the agent waiting to start can take along keeps its inputs for that run
 	// (JoinWaitingWakeups).
@@ -1483,7 +1498,8 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if waiting {
 			// As while its own run is claimed: timers advance, inputs stay,
 			// and a once rule stays on until its input is handed over.
-			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next}); err != nil {
+			reason := pgtype.Text{String: "Waiting for a queued run of this agent on the issue to start; new trigger inputs are retained.", Valid: true}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastError: reason}); err != nil {
 				return err
 			}
 			if timedOut {
@@ -1499,6 +1515,38 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			if held, err := s.customActiveRun(ctx, q, w, custom, current, receipts, deferring, now, next, note); err != nil {
 				return err
 			} else if held {
+				return commit()
+			}
+		}
+		// CHE-4984: a scheduled conflict heartbeat over a PR that is as it was
+		// when the last heartbeat run started adds nothing, so it starts no run.
+		if scheduled && custom == nil && isConflictHeartbeat(w) {
+			if heartbeatFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID)); err != nil {
+				return err
+			}
+			if heartbeatFP != "" {
+				// An edited rule is not what the last run answered.
+				heartbeatFP += fmt.Sprintf("|%d|%s", w.Revision, w.Instruction)
+			}
+			lastTask, unchanged, err := unchangedSinceLastRun(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID), heartbeatFP)
+			if err != nil {
+				return err
+			}
+			if unchanged {
+				if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+					return err
+				}
+				if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next}); err != nil {
+					return err
+				}
+				if timedOut {
+					if err := markTimedOut(); err != nil {
+						return err
+					}
+				}
+				if err := note(wakeupActivitySkipped, skippedUnchangedDetails("conflict_heartbeat", lastTask)); err != nil {
+					return err
+				}
 				return commit()
 			}
 		}
@@ -1560,7 +1608,49 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if w.SourceTaskID.Valid {
 			origin = OriginDerived
 		}
-		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
+		// A reviewer that already answered the PR head needs no run for it
+		// (CHE-4649). Checked here, for named and derived event wakeups alike:
+		// the receipts are consumed rather than retried, because the head will
+		// not change by waiting. Scheduled check-ins (at, every, cron) are not
+		// review runs and always run.
+		var answered error
+		if w.Kind == "event" {
+			answered = guardReviewHeadAnswered(ctx, q, issue.ID, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", ReviewRun: true})
+		}
+		if errors.Is(answered, ErrReviewHeadAnswered) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrReviewHeadAnswered.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonReviewHeadAnswered), "reason": ErrReviewHeadAnswered.Error()}); err != nil {
+				return err
+			}
+			return commit()
+		}
+		// A paused agent's wakeup is skipped and logged, not retried. A
+		// recurring wakeup fires again on its next schedule after a resume; a
+		// one-shot or condition wakeup is consumed here and does not fire after
+		// a resume (CHE-5066).
+		if pausedErr := guardAgentNotPaused(ctx, q, w.AgentID); errors.Is(pausedErr, ErrAgentPaused) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrAgentPaused.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonAgentPaused), "reason": ErrAgentPaused.Error()}); err != nil {
+				return err
+			}
+			slog.Info("issue wakeup skipped: agent paused", "wakeup_id", util.UUIDToString(w.ID), "agent_id", util.UUIDToString(w.AgentID))
+			return commit()
+		}
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", SourceWakeupID: w.ID}); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1623,6 +1713,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
 		}
+		if heartbeatFP != "" {
+			taskContext[wakeupFingerprintKey] = heartbeatFP
+		}
 		contextJSON, _ := json.Marshal(taskContext)
 		// A custom rule's resolved target carries its own squad identity.
 		squadID, leader := current.SquadID, current.Type == "squad"
@@ -1661,6 +1754,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: lastTask}); err != nil {
+		return err
+	}
+	if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
 		return err
 	}
 	if timedOut {
@@ -2010,4 +2106,26 @@ func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (b
  AND t.agent_id=$3 AND t.issue_id=$1 AND t.context->>'wakeup_id'=$4)`,
 		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID, util.UUIDToString(w.ID)).Scan(&recorded)
 	return recorded, err
+}
+
+// DispatchRule dispatches one rule once, as a scheduler pass would, and returns
+// what the dispatch returned (a budget refusal included): the run budget
+// resume (CHE-2860) runs the dispatch a refusal stopped and reads the outcome
+// from it. The rule's failure note and scan-order touch are the pass's, not
+// this call's. A rule that is gone is nil: there is nothing to run.
+func (s *IssueWakeupService) DispatchRule(ctx context.Context, workspaceID, id pgtype.UUID) error {
+	w, err := s.Tasks.Queries.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: id, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	switch {
+	case w.SystemRule.String == SystemRuleWorkflowEdges:
+		return s.dispatchWorkflowEdges(ctx, w)
+	case w.SystemRule.Valid:
+		return s.dispatchSystem(ctx, w)
+	}
+	return s.dispatch(ctx, w)
 }

@@ -118,7 +118,10 @@ WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.n
   -- prompt an evaluation of what still holds on resume.
   OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
-ORDER BY w.updated_at,w.id LIMIT @row_limit;
+-- CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
+-- updated_at, so a fresh one-shot sorted behind all older recurring rules and
+-- waited out whole passes of them.
+ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT @row_limit;
 -- name: ListPendingWakeupInputGroups :many
 -- Scheduler observability over unprocessed inputs, grouped per rule and by
 -- whether a run still reserves them. Dispatch deliberately keeps some inputs
@@ -333,14 +336,21 @@ SELECT id,COALESCE(context->>'wakeup_id','')::text AS wakeup_id,COALESCE(context
 FROM agent_task_queue WHERE id=ANY(@ids::uuid[]);
 
 -- name: ListWakeupRuns :many
--- The rule's latest runs with what triggered each one, a check-in note when
--- the run ended silently, and whether it left a comment.
-SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
- COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
- COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
- EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
-FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
-ORDER BY t.created_at DESC,t.id DESC LIMIT 10;
+-- The rule's latest fires with what triggered each one, a check-in note when
+-- the run ended silently, and whether it left a comment. A fire the platform
+-- skipped (CHE-4984) has no run: it shows as status 'skipped' with its reason.
+SELECT id,status,created_at,started_at,completed_at,checkin_note,triggers,commented FROM (
+ SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
+  COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
+  COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
+  EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
+ FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
+ UNION ALL
+ SELECT a.id,'skipped'::text,a.created_at,NULL::timestamptz,NULL::timestamptz,
+  COALESCE(a.details->>'reason','')::text,'{}'::text[],false::bool
+ FROM activity_log a WHERE a.action='wakeup_skipped' AND a.issue_id= @issue_id AND a.details->'wakeup'->>'id'= @wakeup_id::text
+) runs
+ORDER BY created_at DESC,id DESC LIMIT 10;
 
 -- name: DeleteIssueWakeupReceipts :exec
 DELETE FROM issue_wakeup_receipt WHERE wakeup_id= @id;
