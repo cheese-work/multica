@@ -2042,6 +2042,7 @@ WHERE agent_task_queue.id = $1
   AND EXISTS (SELECT 1 FROM current_issue WHERE current_issue.status = $2::text)
   AND context->>'wakeup_id' IS NULL
   AND trigger_comment_id IS NULL
+  AND NOT (COALESCE(context, '{}'::jsonb) ? 'workflow_handoff_revision')
   AND workflow_step IS NOT NULL
   AND workflow_step <> $2::text
   AND (
@@ -8615,6 +8616,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
   )
   AND trigger_comment_id IS NULL
+  AND NOT (COALESCE(context, '{}'::jsonb) ? 'workflow_handoff_revision')
   AND workflow_step IS NOT NULL
   AND workflow_step <> $3::text
 `
@@ -8630,6 +8632,9 @@ type ListStalePendingStepTasksParams struct {
 // Pending is the same set as the unique pending-task index: queued, dispatched,
 // or deferred behind channel media. A media-deferred run left out here would
 // keep the slot and make the next step's run deduplicate against it.
+// Workflow-squad handoff rows (upstream v0.8.2, context.workflow_handoff_revision)
+// are excluded: each stage's handoff is preserved, and only an explicit
+// stop_previous_assignee_runs request cancels an earlier stage.
 func (q *Queries) ListStalePendingStepTasks(ctx context.Context, arg ListStalePendingStepTasksParams) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listStalePendingStepTasks, arg.IssueID, arg.AgentID, arg.Step)
 	if err != nil {
