@@ -34,8 +34,13 @@ var attachmentDownloadCmd = &cobra.Command{
 
 var attachmentUploadCmd = &cobra.Command{
 	Use:   "upload <path>",
-	Short: "Upload a file to attach to your chat reply",
+	Short: "Upload a file to your chat reply, or to an issue as the next revision",
 	Long: `Upload a local file so it is attached to the reply of the current chat task.
+
+With --issue or --replaces the file goes to an issue instead. --replaces <id>
+makes it the next revision of that attachment (the card shows "v2"); without
+--replaces, a file with the same name as one already on the issue becomes its
+next revision too. Read the chain with "attachment history" and "attachment diff".
 
 Intended for agents running inside a chat task: the file is tagged with the
 task and, when the task completes, the server binds it to the assistant reply
@@ -47,7 +52,10 @@ own line to place the item: files use !file[name](url) (a card), images use
 The task id is read from MULTICA_TASK_ID (set by the daemon inside a task);
 override it with --task when needed.`,
 	Example: `  # Attach an image to the current chat reply
-  $ multica attachment upload ./chart.png`,
+  $ multica attachment upload ./chart.png
+
+  # Attach a new revision of an existing issue file
+  $ multica attachment upload ./plan.md --replaces abc123`,
 	Args: exactArgs(1),
 	RunE: runAttachmentUpload,
 }
@@ -58,12 +66,26 @@ func init() {
 
 	attachmentDownloadCmd.Flags().StringP("output-dir", "o", ".", "Directory to save the downloaded file")
 	attachmentUploadCmd.Flags().String("task", "", "Chat task id to attach to (defaults to MULTICA_TASK_ID)")
+	attachmentUploadCmd.Flags().String("issue", "", "Issue to attach to (id or identifier); defaults to the issue of --replaces")
+	attachmentUploadCmd.Flags().String("replaces", "", "Attachment id this file is the next revision of")
+
+	attachmentCmd.AddCommand(attachmentHistoryCmd, attachmentDiffCmd)
+	attachmentHistoryCmd.Flags().String("output", "table", "Output format: table or json")
+	attachmentDiffCmd.Flags().String("output", "table", "Output format: table or json")
+	attachmentDiffCmd.Flags().Int64("from", 0, "Earlier revision number (required)")
+	attachmentDiffCmd.Flags().Int64("to", 0, "Later revision number (required)")
 }
 
 func runAttachmentUpload(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
+	}
+
+	issueRef, _ := cmd.Flags().GetString("issue")
+	replaces, _ := cmd.Flags().GetString("replaces")
+	if issueRef != "" || replaces != "" {
+		return runAttachmentUploadToIssue(cmd, client, args[0], issueRef, replaces)
 	}
 
 	taskID, _ := cmd.Flags().GetString("task")

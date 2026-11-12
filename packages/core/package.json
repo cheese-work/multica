@@ -17,6 +17,8 @@
     "./attachments": "./attachments/index.ts",
     "./attachments/deliverables": "./attachments/deliverables.ts",
     "./attachments/image-sequence": "./attachments/image-sequence.ts",
+    "./attachments/revision-diff": "./attachments/revision-diff.ts",
+    "./attachments/revision-diff-query": "./attachments/revision-diff-query.ts",
     "./api": "./api/index.ts",
     "./api/client": "./api/client.ts",
     "./api/schema": "./api/schema.ts",

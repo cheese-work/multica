@@ -160,7 +160,11 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		// order every decision transaction takes.
 		var plan runBudgetDecisionPlan
 		if e.Kind == service.RunBudgetKindExhausted {
-			if plan, err = h.planRunBudgetDecisions(ctx, qtx, issue, recipients); err != nil {
+			owners, err := runBudgetCardRecipients(ctx, qtx, issue, recipients)
+			if err != nil {
+				return fmt.Errorf("card recipients: %w", err)
+			}
+			if plan, err = h.planRunBudgetDecisions(ctx, qtx, issue, owners); err != nil {
 				return fmt.Errorf("plan decisions: %w", err)
 			}
 		}
@@ -192,6 +196,16 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		// Worded under the budget lock, so a command in it describes the ledger
 		// this transaction commits against.
 		content, title = runBudgetNoticeText(usage, recent, e, text(ctx, qtx))
+		// The platform opens the top-up card itself and the notice links it:
+		// one card, one passkey click, no agent run (CHE-5303).
+		if e.Kind == service.RunBudgetKindExhausted && len(plan.lanes) > 0 {
+			links, opened, err := h.openRunBudgetActionCards(ctx, qtx, issue, plan, "top_up", 0, e.Since.UTC().Format(time.RFC3339Nano), runBudgetRefusalAsk(issue))
+			if err != nil {
+				return fmt.Errorf("open top-up card: %w", err)
+			}
+			decisions = opened
+			content += "\n\n[Approve the top-up](" + links[0].ApproveURL + ")"
+		}
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -218,11 +232,7 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 				items = append(items, item)
 			}
 		}
-		if e.Kind != service.RunBudgetKindExhausted {
-			return nil
-		}
-		decisions, err = h.openRunBudgetDecisions(ctx, qtx, issue, e, comment, plan)
-		return err
+		return nil
 	})
 	if errors.Is(err, errRefusalLifted) {
 		return

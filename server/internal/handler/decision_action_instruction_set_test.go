@@ -49,7 +49,8 @@ func instructionSetTargets() []instructionSetTarget {
 		},
 		{
 			name: "workspace", actionType: "workspace.context.set", field: "workspace.context", idKey: "workspace_id", contentKey: "context",
-			create: func(test *testing.T, _ singleCallFixture) string {
+			create: func(test *testing.T, fixture singleCallFixture) string {
+				setContextProposerGrant(test, fixture.agentID, true)
 				var original string
 				dbfx.QueryRow(test, `SELECT COALESCE(context, '') FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&original)
 				dbfx.Cleanup(test, `UPDATE workspace SET context = $1 WHERE id = $2`, original, testWorkspaceID)
@@ -332,6 +333,9 @@ func TestInstructionSetConcurrentApprovalsApplyOnce(test *testing.T) {
 		// The second agent saw the same base and wants a different edit.
 		other := strings.Replace(governedText, "tail", "tail other", 1)
 		fixture := newActionFixture(test)
+		if target.name == "workspace" {
+			setContextProposerGrant(test, fixture.agentID, true)
+		}
 		var created actionResponse
 		fixture.respond(test, fixture.withAction(map[string]any{"type": target.actionType, "version": 1, "params": target.params(first.id, governedText, other)}), http.StatusCreated, &created)
 		dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
@@ -396,6 +400,9 @@ func TestInstructionSetBusyLoserRetriesAsDriftAfterTheWinnerCommits(test *testin
 		winner, _ := requestInstructionSet(test, target, http.StatusCreated, nil)
 		other := strings.Replace(governedText, "tail", "tail other", 1)
 		fixture := newActionFixture(test)
+		if target.name == "workspace" {
+			setContextProposerGrant(test, fixture.agentID, true)
+		}
 		var created actionResponse
 		fixture.respond(test, fixture.withAction(map[string]any{"type": target.actionType, "version": 1, "params": target.params(winner.id, governedText, other)}), http.StatusCreated, &created)
 		dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
