@@ -2,12 +2,9 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -75,26 +72,6 @@ func runBudgetAsker(ctx context.Context, q *db.Queries, issue db.Issue) (agent d
 	return agents[0], true, nil
 }
 
-// runBudgetDecisionAsk is the structured ask: reopen the budget by a status
-// move or a top-up, or do nothing. A top-up is approved in the web app.
-func runBudgetDecisionAsk(issue db.Issue, notice db.Comment) decisiontx.Ask {
-	return decisiontx.Ask{
-		ContextELI10:  "This issue used up its run budget. The platform refused the next run, so nothing derived from this issue runs until a person opens a new run window.",
-		AgentDid:      "The platform refused a new run on this issue because its run budget for the current window is spent. No agent is running on it.",
-		Decision:      "Do you want to open a new run window for this issue?",
-		StakesIfWrong: "If you do nothing, the issue stays stopped. If you reopen it while the work loops, it can spend a full new window of runs and tokens.",
-		Options: []decisiontx.AskOption{
-			{Label: "Move the status", WhatHappens: "You move the issue to another status on the board. That opens a new run window and the workflow runs again.", Pros: []string{"No command needed"}, Cons: []string{"Runs start at once"}, CostOrTime: "One click, then a new window of runs"},
-			{Label: "Top up the window", WhatHappens: "You approve a top-up in the web app. That opens a new run window and leaves the status where it is. Until then, move the status in the web app.", Pros: []string{"The status stays as it is"}, Cons: []string{"Needs the web app"}, CostOrTime: "One approval, then a new window of runs"},
-			{Label: "No action", WhatHappens: "Nothing changes. The issue stays stopped.", Pros: []string{"No new spend"}, Cons: []string{"The work stays stopped"}, CostOrTime: "Free"},
-		},
-		Recommendation:   "Read the issue's last comments first. Reopen it only when the earlier runs made progress.",
-		DefaultIfNoReply: "No action. The issue stays stopped and nothing runs on it.",
-		SourceIssueID:    uuidToString(issue.ID),
-		SourceCommentID:  uuidToString(notice.ID),
-	}
-}
-
 // runBudgetDecisionPlan is what the exhausted notice locks before it writes its
 // comment, so its locks follow the order every decision transaction uses:
 // workspace, topic lane and session, then the issue the comment locks.
@@ -144,45 +121,6 @@ func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 		plan.lanes = append(plan.lanes, runBudgetLane{human: human, session: session, reuse: reuse})
 	}
 	return plan, nil
-}
-
-// openRunBudgetDecisions opens one decision request per planned recipient inside
-// the exhausted notice's transaction, after the notice comment exists. The
-// notice's claim row is the idempotency key: only the transaction that inserted
-// it gets here, so a concurrent refusal, a retried hook and a re-delivered event
-// open nothing more, and the next window's new claim re-arms it. The request is
-// asked as an agent but has no task behind it.
-func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetEvent, notice db.Comment, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
-	if len(plan.lanes) == 0 {
-		return nil, nil
-	}
-	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	ask := runBudgetDecisionAsk(issue, notice)
-	if err := ask.Validate(); err != nil {
-		return nil, fmt.Errorf("budget ask: %w", err)
-	}
-	askJSON, err := json.Marshal(ask)
-	if err != nil {
-		return nil, err
-	}
-	ask.AskedBy = plan.asker.Name
-	input := decisionRequestInput{
-		Ask: ask.Content(workspace.Slug), Options: ask.Options, AskJSON: askJSON, EscalationClass: "reversible",
-		Fingerprint: serverDecisionFingerprint + "run_budget:" + e.Since.UTC().Format(time.RFC3339Nano),
-	}
-	var results []decisionRequestResult
-	for _, lane := range plan.lanes {
-		input.HumanUserID = lane.human
-		result, err := h.openRunBudgetDecision(ctx, q, issue, plan, lane, input)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, result)
-	}
-	return results, nil
 }
 
 // openRunBudgetDecision is createSingleCallDecisionTx's body minus the running
