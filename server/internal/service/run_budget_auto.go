@@ -130,8 +130,8 @@ func EvaluateRunBudgetAuto(ctx context.Context, q *db.Queries, issue db.Issue, s
 	}
 	delivered := 0
 	for _, r := range runs {
-		// A pushed head with no check history may have failed the same check as
-		// the others: the loop test cannot run, so a person decides.
+		// A pushed head whose checks are missing or not all finished may fail
+		// the same check as the others: the loop test cannot run, so a person decides.
 		if r.CiUnknown {
 			return RunBudgetAutoVerdict{Reason: "ci_unknown", Runs: usage.Max}, nil
 		}

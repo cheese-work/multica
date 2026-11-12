@@ -21,6 +21,7 @@ type autoRun struct {
 	ci        string   // a ci_failure_event workflow on the head the run pushed (needs prUpdate)
 	prUpdate  bool     // a linked PR's head moved while the run ran
 	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported); a CI failure event does not replace them
+	pending   bool     // the pushed head has a passing check and one still queued or running, so its CI has not finished
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -87,6 +88,9 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				if len(r.checks) == 0 && r.ci == "" && !r.noChecks {
 					// A head whose results are retained and all passed.
 					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 0, 'go-test', 'completed', 'success')`, prID, head)
+				}
+				if r.pending {
+					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 1, 'web-e2e', 'in_progress', NULL)`, prID, head)
 				}
 				t.Cleanup(func() {
 					_, _ = testPool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, prID)
@@ -389,6 +393,12 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 		}, false},
 		{"three pushed heads with only a CI failure event each, results gone", []autoRun{
 			{status: "completed", prUpdate: true, ci: "CI-a"}, {status: "completed", prUpdate: true, ci: "CI-b"}, {status: "completed", prUpdate: true, ci: "CI-c"},
+		}, false},
+		{"three pushed heads with a passing check and one still running each", []autoRun{
+			{status: "completed", prUpdate: true, pending: true}, {status: "completed", prUpdate: true, pending: true}, {status: "completed", prUpdate: true, pending: true},
+		}, false},
+		{"one pushed head still running among finished ones", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, pending: true}, {status: "completed", prUpdate: true},
 		}, false},
 		{"pushed heads whose results are retained and passed", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true},

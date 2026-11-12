@@ -149,7 +149,10 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
            SELECT 1 FROM issue_pr_event e
            WHERE e.issue_id = t.issue_id AND e.kind = 'head_changed'
              AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
-             AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha)
+             AND (
+                 NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha)
+                 OR EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND (cr.status <> 'completed' OR cr.conclusion IS NULL))
+             )
        )::boolean AS ci_unknown,
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
@@ -182,9 +185,11 @@ type ListRunBudgetWindowRunsRow struct {
 // its tool output, so no PR is needed). failures are the run's loop keys beyond
 // its own error: the failed check names and the CI failure workflows recorded
 // for the heads it pushed, so a loop shows across completed runs. ci_unknown
-// is set when a head the run pushed has neither: check results are kept only
-// for a PR's current head and CI failure events only while the ci_watcher flag
-// is on, so nothing says whether that head failed.
+// fails closed: it is set unless every check on each head the run pushed has
+// finished. A head with no retained check results (they are kept only for a
+// PR's current head, and CI failure events only while the ci_watcher flag is
+// on) or with any check still queued or running says nothing final about
+// whether it failed.
 func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudgetWindowRunsParams) ([]ListRunBudgetWindowRunsRow, error) {
 	rows, err := q.db.Query(ctx, listRunBudgetWindowRuns, arg.IssueID, arg.Since)
 	if err != nil {
