@@ -551,6 +551,34 @@ func notifyDirect(
 	})
 }
 
+// mentionSourceRank orders why a member was notified: being named outranks
+// @all, which outranks being in an @squad. The winner is recorded in the inbox
+// item's details as `mention_source`, which the "Mentions me" filter reads.
+var mentionSourceRank = map[string]int{"squad": 1, "all": 2, "direct": 3}
+
+func recordMentionSource(sources map[string]string, memberID, source string) {
+	if mentionSourceRank[source] > mentionSourceRank[sources[memberID]] {
+		sources[memberID] = source
+	}
+}
+
+// withMentionSource returns details with `mention_source` set. Details that
+// are not a JSON object of strings are returned unchanged.
+func withMentionSource(details []byte, source string) []byte {
+	parsed := map[string]string{}
+	if len(details) > 0 {
+		if err := json.Unmarshal(details, &parsed); err != nil {
+			return details
+		}
+	}
+	parsed["mention_source"] = source
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return details
+	}
+	return out
+}
+
 // notifyMentionedMembers creates inbox items for each @mentioned member,
 // excluding the actor and any IDs in the skip set. When an @all mention is
 // present, all workspace members are notified (excluding agents).
@@ -566,8 +594,8 @@ func notifyMentionedMembers(
 	skip map[string]bool,
 	details []byte,
 ) {
-	// Collect the set of member IDs to notify.
-	recipientIDs := map[string]bool{}
+	// Collect the member IDs to notify, each with why (see mentionSourceRank).
+	recipientIDs := map[string]string{}
 
 	hasAll := false
 	var squadIDs []string
@@ -580,7 +608,7 @@ func notifyMentionedMembers(
 			if _, err := util.ParseUUID(m.ID); err != nil {
 				continue
 			}
-			recipientIDs[m.ID] = true
+			recordMentionSource(recipientIDs, m.ID, "direct")
 		}
 		if m.Type == "squad" {
 			squadIDs = append(squadIDs, m.ID)
@@ -602,7 +630,7 @@ func notifyMentionedMembers(
 		}
 		for _, sm := range members {
 			if sm.MemberType == "member" {
-				recipientIDs[util.UUIDToString(sm.MemberID)] = true
+				recordMentionSource(recipientIDs, util.UUIDToString(sm.MemberID), "squad")
 			}
 		}
 	}
@@ -614,7 +642,7 @@ func notifyMentionedMembers(
 			slog.Error("failed to list members for @all mention", "workspace_id", e.WorkspaceID, "error", err)
 		} else {
 			for _, m := range members {
-				recipientIDs[util.UUIDToString(m.UserID)] = true
+				recordMentionSource(recipientIDs, util.UUIDToString(m.UserID), "all")
 			}
 		}
 	}
@@ -628,7 +656,7 @@ func notifyMentionedMembers(
 	}
 	mentionPrefs := loadUserPrefs(context.Background(), queries, e.WorkspaceID, mentionUserIDs)
 
-	for id := range recipientIDs {
+	for id, source := range recipientIDs {
 		if id == e.ActorID || skip[id] {
 			continue
 		}
@@ -649,7 +677,7 @@ func notifyMentionedMembers(
 			Title:         title,
 			ActorType:     util.StrToText(e.ActorType),
 			ActorID:       optionalUUID(e.ActorID),
-			Details:       details,
+			Details:       withMentionSource(details, source),
 		})
 		if err != nil {
 			slog.Error("mention inbox creation failed", "mentioned_id", id, "error", err)
