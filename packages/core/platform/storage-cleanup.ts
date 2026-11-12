@@ -71,7 +71,13 @@ export function clearAllWorkspaceStorage(adapter: StorageAdapter): boolean {
       adapter.removeItem(key);
     }
   }
-  // Globally-namespaced draft keys carry no slug to match on.
-  for (const key of drafts.global) adapter.removeItem(key);
+  // Globally-namespaced draft keys carry no slug to match on; session-keyed
+  // ones are `<name>#<token>`.
+  for (const name of drafts.global) {
+    adapter.removeItem(name);
+    for (const key of storedKeys) {
+      if (key.startsWith(`${name}#`)) adapter.removeItem(key);
+    }
+  }
   return true;
 }

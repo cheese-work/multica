@@ -356,8 +356,7 @@ func TestWorkflowDecisionFlagErrorsSendNothing(t *testing.T) {
 		want string
 	}{
 		{"id must be a UUID", map[string]string{"decision-id": "CHE-2458", "steps-file": steps}, "--decision-id must be a decision request UUID"},
-		{"rule flag", map[string]string{"decision-id": testDecisionID, "steps-file": steps, "max-runs-per-issue": "5"}, "a decision-bound write carries --steps-file only"},
-		{"rules only", map[string]string{"decision-id": testDecisionID, "max-runs-per-issue": "5"}, "a decision-bound write carries --steps-file only"},
+		{"start status", map[string]string{"decision-id": testDecisionID, "start-status": "todo"}, "--start-status needs the owner/admin path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -368,6 +367,7 @@ func TestWorkflowDecisionFlagErrorsSendNothing(t *testing.T) {
 			setCLITestServerEnv(t, srv.URL)
 
 			cmd := newWorkflowDecisionCmd()
+			cmd.Flags().String("start-status", "", "")
 			for k, v := range tc.set {
 				if k == "steps-file" {
 					v = writeTemp(t, v)

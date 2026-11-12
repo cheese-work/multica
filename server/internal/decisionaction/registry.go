@@ -115,6 +115,15 @@ func init() {
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
 }
 
+// Types lists every allowlisted action type, sorted and without versions.
+func Types() []string {
+	seen := map[string]bool{}
+	for _, def := range registry {
+		seen[def.Type] = true
+	}
+	return sortedKeys(seen)
+}
+
 func Lookup(typ string, version int) (*Definition, bool) {
 	def, ok := registry[typ+"@"+strconv.Itoa(version)]
 	return def, ok

@@ -126,7 +126,7 @@ beforeEach(() => {
     "ResizeObserver",
     class {
       targets: Element[] = [];
-      constructor(private callback: () => void) {
+      constructor(private callback: (entries: ResizeObserverEntry[]) => void) {
         observers.push(this as unknown as FakeObserver);
       }
       observe(target: Element) {
@@ -140,7 +140,7 @@ beforeEach(() => {
         observers = observers.filter((o) => (o as unknown as this) !== this);
       }
       fire() {
-        this.callback();
+        this.callback([]);
       }
     },
   );

@@ -161,6 +161,20 @@ describe("IssueRunsDialog", () => {
     expect(screen.getByText("Cancelled")).toBeInTheDocument();
   });
 
+  it("keeps a skipped review run visible without task-only actions", () => {
+    open([
+      makeTask({ id: "skip-1", trigger_summary: "Skipped run", status: "cancelled", failure_reason: "review_head_answered", started_at: "2026-09-27T10:00:00", completed_at: "2026-09-27T10:00:00" }),
+      makeTask({ id: "real-cancel", trigger_summary: "Cancelled run", status: "cancelled", started_at: "2026-09-27T11:00:00", completed_at: "2026-09-27T11:00:05" }),
+    ]);
+
+    const skipped = screen.getByText("Skipped run").closest("[class*='group/run-row']") as HTMLElement;
+    const cancelled = screen.getByText("Cancelled run").closest("[class*='group/run-row']") as HTMLElement;
+    expect(within(skipped).queryByRole("button", { name: "Retry run" })).not.toBeInTheDocument();
+    expect(within(skipped).queryByRole("button", { name: "View transcript" })).not.toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "View transcript" })).toBeInTheDocument();
+  });
+
   it("gives every terminal run a status a screen reader can read", () => {
     // Completed rows show their duration; the status word must still be there.
     open([

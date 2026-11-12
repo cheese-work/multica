@@ -122,6 +122,8 @@ func wakeupError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, service.ErrWakeupConflict):
 		writeError(w, 409, err.Error())
+	case errors.Is(err, service.ErrWakeupHeadUnchanged):
+		writeErrorCode(w, 409, "wakeup_head_unchanged", err.Error())
 	case errors.Is(err, service.ErrWakeupInput):
 		writeError(w, 400, err.Error())
 	case errors.Is(err, service.ErrWakeupForbidden):

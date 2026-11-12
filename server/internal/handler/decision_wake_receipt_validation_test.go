@@ -124,6 +124,38 @@ func TestReceiptDeliveryRechecksWakeAtUnderAnswerLock(test *testing.T) {
 	}
 }
 
+// Terra P1 on PR #1244: an answer's wake_at stays NULL while its answering task
+// runs. A NULL wake_at is not due: no selection, no dispatch. Delivery follows
+// once finalization sets wake_at.
+func TestReceiptNotDispatchedWhileAnswerWakeAtIsNull(test *testing.T) {
+	fixture, _, leader := squadActionFixture(test)
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = NULL WHERE decision_request_id = $1`, fixture.decision.ID)
+	receipt := receiptIDFor(test, fixture.decision.ID, leader)
+	ids, err := testHandler.Queries.ListDecisionWakeReceiptCandidates(context.Background(), 100)
+	if err != nil {
+		test.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == receipt {
+			test.Fatalf("receipt %v selected while the answer's wake_at is NULL", id)
+		}
+	}
+	if err := testHandler.deliverDecisionWakeReceipt(context.Background(), receipt); err != nil {
+		test.Fatal(err)
+	}
+	receiptPending(test, receipt)
+	if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, fixture.issueID, leader); n != 0 {
+		test.Fatalf("leader got %d queued tasks while the answer's wake_at is NULL", n)
+	}
+	dbfx.Exec(test, `UPDATE decision_answer SET wake_at = clock_timestamp() WHERE decision_request_id = $1`, fixture.decision.ID)
+	if err := testHandler.deliverDecisionWakeReceipt(context.Background(), receipt); err != nil {
+		test.Fatal(err)
+	}
+	if got := receiptStateOf(test, receipt); got.Status == "pending" {
+		test.Fatalf("receipt still pending after wake_at was set: %+v", got)
+	}
+}
+
 // Sol (e): a disclaim and a delivery of the same receipt finish without a
 // deadlock, and the delivery sees the disclaim.
 func TestConcurrentDisclaimAndReceiptDeliveryFinishWithoutDeadlock(test *testing.T) {
@@ -182,7 +214,7 @@ func TestOlderPendingRetractionBlocksCorrectedAnswerDespiteUUIDOrder(test *testi
 	if err != nil {
 		test.Fatal(err)
 	}
-	if err := recordDecisionWakeEvent(ctx, testHandler.Queries, request, "retracted", recordedA.Answer.ID, pgtype.UUID{Bytes: [16]byte{1}, Valid: true}); err != nil {
+	if err := testHandler.recordDecisionWakeEvent(ctx, testHandler.Queries, request, "retracted", recordedA.Answer.ID, pgtype.UUID{Bytes: [16]byte{1}, Valid: true}); err != nil {
 		test.Fatal(err)
 	}
 	dbfx.Exec(test, `UPDATE decision_request SET status = 'open' WHERE id = $1`, fixture.decision.ID)
@@ -192,6 +224,7 @@ func TestOlderPendingRetractionBlocksCorrectedAnswerDespiteUUIDOrder(test *testi
 		test.Fatal(err)
 	}
 	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	finalizeAnswerWake(test, fixture)
 	// Force UUID order opposite to event order: B's event ID sorts first.
 	var retractionID, answerBID pgtype.UUID
 	dbfx.QueryRow(test, `SELECT id FROM decision_wake_event WHERE request_id = $1 AND type = 'retracted'`, fixture.decision.ID).Scan(&retractionID)
@@ -239,5 +272,32 @@ func TestOlderPendingRetractionBlocksCorrectedAnswerDespiteUUIDOrder(test *testi
 		if second.DeliveredAt.Time.Before(first.DeliveredAt.Time) {
 			test.Fatalf("%s got B before the retraction", agent)
 		}
+	}
+}
+
+// Sol (decision_wake_receipt.sql:45): withdrawal clears wake_at to NULL on an
+// unwoken answer. The withdrawn answer's pending receipt must stay selectable,
+// so delivery settles it as superseded instead of leaving it pending and
+// blocking every later receipt of the request through the older-pending barrier.
+func TestWithdrawnAnswerReceiptStaysSelectableAndSettles(test *testing.T) {
+	fixture, _, leader := squadActionFixture(test)
+	dbfx.Exec(test, `UPDATE decision_answer SET disclaimed_at = clock_timestamp(), wake_at = NULL WHERE decision_request_id = $1`, fixture.decision.ID)
+	receipt := receiptIDFor(test, fixture.decision.ID, leader)
+	ids, err := testHandler.Queries.ListDecisionWakeReceiptCandidates(context.Background(), 100)
+	if err != nil {
+		test.Fatal(err)
+	}
+	selected := false
+	for _, id := range ids {
+		selected = selected || id == receipt
+	}
+	if !selected {
+		test.Fatalf("receipt %v of a withdrawn answer (wake_at NULL) is not selected; it would stay pending and block later receipts", receipt)
+	}
+	if err := testHandler.deliverDecisionWakeReceipts(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if got := receiptStateOf(test, receipt); got.Status != "superseded" {
+		test.Fatalf("receipt = %+v, want superseded", got)
 	}
 }

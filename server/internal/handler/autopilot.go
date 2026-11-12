@@ -47,11 +47,13 @@ type AutopilotResponse struct {
 	PauseReason        *string `json:"pause_reason"`
 	ExecutionMode      string  `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
-	CreatedByType      string  `json:"created_by_type"`
-	CreatedByID        string  `json:"created_by_id"`
-	LastRunAt          *string `json:"last_run_at"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
+	// ScriptConfig is set only for execution_mode=script: {"name","args"}.
+	ScriptConfig  json.RawMessage `json:"script_config,omitempty"`
+	CreatedByType string          `json:"created_by_type"`
+	CreatedByID   string          `json:"created_by_id"`
+	LastRunAt     *string         `json:"last_run_at"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
 
 	// List-endpoint-only derived fields (absent on the detail/create/update
 	// responses and on older servers — clients must treat them as optional).
@@ -210,6 +212,7 @@ func autopilotToResponse(a db.Autopilot, subscribers []db.AutopilotSubscriber) A
 		PauseReason:        textToPtr(a.PauseReason),
 		ExecutionMode:      a.ExecutionMode,
 		IssueTitleTemplate: textToPtr(a.IssueTitleTemplate),
+		ScriptConfig:       a.ScriptConfig,
 		CreatedByType:      a.CreatedByType,
 		CreatedByID:        uuidToString(a.CreatedByID),
 		LastRunAt:          timestampToPtr(a.LastRunAt),
@@ -366,6 +369,7 @@ type CreateAutopilotRequest struct {
 	AssigneeID         string            `json:"assignee_id"`
 	ExecutionMode      string            `json:"execution_mode"`
 	IssueTitleTemplate *string           `json:"issue_title_template"`
+	ScriptConfig       json.RawMessage   `json:"script_config"`
 	Subscribers        []SubscriberInput `json:"subscribers"`
 }
 
@@ -378,6 +382,8 @@ type UpdateAutopilotRequest struct {
 	Status             *string `json:"status"`
 	ExecutionMode      *string `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
+	// ScriptConfig replaces the stored config when present; null clears it.
+	ScriptConfig json.RawMessage `json:"script_config"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
 }
@@ -823,8 +829,13 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "execution_mode is required")
 		return
 	}
-	if req.ExecutionMode != "create_issue" && req.ExecutionMode != "run_only" {
-		writeError(w, http.StatusBadRequest, "execution_mode must be create_issue or run_only")
+	if !isValidAutopilotExecutionMode(req.ExecutionMode) {
+		writeError(w, http.StatusBadRequest, "execution_mode must be create_issue, run_only or script")
+		return
+	}
+	scriptCfg, err := resolveScriptConfig(req.ExecutionMode, req.ScriptConfig, true, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.IssueTitleTemplate != nil {
@@ -906,6 +917,7 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		AssigneeID:         assigneeUUID,
 		Status:             "active",
 		ExecutionMode:      req.ExecutionMode,
+		ScriptConfig:       scriptCfg,
 		CreatedByType:      "member",
 		CreatedByID:        actor.UserID,
 		Description:        ptrToText(req.Description),
@@ -1084,6 +1096,7 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		AssigneeID:         prev.AssigneeID,
 		IssueTitleTemplate: prev.IssueTitleTemplate,
 		ProjectID:          prev.ProjectID,
+		ScriptConfig:       prev.ScriptConfig,
 	}
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
@@ -1091,9 +1104,22 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil {
 		params.Status = pgtype.Text{String: *req.Status, Valid: true}
 	}
+	nextMode := prev.ExecutionMode
 	if req.ExecutionMode != nil {
-		params.ExecutionMode = pgtype.Text{String: *req.ExecutionMode, Valid: true}
+		if !isValidAutopilotExecutionMode(*req.ExecutionMode) {
+			writeError(w, http.StatusBadRequest, "execution_mode must be create_issue, run_only or script")
+			return
+		}
+		nextMode = *req.ExecutionMode
+		params.ExecutionMode = pgtype.Text{String: nextMode, Valid: true}
 	}
+	_, scriptCfgSent := rawFields["script_config"]
+	scriptCfg, err := resolveScriptConfig(nextMode, req.ScriptConfig, scriptCfgSent, prev.ScriptConfig)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	params.ScriptConfig = scriptCfg
 	if _, ok := rawFields["description"]; ok {
 		params.Description = ptrToText(req.Description)
 	}
