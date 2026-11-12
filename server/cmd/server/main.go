@@ -774,6 +774,7 @@ func main() {
 	go runSourceContextSweeper(sweepCtx, taskSvc)
 	go runWebhookNonceSweeper(sweepCtx, queries)
 	go h.RunElevationFenceSweeper(sweepCtx)
+	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {

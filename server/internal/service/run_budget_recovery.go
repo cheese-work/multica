@@ -67,6 +67,11 @@ func (s *TaskService) PrepareBudgetRecoveryRun(ctx context.Context, issue db.Iss
 	return &BudgetRecoveryRun{svc: s, issue: issue, params: params, txCtx: txCtx, notifyAfterCommit: notifyAfterCommit}, nil
 }
 
+// WithTaint makes the run carry taint on top of that of its acting task.
+func (r *BudgetRecoveryRun) WithTaint(taint []string) {
+	r.txCtx = WithTaint(r.txCtx, taint)
+}
+
 // Claim claims the window's one recovery run and inserts its task, in the
 // caller's transaction: a second claim in the same window returns
 // ErrRecoveryClaimed. A recovery run bypasses the exhaustion refusal, so the

@@ -25,6 +25,22 @@ func withStageTaint(ctx context.Context, taint []string) context.Context {
 	return context.WithValue(ctx, stageTaintKey{}, taint)
 }
 
+// WithTaint is withStageTaint for a caller outside the package: a hook that
+// resumes a refusal after a restart restores the taint it recorded.
+func WithTaint(ctx context.Context, taint []string) context.Context {
+	return withStageTaint(ctx, taint)
+}
+
+// CtxTaint is the taint every task inserted under ctx would carry. Never nil.
+// Fail closed: an acting task that cannot be read is an error.
+func CtxTaint(ctx context.Context, q *db.Queries) ([]string, error) {
+	acting, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]string{}, acting...), stageTaint(ctx)...), nil
+}
+
 func stageTaint(ctx context.Context) []string {
 	taint, _ := ctx.Value(stageTaintKey{}).([]string)
 	return taint
