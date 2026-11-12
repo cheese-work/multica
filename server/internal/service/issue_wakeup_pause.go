@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -105,4 +107,25 @@ func dropLateIfResumed(ctx context.Context, q *db.Queries, w db.IssueWakeup, sta
 	}
 	_, err := q.DropLatePausedReceipts(ctx, db.DropLatePausedReceiptsParams{ID: w.ID, ResumedAt: state.ResumedAt})
 	return err
+}
+
+// skipForPausedAgent ends a dispatch pass for a rule whose agent is paused
+// (CHE-5066): settlePaused already dropped the inputs and skipped missed slots.
+// The skip is logged on the issue timeline and in the server log; an overdue
+// one-shot and a condition keep their state and fire once after resume.
+func (s *IssueWakeupService) skipForPausedAgent(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, agent db.Agent) error {
+	act, err := recordWakeupActivity(ctx, q, w, wakeupActivitySkipped, "system", pgtype.UUID{}, map[string]any{
+		"reason_code": "agent_paused",
+		"reason":      "Agent is paused; the wakeup did not start a run",
+		"agent_id":    util.UUIDToString(agent.ID),
+	})
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	slog.Info("wakeup skipped: agent paused", "wakeup_id", util.UUIDToString(w.ID), "agent_id", util.UUIDToString(agent.ID))
+	s.publishWakeupActivities(act)
+	return nil
 }

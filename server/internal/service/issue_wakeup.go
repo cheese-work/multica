@@ -1238,6 +1238,15 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		}
 		return tx.Commit(ctx)
 	}
+	if agent.SchedulingPausedAt.Valid {
+		held, err := settlePaused(ctx, tx, q, w)
+		if err != nil {
+			return err
+		}
+		if held {
+			return s.skipForPausedAgent(ctx, tx, q, w, agent)
+		}
+	}
 	if _, err = tx.Exec(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id=$1 AND revision<>$2 AND processed_at IS NULL", w.ID, w.Revision); err != nil {
 		return err
 	}
