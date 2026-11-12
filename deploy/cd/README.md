@@ -698,7 +698,7 @@ dispatch click. A merge by anyone else, or a commit with no merged `main` pull
 request, runs `candidate-preflight` and `notify-approval` and stops: no C00 job
 runs. The notice links to the workflow's dispatch page with the full
 `candidate_sha`. The notice goes by `C00_APPROVAL_WEBHOOK_URL` and/or a Multica
-decision card (secrets `C00_APPROVAL_MULTICA_{SERVER_URL,TOKEN,WORKSPACE_ID,ISSUE,MEMBER_ID}`:
+decision card (secret `C00_APPROVAL_MULTICA_TOKEN`; the server URL, workspace, issue, member and anchor comment default in the workflow, and secrets `C00_APPROVAL_MULTICA_{SERVER_URL,WORKSPACE_ID,ISSUE,MEMBER_ID,SOURCE_COMMENT}` override them. The token holds only that scope, so the job never reads comments; the anchor is a fixed root comment of the notice issue:
 `POST /api/decisions/ci` opens one card on that issue for the member with the
 dispatch one-liner and the run link). `TOKEN` is a personal access token of the
 workspace owner with the `decisions:ci_request` scope. The server keeps one open
