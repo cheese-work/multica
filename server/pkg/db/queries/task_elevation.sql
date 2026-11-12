@@ -58,7 +58,7 @@ RETURNING te.task_id;
 -- name: FenceIssueTaskElevations :many
 -- A member clearing the issue's taint fences every elevation still live on it
 -- first, so the taint cannot vanish before the sweep saw it. Same update as the
--- sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+-- sweep; it runs after the issue lock, as every path that touches a run does.
 UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
 WHERE issue_id = $1 AND state = 'elevated'
 RETURNING task_id;
