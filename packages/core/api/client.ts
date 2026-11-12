@@ -38,6 +38,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentSchedulingImpact,
   AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
@@ -2196,6 +2197,18 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
+  async pauseAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
+  }
+
+  async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
+    return this.fetch(`/api/agents/${id}/scheduling-impact`);
+  }
+
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
