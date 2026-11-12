@@ -69,6 +69,14 @@ func guardAgentIssueStatus(ctx context.Context, queries *db.Queries, params db.U
 		}
 		for _, request := range requests {
 			if request.Status == "open" {
+				// A top-up card left behind by a new window cannot be approved
+				// (stale_window) and must not hold the close.
+				if holds, isCard, err := runBudgetCardHolds(ctx, queries, request); err != nil {
+					return fmt.Errorf("check run budget card: %w", err)
+				} else if isCard && !holds {
+					slog.Warn("done guard: ignoring stale run budget card", "request_id", uuidToString(request.ID))
+					continue
+				}
 				return fmt.Errorf("%w: %s; answer or withdraw the request before closing the issue", errAgentIssueOpenDecision, uuidToString(request.ID))
 			}
 			if request.Status == "answered" {

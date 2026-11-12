@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -190,4 +192,31 @@ func (h *Handler) publishRunBudgetDecisions(issue db.Issue, results []decisionRe
 	if len(results) > 0 {
 		h.DecisionWorker.Notify()
 	}
+}
+
+// runBudgetCardHolds reports whether an open top-up card still stands for a
+// refusal: the window it names is the issue's current window and still refuses
+// a run. A status move or top-up opens a new window and leaves the card behind;
+// a card that no longer holds blocks neither a decision ask nor done (CHE-5303).
+// ok is false for a request that is not a platform top-up card.
+func runBudgetCardHolds(ctx context.Context, q *db.Queries, request db.DecisionRequest) (holds, ok bool, err error) {
+	if request.Status != "open" || !strings.HasPrefix(request.RequestFingerprint, serverDecisionFingerprint+"run_budget_action:") {
+		return false, false, nil
+	}
+	action, err := q.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: request.WorkspaceID})
+	if err != nil {
+		return false, true, err
+	}
+	var params struct {
+		WindowID string `json:"window_id"`
+	}
+	if err := json.Unmarshal(action.Params, &params); err != nil {
+		return false, true, err
+	}
+	since, err := time.Parse(time.RFC3339Nano, params.WindowID)
+	if err != nil {
+		return false, true, nil
+	}
+	holds, err = service.RunBudgetStillRefuses(ctx, q, request.IssueID, since)
+	return holds, true, err
 }

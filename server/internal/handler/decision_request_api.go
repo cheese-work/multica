@@ -501,7 +501,12 @@ func (handler *Handler) refuseBudgetQuestion(writer http.ResponseWriter, request
 		return true
 	}
 	for _, open := range requests {
-		if open.Status != "open" || !strings.HasPrefix(open.RequestFingerprint, serverDecisionFingerprint+"run_budget_action:") {
+		holds, isCard, err := runBudgetCardHolds(request.Context(), handler.Queries, open)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+			return true
+		}
+		if !isCard || !holds {
 			continue
 		}
 		action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
