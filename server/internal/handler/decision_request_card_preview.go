@@ -147,6 +147,10 @@ func (handler *Handler) cardConfigChange(ctx context.Context, action db.Decision
 	if card.Keys == nil {
 		card.Keys = []string{}
 	}
+	// A preview stored before diff_kind existed is the json kind.
+	if card.DiffKind == "" {
+		card.DiffKind = "json"
+	}
 	if card.Diff == nil {
 		card.Diff = []decisiontx.DiffHunk{}
 	}

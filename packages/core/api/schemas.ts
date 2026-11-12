@@ -1091,7 +1091,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
     field: z.string(),
     target_id: z.string(),
     keys: z.array(z.string()),
-    diff_kind: z.enum(["json", "text", "lines"]),
+    diff_kind: z.string(), // an unknown kind parses; approvableConfigChange refuses it
     diff: z.array(z.object({ old_start: z.number(), new_start: z.number(), lines: z.array(z.string()) }).loose()),
     after: z.unknown(),
     before_sha256: z.string().regex(SHA256_HEX),
