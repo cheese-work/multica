@@ -107,7 +107,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | decision-card-fold | doop `HtwdZpoCai` @ 2026-11-07T12:47:11.565Z | A | 1183 | n/a (`design/decision-card-fold/approved/`) |
 | workflow-lint-ui | doop `6mYQFWIMvR` @ 2026-11-06T07:54:26.758Z (D light) with dark `u9lNVhB-2k` @ 2026-11-06T07:55:08.558Z, dialog `-IGdS_B1PB` @ 2026-11-06T07:56:19.372Z, `Tz8ZFkiTdl` @ 2026-11-06T07:56:38.931Z, states `-op18JpCVJ` @ 2026-11-06T07:56:54.349Z | D | 1211 | n/a (`design/workflow-lint-ui/approved/`) |
 | delegated-governed-writes | doop `Ocyo3e9IQD` @ 2026-11-08T09:29:28.407Z | B | 1256 | n/a (`design/delegated-governed-writes/approved/`) |
-| decision-card | doop `Z3bizs5RyO` @ 2026-11-11T23:21:50.584Z | B | PRNUM | n/a (`design/decision-card/approved/`) |
+| decision-card | doop `Z3bizs5RyO` @ 2026-11-11T23:21:50.584Z | B | 1379 | n/a (`design/decision-card/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
