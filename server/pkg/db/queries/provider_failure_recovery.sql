@@ -259,3 +259,29 @@ SELECT
                    THEN (task.context->>'wakeup_revision')::bigint ELSE 0 END
               >= COALESCE(recovery.recovery_wakeup_revision, 0)
     ) AS wakeup_lineage;
+
+-- CHE-1736 M1.2 fence for a held provider retry. TRUE only if the failed task is
+-- still the issue's latest run, the issue is not in a terminal status, and the
+-- issue is still assigned to the task's agent or squad. An unassigned issue, a
+-- newer run or a reassignment means no retry.
+-- name: GetProviderHeldRetryFence :one
+SELECT (
+    i.id IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM agent_task_queue newer
+        WHERE newer.issue_id = t.issue_id AND newer.id <> t.id
+          AND (newer.created_at, newer.id) > (t.created_at, t.id)
+    )
+    AND i.status NOT IN ('done', 'cancelled')
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed')
+    )
+    AND (
+        (i.assignee_type = 'agent' AND i.assignee_id = t.agent_id)
+        OR (i.assignee_type = 'squad' AND i.assignee_id = t.squad_id)
+    )
+)::boolean AS allowed
+FROM agent_task_queue t
+LEFT JOIN issue i ON i.id = t.issue_id
+WHERE t.id = @task_id;

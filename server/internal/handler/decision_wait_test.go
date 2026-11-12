@@ -75,7 +75,7 @@ func (f episodeFixture) agentMove(t *testing.T, writer issueWriter, status strin
 
 func (f episodeFixture) memberMove(t *testing.T, status string) *testutil.Response {
 	t.Helper()
-	return issueWriters[0].write(t, f.issueID, map[string]any{"status": status}, nil)
+	return issueWriters[0].write(t, f.issueID, map[string]any{"status": status}, map[string]string{"X-Actor-Source": "interactive_jwt"})
 }
 
 type episodeRow struct {
