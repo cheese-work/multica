@@ -297,10 +297,14 @@ class MulticaPathsMapToTiers(unittest.TestCase):
                  "scripts/install.test.sh", "scripts/daemon-artifact-version.test.mjs", "server/internal/daemon/daemon_test.go")
         self.assertEqual(protected({p: "x\n" for p in paths}), set())
 
-    def test_registry_is_valid_and_has_no_active_waiver_claim(self):
+    def test_registry_is_valid_and_covered_scopes_are_exact_paths(self):
         reg = json.loads((TIER_DIR / "registry.json").read_text())
         self.assertEqual(reg["schema"], 1)
-        self.assertEqual(reg["covered_scopes"], [])
+        scopes = reg["covered_scopes"]
+        self.assertEqual({s["analysis"] for s in scopes}, {"path-registry"} if scopes else set())
+        self.assertEqual(len({s["id"] for s in scopes}), len(scopes))
+        for s in scopes:
+            self.assertFalse(any(c in s["glob"] for c in "*?[{"), s)
 
 
 if __name__ == "__main__":
