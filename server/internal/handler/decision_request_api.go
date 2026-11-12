@@ -6,11 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -90,6 +93,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision {
+		hints = append(hints, plainCardConfigHints(parsed)...)
+	}
 	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -134,6 +140,32 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// configChangeWords matches a decision or option that reads like a change to
+// a workflow, agent, squad, workspace or budget in plain words.
+var configChangeWords = regexp.MustCompile(`(?i)\b(?:workflow|squad|agent|workspace)\b.{0,80}\b(?:handler|instructions?|steps?|context|env(?:ironment)?|budget|prompt)\b|\bbudget\b.{0,40}\b(?:raise|top.?up|increase)|\b(?:raise|top.?up|increase)\b.{0,40}\bbudget\b`)
+
+// plainCardConfigHints returns an advisory hint when an option card reads like
+// a change an allowlisted action applies. Approve on an option card only
+// records an answer, so the change would never apply and the person would be
+// sent a second link (CHE-5229). The server cannot read intent, so this never
+// refuses: it scans the decision and the options (not the agent_did detail)
+// for an action type string or plain words naming such a change.
+func plainCardConfigHints(ask decisiontx.Ask) []string {
+	texts := []string{ask.Decision}
+	for _, option := range ask.Options {
+		texts = append(texts, option.Label, option.WhatHappens)
+	}
+	text := strings.Join(texts, "\n")
+	matched := configChangeWords.MatchString(text)
+	for _, actionType := range decisionaction.Types() {
+		matched = matched || strings.Contains(text, actionType)
+	}
+	if !matched {
+		return nil
+	}
+	return []string{"the decision or an option reads like a change to a workflow, agent, squad, workspace or budget; Approve on an option card only records the answer and applies nothing. If one approval should apply the change, send it with `multica decision propose` (or `multica decision request --action-file`)"}
 }
 
 // writeDecisionResult answers a replay with 200, or publishes the events of a
@@ -207,10 +239,43 @@ type decisionRequestResponse struct {
 	Action *decisionActionResponse `json:"action,omitempty"`
 }
 
+// decisionReadResponse is the stored request plus its newest answer, so an
+// agent reads the same state the person saw: who answered, when, with what.
+type decisionReadResponse struct {
+	db.DecisionRequest
+	Answer *decisionAnswerRead `json:"answer,omitempty"`
+}
+
+type decisionAnswerRead struct {
+	ID                string  `json:"id"`
+	AnsweredByUserID  *string `json:"answered_by_user_id"`
+	AnswerSource      string  `json:"answer_source"`
+	ChosenOptionIndex *int32  `json:"chosen_option_index"`
+	ContentSnapshot   string  `json:"content_snapshot"`
+	CreatedAt         *string `json:"created_at"`
+	DisclaimedAt      *string `json:"disclaimed_at"`
+	DisclaimReason    *string `json:"disclaim_reason"`
+}
+
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
-	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
-		writeJSON(writer, http.StatusOK, stored)
+	stored, _, ok := handler.loadDecisionForRead(writer, request)
+	if !ok {
+		return
 	}
+	response := decisionReadResponse{DecisionRequest: stored}
+	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
+	switch {
+	case err == nil:
+		response.Answer = &decisionAnswerRead{
+			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
+			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
+			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision answer")
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 // loadDecisionForRead resolves {id} for a workspace member who can read the
