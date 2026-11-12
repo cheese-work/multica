@@ -695,6 +695,9 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
+        # CHE-4649: `shell: bash` adds -o pipefail, so a failing test stops
+        # hiding behind `| tee` (it left 4 handler tests red under a green job).
+        shell: bash
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
