@@ -266,7 +266,7 @@ class MainTest(unittest.TestCase):
         self.assertIn("09:17 UTC", out)
         self.assertIn("16:17 ICT", out)
 
-    DISPATCH = ("workflow", "run", "cd-deploy.yml", "--ref", "main", "-R", "cheese-work/multica")
+    DISPATCH = ("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", "cheese-work/multica")
 
     @staticmethod
     def dispatches(seen):

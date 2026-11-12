@@ -9,7 +9,7 @@ Two rules for the current main head:
    URL and the first error line.
 3. A `cd-deploy.yml` slot (17 past 01/05/09/13/17/21 UTC) passed >= 30 min ago and no `schedule` run was created since
    -> ::error:: (CHE-5182: GitHub can drop scheduled runs; the cron sits off the hour for the same reason), and one
-   backup `gh workflow run cd-deploy.yml --ref main` (CHE-5353) unless a cd-deploy.yml run on main was created since the
+   backup `gh workflow run cd-deploy.yml --ref main -f schedule_backup=true` (CHE-5353) unless a cd-deploy.yml run on main was created since the
    slot. That run, scheduled or dispatched, is the guard: later alarm runs find it, so a slot gets one dispatch.
 `--live`: compare the revision C00 reports on /api/config (env C00_API_URL, tailnet only, so it runs on an X99
 runner) with main's head; catches a rollback, which run history cannot see.
@@ -130,12 +130,12 @@ def main_live(sha, head_time, now):
 
 
 def backup_dispatch(repo, slot, deploy_runs):
-    """No input: the dispatch deploys the newest qualified main commit; cd-deploy.yml decides everything else."""
+    """The marker makes cd-deploy.yml run its scheduled path (resolve, preflight, merger and suspension checks) for this dispatch."""
     if run_since(slot, deploy_runs):
         print("A cd-deploy.yml run on main was created since the slot; no backup dispatch.")
         return
     try:
-        gh_api("workflow", "run", "cd-deploy.yml", "--ref", "main", "-R", repo)
+        gh_api("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", repo)
         print("Sent one backup dispatch of cd-deploy.yml (once per slot).")
     except subprocess.CalledProcessError as e:
         print(f"::error::backup dispatch failed: {(e.stderr or '').strip() or e}")
