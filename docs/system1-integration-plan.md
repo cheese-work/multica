@@ -103,7 +103,7 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
 
 ### Waiver predictions (CHE-4383 B3)
 
-Table `system1_prediction` (migration `99966_system1_prediction`, no foreign
+Table `system1_prediction` (migration `99968_system1_prediction`, no foreign
 key): `observation_id`, `scope`, `predictor_id`, `predictor_version`,
 `predicted_key` (NULL = abstained), `predicted_confidence`,
 `predicted_precedents`, `predicted_at`. One row per observation, predictor and
