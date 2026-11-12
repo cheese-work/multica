@@ -25,12 +25,11 @@ var bindPaths = []bindPath{
 // bindCase is a linked refusal whose comment is C2, on the path's agent, with
 // the cap raised so the only thing between it and a run is the survivor.
 type bindCase struct {
-	c            budgetCase
-	id           pgtype.UUID
-	agent        string
-	squad        pgtype.UUID
-	c1, c2       pgtype.UUID
-	taskIDsAtEnd func() int
+	c      budgetCase
+	id     pgtype.UUID
+	agent  string
+	squad  pgtype.UUID
+	c1, c2 pgtype.UUID
 }
 
 func newBindCase(t *testing.T, installationID int64, p bindPath, refusalComment bool) bindCase {
