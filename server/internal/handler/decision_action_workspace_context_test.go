@@ -30,7 +30,7 @@ func setContextProposerGrant(test *testing.T, agentID string, granted bool) {
 			Grant DelegatedWritesConfig `json:"delegated_governed_writes"`
 		}
 		_ = json.Unmarshal([]byte(previous), &stored)
-		agents = append(stored.Grant.AllowedAgents, agentID)
+		agents = append([]string{agentID}, stored.Grant.AllowedAgents...)
 	}
 	setting, err := json.Marshal(map[string]any{"delegated_governed_writes": DelegatedWritesConfig{
 		AllowedAgents: agents, AllowedFields: []string{"workspace.context"}, RequiresHumanDecision: true,
