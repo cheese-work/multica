@@ -67,6 +67,11 @@ type dbExecutor interface {
 }
 
 type Config struct {
+	// SetupComponents is the registry of Setup component ids the
+	// adoption_linked close gate checks metadata `components` and the `none`
+	// cross-check against (MULTICA_SETUP_COMPONENTS, comma separated). The
+	// registry lives outside this repo, so the operator mirrors its ids here.
+	SetupComponents     []string
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
@@ -616,6 +621,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 

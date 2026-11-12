@@ -1611,6 +1611,29 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if w.SourceTaskID.Valid {
 			origin = OriginDerived
 		}
+		// A reviewer that already answered the PR head needs no run for it
+		// (CHE-4649). Checked here, for named and derived event wakeups alike:
+		// the receipts are consumed rather than retried, because the head will
+		// not change by waiting. Scheduled check-ins (at, every, cron) are not
+		// review runs and always run.
+		var answered error
+		if w.Kind == "event" {
+			answered = guardReviewHeadAnswered(ctx, q, issue.ID, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", ReviewRun: true})
+		}
+		if errors.Is(answered, ErrReviewHeadAnswered) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrReviewHeadAnswered.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonReviewHeadAnswered), "reason": ErrReviewHeadAnswered.Error()}); err != nil {
+				return err
+			}
+			return commit()
+		}
 		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
 			return err
 		}
