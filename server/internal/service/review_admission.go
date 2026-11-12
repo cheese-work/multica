@@ -73,16 +73,23 @@ func admissionReviewersFromEnv(getenv func(string) string) map[string]bool {
 // record that must be written down. errors.Is(err, ErrAdmissionDeferred) holds.
 type admissionDeferredError struct {
 	issueID, agentID pgtype.UUID
+	actor, comment   pgtype.UUID
 	trigger, head    string
 	reasons          []string
+	taint            []string
 }
 
 func (*admissionDeferredError) Error() string        { return ErrAdmissionDeferred.Error() }
 func (*admissionDeferredError) Is(target error) bool { return target == ErrAdmissionDeferred }
 
 func markAdmissionDeferred(ctx context.Context, q *db.Queries, d *admissionDeferredError) error {
+	taint := d.taint
+	if taint == nil {
+		taint = []string{}
+	}
 	if err := q.MarkReviewAdmissionDeferred(ctx, db.MarkReviewAdmissionDeferredParams{
 		IssueID: d.issueID, AgentID: d.agentID, Trigger: d.trigger, HeadSha: d.head, Reasons: d.reasons,
+		ActorUserID: d.actor, TriggerCommentID: d.comment, TaintIds: taint,
 	}); err != nil {
 		return fmt.Errorf("review admission: record deferral: %w", err)
 	}
@@ -143,47 +150,88 @@ func startsReview(target RunTarget) bool {
 // comes from the PR binding or task evidence, never from assignee or status.
 // An unknown or ambiguous author skips only the exemption; the deferral then
 // records "author: unresolved".
-func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
+//
+// The decision names the one PR head the run was judged on. A deferral that ran
+// out (CHE-4651) lets the run start without judging CI only for the head the
+// recovery evidence names: the evidence is checked against the head read here,
+// so a PR that moved after the evidence was captured is judged as usual.
+// admissionDecision is what guardReviewAdmission settled for the run: the PR
+// head it judged (empty when the run is not judged) and whether it starts
+// because that head's deferral expired.
+type admissionDecision struct {
+	Head    string
+	Expired bool
+}
+
+func guardReviewAdmission(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) (admissionDecision, error) {
 	if !admissionEnabled || !startsReview(target) || !target.AgentID.Valid || !issueID.Valid || !admissionReviewers[util.UUIDToString(target.AgentID)] {
-		return nil
+		return admissionDecision{}, nil
 	}
-	pr, err := q.GetIssueAdmissionPR(ctx, issueID)
+	pr, err := admissionPR(ctx, q, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			return admissionDecision{}, nil
 		}
-		return fmt.Errorf("review admission: load PR: %w", err)
+		return admissionDecision{}, fmt.Errorf("review admission: load PR: %w", err)
+	}
+	if admissionRecoveryOf(ctx).expiredFor(issueID, target.AgentID, pr.HeadSha) {
+		return admissionDecision{Head: pr.HeadSha, Expired: true}, nil
 	}
 	authorKnown := true
 	author, err := GitHubPullRequestAuthor(ctx, q, pr)
 	switch {
 	case err == nil:
 		if author.ID == target.AgentID {
-			return nil
+			return admissionDecision{}, nil
 		}
 	case errors.Is(err, pgx.ErrNoRows):
 		authorKnown = false
 	default:
-		return fmt.Errorf("review admission: resolve PR author: %w", err)
+		return admissionDecision{}, fmt.Errorf("review admission: resolve PR author: %w", err)
 	}
 	runs, err := q.ListAdmissionCheckRuns(ctx, db.ListAdmissionCheckRunsParams{PrID: pr.ID, HeadSha: pr.HeadSha})
 	if err != nil {
-		return fmt.Errorf("review admission: load checks: %w", err)
+		return admissionDecision{}, fmt.Errorf("review admission: load checks: %w", err)
 	}
 	reasons := admissionReasons(admissionChecks, runs, pr.ApiMergeStateStatus.String)
 	if len(reasons) == 0 {
-		return nil
+		return admissionDecision{Head: pr.HeadSha}, nil
 	}
 	if !authorKnown {
 		reasons = append(reasons, "author: unresolved")
 	}
+	// Fail closed: a requester whose taint cannot be read is never shown clean.
+	taint, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return admissionDecision{}, fmt.Errorf("review admission: read requester taint: %w", err)
+	}
 	deferral := &admissionDeferredError{
 		issueID: issueID, agentID: target.AgentID, trigger: target.Trigger, head: pr.HeadSha, reasons: reasons,
+		actor: target.ActorUserID, comment: target.TriggerCommentID, taint: append(taint, stageTaint(ctx)...),
 	}
 	if err := markAdmissionDeferred(ctx, q, deferral); err != nil {
-		return err
+		return admissionDecision{}, err
 	}
 	slog.Info("review admission: run deferred",
 		"issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(target.AgentID), "reasons", reasons)
-	return deferral
+	return admissionDecision{}, deferral
+}
+
+// admissionPR is the PR whose head the review is judged on: the PR a
+// replacement review is pinned to, otherwise the issue's newest open PR. A
+// pinned PR that is no longer open or has no head is not judged (ErrNoRows),
+// as the issue-wide read skips it.
+func admissionPR(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (db.GithubPullRequest, error) {
+	prID := reviewPRPin(ctx)
+	if !prID.Valid {
+		return q.GetIssueAdmissionPR(ctx, issueID)
+	}
+	pr, err := q.GetGitHubPullRequestByID(ctx, prID)
+	if err != nil {
+		return db.GithubPullRequest{}, err
+	}
+	if (pr.State != "open" && pr.State != "draft") || pr.HeadSha == "" {
+		return db.GithubPullRequest{}, pgx.ErrNoRows
+	}
+	return pr, nil
 }

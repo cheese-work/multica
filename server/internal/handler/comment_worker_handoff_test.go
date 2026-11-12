@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -236,6 +237,7 @@ func TestWorkerReplyReconcileBoundaries(t *testing.T) {
 				}
 				if mode == "registration_failure" || mode == "completed_before_registration" {
 					h.Queries = db.New(registration)
+					h.TxStarter = workerReplyRegistrationTx{starter: testPool, probe: registration}
 				}
 				testutil.Call(t, h.CreateComment, req).Want(http.StatusCreated).JSON(&response)
 				if (mode == "registration_failure" || mode == "completed_before_registration") && registration.calls != 1 {
@@ -427,6 +429,56 @@ func TestWorkerReplyRegistrationLosesCompletionRace(t *testing.T) {
 
 // Intercept only the new obligation write; all routing, comment persistence,
 // completion, and successor enqueue still use their real database paths.
+// workerReplyRegistrationTx runs the registration under the issue lock inside a
+// transaction, so the probe must wrap the transaction as well as h.Queries.
+type workerReplyRegistrationTx struct {
+	starter txStarter
+	probe   *workerReplyRegistrationDB
+}
+
+func (s workerReplyRegistrationTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	// The hook completes the run on other connections, so it must run before the
+	// registration transaction takes the issue lock. Other transactions that
+	// CreateComment opens first must not trigger it.
+	if s.probe.before != nil && calledFrom("registerPlannedCommentForActiveTask") {
+		s.probe.before()
+	}
+	tx, err := s.starter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return workerReplyRegistrationTxConn{Tx: tx, probe: s.probe}, nil
+}
+
+func calledFrom(fn string) bool {
+	pcs := make([]uintptr, 16)
+	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, "."+fn) {
+			return true
+		}
+		if !more {
+			return false
+		}
+	}
+}
+
+type workerReplyRegistrationTxConn struct {
+	pgx.Tx
+	probe *workerReplyRegistrationDB
+}
+
+func (c workerReplyRegistrationTxConn) QueryRow(ctx context.Context, query string, args ...any) pgx.Row {
+	if strings.Contains(query, "-- name: RegisterPlannedCommentForActiveTask :one") {
+		c.probe.calls++
+		if c.probe.err != nil {
+			return errRow{err: c.probe.err}
+		}
+	}
+	return c.Tx.QueryRow(ctx, query, args...)
+}
+
 type workerReplyRegistrationDB struct {
 	db.DBTX
 	before func()

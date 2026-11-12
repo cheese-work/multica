@@ -30,10 +30,11 @@ func (s *TaskService) beginScheduling(ctx context.Context) (pgx.Tx, *db.Queries,
 	return tx, s.Queries.WithTx(tx), nil
 }
 
-func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, agentID, actorID pgtype.UUID) (db.Agent, bool, error) {
+// reason is optional free text kept with the pause; the first pause wins.
+func (s *TaskService) PauseAgentScheduling(ctx context.Context, workspaceID, agentID, actorID pgtype.UUID, reason pgtype.Text) (db.Agent, bool, error) {
 	return s.setAgentScheduling(ctx, workspaceID, agentID, func(q *db.Queries) (db.Agent, error) {
 		return q.PauseAgentScheduling(ctx, db.PauseAgentSchedulingParams{
-			ID: agentID, WorkspaceID: workspaceID, ActorID: actorID,
+			ID: agentID, WorkspaceID: workspaceID, ActorID: actorID, Reason: reason,
 		})
 	}, true)
 }
@@ -121,4 +122,10 @@ func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pg
 		return db.Workspace{}, false, fmt.Errorf("commit scheduling change: %w", err)
 	}
 	return updated, prev.SchedulingPausedAt.Valid != pause, nil
+}
+
+// NotifyRuntimeMayHaveWork is ResumeAgentScheduling's wake-up for a caller that
+// resumed the agent inside its own transaction (an approved decision action).
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID string) {
+	s.notifyRuntimeMayHaveWork(runtimeID, taskID)
 }

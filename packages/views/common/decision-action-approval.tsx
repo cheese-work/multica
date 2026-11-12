@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@multica/core/api";
 import { ApiError } from "@multica/core/api/client";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
@@ -81,6 +81,7 @@ export function DecisionActionApproval({
   approveDisabled = false,
   state,
   onEnroll,
+  onOutcome,
 }: {
   actionId: string;
   payloadSha256: string;
@@ -93,9 +94,17 @@ export function DecisionActionApproval({
   /** The action state the surrounding card reports; a change reads the outcome again (a decision made in another tab or by a worker). */
   state?: string;
   onEnroll?: () => void;
+  /** Called once when the action reaches a terminal state, so the caller can refresh what the action changed. */
+  onOutcome?: (state: string) => void;
 }) {
   const { t } = useT("common");
   const [view, setView] = useState<View>({ step: "loading" });
+  const onOutcomeRef = useRef(onOutcome);
+  onOutcomeRef.current = onOutcome;
+  const doneState = view.step === "done" ? view.outcome.state : null;
+  useEffect(() => {
+    if (doneState) onOutcomeRef.current?.(doneState);
+  }, [doneState]);
 
   // `ifPending` is the view for an action that is still undecided.
   const readBack = async (ifPending: View = { step: "lost" }) => {

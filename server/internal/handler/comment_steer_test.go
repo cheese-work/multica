@@ -310,3 +310,85 @@ func TestUpdateCommentKeepsTheLatestEditsSuppression(t *testing.T) {
 		t.Fatalf("the latest edit starts A, but an earlier edit's choice stayed: %v", saved.SuppressedAgentIds)
 	}
 }
+
+// CHE-5286: a comment for an agent that already runs a turn on the issue joins
+// that turn, even when the comment starts a new thread and the author did not
+// ask to steer. A second run would answer the same issue twice.
+func TestCreateCommentFoldsIntoTheSameAgentsRunningTurnWithoutASteerRequest(t *testing.T) {
+	f := newSupplementFixture(t, "claude", "running", true)
+	dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
+
+	var created CommentResponse
+	body := map[string]any{"content": agentMention("Supplement", f.agentID) + " any update?"}
+	testutil.Call(t, testHandler.CreateComment, withURLParam(
+		newRequest(http.MethodPost, "/api/issues/"+f.issueID+"/comments", body), "id", f.issueID)).
+		Want(http.StatusCreated).JSON(&created)
+
+	if len(created.Supplements) != 1 || created.Supplements[0].TaskID != f.taskID {
+		t.Fatalf("receipts = %+v, want one for the running turn %s; outcomes=%+v", created.Supplements, f.taskID, created.TriggerOutcomes)
+	}
+	if outcome, ok := outcomeFor(created.TriggerOutcomes, f.agentID); !ok || outcome.Status != DispatchSteered {
+		t.Fatalf("outcome = %+v (%v), want steered", outcome, ok)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, f.issueID, f.agentID); n != 1 {
+		t.Fatalf("agent has %d runs on the issue, want the running turn only", n)
+	}
+}
+
+// An explicit `steer: false` is the author's choice to start a run after the
+// current one, so the implicit default of CHE-5286 must not override it.
+func TestCreateCommentExplicitNoSteerKeepsTheNormalTrigger(t *testing.T) {
+	f := newSupplementFixture(t, "claude", "running", true)
+	dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
+
+	var created CommentResponse
+	body := map[string]any{"content": agentMention("Supplement", f.agentID) + " after you finish", "steer": false}
+	testutil.Call(t, testHandler.CreateComment, withURLParam(
+		newRequest(http.MethodPost, "/api/issues/"+f.issueID+"/comments", body), "id", f.issueID)).
+		Want(http.StatusCreated).JSON(&created)
+
+	if len(created.Supplements) != 0 {
+		t.Fatalf("receipts = %+v, want none", created.Supplements)
+	}
+	if outcome, ok := outcomeFor(created.TriggerOutcomes, f.agentID); ok && outcome.Status == DispatchSteered {
+		t.Fatalf("outcome = %+v, want the normal trigger", outcome)
+	}
+}
+
+// An implicit steer is a default the author never asked for and cannot see a
+// receipt for: when the turn ends without reading it, completion queues the
+// follow-up run (CHE-5286). An explicit steer keeps its failed receipt for the
+// author to retry.
+func TestCompletionReplaysAnUnreadImplicitSteerButNotAnExplicitOne(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		extra        map[string]any
+		wantFollowUp int
+	}{
+		{"implicit", nil, 1},
+		{"explicit", map[string]any{"steer": true}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSupplementFixture(t, "claude", "running", true)
+			dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
+			body := map[string]any{"content": agentMention("Supplement", f.agentID) + " one more thing"}
+			for k, v := range tc.extra {
+				body[k] = v
+			}
+			var created CommentResponse
+			testutil.Call(t, testHandler.CreateComment, withURLParam(
+				newRequest(http.MethodPost, "/api/issues/"+f.issueID+"/comments", body), "id", f.issueID)).
+				Want(http.StatusCreated).JSON(&created)
+			if len(created.Supplements) != 1 {
+				t.Fatalf("receipts = %+v, want one steer", created.Supplements)
+			}
+
+			// The turn ends before the daemon claims the steer.
+			completeTaskViaDaemon(t, f.taskID)
+			if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE agent_id = $1 AND trigger_comment_id = $2 AND id <> $3`,
+				f.agentID, created.ID, f.taskID); n != tc.wantFollowUp {
+				t.Fatalf("follow-up runs for the unread steer = %d, want %d", n, tc.wantFollowUp)
+			}
+		})
+	}
+}

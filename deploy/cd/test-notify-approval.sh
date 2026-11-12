@@ -26,7 +26,7 @@ case "$*" in
     cat >"$NOTIFY_TEST_DIR/curl-body"
     [ -z "$out" ] || printf '{"id":"card-1"}' >"$out"
     [ -z "$fmt" ] || cat "$NOTIFY_TEST_DIR/ci-status" 2>/dev/null || printf 201 ;;
-  *"/comments"*) cat "$NOTIFY_TEST_DIR/list.json" 2>/dev/null || echo '[{"id":"11111111-1111-4111-8111-111111111111"}]' ;;
+  *"/api/"*) exit 22 ;; # a scoped decisions:ci_request PAT gets 403 on every other route
   *"-d @-"*) cat >"$NOTIFY_TEST_DIR/curl-body"; printf '{"id":"new"}' ;;
 esac
 MOCK
@@ -43,7 +43,7 @@ export PATH="$work_dir/bin:$PATH" NOTIFY_TEST_DIR="$work_dir"
 export SOURCE_SHA=0123456789abcdef0123456789abcdef01234567
 export RUN_URL=https://github.com/cheese-work/multica/actions/runs/42
 export WEBHOOK_URL=https://ntfy.example/topic
-unset MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID MULTICA_NOTIFY_ISSUE MULTICA_NOTIFY_MEMBER_ID
+unset MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID MULTICA_NOTIFY_ISSUE MULTICA_NOTIFY_MEMBER_ID MULTICA_NOTIFY_SOURCE_COMMENT
 
 run() { bash deploy/cd/notify-approval.sh 2>&1; }
 
@@ -74,6 +74,7 @@ if output="$(WEBHOOK_URL= run)"; then echo "no route: want non-zero exit" >&2; e
 export MULTICA_TOKEN=mul_secret_token MULTICA_SERVER_URL=https://multica.example MULTICA_WORKSPACE_ID=ws-1
 export MULTICA_NOTIFY_ISSUE=issue-1 MULTICA_NOTIFY_MEMBER_ID=member-1
 SRC=11111111-1111-4111-8111-111111111111
+export MULTICA_NOTIFY_SOURCE_COMMENT=$SRC
 post() { rm -f "$work_dir/curl-args" "$work_dir/curl-body"; WEBHOOK_URL= run >/dev/null; }
 rm -f "$work_dir/curl-args" "$work_dir/curl-body"
 output="$(WEBHOOK_URL= run)" || { echo "multica: want exit 0" >&2; echo "$output" >&2; exit 1; }
@@ -105,9 +106,9 @@ for code in 400 403 500; do
   if WEBHOOK_URL= run >/dev/null; then echo "status $code: want non-zero exit" >&2; exit 1; fi
 done
 rm -f "$work_dir/ci-status"
-echo '[]' >"$work_dir/list.json"
-if WEBHOOK_URL= run >/dev/null; then echo "no root comment: want non-zero exit" >&2; exit 1; fi
-rm -f "$work_dir/list.json"
+# No anchor comment configured: the Multica route is not configured, so the job fails.
+if output="$(WEBHOOK_URL= MULTICA_NOTIFY_SOURCE_COMMENT= run)"; then echo "no anchor comment: want non-zero exit" >&2; exit 1; fi
+[[ "$output" == *"::error"* ]] || { echo "no anchor comment: no error: $output" >&2; exit 1; }
 touch "$work_dir/gh-fails"
 if WEBHOOK_URL= run >/dev/null; then echo "commit lookup failure: want non-zero exit" >&2; exit 1; fi
 rm -f "$work_dir/gh-fails"
@@ -120,11 +121,11 @@ grep -q 'actions/runs/777' "$work_dir/curl-body" || { echo "RUN_LINK missing fro
 # even though the webhook delivered nothing it could report.
 rm -f "$work_dir/curl-args"
 run >/dev/null
-[ "$(wc -l <"$work_dir/curl-args")" -eq 3 ] || { echo "both routes: want webhook POST + comments + card" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
+[ "$(wc -l <"$work_dir/curl-args")" -eq 2 ] || { echo "both routes: want webhook POST + card" >&2; cat "$work_dir/curl-args" >&2; exit 1; }
 touch "$work_dir/curl-fails"
 if run >/dev/null; then echo "both routes failing: want non-zero exit" >&2; exit 1; fi
 rm "$work_dir/curl-fails"
-unset MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID MULTICA_NOTIFY_ISSUE MULTICA_NOTIFY_MEMBER_ID
+unset MULTICA_TOKEN MULTICA_SERVER_URL MULTICA_WORKSPACE_ID MULTICA_NOTIFY_ISSUE MULTICA_NOTIFY_MEMBER_ID MULTICA_NOTIFY_SOURCE_COMMENT
 
 # A manual run has no workflow_run payload: SOURCE_SHA comes from INPUT_REF.
 # Review round 2: an annotated tag must resolve to its commit, not the tag

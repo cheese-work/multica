@@ -640,6 +640,9 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Steps != nil && refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
 	if ruleMsg != "" {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
@@ -860,21 +863,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	machine := isMachineCredentialActor(r)
 	// A machine credential writes the budget fields only with a workflow.budget
 	// decision (CHE-5228), alone: a budget write carries no step or name edit.
+	// Every other machine write is refused with passkey_action_required (CHE-3482).
 	budgetWrite := machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil)
 	if budgetWrite && strings.TrimSpace(req.DecisionID) == "" {
 		writeBudgetRequiresDecision(w)
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if !budgetWrite && refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	carriesMore := req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun
 	if budgetWrite && (req.Steps != nil || carriesMore) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound budget write carries the budget fields and the decision only")
-		return
-	}
-	if machine && !budgetWrite && (req.Steps == nil || carriesMore) {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
 		return
 	}
 	ctx := r.Context()
@@ -1467,7 +1467,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	machine := isMachineCredentialActor(r)

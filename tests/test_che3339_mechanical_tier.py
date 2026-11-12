@@ -297,10 +297,29 @@ class MulticaPathsMapToTiers(unittest.TestCase):
                  "scripts/install.test.sh", "scripts/daemon-artifact-version.test.mjs", "server/internal/daemon/daemon_test.go")
         self.assertEqual(protected({p: "x\n" for p in paths}), set())
 
-    def test_registry_is_valid_and_has_no_active_waiver_claim(self):
+    def test_a_decision_action_governance_change_is_tier_2_with_no_uncovered_path(self):
+        path = "server/internal/decisionaction/config.go"
+        mt, d, base, head = head_commit({path: "x\n"})
+        try:
+            receipt = mt.classify(d, base, head)
+            self.assertIsNone(receipt["error"])
+            self.assertEqual({m["path"] for m in receipt["capability_matches"]}, {path})
+            self.assertEqual(receipt["tier"], 2, receipt["tier_reasons"])
+            self.assertEqual(receipt["coverage"]["uncovered"], [])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_change_of_only_decision_action_tests_is_not_flagged(self):
+        self.assertEqual(protected({"server/internal/decisionaction/config_test.go": "x\n"}), set())
+
+    def test_registry_is_valid_and_covered_scopes_are_exact_paths(self):
         reg = json.loads((TIER_DIR / "registry.json").read_text())
         self.assertEqual(reg["schema"], 1)
-        self.assertEqual(reg["covered_scopes"], [])
+        scopes = reg["covered_scopes"]
+        self.assertEqual({s["analysis"] for s in scopes}, {"path-registry"} if scopes else set())
+        self.assertEqual(len({s["id"] for s in scopes}), len(scopes))
+        for s in scopes:
+            self.assertFalse(any(c in s["glob"] for c in "*?[{"), s)
 
 
 if __name__ == "__main__":
