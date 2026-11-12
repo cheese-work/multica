@@ -163,7 +163,7 @@ export function NextSelfMention({ scrollEl, flags, firstItemIndex = 0, onJump, e
       type="button"
       onClick={() => jump(below[0]!)}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground shadow-md outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring",
+        "inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-caption font-medium text-primary-foreground shadow-md outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring",
         positionClassName,
       )}
     >

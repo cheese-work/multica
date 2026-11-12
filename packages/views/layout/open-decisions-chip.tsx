@@ -23,7 +23,7 @@ export function OpenDecisionsChip() {
   return (
     <AppLink
       href={href}
-      className="mx-auto mt-2 flex min-h-9 w-fit items-center rounded-full border border-warning/40 bg-warning/10 px-3 text-caption font-medium text-warning focus-visible:outline-2 focus-visible:outline-ring"
+      className="mx-auto mt-2 flex min-h-9 w-fit items-center rounded-lg border border-warning/40 bg-warning/10 px-3 text-caption font-medium text-warning focus-visible:outline-2 focus-visible:outline-ring"
     >
       {t(($) => $.needs_you.chip, { count: data.length })}
     </AppLink>
