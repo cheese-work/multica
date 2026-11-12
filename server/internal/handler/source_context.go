@@ -728,7 +728,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 			workflowProjectID = source.ProjectID
 		}
 	}
-	overrideID, _, _, ok := h.resolveCreateWorkflow(w, r, util.UUIDToString(workspaceID), workspaceID, input.WorkflowID, workflowProjectID, DecisionBindingFields{})
+	overrideID, _, _, ok := h.resolveCreateWorkflow(w, r, util.UUIDToString(workspaceID), workspaceID, input.WorkflowID, workflowProjectID, DecisionBindingFields{}, title)
 	if !ok {
 		return errSourceContextResponseWritten
 	}
