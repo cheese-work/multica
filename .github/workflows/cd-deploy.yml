@@ -282,6 +282,11 @@ jobs:
           INPUT_CHECKS: ${{ inputs.checks_path }}
           INPUT_PROVENANCE: ${{ inputs.provenance_path }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # CHE-5352: stale-candidate line on CHE-4960; skipped when the secret is unset.
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
+          MULTICA_TOKEN: ${{ secrets.CD_NOTICE_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID || 'f2b734e0-b6de-4414-8a27-a2f69b0ef843' }}
+          MULTICA_NOTICE_ISSUE_ID: 01a1c0cd-8ffe-7dfa-8609-19bc0c467daa
         run: bash deploy/cd/resolve-candidate.sh
 
   # ---------------------------------------------------------------------------
