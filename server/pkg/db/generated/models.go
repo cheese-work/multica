@@ -245,6 +245,7 @@ type AgentTaskQueue struct {
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
+	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 }
 
 type AgentToLabel struct {
@@ -281,6 +282,10 @@ type Attachment struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
 	ExternalRead    bool               `json:"external_read"`
+	Revision        int32              `json:"revision"`
+	RevisionOf      pgtype.UUID        `json:"revision_of"`
+	RevisionRoot    pgtype.UUID        `json:"revision_root"`
+	Sha256          string             `json:"sha256"`
 }
 
 type Autopilot struct {
@@ -783,6 +788,23 @@ type ChatWakeup struct {
 	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
 	UntilStatus     string             `json:"until_status"`
 	OnTimeout       string             `json:"on_timeout"`
+}
+
+type CiBrokerAudit struct {
+	ID                int64              `json:"id"`
+	At                pgtype.Timestamptz `json:"at"`
+	RepositoryID      int64              `json:"repository_id"`
+	Repository        string             `json:"repository"`
+	RunID             string             `json:"run_id"`
+	RunAttempt        string             `json:"run_attempt"`
+	WorkflowRef       string             `json:"workflow_ref"`
+	Event             string             `json:"event"`
+	Ref               string             `json:"ref"`
+	RunnerEnvironment string             `json:"runner_environment"`
+	Environment       string             `json:"environment"`
+	Permissions       []byte             `json:"permissions"`
+	Result            string             `json:"result"`
+	Reason            string             `json:"reason"`
 }
 
 type CiFailureEvent struct {
@@ -3003,13 +3025,16 @@ type RecoveryClaim struct {
 }
 
 type ReviewAdmissionDeferral struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	AgentID   pgtype.UUID        `json:"agent_id"`
-	Trigger   string             `json:"trigger"`
-	HeadSha   string             `json:"head_sha"`
-	Reasons   []string           `json:"reasons"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	HeadSha          string             `json:"head_sha"`
+	Reasons          []string           `json:"reasons"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
 }
 
 type RunBudgetNotice struct {
@@ -3367,6 +3392,7 @@ type TaskSupplement struct {
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
+	Implicit        bool               `json:"implicit"`
 }
 
 type TaskSupplementCapability struct {

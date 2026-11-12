@@ -428,6 +428,23 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	case "done", "cancelled", "agent_accepted", "approved":
 		eligible = false
 	}
+	if eligible && snapshot.kind == "" && len(snapshot.requests) > 0 {
+		// An executed or declined action already did its effect; its platform
+		// comment starts no run (CHE-5287). A failed action did not, so the
+		// asker still hears of it. One plain request keeps the wake.
+		settled := true
+		for _, request := range snapshot.requests {
+			action, err := queries.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: workspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				settled = false
+			} else if err != nil {
+				return false, err
+			} else if action.State != "executed" && action.State != "rejected" {
+				settled = false
+			}
+		}
+		eligible = !settled
+	}
 	eligible = eligible && (!asking.ArchivedAt.Valid || (snapshot.kind == "" || snapshot.kind == "retraction") && snapshot.recipient.ID.Valid && !snapshot.recipient.ArchivedAt.Valid)
 	if eligible && snapshot.recipient.ID.Valid && isServerDecision(snapshot.request) {
 		// The platform picked this asker, not the person, so the answer runs the

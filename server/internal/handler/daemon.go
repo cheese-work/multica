@@ -1568,6 +1568,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1637,6 +1638,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
 	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
 	return ack, err
 }
 
@@ -5814,7 +5816,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		// The replayed agent steer is now an ordinary input of the follow-up;
 		// its failed receipt would otherwise invite a member to resend it.
-		if handled && c.AuthorType == "agent" && unreadSteers[uuidToString(c.ID)] {
+		if handled && unreadSteers[uuidToString(c.ID)] {
 			if n, err := h.Queries.DeleteUndeliveredTaskSupplementForRun(ctx, db.DeleteUndeliveredTaskSupplementForRunParams{
 				CommentID: c.ID, TaskID: task.ID,
 			}); err == nil && n > 0 {

@@ -3060,13 +3060,13 @@ func (h *Handler) validateAgentSkillIDsInWorkspace(w http.ResponseWriter, r *htt
 	return true
 }
 
-func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request, agent db.Agent) {
-	skills, err := h.Queries.ListAgentSkillSummaries(r.Context(), agent.ID)
+// agentSkillResponses is the agent's assigned skills as the skills endpoint and
+// the agent:status event report them.
+func (h *Handler) agentSkillResponses(ctx context.Context, agentID pgtype.UUID) ([]SkillSummaryResponse, error) {
+	skills, err := h.Queries.ListAgentSkillSummaries(ctx, agentID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list agent skills")
-		return
+		return nil, err
 	}
-
 	resp := make([]SkillSummaryResponse, len(skills))
 	for i, s := range skills {
 		resp[i] = skillSummaryToResponse(
@@ -3074,6 +3074,15 @@ func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request
 			s.CreatedBy, s.CreatedAt, s.UpdatedAt,
 		)
 		resp[i].Enabled = &s.Enabled
+	}
+	return resp, nil
+}
+
+func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request, agent db.Agent) {
+	resp, err := h.agentSkillResponses(r.Context(), agent.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agent skills")
+		return
 	}
 	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(agent.WorkspaceID))
 	h.publish(protocol.EventAgentStatus, uuidToString(agent.WorkspaceID), actorType, actorID, map[string]any{"agent_id": uuidToString(agent.ID), "skills": resp})

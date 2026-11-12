@@ -142,6 +142,8 @@ Files that members and agents upload in comments are collected in the **Delivera
 
 Uploading a file again with the same name and type adds a new version of the same deliverable. The section lists it once with its version (for example `v2`), and each file card in the comments shows which version it is. In the viewer, click the version number to switch to an older one, and **Show in comments** to jump to the comment that uploaded it.
 
+A file uploaded to an issue with `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` becomes the next revision of that attachment; so does a new upload with the same file name on the same issue. The issue shows one card for the document, labelled for example `v4 · 3 earlier`, and **Diff** opens the changes from the previous revision (removed lines red, added lines green, unchanged lines folded; **Show full** keeps them). Binary files show only that sizes and SHA-256 differ. `multica attachment history <attachment-id>` lists the revisions with time, actor and SHA-256, and `multica attachment diff <attachment-id> --from 3 --to 4` prints the diff.
+
 <DeliverablesDemo />
 
 ## Projects and sub-issues

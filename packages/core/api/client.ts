@@ -7,6 +7,7 @@ import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, Wak
 import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
+import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -106,6 +107,7 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
+  AttachmentRevisionDiff,
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
@@ -299,6 +301,7 @@ import {
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -1792,6 +1795,22 @@ export class ApiClient {
     );
   }
 
+  async getIssueRunBudget(issueId: string) {
+    return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
+  }
+
+  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
+  async requestRunBudgetAction(
+    issueId: string,
+    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
+  ): Promise<RunBudgetActionResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseRunBudgetActionResponse(raw);
+  }
+
   async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
     const raw = await this.fetch<unknown>("/api/issues/limit-usage");
     if (raw == null) return null;
@@ -1846,7 +1865,7 @@ export class ApiClient {
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
-        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
+        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : { steer: false }),
       }),
     });
   }
@@ -4650,6 +4669,22 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
+  // unchanged line instead of folding them.
+  async getAttachmentRevisionDiff(
+    id: string,
+    from: number,
+    to: number,
+    full = false,
+  ): Promise<AttachmentRevisionDiff> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (full) q.set("full", "1");
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
+    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
+      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 
