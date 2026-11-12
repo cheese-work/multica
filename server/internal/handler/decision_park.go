@@ -74,8 +74,19 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 			break
 		}
 	}
-	if target == "" || issue.Status == target {
+	// An issue already `blocked` with no need_decision step to move to still gets
+	// a park record, so the answer can resume it (CHE-5239). A record already
+	// there keeps the prior state of the first card.
+	staysBlocked := target == issuestatus.Blocked && issue.Status == target
+	if target == "" || issue.Status == target && !staysBlocked {
 		return issue, nil, nil
+	}
+	if staysBlocked {
+		if _, err := queries.GetIssueDecisionPark(ctx, db.GetIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err == nil {
+			return issue, nil, nil
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return issue, nil, err
+		}
 	}
 	park := decisionPark{Status: issue.Status, To: target}
 	propertyID, optionID, err := gatedHumanReadiness(ctx, queries, issue)
@@ -100,6 +111,9 @@ func parkIssueForDecision(ctx context.Context, queries *db.Queries, issue db.Iss
 		PriorReadiness: park.Readiness, SetValue: park.Set,
 	}); err != nil {
 		return issue, nil, err
+	}
+	if staysBlocked {
+		return issue, nil, nil
 	}
 	updated, err := queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID})
 	if err != nil {
@@ -155,17 +169,50 @@ func unparkIssueAfterDecision(ctx context.Context, queries *db.Queries, issue db
 			}
 		}
 		previous := issue
-		if issue, err = queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: park.Status, WorkspaceID: issue.WorkspaceID}); err != nil {
+		target := park.Status
+		if len(delivering) > 0 { // an answer starts a run; a cancellation does not
+			if target, err = unparkTarget(ctx, queries, issue, park); err != nil {
+				return previous, nil, err
+			}
+		}
+		if target != issue.Status {
+			if issue, err = queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{ID: issue.ID, Status: target, WorkspaceID: issue.WorkspaceID}); err != nil {
+				return previous, nil, err
+			}
+		}
+		// Runs stamped with a step either side of the park follow the system move,
+		// or their next status write is refused as stale.
+		if err := queries.RestampActiveTasksWorkflowStep(ctx, db.RestampActiveTasksWorkflowStepParams{IssueID: issue.ID, ToStep: pgtype.Text{String: target, Valid: true}, FromSteps: []string{park.To, park.Status}}); err != nil {
 			return previous, nil, err
 		}
-		if recorded, err = recordSystemStatusChange(ctx, queries, previous, issue, service.StatusCauseDecision, nil); err != nil {
-			return previous, nil, err
+		if previous.Status != issue.Status {
+			if recorded, err = recordSystemStatusChange(ctx, queries, previous, issue, service.StatusCauseDecision, nil); err != nil {
+				return previous, nil, err
+			}
 		}
 	}
 	if err := queries.DeleteIssueDecisionPark(ctx, db.DeleteIssueDecisionParkParams{IssueID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
 		return issue, nil, err
 	}
 	return issue, recorded, nil
+}
+
+// unparkTarget is the status a parked issue returns to. An issue parked from
+// `blocked` whose only blocker was the card has nothing left to wait for, so it
+// resumes in `in_progress`; an armed wait elsewhere keeps it `blocked` (CHE-5239).
+func unparkTarget(ctx context.Context, queries *db.Queries, issue db.Issue, park decisionPark) (string, error) {
+	if park.Status != issuestatus.Blocked {
+		return park.Status, nil
+	}
+	waiting, err := queries.IssueHasOpenWait(ctx, issue.ID)
+	if err != nil || waiting {
+		return park.Status, err
+	}
+	available, err := statusAvailableToIssue(ctx, queries, issue, issuestatus.InProgress)
+	if err != nil || !available {
+		return park.Status, err
+	}
+	return issuestatus.InProgress, nil
 }
 
 // readinessUnchanged reports whether Readiness still holds the value the park set.

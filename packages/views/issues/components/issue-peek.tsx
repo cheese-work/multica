@@ -12,6 +12,7 @@ import {
 import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 import { cn } from "@multica/ui/lib/utils";
 import { UI_EASE_OUT, UI_MOTION_DURATION } from "@multica/ui/lib/motion";
+import { useMarkMentionsReadOnOpen } from "@multica/core/inbox";
 import { useModalStore } from "@multica/core/modals";
 import { useWorkspacePaths } from "@multica/core/paths";
 import {
@@ -145,6 +146,8 @@ export function IssuePeekHost({ children }: { children: ReactNode }) {
 // IssueDetail. What does follow the order lives in IssuePeekFollow.
 const IssuePeekPanel = memo(function IssuePeekPanel({ issueId }: { issueId: string }) {
   const { t } = useT("issues");
+  // The peek reads the thread like the page does, so the list badge clears.
+  useMarkMentionsReadOnOpen(issueId);
   const actions = useIssuePeekActions()!;
   const panelRef = useRef<HTMLElement>(null);
   // False while the exit animation plays: the closing panel no longer takes

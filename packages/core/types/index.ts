@@ -1,5 +1,6 @@
 export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, CommentPreview, SourceContextAuthorState, IssueSourceContext,
   IssueDuplicateOf,
+  IssueUnread,
 } from "./issue";
 export type {
   IssueStatusCategory,

@@ -41,14 +41,16 @@ type Input struct {
 }
 
 type PartReport struct {
-	Part   Part
-	Bytes  int
-	Tokens int
-	Budget int
-	Notes  []string
+	Part   Part     `json:"part"`
+	Bytes  int      `json:"bytes"`
+	Tokens int      `json:"tokens"`
+	Budget int      `json:"budget"`
+	Notes  []string `json:"notes,omitempty"`
 }
 
-type Report struct{ Parts []PartReport }
+type Report struct {
+	Parts []PartReport `json:"parts"`
+}
 
 // EstimateTokens is the (bytes+3)/4 heuristic.
 func EstimateTokens(s string) int { return (len(s) + 3) / 4 }

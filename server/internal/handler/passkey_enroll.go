@@ -66,6 +66,7 @@ func writeEnrollError(writer http.ResponseWriter, err error) {
 
 type enrollStartResponse struct {
 	CeremonyID string          `json:"ceremony_id"`
+	Tag        string          `json:"tag"`
 	Options    json.RawMessage `json:"options"`
 	ExpiresAt  time.Time       `json:"expires_at"`
 	// Assertion is present when the decision gate blocks and the user already
@@ -92,7 +93,7 @@ func (handler *Handler) StartPasskeyEnrollment(writer http.ResponseWriter, reque
 		writeEnrollError(writer, err)
 		return
 	}
-	response := enrollStartResponse{CeremonyID: uuidToString(started.CeremonyID), Options: started.Options, ExpiresAt: started.ExpiresAt}
+	response := enrollStartResponse{CeremonyID: uuidToString(started.CeremonyID), Tag: started.Tag, Options: started.Options, ExpiresAt: started.ExpiresAt}
 	if started.Assertion != nil {
 		response.Assertion = &challengeResponse{
 			ChallengeID: uuidToString(started.Assertion.ChallengeID), Options: started.Assertion.Options, ExpiresAt: started.Assertion.ExpiresAt,

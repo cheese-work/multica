@@ -617,6 +617,7 @@ func main() {
 	registerActivityListeners(bus, queries)
 	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
+	registerIssueUnreadListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -759,6 +760,11 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset.
+	if taskSvc.ProviderFailureProbe != nil {
+		go service.NewProbeHeartbeatMonitor(taskSvc.ProviderFailureProbe, service.SlogProbeAlertSink{}, time.Now, 10*time.Minute).Run(sweepCtx)
+	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
