@@ -3455,6 +3455,9 @@ func readRuntimeCLIVersion(metadata []byte) string {
 }
 
 type CreateIssueRequest struct {
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's create that names a wider workflow (CHE-5228).
+	DecisionBindingFields
 	Title         string  `json:"title"`
 	Description   *string `json:"description"`
 	Status        string  `json:"status"`
@@ -3619,7 +3622,7 @@ func duplicateIssueMessage(issue IssueResponse) string {
 // (feature flag and workflow-manager permission required), otherwise the
 // project's. It writes the error response and returns false on any failure.
 // Shared by the ordinary create and the captured-comment create.
-func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID, binding DecisionBindingFields) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
 	var overrideID pgtype.UUID
 	if rawWorkflowID != nil && *rawWorkflowID != "" {
 		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
@@ -3645,7 +3648,44 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return overrideID, nil, project, false
 	}
+	// One widening rule for create, update and set (CHE-5228): a non-interactive
+	// credential cannot name a workflow whose budget is wider than the one the
+	// issue would follow without the override.
+	if overrideID.Valid && !isInteractiveRequest(r) {
+		before, berr := issueBinding(r.Context(), h.Queries, wsUUID, pgtype.UUID{}, workflowProjectID, pgtype.Int4{})
+		if berr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return overrideID, nil, project, false
+		}
+		if budgetWidens(before, workflowBinding(def, pgtype.Int4{})) && !h.approveCreateWidening(w, r, wsUUID, binding, workflowProjectID, overrideID) {
+			return overrideID, nil, project, false
+		}
+	}
 	return overrideID, def, project, true
+}
+
+// approveCreateWidening checks an agent's owner-approved issue.workflow
+// decision for a create that names a wider workflow and consumes it in its own
+// transaction. The decision is spent before the issue exists: a later failure
+// of the create leaves it used, so the agent asks again rather than the
+// approval staying open. It writes the refusal and reports false on any failure.
+func (h *Handler) approveCreateWidening(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, binding DecisionBindingFields, projectID, workflowID pgtype.UUID) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if err := h.verifyBoundRebinding(ctx, h.Queries.WithTx(tx), r, wsUUID, binding, pgtype.UUID{}, projectID, pgtype.UUID{}, workflowID); err != nil {
+		writeBoundRebindingError(w, err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -3766,7 +3806,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID, req.DecisionBindingFields)
 	if !ok {
 		return
 	}

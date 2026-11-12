@@ -648,12 +648,14 @@ carries none of the secrets `cd-deploy.yml` uses — verify this after any
 change to either workflow by diffing `cd-qualification.yml`; it should never
 change as part of D2 work.
 
-`cd-deploy.yml` runs automatically after a successful `cd-qualification` run
-for a `main` commit, and can still be dispatched by hand. The automatic path
-adds `candidate-preflight` and `prepare-release-candidate`, which the manual
+`cd-deploy.yml` runs automatically every 4 hours (00:17, 04:17, 08:17, 12:17,
+16:17, 20:17 ICT; CHE-5182), and can still be dispatched by hand. Its first
+job, `schedule-resolve`, picks the newest `main` commit whose `cd-qualification`
+run succeeded. When C00 already runs that commit or a descendant, the run ends
+there with "nothing new to deploy": no C00 runner, lock or approval is taken.
+The automatic path adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need (CHE-4582: the automatic path deploys only for an
-authorized merger, below). The run title names the qualifying candidate SHA rather
-than the workflow run's default-branch SHA.
+authorized merger, below). The resolved candidate SHA is in the `schedule-resolve` job summary.
 
 `candidate-preflight` runs on X99 without a deployment environment or
 C00 credentials. It uses the workflow revision's tools so an older candidate

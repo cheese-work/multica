@@ -300,6 +300,7 @@ type Autopilot struct {
 	AssigneeType       string             `json:"assignee_type"`
 	ProjectID          pgtype.UUID        `json:"project_id"`
 	PauseReason        pgtype.Text        `json:"pause_reason"`
+	ScriptConfig       []byte             `json:"script_config"`
 }
 
 type AutopilotCollaborator struct {
@@ -2098,6 +2099,15 @@ type IssueDependency struct {
 	IssueID          pgtype.UUID `json:"issue_id"`
 	DependsOnIssueID pgtype.UUID `json:"depends_on_issue_id"`
 	Type             string      `json:"type"`
+}
+
+type IssueDescriptionRevision struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	Revision    int64              `json:"revision"`
+	Description string             `json:"description"`
+	ActorType   pgtype.Text        `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type IssueIdleGuard struct {

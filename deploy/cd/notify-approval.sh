@@ -13,7 +13,7 @@ set -euo pipefail
 # left eligible candidates unseen for a day. The deploy gate itself does not
 # depend on this job.
 #
-# SOURCE_SHA comes from the workflow_run payload. A manual dispatch has none, so
+# SOURCE_SHA comes from the schedule-resolve job. A manual dispatch has none, so
 # INPUT_REF (a branch, tag or commit SHA) is fetched and peeled to its commit:
 # an annotated tag's FETCH_HEAD is the tag object, not the version to deploy.
 

@@ -118,7 +118,10 @@ WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.n
   -- prompt an evaluation of what still holds on resume.
   OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
-ORDER BY w.updated_at,w.id LIMIT @row_limit;
+-- CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
+-- updated_at, so a fresh one-shot sorted behind all older recurring rules and
+-- waited out whole passes of them.
+ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT @row_limit;
 -- name: ListPendingWakeupInputGroups :many
 -- Scheduler observability over unprocessed inputs, grouped per rule and by
 -- whether a run still reserves them. Dispatch deliberately keeps some inputs

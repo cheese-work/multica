@@ -2250,6 +2250,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
+					r.Get("/description/history", h.ListIssueDescriptionRevisions)
+					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
