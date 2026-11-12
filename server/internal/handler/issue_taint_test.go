@@ -377,7 +377,7 @@ func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
 			teardown <- err
 			return
 		}
-		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID), nil); err != nil {
 			teardown <- err
 			return
 		}
@@ -437,7 +437,7 @@ func TestWorkspaceTeardownTaskPageAndAuthorizeShareOneLockOrder(t *testing.T) {
 			teardown <- err
 			return
 		}
-		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID)); err != nil {
+		if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(victim.victimID), nil); err != nil {
 			teardown <- err
 			return
 		}

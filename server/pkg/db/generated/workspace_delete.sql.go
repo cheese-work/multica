@@ -958,6 +958,49 @@ func (q *Queries) DetachTaskBatchReferences(ctx context.Context, taskIds []pgtyp
 	return err
 }
 
+const listForeignIssueIDsOfWorkspaceTasks = `-- name: ListForeignIssueIDsOfWorkspaceTasks :many
+SELECT x.issue_id::uuid AS id
+FROM (
+    SELECT p.issue_id FROM agent_task_queue p
+    WHERE p.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id = $1)
+       OR p.issue_id IN (SELECT i.id FROM issue i WHERE i.workspace_id = $1)
+       OR p.runtime_id IN (SELECT r.id FROM agent_runtime r WHERE r.workspace_id = $1)
+    UNION
+    SELECT c.issue_id FROM agent_task_queue c
+    JOIN agent_task_queue p ON p.id = c.parent_task_id
+    WHERE p.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id = $1)
+       OR p.issue_id IN (SELECT i.id FROM issue i WHERE i.workspace_id = $1)
+       OR p.runtime_id IN (SELECT r.id FROM agent_runtime r WHERE r.workspace_id = $1)
+) x
+WHERE x.issue_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM issue i WHERE i.id = x.issue_id AND i.workspace_id = $1)
+ORDER BY x.issue_id
+`
+
+// Issues of other workspaces that the deletion of this workspace's tasks touches:
+// the issue of each task reachable through its agent, issue or runtime, and the
+// issue of each child that names such a task as parent. A restart locks them all
+// before it holds any run row, so one restart covers every later page.
+func (q *Queries) ListForeignIssueIDsOfWorkspaceTasks(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listForeignIssueIDsOfWorkspaceTasks, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIssueIDsOfTaskBatch = `-- name: ListIssueIDsOfTaskBatch :many
 SELECT t.issue_id AS id
 FROM (
@@ -977,6 +1020,42 @@ ORDER BY t.issue_id
 // child's issue FOR NO KEY UPDATE. Ascending, so callers can lock in this order.
 func (q *Queries) ListIssueIDsOfTaskBatch(ctx context.Context, taskIds []pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listIssueIDsOfTaskBatch, taskIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueIDsOutsideWorkspace = `-- name: ListIssueIDsOutsideWorkspace :many
+SELECT x.id::uuid AS id
+FROM unnest($1::uuid[]) AS x(id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = x.id AND i.workspace_id = $2
+)
+`
+
+type ListIssueIDsOutsideWorkspaceParams struct {
+	IssueIds    []pgtype.UUID `json:"issue_ids"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+// The ids in the list that are not an issue of the workspace: another
+// workspace's issue, or an id with no issue row.
+func (q *Queries) ListIssueIDsOutsideWorkspace(ctx context.Context, arg ListIssueIDsOutsideWorkspaceParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssueIDsOutsideWorkspace, arg.IssueIds, arg.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -1524,6 +1603,22 @@ SELECT pg_advisory_xact_lock(4246)
 // minutes, and an unbounded wait here hangs the delete request (MUL-5983).
 func (q *Queries) LockTaskUsageRollupForWorkspaceDelete(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, lockTaskUsageRollupForWorkspaceDelete)
+	return err
+}
+
+const lockWorkspaceIssuesForDelete = `-- name: LockWorkspaceIssuesForDelete :exec
+SELECT i.id FROM issue i
+WHERE i.workspace_id = $1
+ORDER BY i.id
+FOR UPDATE
+`
+
+// Locks every issue of the workspace, ascending, before the delete holds any run
+// row. The workspace row is already locked FOR UPDATE, which blocks an insert of
+// a new issue of this workspace, so the set cannot grow. A task page then needs no
+// issue lock of its own for these issues.
+func (q *Queries) LockWorkspaceIssuesForDelete(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceIssuesForDelete, workspaceID)
 	return err
 }
 

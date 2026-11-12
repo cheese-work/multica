@@ -1161,7 +1161,8 @@ const workspaceDeleteMaxRestarts = 3
 // Late arrivals are handled by the fence, not here: migration 284 makes every task
 // write take FOR KEY SHARE on its owners' workspace rows, which conflicts with the
 // FOR UPDATE that LockWorkspaceForDelete holds for this whole transaction.
-func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, lockedIssueIDs []pgtype.UUID) error {
+	pages := newTaskPageLocks(workspaceID, lockedIssueIDs)
 	ownerKinds := []struct {
 		label          string
 		ownerFirstPage func(context.Context, int32) ([]pgtype.UUID, error)
@@ -1255,7 +1256,7 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
 					func(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
-						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids)
+						return lockTaskPageIssuesFirst(ctx, qtx, pages, ownerID, ids)
 					},
 					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
 					return err
@@ -1286,47 +1287,103 @@ func (e *issuesWidenedError) Error() string {
 	return fmt.Sprintf("task page names %d issue(s) it did not lock first", len(e.IDs))
 }
 
+// taskPageLocks is what one delete attempt knows about the issues it holds across
+// task pages. Every issue of the workspace is locked before the first page, and an
+// insert of a new one waits on the workspace row lock, so only an issue of another
+// workspace can be new to a page. foreign holds those the attempt has locked.
+type taskPageLocks struct {
+	workspaceID pgtype.UUID
+	foreign     map[pgtype.UUID]struct{}
+	// holdsRuns is set once a page has locked run rows; they stay locked until
+	// the transaction ends.
+	holdsRuns bool
+}
+
+func newTaskPageLocks(workspaceID pgtype.UUID, lockedIssueIDs []pgtype.UUID) *taskPageLocks {
+	l := &taskPageLocks{workspaceID: workspaceID, foreign: make(map[pgtype.UUID]struct{}, len(lockedIssueIDs))}
+	for _, id := range lockedIssueIDs {
+		l.foreign[id] = struct{}{}
+	}
+	return l
+}
+
+// unlocked returns the ids of other workspaces' issues the attempt does not hold.
+func (l *taskPageLocks) unlocked(ctx context.Context, qtx *db.Queries, ids []pgtype.UUID) ([]pgtype.UUID, error) {
+	outside, err := qtx.ListIssueIDsOutsideWorkspace(ctx, db.ListIssueIDsOutsideWorkspaceParams{
+		IssueIds: ids, WorkspaceID: l.workspaceID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list issues outside the workspace: %w", err)
+	}
+	var out []pgtype.UUID
+	for _, id := range outside {
+		if _, ok := l.foreign[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// widen builds the restart request: the issues the page found plus every other
+// issue of another workspace the workspace's tasks reach, so one restart covers
+// the later pages instead of discovering one issue per attempt.
+func (l *taskPageLocks) widen(ctx context.Context, qtx *db.Queries, found []pgtype.UUID) error {
+	all, err := qtx.ListForeignIssueIDsOfWorkspaceTasks(ctx, l.workspaceID)
+	if err != nil {
+		return fmt.Errorf("list foreign issues of workspace tasks: %w", err)
+	}
+	return &issuesWidenedError{IDs: service.MergeSortedUUIDs(found, all)}
+}
+
 // lockTaskPageIssuesFirst locks one task page in the order every other writer
 // uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
 // issue and then waits on the run row, so a page that held the run rows and then
 // asked for the issue of a child would be aborted with 40P01 against it.
 //
 //  1. The page ids come from a plain SELECT; no row is locked yet.
-//  2. The issues of the page's tasks and of their children are locked, ascending.
-//  3. The task rows are locked; a row that moved to another owner or is gone drops
+//  2. The issues of the page's tasks and of their children are listed. If an
+//     earlier page of this attempt holds run rows and the list names an issue of
+//     another workspace the attempt does not hold, the page locks nothing and
+//     returns an issuesWidenedError: the teardown rolls back, which releases
+//     every lock, and starts again with those issues locked first.
+//  3. Those issues are locked, ascending.
+//  4. The task rows are locked; a row that moved to another owner or is gone drops
 //     out of the returned ids.
-//  4. The children of the locked rows are read again. A child created after step 2
-//     can name an issue that is not locked. The page never locks it while it holds
-//     task rows: it returns an issuesWidenedError, and the teardown rolls back,
-//     which releases every lock, and starts again with those issues locked first.
-func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+//  5. The children of the locked rows are read again. A child created after step 2
+//     can name an issue that is not locked; the page returns an issuesWidenedError
+//     for it the same way.
+func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, pages *taskPageLocks, ownerID pgtype.UUID, pageIDs []pgtype.UUID) ([]pgtype.UUID, error) {
 	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("list issues of task page: %w", err)
 	}
-	held := make(map[pgtype.UUID]struct{}, len(need))
-	for _, id := range need {
-		held[id] = struct{}{}
+	unheld, err := pages.unlocked(ctx, qtx, need)
+	if err != nil {
+		return nil, err
+	}
+	if pages.holdsRuns && len(unheld) > 0 {
+		return nil, pages.widen(ctx, qtx, unheld)
 	}
 	if err := qtx.LockIssuesByID(ctx, need); err != nil {
 		return nil, fmt.Errorf("lock issues of task page: %w", err)
+	}
+	for _, id := range unheld {
+		pages.foreign[id] = struct{}{}
 	}
 	locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
 	if err != nil {
 		return nil, fmt.Errorf("lock task page: %w", err)
 	}
+	pages.holdsRuns = pages.holdsRuns || len(locked) > 0
 	current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
 	if err != nil {
 		return nil, fmt.Errorf("list issues of locked task page: %w", err)
 	}
-	var unheld []pgtype.UUID
-	for _, id := range current {
-		if _, ok := held[id]; !ok {
-			unheld = append(unheld, id)
-		}
+	if unheld, err = pages.unlocked(ctx, qtx, current); err != nil {
+		return nil, err
 	}
 	if len(unheld) > 0 {
-		return nil, &issuesWidenedError{IDs: unheld}
+		return nil, pages.widen(ctx, qtx, unheld)
 	}
 	return locked, nil
 }
@@ -1553,6 +1610,10 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 		failWorkspaceDelete(w, r, workspaceID, "lock issues found by an earlier attempt", err)
 		return nil, nil, false
 	}
+	if err := qtx.LockWorkspaceIssuesForDelete(r.Context(), requester.WorkspaceID); err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "lock workspace issues", err)
+		return nil, nil, false
+	}
 	// Take a best-effort snapshot for post-commit daemon invalidation. Runtime
 	// registration does not participate in the workspace delete lock protocol,
 	// so PR1 retains the heartbeat lookup as the correctness fallback for a
@@ -1652,7 +1713,7 @@ func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request,
 			// task_usage. Replaces both the task-keyed arms of the old leaf
 			// data statement and the separate whole-workspace task delete.
 			name: "delete tasks",
-			run:  func() error { return deleteWorkspaceTasks(ctx, qtx, requester.WorkspaceID) },
+			run:  func() error { return deleteWorkspaceTasks(ctx, qtx, requester.WorkspaceID, extraIssueIDs) },
 		},
 		{
 			name: "delete Qoder Cloud Agents connection",

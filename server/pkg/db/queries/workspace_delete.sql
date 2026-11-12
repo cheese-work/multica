@@ -1054,3 +1054,45 @@ deleted_share_links AS (
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1;
+
+-- name: LockWorkspaceIssuesForDelete :exec
+-- Locks every issue of the workspace, ascending, before the delete holds any run
+-- row. The workspace row is already locked FOR UPDATE, which blocks an insert of
+-- a new issue of this workspace, so the set cannot grow. A task page then needs no
+-- issue lock of its own for these issues.
+SELECT i.id FROM issue i
+WHERE i.workspace_id = @workspace_id
+ORDER BY i.id
+FOR UPDATE;
+
+-- name: ListIssueIDsOutsideWorkspace :many
+-- The ids in the list that are not an issue of the workspace: another
+-- workspace's issue, or an id with no issue row.
+SELECT x.id::uuid AS id
+FROM unnest(@issue_ids::uuid[]) AS x(id)
+WHERE NOT EXISTS (
+    SELECT 1 FROM issue i
+    WHERE i.id = x.id AND i.workspace_id = @workspace_id
+);
+
+-- name: ListForeignIssueIDsOfWorkspaceTasks :many
+-- Issues of other workspaces that the deletion of this workspace's tasks touches:
+-- the issue of each task reachable through its agent, issue or runtime, and the
+-- issue of each child that names such a task as parent. A restart locks them all
+-- before it holds any run row, so one restart covers every later page.
+SELECT x.issue_id::uuid AS id
+FROM (
+    SELECT p.issue_id FROM agent_task_queue p
+    WHERE p.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id = @workspace_id)
+       OR p.issue_id IN (SELECT i.id FROM issue i WHERE i.workspace_id = @workspace_id)
+       OR p.runtime_id IN (SELECT r.id FROM agent_runtime r WHERE r.workspace_id = @workspace_id)
+    UNION
+    SELECT c.issue_id FROM agent_task_queue c
+    JOIN agent_task_queue p ON p.id = c.parent_task_id
+    WHERE p.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id = @workspace_id)
+       OR p.issue_id IN (SELECT i.id FROM issue i WHERE i.workspace_id = @workspace_id)
+       OR p.runtime_id IN (SELECT r.id FROM agent_runtime r WHERE r.workspace_id = @workspace_id)
+) x
+WHERE x.issue_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM issue i WHERE i.id = x.issue_id AND i.workspace_id = @workspace_id)
+ORDER BY x.issue_id;

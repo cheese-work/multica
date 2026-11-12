@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -202,7 +203,7 @@ func TestDeleteWorkspaceTasks_IsSelfSufficientWithoutCascades(t *testing.T) {
 	if err := lockWorkspaceTaskOwners(ctx, qtx, parseUUID(f.victimID)); err != nil {
 		t.Fatalf("lock task owners: %v", err)
 	}
-	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID)); err != nil {
+	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID), nil); err != nil {
 		t.Fatalf("deleteWorkspaceTasks: %v", err)
 	}
 
@@ -371,7 +372,16 @@ SELECT $1, $2, $3, 'completed', now() FROM generate_series(1, $4::int)
 			uuidToString(secondPage[0]), uuidToString(firstPage[len(firstPage)-1]))
 	}
 
-	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID)); err != nil {
+	// The delete attempt locks the other workspaces' issues these tasks reach
+	// before it holds a run row; do the same here.
+	foreign, err := qtx.ListForeignIssueIDsOfWorkspaceTasks(ctx, parseUUID(f.victimID))
+	if err != nil {
+		t.Fatalf("list foreign issues: %v", err)
+	}
+	if err := qtx.LockIssuesByID(ctx, foreign); err != nil {
+		t.Fatalf("lock foreign issues: %v", err)
+	}
+	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID), foreign); err != nil {
 		t.Fatalf("deleteWorkspaceTasks: %v", err)
 	}
 
@@ -449,7 +459,7 @@ SELECT id, $5, $2, 'completed', now() FROM new_agents
 		t.Fatal("second owner page is empty; owner enumeration stopped after one page")
 	}
 
-	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID)); err != nil {
+	if err := deleteWorkspaceTasks(ctx, qtx, parseUUID(f.victimID), nil); err != nil {
 		t.Fatalf("deleteWorkspaceTasks: %v", err)
 	}
 
@@ -736,13 +746,13 @@ func TestLockTaskPageIssuesFirstReturnsALateIssueInsteadOfLockingIt(t *testing.T
 		DBTX: tx, t: t, parent: parent, agentID: f.victimAgent,
 		runtimeID: f.victimRuntime, workspaceID: f.neighbourID, lateChild: true,
 	}
-	locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)})
+	locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), newTaskPageLocks(parseUUID(f.victimID), nil), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)})
 	var widened *issuesWidenedError
 	if !errors.As(err, &widened) {
 		t.Fatalf("late child: locked=%d err=%v, want an issuesWidenedError", len(locked), err)
 	}
-	if len(widened.IDs) != 1 || uuidToString(widened.IDs[0]) != w.lateIssueID {
-		t.Fatalf("widened ids = %v, want only the late child's issue %s", widened.IDs, w.lateIssueID)
+	if !slices.ContainsFunc(widened.IDs, func(id pgtype.UUID) bool { return uuidToString(id) == w.lateIssueID }) {
+		t.Fatalf("widened ids = %v, want the late child's issue %s", widened.IDs, w.lateIssueID)
 	}
 	if !issueLockableNow(t, w.lateIssueID) {
 		t.Fatalf("the page locked the late issue while it held task rows; it must leave the issue to the restart")
@@ -868,5 +878,55 @@ func TestDeleteWorkspaceFailsClosedWhenPagesKeepWidening(t *testing.T) {
 	if err := testPool.QueryRow(context.Background(),
 		`SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, f.victimID).Scan(&exists); err != nil || !exists {
 		t.Fatalf("victim workspace exists = %v (err %v), want true: a refused delete changes nothing", exists, err)
+	}
+}
+
+// insertForeignChildRun creates an issue in the neighbour workspace and a run on it
+// that names parent as its parent task. Deleting the parent nulls the child's
+// parent_task_id, which locks the child's issue.
+func insertForeignChildRun(t *testing.T, f workspaceDeletePathFixture, parent string) string {
+	t.Helper()
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_type, creator_id, number)
+VALUES ($1, 'foreign child', 'member', $2,
+        (SELECT COALESCE(max(number), 0) + 1 FROM issue WHERE workspace_id = $1))
+RETURNING id`, f.neighbourID, testUserID).Scan(&issueID); err != nil {
+		t.Fatalf("create foreign child issue: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_at, parent_task_id)
+VALUES ($1, $2, $3, 'completed', now(), $4)`, f.neighbourAgent, issueID, f.neighbourRuntime, parent); err != nil {
+		t.Fatalf("create foreign child run: %v", err)
+	}
+	return issueID
+}
+
+// A later task page can name an issue no earlier page locked, while earlier pages
+// already hold run rows of this transaction. The page must not lock that issue
+// then: AuthorizeElevatedOp holds a run's issue and waits on the run row. The
+// attempt rolls back and runs again with that issue locked first.
+func TestDeleteWorkspaceRestartsWhenALaterPageNamesAnUnlockedIssue(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	pageSize := workspaceDeleteTaskPageSize
+	workspaceDeleteTaskPageSize = 1
+	t.Cleanup(func() { workspaceDeleteTaskPageSize = pageSize })
+
+	f := newWorkspaceDeletePathFixture(t, "later-page")
+	first := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+	second := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+	insertForeignChildRun(t, f, first)
+	insertForeignChildRun(t, f, second)
+	s := &widenStarter{t: t, inner: testHandler.TxStarter, f: f, parent: first}
+
+	rec := deleteVictimWorkspace(t, f, s)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	if s.attempts != 2 {
+		t.Fatalf("delete attempts = %d, want 2 (page two named a foreign issue while page one held run rows, then the restart)", s.attempts)
 	}
 }
