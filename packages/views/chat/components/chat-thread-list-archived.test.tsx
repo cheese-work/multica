@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { VirtuosoMockContext } from "react-virtuoso";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
@@ -69,6 +70,7 @@ const sessions = [
 
 function openArchivedView() {
   render(
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
     <I18nProvider locale="en" resources={{ en: { chat: enChat, issues: enIssues } }}>
       <ChatThreadList
         sessions={sessions}
@@ -77,7 +79,8 @@ function openArchivedView() {
         onSelectSession={vi.fn()}
         onArchive={vi.fn()}
       />
-    </I18nProvider>,
+    </I18nProvider>
+    </VirtuosoMockContext.Provider>,
   );
   fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
 }
@@ -122,6 +125,7 @@ describe("ChatThreadList archived view", () => {
   it("keeps the pin icon and Pin item on an active row", () => {
     const pinned = [makeSession({ id: "live", pinned: true })];
     render(
+      <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
       <I18nProvider locale="en" resources={{ en: { chat: enChat, issues: enIssues } }}>
         <ChatThreadList
           sessions={pinned}
@@ -130,7 +134,8 @@ describe("ChatThreadList archived view", () => {
           onSelectSession={vi.fn()}
           onArchive={vi.fn()}
         />
-      </I18nProvider>,
+      </I18nProvider>
+      </VirtuosoMockContext.Provider>,
     );
     const row = screen.getByText("Chat live").closest("[tabindex]") as HTMLElement;
     expect(within(row).getByLabelText(enChat.list.pinned)).toBeInTheDocument();

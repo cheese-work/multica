@@ -98,6 +98,8 @@ import type {
   Skill,
   SkillImportResult,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   Squad,
   TimelineEntry,
   User,
@@ -3264,6 +3266,9 @@ export const UserSchema = z.lazy(() => z.object({
   language: z.string().nullable().default(null),
   profile_description: z.string().default(""),
   timezone: z.string().nullable().default(null),
+  // No default: absence is the "server cannot track" signal. A malformed
+  // value degrades to that state instead of discarding the whole user.
+  whats_new_seen_version: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -3312,6 +3317,8 @@ export const IssueUnreadPageSchema = z.lazy(() =>
             issue_id: z.string(),
             outcome: z.string(),
             agent_id: z.string().nullish().transform((v) => v ?? null),
+            task_id: z.string().nullish().transform((v) => v ?? null),
+            comment_id: z.string().nullish().transform((v) => v ?? null),
             created_at: z.string(),
           })
           .loose(),
@@ -3325,6 +3332,28 @@ export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: strin
   items: [],
   next_cursor: null,
 };
+
+// Reading one issue's notifications (`/api/inbox/issues/{id}/read` POST).
+// `count` is how many rows the write read; the client refreshes its inbox
+// caches only when it is above zero. A body without a usable count cannot say
+// that nothing changed, so the client treats it as unknown and refreshes.
+export const IssueInboxReadSchema = z.lazy(() => z
+  .object({
+    count: z.number().int().nonnegative(),
+  })
+  .loose());
+
+// The viewer's subscribed issue ids (`/api/issues/subscribed` GET), behind the
+// "subscribed" relation filter on client-filtered surfaces. A non-string entry
+// is dropped; a body without the list has no safe fallback — an empty set
+// would hide every row under the filter — so the client fails the request.
+export const SubscribedIssueIdsSchema = z.lazy(() => z
+  .object({
+    issue_ids: z
+      .array(z.unknown())
+      .transform((ids) => ids.filter((id): id is string => typeof id === "string" && id.length > 0)),
+  })
+  .loose());
 
 // Inbox items (`/api/inbox` and `/api/inbox/archived` GET).
 // Lenient per the usual rules: `severity` / `type` / `recipient_type` stay
@@ -4229,6 +4258,62 @@ export const EMPTY_SKILL: Skill = {
 };
 
 export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
+
+const SKILL_VERSION_SOURCES = [
+  "baseline",
+  "create",
+  "update",
+  "import",
+  "refresh",
+  "restore",
+] as const;
+
+const skillVersionSummaryShape = () => ({
+  id: z.string(),
+  skill_id: z.string(),
+  version: z.number(),
+  name: z.string().optional().default(""),
+  source: z.enum(SKILL_VERSION_SOURCES).catch("update"),
+  restored_from_version: z.number().nullable().optional().default(null),
+  created_by: z.string().nullable().optional().default(null),
+  created_at: z.string().optional().default(""),
+});
+
+export const SkillVersionSummarySchema = z.lazy(() =>
+  z.object(skillVersionSummaryShape()).loose(),
+);
+
+export const SkillVersionSummaryListSchema = z.lazy(() =>
+  z.array(SkillVersionSummarySchema).default([]),
+);
+
+export const EMPTY_SKILL_VERSION_SUMMARY_LIST: SkillVersionSummary[] = [];
+
+export const SkillVersionSchema = z.lazy(() =>
+  z.object({
+    ...skillVersionSummaryShape(),
+    description: z.string().optional().default(""),
+    content: z.string().optional().default(""),
+    files: z
+      .array(z.object({ path: z.string(), content: z.string().optional().default("") }).loose())
+      .optional()
+      .default([]),
+  }).loose(),
+);
+
+export const EMPTY_SKILL_VERSION: SkillVersion = {
+  id: "",
+  skill_id: "",
+  version: 0,
+  name: "",
+  source: "update",
+  restored_from_version: null,
+  created_by: null,
+  created_at: "",
+  description: "",
+  content: "",
+  files: [],
+};
 
 export const EMPTY_SKILL_SUMMARY_LIST: SkillSummary[] = [];
 

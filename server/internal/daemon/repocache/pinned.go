@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -147,14 +146,4 @@ func requirePinnedLinkedRepoContext(ctx context.Context, path, barePath string) 
 		return fmt.Errorf("checkout at %s belongs to another repository than the cache at %s; refusing to reuse it", path, barePath)
 	}
 	return nil
-}
-
-func samePath(a, b string) bool {
-	resolve := func(p string) string {
-		if r, err := filepath.EvalSymlinks(p); err == nil {
-			p = r
-		}
-		return filepath.Clean(p)
-	}
-	return resolve(a) == resolve(b)
 }

@@ -937,13 +937,14 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 	}
 
 	resp, err := h.createSkillWithFiles(r.Context(), r, skillCreateInput{
-		WorkspaceID: rt.WorkspaceID,
-		CreatorID:   creatorUUID,
-		Name:        name,
-		Description: description,
-		Content:     body.Skill.Content,
-		Config:      config,
-		Files:       files,
+		VersionSource: skillVersionSourceImport,
+		WorkspaceID:   rt.WorkspaceID,
+		CreatorID:     creatorUUID,
+		Name:          name,
+		Description:   description,
+		Content:       body.Skill.Content,
+		Config:        config,
+		Files:         files,
 	})
 	if err != nil {
 		if failedAudit(w, r, err, "skill.create") {

@@ -46,6 +46,7 @@ import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
 import { formatChatTime } from "./format-chat-time";
 import { NeedsYouList } from "./needs-you-list";
+import { SessionHistoryList } from "./session-history-list";
 
 const apiLogger = createLogger("chat.api");
 
@@ -515,12 +516,12 @@ function ChatThreadListBody({
   // here (via each row's hover actions).
   if (view === "archived") {
     return (
-      <>
+      <div className="flex h-full min-h-0 flex-col">
         <NeedsYouList sessions={rows} agents={agents} />
         <button
           type="button"
           onClick={() => setView("history")}
-          className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+          className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
         >
           <ChevronLeft className="size-4 shrink-0" />
           <span className="truncate">{t(($) => $.list.archived_title)}</span>
@@ -528,10 +529,10 @@ function ChatThreadListBody({
             {archivedSessions.length}
           </span>
         </button>
-        <div className="contents" data-testid="chat-thread-group-archived">
-          {archivedSessions.map(renderRow)}
+        <div className="min-h-0 flex-1" data-testid="chat-thread-group-archived">
+          <SessionHistoryList sessions={archivedSessions} renderRow={renderRow} />
         </div>
-      </>
+      </div>
     );
   }
 
@@ -564,13 +565,16 @@ function ChatThreadListBody({
   }
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       <NeedsYouList sessions={rows} agents={agents} />
-      <div className="contents" data-testid="chat-thread-group-recent">
-        {historySessions.map(renderRow)}
+      <div className="min-h-0 flex-1" data-testid="chat-thread-group-recent">
+        <SessionHistoryList
+          sessions={historySessions}
+          renderRow={renderRow}
+          footer={archivedEntry}
+        />
       </div>
-      {archivedEntry}
-    </>
+    </div>
   );
 }
 
