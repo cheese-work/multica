@@ -117,6 +117,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 						return err
 					}
 				}
+				// A resume that already ended on a run: the join reaches that exact run.
+				if existing.TaskID.Valid && len(taint) > 0 {
+					if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: existing.TaskID, Taint: taint}); err != nil {
+						return err
+					}
+				}
 				id, generation, ok = existing.ID, existing.HookGeneration, true
 				return nil
 			}
@@ -130,6 +136,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			ID:       dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, WindowID: window,
 			Status:  pgtype.Text{String: e.Status, Valid: true},
 			AgentID: e.Target.AgentID, Trigger: e.Target.Trigger, State: "open",
+			ActorUserID: e.Target.ActorUserID, TriggerCommentID: e.Target.TriggerCommentID,
 		}
 		newest, err := q.NewestIssueStatusChange(ctx, issue.ID)
 		switch {
@@ -142,9 +149,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		// original refusal's, which the block's history row names. A block that
 		// names none (made before refusals were recorded) has no status to give
 		// back: the row ends unknown_origin and only the notice goes out.
+		source := db.SetRunBudgetRefusalSourceParams{SourceWakeupID: e.Target.SourceWakeupID, SourceTaskID: e.Target.SourceTaskID}
 		if issue.Status == issuestatus.Blocked {
 			if prev, ok := h.blockingRefusal(ctx, q, newest); ok {
 				in.Status, in.AgentID, in.Trigger, in.Blocked = prev.Status, prev.AgentID, prev.Trigger, true
+				source = db.SetRunBudgetRefusalSourceParams{SourceWakeupID: prev.SourceWakeupID, SourceTaskID: prev.SourceTaskID}
+				in.ActorUserID, in.TriggerCommentID = prev.ActorUserID, prev.TriggerCommentID
 			} else {
 				in.Status, in.Blocked = pgtype.Text{}, true
 				in.State, in.StateReason = "superseded", pgtype.Text{String: stateReasonUnknownOrigin, Valid: true}
@@ -154,6 +164,7 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 			row, err := q.ReviveRunBudgetRefusal(ctx, db.ReviveRunBudgetRefusalParams{
 				ID: existing.ID, Status: in.Status, OccurrenceActivityID: in.OccurrenceActivityID, Blocked: in.Blocked,
 				AgentID: in.AgentID, Trigger: in.Trigger, StateReason: in.StateReason, State: in.State, TaintIds: in.TaintIds,
+				ActorUserID: in.ActorUserID, TriggerCommentID: in.TriggerCommentID,
 			})
 			if err != nil {
 				return fmt.Errorf("revive refusal: %w", err)
@@ -165,6 +176,10 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 				return fmt.Errorf("insert refusal: %w", err)
 			}
 			id, generation, ok = row.ID, row.HookGeneration, true
+		}
+		source.ID = id
+		if err := q.SetRunBudgetRefusalSource(ctx, source); err != nil {
+			return err
 		}
 		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
 	})
@@ -213,33 +228,13 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 	if row.State != "open" && row.StateReason.String != stateReasonUnknownOrigin {
 		return row.State, nil
 	}
-	issue, err := q.GetIssue(ctx, row.IssueID)
-	if err != nil {
-		return "", err
+	_, reason, err := refusalMoved(ctx, q, row)
+	if reason != "" || err != nil {
+		return reason, err
 	}
 	since, err := refusalSince(row)
 	if err != nil {
 		return "", err
-	}
-	want := row.Status.String
-	if row.Blocked {
-		want = issuestatus.Blocked
-	}
-	if issue.Status != want {
-		return "status_moved", nil
-	}
-	if service.IsReviewStatus(want) && issue.AssigneeID != row.AgentID {
-		return "assignee_changed", nil
-	}
-	var occurrence pgtype.UUID
-	switch newest, err := q.NewestIssueStatusChange(ctx, row.IssueID); {
-	case err == nil:
-		occurrence = newest.ID
-	case !errors.Is(err, pgx.ErrNoRows):
-		return "", err
-	}
-	if occurrence != row.OccurrenceActivityID {
-		return "status_moved", nil
 	}
 	// Last: a status move also changes the window, and the move is the better reason.
 	if still, err := service.RunBudgetStillRefuses(ctx, q, row.IssueID, since); err != nil {
@@ -248,6 +243,37 @@ func refusalIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefus
 		return "budget_restored", nil
 	}
 	return "", nil
+}
+
+// refusalMoved reports whether the issue left the status occurrence the
+// refusal was recorded in ("status_moved", or "assignee_changed" for a review).
+// It returns the issue it read.
+func refusalMoved(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal) (db.Issue, string, error) {
+	issue, err := q.GetIssue(ctx, row.IssueID)
+	if err != nil {
+		return issue, "", err
+	}
+	want := row.Status.String
+	if row.Blocked {
+		want = issuestatus.Blocked
+	}
+	if issue.Status != want {
+		return issue, "status_moved", nil
+	}
+	if service.IsReviewStatus(want) && issue.AssigneeID != row.AgentID {
+		return issue, "assignee_changed", nil
+	}
+	var occurrence pgtype.UUID
+	switch newest, err := q.NewestIssueStatusChange(ctx, row.IssueID); {
+	case err == nil:
+		occurrence = newest.ID
+	case !errors.Is(err, pgx.ErrNoRows):
+		return issue, "", err
+	}
+	if occurrence != row.OccurrenceActivityID {
+		return issue, "status_moved", nil
+	}
+	return issue, "", nil
 }
 
 // lockHookStep locks the refusal and checks that its hook is in phase and still
@@ -483,6 +509,7 @@ func (h *Handler) RunRunBudgetHookSweeper(ctx context.Context) {
 			return
 		case <-ticker.C:
 			h.sweepRunBudgetHooks(ctx, time.Now().Add(-runBudgetHookStale))
+			h.sweepRunBudgetResumes(ctx, time.Now().Add(-runBudgetHookStale))
 		}
 	}
 }
