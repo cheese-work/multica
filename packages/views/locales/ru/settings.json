@@ -24,7 +24,6 @@
       "key_hint": "В API и CLI обозначается как {{key}}.",
       "created": "Статус создан. В API и CLI он обозначается как {{key}}.",
       "category": "Категория",
-      "category_locked": "Категорию нельзя изменить — задачи, уже находящиеся на этом статусе, зависят от неё.",
       "description": "Описание",
       "description_placeholder": "Что означает этот статус для вашей команды",
       "color": "Цвет",
@@ -42,7 +41,8 @@
       "cancel": "Отмена",
       "save": "Сохранить",
       "saving": "Сохранение…",
-      "save_failed": "Не удалось сохранить статус."
+      "save_failed": "Не удалось сохранить статус.",
+      "category_change_hint": "Changing the category changes how every issue on this status behaves. You will confirm before it is saved."
     },
     "archive_dialog": {
       "retry": "Повторить архивацию",
@@ -84,7 +84,16 @@
     "workflow_usage_other": "Используется в {{count}} рабочего процесса",
     "workflow_usage_none": "Не используется в рабочих процессах",
     "workflow_usage_few": "Используется в {{count}} рабочих процессах",
-    "workflow_usage_many": "Используется в {{count}} рабочих процессах"
+    "workflow_usage_many": "Используется в {{count}} рабочих процессах",
+    "category_change_dialog": {
+      "title": "Change the category?",
+      "description_one": "{{count}} issue on this status will change from {{from}} to {{to}}.",
+      "description_few": "{{count}} issues on this status will change from {{from}} to {{to}}.",
+      "description_many": "{{count}} issues on this status will change from {{from}} to {{to}}.",
+      "description_other": "{{count}} issues on this status will change from {{from}} to {{to}}.",
+      "cancel": "Cancel",
+      "confirm": "Change category"
+    }
   },
   "wakeups": {
     "description": "Общие правила платформы, применяемые ко всем задачам. Каждая задача может переопределить их в своём разделе «Пробуждения».",
@@ -104,7 +113,49 @@
     "admin_only": "Изменять эти значения по умолчанию могут только владельцы и администраторы.",
     "load_error": "Не удалось загрузить настройки пробуждений по умолчанию.",
     "customized_few": "{{count}} открытые задачи используют собственную настройку и игнорируют это значение по умолчанию.",
-    "customized_many": "{{count}} открытых задач используют собственную настройку и игнорируют это значение по умолчанию."
+    "customized_many": "{{count}} открытых задач используют собственную настройку и игнорируют это значение по умолчанию.",
+    "pause_label": "Pause all wakeups",
+    "pause_description": "Nothing fires while paused. Events that arrive meanwhile are dropped, not replayed. One-shot and condition wakeups that came due run once after you resume.",
+    "pause_error": "Could not change the pause.",
+    "overridden": "Overridden while wakeups are paused.",
+    "pause_saved": "Wakeups paused.",
+    "pause_resumed": "Wakeups resumed.",
+    "retry": "Retry",
+    "rules": {
+      "title": "Workspace rules",
+      "description": "Custom rules that apply across the workspace. Each fires on an event or condition and wakes the agent you choose.",
+      "empty": "No workspace rules yet.",
+      "new_title": "New workspace rule",
+      "name": "Rule name",
+      "delete": "Delete {{name}}",
+      "delete_error": "Could not delete the rule. Reload and try again.",
+      "preview": "Preview",
+      "previewing": "Checking…",
+      "create": "Create rule",
+      "creating": "Creating…",
+      "preview_ok": "No open issue matches yet; the rule would fire only for new activity.",
+      "preview_met": "{{satisfied}} of {{examined}} issues already match; enabling the rule would fire for them at once.",
+      "preview_met_truncated": "{{satisfied}} of the first {{examined}} issues already match; enabling the rule would fire for them at once.",
+      "preview_cap": "Limit: {{limit}} wakeups per hour for the workspace.",
+      "project_title": "Project rules",
+      "project_description": "Custom rules that apply to this project. Each fires on an event or condition and wakes the agent you choose.",
+      "project_empty": "No project rules yet.",
+      "project_new_title": "New project rule",
+      "project_edit_title": "Edit project rule",
+      "project_preview_cap": "Limit: {{limit}} wakeups per hour for the project.",
+      "preview_error": "Could not preview the rule. Check the settings and try again.",
+      "missing_name": "Name the rule (up to {{max}} characters).",
+      "unsupported_filter": "A workspace rule cannot filter by author or agent yet. Choose anyone or any agent.",
+      "unsupported_schedule": "A workspace rule cannot run on a schedule yet. Choose an event or a condition.",
+      "closed_error": "Wakeup rules are not open for editing yet.",
+      "edit": "Edit {{name}}",
+      "edit_title": "Edit workspace rule",
+      "edit_unsupported": "This rule uses options this editor cannot change. Delete it and create a new one.",
+      "conflict_error": "Someone else changed this rule. Cancel and open it again to see their changes.",
+      "cancel": "Cancel",
+      "save": "Save rule",
+      "saving": "Saving…"
+    }
   },
   "quick_actions": {
     "title": "Быстрые действия",
@@ -325,6 +376,10 @@
       "goSettings": {
         "label": "Перейти в настройки",
         "description": "Открыть настройки рабочего пространства."
+      },
+      "searchChat": {
+        "label": "Search chats",
+        "description": "Focus the chat search field on the Chat page."
       }
     },
     "fixed": {
@@ -342,7 +397,8 @@
   },
   "chat": {
     "floating_label": "Плавающее окно чата",
-    "floating_hint": "Показывать кнопку плавающего чата на каждой странице."
+    "floating_hint": "Показывать кнопку плавающего чата на каждой странице.",
+    "recent_agents_label": "Recent agents in New chat"
   },
   "issue": {
     "opening": {
@@ -418,7 +474,10 @@
       "code": "Код",
       "channels": "Мессенджеры",
       "apps": "Подключённые приложения",
-      "workflows": "Рабочие процессы"
+      "workflows": "Рабочие процессы",
+      "passkeys": "Passkeys",
+      "export_privacy": "Export Privacy",
+      "provider_breakers": "Provider breakers"
     },
     "groups": {
       "personal": "Личное",
@@ -703,7 +762,8 @@
         "description": "Когда у задач, на которые вы подписаны, меняется приоритет или срок",
         "label": "Приоритет и срок"
       }
-    }
+    },
+    "focused_delivery": "Only decisions and issues assigned to me"
   },
   "tokens": {
     "title": "API-токены",
@@ -794,7 +854,47 @@
     "prefix_new_label": "Новый префикс",
     "prefix_rule": "Только буквы и цифры, до 10 символов.",
     "prefix_confirm_action": "Изменить на {{prefix}}",
-    "prefix_external_warning": "Старые идентификаторы вроде {{oldExample}} в заголовках PR, названиях веток, документации и чате не обновятся, поэтому такие ссылки перестанут работать."
+    "prefix_external_warning": "Старые идентификаторы вроде {{oldExample}} в заголовках PR, названиях веток, документации и чате не обновятся, поэтому такие ссылки перестанут работать.",
+    "compact_prompt_label": "Compact prompt",
+    "compact_prompt_hint": "Summary requirements for /compact in DMs. Leave empty to use the built-in default.",
+    "compact_prompt_placeholder": "Write a handoff-format summary of this session's goal, decisions, evidence, open items, exact IDs and URLs, and next action.",
+    "compact_prompt_source_default": "Source: built-in default",
+    "compact_prompt_source_workspace": "Source: workspace",
+    "auto_compact_label": "Auto-compact",
+    "auto_compact_hint": "A web DM moves to a new DM after a reply once its context reaches the threshold.",
+    "auto_compact_threshold_label": "Threshold (%)",
+    "auto_compact_threshold_invalid": "Enter a whole number from 50 to 90.",
+    "auto_compact_tokens_200k_label": "Threshold, 200k models (tokens)",
+    "auto_compact_tokens_1m_label": "Threshold, 1M models (tokens)",
+    "auto_compact_tokens_200k_invalid": "Enter a whole number from 100000 to 200000.",
+    "auto_compact_tokens_1m_invalid": "Enter a whole number from 100000 to 400000.",
+    "auto_compact_readonly_on": "On, at {{threshold}}%",
+    "auto_compact_readonly_on_tokens": "On, at {{small}} / {{large}} tokens",
+    "auto_compact_readonly_off": "Off",
+    "agent_decisions_label": "Agent decisions",
+    "agent_decisions_hint": "Agents may decide allowlisted gates for you. Each decision shows in the daily brief with a 24 h veto.",
+    "agent_decisions_stopped_title": "Decisions were stopped automatically",
+    "agent_decisions_stopped_description": "Reason: {{reason}}. Turning decisions on clears this record.",
+    "agent_decisions_stopped_confirm": "Turn on",
+    "runtime_profile_label": "Runtime profile",
+    "runtime_profile_hint": "Workspace default for how agent CLIs get their config. Managed builds a minimal home per task. Tools without a managed adapter fail under Managed; give those agents an explicit Personal override.",
+    "runtime_profile_personal": "Personal",
+    "runtime_profile_managed": "Managed",
+    "runtime_profile_inherit": "Workspace default",
+    "idle_guard_label": "Idle-issue guard",
+    "idle_guard_hint": "Moves started issues with no run and no wakeup after N hours. Shadow only logs.",
+    "idle_guard_off": "Off",
+    "idle_guard_shadow": "Shadow",
+    "idle_guard_act": "Act",
+    "idle_guard_hours_label": "After (hours)",
+    "idle_guard_hours_invalid": "Enter a whole number from 1 to 72.",
+    "idle_guard_readonly": "{{mode}}, after {{hours}} h",
+    "routing_agent_label": "Routing agent",
+    "routing_agent_hint": "Handles routing-only workflow steps: todo, blocked, merged and need decision. Not set keeps each step's own agent.",
+    "routing_fallback_label": "Fallback agent",
+    "routing_fallback_hint": "Takes over a routing step when the routing agent fails with a provider error.",
+    "routing_agent_none": "None",
+    "routing_agent_unknown": "Unknown agent"
   },
   "delete_workspace_dialog": {
     "title": "Удалить рабочее пространство",
@@ -839,7 +939,8 @@
     "feature_auto_link_description": "Связывает PR с задачей, чей идентификатор (например, {{example}}) указан в заголовке PR или названии ветки, либо стоит после слова «Closes» в его описании.",
     "status_paused": "Приостановлено",
     "pause": "Приостановить функции GitHub",
-    "resume": "Возобновить функции GitHub"
+    "resume": "Возобновить функции GitHub",
+    "add_account_or_organization": "Add account or organization"
   },
   "vcs": {
     "section_title": "Git (self-hosted)",
@@ -1259,7 +1360,10 @@
     "url_label": "URL репозитория",
     "description_label": "Описание",
     "duplicate": "Этот репозиторий уже добавлен.",
-    "actions_aria": "Действия для {{url}}"
+    "actions_aria": "Действия для {{url}}",
+    "github_add_account_or_organization": "Add account or organization",
+    "github_installation_not_allowed": "This GitHub account is not allowed on this deployment.",
+    "github_scope": "Only repositories authorized for {{account}} are shown."
   },
   "desktop": {
     "tabs": {
@@ -1368,7 +1472,8 @@
       "copied_lines_few": "Скопировано {{count}} строки",
       "copied_lines_many": "Скопировано {{count}} строк",
       "runtime_count_few": "{{count}} среды выполнения",
-      "runtime_count_many": "{{count}} сред выполнения"
+      "runtime_count_many": "{{count}} сред выполнения",
+      "cli_download_progress": "Downloading runtime… {{done}} / {{total}} MB"
     }
   },
   "members": {
@@ -1501,5 +1606,154 @@
     "mcp": "Добавляются администраторами и доступны всему рабочему пространству, затем назначаются отдельным агентам.",
     "apps": "Авторизуются через Composio с использованием вашей учётной записи и включаются для агентов, которыми вы владеете.",
     "plugins": "Установленные пакеты, которые могут добавлять инструменты, запланированные хуки и хранилище, каждый со своими правами доступа."
+  },
+  "site_search": {
+    "title": "Site search",
+    "url": "Search URL",
+    "hint": "Add in brave://settings/search → Site search → Add",
+    "copy": "Copy",
+    "copied": "Search URL copied",
+    "copy_failed": "Could not copy search URL"
+  },
+  "passkeys": {
+    "title": "Passkeys",
+    "purpose": "Passkeys sign security-sensitive approvals with this device or a security key.",
+    "description": "A passkey proves it is you when you approve a protected decision. Keep at least two, on different devices.",
+    "desktop_note": "Passkeys are tied to the web app, so manage them in your browser.",
+    "open_in_browser": "Open in browser",
+    "add": "Add passkey",
+    "code_hint": "We emailed you a code. Enter it, then follow your browser's prompt to create the passkey.",
+    "code_label": "Email code",
+    "attempt_tag": "Attempt {{tag}}: use the email whose subject ends with [{{tag}}].",
+    "confirm": "Confirm",
+    "cancel": "Cancel",
+    "empty": "No passkeys yet.",
+    "load_failed": "Could not load your passkeys. Reload the page to try again.",
+    "item_title": "Passkey {{number}}",
+    "item_meta": "Added {{created}} · {{lastUsed}}",
+    "last_used_with_date": "Last used {{date}}",
+    "last_used_never": "Never used",
+    "suspect": "Suspect",
+    "revoke_code_hint": "We emailed you a code to remove this passkey. Enter it to confirm.",
+    "revoke_aria": "Revoke passkey {{number}}",
+    "toast_enrolled": "Passkey added",
+    "toast_enroll_failed": "Failed to add passkey",
+    "toast_revoked": "Passkey revoked",
+    "toast_revoke_failed": "Failed to revoke passkey",
+    "revoke_dialog": {
+      "title": "Revoke passkey",
+      "description": "This passkey will be removed and can no longer approve decisions. You sign this with another passkey.",
+      "cancel": "Cancel",
+      "confirm": "Revoke",
+      "use_code": "Use an email code instead"
+    }
+  },
+  "export_privacy": {
+    "title": "Export Privacy",
+    "description": "Controls what provenance exports redact and how long their audit manifests are kept.",
+    "section_title": "Export policy",
+    "loading": "Loading export privacy settings…",
+    "mode_label": "Redaction mode",
+    "mode_hint": "Strict redaction is not yet available and cannot be selected.",
+    "mode_small_label": "Small (secrets and credentials masked)",
+    "retention_label": "Manifest retention (days)",
+    "retention_hint": "Audit manifests are automatically deleted after this many days ({{min}}–{{max}}).",
+    "retention_range_error": "Enter a number between {{min}} and {{max}}.",
+    "unavailable_title": "Export privacy controls are unavailable",
+    "unavailable_description": "This feature is temporarily disabled. Try again later.",
+    "load_failed_title": "Couldn't load export privacy settings",
+    "load_failed_description": "Something went wrong loading the current policy. Try again later.",
+    "errors": {
+      "save_failed": "Failed to save export privacy settings",
+      "unavailable": "Export privacy controls are temporarily unavailable",
+      "permission_changed": "You no longer have permission to manage export privacy settings",
+      "permission_changed_title": "Permission required"
+    }
+  },
+  "github_review": {
+    "section_title": "GitHub reviews",
+    "members_label": "Reviewers",
+    "members_description": "Maps a GitHub user ID to the workspace member whose review counts.",
+    "members_key": "GitHub user ID",
+    "members_value": "Member",
+    "authors_label": "Pull request authors",
+    "authors_description": "Pins a pull request to the agent that wrote it. Without a pin, the branch name decides.",
+    "authors_key": "Pull request",
+    "authors_value": "Agent",
+    "add": "Add",
+    "remove": "Remove",
+    "toast_failed": "Failed to save the mapping"
+  },
+  "provider_breakers": {
+    "description": "A breaker refuses new work for a provider after repeated server errors, then probes it again by itself.",
+    "empty": "No breaker has tripped in this workspace.",
+    "load_error": "Could not load provider breakers.",
+    "retry": "Retry",
+    "columns": {
+      "provider": "Provider",
+      "state": "State",
+      "reason": "Reason",
+      "failures": "Failures",
+      "opened": "Opened",
+      "next_probe": "Next probe",
+      "last_success": "Last success",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Closed",
+      "open": "Open",
+      "half_open": "Half open"
+    },
+    "none": "—",
+    "reset": "Reset",
+    "reset_label": "Reset {{provider}} breaker",
+    "reset_title": "Reset the {{provider}} breaker?",
+    "reset_description": "The breaker closes now and new work reaches {{provider}} again. If the provider is still failing, the breaker trips again. The reset is recorded in the audit log.",
+    "reset_cancel": "Cancel",
+    "reset_confirm": "Reset breaker",
+    "resetting": "Resetting…",
+    "reset_success": "Breaker reset.",
+    "reset_error": "Could not reset the breaker."
+  },
+  "delegated_writes": {
+    "title": "Delegated governed writes",
+    "description": "Which agents may write which governed fields, and whether a person must decide first.",
+    "edit": "Edit rule",
+    "setup": "Set up delegation",
+    "member_note": "Only workspace owners and admins can change this. You are a member. Ask an owner to change it.",
+    "agents_count_one": "{{count}} agent",
+    "agents_count_few": "{{count}} agents",
+    "agents_count_many": "{{count}} agents",
+    "agents_count_other": "{{count}} agents",
+    "fields_count_one": "{{count}} field",
+    "fields_count_few": "{{count}} fields",
+    "fields_count_many": "{{count}} fields",
+    "fields_count_other": "{{count}} fields",
+    "summary_decision": "{{agents}} may write {{fields}}. Each change waits in a decision card.",
+    "summary_direct": "{{agents}} may write {{fields}}, directly, with no decision card.",
+    "empty_title": "No agent may write a governed field.",
+    "empty_body": "Agents can still propose changes. Only people apply them. Once you allow an agent, every change waits in a decision card unless you turn that off.",
+    "col_agent": "Agent",
+    "may_write": "May write",
+    "read_only": "Read-only",
+    "writes_directly": "Writes directly",
+    "new_tag": "New",
+    "others_read_only": "All other agents: read-only for every governed field.",
+    "allowed_agents": "Allowed agents",
+    "add_agent": "Add agent",
+    "remove_agent": "Remove {{name}}",
+    "archived": "archived",
+    "unknown_agent": "Unknown agent",
+    "allowed_fields": "Allowed fields",
+    "requires_decision": "Requires human decision",
+    "requires_decision_on": "A written change waits in a decision card. You apply it with one click.",
+    "requires_decision_off": "No one reviews first.",
+    "confirm_direct": "I understand agents will write this field without a decision.",
+    "unsaved": "Unsaved changes",
+    "cancel": "Cancel",
+    "save": "Save changes",
+    "not_saved": "Not saved. Nothing changed.",
+    "load_failed": "Could not load the rule.",
+    "save_failed": "The rule could not be saved."
   }
 }

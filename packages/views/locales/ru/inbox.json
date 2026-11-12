@@ -99,7 +99,8 @@
     "quick_create_unconfirmed": "Создание с помощью агента не подтверждено",
     "autopilot_paused": "Автопилот приостановлен",
     "children_done": "Подзадачи завершены",
-    "autopilot_quota_exceeded": "Достигнут лимит запусков Автопилота"
+    "autopilot_quota_exceeded": "Достигнут лимит запусков Автопилота",
+    "machine_drained": "Safe to shut down"
   },
   "labels": {
     "set_status_to": "Установлен статус",

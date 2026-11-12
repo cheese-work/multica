@@ -227,7 +227,19 @@
     "edit_description_title": "Изменить описание",
     "description_placeholder": "Чем занимается этот агент?",
     "save": "Сохранить",
-    "cancel": "Отмена"
+    "cancel": "Отмена",
+    "section_presets": "Presets",
+    "preset_default": "Default",
+    "preset_stale": "Stale",
+    "preset_stale_reason": {
+      "unknown_preset": "No longer exists",
+      "ambiguous": "Name matches more than one preset",
+      "context_args": "Context args not supported",
+      "thinking_level": "Thinking level not supported",
+      "service_tier": "Service tier not supported",
+      "model": "Model not available",
+      "lab_lock": "Locked to another lab"
+    }
   },
   "overview": {
     "attention_title": "Запуски требуют внимания",
@@ -1057,7 +1069,19 @@
     "group_calls_few": "Вызовов: {{count}}",
     "group_calls_many": "Вызовов: {{count}}",
     "steps_count_few": "Шагов: {{count}}",
-    "steps_count_many": "Шагов: {{count}}"
+    "steps_count_many": "Шагов: {{count}}",
+    "details_preset": "Preset",
+    "details_preset_skipped": "Skipped",
+    "details_preset_claimed": "Claimed",
+    "details_preset_applied": "Applied",
+    "details_preset_not_reported": "Not reported",
+    "details_preset_agent_defaults": "Agent defaults",
+    "silence_warn": "No output for {{minutes}} min",
+    "silence_warn_unknown": "No output for a while",
+    "tool_stalled": "Still running past {{minutes}} min",
+    "tool_stalled_unknown": "Still running past the limit",
+    "tool_stalled_ended": "Ran past {{minutes}} min with no result",
+    "tool_stalled_ended_unknown": "Ran past the limit with no result"
   },
   "task_failure": {
     "cancelled_by_system": "Отменено системой",
@@ -1140,5 +1164,18 @@
       }
     },
     "title": "Создайте первого ИИ-коллегу"
+  },
+  "actions": {
+    "selected_one": "{{count}} selected",
+    "selected_few": "{{count}} selected",
+    "selected_many": "{{count}} selected",
+    "selected_other": "{{count}} selected",
+    "clear_selection": "Clear selection"
+  },
+  "auto_compact": {
+    "title": "Auto-compact",
+    "hint": "Leave a field empty to use the workspace value.",
+    "inherit_placeholder": "Workspace default",
+    "save_failed": "Could not save the auto-compact setting."
   }
 }

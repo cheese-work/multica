@@ -282,7 +282,8 @@
     "advanced_conditions_many": "{{count}} условий",
     "read_state_unread": "Непрочитанные",
     "relation_subscribed": "За которыми я слежу",
-    "section_read_state": "Состояние прочтения"
+    "section_read_state": "Состояние прочтения",
+    "section_workflow": "Workflow"
   },
   "display": {
     "tooltip": "Настройки отображения",
@@ -440,7 +441,8 @@
   },
   "list": {
     "empty_status": "Нет задач",
-    "add_issue_tooltip": "Добавить задачу"
+    "add_issue_tooltip": "Добавить задачу",
+    "unread_mention": "Unread mention"
   },
   "swimlane": {
     "no_parent": "Без родителя",
@@ -574,7 +576,8 @@
       "no_matches": "Нет совпадений",
       "previous": "Предыдущее совпадение",
       "next": "Следующее совпадение",
-      "close": "Закрыть поиск"
+      "close": "Закрыть поиск",
+      "collapse_disabled": "Can't collapse while find is open"
     },
     "update_failed": "Не удалось обновить задачу",
     "link_copied": "Ссылка скопирована",
@@ -591,7 +594,19 @@
     "thread_nav_show_replies_many": "Показать {{count}} ответов",
     "not_found_title": "Задача не найдена",
     "load_failed": "Не удалось загрузить задачу.",
-    "load_retry": "Повторить"
+    "card_load_failed": "Couldn't load this issue.",
+    "data_error": "This issue has data the app cannot read.",
+    "retry": "Retry",
+    "description_preview": "Description preview",
+    "description_preview_loading": "Description preview is loading",
+    "description_show_more": "Show more",
+    "description_show_less": "Show less",
+    "description_more_lines_one": "{{count}} more line",
+    "description_more_lines_few": "{{count}} more lines",
+    "description_more_lines_many": "{{count}} more lines",
+    "description_more_lines_other": "{{count}} more lines",
+    "status_summary_label": "Status summary",
+    "prop_requested_by": "Requested by"
   },
   "timeline": {
     "loading": "Загрузка...",
@@ -671,7 +686,21 @@
     "wakeup_child_done_all_few": "Все {{count}} подзадачи завершены",
     "wakeup_child_done_all_many": "Все {{count}} подзадач завершены",
     "wakeup_checkin_coalesced_few": "{{count}} тихие проверки · последняя: {{note}}",
-    "wakeup_checkin_coalesced_many": "{{count}} тихих проверок · последняя: {{note}}"
+    "wakeup_checkin_coalesced_many": "{{count}} тихих проверок · последняя: {{note}}",
+    "stop_not_confirmed": "stop not confirmed for run {{taskId}}",
+    "trigger_comment": "New comment",
+    "trigger_comment_by": "Comment by {{name}}",
+    "trigger_status": "Status changed",
+    "trigger_status_by": "Status changed by {{name}}",
+    "trigger_pr_merged": "{{pr}} merged",
+    "trigger_pr_checks_failed": "{{pr}} checks failed",
+    "trigger_pr_needs_attention": "{{pr}} needs attention",
+    "trigger_unknown": "Wakeup rule fired",
+    "wakeup_skipped": "{{condition}} · skipped waking {{agent}}: {{reason}}",
+    "wakeup_skipped_plain": "{{condition}} · skipped waking {{agent}}",
+    "wakeup_link_pr": "PR #{{number}}",
+    "wakeup_link_comment": "Comment",
+    "wakeup_link_run": "View run"
   },
   "comment": {
     "add_reaction": "Добавить реакцию",
@@ -789,7 +818,23 @@
     "trigger_will_start_count_few": "{{count}} агента запустятся при отправке",
     "trigger_will_start_count_many": "{{count}} агентов запустится при отправке",
     "recipient_count_few": "{{count}} агента получат это",
-    "recipient_count_many": "{{count}} агентов получат это"
+    "recipient_count_many": "{{count}} агентов получат это",
+    "show_full": "Show full comment",
+    "you": "You",
+    "invalid_agent_mention_named": "Not sent: @{{name}} can't be mentioned. Your draft is kept — remove or replace it.",
+    "invalid_agent_mentions_one": "Not sent: {{count}} mention can't be used. Your draft is kept — fix the highlighted mention.",
+    "invalid_agent_mentions_few": "Not sent: {{count}} mentions can't be used. Your draft is kept — fix the highlighted mentions.",
+    "invalid_agent_mentions_many": "Not sent: {{count}} mentions can't be used. Your draft is kept — fix the highlighted mentions.",
+    "invalid_agent_mentions_other": "Not sent: {{count}} mentions can't be used. Your draft is kept — fix the highlighted mentions.",
+    "thread_show_more_one": "Show {{count}} more reply",
+    "thread_show_more_few": "Show {{count}} more replies",
+    "thread_show_more_many": "Show {{count}} more replies",
+    "thread_show_more_other": "Show {{count}} more replies",
+    "thread_show_less": "Show less",
+    "supersession": {
+      "superseded_by": "Superseded by rev-{{revision}}",
+      "supersedes": "Supersedes rev-{{revision}}"
+    }
   },
   "reply": {
     "placeholder": "Оставить ответ...",
@@ -1058,7 +1103,21 @@
     "delete_dialog_title_many": "Удалить задачи ({{count}})?",
     "delete_dialog_desc_few": "Это действие нельзя отменить. Выбранные задачи и все связанные с ними данные будут удалены без возможности восстановления.",
     "delete_dialog_desc_many": "Это действие нельзя отменить. Выбранные задачи и все связанные с ними данные будут удалены без возможности восстановления.",
-    "delete_restricted": "Вы можете удалять задачи, созданные вами или вашими агентами. Владельцы и администраторы рабочего пространства могут удалять любые задачи."
+    "delete_restricted": "Вы можете удалять задачи, созданные вами или вашими агентами. Владельцы и администраторы рабочего пространства могут удалять любые задачи.",
+    "workflow": "Workflow",
+    "workflow_success_one": "Changed the workflow of {{count}} issue",
+    "workflow_success_few": "Changed the workflow of {{count}} issues",
+    "workflow_success_many": "Changed the workflow of {{count}} issues",
+    "workflow_success_other": "Changed the workflow of {{count}} issues",
+    "workflow_partial_one": "Changed the workflow of {{updated}} of {{count}} issues. Not changed: {{issues}}",
+    "workflow_partial_few": "Changed the workflow of {{updated}} of {{count}} issues. Not changed: {{issues}}",
+    "workflow_partial_many": "Changed the workflow of {{updated}} of {{count}} issues. Not changed: {{issues}}",
+    "workflow_partial_other": "Changed the workflow of {{updated}} of {{count}} issues. Not changed: {{issues}}",
+    "update_partial_named_one": "Updated {{updated}} of {{count}} issue. Not updated: {{issues}}",
+    "update_partial_named_few": "Updated {{updated}} of {{count}} issues. Not updated: {{issues}}",
+    "update_partial_named_many": "Updated {{updated}} of {{count}} issues. Not updated: {{issues}}",
+    "update_partial_named_other": "Updated {{updated}} of {{count}} issues. Not updated: {{issues}}",
+    "retry_not_updated": "Retry"
   },
   "card": {
     "update_failed": "Не удалось обновить задачу",
@@ -1510,7 +1569,11 @@
       "unknown_label": "удалённая метка",
       "unknown_property": "удалённое свойство",
       "checked": "отмечено",
-      "unchecked": "не отмечено"
+      "unchecked": "не отмечено",
+      "gh_run_id": "run {{id}} of {{repo}}",
+      "gh_run_sha": "{{workflow}} at {{sha}} of {{repo}}",
+      "gh_run_completed": "When {{run}} finishes",
+      "gh_run_waiting": "When {{run}} waits at an approval gate"
     },
     "wait": {
       "reply_from": "Ожидание ответа от {{name}}",
@@ -1533,7 +1596,10 @@
       "time": "{{time}} · будит {{agent}}",
       "header": "{{agent}}: {{what}}",
       "paused": "Пробуждение приостановлено",
-      "open": "Показать пробуждения"
+      "open": "Показать пробуждения",
+      "gh_run_completed": "Waiting for {{run}} to finish",
+      "gh_run_waiting": "Waiting for {{run}} to reach an approval gate",
+      "workspace_paused": "Wakeups paused"
     },
     "paused": {
       "max_fires": "Остановлено после {{count}} запусков",
@@ -1565,6 +1631,35 @@
       "max_fires": "достигнут лимит в {{count}} запусков",
       "loop": "правило будило другие правила, которые будили его снова",
       "rate": "более 12 запусков за час"
+    },
+    "paused_banner": "Wakeups paused by {{name}} at {{time}}",
+    "paused_banner_anonymous": "Wakeups paused at {{time}}",
+    "defaults": {
+      "title": "Default wakeups",
+      "rule_pr_merged": "When the linked PR merges",
+      "rule_pr_checks_failed": "When PR checks fail",
+      "rule_pr_needs_attention": "When the linked PR needs attention",
+      "state_on": "On",
+      "state_disabled": "Disabled",
+      "state_paused": "Paused: {{reason}}",
+      "inherited": "Inherited from {{source}}",
+      "overridden": "Overridden on this issue",
+      "source_workspace": "workspace",
+      "source_project": "project",
+      "source_default": "the default",
+      "open_project": "Edit in project rules",
+      "override": "Override",
+      "override_label": "Override {{rule}}",
+      "edit": "Edit override",
+      "edit_label": "Edit override {{rule}}",
+      "reset": "Reset",
+      "reset_label": "Reset {{rule}}",
+      "save": "Save override",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "save_error": "Could not save the override.",
+      "reset_error": "Could not reset the rule.",
+      "conflict_error": "Someone changed this rule first. Your edits are kept; reload to see theirs."
     }
   },
   "duplicates": {
@@ -1603,7 +1698,8 @@
     "issue_disabled": "Слияние PR не изменит эту задачу",
     "issue_disabled_action": "Включить",
     "waiting_to_few": "Переходит в статус {{status}}, когда {{prs}} будут смёржены",
-    "waiting_to_many": "Переходит в статус {{status}}, когда {{prs}} будут смёржены"
+    "waiting_to_many": "Переходит в статус {{status}}, когда {{prs}} будут смёржены",
+    "workflow_owned": "The workflow moves this issue when its PR merges"
   },
   "deliverables": {
     "section_title": "Результаты",
@@ -1659,7 +1755,8 @@
       "member": "Участник",
       "project_lead": "Руководитель проекта",
       "creator": "Автор задачи",
-      "project_lead_named": "{{name}} (руководитель проекта)"
+      "project_lead_named": "{{name}} (руководитель проекта)",
+      "human_by_role": "Human by role"
     },
     "settings": {
       "title": "Рабочие процессы",
@@ -1763,7 +1860,16 @@
       "no_other_status": "Все статусы уже добавлены как этапы.",
       "no_handoff_step": "Этот этап не передаёт задачи: при входе исполнитель сохраняется, запуск не начинается.",
       "used_by_note_few": "Используется в {{count}} проектах: {{names}}. Сохранённые изменения сразу применятся к ним.",
-      "used_by_note_many": "Используется в {{count}} проектах: {{names}}. Сохранённые изменения сразу применятся к ним."
+      "used_by_note_many": "Используется в {{count}} проектах: {{names}}. Сохранённые изменения сразу применятся к ним.",
+      "max_runs": "Max runs per issue",
+      "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
+      "include_child_prs": "Include child PRs",
+      "advance_on_ci_green": "When a linked PR's checks pass, move to the next column",
+      "load_error": "Couldn’t load this workflow.",
+      "retry": "Retry",
+      "changed_elsewhere": "This workflow was changed by someone else while you were editing. Your edits are kept.",
+      "load_latest": "Load latest",
+      "keep_edits": "Keep my edits"
     },
     "mapping": {
       "title": "Переместить задачи в «{{name}}»",
@@ -1847,7 +1953,21 @@
       "minutes_few": "{{count}} минуты",
       "minutes_many": "{{count}} минут",
       "hours_few": "{{count}} часа",
-      "hours_many": "{{count}} часов"
+      "hours_many": "{{count}} часов",
+      "batch_title_one": "Move {{count}} issue to “{{status}}”?",
+      "batch_title_few": "Move {{count}} issues to “{{status}}”?",
+      "batch_title_many": "Move {{count}} issues to “{{status}}”?",
+      "batch_title_other": "Move {{count}} issues to “{{status}}”?",
+      "batch_summary_one": "{{count}} issue changes assignee.",
+      "batch_summary_few": "{{count}} issues change assignee.",
+      "batch_summary_many": "{{count}} issues change assignee.",
+      "batch_summary_other": "{{count}} issues change assignee.",
+      "batch_stop_label": "Stop the previous assignees’ runs",
+      "batch_confirm_one": "Move {{count}} issue",
+      "batch_confirm_few": "Move {{count}} issues",
+      "batch_confirm_many": "Move {{count}} issues",
+      "batch_confirm_other": "Move {{count}} issues",
+      "batch_error": "Couldn’t check the handoffs"
     },
     "board": {
       "drop_hint_run": "Отпустите, чтобы передать задачу {{name}} и начать запуск",
@@ -1863,7 +1983,14 @@
     },
     "detail": {
       "follows_project": "(из проекта)",
-      "card_title": "{{workflow}} · из {{project}}"
+      "card_title": "{{workflow}} · из {{project}}",
+      "follows_override": "(set on this issue)",
+      "override_title": "Workflow for this issue",
+      "override_follow_project": "Follow the project’s workflow",
+      "override_default": "Default workflow",
+      "override_error": "Couldn’t change the workflow",
+      "no_workflow": "No workflow",
+      "flowchart": "Flowchart"
     },
     "list_separator": ", ",
     "handoff": {
@@ -1895,7 +2022,8 @@
       "scope_all_hint": "В {{projects}} будет использоваться новая передача",
       "scope_project": "Только {{project}}",
       "scope_project_hint": "Создаёт копию «{{copy}}» для {{project}}; остальные проекты остаются без изменений",
-      "saved_copy": "Сохранено в «{{workflow}}», используется только в {{project}}"
+      "saved_copy": "Сохранено в «{{workflow}}», используется только в {{project}}",
+      "human_by_role_hint": "Requester, then project lead, then workspace owner."
     },
     "columns": {
       "new_status": "Новый статус…",
@@ -1913,7 +2041,30 @@
       "scope_shared_one": "Этот рабочий процесс используется в {{count}} проекте. Его передачи применяются ко всем проектам, использующим этот процесс.",
       "scope_shared_other": "Этот рабочий процесс используется в {{count}} проекта. Его передачи применяются ко всем этим проектам.",
       "scope_shared_few": "Этот рабочий процесс используется в {{count}} проектах. Его передачи применяются ко всем этим проектам.",
-      "scope_shared_many": "Этот рабочий процесс используется в {{count}} проектах. Его передачи применяются ко всем этим проектам."
+      "scope_shared_many": "Этот рабочий процесс используется в {{count}} проектах. Его передачи применяются ко всем этим проектам.",
+      "graph_label": "Workflow graph",
+      "exits_label": "Workflow exits",
+      "exit_item": "{{from}} to {{to}} when {{guard}}",
+      "edit": {
+        "title": "Exits from {{step}}",
+        "pick": "Select a step to edit its exits.",
+        "empty": "No exits.",
+        "group": "Exit {{n}}: {{to}}",
+        "guard": "Guard",
+        "target": "Goes to",
+        "timeout": "Timeout",
+        "on_timeout": "On timeout",
+        "add": "Add exit",
+        "remove": "Remove exit",
+        "issues": {
+          "too_many_edges": "{{from}} has more than {{max}} exits.",
+          "missing_target": "An exit of {{from}} goes to a missing step.",
+          "bad_guard": "An exit of {{from}} has an unknown guard.",
+          "bad_timeout": "An exit of {{from}} needs a timeout between 1m and 720h, e.g. 72h.",
+          "bad_on_timeout": "An exit of {{from}} needs a valid On timeout step.",
+          "ci_green_source": "{{from}} cannot advance on CI green."
+        }
+      }
     },
     "templates": {
       "delivery": {
@@ -1941,7 +2092,10 @@
           "waiting": "Ожидание автора"
         }
       }
-    }
+    },
+    "create_handoff_unchecked": "Couldn't check whether this project hands issues off",
+    "catalog_unresolved": "Can't tell yet whether this change hands issues off, so nothing was changed.",
+    "catalog_retry": "Retry"
   },
   "hover_card": {
     "created_updated": "создано {{created}} · обновлено {{updated}}"
@@ -2022,5 +2176,132 @@
   },
   "unread_filter_error": {
     "title": "Не удалось загрузить непрочитанные задачи"
+  },
+  "hierarchy": {
+    "title": "Hierarchy",
+    "expand": "Expand hierarchy",
+    "loading": "Loading hierarchy…",
+    "load_failed": "Could not load the hierarchy.",
+    "retry": "Try again",
+    "you_are_here": "you are here",
+    "parent": "parent",
+    "siblings_one": "{{count}} sibling",
+    "siblings_few": "{{count}} siblings",
+    "siblings_many": "{{count}} siblings",
+    "siblings_other": "{{count}} siblings",
+    "children_one": "{{count}} child",
+    "children_few": "{{count}} children",
+    "children_many": "{{count}} children",
+    "children_other": "{{count}} children",
+    "wakes_one": "{{count}} wake",
+    "wakes_few": "{{count}} wakes",
+    "wakes_many": "{{count}} wakes",
+    "wakes_other": "{{count}} wakes",
+    "mentions_one": "{{count}} mention",
+    "mentions_few": "{{count}} mentions",
+    "mentions_many": "{{count}} mentions",
+    "mentions_other": "{{count}} mentions",
+    "bucket_done": "done",
+    "bucket_active": "active",
+    "bucket_blocked": "blocked",
+    "bucket_todo": "todo",
+    "bucket_closed": "closed",
+    "more": "+{{count}} {{label}}",
+    "canvas_groups": "Hierarchy canvas, zoomed out",
+    "canvas_cards": "Hierarchy canvas, zoomed in",
+    "dialog_description": "Pan and zoom the hierarchy. Open an issue to go to it.",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out",
+    "zoom_level": "Zoom {{percent}}%",
+    "fit": "Fit",
+    "me": "Me",
+    "overview": "Overview",
+    "hint": "Wheel or + / − to zoom · drag or arrow keys to pan · Enter opens",
+    "zoom_in_hint": "Zoom in to see each issue",
+    "label_siblings": "Siblings · {{total}}",
+    "label_children": "Children · {{total}}",
+    "label_showing": "{{label}} (showing {{shown}})",
+    "chip_hierarchy": "Hierarchy {{count}}",
+    "chip_wakes": "Wakes {{value}}",
+    "chip_mentions": "Mentions {{value}}",
+    "chip_mentions_off": "Mentions",
+    "related": "Related",
+    "offscreen": "{{count}} off-screen",
+    "wakes_more": "{{count}}+ wakes",
+    "wakes_unknown": "Wakes unavailable",
+    "mentions_more": "{{count}}+ mentions",
+    "mentions_unknown": "Mentions unavailable"
+  },
+  "decision": {
+    "class": {
+      "reversible": "reversible",
+      "spend": "spend",
+      "deploy": "deploy",
+      "publish": "publish",
+      "irreversible": "irreversible",
+      "product_direction": "product direction"
+    },
+    "state": {
+      "pending": "Pending",
+      "effective": "In effect",
+      "disclaimed": "Disclaimed",
+      "delivered": "Delivered",
+      "recorded": "Recorded"
+    },
+    "via_dm": "via DM",
+    "recorded_by": "Recorded by {{name}}",
+    "recorded_for": "Recorded for {{issue}}",
+    "option_n": "Option {{number}}",
+    "jump_to_card": "Jump to card",
+    "jump_to_ask": "Jump to ask",
+    "jump_to_answer": "Jump to answer",
+    "answered_in_dm": "Answered in DM",
+    "private_dm": "from a private DM",
+    "disclaim_action": "Disclaim",
+    "disclaiming": "Disclaiming…",
+    "disclaim_title": "Disclaim this decision?",
+    "disclaim_desc": "The agent is told the decision is withdrawn and the request reopens. This cannot be undone.",
+    "keep_action": "Keep decision",
+    "changed_title": "This decision changed while you were reading.",
+    "changed_body": "Refresh to see the current state before you disclaim. Nothing was withdrawn.",
+    "refresh_action": "Refresh",
+    "withdrawn_title": "Already withdrawn.",
+    "withdrawn_body": "Nothing was changed by this click.",
+    "review_action": "Review",
+    "failed_notice": "Could not disclaim. The decision is unchanged.",
+    "try_again_action": "Try again",
+    "full_message": "Full message",
+    "agent_note": "Agent's note",
+    "timing_disclaimed": "Disclaimed at {{time}}",
+    "timing_effective": "In effect since {{time}}",
+    "timing_pending_window": "Pending. Takes effect {{time}}; {{minutes}} min to disclaim.",
+    "timing_pending_wake": "Pending. Takes effect as soon as the agent is woken."
+  },
+  "status_history": {
+    "title": "Status history",
+    "description": "Every status change on this issue, oldest first.",
+    "empty": "No status changes recorded.",
+    "truncated": "Older status changes are not shown. The list starts at the oldest change the server returned.",
+    "trigger_not_recorded": "Trigger not recorded",
+    "removed": "{{status}} (removed)",
+    "handoff_comment": "Handoff comment",
+    "handoff_invalid": "Handoff link invalid",
+    "scrubber_label": "Position in status history",
+    "position": "{{current}} of {{total}}",
+    "cause": {
+      "ui_or_api": "Changed by a person",
+      "workflow_edge": "Workflow edge",
+      "workflow_remap": "Workflow remap",
+      "pr_merged": "PR merged",
+      "ci_advance": "CI advance",
+      "run_budget": "Run budget",
+      "decision": "Decision",
+      "watchdog": "Watchdog",
+      "task_reset": "Failed run reset",
+      "qoder": "Qoder",
+      "duplicate": "Duplicate",
+      "system": "System"
+    },
+    "open": "Status history"
   }
 }
