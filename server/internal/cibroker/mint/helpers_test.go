@@ -31,10 +31,14 @@ type fakeLimiter struct {
 	calls   atomic.Int32
 	reading Reading
 	err     error
+	onCall  func() // runs inside RateLimit, before it returns (a slow call)
 }
 
 func (f *fakeLimiter) RateLimit(context.Context) (Reading, error) {
 	f.calls.Add(1)
+	if f.onCall != nil {
+		f.onCall()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.reading, f.err

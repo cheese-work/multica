@@ -159,3 +159,22 @@ func TestQuotaRejectsNegativeRemaining(t *testing.T) {
 	lim.set(reading(clk.Now(), -1, 5000), nil)
 	wantRefusal(t, q.Admit(context.Background()), http.StatusServiceUnavailable, "quota_unavailable")
 }
+
+func TestQuotaSlowRefreshCrossingResetIs503(t *testing.T) {
+	lim := &fakeLimiter{}
+	q, clk := newQuota(t, lim)
+	lim.set(Reading{
+		Core:    Resource{Remaining: 5000, Reset: clk.Now().Add(5 * time.Second)},
+		GraphQL: Resource{Remaining: 5000, Reset: clk.Now().Add(time.Hour)},
+	}, nil)
+	lim.onCall = func() { clk.Advance(6 * time.Second) } // the reset passes during the call
+	wantRefusal(t, q.Admit(context.Background()), http.StatusServiceUnavailable, "quota_unavailable")
+}
+
+func TestQuotaCallOver30sIs503(t *testing.T) {
+	lim := &fakeLimiter{}
+	q, clk := newQuota(t, lim)
+	lim.set(reading(clk.Now(), 5000, 5000), nil)
+	lim.onCall = func() { clk.Advance(ReadingMaxAge + time.Second) }
+	wantRefusal(t, q.Admit(context.Background()), http.StatusServiceUnavailable, "quota_unavailable")
+}

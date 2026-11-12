@@ -64,11 +64,15 @@ func (q *Quota) Admit(ctx context.Context) error {
 	now := q.now()
 	if !q.fresh(now) {
 		q.have = false
+		start := now
 		r, err := q.src.RateLimit(ctx)
-		if err != nil || !usable(r, now) {
+		// Judge the reading by the clock after the call: a slow call can cross a
+		// reset, and a reading is as old as the moment the call began.
+		now = q.now()
+		if err != nil || now.Sub(start) > ReadingMaxAge || !usable(r, now) {
 			return &Refusal{Status: http.StatusServiceUnavailable, Reason: "quota_unavailable", RetryAfter: 30 * time.Second}
 		}
-		q.reading, q.fetchedAt, q.have = r, now, true
+		q.reading, q.fetchedAt, q.have = r, start, true
 	}
 	if q.reading.Core.Remaining < QuotaFloor {
 		return &Refusal{Status: http.StatusTooManyRequests, Reason: "quota_core", RetryAfter: q.reading.Core.Reset.Sub(now)}
