@@ -276,6 +276,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
 		return
 	}
+	if errors.Is(err, service.ErrReviewHeadAnswered) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonReviewHeadAnswered)
+		return
+	}
 	if errors.Is(err, service.ErrRecoveryCaused) {
 		writeError(w, http.StatusForbidden, errRecoveryCaused)
 		return

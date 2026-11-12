@@ -60,7 +60,7 @@ import { WakeupDemo } from "@/components/demos/wakeup-demo";
 | 关联 | 其他任务的状态变化 | 另一条任务完成、完成或取消，或进入审核中。 |
 | | 自定义事件 | 从 25 种原始事件里勾选，例如表态、附件、评论被编辑或讨论被解决。 |
 
-字段、子任务、PR 和其他任务这几类条件由平台自己去查：条件在创建时已经成立的，下一次检查（约 30 秒内）就会唤醒；"CI 结束"例外：它忽略旧推送上已出结果的检查，但 PR 当前 head 上已经出结果的检查会在约 30 秒内唤醒。
+字段、子任务、PR 和其他任务这几类条件由平台自己去查：条件在创建时已经成立的，下一次检查（约 30 秒内）就会唤醒；"CI 结束"例外：它忽略旧推送上已出结果的检查，但 PR 当前 head 上已经出结果的检查会在约 30 秒内唤醒。同一个智能体上一条“CI 结束”规则已在某个 PR head 上触发后，不能在该 head 上再创建第二条“CI 结束”规则：请求返回 `409`（`wakeup_head_unchanged`），文本为`head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`。请推送新的 head，或改为等待状态。
 
 时间以外的条件都是"等某件事发生"，还有三项设置：
 

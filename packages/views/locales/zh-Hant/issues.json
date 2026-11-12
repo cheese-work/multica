@@ -177,6 +177,8 @@
     "relation_assigned": "分配給我的",
     "relation_created": "我建立的",
     "relation_my_agents": "分配給我的智慧體的",
+    "section_agent_status": "智慧體狀態",
+    "agent_status_running": "執行中",
     "operator_label": "關係",
     "operator_is": "是",
     "operator_is_not": "不是",
@@ -410,7 +412,8 @@
   },
   "list": {
     "empty_status": "無任務",
-    "add_issue_tooltip": "新建任務"
+    "add_issue_tooltip": "新建任務",
+    "unread_mention": "未讀的提及"
   },
   "swimlane": {
     "no_parent": "無父級",
@@ -774,6 +777,9 @@
     "hover_header_queued_other": "{{count}} 個智慧體排隊中",
     "status_running": "正在工作",
     "status_queued": "排隊中",
+    "unread_completed": "{{agent}} 已完成執行 · {{time}}",
+    "unread_failed": "{{agent}} 執行失敗 · {{time}}",
+    "unread_manual": "已標為未讀",
     "empty_hover": "當前沒有智慧體在工作",
     "unknown_hover": "工作中的智慧體：尚未載入",
     "filter_active_label": "正在檢視有智慧體在工作的任務",
@@ -959,9 +965,14 @@
     "open_in_new_tab": "在新標籤頁開啟",
     "pin_to_sidebar": "固定到側邊欄",
     "unpin_from_sidebar": "從側邊欄取消固定",
+    "mark_read": "標為已讀",
+    "mark_unread": "標為未讀",
     "copy_link": "複製連結",
     "copy_workdir_path": "複製本地 workdir 路徑",
     "copy_project_directory_path": "複製專案目錄路徑",
+    "copy_identifier": "複製識別符號",
+    "identifier_copied": "已複製 {{identifier}}",
+    "stop_agent_run": "停止 {{name}} 的執行",
     "relations": "關係",
     "create_sub_issue": "建立子任務",
     "set_parent_issue": "設定父任務...",
@@ -1575,6 +1586,9 @@
       "name": "名稱",
       "name_placeholder": "例如：研發流程",
       "description": "描述",
+      "max_runs": "每個 Issue 的最大執行次數",
+      "max_runs_invalid": "請輸入 1 到 {{max}} 的整數，留空則使用預設值（{{default}}）。",
+      "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步驟",
       "add_step": "新增步驟",
       "start": "起始",
@@ -1672,8 +1686,6 @@
       "picker_more": "在「設定 → 工作流」裡可以新建更多工作流。"
     },
     "picker": {
-      "header": "{{workflow}} · 跟隨專案「{{project}}」",
-      "header_no_project": "{{workflow}} 狀態 · 無專案",
       "footer": "只顯示這個任務所在工作流裡的狀態。右側是進入該狀態時的處理人。"
     },
     "confirm": {
