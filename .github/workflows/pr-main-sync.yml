@@ -50,7 +50,7 @@ jobs:
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
           repositories: multica
           permission-contents: write
-          permission-pull-requests: write
+          permission-pull-requests: read
       - name: Merge main into behind PR branches
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
