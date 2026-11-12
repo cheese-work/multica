@@ -49,7 +49,7 @@ function compareAttention(a: ChatSession, b: ChatSession): number {
 }
 
 /** One plain line for a list row: no markdown, no mention links, no parameter dump. */
-function decisionHeadline(ask: string, issueIdentifier: string): string {
+export function decisionHeadline(ask: string, issueIdentifier: string): string {
   const proposal = ask.match(/^\*\*Proposed action\*\*\s*\n`([^`]+)`\s+version\s+(\d+)/);
   if (proposal) return `${proposal[1]} v${proposal[2]} on ${issueIdentifier}`;
   return (ask.match(/\*\*Decision\*\*\s*\n([\s\S]*?)(?:\n\s*\n|$)/)?.[1] ?? ask)
