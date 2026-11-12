@@ -20,7 +20,7 @@ type autoRun struct {
 	checks    []string // failed check names on the head the run pushed (needs prUpdate)
 	ci        string   // a ci_failure_event workflow on the head the run pushed (needs prUpdate)
 	prUpdate  bool     // a linked PR's head moved while the run ran
-	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported) and no CI failure event
+	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported); a CI failure event does not replace them
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -371,9 +371,10 @@ func TestRunBudgetAutoLoopKeysAreStructured(t *testing.T) {
 }
 
 // A head that a run pushed has no retained check results once the PR moved on,
-// and CI failure events exist only while the ci_watcher flag is on. Three runs
-// that each pushed a head whose results are gone could all have failed the same
-// check, so the window is not approved.
+// and CI failure events exist only while the ci_watcher flag is on, and then only
+// for the workflows that failed. Three runs that each pushed a head whose results
+// are gone could all have failed the same check, so the window is not approved,
+// whatever failure events exist for those heads.
 func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 	cases := []struct {
 		name string
@@ -385,6 +386,9 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 		}, false},
 		{"one pushed head with no retained results among passing ones", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, noChecks: true}, {status: "completed", prUpdate: true},
+		}, false},
+		{"three pushed heads with only a CI failure event each, results gone", []autoRun{
+			{status: "completed", prUpdate: true, ci: "CI-a"}, {status: "completed", prUpdate: true, ci: "CI-b"}, {status: "completed", prUpdate: true, ci: "CI-c"},
 		}, false},
 		{"pushed heads whose results are retained and passed", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true},

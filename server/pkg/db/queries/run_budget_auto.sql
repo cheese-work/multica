@@ -51,7 +51,6 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
            WHERE e.issue_id = t.issue_id AND e.kind = 'head_changed'
              AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
              AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha)
-             AND NOT EXISTS (SELECT 1 FROM ci_failure_event cf WHERE cf.workspace_id = e.workspace_id AND cf.head_sha = e.head_sha)
        )::boolean AS ci_unknown,
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
