@@ -104,6 +104,8 @@ class DeployApprovalTests(unittest.TestCase):
             "MULTICA_WORKSPACE_ID": ("C00_APPROVAL_MULTICA_WORKSPACE_ID", "f2b734e0-b6de-4414-8a27-a2f69b0ef843"),
             "MULTICA_NOTIFY_ISSUE": ("C00_APPROVAL_MULTICA_ISSUE", "01a1bff0-6ccc-7873-9ac8-580037bc5206"),
             "MULTICA_NOTIFY_MEMBER_ID": ("C00_APPROVAL_MULTICA_MEMBER_ID", "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff"),
+            # The anchor comment is a default too: the scoped PAT cannot list comments.
+            "MULTICA_NOTIFY_SOURCE_COMMENT": ("C00_APPROVAL_MULTICA_SOURCE_COMMENT", "01a1bff1-cdf8-7856-ad05-da57f3a396f2"),
         }
         for name, (secret, default) in defaults.items():
             with self.subTest(env=name):
