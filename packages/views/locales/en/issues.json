@@ -306,8 +306,7 @@
     "advanced_group_match_trailing": "of these",
     "advanced_group_hint": "Conditions in this group are joined with “{{word}}”",
     "advanced_add_to_group": "Add to group",
-    "advanced_turn_into_group": "Turn into group",
-    "advanced_summary": "Shows issues where {{summary}}"
+    "advanced_turn_into_group": "Turn into group"
   },
   "display": {
     "tooltip": "Display settings",
@@ -1700,6 +1699,7 @@
       "description": "Description",
       "max_runs": "Max runs per issue",
       "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
+      "include_child_prs": "Include child PRs",
       "steps": "Steps",
       "add_step": "Add step",
       "start": "Start",

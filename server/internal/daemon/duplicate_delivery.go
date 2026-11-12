@@ -101,3 +101,16 @@ func (d *Daemon) startTaskWithCurrentClaim(ctx context.Context, task Task, capab
 		return negotiated, err
 	}
 }
+
+// ids lists the tasks with a live (not abandoned) execution.
+func (c *inflightClaims) ids() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.entries))
+	for id, e := range c.entries {
+		if !e.abandoned {
+			out = append(out, id)
+		}
+	}
+	return out
+}

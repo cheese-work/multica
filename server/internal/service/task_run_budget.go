@@ -93,7 +93,7 @@ func createAgentTask(ctx context.Context, q *db.Queries, p db.CreateAgentTaskPar
 	}
 	p.TaintIds = append(p.TaintIds, acting...)
 	p.TaintIds = append(p.TaintIds, stageTaint(ctx)...)
-	task, err := q.CreateAgentTask(ctx, p)
+	task, err := createProviderHeldAgentTask(ctx, q, p)
 	if errors.Is(err, pgx.ErrNoRows) && p.GateRequired.Bool {
 		return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 	}
@@ -217,7 +217,8 @@ func SetOnRunBudgetExhausted(fn func(context.Context, RunBudgetExhausted)) {
 // RunBudgetStart is when an issue's budget window opens: the later of the
 // workflow's budget start (issues in flight at rollout begin fresh) and the
 // last time a person moved the issue's status (a person unblocking an issue
-// grants it a new budget).
+// grants it a new budget). Since the S1d cutover only an interactive session's
+// move counts, not a PAT's or a CLI's (LatestMemberStatusChange).
 func RunBudgetStart(ctx context.Context, q *db.Queries, issueID pgtype.UUID, def *issueworkflow.Definition) (time.Time, error) {
 	since := def.RunBudgetSince
 	moved, err := q.LatestMemberStatusChange(ctx, issueID)

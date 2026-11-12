@@ -8,6 +8,7 @@ export {
   issueStatusWorkflow,
   sharedWorkflowStatusKeys,
   defaultWorkflow,
+  workflowIdForTitle,
   isFixedWorkflowStatus,
   isOptionalWorkflowStatus,
   statusAcceptsHandoff,

@@ -133,7 +133,7 @@ func TestPrepareManagedCodex_DisablesNestedUniversalSkills(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
@@ -198,7 +198,7 @@ func TestPrepareManagedCodex_DisablesSymlinkedUniversalSkills(t *testing.T) {
 			if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 				t.Fatal(err)
 			}
-			if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+			if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 				t.Fatal(err)
 			}
 			cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
@@ -230,7 +230,7 @@ func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := []SkillContextForEnv{{Name: "ws", Description: "d", Content: "body"}}
-	if err := prepareManagedCodex(envRoot, codexHome, ws, json.RawMessage(`{"mcpServers":{"m1":{}}}`), logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, ws, json.RawMessage(`{"mcpServers":{"m1":{}}}`), logger); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +280,7 @@ func TestPersonalCodexHomeUnchanged(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
+	if _, err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(codexHome, "instructions.md")); string(got) != "personal" {
@@ -347,7 +347,7 @@ func TestPrepareManagedCodex_AllowlistsConfig(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 
@@ -503,7 +503,7 @@ func TestPersonalCodexHomeGolden(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
+	if _, err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	var tree strings.Builder
@@ -564,5 +564,79 @@ func TestPrepareManagedCodex_KeepsWindowsNativeSandbox(t *testing.T) {
 				t.Errorf("non-allowlisted windows key survived:\n%s", cfg)
 			}
 		})
+	}
+}
+
+func TestPrepareManagedClaudeHome_SeedsAuthEnvAllowlist(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "settings.json"), `{
+  "hooks": {"SessionStart": []},
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://route.example/v1",
+    "ANTHROPIC_AUTH_TOKEN": "sekret-token",
+    "ANTHROPIC_MODEL": "m1",
+    "DISABLE_TELEMETRY": "1",
+    "SOME_PERSONAL_VAR": "x"
+  }
+}`)
+	envRoot := t.TempDir()
+
+	home, err := PrepareManagedClaudeHome(envRoot, src, "b", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var settings struct {
+		Env   map[string]string `json:"env"`
+		Hooks any               `json:"hooks"`
+		Auto  *bool             `json:"autoMemoryEnabled"`
+	}
+	raw, _ := os.ReadFile(filepath.Join(home.ConfigDir, "settings.json"))
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("settings.json: %v", err)
+	}
+	want := map[string]string{
+		"ANTHROPIC_BASE_URL":   "https://route.example/v1",
+		"ANTHROPIC_AUTH_TOKEN": "sekret-token",
+		"ANTHROPIC_MODEL":      "m1",
+	}
+	if len(settings.Env) != len(want) {
+		t.Errorf("env = %v, want exactly %v", settings.Env, want)
+	}
+	for k, v := range want {
+		if settings.Env[k] != v {
+			t.Errorf("env[%s] = %q, want %q", k, settings.Env[k], v)
+		}
+	}
+	if settings.Hooks != nil {
+		t.Errorf("hooks leaked: %v", settings.Hooks)
+	}
+	if settings.Auto == nil || *settings.Auto {
+		t.Errorf("autoMemoryEnabled must stay false")
+	}
+	if fi, err := os.Stat(filepath.Join(home.ConfigDir, "settings.json")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Errorf("settings.json perms: %v %v", fi, err)
+	}
+
+	rawReceipt, _ := os.ReadFile(filepath.Join(envRoot, LaunchReceiptFile))
+	if strings.Contains(string(rawReceipt), "sekret-token") || strings.Contains(string(rawReceipt), "route.example") {
+		t.Errorf("receipt leaks env values: %s", rawReceipt)
+	}
+	r := readReceipt(t, envRoot)
+	for _, k := range []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "CLAUDE_CONFIG_DIR"} {
+		if !contains(r.EnvKeys, k) {
+			t.Errorf("receipt env keys %v missing %s", r.EnvKeys, k)
+		}
+	}
+	if contains(r.EnvKeys, "SOME_PERSONAL_VAR") || contains(r.EnvKeys, "DISABLE_TELEMETRY") {
+		t.Errorf("receipt lists non-allowlisted keys: %v", r.EnvKeys)
+	}
+}
+
+func TestPrepareManagedClaudeHome_MalformedSourceSettingsIsNotAnError(t *testing.T) {
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "settings.json"), `{not json`)
+	if _, err := PrepareManagedClaudeHome(t.TempDir(), src, "b", nil, nil); err != nil {
+		t.Fatal(err)
 	}
 }

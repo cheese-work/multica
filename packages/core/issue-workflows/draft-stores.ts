@@ -22,6 +22,8 @@ export interface WorkflowEditorDraft {
   handoffs: Record<string, WorkflowDraftHandoff>;
   /** Absent in a draft held before the field existed. */
   maxRuns?: string;
+  /** Absent in a draft held before the field existed. */
+  includeChildPrs?: boolean;
 }
 
 /**

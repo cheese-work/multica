@@ -141,14 +141,64 @@ describe("max runs per issue field", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("shows the server text on 403 budget_requires_interactive", async () => {
-    const text = "changing a workflow's run budget needs an interactive web or desktop session";
+  it("shows the server text on 403 budget_requires_decision", async () => {
+    const text = "changing a workflow's run budget needs the owner's approval";
     apiMock.updateIssueWorkflow.mockRejectedValueOnce(
-      new ApiError(text, 403, "Forbidden", { code: "budget_requires_interactive" }),
+      new ApiError(text, 403, "Forbidden", { code: "budget_requires_decision" }),
     );
     mount(workflow({ max_runs_per_issue: 100 }));
     type("25");
     fireEvent.click(save());
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(text));
+  });
+});
+
+describe("include child PRs switch (CHE-5228)", () => {
+  const childPrs = () => screen.getByRole("switch", { name: "Include child PRs" });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.updateIssueWorkflow.mockResolvedValue(workflow());
+  });
+  afterEach(cleanup);
+
+  it("shows the saved value, on when the server sends none", () => {
+    mount(workflow({ include_child_prs: false }));
+    expect(childPrs().getAttribute("aria-checked")).toBe("false");
+    cleanup();
+    mount(workflow({ include_child_prs: true }));
+    expect(childPrs().getAttribute("aria-checked")).toBe("true");
+    cleanup();
+    mount(workflow());
+    expect(childPrs().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("sends include_child_prs: false after the switch is turned off", async () => {
+    mount(workflow({ include_child_prs: true }));
+    fireEvent.click(childPrs());
+    expect(save().disabled).toBe(false);
+    fireEvent.click(save());
+    await waitFor(() => expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1));
+    expect(sentBody().include_child_prs).toBe(false);
+  });
+
+  it("omits include_child_prs when the switch is untouched", async () => {
+    mount(workflow({ include_child_prs: true }));
+    fireEvent.change(screen.getByDisplayValue("Ship it"), { target: { value: "Ship it fast" } });
+    fireEvent.click(save());
+    await waitFor(() => expect(apiMock.updateIssueWorkflow).toHaveBeenCalledTimes(1));
+    expect(sentBody()).not.toHaveProperty("include_child_prs");
+  });
+
+  it("is read-only without edit rights", () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    queryClient.setQueryData(issueStatusKeys.list("ws-1"), { statuses: KEYS.map(statusEntry) });
+    queryClient.setQueryData(projectListOptions("ws-1").queryKey, { projects: [], total: 0 });
+    queryClient.setQueryData(issueWorkflowKeys.list("ws-1"), { workflows: [workflow()], total: 1 });
+    renderWithI18n(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowEditorPage workflowId="wf-1" seed={null} canEdit={false} onBack={() => {}} onOpen={() => {}} />
+      </QueryClientProvider>,
+    );
+    expect(childPrs().hasAttribute("data-disabled")).toBe(true);
   });
 });

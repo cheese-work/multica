@@ -453,6 +453,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmailDomains:            splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		DisableWorkspaceCreation:       os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
 		WorkspaceCreationAllowedEmails: splitAndTrim(os.Getenv("WORKSPACE_CREATION_ALLOWED_EMAILS")),
+		SetupComponents:                splitAndTrim(os.Getenv("MULTICA_SETUP_COMPONENTS")),
 		VCSIntegrationEnabled:          os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                      strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                         appURLFromEnv(),
@@ -1195,6 +1196,51 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				if wecom.SetTrace(os.Getenv("MULTICA_WECOM_TRACE") == "1") {
 					slog.Warn("wecom: frame tracing ON — records message text; unset MULTICA_WECOM_TRACE when done")
 				}
+
+				// Scan-code install: the admin scans a QR in WeCom and the bot is
+				// created and bound without anyone handling its secret. The
+				// worker drives the WeCom calls out of band and runs even when
+				// the scan flow is off, so a session already in flight reaches a
+				// terminal state instead of spinning in the admin's dialog.
+				var wecomProvider wecom.Provider
+				wecomSourceID := strings.TrimSpace(os.Getenv("MULTICA_WECOM_SOURCE_ID"))
+				if wecomSourceID == "" {
+					wecomSourceID = wecom.DefaultSourceID
+				}
+				if provider, provErr := wecom.NewHTTPProvider(wecom.HTTPProviderConfig{
+					SourceID: wecomSourceID,
+					Logger:   slog.Default(),
+				}); provErr != nil {
+					slog.Error("wecom: QR provider init failed; scan install disabled", "error", provErr)
+				} else {
+					wecomProvider = provider
+				}
+				// Assigned through the interface only when non-nil: a nil
+				// *InstallationService in a BotBinder is a non-nil interface,
+				// which would defeat Configured() and panic at finalize.
+				var wecomBotBinder wecom.BotBinder
+				if svc, instErr := wecom.NewInstallationService(queries, pool, box); instErr != nil {
+					slog.Error("wecom: InstallationService init failed; scan install disabled", "error", instErr)
+				} else {
+					wecomBotBinder = svc
+				}
+				wecomInstall := wecom.NewInstallService(queries, pool, wecomBotBinder, wecom.InstallServiceConfig{
+					Provider: wecomProvider,
+					Box:      box,
+					Logger:   slog.Default(),
+				})
+				// Same typed-nil hazard: the supervisor is nil when its lease
+				// configuration is invalid, and a nil *Supervisor in the
+				// Notifier interface would panic on the first scanned bot.
+				var wecomInstallNotifier wecom.Notifier
+				if h.ChannelSupervisor != nil {
+					wecomInstallNotifier = h.ChannelSupervisor
+				}
+				h.WecomInstall = wecomInstall
+				h.WecomInstallWorker = wecom.NewInstallWorker(wecomInstall, wecom.InstallWorkerConfig{
+					Bus:        bus,
+					Supervisor: wecomInstallNotifier,
+				})
 
 				slog.Info("wecom integration enabled (smart bot, long connection)")
 				// REPLICA TOPOLOGY: WeCom outbound (agent replies + inbox
@@ -1979,6 +2025,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/slack/install/byo", h.RegisterSlackBYO)
 					r.Delete("/wecom/installations/{installationId}", h.RevokeWecomInstallation)
 					r.Post("/wecom/install/byo", h.RegisterWecomBYO)
+					// Scan-code install creates and binds a bot, so it sits with
+					// the manual install and the revoke: whoever can connect a
+					// bot this way can also disconnect it.
+					r.Post("/wecom/install/begin", h.BeginWecomInstall)
+					r.Get("/wecom/install/{sessionId}", h.GetWecomInstallStatus)
 				})
 
 				r.Group(func(r chi.Router) {
@@ -2200,6 +2251,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
+					r.Get("/description/history", h.ListIssueDescriptionRevisions)
+					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)

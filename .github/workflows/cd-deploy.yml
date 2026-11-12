@@ -8,8 +8,8 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
-# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:00, 04:00,
-# 08:00, 12:00, 16:00, 20:00 ICT), not after every qualified build. The first
+# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:17, 04:17,
+# 08:17, 12:17, 16:17, 20:17 ICT), not after every qualified build. The first
 # job, schedule-resolve, picks the newest main commit whose cd-qualification run
 # succeeded and ends the run with "nothing new to deploy" when C00 already runs
 # it. It uses no C00 runner, lock or environment.
@@ -55,8 +55,8 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # build-evidence.
 on:
   schedule:
-    # 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 ICT (UTC+7).
-    - cron: "0 1,5,9,13,17,21 * * *"
+    # 00:17, 04:17, 08:17, 12:17, 16:17, 20:17 ICT (UTC+7), off the hour: GitHub drops top-of-hour schedules under load.
+    - cron: "17 1,5,9,13,17,21 * * *"
   workflow_dispatch:
     inputs:
       candidate_sha:

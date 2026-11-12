@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -85,7 +86,11 @@ type IssueResponse struct {
 	ProjectID   *string           `json:"project_id"`
 	// WorkflowID is the issue's own workflow override; null follows the project.
 	WorkflowID *string `json:"workflow_id"`
-	Position   float64 `json:"position"`
+	// WorkflowHint is set on an update that changed the title to a type the
+	// workspace maps to a different workflow than the issue's. The issue keeps
+	// its workflow; the hint tells the caller how to move it. (CHE-5271)
+	WorkflowHint string  `json:"workflow_hint,omitempty"`
+	Position     float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -3258,6 +3263,10 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
+	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, hasSquad, len(req.AttachmentIDs) > 0); status != 0 {
+		writeJSON(w, status, payload)
+		return
+	}
 	if priority != "" || dueDate != "" {
 		if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
 			r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
@@ -3372,6 +3381,29 @@ func (h *Handler) checkQuickCreateDaemonVersion(ctx context.Context, source stri
 	return h.checkQuickCreateDaemonVersionAtLeast(ctx, source, runtimeID, agentpkg.MinQuickCreateCLIVersion)
 }
 
+// checkQuickCreateQoderLimits rejects quick-create requests that a Qoder
+// Cloud Agents leader can create but not run afterwards. The bridge drafts and
+// creates the issue itself, but the run that the new issue's assignment
+// dispatches next fails on the bridge for a squad-leader task or an issue with
+// attachments, so the user would see "created" followed by a failed run.
+func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, squad, attachments bool) (int, map[string]any) {
+	if !squad && !attachments {
+		return 0, nil
+	}
+	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
+	if err != nil || rt.Provider != qoderruntime.Provider {
+		return 0, nil
+	}
+	reason := "Qoder Cloud Agents cannot lead a squad; pick the agent directly to create the issue"
+	if !squad {
+		reason = "Qoder Cloud Agents cannot read attachments; remove them or pick another agent"
+	}
+	return http.StatusUnprocessableEntity, map[string]any{
+		"code":   "agent_unavailable",
+		"reason": reason,
+	}
+}
+
 func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, source string, runtimeID pgtype.UUID, minimum string) (int, map[string]any) {
 	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
 	if err != nil {
@@ -3382,11 +3414,9 @@ func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, sour
 			"reason": "agent's runtime is no longer registered",
 		}
 	}
+	// The Qoder bridge creates the issue itself instead of running the CLI.
 	if rt.Provider == qoderruntime.Provider {
-		return http.StatusUnprocessableEntity, map[string]any{
-			"code":   "agent_unavailable",
-			"reason": "Qoder Cloud Agents supports existing issue runs only; create the issue manually and assign it to this agent",
-		}
+		return 0, nil
 	}
 	current := readRuntimeCLIVersion(rt.Metadata)
 	switch err := agentpkg.CheckMinCLIVersionFor(current, minimum); {
@@ -3430,6 +3460,9 @@ func readRuntimeCLIVersion(metadata []byte) string {
 }
 
 type CreateIssueRequest struct {
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's create that names a wider workflow (CHE-5228).
+	DecisionBindingFields
 	Title         string  `json:"title"`
 	Description   *string `json:"description"`
 	Status        string  `json:"status"`
@@ -3594,7 +3627,12 @@ func duplicateIssueMessage(issue IssueResponse) string {
 // (feature flag and workflow-manager permission required), otherwise the
 // project's. It writes the error response and returns false on any failure.
 // Shared by the ordinary create and the captured-comment create.
-func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+//
+// With no override named, the workspace's workflow_by_type setting may pick one
+// from the title type (CHE-5271). That choice is workspace policy, so it skips
+// the manager and budget checks an explicit override needs; a mapped workflow
+// that no longer exists falls back to the project's.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID, binding DecisionBindingFields, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
 	var overrideID pgtype.UUID
 	if rawWorkflowID != nil && *rawWorkflowID != "" {
 		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
@@ -3602,6 +3640,12 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 			return overrideID, nil, db.Project{}, false
 		}
 		overrideID = id
+	}
+	explicit := overrideID.Valid
+	if !explicit {
+		if id, def, project, ok := h.workflowFromTitleType(r, wsUUID, workflowProjectID, title); ok {
+			return id, def, project, true
+		}
 	}
 	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
 	if overrideID.Valid {
@@ -3620,7 +3664,77 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return overrideID, nil, project, false
 	}
+	// One widening rule for create, update and set (CHE-5228): a non-interactive
+	// credential cannot name a workflow whose budget is wider than the one the
+	// issue would follow without the override.
+	if overrideID.Valid && !isInteractiveRequest(r) {
+		before, berr := issueBinding(r.Context(), h.Queries, wsUUID, pgtype.UUID{}, workflowProjectID, pgtype.Int4{})
+		if berr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return overrideID, nil, project, false
+		}
+		if budgetWidens(before, workflowBinding(def, pgtype.Int4{})) && !h.approveCreateWidening(w, r, wsUUID, binding, workflowProjectID, overrideID) {
+			return overrideID, nil, project, false
+		}
+	}
 	return overrideID, def, project, true
+}
+
+// workflowFromTitleType loads the workflow the workspace's workflow_by_type
+// setting maps the title's type to. ok is false when project workflows are off,
+// no entry matches, or the mapped workflow is gone.
+func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProjectID pgtype.UUID, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	if !featureflags.ProjectWorkflowsV1Enabled(r.Context(), h.FeatureFlags) {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	id, ok := issueworkflow.WorkflowForTitle(ws.Settings, title)
+	if !ok {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, id, workflowProjectID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	return id, def, project, true
+}
+
+// titleTypeWorkflowHint is the one-line note for a title edit whose type maps
+// to a workflow other than the issue's own. The edit never moves the workflow.
+func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
+	id, def, _, ok := h.workflowFromTitleType(r, issue.WorkspaceID, issue.ProjectID, issue.Title)
+	if !ok || (issue.WorkflowID.Valid && issue.WorkflowID == id) {
+		return ""
+	}
+	return fmt.Sprintf("Title type maps to workflow %q (%s); this issue keeps its workflow. Move it with: multica issue update %s --workflow %s",
+		def.Name, uuidToString(id), uuidToString(issue.ID), uuidToString(id))
+}
+
+// approveCreateWidening checks an agent's owner-approved issue.workflow
+// decision for a create that names a wider workflow and consumes it in its own
+// transaction. The decision is spent before the issue exists: a later failure
+// of the create leaves it used, so the agent asks again rather than the
+// approval staying open. It writes the refusal and reports false on any failure.
+func (h *Handler) approveCreateWidening(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, binding DecisionBindingFields, projectID, workflowID pgtype.UUID) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if err := h.verifyBoundRebinding(ctx, h.Queries.WithTx(tx), r, wsUUID, binding, pgtype.UUID{}, projectID, pgtype.UUID{}, workflowID); err != nil {
+		writeBoundRebindingError(w, err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -3741,7 +3855,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID, req.DecisionBindingFields, req.Title)
 	if !ok {
 		return
 	}
@@ -3970,6 +4084,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		PropertyGate:    h.createPropertyGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
@@ -4760,6 +4875,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
+	if req.Title != nil && prevIssue.Title != issue.Title {
+		resp.WorkflowHint = h.titleTypeWorkflowHint(r, issue)
+	}
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&

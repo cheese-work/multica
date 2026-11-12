@@ -101,8 +101,46 @@ type ManagedClaudeHome struct {
 // subagents, commands).
 var claudePersonalDiscovery = []string{"CLAUDE.md", "settings.json", "plugins", "skills", "agents", "commands"}
 
+// claudeAuthEnvKeys is the allowlist of `env` keys copied from the personal
+// settings.json into the managed one: provider route, credential and model
+// selection only. Proxy-routed installs (no OAuth login) authenticate solely
+// through these, so dropping them makes Claude report "Not logged in".
+var claudeAuthEnvKeys = map[string]bool{
+	"ANTHROPIC_BASE_URL":             true,
+	"ANTHROPIC_AUTH_TOKEN":           true,
+	"ANTHROPIC_API_KEY":              true,
+	"ANTHROPIC_MODEL":                true,
+	"ANTHROPIC_SMALL_FAST_MODEL":     true,
+	"ANTHROPIC_DEFAULT_OPUS_MODEL":   true,
+	"ANTHROPIC_DEFAULT_SONNET_MODEL": true,
+	"ANTHROPIC_DEFAULT_HAIKU_MODEL":  true,
+}
+
+// managedClaudeAuthEnv returns the allowlisted `env` entries of the personal
+// settings.json. A missing or unparsable file yields none.
+func managedClaudeAuthEnv(sourceConfigDir string) map[string]string {
+	raw, err := os.ReadFile(filepath.Join(sourceConfigDir, "settings.json"))
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Env map[string]any `json:"env"`
+	}
+	if json.Unmarshal(raw, &cfg) != nil {
+		return nil
+	}
+	kept := map[string]string{}
+	for k, v := range cfg.Env {
+		if s, ok := v.(string); ok && claudeAuthEnvKeys[k] {
+			kept[k] = s
+		}
+	}
+	return kept
+}
+
 // PrepareManagedClaudeHome builds the allowlisted CLAUDE_CONFIG_DIR for one
-// task: credentials, a minimal settings.json (auto-memory off, no hooks) and
+// task: credentials, a minimal settings.json (auto-memory off, no hooks, only
+// the allowlisted auth/route `env` keys of the personal one) and
 // the runtime brief as a standalone file. Missing credentials are not an error
 // (API-key and keychain auth carry them elsewhere).
 func PrepareManagedClaudeHome(envRoot, sourceConfigDir, brief string, skills []SkillContextForEnv, mcpConfig json.RawMessage) (ManagedClaudeHome, error) {
@@ -119,8 +157,21 @@ func PrepareManagedClaudeHome(envRoot, sourceConfigDir, brief string, skills []S
 	} else if !os.IsNotExist(err) {
 		return ManagedClaudeHome{}, fmt.Errorf("read claude credentials: %w", err)
 	}
+	authEnv := managedClaudeAuthEnv(sourceConfigDir)
+	settings := map[string]any{"autoMemoryEnabled": false}
+	envKeys := []string{"CLAUDE_CONFIG_DIR"}
+	if len(authEnv) > 0 {
+		settings["env"] = authEnv
+		for k := range authEnv {
+			envKeys = append(envKeys, k)
+		}
+	}
+	settingsJSON, err := json.Marshal(settings)
+	if err != nil {
+		return ManagedClaudeHome{}, fmt.Errorf("encode managed claude settings: %w", err)
+	}
 	files := map[string]string{
-		"settings.json": `{"autoMemoryEnabled": false}`,
+		"settings.json": string(settingsJSON),
 		".claude.json":  `{"hasCompletedOnboarding": true}`,
 	}
 	for name, content := range files {
@@ -135,7 +186,7 @@ func PrepareManagedClaudeHome(envRoot, sourceConfigDir, brief string, skills []S
 	}
 	receiptPath, err := writeLaunchReceipt(envRoot, LaunchReceipt{
 		Provider:      "claude",
-		EnvKeys:       []string{"CLAUDE_CONFIG_DIR"},
+		EnvKeys:       envKeys,
 		FilesSeeded:   seeded,
 		Skills:        skillNames(skills),
 		McpServers:    mcpServerNames(mcpConfig),
@@ -151,27 +202,30 @@ func PrepareManagedClaudeHome(envRoot, sourceConfigDir, brief string, skills []S
 // prepareCodexHomeWithOpts(Managed): only assigned skills are installed,
 // $HOME/.agents/skills entries are disabled in config.toml, and a receipt is
 // written. The personal ~/.codex/skills link step is deliberately skipped.
-func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv, mcpConfig json.RawMessage, logger *slog.Logger) error {
+func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv, mcpConfig json.RawMessage, logger *slog.Logger) ([]string, error) {
 	skillsDir := filepath.Join(codexHome, "skills")
 	if err := os.RemoveAll(skillsDir); err != nil {
-		return fmt.Errorf("clear codex skills dir: %w", err)
+		return nil, fmt.Errorf("clear codex skills dir: %w", err)
 	}
+	preparedSkillNames := resolveSkillSlugs(skills)
 	if len(skills) > 0 {
-		if err := writeSkillFiles(skillsDir, skills, nil); err != nil {
-			return err
+		var err error
+		preparedSkillNames, err = writeSkillFilesWithNames(skillsDir, skills, nil)
+		if err != nil {
+			return nil, err
 		}
 	}
 	userHome, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve user home: %w", err)
+		return nil, fmt.Errorf("resolve user home: %w", err)
 	}
 	universalDir := filepath.Join(userHome, ".agents", "skills")
 	universal, universalCanonical := listUniversalSkills(universalDir)
 	if err := ensureCodexDisabledSkillsConfig(filepath.Join(codexHome, "config.toml"), codexHome, universal, skills); err != nil {
-		return fmt.Errorf("disable personal codex skills: %w", err)
+		return nil, fmt.Errorf("disable personal codex skills: %w", err)
 	}
 	if err := appendDisabledCodexSkillPaths(filepath.Join(codexHome, "config.toml"), universalCanonical); err != nil {
-		return fmt.Errorf("disable canonical personal codex skills: %w", err)
+		return nil, fmt.Errorf("disable canonical personal codex skills: %w", err)
 	}
 	sharedHome := resolveSharedCodexHome()
 	if _, err := writeLaunchReceipt(envRoot, LaunchReceipt{
@@ -182,12 +236,12 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 		McpServers:    mcpServerNames(mcpConfig),
 		ExcludedPaths: append(existingPaths(sharedHome, "instructions.md", "skills", filepath.Join("plugins", "cache")), universalDir),
 	}); err != nil {
-		return fmt.Errorf("write launch receipt: %w", err)
+		return nil, fmt.Errorf("write launch receipt: %w", err)
 	}
 	if logger != nil {
 		logger.Info("execenv: managed codex home prepared", "codex_home", codexHome)
 	}
-	return nil
+	return preparedSkillNames, nil
 }
 
 // managedCodexConfigKeys is the top-level allowlist for a managed

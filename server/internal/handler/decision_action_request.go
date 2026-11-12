@@ -48,6 +48,9 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {

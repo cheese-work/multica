@@ -43,6 +43,12 @@ type InstallationParams struct {
 	// value falls back to. Empty on a re-install of the SAME bot keeps
 	// whatever is already on the row.
 	BotDisplayName string
+
+	// RequireManagerInstaller makes Upsert refuse unless InstallerUserID is,
+	// at commit time, an owner or admin of the workspace. For callers that
+	// act on a role read earlier (the scan-install worker), where the role may
+	// have been revoked since; callers behind a live admin check leave it off.
+	RequireManagerInstaller bool
 }
 
 // InstallationService creates, refreshes and revokes wecom smart-bot
@@ -85,6 +91,10 @@ type InstallationOption func(*InstallationService)
 func WithCredentialProbe(p CredentialProbe) InstallationOption {
 	return func(s *InstallationService) { s.probe = p }
 }
+
+// ErrInstallerNotManager is returned by Upsert, when RequireManagerInstaller is
+// set, for an installer who is no longer a workspace owner or admin.
+var ErrInstallerNotManager = errors.New("wecom: installer is no longer a workspace owner or admin")
 
 // ErrProbeRequired is returned when a service would otherwise be built — or
 // run — without a credential probe. Proof of control gates a statement that
@@ -195,6 +205,21 @@ func (s *InstallationService) Upsert(ctx context.Context, p InstallationParams) 
 	// already this caller's own. Prove control before the reclaim acts on it.
 	if err := s.probe.Probe(ctx, p.BotID, p.Secret); err != nil {
 		return Installation{}, err
+	}
+
+	// FOR SHARE holds the member row until commit, so a concurrent role change
+	// waits for this bind and then lands after it, never between check and write.
+	if p.RequireManagerInstaller {
+		var role string
+		err := tx.QueryRow(ctx,
+			`SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2 FOR SHARE`,
+			p.WorkspaceID, p.InstallerUserID).Scan(&role)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return Installation{}, fmt.Errorf("wecom: check installer role: %w", err)
+		}
+		if role != "owner" && role != "admin" {
+			return Installation{}, ErrInstallerNotManager
+		}
 	}
 
 	sealed, err := s.box.Seal([]byte(p.Secret))

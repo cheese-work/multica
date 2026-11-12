@@ -676,6 +676,28 @@ func (q *Queries) ListSkillsByWorkspace(ctx context.Context, workspaceID pgtype.
 	return items, nil
 }
 
+const lockSkillForFileWrite = `-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE
+`
+
+type LockSkillForFileWriteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Every writer of an existing skill's files takes this lock first and holds it
+// to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+// agent.skills.set approval, which row locks on skill_file could not do for an
+// insert. It waits under the transaction lock timeout.
+func (q *Queries) LockSkillForFileWrite(ctx context.Context, arg LockSkillForFileWriteParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockSkillForFileWrite, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const lockSkillsShare = `-- name: LockSkillsShare :many
 SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id FROM skill
 WHERE workspace_id = $1 AND id = ANY($2::uuid[])
@@ -766,6 +788,38 @@ func (q *Queries) SetAgentSkillEnabled(ctx context.Context, arg SetAgentSkillEna
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const touchSkill = `-- name: TouchSkill :one
+UPDATE skill SET updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id
+`
+
+type TouchSkillParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Supporting-file writes change the skill as a whole, so they bump the parent's
+// updated_at in the same transaction. Updating the row also takes its lock,
+// which serializes concurrent file writes on one skill with UpdateSkill.
+func (q *Queries) TouchSkill(ctx context.Context, arg TouchSkillParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, touchSkill, arg.ID, arg.WorkspaceID)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.Content,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PluginInstallationID,
+	)
+	return i, err
 }
 
 const updateSkill = `-- name: UpdateSkill :one

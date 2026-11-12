@@ -76,7 +76,7 @@ import {
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { useChatStore } from "@multica/core/chat";
+import { deriveChatTitle, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -372,7 +372,7 @@ export function ChatWindow() {
   // promise ref dedupes those races: the first caller starts the create,
   // every subsequent caller awaits the same promise until it settles.
   //
-  // titleSeed is the first 50 chars of the user's message when called from
+  // titleSeed is the user's message (title derived via deriveChatTitle) when called from
   // send; the upload path passes "" and we leave the title empty so the
   // session-dropdown's existing localized `window.untitled` fallback kicks
   // in. A follow-up task may back-fill the real title from the first user
@@ -405,7 +405,7 @@ export function ChatWindow() {
         try {
           const session = await createSession.mutateAsync({
             agent_id: activeAgent.id,
-            title: titleSeed.slice(0, 50),
+            title: deriveChatTitle(titleSeed),
             project_id: activeProjectId,
           });
           return session.id;

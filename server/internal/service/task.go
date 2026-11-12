@@ -976,16 +976,10 @@ func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTas
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
-	// Revoke any mat_ task tokens minted for this task. Cancellation is
-	// a terminal transition, so the running agent process no longer
-	// needs to call back; eagerly deleting the token closes the
-	// window where a compromised process could keep authenticating
-	// against the API until the 24h expiry. Failure is non-fatal — the
-	// expiry / FK cascade are the durable guards. MUL-2600.
-	if err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
-		slog.Warn("cancel task: failed to revoke task tokens",
-			"task_id", util.UUIDToString(task.ID), "error", err)
-	}
+	// Delete any mat_ task tokens minted for this task (MUL-2600). Best
+	// effort: a failed delete leaves the row valid until expiry; see
+	// RevokeTaskTokens.
+	s.RevokeTaskTokens(ctx, task)
 }
 
 // costUSDTicks is the provider's own price for this usage in 1e-10 USD, or 0
@@ -1704,7 +1698,13 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
+		provider, seconds, configErr := issueProviderHoldConfig(ctx, queries, createParams.AgentID)
+		if configErr != nil {
+			return db.AgentTaskQueue{}, configErr
+		}
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
+			HoldProvider:         provider,
+			ProviderHoldSeconds:  seconds,
 			ID:                   dbid.NewV7(),
 			AgentID:              createParams.AgentID,
 			RuntimeID:            createParams.RuntimeID,
@@ -1907,7 +1907,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -4508,6 +4508,42 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			}
 			minPriority = priorityToInt("urgent")
 		}
+
+		// Runtime-wide cap (GitHub #9626): several agents can share one
+		// runtime (e.g. one local GPU), so the per-agent cap alone cannot
+		// keep their combined work bounded.
+		//
+		// The lock is taken before the cap is read, on every claim. The cap
+		// update (UpdateAgentRuntimeMaxConcurrentTasks in the handler) takes
+		// the same lock before committing, so once a PATCH returns, no claim
+		// can still commit against the old value: a claim either finished
+		// before the update got the lock, or reads the new value after it.
+		// Reading the cap first and locking only when it is set would let a
+		// claim that waited on the lock (or read NULL) dispatch against a
+		// stale cap. Claims on one runtime are already short and nearly
+		// serial (one daemon per runtime), so the extra lock is cheap.
+		if err := qtx.LockRuntimeClaimCapacity(ctx, claimRuntimeID); err != nil {
+			outcome = claimOutcomeErrorCountRunning
+			return fmt.Errorf("lock runtime claim capacity: %w", err)
+		}
+		runtimeCap, err := qtx.GetAgentRuntimeMaxConcurrentTasks(ctx, claimRuntimeID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			outcome = claimOutcomeErrorCountRunning
+			return fmt.Errorf("get runtime concurrency cap: %w", err)
+		}
+		if err == nil && runtimeCap.Valid {
+			runtimeRunning, err := qtx.CountActiveTasksByRuntime(ctx, claimRuntimeID)
+			if err != nil {
+				outcome = claimOutcomeErrorCountRunning
+				return fmt.Errorf("count runtime running tasks: %w", err)
+			}
+			if runtimeRunning >= int64(runtimeCap.Int32) {
+				decisionDetail = claimDecisionDetail{running: runtimeRunning, maxConcurrent: int64(runtimeCap.Int32)}
+				outcome = claimOutcomeRuntimeNoCapacity
+				return nil
+			}
+		}
+		countRunningMs = time.Since(t0).Milliseconds()
 
 		t0 = time.Now()
 		reclaimCheckAfter = t0.Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
@@ -8657,7 +8693,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ruleVersionID = target.source.RuleVersionID
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
-		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		task, err := createProviderHeldAgentTask(ctx, s.Queries, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              target.agent.ID,
 			RuntimeID:            target.agent.RuntimeID,
@@ -9214,6 +9250,13 @@ func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQ
 func (s *TaskService) NotifyTaskFinished(task db.AgentTaskQueue) {
 	s.forgetTaskReclaim(task)
 	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
+}
+
+// NotifyRuntimeCapacityChanged wakes a runtime's daemon after its
+// runtime-wide concurrency cap was raised or removed (GitHub #9626), since
+// queued work held back by the old cap may now be claimable.
+func (s *TaskService) NotifyRuntimeCapacityChanged(runtimeID pgtype.UUID) {
+	s.notifyRuntimeMayHaveWork(runtimeID, "")
 }
 
 // notifyTasksFinished is the batch form used by bulk terminal transitions.
@@ -10210,5 +10253,29 @@ func agentToMap(a db.Agent) map[string]any {
 		"updated_at":           util.TimestampToString(a.UpdatedAt),
 		"archived_at":          util.TimestampToPtr(a.ArchivedAt),
 		"archived_by":          util.UUIDToPtr(a.ArchivedBy),
+	}
+}
+
+// RevokeTaskTokens deletes a task's mat_ tokens at task end. It is best effort
+// and is not an immediate revocation guarantee: if the delete fails, the row
+// stays valid until its expires_at (GetTaskTokenByHash filters on it), so the
+// failure is logged and, for an autopilot run, recorded as
+// result.token_revoke_failed. Neither the log nor the record carries a token.
+func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQueue) {
+	err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID)
+	if err == nil {
+		return
+	}
+	slog.Error("task end: failed to delete task tokens; they stay valid until expiry",
+		"task_id", util.UUIDToString(task.ID), "error", err)
+	if !task.AutopilotRunID.Valid {
+		return
+	}
+	// The caller's ctx may be the reason the delete failed (cancelled request).
+	if mergeErr := s.Queries.MergeAutopilotRunResult(context.WithoutCancel(ctx), db.MergeAutopilotRunResultParams{
+		ID: task.AutopilotRunID, Patch: []byte(`{"token_revoke_failed":true}`),
+	}); mergeErr != nil {
+		slog.Error("task end: failed to record token deletion failure",
+			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
 }
