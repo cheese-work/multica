@@ -19,6 +19,9 @@
      "pure_exceptions": ["**/*_test.go"]},
     {"id": "public-contract-wire", "capability": "Public contract",
      "globs": ["packages/core/api/**", "openapi/**", "proto/**"]},
+    {"id": "decision-action-governance", "capability": "Governed-field and workspace-settings allowlists and their refusal logic",
+     "globs": ["server/internal/decisionaction/**"],
+     "pure_exceptions": ["**/*_test.go"]},
     {"id": "instruction-policy", "capability": "Instruction, permission and review-policy trust boundary",
      "globs": ["AGENTS.md", "CLAUDE.md", "**/AGENTS.md", "**/CLAUDE.md", ".agents/**", ".codex/**", "skills/**", "docs/cheese-work/**"]}
   ],
