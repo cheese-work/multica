@@ -492,22 +492,6 @@ func (q *Queries) NewestIssueStatusChange(ctx context.Context, issueID pgtype.UU
 	return i, err
 }
 
-const newestRunBudgetTaskSince = `-- name: NewestRunBudgetTaskSince :one
-SELECT id FROM agent_task_queue
-WHERE issue_id = $1::uuid AND created_at >= now()
-ORDER BY created_at DESC, id DESC
-LIMIT 1
-`
-
-// The task id the worker's admission just inserted: the newest agent task of the
-// issue created at or after the transaction's start (now() is the tx start).
-func (q *Queries) NewestRunBudgetTaskSince(ctx context.Context, issueID pgtype.UUID) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, newestRunBudgetTaskSince, issueID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
 const retireRunBudgetRefusalHook = `-- name: RetireRunBudgetRefusalHook :exec
 UPDATE run_budget_refusal
 SET hook_phase = 'retired', hook_reason = $1::text, updated_at = now()
@@ -531,7 +515,7 @@ func (q *Queries) RetireRunBudgetRefusalHook(ctx context.Context, arg RetireRunB
 const reviveRunBudgetRefusal = `-- name: ReviveRunBudgetRefusal :one
 UPDATE run_budget_refusal
 SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
-    state_reason = $7, state = $8, taint_ids = $9, actor_user_id = $10, trigger_comment_id = $11, hook_phase = 'intent', hook_reason = NULL,
+    state_reason = $7, state = $8, taint_ids = $9, actor_user_id = $10, trigger_comment_id = $11, task_id = NULL, hook_phase = 'intent', hook_reason = NULL,
     hook_generation = hook_generation + 1, updated_at = now()
 WHERE id = $1
 RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id
@@ -681,5 +665,24 @@ type TaintBudgetRecoveryRunsParams struct {
 // started run reads its taint on every call).
 func (q *Queries) TaintBudgetRecoveryRuns(ctx context.Context, arg TaintBudgetRecoveryRunsParams) error {
 	_, err := q.db.Exec(ctx, taintBudgetRecoveryRuns, arg.Taint, arg.IssueID)
+	return err
+}
+
+const unionTaskTaint = `-- name: UnionTaskTaint :exec
+UPDATE agent_task_queue
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || $1::text[]) AS t ORDER BY t)
+WHERE id = $2::uuid AND NOT taint_ids @> $1::text[]
+`
+
+type UnionTaskTaintParams struct {
+	Taint []string    `json:"taint"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// The run a refusal ended on carries the refusal's taint (CHE-2860). Monotonic:
+// the task keeps what it has (the agent_task_inherit_taint trigger unions it
+// again), so a join never makes a run cleaner.
+func (q *Queries) UnionTaskTaint(ctx context.Context, arg UnionTaskTaintParams) error {
+	_, err := q.db.Exec(ctx, unionTaskTaint, arg.Taint, arg.ID)
 	return err
 }

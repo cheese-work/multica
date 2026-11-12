@@ -799,3 +799,103 @@ func TestRunBudgetResumeBlockedRestoreToAnArchivedHandlerSupersedesIt(t *testing
 		t.Fatalf("issue %s with %d queued runs, want blocked and none", got, n)
 	}
 }
+
+// Slice 1 (CHE-2860 revise): the resume runs on the refusal as it is under the
+// locks, and the run it ends on is the exact task, tainted by every join.
+
+const joinTaint = "untrusted:web"
+
+// joinTaintTo is what a caller that joined the refusal records on its row.
+func joinTaintTo(t *testing.T, id pgtype.UUID) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, id, joinTaint)
+}
+
+func TestRunBudgetResumeTaintJoinedBetweenTheReadAndTheLockReachesTheRun(t *testing.T) {
+	t.Run("direct", func(t *testing.T) {
+		c, id := intentCase(t, 2860170)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		atResume(t, "before_resume", func() { joinTaintTo(t, id) })
+		resume(t, id)
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, joinTaint)
+	})
+	t.Run("blocked restore", func(t *testing.T) {
+		c, id := reviewBlockedCase(t, 2860171)
+		linkRefusal(t, id, resumeRowOf(t, id).Window)
+		raiseCap(t, c)
+		atResume(t, "before_resume", func() { joinTaintTo(t, id) })
+		resume(t, id)
+		wantResume(t, id, "run_queued", "")
+		wantTaint(t, refusedRunOf(t, c).Taint, joinTaint)
+	})
+}
+
+// A caller that joins after the run was queued taints that run: the row alone
+// is no longer read.
+func TestRunBudgetResumeTaintJoinedAfterTheRunWasQueuedReachesTheExactRun(t *testing.T) {
+	for _, status := range []string{"queued", "dispatched", "running"} {
+		t.Run(status, func(t *testing.T) {
+			c, e := hookCase(t, 2860172)
+			crashAt(t, "after_intent")
+			testHandler.onRunBudgetExhausted(context.Background(), e)
+			id := refusalIDs(t, c)[0]
+			linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			resume(t, id)
+			wantResume(t, id, "run_queued", "")
+			task := wantTaskOf(t, id)
+			dbfx.Exec(t, `UPDATE agent_task_queue SET status=$2 WHERE id=$1`, task, status)
+			ctx := service.WithTaint(context.Background(), []string{joinTaint})
+			if _, _, ok := testHandler.recordRefusalIntent(ctx, e); !ok {
+				t.Fatal("the join did not reach the refusal")
+			}
+			var got []string
+			if err := testPool.QueryRow(context.Background(), `SELECT taint_ids FROM agent_task_queue WHERE id=$1`, task).Scan(&got); err != nil {
+				t.Fatal(err)
+			}
+			wantTaint(t, got, joinTaint)
+		})
+	}
+}
+
+func wantTaskOf(t *testing.T, id pgtype.UUID) pgtype.UUID {
+	t.Helper()
+	r := resumeRowOf(t, id)
+	if !r.TaskID.Valid {
+		t.Fatalf("refusal names no task: %+v", r)
+	}
+	return r.TaskID
+}
+
+// A clean run of the same agent already pending is the run the refusal ends on:
+// it is named, tainted with the refusal's taint, and no second run is queued.
+func TestRunBudgetResumeEndsOnTheSurvivorAndTaintsIt(t *testing.T) {
+	for _, trigger := range []string{"assignment or status handoff", "mention"} {
+		t.Run(trigger, func(t *testing.T) {
+			c, id := intentCase(t, 2860173)
+			agent := c.agentID
+			if trigger == "mention" {
+				agent = secondAgent(t)
+			}
+			dbfx.Exec(t, `UPDATE run_budget_refusal SET agent_id=$2, trigger=$3, taint_ids=ARRAY[$4]::text[] WHERE id=$1`, id, agent, trigger, joinTaint)
+			linkRefusal(t, id, resumeRowOf(t, id).Window)
+			raiseCap(t, c)
+			var survivor pgtype.UUID
+			if err := testPool.QueryRow(context.Background(), `INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+				SELECT $1, runtime_id, $2, 'queued', 0 FROM agent WHERE id=$1 RETURNING id`, agent, c.issueID).Scan(&survivor); err != nil {
+				t.Fatal(err)
+			}
+			resume(t, id)
+			wantResume(t, id, "run_queued", "")
+			if got := wantTaskOf(t, id); got != survivor {
+				t.Fatalf("refusal ends on task %s, want the pending survivor %s", uuidToString(got), uuidToString(survivor))
+			}
+			if n := resumeQueued(t, c); n != 1 {
+				t.Fatalf("queued runs = %d, want the survivor only", n)
+			}
+			wantTaint(t, refusedRunOf(t, c).Taint, joinTaint)
+		})
+	}
+}

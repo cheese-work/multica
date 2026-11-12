@@ -117,6 +117,12 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 						return err
 					}
 				}
+				// A resume that already ended on a run: the join reaches that exact run.
+				if existing.TaskID.Valid && len(taint) > 0 {
+					if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: existing.TaskID, Taint: taint}); err != nil {
+						return err
+					}
+				}
 				id, generation, ok = existing.ID, existing.HookGeneration, true
 				return nil
 			}

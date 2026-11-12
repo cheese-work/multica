@@ -87,29 +87,31 @@ func resumeIneligible(ctx context.Context, q *db.Queries, row db.RunBudgetRefusa
 }
 
 // lockResume takes the locks in lock order E23 (the issue, then the refusal)
-// and checks the refusal is still waiting and eligible.
-func lockResume(ctx context.Context, q *db.Queries, id, issueID, actionID pgtype.UUID) error {
+// and checks the refusal is still waiting and eligible. It returns the row as
+// the lock read it: a taint that joined after the worker's first read is on it
+// (CHE-2860), so the run is never admitted with the older copy.
+func lockResume(ctx context.Context, q *db.Queries, id, issueID, actionID pgtype.UUID) (db.RunBudgetRefusal, error) {
 	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil {
-		return err
+		return db.RunBudgetRefusal{}, err
 	}
 	row, err := q.LockRunBudgetRefusal(ctx, id)
 	if err != nil {
-		return err
+		return db.RunBudgetRefusal{}, err
 	}
 	if row.State != "resume_pending" {
-		return errResumeDone
+		return db.RunBudgetRefusal{}, errResumeDone
 	}
 	if row.ActionID != actionID {
-		return errResumeRelinked
+		return db.RunBudgetRefusal{}, errResumeRelinked
 	}
 	reason, err := resumeIneligible(ctx, q, row)
 	if err != nil {
-		return err
+		return db.RunBudgetRefusal{}, err
 	}
 	if reason != "" {
-		return &resumeSuperseded{reason: reason}
+		return db.RunBudgetRefusal{}, &resumeSuperseded{reason: reason}
 	}
-	return nil
+	return row, nil
 }
 
 // isRunRefusal reports whether err is an admission refusal, as opposed to a failure.
@@ -120,16 +122,21 @@ func isRunRefusal(err error) bool {
 }
 
 // finishResume is the worker's terminal write, in the worker's transaction.
-func finishResume(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, direct bool) error {
-	task, err := q.NewestRunBudgetTaskSince(ctx, row.IssueID)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
+// task is the exact run the resume admitted or found already holding the slot;
+// invalid when the restore started none. fresh is the row the locks read: its
+// taint is unioned into that run, so a run that survived the refusal is never
+// cleaner than the refusal (the trigger keeps it monotonic).
+func finishResume(ctx context.Context, q *db.Queries, fresh db.RunBudgetRefusal, task pgtype.UUID, direct bool) error {
 	state := "run_queued"
 	if !task.Valid && !direct {
 		state = "status_restored"
 	}
-	if err := q.FinishRunBudgetRefusalResume(ctx, db.FinishRunBudgetRefusalResumeParams{ID: row.ID, State: state, TaskID: task}); err != nil {
+	if task.Valid && len(fresh.TaintIds) > 0 {
+		if err := q.UnionTaskTaint(ctx, db.UnionTaskTaintParams{ID: task, Taint: fresh.TaintIds}); err != nil {
+			return err
+		}
+	}
+	if err := q.FinishRunBudgetRefusalResume(ctx, db.FinishRunBudgetRefusalResumeParams{ID: fresh.ID, State: state, TaskID: task}); err != nil {
 		return err
 	}
 	if runBudgetResumeAt("before_commit") {
@@ -204,12 +211,19 @@ func (h *Handler) resumeOnce(ctx context.Context, row db.RunBudgetRefusal) (func
 func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, issue db.Issue) (func(context.Context), error) {
 	to := row.Status.String
 	overlay := h.prepareEdgeRunOverlay(ctx, issue, to, true)
+	// fresh is the refusal as the guard's lock read it, inside the move.
+	fresh := row
 	guard := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
-		return lockResume(ctx, q, row.ID, issue.ID, row.ActionID)
+		locked, err := lockResume(ctx, q, row.ID, issue.ID, row.ActionID)
+		if err == nil {
+			fresh = locked
+		}
+		return err
 	}
 	extra := map[string]any{"reason": "budget_approved", "action_id": uuidToString(row.ActionID)}
 	var edge edgeMove
-	// The run the move admits carries the taint the refusal recorded.
+	// The run the move admits carries the taint the refusal recorded; finishResume
+	// adds what joined after this read.
 	moveCtx := withIssueMoveGuard(service.WithTaint(ctx, row.TaintIds), guard)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
@@ -230,7 +244,7 @@ func (h *Handler) resumeBlocked(ctx context.Context, row db.RunBudgetRefusal, is
 		if edge.RunRefused != nil && !errors.Is(edge.RunRefused, service.ErrDuplicatePendingTask) {
 			return &resumeRefused{cause: edge.RunRefused}
 		}
-		return finishResume(ctx, q, row, false)
+		return finishResume(ctx, q, fresh, edge.TaskID, false)
 	})
 	if err != nil {
 		return nil, err
@@ -264,7 +278,8 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 	var after func()
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
-		if err := lockResume(ctx, q, row.ID, issue.ID, row.ActionID); err != nil {
+		fresh, err := lockResume(ctx, q, row.ID, issue.ID, row.ActionID)
+		if err != nil {
 			return err
 		}
 		// Read under the lock: the run is admitted for the issue as it is now.
@@ -272,8 +287,9 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		if err != nil {
 			return err
 		}
-		// The run carries the taint the refusal recorded.
-		after, err = h.enqueueRefusedRun(service.WithTaint(ctx, row.TaintIds), q, row, locked, overlay)
+		// The run carries the taint the locked refusal holds now.
+		var taskID pgtype.UUID
+		taskID, after, err = h.enqueueRefusedRun(service.WithTaint(ctx, fresh.TaintIds), q, fresh, locked, overlay)
 		switch {
 		case err == nil, errors.Is(err, service.ErrDuplicatePendingTask):
 		case isRunRefusal(err):
@@ -281,7 +297,7 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 		default:
 			return err
 		}
-		return finishResume(ctx, q, row, true)
+		return finishResume(ctx, q, fresh, taskID, true)
 	})
 	if err != nil {
 		return nil, err
@@ -296,14 +312,14 @@ func (h *Handler) resumeDirect(ctx context.Context, row db.RunBudgetRefusal, iss
 // squad-leader run needs the assignee it was refused for; any other trigger (a
 // mention, a wakeup) runs its own agent whoever the assignee is. A refusal
 // without a valid agent falls back to the assignee.
-func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, issue db.Issue, overlay *service.PreparedRuntimeMCPOverlay) (func(), error) {
+func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.RunBudgetRefusal, issue db.Issue, overlay *service.PreparedRuntimeMCPOverlay) (pgtype.UUID, func(), error) {
 	th := h.onQueries(q)
 	// A wakeup or a retry keeps its evidence in the wakeup rule or the failed
 	// task, not in the refusal: restoring it here would re-admit it as a mention.
 	// Its own tick or retry runs it again.
 	switch row.Trigger {
 	case "wakeup", "system wakeup", "retry":
-		return nil, &resumeSuperseded{reason: "trigger_not_resumable"}
+		return pgtype.UUID{}, nil, &resumeSuperseded{reason: "trigger_not_resumable"}
 	}
 	agentID, viaSquad := row.AgentID, row.Trigger == "squad leader callback"
 	switch {
@@ -313,22 +329,22 @@ func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.R
 		viaSquad = true
 		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 		if err != nil {
-			return nil, &resumeSuperseded{reason: "assignee_changed"}
+			return pgtype.UUID{}, nil, &resumeSuperseded{reason: "assignee_changed"}
 		}
 		agentID = squad.LeaderID
 	case !agentID.Valid:
-		return nil, &resumeSuperseded{reason: "assignee_changed"}
+		return pgtype.UUID{}, nil, &resumeSuperseded{reason: "assignee_changed"}
 	}
 	if viaSquad {
 		squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: issue.AssigneeID, WorkspaceID: issue.WorkspaceID})
 		if issue.AssigneeType.String != "squad" || err != nil || squad.LeaderID != agentID {
-			return nil, &resumeSuperseded{reason: "assignee_changed"}
+			return pgtype.UUID{}, nil, &resumeSuperseded{reason: "assignee_changed"}
 		}
 	}
 	if agent, err := q.GetAgent(ctx, agentID); errors.Is(err, pgx.ErrNoRows) || (err == nil && agent.ArchivedAt.Valid) {
-		return nil, &resumeSuperseded{reason: "agent_archived"}
+		return pgtype.UUID{}, nil, &resumeSuperseded{reason: "agent_archived"}
 	} else if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
 	switch {
 	case viaSquad:
@@ -339,30 +355,30 @@ func (h *Handler) enqueueRefusedRun(ctx context.Context, q *db.Queries, row db.R
 		return th.enqueueSquadLeaderRunAsInTx(ctx, q, issue, row.TriggerCommentID, actorType, actorID)
 	case row.Trigger == "assignment or status handoff" || row.Trigger == "comment":
 		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
-			return nil, &resumeSuperseded{reason: "assignee_changed"}
+			return pgtype.UUID{}, nil, &resumeSuperseded{reason: "assignee_changed"}
 		}
 		return th.TaskService.EnqueueIssueRunInTx(ctx, q, issue, row.TriggerCommentID, row.ActorUserID, overlay)
 	}
-	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+	survivor, err := q.PendingTaskForIssueAndAgent(ctx, db.PendingTaskForIssueAndAgentParams{
 		IssueID: issue.ID,
 		AgentID: agentID,
 		HeadSha: th.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
-	if err != nil {
-		return nil, err
+	if err == nil {
+		return survivor, nil, service.ErrDuplicatePendingTask
 	}
-	if pending {
-		return nil, service.ErrDuplicatePendingTask
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil, err
 	}
 	params, err := th.TaskService.PrepareTaskForMention(ctx, q, issue, agentID, row.TriggerCommentID, row.ActorUserID, service.OriginDerived)
 	if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
 	task, err := th.TaskService.EnqueuePreparedTaskForMentionInTx(ctx, q, issue, params, service.OriginDerived)
 	if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
-	return func() { h.TaskService.PublishTaskEnqueued(ctx, task) }, nil
+	return task.ID, func() { h.TaskService.PublishTaskEnqueued(ctx, task) }, nil
 }
 
 // refuseResume records why a rolled-back resume was refused: still_blocked
