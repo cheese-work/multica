@@ -91,6 +91,59 @@ WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summa
 ORDER BY created_at DESC
 LIMIT 1;
 
+-- name: ListChatCarryOverMessages :many
+-- Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+-- assistant messages above the DM's segment floor, newest first. A queued
+-- follow-up is not delivered yet and stays out; the claiming task's own input
+-- batch is excluded because the claim delivers it separately.
+SELECT m.* FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatSegmentTail :many
+-- Carry-over fallback when the current segment holds no assistant message yet:
+-- the last assistant message of the previous segment and the messages after it,
+-- newest first. Nothing at or before the previous divider is returned. Same
+-- exclusions as ListChatCarryOverMessages.
+WITH prev_divider AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'compaction_summary'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+)
+SELECT m.* FROM chat_message m
+JOIN prev_segment ps ON ps.id = m.id
+LEFT JOIN last_answer la ON true
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
 -- name: MoveUnstartedChatTasksToSession :many
 -- A continuation answers the turns still waiting in the archived DM. A task no
 -- daemon has claimed (queued, or deferred behind a retry) moves with its input

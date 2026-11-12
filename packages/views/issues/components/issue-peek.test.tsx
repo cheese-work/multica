@@ -10,6 +10,11 @@ import {
 } from "../surface/peek-context";
 import { IssuePeekHost } from "./issue-peek";
 
+const markMentionsRead = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/inbox", () => ({
+  useMarkMentionsReadOnOpen: (issueId: string) => markMentionsRead(issueId),
+}));
+
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
@@ -148,6 +153,15 @@ describe("IssuePeekHost", () => {
     expect(screen.getByTestId("detail")).toHaveTextContent("i-2");
     expect(screen.getByText("card i-2")).toHaveAttribute("data-peeked");
     expect(screen.getByText("card i-1")).not.toHaveAttribute("data-peeked");
+  });
+
+  it("reads the viewer's mentions on the peeked issue, and on the one stepped to", () => {
+    renderHost();
+    openCard("i-2");
+    expect(markMentionsRead).toHaveBeenLastCalledWith("i-2");
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(markMentionsRead).toHaveBeenLastCalledWith("i-3");
   });
 
   it("switches to another card, and closes when the peeked card is toggled again", async () => {

@@ -69,7 +69,7 @@ test.beforeEach(async ({}, testInfo) => {
 });
 
 test.afterEach(async () => {
-  await removeSeed(seed, passkey);
+  await removeSeed(seed);
   await api.cleanup();
 });
 

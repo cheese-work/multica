@@ -628,6 +628,7 @@ func init() {
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
+	issueCmd.AddCommand(issueUrgentOrphansCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
 	issueCmd.AddCommand(issueAssignCmd)
@@ -684,6 +685,7 @@ func init() {
 	issuePullRequestsUnlinkCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
+	issueUrgentOrphansCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 
 	// issue create
@@ -701,6 +703,8 @@ func init() {
 	issueCreateCmd.Flags().String("project", "", "Project ID")
 	issueCreateCmd.Flags().String("on-behalf-of", "", "Member (user ID) you are creating the issue for; defaults to the person your run acts for")
 	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
+	issueCreateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
+	issueCreateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
@@ -722,18 +726,20 @@ func init() {
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
 	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
+	issueUpdateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
+	issueUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	issueUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD)")
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run, including a workflow step handler's run.")
 	issueUpdateCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID) and cancel it; --status, if given, must be cancelled, and description/attachment changes must go in a separate update")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
@@ -791,6 +797,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
+	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -1813,6 +1820,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if title == "" {
 		return fmt.Errorf("--title is required")
 	}
+	if err := checkIssueWorkflowBindingFlags(cmd); err != nil {
+		return err
+	}
 	statusFlag, _ := cmd.Flags().GetString("status")
 	if statusFlag != "" {
 		if err := validateIssueStatus(statusFlag); err != nil {
@@ -1891,6 +1901,18 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	}
 	if v, _ := cmd.Flags().GetString("workflow"); v != "" && v != "none" {
 		body["workflow_id"] = v
+	}
+	if workflowBindingRequested(cmd) {
+		projectID, _ := body["project_id"].(string)
+		if parentID, _ := body["parent_issue_id"].(string); projectID == "" && parentID != "" {
+			var err error
+			if projectID, _, err = liveIssueWorkflow(ctx, client, parentID); err != nil {
+				return err
+			}
+		}
+		if done, err := bindIssueWorkflow(cmd, body, "", projectID, ""); done {
+			return err
+		}
 	}
 	if v, _ := cmd.Flags().GetString("on-behalf-of"); v != "" {
 		body["requested_by_id"] = v
@@ -2096,6 +2118,9 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkIssueWorkflowBindingFlags(cmd); err != nil {
+		return err
+	}
 	// The server rejects a mark alongside description or attachment writes,
 	// and attachments upload before the update, so refuse the combination
 	// before anything is uploaded and left unbound.
@@ -2219,6 +2244,15 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 			workflowID = nil
 		}
 		switchBody := map[string]any{"workflow_id": workflowID}
+		if workflowBindingRequested(cmd) {
+			projectID, override, err := liveIssueWorkflow(ctx, client, issueRef.ID)
+			if err != nil {
+				return err
+			}
+			if done, err := bindIssueWorkflow(cmd, switchBody, issueRef.ID, projectID, override); done {
+				return err
+			}
+		}
 		if cmd.Flags().Changed("expected-revision") {
 			switchBody["expected_revision"], _ = cmd.Flags().GetInt64("expected-revision")
 		}
@@ -2995,6 +3029,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
+	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
+	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
+		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -3093,6 +3131,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"content": content}
 	if decisionVeto {
 		body["decision_veto"] = true
+	}
+	if notifyOnly {
+		body["notify_only"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true

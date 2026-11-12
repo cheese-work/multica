@@ -42,7 +42,7 @@ func (service *Service) StartRevocationByCode(ctx context.Context, userID, targe
 	if err != nil {
 		return Started{}, err
 	}
-	return Started{CeremonyID: row.ID, ExpiresAt: row.ExpiresAt.Time}, nil
+	return Started{CeremonyID: row.ID, ExpiresAt: row.ExpiresAt.Time, Tag: AttemptTag(row.ID)}, nil
 }
 
 // RevokeByCode retires the target once the mailed code of the user's
@@ -76,7 +76,7 @@ func (service *Service) RevokeByCode(ctx context.Context, userID, targetID, cere
 		return conflict("ceremony_expired: start a new revocation")
 	}
 	if !hmac.Equal(ceremony.CodeHmac, codeMAC(service.CodeKey, userID, code)) {
-		return service.spendAttempt(ctx, tx, queries, ceremony.ID, userID, email, forbidden("invalid_code: the code does not match"))
+		return service.spendAttempt(ctx, tx, queries, ceremony.ID, userID, email, service.wrongCode(ctx, queries, userID, ceremonyRevoke, ceremony.ID, code))
 	}
 	// The target and every usable passkey are locked together, so the floor
 	// check below sees the set no concurrent revocation can change.
