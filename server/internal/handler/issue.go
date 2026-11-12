@@ -4035,6 +4035,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		PropertyGate:    h.createPropertyGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,

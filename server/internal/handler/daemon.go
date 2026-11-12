@@ -7087,9 +7087,49 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	// for a column that is near-empty on runs that have not finished.
 	if !activeOnly {
 		h.hydrateTaskUsage(r.Context(), issue.ID, resp)
+		resp = h.withSkippedRuns(r.Context(), issue, tasks, resp)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// withSkippedRuns adds the runs the review-head guard declined (CHE-4649) to
+// the run list as cancelled entries whose failure_reason is the skip reason, in
+// time order with the real runs. They are no task rows (a row would count
+// against the run budget), so the list reads them from the activity. A read
+// error leaves the list as it was.
+func (h *Handler) withSkippedRuns(ctx context.Context, issue db.Issue, tasks []db.AgentTaskQueue, resp []AgentTaskResponse) []AgentTaskResponse {
+	skips, err := h.Queries.ListIssueRunSkips(ctx, issue.ID)
+	if err != nil || len(skips) == 0 {
+		return resp
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	// resp is newest first, one entry per task; place each skip before the first
+	// run that is older than it.
+	for _, skip := range skips {
+		var d struct {
+			Reason  string `json:"reason"`
+			AgentID string `json:"agent_id"`
+			Head    string `json:"head_sha"`
+			Trigger string `json:"trigger"`
+		}
+		if json.Unmarshal(skip.Details, &d) != nil || d.Reason == "" {
+			continue
+		}
+		msg := fmt.Sprintf("Run not started: agent already answered PR head %s (%s)", d.Head, d.Trigger)
+		entry := AgentTaskResponse{
+			ID: uuidToString(skip.ID), AgentID: d.AgentID, IssueID: uuidToString(issue.ID), WorkspaceID: workspaceID,
+			Status: "cancelled", FailureReason: d.Reason, Error: &msg, TriggerSummary: &msg,
+			CreatedAt: timestampToString(skip.CreatedAt), CompletedAt: timestampToPtr(skip.CreatedAt),
+		}
+		at := slices.IndexFunc(tasks, func(t db.AgentTaskQueue) bool { return t.CreatedAt.Time.Before(skip.CreatedAt.Time) })
+		if at < 0 {
+			at = len(resp)
+		}
+		resp = slices.Insert(resp, at, entry)
+		tasks = slices.Insert(tasks, at, db.AgentTaskQueue{CreatedAt: skip.CreatedAt})
+	}
+	return resp
 }
 
 // hydrateTaskUsage attaches each run's own token usage to the execution-log
