@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -117,6 +118,24 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
+	var dmSession pgtype.UUID
+	if taskID, err := util.ParseUUID(request.Header.Get("X-Task-ID")); err == nil {
+		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeError(writer, http.StatusInternalServerError, "failed to load task")
+			return
+		}
+		if err == nil && task.ChatSessionID.Valid {
+			// A DM agent asks its own member in its own DM, never elsewhere.
+			if input.NewDM || sessionID.Valid || parentID.Valid {
+				writeError(writer, http.StatusBadRequest, "a request from a chat takes no new_dm, session_id or parent_id")
+				return
+			}
+			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For); !ok {
+				return
+			}
+		}
+	}
 	covers, ok := parseBatchCovers(writer, input.CoversRequestIDs, input.Action != nil)
 	if !ok {
 		return
@@ -134,7 +153,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
