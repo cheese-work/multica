@@ -48,7 +48,7 @@ var runBudgetAnomalyText = map[string]string{
 // envelope is spent, the issue is not waiting on an agent's run it can resume,
 // or the auto path failed. Failing closed hands the window to a person.
 func (h *Handler) autoApproveExhausted(ctx context.Context, e service.RunBudgetExhausted) bool {
-	issue, ok := h.exhaustedIssue(ctx, e)
+	issue, ok := exhaustedIssueWith(ctx, h.Queries, e)
 	if !ok || issue.Status == issuestatus.Blocked || issue.AssigneeType.String != "agent" || issue.AssigneeID != e.Target.AgentID {
 		return false
 	}
