@@ -2018,5 +2018,16 @@
       "system": "系统"
     },
     "open": "状态历史"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 此前 {{earlier}} 个",
+    "diff": "差异",
+    "title": "{{name}}：v{{from}} → v{{to}}",
+    "region": "v{{from}} 到 v{{to}} 的变更，仅显示改动部分",
+    "show_full": "显示全部",
+    "show_changes": "仅显示变更",
+    "loading": "正在加载变更",
+    "load_failed": "无法加载变更。",
+    "no_changes": "文本没有变化。"
   }
 }

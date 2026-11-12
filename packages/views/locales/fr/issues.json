@@ -2099,5 +2099,16 @@
       "system": "Système"
     },
     "open": "Historique des statuts"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · {{earlier}} antérieures",
+    "diff": "Diff",
+    "title": "{{name}} : v{{from}} → v{{to}}",
+    "region": "Modifications de v{{from}} à v{{to}}, passages modifiés uniquement",
+    "show_full": "Tout afficher",
+    "show_changes": "Modifications seulement",
+    "loading": "Chargement des modifications",
+    "load_failed": "Impossible de charger les modifications.",
+    "no_changes": "Aucune modification du texte."
   }
 }
