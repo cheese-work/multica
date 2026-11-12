@@ -40,9 +40,12 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
   const { data: budget } = useRunBudget(wsId, issueId);
   const qc = useQueryClient();
   const { data: members } = useQuery(memberListOptions(wsId));
-  // An open request on this issue sits in the decision banner below: link to it instead of opening a second one.
+  // An open budget request on this issue sits in the decision banner below: link to it instead of opening a second one.
+  // Other open cards on the issue do not count.
   const { data: openRequests } = useQuery(openDecisionRequestsOptions(wsId));
-  const hasOpenRequest = (openRequests ?? []).some((r) => r.issue_id === issueId);
+  const hasOpenRequest = (openRequests ?? []).some(
+    (r) => r.issue_id === issueId && (r.action?.action_type ?? "").startsWith("issue.run_budget."),
+  );
   const userId = useAuthStore((s) => s.user?.id);
   const [asked, setAsked] = useState<Asked>({ kind: "idle" });
   const windowId = budget?.windowId ?? null;

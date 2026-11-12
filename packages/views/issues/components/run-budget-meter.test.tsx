@@ -65,11 +65,19 @@ describe("RunBudgetMeter (CHE-2861)", () => {
 
   describe("open request link (CHE-5285)", () => {
     it("links to the open request on this issue and holds the buttons", async () => {
-      listOpenDecisionRequests.mockResolvedValue([{ id: "req-1", issue_id: issueId }, { id: "req-2", issue_id: "other" }]);
+      listOpenDecisionRequests.mockResolvedValue([{ id: "req-1", issue_id: issueId, action: { action_type: "issue.run_budget.raise" } }, { id: "req-2", issue_id: "other", action: { action_type: "issue.run_budget.raise" } }]);
       view();
       const link = await screen.findByRole("link", { name: "Open request below" });
       expect(link.getAttribute("href")).toBe("#issue-decision-banner");
       expect(screen.queryByRole("button", { name: "Top up" })).toBeNull();
+    });
+
+    it("keeps the buttons when the open card on this issue is not a budget card", async () => {
+      listOpenDecisionRequests.mockResolvedValue([{ id: "req-3", issue_id: issueId }, { id: "req-4", issue_id: issueId, action: { action_type: "agent.env.patch" } }]);
+      view();
+      expect(await screen.findByRole("button", { name: "Top up" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Raise" })).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Open request below" })).toBeNull();
     });
 
     it("keeps the buttons when no request is open on this issue", async () => {
