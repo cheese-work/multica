@@ -84,9 +84,7 @@ type proposalRequest struct {
 	ChatSessionID pgtype.UUID
 }
 
-// inDM and chatSession are nil-safe: most requests are not proposals.
-func (proposal *proposalRequest) inDM() bool { return proposal != nil && proposal.ChatSessionID.Valid }
-
+// chatSession is nil-safe: most requests are not proposals.
 func (proposal *proposalRequest) chatSession() pgtype.UUID {
 	if proposal == nil {
 		return pgtype.UUID{}
