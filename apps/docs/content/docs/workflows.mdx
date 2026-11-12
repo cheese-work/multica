@@ -94,6 +94,8 @@ Removing a column may ask you to choose a new status for issues already in it. O
 
 Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client. The **Include child PRs** switch next to it controls whether PR guards also read the PRs of sub-issues (on by default) and follows the same rule. An agent or token cannot change either field directly: it gets `budget_requires_decision` and proposes the change with `multica config propose workflow.budget`, and an owner approves it with a passkey. The same limit applies when an agent or token creates an issue on, or re-binds an issue to, a workflow with a wider budget (`budget_rebinding_requires_interactive`). It takes the same decision: `multica issue create` and `multica issue update` accept `--workflow <id> --decision-id <id>`.
 
+On an issue with a run budget, the sidebar shows a meter with the runs used, the runs left, a warning at 80 % and a **Run budget used up** state. **Raise** and **Top up** ask a workspace owner to approve more runs. If you are an owner, you approve with your passkey right there; otherwise the owner gets the request.
+
 To delete a workflow, first switch the projects using it to another workflow. Issues keep their current status.
 
 If **Settings** does not include **Workflows**, the feature is not available in this workspace yet, and statuses are still managed in **Settings → Issue Statuses**.
