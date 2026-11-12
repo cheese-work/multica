@@ -60,6 +60,7 @@ const (
 	ReasonSteered                             = dispatch.ReasonSteered
 	ReasonInvocationNotAllowed                = dispatch.ReasonInvocationNotAllowed
 	ReasonTargetUnavailable                   = dispatch.ReasonTargetUnavailable
+	ReasonAgentPaused                         = dispatch.ReasonAgentPaused
 	ReasonRuntimeOffline                      = dispatch.ReasonRuntimeOffline
 	ReasonRuntimeUnusable                     = dispatch.ReasonRuntimeUnusable
 	ReasonRuntimeAccessDenied                 = dispatch.ReasonRuntimeAccessDenied

@@ -3863,6 +3863,10 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 				blockTarget("squad", m.ID, ReasonTargetUnavailable)
 				continue
 			}
+			if agent.SchedulingPausedAt.Valid {
+				blockTarget("squad", m.ID, ReasonAgentPaused)
+				continue
+			}
 			// Same shared verdict as the direct-agent branch below.
 			if verdict, err := service.AgentReadiness(ctx, h.runtimeLookup(obsmetrics.RuntimeLookupSourceComment), agent); err == nil && verdict.Blocked() {
 				blockUnusableTarget("squad", m.ID, agent, verdict)
@@ -3916,6 +3920,10 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		if agent.ArchivedAt.Valid {
 			blockTarget("agent", m.ID, ReasonTargetUnavailable)
+			continue
+		}
+		if agent.SchedulingPausedAt.Valid {
+			blockTarget("agent", m.ID, ReasonAgentPaused)
 			continue
 		}
 		// One readiness verdict for every admission path (service.AgentReadiness).
