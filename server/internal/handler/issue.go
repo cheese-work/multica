@@ -5036,6 +5036,10 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	})
 }
 
+// agentPausedMessage refuses an assignment to a scheduling-paused agent
+// (CHE-5066); callers surface it as-is.
+const agentPausedMessage = "agent_paused: this agent is paused; pick another agent by role"
+
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
 // sub-workflow child) judges the human it acts for. Every other check, and the
@@ -5073,6 +5077,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 		if agent.ArchivedAt.Valid {
 			return http.StatusBadRequest, "cannot assign to archived agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, agentPausedMessage
+		}
 		if !canInvoke(agent) {
 			// Names the missing permission, not the target's configuration: the
 			// old "private agent" wording both disclosed the agent's permission
@@ -5099,6 +5106,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 		leader, err := h.Queries.GetAgent(ctx, squad.LeaderID)
 		if err != nil || leader.ArchivedAt.Valid {
 			return http.StatusBadRequest, "squad leader is archived; cannot assign to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, agentPausedMessage
 		}
 		if !canInvoke(leader) {
 			// Same wording rule as the agent branch above; "this squad"
