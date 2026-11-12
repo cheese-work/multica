@@ -140,6 +140,7 @@ type Config struct {
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
+	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
 	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex

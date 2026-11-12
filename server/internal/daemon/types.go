@@ -173,6 +173,7 @@ type Task struct {
 	AutopilotTitle                string                 `json:"autopilot_title,omitempty"`                  // autopilot title used as task context
 	AutopilotDescription          string                 `json:"autopilot_description,omitempty"`            // autopilot description used as task prompt
 	AutopilotSource               string                 `json:"autopilot_source,omitempty"`                 // manual, schedule, webhook, or api
+	Script                        *TaskScript            `json:"script,omitempty"`                           // non-nil for script-mode autopilot tasks: run the allowlisted script with no model session
 	AutopilotTriggerPayload       json.RawMessage        `json:"autopilot_trigger_payload,omitempty"`        // optional trigger payload for webhook/api runs
 	QuickCreatePrompt             string                 `json:"quick_create_prompt,omitempty"`              // user's natural-language input for quick-create tasks
 	QuickCreatePriority           string                 `json:"quick_create_priority,omitempty"`            // explicit priority selected in quick-create
@@ -335,6 +336,14 @@ type TaskUsageEntry struct {
 	// server then leaves the column NULL and the client estimates from the
 	// pricing table instead. See agent.TokenUsage.CostUSDTicks.
 	CostUSDTicks int64 `json:"cost_usd_ticks,omitempty"`
+}
+
+// TaskScript is the script a script-mode autopilot task asks the daemon to run.
+// Name is looked up in the daemon's own allowlist; the server never names an
+// executable.
+type TaskScript struct {
+	Name string   `json:"name"`
+	Args []string `json:"args"`
 }
 
 // TaskResult is the outcome of executing a task.

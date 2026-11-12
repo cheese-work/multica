@@ -442,6 +442,14 @@ SET status = 'running', task_id = $2
 WHERE id = $1
 RETURNING *;
 
+-- name: MergeAutopilotRunResult :exec
+-- Adds top-level keys to a run's result without touching its status or any
+-- key already there. A result that is not a JSON object is replaced, so the
+-- audit record is never lost to a malformed task result. (CHE-5094)
+UPDATE autopilot_run
+SET result = CASE WHEN jsonb_typeof(result) = 'object' THEN result ELSE '{}'::jsonb END || @patch::jsonb
+WHERE id = @id;
+
 -- name: UpdateAutopilotRunSkipped :one
 -- Quota safety: this is only for pre-admission skipped rows, which never have
 -- reservations. Post-admission skips use UpdateAutopilotRunTerminalWithQuota.
