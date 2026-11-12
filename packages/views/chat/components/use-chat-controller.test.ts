@@ -3,7 +3,6 @@ import { QueryClient, type InfiniteData } from "@tanstack/react-query";
 import { chatKeys } from "@multica/core/chat/queries";
 import type { ChatMessage, ChatMessagesPage, ChatPendingTask } from "@multica/core/types";
 import {
-  deriveChatTitle,
   hasInFlightPendingTask,
   isStillOnComposeTarget,
   planProjectContextChange,
@@ -207,15 +206,5 @@ describe("planProjectContextChange", () => {
         currentSession: null,
       }),
     ).toEqual({ kind: "setDraftProject", projectId: "project-x" });
-  });
-});
-
-describe("deriveChatTitle", () => {
-  it("cuts a 100-char message to 60 chars", () => {
-    expect(deriveChatTitle("a".repeat(100))).toHaveLength(60);
-  });
-
-  it("keeps a message of 60 chars or fewer whole", () => {
-    expect(deriveChatTitle("a".repeat(60))).toBe("a".repeat(60));
   });
 });

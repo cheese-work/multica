@@ -133,7 +133,7 @@ func TestPrepareManagedCodex_DisablesNestedUniversalSkills(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
@@ -198,7 +198,7 @@ func TestPrepareManagedCodex_DisablesSymlinkedUniversalSkills(t *testing.T) {
 			if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 				t.Fatal(err)
 			}
-			if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+			if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 				t.Fatal(err)
 			}
 			cfg, _ := os.ReadFile(filepath.Join(codexHome, "config.toml"))
@@ -230,7 +230,7 @@ func TestPrepareManagedCodex_ExcludesPersonalDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := []SkillContextForEnv{{Name: "ws", Description: "d", Content: "body"}}
-	if err := prepareManagedCodex(envRoot, codexHome, ws, json.RawMessage(`{"mcpServers":{"m1":{}}}`), logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, ws, json.RawMessage(`{"mcpServers":{"m1":{}}}`), logger); err != nil {
 		t.Fatal(err)
 	}
 
@@ -280,7 +280,7 @@ func TestPersonalCodexHomeUnchanged(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
+	if _, err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(codexHome, "instructions.md")); string(got) != "personal" {
@@ -347,7 +347,7 @@ func TestPrepareManagedCodex_AllowlistsConfig(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux", Managed: true}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
+	if _, err := prepareManagedCodex(envRoot, codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 
@@ -503,7 +503,7 @@ func TestPersonalCodexHomeGolden(t *testing.T) {
 	if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{GOOS: "linux"}, logger); err != nil {
 		t.Fatal(err)
 	}
-	if err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
+	if _, err := hydrateCodexSkills(codexHome, nil, nil, logger); err != nil {
 		t.Fatal(err)
 	}
 	var tree strings.Builder

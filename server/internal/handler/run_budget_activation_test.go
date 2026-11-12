@@ -32,7 +32,7 @@ func memberMove(t *testing.T, c edgeCase) {
 	t.Helper()
 	time.Sleep(5 * time.Millisecond)
 	if _, err := testPool.Exec(context.Background(), `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
-		VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`, testWorkspaceID, c.issueID, testUserID); err != nil {
+		VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`, testWorkspaceID, c.issueID, testUserID); err != nil {
 		t.Fatal(err)
 	}
 }
