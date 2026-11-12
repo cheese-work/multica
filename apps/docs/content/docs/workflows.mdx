@@ -68,7 +68,7 @@ The project's board now follows the workflow's columns. Each issue's status pick
 
 ## Pick a workflow from the title type
 
-A workspace owner or admin can set `workflow_by_type` in the workspace settings, for example `{"design": "<workflow id>", "plan": "<workflow id>"}`. A new issue whose title starts with a mapped type, such as `design(x): …`, follows that workflow instead of its project's. `--workflow` (CLI) or an explicit workflow choice always wins. A type with no entry, or an entry whose workflow no longer exists, keeps the project's workflow. `multica issue create` prints the chosen workflow. Editing a title later does not change the workflow.
+A workspace owner or admin can set `workflow_by_type` in the workspace settings, for example `{"design": "<workflow id>", "plan": "<workflow id>"}`. A new issue whose title starts with a mapped type, such as `design(x): …`, follows that workflow instead of its project's. `--workflow` (CLI) or an explicit workflow choice always wins. A type with no entry, or an entry whose workflow no longer exists, keeps the project's workflow. `multica issue create` prints the chosen workflow. The create dialog shows the chosen workflow's statuses and handoff once the title has a mapped type. The mapping is workspace policy: it applies to every creator, agents included, without the run-budget check an explicit `--workflow` gets from non-interactive callers. If two keys differ only by case, the first in alphabetical order wins. Editing a title later does not change the workflow; the update response carries a one-line `workflow_hint` (printed by `multica issue update`) with the command that moves it.
 
 ## Move work to the next step
 

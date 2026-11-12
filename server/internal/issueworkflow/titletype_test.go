@@ -51,3 +51,17 @@ func uuidString(b [16]byte) string {
 	}
 	return string(out)
 }
+
+// CHE-5271: two keys that differ only by case must not pick at random.
+func TestWorkflowForTitleDuplicateKeysAreDeterministic(t *testing.T) {
+	settings := []byte(`{"workflow_by_type":{"Design":"00000000-0000-0000-0000-000000000002","design":"00000000-0000-0000-0000-000000000001"}}`)
+	first, ok := WorkflowForTitle(settings, "design: x")
+	if !ok {
+		t.Fatal("no match")
+	}
+	for i := 0; i < 50; i++ {
+		if got, _ := WorkflowForTitle(settings, "design: x"); got != first {
+			t.Fatalf("run %d picked %v, first pick %v", i, got, first)
+		}
+	}
+}

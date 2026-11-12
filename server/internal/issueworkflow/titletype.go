@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -27,7 +28,15 @@ func WorkflowForTitle(settings []byte, title string) (pgtype.UUID, bool) {
 	if !ok {
 		return pgtype.UUID{}, false
 	}
-	for key, raw := range parsed.ByType {
+	// Keys that differ only by case (Design, design) resolve in sorted order,
+	// so the same settings always give the same workflow.
+	keys := make([]string, 0, len(parsed.ByType))
+	for key := range parsed.ByType {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		raw := parsed.ByType[key]
 		if strings.ToLower(strings.TrimSpace(key)) != typ {
 			continue
 		}

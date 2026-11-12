@@ -2348,6 +2348,9 @@ func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		if hint := strVal(result, "workflow_hint"); hint != "" {
+			fmt.Fprintln(os.Stdout, hint)
+		}
 		return nil
 	}
 

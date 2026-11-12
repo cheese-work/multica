@@ -86,7 +86,11 @@ type IssueResponse struct {
 	ProjectID   *string           `json:"project_id"`
 	// WorkflowID is the issue's own workflow override; null follows the project.
 	WorkflowID *string `json:"workflow_id"`
-	Position   float64 `json:"position"`
+	// WorkflowHint is set on an update that changed the title to a type the
+	// workspace maps to a different workflow than the issue's. The issue keeps
+	// its workflow; the hint tells the caller how to move it. (CHE-5271)
+	WorkflowHint string  `json:"workflow_hint,omitempty"`
+	Position     float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -3673,6 +3677,17 @@ func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProject
 	return id, def, project, true
 }
 
+// titleTypeWorkflowHint is the one-line note for a title edit whose type maps
+// to a workflow other than the issue's own. The edit never moves the workflow.
+func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
+	id, def, _, ok := h.workflowFromTitleType(r, issue.WorkspaceID, issue.ProjectID, issue.Title)
+	if !ok || (issue.WorkflowID.Valid && issue.WorkflowID == id) {
+		return ""
+	}
+	return fmt.Sprintf("Title type maps to workflow %q (%s); this issue keeps its workflow. Move it with: multica issue update %s --workflow %s",
+		def.Name, uuidToString(id), uuidToString(issue.ID), uuidToString(id))
+}
+
 // approveCreateWidening checks an agent's owner-approved issue.workflow
 // decision for a create that names a wider workflow and consumes it in its own
 // transaction. The decision is spent before the issue exists: a later failure
@@ -4834,6 +4849,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
+	if req.Title != nil && prevIssue.Title != issue.Title {
+		resp.WorkflowHint = h.titleTypeWorkflowHint(r, issue)
+	}
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
