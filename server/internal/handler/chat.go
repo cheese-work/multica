@@ -2606,7 +2606,17 @@ func normalizeMessageKind(kind string) string {
 // its runs. Nulling parent_task_id on the children of those runs runs the
 // children's taint trigger, so their issues are locked first.
 func deleteSystemAgent(ctx context.Context, qtx *db.Queries, agentID pgtype.UUID) error {
-	if err := qtx.LockIssuesOfAgentTaskChildren(ctx, []pgtype.UUID{agentID}); err != nil {
+	agentIDs := []pgtype.UUID{agentID}
+	if err := service.LockIssueClosure(ctx, qtx,
+		func(ctx context.Context) ([]pgtype.UUID, error) {
+			return qtx.ListIssuesOfAgentTaskChildren(ctx, agentIDs)
+		},
+		func(ctx context.Context) error {
+			if err := qtx.LockAgentsForDelete(ctx, agentIDs); err != nil {
+				return err
+			}
+			return qtx.LockTasksOfAgentsForDelete(ctx, agentIDs)
+		}); err != nil {
 		return fmt.Errorf("lock issues of agent task children: %w", err)
 	}
 	return qtx.DeleteSystemAgentByID(ctx, agentID)

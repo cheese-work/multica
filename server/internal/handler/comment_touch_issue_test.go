@@ -324,7 +324,8 @@ func TestDeleteCommentLosingRaceDoesNotTouchIssue(t *testing.T) {
 		}
 		lockDone <- deleteErr
 	}()
-	waitForCommentMutationLock(t, "LockCommentForDelete", lockDone)
+	// The delete fences the comment inside its issue-lock closure before LockCommentForDelete.
+	waitForCommentMutationLock(t, "LockCommentChainForDelete", lockDone)
 
 	if _, err := holder.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID); err != nil {
 		t.Fatalf("commit winning delete: %v", err)
@@ -371,9 +372,9 @@ func TestCommentMutationsFollowIssueTeardownLockOrder(t *testing.T) {
 		},
 		{
 			name: "delete",
-			// The delete's first statement takes the issues, so it is the one
+			// The delete locks the issues with LockIssuesByID, so it is the one
 			// that waits for the owner lock.
-			queryName: "LockIssuesOfCommentDelete",
+			queryName: "LockIssuesByID",
 			mutate: func(ctx context.Context, commentID string) error {
 				_, err := testHandler.deleteComment(ctx, parseUUID(commentID), parseUUID(testWorkspaceID))
 				if errors.Is(err, pgx.ErrNoRows) {

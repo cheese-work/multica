@@ -831,18 +831,27 @@ deleted_channel_installations AS (
 )
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
 
--- name: LockIssuesOfWorkspaceCommentTasks :exec
--- Runs before DeleteWorkspaceComments. A run can name one of the workspace's
--- comments from an issue of a neighbour workspace, and nulling that trigger
--- locks the run's issue. Take those issues first, in ascending id order.
-SELECT 1 FROM issue i
+-- name: ListIssuesOfWorkspaceCommentTasks :many
+-- Read-only discovery for the lock closure that runs before
+-- DeleteWorkspaceComments. A run can name one of the workspace's comments from an
+-- issue of a neighbour workspace, and nulling that trigger locks the run's issue.
+SELECT i.id FROM issue i
 WHERE i.id IN (
     SELECT t.issue_id FROM agent_task_queue t
     JOIN comment c ON c.id = t.trigger_comment_id
     WHERE c.workspace_id = @workspace_id AND t.issue_id IS NOT NULL
 )
-ORDER BY i.id
-FOR NO KEY UPDATE OF i;
+ORDER BY i.id;
+
+-- name: LockWorkspaceCommentsForDelete :exec
+-- Dependency fence of that closure. A run's trigger_comment_id takes FOR KEY SHARE
+-- on the comment it names, which conflicts with FOR UPDATE: once the workspace's
+-- comments are locked, no run can start to name one of them. DeleteWorkspaceComments
+-- removes every one of these rows next.
+SELECT 1 FROM comment c
+WHERE c.workspace_id = @workspace_id
+ORDER BY c.id
+FOR UPDATE OF c;
 
 -- name: DeleteWorkspaceComments :exec
 DELETE FROM comment WHERE comment.workspace_id = $1;

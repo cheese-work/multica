@@ -995,6 +995,39 @@ func (q *Queries) ListIssueIDsOfTaskBatch(ctx context.Context, taskIds []pgtype.
 	return items, nil
 }
 
+const listIssuesOfWorkspaceCommentTasks = `-- name: ListIssuesOfWorkspaceCommentTasks :many
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = $1 AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+`
+
+// Read-only discovery for the lock closure that runs before
+// DeleteWorkspaceComments. A run can name one of the workspace's comments from an
+// issue of a neighbour workspace, and nulling that trigger locks the run's issue.
+func (q *Queries) ListIssuesOfWorkspaceCommentTasks(ctx context.Context, workspaceID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssuesOfWorkspaceCommentTasks, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskIDsByAgentFirstPage = `-- name: ListTaskIDsByAgentFirstPage :many
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1
@@ -1453,25 +1486,6 @@ func (q *Queries) LockIssuesByID(ctx context.Context, issueIds []pgtype.UUID) er
 	return err
 }
 
-const lockIssuesOfWorkspaceCommentTasks = `-- name: LockIssuesOfWorkspaceCommentTasks :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT t.issue_id FROM agent_task_queue t
-    JOIN comment c ON c.id = t.trigger_comment_id
-    WHERE c.workspace_id = $1 AND t.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// Runs before DeleteWorkspaceComments. A run can name one of the workspace's
-// comments from an issue of a neighbour workspace, and nulling that trigger
-// locks the run's issue. Take those issues first, in ascending id order.
-func (q *Queries) LockIssuesOfWorkspaceCommentTasks(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfWorkspaceCommentTasks, workspaceID)
-	return err
-}
-
 const lockTaskBatch = `-- name: LockTaskBatch :many
 SELECT q.id FROM agent_task_queue q
 WHERE q.id = ANY($1::uuid[])
@@ -1524,6 +1538,22 @@ SELECT pg_advisory_xact_lock(4246)
 // minutes, and an unbounded wait here hangs the delete request (MUL-5983).
 func (q *Queries) LockTaskUsageRollupForWorkspaceDelete(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, lockTaskUsageRollupForWorkspaceDelete)
+	return err
+}
+
+const lockWorkspaceCommentsForDelete = `-- name: LockWorkspaceCommentsForDelete :exec
+SELECT 1 FROM comment c
+WHERE c.workspace_id = $1
+ORDER BY c.id
+FOR UPDATE OF c
+`
+
+// Dependency fence of that closure. A run's trigger_comment_id takes FOR KEY SHARE
+// on the comment it names, which conflicts with FOR UPDATE: once the workspace's
+// comments are locked, no run can start to name one of them. DeleteWorkspaceComments
+// removes every one of these rows next.
+func (q *Queries) LockWorkspaceCommentsForDelete(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockWorkspaceCommentsForDelete, workspaceID)
 	return err
 }
 

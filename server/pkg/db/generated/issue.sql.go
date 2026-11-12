@@ -1635,6 +1635,53 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListI
 	return items, nil
 }
 
+const listIssuesOfIssueDelete = `-- name: ListIssuesOfIssueDelete :many
+SELECT i.id FROM issue i
+WHERE i.id = ANY($1::uuid[])
+   OR i.id IN (
+       SELECT t.issue_id FROM agent_task_queue t
+       JOIN comment c ON c.id = t.trigger_comment_id
+       WHERE c.issue_id = ANY($1::uuid[]) AND t.issue_id IS NOT NULL
+   )
+   OR i.id IN (
+       SELECT child.issue_id FROM agent_task_queue parent
+       JOIN agent_task_queue child ON child.parent_task_id = parent.id
+       WHERE parent.issue_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
+   )
+ORDER BY i.id
+`
+
+// Read-only discovery for the issue delete's lock closure
+// (service.LockIssueClosure). An issue delete removes the issue's comments through comment.issue_id
+// ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
+// that names it, and that update runs the run's taint trigger, which locks the
+// run's issue. Take those issues, and the deleted issues, first in one
+// ascending-id pass: authorization holds an issue and then asks for the run row,
+// so the delete must hold the issue before it reaches the run row.
+// It also removes the issue's runs through agent_task_queue.issue_id ON DELETE
+// CASCADE. Each removed run nulls parent_task_id on its children
+// (ON DELETE SET NULL), a child can belong to another issue, and that update
+// runs the child's taint trigger, which locks the child's issue.
+func (q *Queries) ListIssuesOfIssueDelete(ctx context.Context, issueIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssuesOfIssueDelete, issueIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOpenIssues = `-- name: ListOpenIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
@@ -1906,6 +1953,23 @@ func (q *Queries) ListUrgentOrphanIssues(ctx context.Context, arg ListUrgentOrph
 	return items, nil
 }
 
+const lockCommentsOfIssueDelete = `-- name: LockCommentsOfIssueDelete :exec
+SELECT 1 FROM comment c
+WHERE c.issue_id = ANY($1::uuid[])
+ORDER BY c.id
+FOR UPDATE OF c
+`
+
+// Dependency fence of the issue delete's lock closure, first half. A run's
+// trigger_comment_id takes FOR KEY SHARE on the comment it names, which conflicts
+// with FOR UPDATE: once the deleted issues' comments are locked, no run can start
+// to name one of them. Runs after the issues are locked, before
+// LockTasksOfIssueDelete.
+func (q *Queries) LockCommentsOfIssueDelete(ctx context.Context, issueIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockCommentsOfIssueDelete, issueIds)
+	return err
+}
+
 const lockIssueDuplicateKey = `-- name: LockIssueDuplicateKey :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -2093,35 +2157,18 @@ func (q *Queries) LockIssuesForDuplicateMark(ctx context.Context, arg LockIssues
 	return items, nil
 }
 
-const lockIssuesOfIssueDelete = `-- name: LockIssuesOfIssueDelete :exec
-SELECT 1 FROM issue i
-WHERE i.id = ANY($1::uuid[])
-   OR i.id IN (
-       SELECT t.issue_id FROM agent_task_queue t
-       JOIN comment c ON c.id = t.trigger_comment_id
-       WHERE c.issue_id = ANY($1::uuid[]) AND t.issue_id IS NOT NULL
-   )
-   OR i.id IN (
-       SELECT child.issue_id FROM agent_task_queue parent
-       JOIN agent_task_queue child ON child.parent_task_id = parent.id
-       WHERE parent.issue_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
-   )
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
+const lockTasksOfIssueDelete = `-- name: LockTasksOfIssueDelete :exec
+SELECT 1 FROM agent_task_queue t
+WHERE t.issue_id = ANY($1::uuid[])
+ORDER BY t.id
+FOR UPDATE OF t
 `
 
-// An issue delete removes the issue's comments through comment.issue_id
-// ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
-// that names it, and that update runs the run's taint trigger, which locks the
-// run's issue. Take those issues, and the deleted issues, first in one
-// ascending-id pass: authorization holds an issue and then asks for the run row,
-// so the delete must hold the issue before it reaches the run row.
-// It also removes the issue's runs through agent_task_queue.issue_id ON DELETE
-// CASCADE. Each removed run nulls parent_task_id on its children
-// (ON DELETE SET NULL), a child can belong to another issue, and that update
-// runs the child's taint trigger, which locks the child's issue.
-func (q *Queries) LockIssuesOfIssueDelete(ctx context.Context, issueIds []pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfIssueDelete, issueIds)
+// Dependency fence of the issue delete's lock closure, second half. A child's
+// parent_task_id takes FOR KEY SHARE on the parent run; locking the deleted
+// issues' runs FOR UPDATE keeps a new child from naming one of them.
+func (q *Queries) LockTasksOfIssueDelete(ctx context.Context, issueIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTasksOfIssueDelete, issueIds)
 	return err
 }
 

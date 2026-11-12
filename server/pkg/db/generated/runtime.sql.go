@@ -1019,6 +1019,39 @@ func (q *Queries) ListDaemonCustomNames(ctx context.Context, arg ListDaemonCusto
 	return items, nil
 }
 
+const listIssuesOfSystemAgentTaskChildrenByRuntime = `-- name: ListIssuesOfSystemAgentTaskChildrenByRuntime :many
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT child.issue_id FROM agent a
+    JOIN agent_task_queue parent ON parent.agent_id = a.id
+    JOIN agent_task_queue child ON child.parent_task_id = parent.id
+    WHERE a.runtime_id = $1 AND a.kind = 'system' AND child.issue_id IS NOT NULL
+)
+ORDER BY i.id
+`
+
+// Read-only discovery for DeleteSystemAgentsByRuntime; the reason is the one on
+// ListIssuesOfAgentTaskChildren.
+func (q *Queries) ListIssuesOfSystemAgentTaskChildrenByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssuesOfSystemAgentTaskChildrenByRuntime, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNonOwnerActiveTasksByRuntime = `-- name: ListNonOwnerActiveTasksByRuntime :many
 SELECT task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose, task.cancel_ack_reason
 FROM agent_task_queue AS task
@@ -1550,25 +1583,6 @@ func (q *Queries) LockAgentRuntimeForAccessChange(ctx context.Context, id pgtype
 	return i, err
 }
 
-const lockIssuesOfSystemAgentTaskChildrenByRuntime = `-- name: LockIssuesOfSystemAgentTaskChildrenByRuntime :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT child.issue_id FROM agent a
-    JOIN agent_task_queue parent ON parent.agent_id = a.id
-    JOIN agent_task_queue child ON child.parent_task_id = parent.id
-    WHERE a.runtime_id = $1 AND a.kind = 'system' AND child.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// Issue lock for DeleteSystemAgentsByRuntime; the reason is the one on
-// LockIssuesOfAgentTaskChildren.
-func (q *Queries) LockIssuesOfSystemAgentTaskChildrenByRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfSystemAgentTaskChildrenByRuntime, runtimeID)
-	return err
-}
-
 const lockRuntimeClaimCapacity = `-- name: LockRuntimeClaimCapacity :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':runtime_claim_capacity', 0))
 `
@@ -1734,6 +1748,35 @@ func (q *Queries) LockRuntimesForMerge(ctx context.Context, runtimeIds []pgtype.
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockSystemAgentsByRuntimeForDelete = `-- name: LockSystemAgentsByRuntimeForDelete :exec
+SELECT 1 FROM agent a
+WHERE a.runtime_id = $1 AND a.kind = 'system'
+ORDER BY a.id
+FOR UPDATE OF a
+`
+
+// Dependency fence, first half; the reason is the one on LockAgentsForDelete.
+func (q *Queries) LockSystemAgentsByRuntimeForDelete(ctx context.Context, runtimeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockSystemAgentsByRuntimeForDelete, runtimeID)
+	return err
+}
+
+const lockTasksOfSystemAgentsByRuntimeForDelete = `-- name: LockTasksOfSystemAgentsByRuntimeForDelete :exec
+SELECT 1 FROM agent_task_queue t
+WHERE t.agent_id IN (
+    SELECT a.id FROM agent a WHERE a.runtime_id = $1 AND a.kind = 'system'
+)
+ORDER BY t.id
+FOR UPDATE OF t
+`
+
+// Dependency fence, second half; the reason is the one on
+// LockTasksOfAgentsForDelete.
+func (q *Queries) LockTasksOfSystemAgentsByRuntimeForDelete(ctx context.Context, runtimeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTasksOfSystemAgentsByRuntimeForDelete, runtimeID)
+	return err
 }
 
 const lockWorkspaceForRuntimeMerge = `-- name: LockWorkspaceForRuntimeMerge :exec

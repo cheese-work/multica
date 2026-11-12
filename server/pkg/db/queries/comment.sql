@@ -659,14 +659,14 @@ SELECT EXISTS (
 SELECT count(*) > 0 AS has_replied FROM comment
 WHERE parent_id = @parent_id AND author_type = 'agent' AND author_id = @agent_id;
 
--- name: LockIssuesOfCommentDelete :exec
--- Runs before LockCommentForDelete. Deleting a comment nulls
--- agent_task_queue.trigger_comment_id (ON DELETE SET NULL) on every run that
--- names it, and that update runs the run's taint triggers, which lock the run's
--- issue. That issue can differ from the comment's. Taking every such issue
--- here, in ascending id order, keeps the delete in the order every other path
--- uses: issue first, then the run row. The chain covers the ancestors, which
--- the delete prunes when it removes their last reply.
+-- name: ListIssuesOfCommentDelete :many
+-- Read-only discovery for the comment delete's lock closure
+-- (service.LockIssueClosure); the closure locks the result with LockIssuesByID.
+-- Deleting a comment nulls agent_task_queue.trigger_comment_id (ON DELETE SET
+-- NULL) on every run that names it, and that update runs the run's taint
+-- triggers, which lock the run's issue. That issue can differ from the
+-- comment's. The chain covers the ancestors, which the delete prunes when it
+-- removes their last reply.
 WITH RECURSIVE chain AS (
     SELECT c.id, c.parent_id, c.issue_id FROM comment c
     WHERE c.id = @id AND c.workspace_id = @workspace_id
@@ -674,15 +674,34 @@ WITH RECURSIVE chain AS (
     SELECT p.id, p.parent_id, p.issue_id FROM comment p
     JOIN chain ON p.id = chain.parent_id
 )
-SELECT 1 FROM issue i
+SELECT i.id FROM issue i
 WHERE i.id IN (
     SELECT chain.issue_id FROM chain
     UNION
     SELECT t.issue_id FROM agent_task_queue t
     WHERE t.trigger_comment_id IN (SELECT chain.id FROM chain) AND t.issue_id IS NOT NULL
 )
-ORDER BY i.id
-FOR NO KEY UPDATE OF i;
+ORDER BY i.id;
+
+-- name: LockCommentChainForDelete :exec
+-- Dependency fence of the comment delete's lock closure. agent_task_queue.
+-- trigger_comment_id takes FOR KEY SHARE on the comment row it names, and that
+-- conflicts with FOR UPDATE: once the chain is locked, no run can start to name
+-- a comment the delete removes, so the issues ListIssuesOfCommentDelete reads
+-- afterwards are complete. Runs after the issues are locked. Every comment of
+-- the chain is in the one issue the delete already holds, so no other comment
+-- lock order can cross this one.
+WITH RECURSIVE chain AS (
+    SELECT c.id, c.parent_id FROM comment c
+    WHERE c.id = @id AND c.workspace_id = @workspace_id
+    UNION
+    SELECT p.id, p.parent_id FROM comment p
+    JOIN chain ON p.id = chain.parent_id
+)
+SELECT 1 FROM comment c
+WHERE c.id IN (SELECT chain.id FROM chain)
+ORDER BY c.id
+FOR UPDATE OF c;
 
 -- name: LockCommentForDelete :one
 -- First statement of the comment delete transaction (#8296). Defense-in-depth:

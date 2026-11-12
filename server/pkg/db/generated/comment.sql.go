@@ -1789,6 +1789,56 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listIssuesOfCommentDelete = `-- name: ListIssuesOfCommentDelete :many
+WITH RECURSIVE chain AS (
+    SELECT c.id, c.parent_id, c.issue_id FROM comment c
+    WHERE c.id = $1 AND c.workspace_id = $2
+    UNION
+    SELECT p.id, p.parent_id, p.issue_id FROM comment p
+    JOIN chain ON p.id = chain.parent_id
+)
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT chain.issue_id FROM chain
+    UNION
+    SELECT t.issue_id FROM agent_task_queue t
+    WHERE t.trigger_comment_id IN (SELECT chain.id FROM chain) AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+`
+
+type ListIssuesOfCommentDeleteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Read-only discovery for the comment delete's lock closure
+// (service.LockIssueClosure); the closure locks the result with LockIssuesByID.
+// Deleting a comment nulls agent_task_queue.trigger_comment_id (ON DELETE SET
+// NULL) on every run that names it, and that update runs the run's taint
+// triggers, which lock the run's issue. That issue can differ from the
+// comment's. The chain covers the ancestors, which the delete prunes when it
+// removes their last reply.
+func (q *Queries) ListIssuesOfCommentDelete(ctx context.Context, arg ListIssuesOfCommentDeleteParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssuesOfCommentDelete, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMemberCommentsForIssue = `-- name: ListMemberCommentsForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read FROM comment
 WHERE issue_id = $1 AND workspace_id = $2 AND author_type = 'member'
@@ -2616,6 +2666,37 @@ func (q *Queries) LockCommentAncestorPath(ctx context.Context, arg LockCommentAn
 	return items, nil
 }
 
+const lockCommentChainForDelete = `-- name: LockCommentChainForDelete :exec
+WITH RECURSIVE chain AS (
+    SELECT c.id, c.parent_id FROM comment c
+    WHERE c.id = $1 AND c.workspace_id = $2
+    UNION
+    SELECT p.id, p.parent_id FROM comment p
+    JOIN chain ON p.id = chain.parent_id
+)
+SELECT 1 FROM comment c
+WHERE c.id IN (SELECT chain.id FROM chain)
+ORDER BY c.id
+FOR UPDATE OF c
+`
+
+type LockCommentChainForDeleteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Dependency fence of the comment delete's lock closure. agent_task_queue.
+// trigger_comment_id takes FOR KEY SHARE on the comment row it names, and that
+// conflicts with FOR UPDATE: once the chain is locked, no run can start to name
+// a comment the delete removes, so the issues ListIssuesOfCommentDelete reads
+// afterwards are complete. Runs after the issues are locked. Every comment of
+// the chain is in the one issue the delete already holds, so no other comment
+// lock order can cross this one.
+func (q *Queries) LockCommentChainForDelete(ctx context.Context, arg LockCommentChainForDeleteParams) error {
+	_, err := q.db.Exec(ctx, lockCommentChainForDelete, arg.ID, arg.WorkspaceID)
+	return err
+}
+
 const lockCommentForDelete = `-- name: LockCommentForDelete :one
 WITH locked_issue AS MATERIALIZED (
     SELECT issue.id
@@ -2711,42 +2792,6 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':comment_thread
 // of failing outright — the reply is rare and cheap to make wait briefly.
 func (q *Queries) LockCommentThread(ctx context.Context, threadRootID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, lockCommentThread, threadRootID)
-	return err
-}
-
-const lockIssuesOfCommentDelete = `-- name: LockIssuesOfCommentDelete :exec
-WITH RECURSIVE chain AS (
-    SELECT c.id, c.parent_id, c.issue_id FROM comment c
-    WHERE c.id = $1 AND c.workspace_id = $2
-    UNION
-    SELECT p.id, p.parent_id, p.issue_id FROM comment p
-    JOIN chain ON p.id = chain.parent_id
-)
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT chain.issue_id FROM chain
-    UNION
-    SELECT t.issue_id FROM agent_task_queue t
-    WHERE t.trigger_comment_id IN (SELECT chain.id FROM chain) AND t.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-type LockIssuesOfCommentDeleteParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Runs before LockCommentForDelete. Deleting a comment nulls
-// agent_task_queue.trigger_comment_id (ON DELETE SET NULL) on every run that
-// names it, and that update runs the run's taint triggers, which lock the run's
-// issue. That issue can differ from the comment's. Taking every such issue
-// here, in ascending id order, keeps the delete in the order every other path
-// uses: issue first, then the run row. The chain covers the ancestors, which
-// the delete prunes when it removes their last reply.
-func (q *Queries) LockIssuesOfCommentDelete(ctx context.Context, arg LockIssuesOfCommentDeleteParams) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfCommentDelete, arg.ID, arg.WorkspaceID)
 	return err
 }
 

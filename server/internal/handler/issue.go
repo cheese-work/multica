@@ -5333,6 +5333,22 @@ func (h *Handler) deleteIssueAndCollectAttachmentURLs(ctx context.Context, issue
 	return h.deleteIssuesAndCollectAttachmentURLs(ctx, []db.Issue{issue}, excludedIssueIDs)
 }
 
+// lockIssueDeleteClosure takes the deleted issues and every issue a run of the
+// cascade reaches, then the deleted issues' comments and runs as the dependency
+// fence; see service.LockIssueClosure.
+func lockIssueDeleteClosure(ctx context.Context, qtx *db.Queries, issueIDs []pgtype.UUID) error {
+	return service.LockIssueClosure(ctx, qtx,
+		func(ctx context.Context) ([]pgtype.UUID, error) {
+			return qtx.ListIssuesOfIssueDelete(ctx, issueIDs)
+		},
+		func(ctx context.Context) error {
+			if err := qtx.LockCommentsOfIssueDelete(ctx, issueIDs); err != nil {
+				return err
+			}
+			return qtx.LockTasksOfIssueDelete(ctx, issueIDs)
+		})
+}
+
 func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issues []db.Issue, excludedIssueIDs []pgtype.UUID) (issueDeleteResult, error) {
 	sort.Slice(issues, func(i, j int) bool {
 		return uuidToString(issues[i].ID) < uuidToString(issues[j].ID)
@@ -5350,7 +5366,7 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	for _, issue := range issues {
 		issueIDs = append(issueIDs, issue.ID)
 	}
-	if err := qtx.LockIssuesOfIssueDelete(ctx, issueIDs); err != nil {
+	if err := lockIssueDeleteClosure(ctx, qtx, issueIDs); err != nil {
 		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
 	}
 

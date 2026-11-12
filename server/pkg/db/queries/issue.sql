@@ -156,8 +156,9 @@ WHERE id = sqlc.arg(id)
   AND workspace_id = sqlc.arg(workspace_id)
 RETURNING *;
 
--- name: LockIssuesOfIssueDelete :exec
--- An issue delete removes the issue's comments through comment.issue_id
+-- name: ListIssuesOfIssueDelete :many
+-- Read-only discovery for the issue delete's lock closure
+-- (service.LockIssueClosure). An issue delete removes the issue's comments through comment.issue_id
 -- ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
 -- that names it, and that update runs the run's taint trigger, which locks the
 -- run's issue. Take those issues, and the deleted issues, first in one
@@ -167,7 +168,7 @@ RETURNING *;
 -- CASCADE. Each removed run nulls parent_task_id on its children
 -- (ON DELETE SET NULL), a child can belong to another issue, and that update
 -- runs the child's taint trigger, which locks the child's issue.
-SELECT 1 FROM issue i
+SELECT i.id FROM issue i
 WHERE i.id = ANY(@issue_ids::uuid[])
    OR i.id IN (
        SELECT t.issue_id FROM agent_task_queue t
@@ -179,8 +180,27 @@ WHERE i.id = ANY(@issue_ids::uuid[])
        JOIN agent_task_queue child ON child.parent_task_id = parent.id
        WHERE parent.issue_id = ANY(@issue_ids::uuid[]) AND child.issue_id IS NOT NULL
    )
-ORDER BY i.id
-FOR NO KEY UPDATE OF i;
+ORDER BY i.id;
+
+-- name: LockCommentsOfIssueDelete :exec
+-- Dependency fence of the issue delete's lock closure, first half. A run's
+-- trigger_comment_id takes FOR KEY SHARE on the comment it names, which conflicts
+-- with FOR UPDATE: once the deleted issues' comments are locked, no run can start
+-- to name one of them. Runs after the issues are locked, before
+-- LockTasksOfIssueDelete.
+SELECT 1 FROM comment c
+WHERE c.issue_id = ANY(@issue_ids::uuid[])
+ORDER BY c.id
+FOR UPDATE OF c;
+
+-- name: LockTasksOfIssueDelete :exec
+-- Dependency fence of the issue delete's lock closure, second half. A child's
+-- parent_task_id takes FOR KEY SHARE on the parent run; locking the deleted
+-- issues' runs FOR UPDATE keeps a new child from naming one of them.
+SELECT 1 FROM agent_task_queue t
+WHERE t.issue_id = ANY(@issue_ids::uuid[])
+ORDER BY t.id
+FOR UPDATE OF t;
 
 -- name: LockIssueForDelete :one
 -- Issue deletion must collect every attachment URL after it has won the same

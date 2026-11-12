@@ -7922,6 +7922,42 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 	return items, nil
 }
 
+const listIssuesOfAgentTaskChildren = `-- name: ListIssuesOfAgentTaskChildren :many
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT child.issue_id FROM agent_task_queue parent
+    JOIN agent_task_queue child ON child.parent_task_id = parent.id
+    WHERE parent.agent_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
+)
+ORDER BY i.id
+`
+
+// Read-only discovery for deleting an agent (service.LockIssueClosure). The agent's runs go with it through
+// agent_task_queue.agent_id ON DELETE CASCADE, and each removed run nulls
+// parent_task_id on its children (ON DELETE SET NULL). That update runs the
+// child's taint trigger, which locks the child's issue. AuthorizeElevatedOp takes
+// the issue lock first and then waits on the run row, so the delete must hold the
+// child's issue before it removes the parent.
+func (q *Queries) ListIssuesOfAgentTaskChildren(ctx context.Context, agentIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listIssuesOfAgentTaskChildren, agentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveReviewRunsForPR = `-- name: ListLiveReviewRunsForPR :many
 SELECT t.id, t.issue_id, t.agent_id FROM agent_task_queue t
 JOIN issue i ON i.id = t.issue_id
@@ -9766,26 +9802,18 @@ func (q *Queries) LockAgentTaskStartClaim(ctx context.Context, arg LockAgentTask
 	return i, err
 }
 
-const lockIssuesOfAgentTaskChildren = `-- name: LockIssuesOfAgentTaskChildren :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT child.issue_id FROM agent_task_queue parent
-    JOIN agent_task_queue child ON child.parent_task_id = parent.id
-    WHERE parent.agent_id = ANY($1::uuid[]) AND child.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
+const lockAgentsForDelete = `-- name: LockAgentsForDelete :exec
+SELECT 1 FROM agent a
+WHERE a.id = ANY($1::uuid[])
+ORDER BY a.id
+FOR UPDATE OF a
 `
 
-// Issue lock for deleting an agent. The agent's runs go with it through
-// agent_task_queue.agent_id ON DELETE CASCADE, and each removed run nulls
-// parent_task_id on its children (ON DELETE SET NULL). That update runs the
-// child's taint trigger, which locks the child's issue. AuthorizeElevatedOp takes
-// the issue lock first and then waits on the run row, so the delete must hold the
-// child's issue before it removes the parent. Issue ids are locked in ascending
-// order so two deletes cannot cross each other.
-func (q *Queries) LockIssuesOfAgentTaskChildren(ctx context.Context, agentIds []pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfAgentTaskChildren, agentIds)
+// Dependency fence of the agent delete's lock closure, first half. A run's
+// agent_id takes FOR KEY SHARE on the agent row, which conflicts with FOR UPDATE:
+// once the agents are locked, no new run starts for them.
+func (q *Queries) LockAgentsForDelete(ctx context.Context, agentIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockAgentsForDelete, agentIds)
 	return err
 }
 
@@ -9813,6 +9841,20 @@ func (q *Queries) LockQueuedSiblingTask(ctx context.Context, taskID pgtype.UUID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const lockTasksOfAgentsForDelete = `-- name: LockTasksOfAgentsForDelete :exec
+SELECT 1 FROM agent_task_queue t
+WHERE t.agent_id = ANY($1::uuid[])
+ORDER BY t.id
+FOR UPDATE OF t
+`
+
+// Second half. A child's parent_task_id takes FOR KEY SHARE on the parent run;
+// locking the agents' runs FOR UPDATE keeps a new child from naming one of them.
+func (q *Queries) LockTasksOfAgentsForDelete(ctx context.Context, agentIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTasksOfAgentsForDelete, agentIds)
+	return err
 }
 
 const markAgentTaskCancelAcked = `-- name: MarkAgentTaskCancelAcked :exec

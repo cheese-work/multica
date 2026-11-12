@@ -4518,6 +4518,25 @@ var errTaskSupplementInFlight = errors.New("additional message is still being de
 // that is left without replies. Nothing here relies on the parent_id cascade.
 //
 // Returns pgx.ErrNoRows when the comment is already gone or already deleted.
+// lockCommentDeleteClosure takes the issue of the comment, of its ancestors and
+// of every run that names one of them, then the chain's comment rows as the
+// dependency fence (a run's trigger_comment_id is a FOR KEY SHARE on the comment).
+// A run that names the chain between the first read and the fence widens the set,
+// and the closure restarts with the larger set before any comment row is held.
+func lockCommentDeleteClosure(ctx context.Context, qtx *db.Queries, commentID, workspaceID pgtype.UUID) error {
+	return service.LockIssueClosure(ctx, qtx,
+		func(ctx context.Context) ([]pgtype.UUID, error) {
+			return qtx.ListIssuesOfCommentDelete(ctx, db.ListIssuesOfCommentDeleteParams{
+				ID: commentID, WorkspaceID: workspaceID,
+			})
+		},
+		func(ctx context.Context) error {
+			return qtx.LockCommentChainForDelete(ctx, db.LockCommentChainForDeleteParams{
+				ID: commentID, WorkspaceID: workspaceID,
+			})
+		})
+}
+
 func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgtype.UUID) (commentDeletion, error) {
 	var out commentDeletion
 	tx, err := h.beginWakeupWrite(ctx)
@@ -4529,9 +4548,7 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 
 	// The delete nulls the trigger of every run that names this comment, which
 	// locks that run's issue; take those issues before the run rows.
-	if err := qtx.LockIssuesOfCommentDelete(ctx, db.LockIssuesOfCommentDeleteParams{
-		ID: commentID, WorkspaceID: workspaceID,
-	}); err != nil {
+	if err := lockCommentDeleteClosure(ctx, qtx, commentID, workspaceID); err != nil {
 		return out, err
 	}
 	target, err := qtx.LockCommentForDelete(ctx, db.LockCommentForDeleteParams{
