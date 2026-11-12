@@ -67,16 +67,16 @@ type IssueResponse struct {
 	// field at all: with omitempty a built-in fixture hides it from BOTH
 	// renderings, and the drift guard goes green on a payload that has drifted.
 	// (MUL-6749)
-	StatusName   string  `json:"status_name"`
+	StatusName string `json:"status_name"`
 	// RunBudgetBlocked is true while the run budget, not a person, holds the
 	// issue in blocked (CHE-5285). Omitted when false, so a client treats
 	// absence as "not budget-stopped".
-	RunBudgetBlocked bool   `json:"run_budget_blocked,omitempty"`
-	Priority     string  `json:"priority"`
-	AssigneeType *string `json:"assignee_type"`
-	AssigneeID   *string `json:"assignee_id"`
-	CreatorType  string  `json:"creator_type"`
-	CreatorID    string  `json:"creator_id"`
+	RunBudgetBlocked bool    `json:"run_budget_blocked,omitempty"`
+	Priority         string  `json:"priority"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	CreatorType      string  `json:"creator_type"`
+	CreatorID        string  `json:"creator_id"`
 	// RequestedByID is the member the issue was made on behalf of: set when an
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
