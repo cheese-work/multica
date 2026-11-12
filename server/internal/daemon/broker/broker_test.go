@@ -17,6 +17,25 @@ import (
 	"time"
 )
 
+// TestMain turns off git's background maintenance for every git the tests (and
+// the broker under test) spawn. After a fetch git detaches `gc --auto` /
+// `maintenance run --auto`, which keeps writing into the repo while t.TempDir
+// cleanup removes it ("unlinkat .git: directory not empty").
+func TestMain(m *testing.M) {
+	for k, v := range map[string]string{
+		"GIT_CONFIG_COUNT":   "2",
+		"GIT_CONFIG_KEY_0":   "gc.auto",
+		"GIT_CONFIG_VALUE_0": "0",
+		"GIT_CONFIG_KEY_1":   "maintenance.auto",
+		"GIT_CONFIG_VALUE_1": "false",
+	} {
+		if err := os.Setenv(k, v); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 func git(t testing.TB, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
@@ -425,4 +444,17 @@ func sortDurations(d []time.Duration) {
 func loadavg() string {
 	b, _ := os.ReadFile("/proc/loadavg")
 	return strings.TrimSpace(string(b))
+}
+
+// TestGitBackgroundMaintenanceIsOff pins TestMain's git config: no test repo
+// may get a detached `gc --auto` / `maintenance run --auto` after a fetch, or
+// it writes into the temp repo while t.TempDir cleanup removes it.
+func TestGitBackgroundMaintenanceIsOff(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	for key, want := range map[string]string{"gc.auto": "0", "maintenance.auto": "false"} {
+		if got := git(t, dir, "config", "--get", key); got != want {
+			t.Errorf("git config %s = %q, want %q", key, got, want)
+		}
+	}
 }
