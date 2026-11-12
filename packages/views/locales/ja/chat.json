@@ -7,6 +7,7 @@
     "no_run": "実行中のランはありません。"
   },
   "needs_you": {
+    "chip_other": "{{count}} 件の決定が待っています",
     "title": "あなたの判断待ち",
     "loading": "未回答の依頼を読み込み中…",
     "error": "依頼を読み込めませんでした。",
@@ -457,6 +458,7 @@
     "answer_helper_issue": "送信すると回答が {{issue}} に投稿されます。",
     "answer_hint": "{{shortcut}} で送信",
     "answer_too_long": "回答が 8 KB を超えています。短くすると送信できます。",
+    "answer_upload_cancelled": "このカードを離れたため、アップロードをキャンセルしました。ファイルをもう一度添付してください。",
     "answer_offline": "オフラインです。回答は保持されます。再接続すると送信できます。",
     "answer_conflict": "このカードは回答を受け付けられません（例: 先に回答があった場合）。下書きは投稿されていません。下書き:",
     "answer_discard": "下書きを破棄",

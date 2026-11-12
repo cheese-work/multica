@@ -306,8 +306,7 @@
     "advanced_group_match_trailing": "de ces conditions",
     "advanced_group_hint": "Les conditions de ce groupe sont reliées par « {{word}} »",
     "advanced_add_to_group": "Ajouter au groupe",
-    "advanced_turn_into_group": "Transformer en groupe",
-    "advanced_summary": "Affiche les tâches où {{summary}}"
+    "advanced_turn_into_group": "Transformer en groupe"
   },
   "display": {
     "tooltip": "Paramètres d'affichage",
@@ -465,7 +464,8 @@
   },
   "list": {
     "empty_status": "Aucune tâche",
-    "add_issue_tooltip": "Ajouter une tâche"
+    "add_issue_tooltip": "Ajouter une tâche",
+    "unread_mention": "Mention non lue"
   },
   "swimlane": {
     "no_parent": "Sans parent",
@@ -852,6 +852,9 @@
     "hover_header_queued_other": "{{count}} agents en attente",
     "status_running": "Au travail",
     "status_queued": "En file d'attente",
+    "unread_completed": "{{agent}} a terminé · {{time}}",
+    "unread_failed": "L'exécution de {{agent}} a échoué · {{time}}",
+    "unread_manual": "Marqué comme non lu",
     "empty_hover": "Aucun agent au travail pour l'instant",
     "unknown_hover": "Agents au travail : pas encore chargé",
     "filter_active_label": "Affichage des tâches avec des agents au travail",
@@ -1058,6 +1061,8 @@
     "open_in_new_tab": "Ouvrir dans un nouvel onglet",
     "pin_to_sidebar": "Épingler à la barre latérale",
     "unpin_from_sidebar": "Détacher de la barre latérale",
+    "mark_read": "Marquer comme lu",
+    "mark_unread": "Marquer comme non lu",
     "copy_link": "Copier le lien",
     "copy_workdir_path": "Copier le chemin du répertoire de travail local",
     "copy_project_directory_path": "Copier le chemin du répertoire du projet",
@@ -1692,6 +1697,9 @@
       "name": "Nom",
       "name_placeholder": "ex. Livraison",
       "description": "Description",
+      "max_runs": "Exécutions max par ticket",
+      "max_runs_invalid": "Saisissez un nombre entier de 1 à {{max}}, ou laissez vide pour la valeur par défaut ({{default}}).",
+      "include_child_prs": "Inclure les PR des sous-tickets",
       "steps": "Étapes",
       "add_step": "Ajouter une étape",
       "start": "Début",
@@ -2091,5 +2099,27 @@
       "system": "Système"
     },
     "open": "Historique des statuts"
+  },
+  "run_budget": {
+    "runs": "Exécutions {{used}} / {{limit}}",
+    "left_one": "{{count}} restante",
+    "left_other": "{{count}} restantes",
+    "near": "80 % utilisé",
+    "exhausted": "Budget d'exécutions épuisé",
+    "raise": "Augmenter",
+    "top_up": "Recharger",
+    "asked": "Demande envoyée au propriétaire de l'espace de travail.",
+    "request_failed": "La demande n'a pas abouti. Réessayez."
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · {{earlier}} antérieures",
+    "diff": "Diff",
+    "title": "{{name}} : v{{from}} → v{{to}}",
+    "region": "Modifications de v{{from}} à v{{to}}, passages modifiés uniquement",
+    "show_full": "Tout afficher",
+    "show_changes": "Modifications seulement",
+    "loading": "Chargement des modifications",
+    "load_failed": "Impossible de charger les modifications.",
+    "no_changes": "Aucune modification du texte."
   }
 }

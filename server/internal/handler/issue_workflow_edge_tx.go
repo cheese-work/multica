@@ -15,6 +15,8 @@ import (
 // edgeMove is what moveIssueOnEdgeTx leaves for the caller.
 type edgeMove struct {
 	Issue db.Issue
+	// StatusActivityID is the history row the move wrote; invalid when none.
+	StatusActivityID pgtype.UUID
 	// RunRefused is why the next step's run was not inserted (budget, triage,
 	// a pending run already holds the slot). The move is written regardless; a
 	// caller that needs both or neither rolls back on it.
@@ -62,6 +64,11 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 	write.system = true
 	rec := &statusRecord{workspaceID: issue.WorkspaceID, trigger: statusTriggerFromSystem(edgeMoveCause(source))}
+	// The block an exhausted budget causes names its refusal, so a later refusal
+	// can find the status and target the block hid.
+	if id, ok := extra["refusal_id"].(string); ok && source == "run_budget" {
+		rec.trigger.Cause.Ref = map[string]string{"refusal_id": id}
+	}
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
@@ -115,7 +122,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrIssueInTriage),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrAgentPaused),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
@@ -174,7 +181,11 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		}
 		return ranHandler
 	}
-	return edgeMove{Issue: updated, RunRefused: runRefused, AfterCommit: afterCommit}, nil
+	var activityID pgtype.UUID
+	if rec.activity != nil {
+		activityID = rec.activity.ID
+	}
+	return edgeMove{Issue: updated, StatusActivityID: activityID, RunRefused: runRefused, AfterCommit: afterCommit}, nil
 }
 
 // prepareEdgeRunOverlay builds, outside any transaction, the Composio overlay

@@ -88,7 +88,8 @@ export interface DecisionConfigChange {
   field: string;
   target_id: string;
   keys: string[];
-  diff_kind: "json" | "text" | "lines";
+  /** `json`, `text` or `lines`; a newer server may send another kind, which this client cannot approve. */
+  diff_kind: "json" | "text" | "lines" | (string & {});
   diff: DecisionConfigDiffHunk[];
   /** The value the change writes. A string for text, an array of lines for lines, JSON otherwise. */
   after: unknown;

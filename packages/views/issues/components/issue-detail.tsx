@@ -1,5 +1,6 @@
 "use client";
 
+import { RunBudgetMeter } from "./run-budget-meter";
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -111,6 +112,8 @@ import { IssuePropertyPills } from "./issue-property-pills";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
+import { AttachmentList } from "./attachment-list";
+import { chainedIssueAttachments } from "@multica/core/attachments/revision-diff";
 import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
 import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
@@ -190,6 +193,7 @@ import {
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
+import { useMarkIssueReadWhileViewing } from "../hooks/use-mark-issue-read-while-viewing";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { useLocale, useTimeAgo } from "../../i18n";
 import {
@@ -1635,6 +1639,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
+  useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -3183,6 +3188,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     [issueAttachments, descPendingAttachments],
   );
 
+  const chainedAttachments = useMemo(() => chainedIssueAttachments(issueAttachments), [issueAttachments]);
+
   // Every previewable file in this issue, in the order the page renders them:
   // the description first, then each timeline comment with its thread replies
   // nested under it (MUL-5752). Built from `items` rather than the flat
@@ -3586,6 +3593,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
           the Parent issue section and the Relations graph button. */}
       <IssueHierarchy key={issue.id} issue={issue} />
+
+      <RunBudgetMeter key={issue.id} issueId={issue.id} />
 
       {/* Properties */}
       <div>
@@ -4503,6 +4512,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 />
               </div>
             </DescriptionDisclosure>
+
+            <AttachmentList
+              attachments={chainedAttachments}
+              content={issue?.description ?? ""}
+              className="mt-3"
+            />
 
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar

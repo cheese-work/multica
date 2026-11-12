@@ -76,6 +76,7 @@ type IssueRunTrigger struct {
 	AgentID      pgtype.UUID
 	AssigneeType string
 	Source       RunEnqueueSource
+	BlockedEntry bool
 }
 
 func allowAllAgents(db.Agent) bool { return true }
@@ -193,6 +194,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AgentID:      issue.AssigneeID,
 			AssigneeType: "agent",
 			Source:       source,
+			BlockedEntry: in.EnteredHandoffStep && in.StatusChanged && currentStatus == "blocked",
 		}, true
 
 	case "squad":
@@ -231,6 +233,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			AgentID:      squad.LeaderID,
 			AssigneeType: "squad",
 			Source:       source,
+			BlockedEntry: in.EnteredHandoffStep && in.StatusChanged && currentStatus == "blocked",
 		}, true
 	}
 	return IssueRunTrigger{}, false

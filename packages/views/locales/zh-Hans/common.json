@@ -172,13 +172,19 @@
     "error": "通行密钥批准未完成。请重试。",
     "lost": "响应丢失。该操作不会被再次批准。请检查结果。",
     "check": "检查结果",
-    "outcome": { "cap_applied": "已应用上限", "run_queued": "运行已排队", "still_blocked": "仍被阻止：{{reason}}" },
+    "outcome": {
+      "cap_applied": "已应用上限",
+      "run_queued": "运行已排队",
+      "still_blocked": "仍被阻止：{{reason}}"
+    },
     "panel": {
       "title": "运行预算请求",
       "raise_cap": "将此窗口中 {{issue}} 的运行上限提高到 {{cap}} 次。",
       "top_up": "为此窗口中的 {{issue}} 补充运行预算。",
-      "mismatch": "此审批不是针对该问题的运行预算请求，无法在此审批。",
-      "unreadable": "你无权查看此审批，或它已不存在。"
+      "settled": "此审批已处于“{{state}}”状态。如仍需要，请让智能体重新提出。",
+      "mismatch": "此审批不是针对该问题的运行预算请求。请在私信或收件箱中打开该卡片进行决定。",
+      "open_card": "打开卡片",
+      "unreadable": "此审批对你不可用，或已不存在。请让智能体重新提出。"
     }
   }
 }

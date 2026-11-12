@@ -92,6 +92,12 @@ import { RunLifecycleDemo } from "@/components/demos/run-lifecycle-demo";
 
 当一条任务上没有其他活动运行，也没有新的重试等待执行时，失败会让处于 `in_progress` 的任务回到 `todo`。
 
+## 循环熔断
+
+当某个智能体在最近 30 分钟内已在同一事项上启动过 5 次运行时，Multica 会拒绝它在该事项上的第 6 次运行。事项会以原因 `loop-breaker: <agent> started N runs in 30 min` 进入 `blocked`，并发布一条系统评论，列出该智能体名称及其最近运行的触发类型。每个事项、每个智能体每小时最多发布一条这样的评论。同一事项上其他智能体的运行，以及没有关联事项的聊天任务，不计入。
+
+要调整限制，请在服务器上设置 `MULTICA_LOOP_BREAKER_MAX_RUNS`（默认 `6`；`0` 关闭熔断）和 `MULTICA_LOOP_BREAKER_WINDOW`（默认 `30m`）。
+
 ## 失败原因参考
 
 执行日志和[统计](/analytics#错误页签)里的失败原因分两类：不带前缀的原因码由平台记录，`agent_error.*` 由 AI 编程工具的报错归类而来。

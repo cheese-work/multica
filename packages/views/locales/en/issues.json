@@ -306,8 +306,7 @@
     "advanced_group_match_trailing": "of these",
     "advanced_group_hint": "Conditions in this group are joined with “{{word}}”",
     "advanced_add_to_group": "Add to group",
-    "advanced_turn_into_group": "Turn into group",
-    "advanced_summary": "Shows issues where {{summary}}"
+    "advanced_turn_into_group": "Turn into group"
   },
   "display": {
     "tooltip": "Display settings",
@@ -465,7 +464,8 @@
   },
   "list": {
     "empty_status": "No issues",
-    "add_issue_tooltip": "Add issue"
+    "add_issue_tooltip": "Add issue",
+    "unread_mention": "Unread mention"
   },
   "swimlane": {
     "no_parent": "No parent",
@@ -852,6 +852,9 @@
     "hover_header_queued_other": "{{count}} queued agents",
     "status_running": "Working",
     "status_queued": "Queued",
+    "unread_completed": "{{agent}} finished · {{time}}",
+    "unread_failed": "{{agent}}'s run failed · {{time}}",
+    "unread_manual": "Marked as unread",
     "empty_hover": "No agents working right now",
     "unknown_hover": "Agents working: not loaded yet",
     "filter_active_label": "Viewing issues with agents working",
@@ -1058,6 +1061,8 @@
     "open_in_new_tab": "Open in new tab",
     "pin_to_sidebar": "Pin to sidebar",
     "unpin_from_sidebar": "Unpin from sidebar",
+    "mark_read": "Mark as read",
+    "mark_unread": "Mark as unread",
     "copy_link": "Copy link",
     "copy_workdir_path": "Copy local workdir path",
     "copy_project_directory_path": "Copy project directory path",
@@ -1692,6 +1697,9 @@
       "name": "Name",
       "name_placeholder": "e.g. Delivery",
       "description": "Description",
+      "max_runs": "Max runs per issue",
+      "max_runs_invalid": "Enter a whole number from 1 to {{max}}, or leave empty for the default ({{default}}).",
+      "include_child_prs": "Include child PRs",
       "steps": "Steps",
       "add_step": "Add step",
       "start": "Start",
@@ -2091,5 +2099,27 @@
       "system": "System"
     },
     "open": "Status history"
+  },
+  "run_budget": {
+    "runs": "Runs {{used}} / {{limit}}",
+    "left_one": "{{count}} left",
+    "left_other": "{{count}} left",
+    "near": "80 % used",
+    "exhausted": "Run budget used up",
+    "raise": "Raise",
+    "top_up": "Top up",
+    "asked": "Asked the workspace owner to approve.",
+    "request_failed": "The request did not go through. Try again."
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · {{earlier}} earlier",
+    "diff": "Diff",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "Changes from v{{from}} to v{{to}}, changed hunks only",
+    "show_full": "Show full",
+    "show_changes": "Show changes only",
+    "loading": "Loading changes",
+    "load_failed": "Could not load the changes.",
+    "no_changes": "No text changes."
   }
 }
