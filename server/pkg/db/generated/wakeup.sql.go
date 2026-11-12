@@ -1095,7 +1095,7 @@ WHERE ($1::uuid[] IS NULL OR w.workspace_id = ANY($1::uuid[]))
   -- prompt an evaluation of what still holds on resume.
   OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
-ORDER BY w.updated_at,w.id LIMIT $3
+ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT $3
 `
 
 type ListDueWakeupsParams struct {
@@ -1106,6 +1106,9 @@ type ListDueWakeupsParams struct {
 
 // Scheduler lane 2: schedules, deadlines and condition checks that are due.
 // Rules already visited in this pass are skipped.
+// CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
+// updated_at, so a fresh one-shot sorted behind all older recurring rules and
+// waited out whole passes of them.
 func (q *Queries) ListDueWakeups(ctx context.Context, arg ListDueWakeupsParams) ([]IssueWakeup, error) {
 	rows, err := q.db.Query(ctx, listDueWakeups, arg.WorkspaceIds, arg.SkipIds, arg.RowLimit)
 	if err != nil {
@@ -1852,12 +1855,18 @@ func (q *Queries) ListWakeupReservingTasks(ctx context.Context, arg ListWakeupRe
 }
 
 const listWakeupRuns = `-- name: ListWakeupRuns :many
-SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
- COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
- COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
- EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
-FROM agent_task_queue t WHERE t.context->>'wakeup_id'= $1::text AND t.issue_id= $2
-ORDER BY t.created_at DESC,t.id DESC LIMIT 10
+SELECT id,status,created_at,started_at,completed_at,checkin_note,triggers,commented FROM (
+ SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
+  COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
+  COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
+  EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
+ FROM agent_task_queue t WHERE t.context->>'wakeup_id'= $1::text AND t.issue_id= $2
+ UNION ALL
+ SELECT a.id,'skipped'::text,a.created_at,NULL::timestamptz,NULL::timestamptz,
+  COALESCE(a.details->>'reason','')::text,'{}'::text[],false::bool
+ FROM activity_log a WHERE a.action='wakeup_skipped' AND a.issue_id= $2 AND a.details->'wakeup'->>'id'= $1::text
+) runs
+ORDER BY created_at DESC,id DESC LIMIT 10
 `
 
 type ListWakeupRunsParams struct {
@@ -1876,8 +1885,9 @@ type ListWakeupRunsRow struct {
 	Commented   bool               `json:"commented"`
 }
 
-// The rule's latest runs with what triggered each one, a check-in note when
-// the run ended silently, and whether it left a comment.
+// The rule's latest fires with what triggered each one, a check-in note when
+// the run ended silently, and whether it left a comment. A fire the platform
+// skipped (CHE-4984) has no run: it shows as status 'skipped' with its reason.
 func (q *Queries) ListWakeupRuns(ctx context.Context, arg ListWakeupRunsParams) ([]ListWakeupRunsRow, error) {
 	rows, err := q.db.Query(ctx, listWakeupRuns, arg.WakeupID, arg.IssueID)
 	if err != nil {

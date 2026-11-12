@@ -7850,6 +7850,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
 
+	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
+	if task.Script != nil {
+		return d.runScriptTask(ctx, task, taskLog)
+	}
+
 	prepareTimeout := d.effectiveTaskPrepareTimeout()
 	prepareCtx, cancelPrepare := context.WithTimeoutCause(ctx, prepareTimeout, errTaskPrepareTimeout)
 	prepareComplete := false
@@ -8757,6 +8762,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if selfBin, err := resolveSelfExecutable(); err == nil {
 		binDir := filepath.Dir(selfBin)
 		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	}
+	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
+	// failure only costs the guard, never the run.
+	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
+		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.

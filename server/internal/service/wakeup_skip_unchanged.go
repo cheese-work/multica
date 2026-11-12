@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,4 +77,20 @@ func holdsDraftReturn(receipts []db.IssueWakeupReceipt) bool {
 
 func skippedUnchangedDetails(rule string, lastTask pgtype.UUID) map[string]any {
 	return map[string]any{"rule": rule, "reason": wakeupOutcomeUnchanged, "last_task_id": util.UUIDToString(lastTask)}
+}
+
+var (
+	heartbeatReadsMergeability = regexp.MustCompile(`mergeable|mergeStateStatus`)
+	heartbeatActsOnConflict    = regexp.MustCompile(`CONFLICTING|DIRTY`)
+)
+
+// isConflictHeartbeat reports the CHE-2795 PR conflict heartbeat: a repeating
+// time rule an agent armed whose text only reads PR mergeability and acts on
+// CONFLICTING or DIRTY (the same test as the in-review gate). Such a rule
+// watches what prStateFingerprint hashes; any other free-text time rule can
+// watch things the platform does not hold, so it always runs.
+func isConflictHeartbeat(w db.IssueWakeup) bool {
+	return (w.Kind == "every" || w.Kind == "cron") && w.Mode == "continuous" && !w.SystemRule.Valid &&
+		!w.DefaultRuleKey.Valid && w.SourceTaskID.Valid &&
+		heartbeatReadsMergeability.MatchString(w.Instruction) && heartbeatActsOnConflict.MatchString(w.Instruction)
 }
