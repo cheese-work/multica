@@ -84,7 +84,7 @@ func blockRows(t *testing.T, c budgetCase) int {
 func recordOccurrence(t *testing.T, c budgetCase, to string) {
 	t.Helper()
 	if _, err := testPool.Exec(context.Background(), `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
-		VALUES ($1, $2, 'member', $3, 'status_changed', jsonb_build_object('to', $4::text))`, testWorkspaceID, c.issueID, testUserID, to); err != nil {
+		VALUES ($1, $2, 'member', $3, 'status_changed', jsonb_build_object('to', $4::text, 'trigger', jsonb_build_object('cause', jsonb_build_object('kind', 'ui_or_api'), 'auth_source', 'interactive_jwt')))`, testWorkspaceID, c.issueID, testUserID, to); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -107,7 +107,8 @@ func humanMove(t *testing.T, c budgetCase, to string) {
 	if _, err := tx.Exec(ctx, `UPDATE issue SET status=$2 WHERE id=$1`, c.issueID, to); err != nil {
 		t.Fatal(err)
 	}
-	trigger := service.StatusTrigger{Cause: service.StatusCause{Kind: service.StatusCauseUIOrAPI, By: service.StatusCauseActor{Type: "member", ID: testUserID}}, Channel: "web"}
+	interactive := "interactive_jwt" // only an interactive move opens a window (S1d)
+	trigger := service.StatusTrigger{Cause: service.StatusCause{Kind: service.StatusCauseUIOrAPI, By: service.StatusCauseActor{Type: "member", ID: testUserID}}, AuthSource: &interactive, Channel: "web"}
 	if _, err := service.RecordStatusChange(ctx, q, issue, issue.Status, to, trigger, nil); err != nil {
 		t.Fatal(err)
 	}
