@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,6 +69,9 @@ type TaskService struct {
 	// FeatureFlags is the server-side toggle router. Nil is valid and returns
 	// each call site's default.
 	FeatureFlags *featureflag.Service
+	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
+	// that completion dispatches to. Nil: no background output is written.
+	BackgroundWriters map[string]BackgroundWriter
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -971,16 +976,10 @@ func (s *TaskService) captureTaskCancelled(ctx context.Context, task db.AgentTas
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
 		s.Metrics.RecordTaskTerminal(util.UUIDToString(task.ID), source, runtimeMode, task.Status, taskRunSeconds(task), taskTotalSeconds(task), task.Attempt)
 	}
-	// Revoke any mat_ task tokens minted for this task. Cancellation is
-	// a terminal transition, so the running agent process no longer
-	// needs to call back; eagerly deleting the token closes the
-	// window where a compromised process could keep authenticating
-	// against the API until the 24h expiry. Failure is non-fatal — the
-	// expiry / FK cascade are the durable guards. MUL-2600.
-	if err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID); err != nil {
-		slog.Warn("cancel task: failed to revoke task tokens",
-			"task_id", util.UUIDToString(task.ID), "error", err)
-	}
+	// Delete any mat_ task tokens minted for this task (MUL-2600). Best
+	// effort: a failed delete leaves the row valid until expiry; see
+	// RevokeTaskTokens.
+	s.RevokeTaskTokens(ctx, task)
 }
 
 // costUSDTicks is the provider's own price for this usage in 1e-10 USD, or 0
@@ -1699,7 +1698,13 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
+		provider, seconds, configErr := issueProviderHoldConfig(ctx, queries, createParams.AgentID)
+		if configErr != nil {
+			return db.AgentTaskQueue{}, configErr
+		}
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
+			HoldProvider:         provider,
+			ProviderHoldSeconds:  seconds,
 			ID:                   dbid.NewV7(),
 			AgentID:              createParams.AgentID,
 			RuntimeID:            createParams.RuntimeID,
@@ -1902,7 +1907,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -4491,10 +4496,17 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_count_running"
 			return fmt.Errorf("count running tasks: %w", err)
 		}
-		if running >= int64(agent.MaxConcurrentTasks) {
+		// At the cap, one extra urgent task may still start (CHE-5118). Running
+		// above cap+1 means the reserved slot is already used.
+		var minPriority int32
+		atCap := running >= int64(agent.MaxConcurrentTasks)
+		if atCap {
 			decisionDetail = claimDecisionDetail{running: running, maxConcurrent: int64(agent.MaxConcurrentTasks)}
-			outcome = "no_capacity"
-			return nil
+			if running > int64(agent.MaxConcurrentTasks) || !urgentReservedSlotEnabled(agent.RuntimeConfig) {
+				outcome = "no_capacity"
+				return nil
+			}
+			minPriority = priorityToInt("urgent")
 		}
 
 		t0 = time.Now()
@@ -4504,11 +4516,15 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			RuntimeID:        claimRuntimeID,
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
+			MinPriority:      minPriority,
 		})
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				outcome = "no_tasks"
+				if atCap {
+					outcome = "no_capacity"
+				}
 				return nil
 			}
 			outcome = "error_claim"
@@ -5562,6 +5578,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
 			return err
 		}
+		if err := s.writeBackgroundOutput(ctx, qtx, t, result); err != nil {
+			return fmt.Errorf("write background task output: %w", err)
+		}
 
 		if t.ChatSessionID.Valid {
 			// Pin the chat_session's runtime_id alongside the session_id so the
@@ -5701,6 +5720,11 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 					}
 				}
 			}
+		}
+		if issue, err := s.Queries.GetIssue(ctx, task.IssueID); err == nil {
+			s.stampBlockedDispatchSnapshot(ctx, s.Queries, issue, task)
+		} else {
+			slog.Warn("blocked dispatch completion snapshot unavailable", "issue_id", util.UUIDToString(task.IssueID), "error", err)
 		}
 	}
 
@@ -5850,6 +5874,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	if err != nil {
 		return nil, err
 	}
+	if _, err := writeChatInterimMessages(ctx, qtx, task, replySessionID, body, true); err != nil {
+		return nil, err
+	}
 	params := db.CreateChatMessageParams{
 		ID:            dbid.NewV7(),
 		ChatSessionID: replySessionID,
@@ -5917,6 +5944,208 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		}
 	}
 	return &row, nil
+}
+
+// chatInterimBlock is one message the agent wrote: the contiguous text rows of
+// a turn. The daemon seals a text row every 500 ms and on every type change, so
+// a single sentence can span several rows (CHE-4704); whitespace-only chunks
+// are part of the sentence and must survive the join. A block is sealed once a
+// non-text row follows it, which is the earliest moment it can no longer grow.
+type chatInterimBlock struct {
+	seq    int32
+	text   string
+	sealed bool
+}
+
+func chatInterimBlocks(steps []db.ListTaskTextStepsRow) []chatInterimBlock {
+	var blocks []chatInterimBlock
+	open := false
+	for _, m := range steps {
+		if m.Type != "text" {
+			if open {
+				blocks[len(blocks)-1].sealed = true
+			}
+			open = false
+			continue
+		}
+		if !open {
+			blocks = append(blocks, chatInterimBlock{seq: m.Seq})
+			open = true
+		}
+		blocks[len(blocks)-1].text += m.Content
+	}
+	return blocks
+}
+
+// chatInterimBody is the text a block shows in the DM: the same unescape and
+// quick-actions strip the final reply gets, trimmed of chunk-boundary spaces.
+func chatInterimBody(text string) string {
+	body, _ := splitChatQuickActions(util.UnescapeBackslashEscapes(text))
+	return strings.TrimSpace(body)
+}
+
+type chatInterimMessage struct {
+	seq  int32
+	body string
+}
+
+// selectChatInterimMessages picks the blocks that become their own DM rows.
+// While the turn runs (completing=false) that is every sealed block. At
+// completion the final reply is written separately, so it must not be repeated:
+// finalBody is matched as a suffix of the last block that ends with it, which
+// keeps the text before it — a provider that reports only its last message as
+// Output (Codex) leaves earlier text after the last tool step. Every other
+// block is written, including those after the match, so trailing text is never
+// dropped. With no match (an empty finalBody, or an Output that differs from the
+// streamed text) every block is written; the cost is a repeat only when the
+// Output restates a block in different words.
+func selectChatInterimMessages(blocks []chatInterimBlock, finalBody string, completing bool) []chatInterimMessage {
+	finalBody = strings.TrimSpace(finalBody)
+	var out []chatInterimMessage
+	add := func(seq int32, text string) {
+		if body := chatInterimBody(text); body != "" {
+			out = append(out, chatInterimMessage{seq: seq, body: body})
+		}
+	}
+	final := -1
+	if completing && finalBody != "" {
+		for i := len(blocks) - 1; i >= 0; i-- {
+			if strings.HasSuffix(chatInterimBody(blocks[i].text), finalBody) {
+				final = i
+				break
+			}
+		}
+	}
+	for i, b := range blocks {
+		switch {
+		case i == final:
+			add(b.seq, strings.TrimSuffix(chatInterimBody(b.text), finalBody))
+		case completing:
+			add(b.seq, b.text)
+		case !completing && b.sealed:
+			add(b.seq, b.text)
+		}
+	}
+	return out
+}
+
+// chatInterimMessageID is the deterministic id of the block that starts at seq.
+// The live writer and the completion writer both derive it, so whichever runs
+// second finds the row and skips it. The seq leads the id so rows written in
+// one transaction (same created_at) still sort in transcript order, ahead of
+// the final reply, whose time-ordered id starts with a far larger timestamp.
+func chatInterimMessageID(taskID pgtype.UUID, seq int32) pgtype.UUID {
+	h := sha256.Sum256([]byte("chat-interim:" + util.UUIDToString(taskID) + ":" + strconv.Itoa(int(seq))))
+	var id [16]byte
+	copy(id[:], h[:16])
+	binary.BigEndian.PutUint32(id[:4], uint32(seq))
+	id[6] = id[6]&0x0f | 0x80
+	id[8] = id[8]&0x3f | 0x80
+	return pgtype.UUID{Bytes: id, Valid: true}
+}
+
+// writeChatInterimMessages writes the agent's earlier messages of a direct-chat
+// turn as ordinary assistant rows (CHE-4704). Only the final Output became a
+// chat_message, so status lines and multi-part replies stayed in task_message,
+// where the UI folds them into the step block. The rows carry no task_id: with
+// one, web and mobile key them like the final reply and render the whole task
+// timeline under each. Rows that already exist are skipped and returned
+// nothing. Channel tasks are skipped: their outbound pushes every assistant row
+// to Slack/Lark.
+func writeChatInterimMessages(ctx context.Context, qtx *db.Queries, task db.AgentTaskQueue, sessionID pgtype.UUID, finalBody string, completing bool) ([]db.ChatMessage, error) {
+	if !task.ChatInputTaskID.Valid {
+		return nil, nil
+	}
+	if channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, task.ChatInputTaskID); err != nil {
+		return nil, fmt.Errorf("check interim chat channel provenance: %w", err)
+	} else if channelIngested {
+		return nil, nil
+	}
+	steps, err := qtx.ListTaskTextSteps(ctx, task.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list chat task steps: %w", err)
+	}
+	var created []db.ChatMessage
+	for _, m := range selectChatInterimMessages(chatInterimBlocks(steps), finalBody, completing) {
+		id := chatInterimMessageID(task.ID, m.seq)
+		if _, err := qtx.GetChatMessage(ctx, id); err == nil {
+			continue
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("check interim chat message: %w", err)
+		}
+		row, err := createAssistantChatMessage(ctx, qtx, db.CreateChatMessageParams{
+			ID:            id,
+			ChatSessionID: sessionID,
+			Role:          "assistant",
+			Content:       redact.Prose(m.body),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("create interim chat message: %w", err)
+		}
+		created = append(created, row)
+	}
+	return created, nil
+}
+
+// PublishChatInterimMessages shows the agent's finished messages in the DM
+// while its turn still runs, instead of when the turn ends (CHE-4704). It
+// writes each sealed text block once, so a turn that later fails or is
+// cancelled keeps what the agent already said. Called after each step batch;
+// best-effort, because the completion path writes whatever this missed.
+func (s *TaskService) PublishChatInterimMessages(ctx context.Context, task db.AgentTaskQueue) error {
+	if !task.ChatSessionID.Valid || !task.ChatInputTaskID.Valid {
+		return nil
+	}
+	var created []db.ChatMessage
+	err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if err := lockChatSessionForTaskWrite(ctx, qtx, task.ID); err != nil {
+			return err
+		}
+		// Re-read under the session lock: once the task has settled, the
+		// completion or failure path owns the transcript.
+		current, err := qtx.GetAgentTask(ctx, task.ID)
+		if err != nil {
+			return fmt.Errorf("get task for interim chat messages: %w", err)
+		}
+		if current.Status != "running" {
+			return nil
+		}
+		sessionID, err := chatReplySessionID(ctx, qtx, task.ChatSessionID)
+		if err != nil {
+			return err
+		}
+		created, err = writeChatInterimMessages(ctx, qtx, task, sessionID, "", false)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if len(created) == 0 {
+		return nil
+	}
+	scope := s.ResolveTaskScope(ctx, task)
+	if scope.WorkspaceID == "" {
+		return nil
+	}
+	for _, msg := range created {
+		s.Bus.Publish(events.Event{
+			Type:               protocol.EventChatMessage,
+			WorkspaceID:        scope.WorkspaceID,
+			ActorType:          "agent",
+			ActorID:            util.UUIDToString(task.AgentID),
+			ChatSessionID:      util.UUIDToString(msg.ChatSessionID),
+			ChatSessionOwnerID: scope.ChatSessionOwnerID,
+			Payload: protocol.ChatMessagePayload{
+				ChatSessionID: util.UUIDToString(msg.ChatSessionID),
+				MessageID:     util.UUIDToString(msg.ID),
+				Role:          msg.Role,
+				Content:       msg.Content,
+				CreatedAt:     msg.CreatedAt.Time.UTC().Format(time.RFC3339Nano),
+				MessageKind:   msg.MessageKind,
+			},
+		})
+	}
+	return nil
 }
 
 // observeChatOutputLocalPath records a metric when a chat reply references a
@@ -6044,12 +6273,23 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// so don't block" fail-open providerHoldVerdict documents.
 		retryAgent       db.Agent
 		retryAgentLoaded bool
+		// retryFence: set when the task is in a provider-failure recovery
+		// lineage (CHE-1773); no retry is minted and the owner is told once.
+		retryFence providerFailureOwnerDecision
 	)
 	if retryableReasons[failureReason] {
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if retryEligible(failureReason, parent) {
+		} else if !retryEligible(failureReason, parent) {
+			// Not retryable: nothing to mint.
+		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
+			// Fail closed: an unreadable lineage must not mint a generic retry.
+			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
+				"task_id", util.UUIDToString(taskID), "error", ferr)
+		} else if fence.Capped() {
+			retryFence = fence
+		} else {
 			wantRetry = true
 			// Persist the reason-aware effective budget into the child so the
 			// retry chain self-describes (e.g. provider_network → max_attempts=3),
@@ -6093,6 +6333,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 				wantRetry = false
+			}
+			// SEC-1 rule 4: the retry guard below locks the workspace, which
+			// must come before the session lock taken next.
+			if wantRetry && parent.Purpose.Valid && parent.Purpose.String == "compaction" && parent.ChatSessionID.Valid {
+				if _, err := lockCompactionRetryWorkspace(ctx, qtx, parent); err != nil {
+					return err
+				}
 			}
 		}
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
@@ -6237,6 +6484,15 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 					"issue_id", util.UUIDToString(t.IssueID),
 					"error", gerr,
 				)
+				createRetry = false
+			}
+		}
+		if createRetry {
+			// SEC-1 rule 4: skip, never abort — this transaction carries the
+			// parent's failed status.
+			if revoked, rerr := compactionRetryRevoked(ctx, qtx, t); rerr != nil || revoked {
+				slog.Info("fail task auto-retry skipped: compact chain changed or unreadable",
+					"task_id", util.UUIDToString(taskID), "error", rerr)
 				createRetry = false
 			}
 		}
@@ -6432,11 +6688,19 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// in addition to the coordinator recovery signal, preserving visibility on
 	// both sides of a cross-issue handoff.
 	if errMsg != "" && task.IssueID.Valid && retried == nil {
-		s.createAgentComment(ctx, task.IssueID, task.AgentID, redact.Text(errMsg), "system", task.TriggerCommentID, task.ID)
+		notice := redact.Text(errMsg)
+		if isGatewayClassFailureReason(failureReason) {
+			// CHE-4575: raw provider text may carry a mention link; a live
+			// agent mention would enqueue a run for a failure notice.
+			notice = strings.ReplaceAll(notice, "mention://agent/", "mention-agent://")
+		}
+		s.createAgentComment(ctx, task.IssueID, task.AgentID, notice, "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
 		s.failOverRoutingTask(ctx, task, failureReason)
 	}
+	// CHE-1773: a recovery-lineage task got no retry; tell its owner once.
+	s.notifyProviderFailureCap(ctx, s.Queries, task.ID, retryFence)
 	// CHE-607: errMsg above is the proximate cause (e.g. a stream disconnect) —
 	// on its own it says nothing about why the auto-retry that would normally
 	// follow a provider_network failure didn't happen. Post the policy notice
@@ -6520,6 +6784,8 @@ var retryableReasons = map[string]bool{
 // final attempt instead of firing back-to-back. Every other retryable reason
 // keeps the task's generic max_attempts ceiling and retries immediately.
 const (
+	// gatewayFailureCooldown holds every new claim of an agent after a provider 5xx
+	// or 429 failure, so queued work does not burn a run into the same saturated route.
 	gatewayFailureCooldown        = 10 * time.Minute
 	runtimeOfflineRetryDeferral   = time.Second
 	providerNetworkMaxAttempts    = 3
@@ -6651,6 +6917,43 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 		!t.AutopilotRunID.Valid &&
 		!IsTriageTask(t) &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
+}
+
+// compactionRetryRevoked reports whether a compaction task's retry must not be
+// created because the workspace's compact agent chain changed after the task
+// was created (SEC-1 rule 4). The change cancels live tasks only, so a task
+// that had already failed would otherwise retry as an active child, even after
+// A -> B -> A. Taking the chat_session lock orders the check after a change in
+// flight. The workspace lock comes first, the order the settings write uses
+// (workspace, then sessions); the other order deadlocks with CreateRetryTask,
+// which also locks the workspace. It fails closed: an error means no retry.
+func compactionRetryRevoked(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (bool, error) {
+	if !parent.ChatSessionID.Valid || !parent.Purpose.Valid || parent.Purpose.String != "compaction" {
+		return false, nil
+	}
+	workspaceID, err := lockCompactionRetryWorkspace(ctx, q, parent)
+	if err != nil {
+		return true, err
+	}
+	if _, err := q.LockChatSessionShared(ctx, parent.ChatSessionID); err != nil {
+		return true, err
+	}
+	return q.CompactChainChangedSince(ctx, db.CompactChainChangedSinceParams{WorkspaceID: workspaceID, CreatedAt: parent.CreatedAt})
+}
+
+// lockCompactionRetryWorkspace takes the workspace row of a compaction task's
+// session. A caller that locks the session itself (FailTask) calls it first, so
+// the workspace-then-session order holds on every path. Not a compaction task:
+// no-op.
+func lockCompactionRetryWorkspace(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) (pgtype.UUID, error) {
+	session, err := q.GetChatSession(ctx, parent.ChatSessionID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, session.WorkspaceID); err != nil {
+		return pgtype.UUID{}, err
+	}
+	return session.WorkspaceID, nil
 }
 
 // refuseRetryForProviderHold checks the just-created retry child's agent
@@ -6792,6 +7095,16 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryEligible(reason, parent) {
 		return nil, nil
 	}
+	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
+	// point either; fail closed when the lineage cannot be read.
+	fence, err := s.fenceRecoveryLineage(ctx, s.Queries, parent.ID)
+	if err != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery lineage check: %w", err)
+	}
+	if fence.Capped() {
+		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
 
 	var runtimeMCPOverlay runtimeMCPOverlayData
 	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
@@ -6838,6 +7151,18 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+	// CHE-4581: replays of this hand-off queue behind the first writer, whose
+	// committed successor CreateRetryTask then sees.
+	if _, lerr := qtx.LockAgentTaskForRetry(ctx, parent.ID); lerr != nil {
+		return nil, fmt.Errorf("task auto-retry: lock parent: %w", lerr)
+	}
+	if revoked, rerr := compactionRetryRevoked(ctx, qtx, parent); rerr != nil {
+		return nil, fmt.Errorf("task auto-retry: check compaction authority: %w", rerr)
+	} else if revoked {
+		slog.Info("task auto-retry skipped: compact chain changed",
+			"parent_task_id", util.UUIDToString(parent.ID))
+		return nil, nil
+	}
 	if err := requireActiveTaskProject(ctx, qtx, parent); err != nil {
 		if IsProjectInactive(err) {
 			return nil, nil
@@ -6845,7 +7170,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -8332,7 +8657,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ruleVersionID = target.source.RuleVersionID
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
-		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		task, err := createProviderHeldAgentTask(ctx, s.Queries, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              target.agent.ID,
 			RuntimeID:            target.agent.RuntimeID,
@@ -8389,11 +8714,34 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 	return delegatedFailureRecoveryCovered, fmt.Errorf("delegate failure recovery could not acquire coordinator task slot")
 }
 
+// isGatewayClassFailureReason reports the provider/gateway failures (transport,
+// capacity, quota, config, unknown) whose terminal failure comment is the whole
+// notice: waking an LLM coordinator cannot fix them (CHE-4575).
+func isGatewayClassFailureReason(reason string) bool {
+	switch taskfailure.Reason(reason) {
+	case taskfailure.ReasonAgentProviderNetwork,
+		taskfailure.ReasonAgentProviderCapacityOrRateLimit,
+		taskfailure.ReasonAgentProviderServerError,
+		taskfailure.ReasonAgentProviderQuotaLimit,
+		taskfailure.ReasonAgentProviderAuthOrAccess,
+		taskfailure.ReasonAgentMissingConfig,
+		taskfailure.ReasonAgentModelNotFoundOrUnavailable,
+		taskfailure.ReasonAgentUnknown:
+		return true
+	}
+	return false
+}
+
 // recoverDelegatedTaskFailure is the shared post-terminal hook for FailTask and
 // HandleFailedTasks. handled reports whether the failure was an eligible
 // delegated terminal; the production terminal paths deliberately retain their
 // legacy raw-error notice alongside the richer coordinator recovery signal.
 func (s *TaskService) recoverDelegatedTaskFailure(ctx context.Context, failed db.AgentTaskQueue) (handled bool, err error) {
+	// CHE-4575: a gateway-class terminal failure keeps its timeline failure
+	// comment but never wakes the coordinator: no recovery comment, no task.
+	if isGatewayClassFailureReason(failed.FailureReason.String) {
+		return false, nil
+	}
 	target, _, err := s.ensureDelegatedFailureRecoveryComment(ctx, failed.ID)
 	if err != nil || target == nil {
 		return false, err
@@ -8819,6 +9167,18 @@ func computeChatElapsedMs(task db.AgentTaskQueue) pgtype.Int8 {
 		ms = 0
 	}
 	return pgtype.Int8{Int64: ms, Valid: true}
+}
+
+// urgentReservedSlotEnabled reads agent.runtime_config.urgent_reserved_slot.
+// Default on: absent, null or malformed config keeps the slot.
+func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
+	var cfg struct {
+		Enabled *bool `json:"urgent_reserved_slot"`
+	}
+	if json.Unmarshal(runtimeConfig, &cfg) != nil || cfg.Enabled == nil {
+		return true
+	}
+	return *cfg.Enabled
 }
 
 func priorityToInt(p string) int32 {
@@ -9850,5 +10210,29 @@ func agentToMap(a db.Agent) map[string]any {
 		"updated_at":           util.TimestampToString(a.UpdatedAt),
 		"archived_at":          util.TimestampToPtr(a.ArchivedAt),
 		"archived_by":          util.UUIDToPtr(a.ArchivedBy),
+	}
+}
+
+// RevokeTaskTokens deletes a task's mat_ tokens at task end. It is best effort
+// and is not an immediate revocation guarantee: if the delete fails, the row
+// stays valid until its expires_at (GetTaskTokenByHash filters on it), so the
+// failure is logged and, for an autopilot run, recorded as
+// result.token_revoke_failed. Neither the log nor the record carries a token.
+func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQueue) {
+	err := s.Queries.DeleteTaskTokensByTask(ctx, task.ID)
+	if err == nil {
+		return
+	}
+	slog.Error("task end: failed to delete task tokens; they stay valid until expiry",
+		"task_id", util.UUIDToString(task.ID), "error", err)
+	if !task.AutopilotRunID.Valid {
+		return
+	}
+	// The caller's ctx may be the reason the delete failed (cancelled request).
+	if mergeErr := s.Queries.MergeAutopilotRunResult(context.WithoutCancel(ctx), db.MergeAutopilotRunResultParams{
+		ID: task.AutopilotRunID, Patch: []byte(`{"token_revoke_failed":true}`),
+	}); mergeErr != nil {
+		slog.Error("task end: failed to record token deletion failure",
+			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
 }

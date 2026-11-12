@@ -100,6 +100,15 @@ ON CONFLICT (skill_id, path) DO UPDATE SET
     updated_at = now()
 RETURNING *;
 
+-- Every writer of an existing skill's files takes this lock first and holds it
+-- to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+-- agent.skills.set approval, which row locks on skill_file could not do for an
+-- insert. It waits under the transaction lock timeout.
+-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
+
 -- name: DeleteSkillFile :exec
 DELETE FROM skill_file WHERE id = $1;
 
@@ -161,6 +170,23 @@ WHERE agent_id = $1 AND skill_id = $2;
 
 -- name: RemoveAllAgentSkills :exec
 DELETE FROM agent_skill WHERE agent_id = $1;
+
+-- name: LockSkillsShare :many
+-- The skill rows an approval snapshots, in the workspace, locked FOR SHARE
+-- NOWAIT in id order. Every writer of a skill's files takes a conflicting
+-- parent lock first, so the file set cannot change until the lock holder
+-- commits. Rows are never locked per file: a new file row would escape a row
+-- lock. A busy row answers 55P03. Missing and foreign ids return no row.
+SELECT * FROM skill
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = ANY(sqlc.arg('ids')::uuid[])
+ORDER BY id
+FOR SHARE NOWAIT;
+
+-- name: ListAgentSkillAssignments :many
+-- The agent's skill assignments with their enabled flag, for the skill-set digest.
+SELECT skill_id, enabled FROM agent_skill
+WHERE agent_id = $1
+ORDER BY skill_id;
 
 -- name: ListAgentSkillsByWorkspace :many
 SELECT ask.agent_id, s.id, s.name, s.description, ask.enabled

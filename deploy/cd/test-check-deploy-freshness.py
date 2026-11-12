@@ -120,54 +120,6 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(self.run_live(SHA[:7], 600), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
 
 
-class ResumeAfterPauseTest(unittest.TestCase):
-    """CHE-4500: a deploy run skipped by MAIN_RED_PAUSED is lost unless something reruns it after the flag clears."""
-
-    def skipped(self, sha=SHA, attempt=1, run_id=30):
-        return {"id": run_id, "display_title": f"CD deploy to C00 · {sha}", "conclusion": "skipped", "run_attempt": attempt}
-
-    def test_qualified_head_with_skipped_deploy_run_is_rerun(self):
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=False, paused=False), 30)
-
-    def test_deployed_head_is_not_rerun(self):
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped()], deployed=True, paused=False))
-
-    def test_unqualified_head_is_not_rerun(self):
-        for conclusion in ("failure", None, "cancelled"):
-            self.assertIsNone(fresh.decide_resume(SHA, [qual(conclusion)], [self.skipped()], deployed=False, paused=False), conclusion)
-
-    def test_skipped_run_of_another_sha_is_not_rerun(self):
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(sha="0" * 40)], deployed=False, paused=False))
-
-    def test_retries_stop_at_the_attempt_cap(self):
-        last = self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS - 1)
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [last], deployed=False, paused=False), 30)
-        self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=fresh.MAX_RESUME_ATTEMPTS)], deployed=False, paused=False))
-
-    def test_no_retry_is_spent_while_the_pause_is_still_set(self):
-        # Terra P1: 12 reruns during a long pause used up the cap, so clearing the flag later resumed nothing.
-        for attempt in (1, 5, fresh.MAX_RESUME_ATTEMPTS - 1):
-            self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [self.skipped(attempt=attempt)], deployed=False, paused=True))
-
-    def test_long_pause_then_cleared_still_resumes(self):
-        # 20 ticks paused (no rerun, attempt stays 1), then the flag clears: the next tick reruns.
-        run = self.skipped(attempt=1)
-        for _ in range(20):
-            self.assertIsNone(fresh.decide_resume(SHA, [qual("success")], [run], deployed=False, paused=True))
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], [run], deployed=False, paused=False), 30)
-
-    def test_paused_reads_the_variable_from_the_environment(self):
-        for value, expected in (("", False), (None, False), ("1", True), ("main red since 10:00", True)):
-            env = {} if value is None else {"MAIN_RED_PAUSED": value}
-            with patch.dict(fresh.os.environ, env, clear=True):
-                self.assertIs(fresh.main_red_paused(), expected, value)
-
-    def test_newest_skipped_run_wins(self):
-        runs = [self.skipped(run_id=30, attempt=3), self.skipped(run_id=31, attempt=1)]
-        runs[0]["created_at"], runs[1]["created_at"] = "2026-11-05T10:00:00Z", "2026-11-05T11:00:00Z"
-        self.assertEqual(fresh.decide_resume(SHA, [qual("success")], runs, deployed=False, paused=False), 31)
-
-
 class RateLimitTest(unittest.TestCase):
     def err(self, text):
         return subprocess.CalledProcessError(1, "gh", stderr=text)
@@ -206,8 +158,42 @@ class RateLimitTest(unittest.TestCase):
         self.assertEqual(gh.call_count, 3)
 
 
+def sched(created):
+    return {"id": 30, "event": "schedule", "created_at": created, "html_url": "https://example.test/run/30"}
+
+
+def at(h, m=0, day=5):
+    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+
+
+class MissedSlotTest(unittest.TestCase):
+    """cd-deploy.yml slots: 01:17, 05:17, 09:17, 13:17, 17:17, 21:17 UTC (08:17 ... 04:17 ICT). CHE-5182 reopened."""
+
+    def missed(self, now, runs):
+        return fresh.missed_slot(now, runs)
+
+    def test_slot_passed_over_30_minutes_with_no_schedule_run_is_missed(self):
+        self.assertEqual(self.missed(at(13, 48), []), at(13, 17))
+
+    def test_inside_the_30_minute_grace_nothing_is_missed(self):
+        self.assertIsNone(self.missed(at(13, 46), [sched("2026-11-05T09:20:00Z")]))
+
+    def test_a_run_created_since_the_slot_clears_it(self):
+        self.assertIsNone(self.missed(at(13, 48), [sched("2026-11-05T13:22:00Z")]))
+
+    def test_a_run_from_the_previous_slot_does_not_clear_the_new_one(self):
+        self.assertEqual(self.missed(at(13, 48), [sched("2026-11-05T09:20:00Z")]), at(13, 17))
+
+    def test_slot_before_midnight_is_found_after_midnight(self):
+        self.assertEqual(self.missed(at(21, 50, day=5), []), at(21, 17))
+        self.assertEqual(self.missed(at(0, 30, day=6), []), at(21, 17, day=5))
+
+    def test_off_slot_hours_use_the_latest_slot(self):
+        self.assertEqual(self.missed(at(3, 0), []), at(1, 17))
+
+
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", skipped_runs=(), paused="", log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
         commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
@@ -221,9 +207,9 @@ class MainTest(unittest.TestCase):
                 return json.dumps(commit)
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
+            if "workflows/cd-deploy.yml/runs" in path and "event=schedule" in path:
+                return json.dumps({"workflow_runs": list(schedule_runs)})
             if "workflows/cd-deploy.yml/runs" in path:
-                if "status=skipped" in path:
-                    return json.dumps({"workflow_runs": list(skipped_runs)})
                 self.assertIn("status=success", path)
                 return json.dumps({"workflow_runs": deploy_runs})
             if "/actions/runs/20/jobs" in path:
@@ -235,23 +221,11 @@ class MainTest(unittest.TestCase):
             raise AssertionError(path)
 
         out = io.StringIO()
-        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica", "MAIN_RED_PAUSED": paused}), \
+        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica"}), \
                 patch.object(fresh, "gh_api", side_effect=fake), patch.object(fresh, "utcnow", return_value=NOW), \
                 contextlib.redirect_stdout(out):
             rc = fresh.main()
         return rc, out.getvalue(), seen
-
-    def test_deploy_run_skipped_by_the_pause_is_rerun_without_failed_flag(self):
-        skipped = {"id": 30, "display_title": f"CD deploy to C00 · {SHA}", "conclusion": "skipped", "run_attempt": 1}
-        rc, out, seen = self.run_main([qual("success")], [], 30, skipped_runs=[skipped])
-        self.assertEqual(rc, 0)
-        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "30", "-R", "cheese-work/multica")])
-
-    def test_skipped_deploy_run_is_not_rerun_while_the_pause_is_set(self):
-        skipped = {"id": 30, "display_title": f"CD deploy to C00 · {SHA}", "conclusion": "skipped", "run_attempt": 1}
-        rc, out, seen = self.run_main([qual("success")], [], 30, skipped_runs=[skipped], paused="1")
-        self.assertEqual(rc, 0)
-        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [])
 
     def test_failed_build_is_rerun_once_and_not_yet_alerted(self):
         rc, out, seen = self.run_main([qual("failure")], [], 30)
@@ -279,6 +253,14 @@ class MainTest(unittest.TestCase):
         rc, out, _ = self.run_main([qual("success")], [deploy("failure")], 120, log="nothing useful\n")
         self.assertEqual(rc, 1)
         self.assertIn("::error::", out)
+
+
+    def test_missed_deploy_slot_alerts_even_when_main_is_deployed(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("09:17 UTC", out)
+        self.assertIn("16:17 ICT", out)
 
 
 class WorkflowFileTest(unittest.TestCase):

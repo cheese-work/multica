@@ -78,7 +78,7 @@ Si la session locale n'existe plus, si le contexte ne peut pas être poursuivi, 
 
 ## Suivre et arrêter une exécution
 
-Pendant l'exécution de l'agent, l'interface affiche la phase en cours et l'activité des outils. Dépliez **Afficher les détails** pour inspecter l'exécution en entier.
+Pendant l'exécution de l'agent, l'interface affiche la phase en cours et l'activité des outils. Dépliez **Afficher les détails** pour inspecter l'exécution en entier. Les messages que l'agent écrit entre deux appels d'outils apparaissent dans la conversation au fur et à mesure, sans qu'il soit nécessaire de déplier les détails pour les lire.
 
 Pour l'interrompre, cliquez sur le bouton Arrêter à côté de la zone de saisie (affiché quand la zone est vide). Le contenu déjà renvoyé dans la conversation est conservé.
 
@@ -117,6 +117,10 @@ Si une conversation est liée à un canal externe (comme Slack), l'archiver romp
 <Callout type="warning">
 La suppression d'une conversation est irréversible et arrête toutes les exécutions qu'elle contient et qui ne sont pas terminées. Archivez-la plutôt si vous n'en avez simplement plus besoin pour le moment.
 </Callout>
+
+## Décisions en attente
+
+Tant qu'un agent attend votre décision, une pastille « N décisions vous attendent » s'affiche sur chaque page. Un clic ouvre la plus ancienne : le ticket au commentaire de la carte, ou le ticket si la carte n'a pas de commentaire. La même décision apparaît aussi dans votre boîte de réception et dans la liste « Needs you ». Une réponse en texte libre sans option ferme quand même la carte, et l'agent lit vos mots.
 
 ## Étapes suivantes
 

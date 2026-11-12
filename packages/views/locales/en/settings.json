@@ -477,7 +477,8 @@
       "code": "Code",
       "channels": "Messaging",
       "apps": "Connected apps",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "provider_breakers": "Provider breakers"
     },
     "groups": {
       "personal": "Personal",
@@ -768,6 +769,7 @@
     "add": "Add passkey",
     "code_hint": "We emailed you a code. Enter it, then follow your browser's prompt to create the passkey.",
     "code_label": "Email code",
+    "attempt_tag": "Attempt {{tag}}: use the email whose subject ends with [{{tag}}].",
     "confirm": "Confirm",
     "cancel": "Cancel",
     "empty": "No passkeys yet.",
@@ -892,6 +894,11 @@
     "agent_decisions_stopped_title": "Decisions were stopped automatically",
     "agent_decisions_stopped_description": "Reason: {{reason}}. Turning decisions on clears this record.",
     "agent_decisions_stopped_confirm": "Turn on",
+    "runtime_profile_label": "Runtime profile",
+    "runtime_profile_hint": "Workspace default for how agent CLIs get their config. Managed builds a minimal home per task. Tools without a managed adapter fail under Managed; give those agents an explicit Personal override.",
+    "runtime_profile_personal": "Personal",
+    "runtime_profile_managed": "Managed",
+    "runtime_profile_inherit": "Workspace default",
     "idle_guard_label": "Idle-issue guard",
     "idle_guard_hint": "Moves started issues with no run and no wakeup after N hours. Shadow only logs.",
     "idle_guard_off": "Off",
@@ -1630,5 +1637,36 @@
     "mcp": "Added by admins and shared across the workspace, then assigned per agent.",
     "apps": "Authorized with your own account through Composio and enabled on agents you own.",
     "plugins": "Installed packages that can add tools, scheduled hooks, and storage, each with its own permissions."
+  },
+  "provider_breakers": {
+    "description": "A breaker refuses new work for a provider after repeated server errors, then probes it again by itself.",
+    "empty": "No breaker has tripped in this workspace.",
+    "load_error": "Could not load provider breakers.",
+    "retry": "Retry",
+    "columns": {
+      "provider": "Provider",
+      "state": "State",
+      "reason": "Reason",
+      "failures": "Failures",
+      "opened": "Opened",
+      "next_probe": "Next probe",
+      "last_success": "Last success",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Closed",
+      "open": "Open",
+      "half_open": "Half open"
+    },
+    "none": "—",
+    "reset": "Reset",
+    "reset_label": "Reset {{provider}} breaker",
+    "reset_title": "Reset the {{provider}} breaker?",
+    "reset_description": "The breaker closes now and new work reaches {{provider}} again. If the provider is still failing, the breaker trips again. The reset is recorded in the audit log.",
+    "reset_cancel": "Cancel",
+    "reset_confirm": "Reset breaker",
+    "resetting": "Resetting…",
+    "reset_success": "Breaker reset.",
+    "reset_error": "Could not reset the breaker."
   }
 }

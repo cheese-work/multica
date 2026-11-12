@@ -59,6 +59,7 @@ import type {
   IssuePullRequestsResponse,
   InboxItem,
   InboxWorkspaceUnread,
+  IssueUnread,
   Label,
   MemberWithUser,
   IssueProperty,
@@ -588,6 +589,7 @@ const IssueWorkflowStepSchema = z.lazy(() => z.object({
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
   advance_on_ci_green: z.boolean().optional(),
+  keep_other_assignee: z.boolean().optional(),
   edges: z.array(IssueWorkflowEdgeSchema).optional(),
   entry: z.array(IssueWorkflowEntryGateSchema).optional(),
   sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
@@ -740,6 +742,30 @@ export const EMPTY_ISSUE_VIEW_PREFERENCE: IssueViewPreference = {
   prefs: { hidden: [], order: [] },
   updated_at: "",
 };
+
+/**
+ * The `sidebar_projects` preference document. Another client version may have
+ * saved values this one does not know; every field that does not parse comes
+ * out undefined so the caller's default stands in for it.
+ */
+export const SidebarProjectPrefsDocSchema = z.lazy(() => z.object({
+  projects: z.object({
+    ordering: z.enum(["manual", "name", "updated", "created"]).optional().catch(undefined),
+    statuses: z.array(z.string()).optional().catch(undefined),
+    onlyMine: z.boolean().optional().catch(undefined),
+    showCount: z.boolean().optional().catch(undefined),
+  }).catch({}),
+  issues: z.object({
+    sortBy: z.enum(["updated_at", "created_at", "priority", "status", "title", "due_date"]).optional().catch(undefined),
+    sortDirection: z.enum(["asc", "desc"]).optional().catch(undefined),
+    hiddenStatuses: z.array(z.string()).nullable().optional().catch(undefined),
+    assignee: z.enum(["anyone", "me", "my_agents", "me_and_my_agents"]).optional().catch(undefined),
+    showSubIssues: z.boolean().optional().catch(undefined),
+  }).catch({}),
+  order: z.array(z.unknown()).catch([]).transform((ids) => ids.filter((id): id is string => typeof id === "string")),
+}));
+
+export type SidebarProjectPrefsDoc = z.infer<typeof SidebarProjectPrefsDocSchema>;
 
 export interface CreateIssueViewRequest {
   name: string;
@@ -1055,10 +1081,25 @@ const DecisionActionSchema = z.lazy(() => z.object({
   id: z.string(),
   action_type: z.string().catch(""),
   payload_sha256: z.string(),
+  state: z.string().optional().catch(undefined),
   preview: z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
+  config_change: z.object({
+    field: z.string(),
+    target_id: z.string(),
+    keys: z.array(z.string()),
+    diff_kind: z.string(), // an unknown kind parses; approvableConfigChange refuses it
+    diff: z.array(z.object({ old_start: z.number(), new_start: z.number(), lines: z.array(z.string()) }).loose()),
+    after: z.unknown(),
+    before_sha256: z.string().regex(SHA256_HEX),
+    after_sha256: z.string().regex(SHA256_HEX),
+    meta: z.record(z.string(), z.unknown()).optional().catch(undefined),
+    sha256: z.string().regex(SHA256_HEX),
+  }).loose().optional().catch(undefined),
+  owner_only: z.boolean().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
@@ -1091,6 +1132,19 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
     answered_at: z.string().default(""),
   }).loose().optional().catch(undefined),
   action: DecisionActionSchema.optional().catch(undefined),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
+  answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
@@ -1137,6 +1191,18 @@ export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
     label: z.string(),
     what_happens: z.string().optional().catch(undefined),
   }).loose()).catch([]),
+  covers_request_ids: z.array(z.string()).optional().catch(undefined),
+  covered_cards: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string().default(""),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().optional().catch(undefined),
+    decision: z.string().default(""),
+    options: z.array(z.object({
+      label: z.string(),
+      what_happens: z.string().optional().catch(undefined),
+    }).loose()).catch([]),
+  }).loose()).optional().catch(undefined),
 }).loose()));
 
 // An unknown status degrades to `uncertain`: it never claims the agent read the
@@ -2546,6 +2612,7 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   attention_since: z.string().nullable().optional().catch(undefined),
   stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
   next_change_at: z.string().nullable().optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -3228,6 +3295,33 @@ export const InboxUnreadSummarySchema = z.lazy(() => z.array(
 ));
 
 export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
+
+// The viewer's unread issues (`/api/issues/unread` GET), behind the sidebar's
+// unread dot. `outcome` stays a string so a future kind still lights the dot;
+// on malformed JSON parseWithFallback returns the empty list, which hides it.
+
+export const IssueUnreadPageSchema = z.lazy(() =>
+  z
+  .object({
+    items: z.array(
+      z
+        .object({
+          issue_id: z.string(),
+          outcome: z.string(),
+          agent_id: z.string().nullish().transform((v) => v ?? null),
+          created_at: z.string(),
+        })
+        .loose(),
+    ),
+    next_cursor: z.string().nullish().transform((v) => v ?? null),
+  })
+  .loose(),
+);
+
+export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
+  items: [],
+  next_cursor: null,
+};
 
 // Inbox items (`/api/inbox` and `/api/inbox/archived` GET).
 // Lenient per the usual rules: `severity` / `type` / `recipient_type` stay
@@ -4486,3 +4580,19 @@ export const RoutingAgentSettingSchema = z.lazy(() => z.object({
   overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
 }).loose());
 export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+
+// Provider breaker state (CHE-4382). An unknown state reads as `open`: the
+// panel must not tell an admin a breaker is closed when it cannot tell.
+export const ProviderBreakerSchema = z.lazy(() => z.object({
+  provider: z.string(),
+  state: z.enum(["closed", "open", "half_open"]).catch("open"),
+  open_reason: z.string().nullish().transform((v) => v ?? ""),
+  failure_count: z.number().int().nonnegative().catch(0),
+  opened_at: z.string().nullish().transform((v) => v ?? null),
+  next_probe_at: z.string().nullish().transform((v) => v ?? null),
+  last_success_at: z.string().nullish().transform((v) => v ?? null),
+  trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+export const ProviderBreakerListSchema = z.lazy(() => z.object({
+  breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
+}));

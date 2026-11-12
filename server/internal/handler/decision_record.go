@@ -44,6 +44,8 @@ type decisionRecordResult struct {
 	AnswerMessage   db.ChatMessage
 	ClearedComments []db.Comment
 	Replayed        bool
+	// Covered holds the per-issue cards a batch answer closed (CHE-4453).
+	Covered []coveredCardAnswer
 }
 
 func (handler *Handler) createAskedDecisionRecord(request *http.Request, issue db.Issue, input decisionRecordInput) (decisionRecordResult, error) {
@@ -513,7 +515,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if err := queries.TouchChatSession(ctx, source.SessionID); err != nil {
 		return empty, err
 	}
-	decision, err = markDecisionRequestAnswered(ctx, queries, decision, answer)
+	decision, err = handler.markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}

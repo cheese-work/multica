@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/passkey/passkeytest"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -249,6 +251,34 @@ func TestEnrollmentRefusals(test *testing.T) {
 		f.start()
 		f.wantRefusal(f.finishAs(f.user, first, firstCode, f.attest(passkeytest.New(test), first, nil)), 409, "ceremony_used")
 	})
+	test.Run("old code on the newest ceremony names the superseded email", func(test *testing.T) {
+		f, mailer := newEnrollFixture(test)
+		first := f.start()
+		firstCode := mailer.lastCode(test)
+		second := f.start()
+		err := f.finishAs(f.user, second, firstCode, f.attest(passkeytest.New(test), second, nil))
+		f.wantRefusal(err, 403, "ceremony_superseded")
+		if !strings.Contains(err.Error(), "use the newest email") {
+			test.Fatalf("refusal %q lacks the newest-email hint", err)
+		}
+		if strings.Contains(err.Error(), firstCode) {
+			test.Fatal("the refusal reveals the code")
+		}
+		if n := f.count(`SELECT attempts FROM passkey_enroll_ceremony WHERE id = $1`, second.CeremonyID); n != 1 {
+			test.Fatalf("attempts = %d, want 1: a superseded code still spends one", n)
+		}
+		_ = first
+	})
+	test.Run("a never-mailed code stays invalid_code", func(test *testing.T) {
+		f, mailer := newEnrollFixture(test)
+		f.start()
+		second := f.start()
+		wrong := "000000"
+		if mailer.lastCode(test) == wrong {
+			wrong = "000001"
+		}
+		f.wantRefusal(f.finishAs(f.user, second, wrong, f.attest(passkeytest.New(test), second, nil)), 403, "invalid_code")
+	})
 	rejected := map[string]func(*passkeytest.Registration){
 		"wrong origin": func(r *passkeytest.Registration) { r.Origin = "https://evil.example.test" },
 		"wrong rp id":  func(r *passkeytest.Registration) { r.RPID = "evil.example.test" },
@@ -383,5 +413,29 @@ func TestEnrollCeremonyExpiryIsReadAtVerificationTimeNotTransactionStart(test *t
 	}
 	if !row.Expired {
 		test.Fatal("a ceremony that expired before the lock read it must read as expired")
+	}
+}
+
+func TestMailedCeremonyCarriesTheAttemptTagAndSendTime(test *testing.T) {
+	f, mailer := newEnrollFixture(test)
+	started := f.start()
+	tag := AttemptTag(started.CeremonyID)
+	if len(tag) != 4 {
+		test.Fatalf("tag %q, want 4 characters", tag)
+	}
+	if !strings.HasSuffix(strings.ToLower(uuid.UUID(started.CeremonyID.Bytes).String()), strings.ToLower(tag)) {
+		test.Fatalf("tag %q is not the last 4 characters of the ceremony ID", tag)
+	}
+	mailer.mu.Lock()
+	sent := mailer.sent[len(mailer.sent)-1]
+	mailer.mu.Unlock()
+	if !strings.Contains(sent.subject, tag) {
+		test.Fatalf("subject %q lacks tag %q", sent.subject, tag)
+	}
+	if !strings.Contains(sent.body, tag) || !strings.Contains(sent.body, "ICT") {
+		test.Fatalf("body %q lacks the tag or the send time", sent.body)
+	}
+	if started.Tag != tag {
+		test.Fatalf("Started.Tag = %q, want %q", started.Tag, tag)
 	}
 }

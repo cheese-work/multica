@@ -3,7 +3,10 @@
 // functions plus two CLI modes:
 //   PR check (CI):  node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH"
 //     Prints `Entry: [<Section>] "<text>"` or `Hidden: <reason> — add ...` to the
-//     job summary and fails a feat/fix/perf PR without a valid Changelog line.
+//     job summary and fails a feat/fix/perf PR without a valid Changelog line, and
+//     (CHE-4016) one with `Changelog: none` that changes user-facing files. The
+//     workflow passes the changed files with --files <newline-separated list>; an
+//     absent or unreadable list warns and passes.
 //   Local preview:  node scripts/fork-changelog.mjs --fixture <file> --out <path>
 //     (or `pnpm changelog:preview`) writes the entries for a fixture, with no
 //     credentials and no network. The default output is git-ignored. Add
@@ -23,6 +26,16 @@ const ICT_OFFSET_MS = 7 * 60 * 60 * 1000;
 const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?([^\n]*)$/;
 const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" };
 const REQUIRES_LINE = new Set(["feat", "fix", "perf"]);
+
+// Paths where `Changelog: none` is honest (CHE-4016). Everything else is user-facing.
+// Root-only prefixes; test-ish directories match at any depth.
+const INTERNAL_PREFIXES = [".github/", ".agents/", ".planning/", ".plans/", "deploy/", "scripts/", "docs/", "design/"];
+const INTERNAL_ANYWHERE = /(^|\/)(__tests__|tests|e2e|fixtures)\//;
+const INTERNAL_FILE = /(\.md|_test\.go|\.test\.(ts|tsx|mjs)|\.spec\.[^/]+)$/;
+const MAX_LISTED_FILES = 5;
+
+export const isInternalPath = (path) =>
+  INTERNAL_PREFIXES.some((prefix) => path.startsWith(prefix)) || INTERNAL_ANYWHERE.test(path) || INTERNAL_FILE.test(path);
 
 // Everything invisible is stripped by Unicode property, not by list: default-ignorable
 // (zero-width, bidi, fillers, variation selectors, tags), format, control, unassigned,
@@ -198,9 +211,27 @@ export function evaluatePr(pr, options = {}) {
   };
 }
 
-export function formatCheck(evaluation) {
+// files: changed paths, or null when the list could not be read.
+export function formatCheck(evaluation, files = null) {
   if (evaluation.kind === "entry") {
     return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: evaluation.overLimit, warnings: evaluation.warnings };
+  }
+  if (evaluation.reason === "none" && REQUIRES_LINE.has(evaluation.type)) {
+    const line = `Hidden: none — add "Changelog: <sentence>" to publish`;
+    if (files === null) {
+      return { line, failing: false, warnings: [...evaluation.warnings, "Could not read the changed files: the `Changelog: none` check was skipped."] };
+    }
+    const userFacing = files.filter((file) => !isInternalPath(file));
+    if (userFacing.length > 0) {
+      const shown = userFacing.slice(0, MAX_LISTED_FILES).join(", ");
+      const more = userFacing.length > MAX_LISTED_FILES ? `, and ${userFacing.length - MAX_LISTED_FILES} more` : "";
+      return {
+        line,
+        failing: true,
+        warnings: evaluation.warnings,
+        error: `This \`${evaluation.type}\` PR changes user-facing code. Write one sentence a user understands in \`Changelog:\`, or use a non-user-facing type (for example \`ci\`, \`test\`, \`chore\`). User-facing files: ${shown}${more}`,
+      };
+    }
   }
   const missingLine = evaluation.reason === "missing" || evaluation.reason === "parse-error";
   return {
@@ -340,7 +371,19 @@ function parseArgs(argv) {
   return args;
 }
 
-function runCheck(eventPath, options, env) {
+function readFiles(path) {
+  if (!path) return null;
+  try {
+    return readFileSync(path, "utf8").split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+// Workflow-command data: escape %, CR and LF so a file name or PR text cannot start a forged command.
+const escapeAnnotation = (text) => String(text).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+
+function runCheck(eventPath, filesPath, options, env) {
   const { pull_request: pr } = JSON.parse(readFileSync(eventPath, "utf8"));
   if (!pr) throw new Error("The event has no pull_request");
   if (pr.state === "closed") {
@@ -348,11 +391,11 @@ function runCheck(eventPath, options, env) {
     return 0;
   }
   const input = { number: pr.number, title: pr.title ?? "", body: pr.body ?? "", headRef: pr.head?.ref ?? "" };
-  const check = formatCheck(evaluatePr(input, options));
-  console.log(check.line);
-  for (const message of check.warnings) console.log(`::warning::${message}`);
+  const check = formatCheck(evaluatePr(input, options), readFiles(filesPath));
+  console.log(check.line.replace(/[\r\n]+/g, " "));
+  for (const message of check.warnings) console.log(`::warning::${escapeAnnotation(message)}`);
   if (check.failing) {
-    console.log('::error::This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none".');
+    console.log(`::error::${escapeAnnotation(check.error ?? 'This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none" (none is only for internal-only changes).')}`);
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];
@@ -378,7 +421,7 @@ export function main(argv, env) {
     if (args.start) options.startDate = args.start;
     if (args["sync-prefix"]) options.syncPrefix = args["sync-prefix"];
     if (args.backfill) options.backfill = loadBackfill(args.backfill);
-    if (args.event) return runCheck(args.event, options, env);
+    if (args.event) return runCheck(args.event, args.files, options, env);
     if (args.fixture && args.out) return runPreview(args.fixture, args.out, options);
     throw new Error("Use --event <file> or --fixture <file> --out <path>");
   } catch (error) {

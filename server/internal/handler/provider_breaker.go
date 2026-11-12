@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -9,6 +10,15 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/service"
 )
+
+func validateProviderHoldSetting(value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = service.ProviderHoldSecondsFromSettings(raw)
+	return err
+}
 
 type providerBreakerResponse struct {
 	Provider      string   `json:"provider"`

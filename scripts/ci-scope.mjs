@@ -42,8 +42,10 @@ export function hasGreenMergeGroup(env, query = (endpoint) => JSON.parse(execFil
   }
 }
 
-export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = false) {
-  const full = event === "schedule" || event === "workflow_dispatch";
+// forcePushFull (CI_PUSH_FULL=true, the merge-queue fallback, CHE-4498): a push to main runs every scope,
+// not only the paths changed since the previous push.
+export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = false, forcePushFull = false) {
+  const full = event === "schedule" || event === "workflow_dispatch" || (event === "push" && headRef === "main" && forcePushFull);
   if (!full && event !== "push" && event !== "pull_request" && event !== "merge_group") {
     throw new Error(`Unsupported CI event: ${event}`);
   }
@@ -58,6 +60,11 @@ export function decideScopes(event, filtered, headRef = "", mergeGroupGreen = fa
   // Product builds already install dependencies and run the shared checks.
   // Only allocate a separate runner when quality is the sole frontend work.
   outputs.quality_only = String(outputs.quality === "true" && outputs.frontend === "false");
+  // Full-suite jobs (CHE-4874): a PR runs one only when its own scope changed; merge_group,
+  // main pushes, schedule and dispatch keep the whole suite. A reused merge group skips all.
+  for (const scope of ["backend", "frontend", "sqlc"]) {
+    outputs[`push_${scope}`] = String(!reuse && (event !== "pull_request" || outputs[scope] === "true"));
+  }
   if (headRef.startsWith("upstream-sync/")) {
     for (const scope of X99_SCOPES) outputs[scope] = "false";
   }
@@ -100,7 +107,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     switch (process.argv[2]) {
       case "decide": {
-        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF, hasGreenMergeGroup(process.env));
+        const outputs = decideScopes(process.env.EVENT_NAME, JSON.parse(process.env.FILTER_RESULTS), process.env.HEAD_REF, hasGreenMergeGroup(process.env), process.env.CI_PUSH_FULL === "true");
         appendFileSync(process.env.GITHUB_OUTPUT,
           Object.entries(outputs).map(([key, value]) => `${key}=${value}\n`).join(""));
         break;

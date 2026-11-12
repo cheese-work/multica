@@ -190,7 +190,7 @@ const cancelCompactionTasksByWorkspace = `-- name: CancelCompactionTasksByWorksp
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
     cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
-WHERE task_kind = 'compact'
+WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
@@ -199,7 +199,8 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 // CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
 // task of the workspace, whichever agent it was queued for, so a task queued
 // under the old value never delivers the transcript. The chat resume pointer is
-// not touched (SEC-2).
+// not touched (SEC-2). CHE-2909: a retry child copies purpose but not task_kind,
+// so match either marker or it would survive A->B->A with DM access.
 func (q *Queries) CancelCompactionTasksByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelCompactionTasksByWorkspace, workspaceID)
 	if err != nil {
@@ -432,6 +433,32 @@ type ClearChatSessionSessionIfMatchesParams struct {
 func (q *Queries) ClearChatSessionSessionIfMatches(ctx context.Context, arg ClearChatSessionSessionIfMatchesParams) error {
 	_, err := q.db.Exec(ctx, clearChatSessionSessionIfMatches, arg.ID, arg.SessionID, arg.RuntimeID)
 	return err
+}
+
+const compactChainChangedSince = `-- name: CompactChainChangedSince :one
+SELECT EXISTS (
+    SELECT 1 FROM activity_log
+    WHERE workspace_id = $1
+      AND action = 'background_agent_changed'
+      AND details->>'job' = 'compact'
+      AND created_at > $2
+) AS changed
+`
+
+type CompactChainChangedSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// CHE-2909 (SEC-1 rule 4): true when the workspace's compact agent chain
+// changed after a task was created. The change sweep cancels only live tasks,
+// so a task that had already failed would otherwise retry into the new chain
+// (A -> B -> A included).
+func (q *Queries) CompactChainChangedSince(ctx context.Context, arg CompactChainChangedSinceParams) (bool, error) {
+	row := q.db.QueryRow(ctx, compactChainChangedSince, arg.WorkspaceID, arg.CreatedAt)
+	var changed bool
+	err := row.Scan(&changed)
+	return changed, err
 }
 
 const compactChatSessionInPlace = `-- name: CompactChatSessionInPlace :one
@@ -3073,6 +3100,74 @@ func (q *Queries) ListChannelOutboundMessageIDsForContext(ctx context.Context, a
 	return items, nil
 }
 
+const listChatCarryOverMessages = `-- name: ListChatCarryOverMessages :many
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = $1
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY($2::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $3
+`
+
+type ListChatCarryOverMessagesParams struct {
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+}
+
+// Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+// assistant messages above the DM's segment floor, newest first. A queued
+// follow-up is not delivered yet and stays out; the claiming task's own input
+// batch is excluded because the claim delivers it separately.
+func (q *Queries) ListChatCarryOverMessages(ctx context.Context, arg ListChatCarryOverMessagesParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatCarryOverMessages, arg.ChatSessionID, arg.ExcludedIds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listChatDraftRestoresBySession = `-- name: ListChatDraftRestoresBySession :many
 SELECT id, chat_session_id, task_id, content, attachment_ids, created_at FROM chat_draft_restore
 WHERE chat_session_id = $1
@@ -3668,6 +3763,95 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 		arg.BeforeID,
 		arg.PageLimit,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegmentTail = `-- name: ListChatSegmentTail :many
+WITH prev_divider AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = $3
+      AND m.message_kind = 'compaction_summary'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = $3
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+)
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
+JOIN prev_segment ps ON ps.id = m.id
+LEFT JOIN last_answer la ON true
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY($1::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $2
+`
+
+type ListChatSegmentTailParams struct {
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+}
+
+// Carry-over fallback when the current segment holds no assistant message yet:
+// the last assistant message of the previous segment and the messages after it,
+// newest first. Nothing at or before the previous divider is returned. Same
+// exclusions as ListChatCarryOverMessages.
+func (q *Queries) ListChatSegmentTail(ctx context.Context, arg ListChatSegmentTailParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatSegmentTail, arg.ExcludedIds, arg.RowLimit, arg.ChatSessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -4589,6 +4773,20 @@ func (q *Queries) LockChatSessionForTask(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
+const lockChatSessionShared = `-- name: LockChatSessionShared :one
+SELECT workspace_id FROM chat_session WHERE id = $1 FOR SHARE
+`
+
+// CHE-2909: retry admission takes the same chat_session lock a compact chain
+// change holds (LockChatSessionsByWorkspace, FOR UPDATE), so the check below
+// reads the committed outcome of any change in flight.
+func (q *Queries) LockChatSessionShared(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockChatSessionShared, id)
+	var workspace_id pgtype.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
 const lockChatSessionsByIDs = `-- name: LockChatSessionsByIDs :many
 SELECT id FROM chat_session
 WHERE id = ANY($1::uuid[])
@@ -4716,6 +4914,20 @@ func (q *Queries) LockChatSessionsForRuntimes(ctx context.Context, runtimeIds []
 	return items, nil
 }
 
+const lockedClockTimestamp = `-- name: LockedClockTimestamp :one
+SELECT clock_timestamp()::timestamptz AS at
+`
+
+// CHE-2909: wall-clock time read while a settings write holds its locks. The
+// activity row is stamped with it because now() is the transaction start, which
+// can predate a task created and failed while the write waited for its locks.
+func (q *Queries) LockedClockTimestamp(ctx context.Context) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, lockedClockTimestamp)
+	var at pgtype.Timestamptz
+	err := row.Scan(&at)
+	return at, err
+}
+
 const markChatSessionExplicitlyCreated = `-- name: MarkChatSessionExplicitlyCreated :one
 UPDATE chat_session
 SET explicitly_created_at = COALESCE(explicitly_created_at, now())
@@ -4831,7 +5043,9 @@ type MarkChatTaskCompactParams struct {
 
 // CHE-1807: flags a chat task as a compaction run. An automatic compaction
 // carries the server-built reason and the prompt size that triggered it; a
-// manual /compact carries neither.
+// manual /compact carries neither. It does not set purpose: both flows still run
+// as the DM agent (existing path); the dedicated-agent enqueue (CHE-2913) stamps
+// purpose='compaction'.
 func (q *Queries) MarkChatTaskCompact(ctx context.Context, arg MarkChatTaskCompactParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, markChatTaskCompact, arg.ID, arg.CompactReason, arg.CompactTriggerTokens)
 	var i AgentTaskQueue

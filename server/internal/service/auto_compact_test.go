@@ -79,3 +79,23 @@ func TestAutoCompactReachedByWindowTokens(t *testing.T) {
 		t.Error("a disabled rule must never be reached")
 	}
 }
+
+// CHE-4438: the notice states the trigger size and limit once, never says the
+// DM changed, and carries no percent.
+func TestAutoCompactNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tokens, win int64
+		rule        AutoCompact
+		want        string
+	}{
+		{"token rule on a 1M window", 213_000, 1_000_000, tokenRule(true, 190_000, 200_000), "Compacted in this DM at 213k tokens (limit 200k). Earlier messages are summarized below."},
+		{"percent rule", 164_000, 200_000, pctRule(true, 80), "Compacted in this DM at 164k tokens (limit 160k). Earlier messages are summarized below."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := autoCompactNotice(tc.tokens, tc.win, tc.rule); got != tc.want {
+				t.Fatalf("autoCompactNotice = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -474,7 +474,8 @@
       "code": "코드",
       "channels": "메신저",
       "apps": "연결된 앱",
-      "workflows": "워크플로"
+      "workflows": "워크플로",
+      "provider_breakers": "공급자 차단기"
     },
     "groups": {
       "personal": "개인",
@@ -762,6 +763,7 @@
     "add": "패스키 추가",
     "code_hint": "이메일로 코드를 보냈습니다. 코드를 입력한 뒤 브라우저 안내에 따라 패스키를 만드세요.",
     "code_label": "이메일 코드",
+    "attempt_tag": "시도 {{tag}}: 제목이 [{{tag}}]로 끝나는 이메일을 사용하세요.",
     "confirm": "확인",
     "cancel": "취소",
     "empty": "아직 패스키가 없습니다.",
@@ -886,6 +888,11 @@
     "agent_decisions_stopped_title": "결정이 자동으로 중지되었습니다",
     "agent_decisions_stopped_description": "사유: {{reason}}. 결정을 켜면 이 기록이 지워집니다.",
     "agent_decisions_stopped_confirm": "켜기",
+    "runtime_profile_label": "런타임 프로필",
+    "runtime_profile_hint": "에이전트 CLI 설정 방식의 워크스페이스 기본값입니다. Managed는 작업마다 최소 구성 홈을 만듭니다. 관리형 어댑터가 없는 도구는 Managed에서 실패하므로, 해당 에이전트에는 개인을 명시적으로 지정하세요.",
+    "runtime_profile_personal": "개인",
+    "runtime_profile_managed": "관리형",
+    "runtime_profile_inherit": "워크스페이스 기본값",
     "idle_guard_label": "유휴 이슈 가드",
     "idle_guard_hint": "실행도 웨이크업도 없는 시작된 이슈를 N시간 후에 이동합니다. Shadow는 기록만 합니다.",
     "idle_guard_off": "꺼짐",
@@ -1618,5 +1625,36 @@
     "mcp": "관리자가 추가해 워크스페이스에서 공유하고, 에이전트별로 할당합니다.",
     "apps": "내 계정으로 Composio를 통해 승인하고, 내가 소유한 에이전트에서 사용합니다.",
     "plugins": "설치하면 도구, 예약 훅, 저장소를 추가할 수 있으며 플러그인마다 권한을 부여합니다."
+  },
+  "provider_breakers": {
+    "description": "차단기는 서버 오류가 반복된 공급자로 가는 새 작업을 막고, 스스로 다시 확인합니다.",
+    "empty": "이 워크스페이스에서 작동한 차단기가 없습니다.",
+    "load_error": "차단기를 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "columns": {
+      "provider": "공급자",
+      "state": "상태",
+      "reason": "사유",
+      "failures": "실패 횟수",
+      "opened": "열린 시각",
+      "next_probe": "다음 확인",
+      "last_success": "마지막 성공",
+      "actions": "작업"
+    },
+    "states": {
+      "closed": "닫힘",
+      "open": "열림",
+      "half_open": "반열림"
+    },
+    "none": "—",
+    "reset": "초기화",
+    "reset_label": "{{provider}} 차단기 초기화",
+    "reset_title": "{{provider}} 차단기를 초기화할까요?",
+    "reset_description": "차단기가 바로 닫히고 새 작업이 다시 {{provider}}에 전달됩니다. 공급자가 계속 실패하면 차단기가 다시 작동합니다. 초기화는 감사 로그에 기록됩니다.",
+    "reset_cancel": "취소",
+    "reset_confirm": "차단기 초기화",
+    "resetting": "초기화 중…",
+    "reset_success": "차단기를 초기화했습니다.",
+    "reset_error": "차단기를 초기화하지 못했습니다."
   }
 }

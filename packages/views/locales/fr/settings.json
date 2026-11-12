@@ -477,7 +477,8 @@
       "code": "Code",
       "channels": "Messagerie",
       "apps": "Applications connectées",
-      "workflows": "Workflows"
+      "workflows": "Workflows",
+      "provider_breakers": "Disjoncteurs des fournisseurs"
     },
     "groups": {
       "personal": "Personnel",
@@ -768,6 +769,7 @@
     "add": "Ajouter une clé d'accès",
     "code_hint": "Nous vous avons envoyé un code par e-mail. Saisissez-le, puis suivez l'invite de votre navigateur pour créer la clé d'accès.",
     "code_label": "Code reçu par e-mail",
+    "attempt_tag": "Tentative {{tag}} : utilisez l’e-mail dont l’objet se termine par [{{tag}}].",
     "confirm": "Confirmer",
     "cancel": "Annuler",
     "empty": "Aucune clé d'accès pour le moment.",
@@ -892,6 +894,11 @@
     "agent_decisions_stopped_title": "Les décisions ont été arrêtées automatiquement",
     "agent_decisions_stopped_description": "Motif : {{reason}}. Activer les décisions efface cet enregistrement.",
     "agent_decisions_stopped_confirm": "Activer",
+    "runtime_profile_label": "Profil d'exécution",
+    "runtime_profile_hint": "Valeur par défaut de l'espace de travail pour la configuration des CLI d'agent. Managed crée un dossier minimal par tâche. Les outils sans adaptateur géré échouent sous Managed : donnez à ces agents une surcharge explicite Personnel.",
+    "runtime_profile_personal": "Personnel",
+    "runtime_profile_managed": "Géré",
+    "runtime_profile_inherit": "Valeur par défaut de l'espace de travail",
     "idle_guard_label": "Garde des tickets inactifs",
     "idle_guard_hint": "Déplace les tickets démarrés sans exécution ni réveil après N heures. Shadow journalise seulement.",
     "idle_guard_off": "Désactivée",
@@ -1630,5 +1637,36 @@
     "mcp": "Ajoutés par les administrateurs, partagés dans l'espace de travail puis attribués agent par agent.",
     "apps": "Autorisées avec votre propre compte via Composio et activées sur les agents qui vous appartiennent.",
     "plugins": "Paquets installés pouvant ajouter des outils, des hooks planifiés et du stockage, chacun avec ses propres autorisations."
+  },
+  "provider_breakers": {
+    "description": "Un disjoncteur refuse le nouveau travail d'un fournisseur après des erreurs serveur répétées, puis le sonde de nouveau tout seul.",
+    "empty": "Aucun disjoncteur ne s'est déclenché dans cet espace de travail.",
+    "load_error": "Impossible de charger les disjoncteurs.",
+    "retry": "Réessayer",
+    "columns": {
+      "provider": "Fournisseur",
+      "state": "État",
+      "reason": "Raison",
+      "failures": "Échecs",
+      "opened": "Ouvert",
+      "next_probe": "Prochaine sonde",
+      "last_success": "Dernier succès",
+      "actions": "Actions"
+    },
+    "states": {
+      "closed": "Fermé",
+      "open": "Ouvert",
+      "half_open": "Semi-ouvert"
+    },
+    "none": "—",
+    "reset": "Réinitialiser",
+    "reset_label": "Réinitialiser le disjoncteur {{provider}}",
+    "reset_title": "Réinitialiser le disjoncteur {{provider}} ?",
+    "reset_description": "Le disjoncteur se ferme maintenant et le nouveau travail atteint de nouveau {{provider}}. Si le fournisseur échoue encore, le disjoncteur se déclenche à nouveau. La réinitialisation est enregistrée dans le journal d'audit.",
+    "reset_cancel": "Annuler",
+    "reset_confirm": "Réinitialiser le disjoncteur",
+    "resetting": "Réinitialisation…",
+    "reset_success": "Disjoncteur réinitialisé.",
+    "reset_error": "Impossible de réinitialiser le disjoncteur."
   }
 }

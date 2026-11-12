@@ -192,6 +192,8 @@ func factFor(g Guard, f Facts) string {
 		return "no closed PR is linked"
 	case GuardChildrenDone:
 		return "a child issue is not done"
+	case GuardAdoptionLinked:
+		return f.Adoption.Refusal()
 	case GuardIssueStatus:
 		if got := f.IssueStatuses[g.Args[0]]; got != "" {
 			return fmt.Sprintf("%s is %s", g.Args[0], got)
@@ -219,6 +221,8 @@ func fixFor(g Guard) string {
 		return "close the PR without merging and leave no other open or merged PR"
 	case GuardChildrenDone:
 		return "finish or close every child issue"
+	case GuardAdoptionLinked:
+		return adoptionFix()
 	case GuardIssueStatus:
 		return fmt.Sprintf("move %s to %s", g.Args[0], g.Args[1])
 	}

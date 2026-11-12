@@ -144,6 +144,8 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
+	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
 	"893_issue_search_text_title_trgm_idx":                      "idx_issue_search_text_title_trgm",
 	"894_issue_search_text_description_trgm_idx":                "idx_issue_search_text_description_trgm",
@@ -157,6 +159,11 @@ var concurrentIndexCleanups = map[string]string{
 	"997_ci_signature_owner_signature_uidx":                     "ci_signature_owner_signature_uidx",
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
+	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
+	"99961_browser_profile_name_idx":                            "browser_profile_workspace_name_uidx",
+	"99962_browser_instance_name_idx":                           "browser_instance_workspace_name_uidx",
+	"99963_browser_lease_one_holder_idx":                        "browser_lease_one_holder_uidx",
+	"99964_browser_lease_epoch_idx":                             "browser_lease_instance_epoch_uidx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -166,6 +173,7 @@ var concurrentIndexCleanups = map[string]string{
 	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
 	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
 	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
+	"908_wakeup_decision_request_index":                         "idx_issue_wakeup_decision_request",
 	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
 	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
 	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
@@ -319,6 +327,7 @@ var concurrentIndexCleanups = map[string]string{
 	"716_github_workflow_job_identity_index":                    "github_workflow_job_identity_uidx",
 	"717_github_workflow_job_run_attempt_index":                 "github_workflow_job_run_attempt_idx",
 	"718_github_workflow_job_updated_at_index":                  "github_workflow_job_updated_at_idx",
+	"949_issue_unread_unique_index":                             "issue_unread_workspace_user_issue_uidx",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",
@@ -530,6 +539,14 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"962_agent_task_queue_one_active_per_chat": {
+		IndexRegclass: "idx_agent_task_queue_one_active_per_chat",
+		TableRegclass: "agent_task_queue",
+		Unique:        true,
+		Columns:       []string{"chat_session_id"},
+		// Postgres stores IN (...) as = ANY (ARRAY[...]) in indpred.
+		Predicate: "chat_session_id IS NOT NULL AND status = ANY (ARRAY['dispatched'::text, 'waiting_local_directory'::text, 'running'::text])",
+	},
 	"994_ci_watch_config_repo_uidx": {
 		IndexRegclass: "ci_watch_config_repo_uidx",
 		TableRegclass: "ci_watch_config",
@@ -564,6 +581,12 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		IndexRegclass: "ci_failure_event_created_at_idx",
 		TableRegclass: "ci_failure_event",
 		Columns:       []string{"created_at"},
+	},
+	"99953_system1_observation_route_event_id_idx": {
+		IndexRegclass: "system1_observation_route_event_idx",
+		TableRegclass: "system1_observation",
+		Columns:       []string{"workspace_id", "event_id"},
+		Predicate:     "kind = 'route'::text",
 	},
 	"971_dm_progress_data_incident_follow_kind_idx": {
 		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
@@ -753,6 +776,17 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 	}
 	for version, index := range concurrentIndexCleanups {
 		hooks[version] = cleanupInvalidConcurrentIndexHook(index)
+	}
+	// CHE-2910: report DMs that already hold more than one active task. A
+	// duplicate would make the unique build fail and leave an INVALID index with
+	// no row detail. The hook only reads; resolving the rows is an operator call.
+	const oneActiveChatVersion = "962_agent_task_queue_one_active_per_chat"
+	cleanup := hooks[oneActiveChatVersion]
+	hooks[oneActiveChatVersion] = func(ctx context.Context, pool *pgxpool.Pool) error {
+		if err := cleanup(ctx, pool); err != nil {
+			return err
+		}
+		return refuseDuplicateActiveChatTasks(ctx, pool)
 	}
 	return hooks
 }()
@@ -1669,4 +1703,47 @@ func quoteQualifiedIdentifier(name string) (string, error) {
 		}
 	}
 	return pgx.Identifier(parts).Sanitize(), nil
+}
+
+// refuseDuplicateActiveChatTasks stops migration 962 when any DM already has
+// more than one active task. It lists each offending chat_session_id with its
+// task ids and statuses, and changes nothing.
+func refuseDuplicateActiveChatTasks(ctx context.Context, pool *pgxpool.Pool) error {
+	var exists bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('agent_task_queue') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("inspect agent_task_queue: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT chat_session_id::text, count(*), string_agg(id::text || ':' || status, ', ' ORDER BY created_at, id)
+		FROM agent_task_queue
+		WHERE chat_session_id IS NOT NULL
+		  AND status IN ('dispatched', 'waiting_local_directory', 'running')
+		GROUP BY chat_session_id
+		HAVING count(*) > 1
+		ORDER BY chat_session_id
+	`)
+	if err != nil {
+		return fmt.Errorf("count duplicate active chat tasks: %w", err)
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var chatSessionID, tasks string
+		var count int
+		if err := rows.Scan(&chatSessionID, &count, &tasks); err != nil {
+			return fmt.Errorf("scan duplicate active chat tasks: %w", err)
+		}
+		lines = append(lines, fmt.Sprintf("chat_session_id=%s active=%d tasks=[%s]", chatSessionID, count, tasks))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read duplicate active chat tasks: %w", err)
+	}
+	if len(lines) > 0 {
+		return fmt.Errorf("%d DM(s) have more than one active task; resolve them (no automatic cleanup) and re-run:\n%s",
+			len(lines), strings.Join(lines, "\n"))
+	}
+	return nil
 }

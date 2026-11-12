@@ -513,18 +513,24 @@ test("PR check: an over-limit line fails with an annotation, a closed PR is skip
   assert.match(sync.summary, /Hidden: upstream-sync/);
 });
 
-test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips closed PRs", () => {
-  const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
+test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, trusted checkout", () => {
+  const raw = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
+  const job = wf.slice(wf.indexOf("\n  changelog-line:"), wf.indexOf("\n  fork-sync-guard:"));
   assert.match(wf, /^permissions: \{\}$/m);
-  assert.match(wf, /runs-on: ubuntu-24\.04/);
-  assert.doesNotMatch(wf, /self-hosted|secrets\./);
-  for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
-  assert.match(wf, /pull_request:/);
-  assert.doesNotMatch(wf, /pull_request_target/);
-  assert.match(wf, /state != 'closed'/);
-  assert.match(raw, /upstream-sync\//, "the header explains why sync heads stay off X99");
-  assert.match(wf, /fork-changelog\.mjs --event/);
+  assert.match(job, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
+  assert.doesNotMatch(wf, /self-hosted/);
+  assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only workflow token");
+  assert.match(job, /pull-requests: read/);
+  assert.match(job, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(job, /pulls\/\$\{?PR_NUMBER\}?\/files/);
+  assert.match(job, /fork-changelog\.mjs --event "\$GITHUB_EVENT_PATH" --files/);
+  for (const type of ["opened", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
+  assert.doesNotMatch(wf, /types: \[[^\]]*edited/); // CHE-4385: a body edit does not re-run the check
+  assert.match(wf, /pull_request_target:/);
+  assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(job, /state != 'closed'/);
+  assert.match(job, /fork-changelog\.mjs --event/);
 });
 
 // --- review round 1 (x99-codex-sol, PR 229): F1-F4 ----------------------------
@@ -818,6 +824,94 @@ test("preview: --backfill adds the backfill entries to the fixture entries", () 
   // Fixture PR #1 is also a backfill number: the fixture entry wins, so it is not counted twice.
   assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length + 3);
   assert.equal(entries.find((e) => e.number === 1).text, "Issue lists now open instantly in large workspaces.");
+});
+
+// --- CHE-4016: `Changelog: none` on a user-facing feat/fix/perf PR fails -----------
+
+const NONE_WARNING = /could not read the changed files/i;
+
+function noneCheck(title, files) {
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(
+    event,
+    JSON.stringify({ pull_request: { number: 5, state: "open", title, body: "Changelog: none", head: { ref: "agent/x/5" } } }),
+  );
+  const args = ["--event", event];
+  if (files !== undefined) {
+    const list = join(dir, "files.txt");
+    writeFileSync(list, files.map((f) => `${f}\n`).join(""));
+    args.push("--files", list);
+  }
+  return cli(args, {});
+}
+
+test("CHE-4016: a fix PR with none that touches packages/views fails and names the rule and the file", () => {
+  const res = noneCheck("fix(settings): b", ["packages/views/settings/a.tsx", "scripts/x.mjs"]);
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /::error::This `fix` PR changes user-facing code\. Write one sentence a user understands in `Changelog:`, or use a non-user-facing type \(for example `ci`, `test`, `chore`\)\./);
+  assert.match(res.stdout, /packages\/views\/settings\/a\.tsx/);
+  assert.doesNotMatch(res.stdout, /scripts\/x\.mjs/, "internal-only files are not listed");
+});
+
+test("CHE-4016: a feat PR with none that touches only internal paths passes", () => {
+  const res = noneCheck("feat(ci): b", [".github/workflows/a.yml", "a/b.test.ts", "README.md", "docs/x.mdx".replace(".mdx", ".md"), "server/x_test.go", "e2e/a.ts", "pkg/__tests__/a.ts", "scripts/a.mjs", "fixtures/a.json", "a/b.spec.tsx"]);
+  assert.equal(res.status, 0, res.stdout);
+});
+
+test("CHE-4016: a ci or chore PR with none passes even with user-facing files", () => {
+  for (const type of ["ci", "chore", "test", "docs", "refactor"]) {
+    assert.equal(noneCheck(`${type}: b`, ["packages/views/a.tsx"]).status, 0, type);
+  }
+});
+
+test("CHE-4016: an unreadable file list warns and passes", () => {
+  for (const files of [undefined]) {
+    const res = noneCheck("fix: b", files);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, NONE_WARNING);
+  }
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 5, state: "open", title: "fix: b", body: "Changelog: none", head: { ref: "h" } } }));
+  const res = cli(["--event", event, "--files", join(dir, "missing.txt")], {});
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /::warning::.*could not read the changed files/i);
+});
+
+test("CHE-4016: the failure message lists at most 5 user-facing files", () => {
+  const files = Array.from({ length: 8 }, (_, i) => `apps/web/f${i}.tsx`);
+  const res = noneCheck("perf: b", files);
+  assert.equal(res.status, 1);
+  const listed = res.stdout.match(/apps\/web\/f\d\.tsx/g) ?? [];
+  assert.equal(new Set(listed).size, 5);
+  assert.match(res.stdout, /and 3 more/);
+});
+
+test("CHE-4016: a file name with CR or LF cannot forge workflow annotations", () => {
+  const res = noneCheck("fix: b", ["packages/views/a\r::error::forged.tsx", "packages/views/b\n::warning::forged2.tsx"]);
+  assert.equal(res.status, 1);
+  assert.doesNotMatch(res.stdout, /\r/, "no raw CR in the output");
+  const commands = res.stdout.split("\n").filter((line) => line.startsWith("::"));
+  assert.equal(commands.length, 1, `only the real error command: ${JSON.stringify(commands)}`);
+  assert.match(commands[0], /^::error::/);
+  assert.match(commands[0], /%0D::error::forged\.tsx/);
+});
+
+test("CHE-4016: a real sentence on a user-facing PR still passes and the files are not required", () => {
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 5, state: "open", title: "fix: b", body: "Changelog: It works.", head: { ref: "h" } } }));
+  const res = cli(["--event", event], {});
+  assert.equal(res.status, 0);
+  assert.doesNotMatch(res.stdout, NONE_WARNING);
+});
+
+test("CHE-4016: template and AGENTS.md say none is only for internal-only changes", () => {
+  const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  for (const text of [read(".github/PULL_REQUEST_TEMPLATE.md"), read("AGENTS.md")]) {
+    assert.match(text, /`?Changelog: none`? is only for internal-only changes/i);
+  }
 });
 
 // CHE-4015: bucket entries into C00 deploys.

@@ -93,6 +93,8 @@ La démonstration ci-dessous part d'une tâche déjà assignée à un agent et l
 
 Les membres et les agents peuvent modifier directement les statuts. Dans un projet avec un [workflow](/workflows), choisissez parmi ses étapes. Entrer dans une étape avec passage de relais peut aussi changer le responsable et demander à un agent de commencer.
 
+Lorsqu’une tâche revient à `blocked`, le paramètre d’espace de travail `blocked_dispatch_dedup.mode` contrôle les nouvelles exécutions Tofu sans changement. Sa valeur par défaut est `block` ; `warn` journalise une exécution qui aurait été ignorée, mais lance quand même une exécution, et `off` désactive cette vérification. Une transition déclenchée par un membre lance toujours une exécution.
+
 Les agents mettent à jour le statut au fil du travail : par défaut, ils passent la tâche à `in_progress` en commençant et à `in_review` à la livraison. Si le projet utilise un workflow, ils suivent ses étapes et ses consignes de relais.
 
 <Callout type="info">
