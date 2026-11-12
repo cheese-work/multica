@@ -10582,6 +10582,62 @@ func (q *Queries) PauseAgentScheduling(ctx context.Context, arg PauseAgentSchedu
 	return i, err
 }
 
+const pendingAssignmentTaskForAgent = `-- name: PendingAssignmentTaskForAgent :one
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2
+  AND comment_thread_id IS NULL
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type PendingAssignmentTaskForAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+// The run that holds the slot HasPendingAssignmentTaskForAgent reports (CHE-2860):
+// a caller that ends on a surviving run needs its id.
+func (q *Queries) PendingAssignmentTaskForAgent(ctx context.Context, arg PendingAssignmentTaskForAgentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingAssignmentTaskForAgent, arg.IssueID, arg.AgentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const pendingTaskForIssueAndAgent = `-- name: PendingTaskForIssueAndAgent :one
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type PendingTaskForIssueAndAgentParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	HeadSha pgtype.Text `json:"head_sha"`
+}
+
+// HasPendingTaskForIssueAndAgent returning the pending run (CHE-2860), the
+// newest one when several match.
+func (q *Queries) PendingTaskForIssueAndAgent(ctx context.Context, arg PendingTaskForIssueAndAgentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingTaskForIssueAndAgent, arg.IssueID, arg.AgentID, arg.HeadSha)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const promoteDeferredChannelIssueTask = `-- name: PromoteDeferredChannelIssueTask :one
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL

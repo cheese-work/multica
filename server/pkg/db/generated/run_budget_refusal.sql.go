@@ -11,8 +11,101 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bindRunBudgetRefusalToRun = `-- name: BindRunBudgetRefusalToRun :many
+UPDATE run_budget_refusal
+SET state = 'run_queued', task_id = $1::uuid, state_reason = NULL, updated_at = now()
+WHERE issue_id = $2::uuid AND state = 'resume_pending' AND blocked = false
+  AND (($3::uuid IS NOT NULL AND source_wakeup_id = $3::uuid)
+    OR ($4::uuid IS NOT NULL AND source_task_id = $4::uuid))
+RETURNING taint_ids
+`
+
+type BindRunBudgetRefusalToRunParams struct {
+	TaskID         pgtype.UUID `json:"task_id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	SourceWakeupID pgtype.UUID `json:"source_wakeup_id"`
+	SourceTaskID   pgtype.UUID `json:"source_task_id"`
+}
+
+// A native dispatch (wakeup tick, system wakeup, retry) delivered the run the
+// refusal stopped, in the dispatch's own transaction: the refusal ends
+// run_queued on that exact run. Only a refusal the approval already linked is
+// bound; the taint it held is returned for the run.
+func (q *Queries) BindRunBudgetRefusalToRun(ctx context.Context, arg BindRunBudgetRefusalToRunParams) ([][]string, error) {
+	rows, err := q.db.Query(ctx, bindRunBudgetRefusalToRun,
+		arg.TaskID,
+		arg.IssueID,
+		arg.SourceWakeupID,
+		arg.SourceTaskID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := [][]string{}
+	for rows.Next() {
+		var taint_ids []string
+		if err := rows.Scan(&taint_ids); err != nil {
+			return nil, err
+		}
+		items = append(items, taint_ids)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const failRunBudgetRefusalResume = `-- name: FailRunBudgetRefusalResume :exec
+UPDATE run_budget_refusal
+SET state = $1::text, state_reason = $2::text,
+    hook_phase = CASE WHEN $1::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN $1::text = 'superseded' AND hook_phase IN ('intent', 'blocked') THEN $2::text ELSE hook_reason END,
+    updated_at = now()
+WHERE id = $3::uuid AND state = 'resume_pending' AND action_id = $4::uuid
+`
+
+type FailRunBudgetRefusalResumeParams struct {
+	State    string      `json:"state"`
+	Reason   string      `json:"reason"`
+	ID       pgtype.UUID `json:"id"`
+	ActionID pgtype.UUID `json:"action_id"`
+}
+
+// The second transaction after a rolled-back resume: still_blocked (retryable) or
+// superseded, with the reason. Only a row still waiting for the worker, and still
+// linked to the action the worker resumed, changes: a newer approval's link stays.
+func (q *Queries) FailRunBudgetRefusalResume(ctx context.Context, arg FailRunBudgetRefusalResumeParams) error {
+	_, err := q.db.Exec(ctx, failRunBudgetRefusalResume,
+		arg.State,
+		arg.Reason,
+		arg.ID,
+		arg.ActionID,
+	)
+	return err
+}
+
+const finishRunBudgetRefusalResume = `-- name: FinishRunBudgetRefusalResume :exec
+UPDATE run_budget_refusal
+SET state = $1::text, state_reason = NULL, task_id = $2::uuid, updated_at = now()
+WHERE id = $3::uuid AND state = 'resume_pending'
+`
+
+type FinishRunBudgetRefusalResumeParams struct {
+	State  string      `json:"state"`
+	TaskID pgtype.UUID `json:"task_id"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+// The worker's terminal write, in its own transaction: run_queued (with the task)
+// or status_restored.
+func (q *Queries) FinishRunBudgetRefusalResume(ctx context.Context, arg FinishRunBudgetRefusalResumeParams) error {
+	_, err := q.db.Exec(ctx, finishRunBudgetRefusalResume, arg.State, arg.TaskID, arg.ID)
+	return err
+}
+
 const getOpenRunBudgetRefusal = `-- name: GetOpenRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal
 WHERE issue_id = $1 AND window_id = $2
   AND state IN ('open', 'resume_pending', 'still_blocked')
 `
@@ -46,12 +139,17 @@ func (q *Queries) GetOpenRunBudgetRefusal(ctx context.Context, arg GetOpenRunBud
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
 }
 
 const getRunBudgetRefusal = `-- name: GetRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE id = $1
 `
 
 func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
@@ -77,12 +175,54 @@ func (q *Queries) GetRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunB
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+	)
+	return i, err
+}
+
+const getRunBudgetRefusalByAction = `-- name: GetRunBudgetRefusalByAction :one
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE action_id = $1
+`
+
+// The refusal a budget approval linked (CHE-2860): the post-commit notify finds it by action.
+func (q *Queries) GetRunBudgetRefusalByAction(ctx context.Context, actionID pgtype.UUID) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, getRunBudgetRefusalByAction, actionID)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
 }
 
 const getRunBudgetRefusalByWindow = `-- name: GetRunBudgetRefusalByWindow :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2
 `
 
 type GetRunBudgetRefusalByWindowParams struct {
@@ -113,6 +253,11 @@ func (q *Queries) GetRunBudgetRefusalByWindow(ctx context.Context, arg GetRunBud
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
 }
@@ -120,10 +265,10 @@ func (q *Queries) GetRunBudgetRefusalByWindow(ctx context.Context, arg GetRunBud
 const insertRunBudgetRefusal = `-- name: InsertRunBudgetRefusal :one
 INSERT INTO run_budget_refusal (
     id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger,
-    state, state_reason, taint_ids, hook_phase)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'intent')
+    state, state_reason, taint_ids, actor_user_id, trigger_comment_id, hook_phase)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'intent')
 ON CONFLICT (issue_id, window_id) DO NOTHING
-RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id
 `
 
 type InsertRunBudgetRefusalParams struct {
@@ -139,6 +284,8 @@ type InsertRunBudgetRefusalParams struct {
 	State                string      `json:"state"`
 	StateReason          pgtype.Text `json:"state_reason"`
 	TaintIds             []string    `json:"taint_ids"`
+	ActorUserID          pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID     pgtype.UUID `json:"trigger_comment_id"`
 }
 
 // Tx R of the exhaustion hook (CHE-2798 A1c1b): a retry finds the row already
@@ -157,6 +304,8 @@ func (q *Queries) InsertRunBudgetRefusal(ctx context.Context, arg InsertRunBudge
 		arg.State,
 		arg.StateReason,
 		arg.TaintIds,
+		arg.ActorUserID,
+		arg.TriggerCommentID,
 	)
 	var i RunBudgetRefusal
 	err := row.Scan(
@@ -179,8 +328,101 @@ func (q *Queries) InsertRunBudgetRefusal(ctx context.Context, arg InsertRunBudge
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
+}
+
+const linkRunBudgetRefusal = `-- name: LinkRunBudgetRefusal :one
+UPDATE run_budget_refusal
+SET state = 'resume_pending', state_reason = NULL, action_id = $1::uuid, resume_window_id = $2::text,
+    hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
+    hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
+    updated_at = now()
+WHERE id = $3::uuid AND issue_id = $4::uuid AND state IN ('open', 'still_blocked', 'resume_pending')
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id
+`
+
+type LinkRunBudgetRefusalParams struct {
+	ActionID       pgtype.UUID `json:"action_id"`
+	ResumeWindowID string      `json:"resume_window_id"`
+	ID             pgtype.UUID `json:"id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+}
+
+// Link (CHE-2798 P2r, CHE-2860): a budget approval claims the refusal it answers.
+// An unfinished intent hook is retired in the same statement, so the block is
+// cancelled and the worker admits the run directly. A refusal still waiting for
+// its worker is linked again: the latest approval's action and window win, so a
+// top-up that commits while the worker is rolling back is not lost. No row back:
+// the refusal is superseded or already resumed.
+func (q *Queries) LinkRunBudgetRefusal(ctx context.Context, arg LinkRunBudgetRefusalParams) (RunBudgetRefusal, error) {
+	row := q.db.QueryRow(ctx, linkRunBudgetRefusal,
+		arg.ActionID,
+		arg.ResumeWindowID,
+		arg.ID,
+		arg.IssueID,
+	)
+	var i RunBudgetRefusal
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.WindowID,
+		&i.Status,
+		&i.OccurrenceActivityID,
+		&i.Blocked,
+		&i.AgentID,
+		&i.Trigger,
+		&i.State,
+		&i.StateReason,
+		&i.HookPhase,
+		&i.HookReason,
+		&i.ActionID,
+		&i.ResumeWindowID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.HookGeneration,
+		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
+	)
+	return i, err
+}
+
+const listResumePendingRunBudgetRefusals = `-- name: ListResumePendingRunBudgetRefusals :many
+SELECT id FROM run_budget_refusal
+WHERE state = 'resume_pending' AND updated_at < $1::timestamptz
+ORDER BY updated_at
+LIMIT 50
+`
+
+// Linked refusals a crashed or missed notify left unresumed: the sweep resumes them.
+func (q *Queries) ListResumePendingRunBudgetRefusals(ctx context.Context, before pgtype.Timestamptz) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listResumePendingRunBudgetRefusals, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listStaleRunBudgetHooks = `-- name: ListStaleRunBudgetHooks :many
@@ -212,7 +454,7 @@ func (q *Queries) ListStaleRunBudgetHooks(ctx context.Context, before pgtype.Tim
 }
 
 const lockRunBudgetRefusal = `-- name: LockRunBudgetRefusal :one
-SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids FROM run_budget_refusal WHERE id = $1 FOR UPDATE
+SELECT id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id FROM run_budget_refusal WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (RunBudgetRefusal, error) {
@@ -238,6 +480,11 @@ func (q *Queries) LockRunBudgetRefusal(ctx context.Context, id pgtype.UUID) (Run
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
 }
@@ -327,10 +574,10 @@ func (q *Queries) RetireRunBudgetRefusalHook(ctx context.Context, arg RetireRunB
 const reviveRunBudgetRefusal = `-- name: ReviveRunBudgetRefusal :one
 UPDATE run_budget_refusal
 SET status = $2, occurrence_activity_id = $3, blocked = $4, agent_id = $5, trigger = $6,
-    state_reason = $7, state = $8, taint_ids = $9, hook_phase = 'intent', hook_reason = NULL,
+    state_reason = $7, state = $8, taint_ids = $9, actor_user_id = $10, trigger_comment_id = $11, task_id = NULL, hook_phase = 'intent', hook_reason = NULL,
     hook_generation = hook_generation + 1, updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids
+RETURNING id, workspace_id, issue_id, window_id, status, occurrence_activity_id, blocked, agent_id, trigger, state, state_reason, hook_phase, hook_reason, action_id, resume_window_id, created_at, updated_at, hook_generation, taint_ids, task_id, actor_user_id, trigger_comment_id, source_wakeup_id, source_task_id
 `
 
 type ReviveRunBudgetRefusalParams struct {
@@ -343,6 +590,8 @@ type ReviveRunBudgetRefusalParams struct {
 	StateReason          pgtype.Text `json:"state_reason"`
 	State                string      `json:"state"`
 	TaintIds             []string    `json:"taint_ids"`
+	ActorUserID          pgtype.UUID `json:"actor_user_id"`
+	TriggerCommentID     pgtype.UUID `json:"trigger_comment_id"`
 }
 
 // A refusal of a window whose row no longer applies (its hook ran or was
@@ -360,6 +609,8 @@ func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudge
 		arg.StateReason,
 		arg.State,
 		arg.TaintIds,
+		arg.ActorUserID,
+		arg.TriggerCommentID,
 	)
 	var i RunBudgetRefusal
 	err := row.Scan(
@@ -382,6 +633,11 @@ func (q *Queries) ReviveRunBudgetRefusal(ctx context.Context, arg ReviveRunBudge
 		&i.UpdatedAt,
 		&i.HookGeneration,
 		&i.TaintIds,
+		&i.TaskID,
+		&i.ActorUserID,
+		&i.TriggerCommentID,
+		&i.SourceWakeupID,
+		&i.SourceTaskID,
 	)
 	return i, err
 }
@@ -413,6 +669,25 @@ func (q *Queries) SetRunBudgetRefusalHook(ctx context.Context, arg SetRunBudgetR
 		arg.OccurrenceActivityID,
 		arg.ID,
 	)
+	return err
+}
+
+const setRunBudgetRefusalSource = `-- name: SetRunBudgetRefusalSource :exec
+UPDATE run_budget_refusal
+SET source_wakeup_id = $1::uuid, source_task_id = $2::uuid
+WHERE id = $3::uuid
+`
+
+type SetRunBudgetRefusalSourceParams struct {
+	SourceWakeupID pgtype.UUID `json:"source_wakeup_id"`
+	SourceTaskID   pgtype.UUID `json:"source_task_id"`
+	ID             pgtype.UUID `json:"id"`
+}
+
+// The native source a refusal stopped (CHE-2860): a derived wakeup rule or a
+// failed run. Written with the insert or the revive, NULLs included.
+func (q *Queries) SetRunBudgetRefusalSource(ctx context.Context, arg SetRunBudgetRefusalSourceParams) error {
+	_, err := q.db.Exec(ctx, setRunBudgetRefusalSource, arg.SourceWakeupID, arg.SourceTaskID, arg.ID)
 	return err
 }
 
@@ -470,5 +745,24 @@ type TaintBudgetRecoveryRunsParams struct {
 // started run reads its taint on every call).
 func (q *Queries) TaintBudgetRecoveryRuns(ctx context.Context, arg TaintBudgetRecoveryRunsParams) error {
 	_, err := q.db.Exec(ctx, taintBudgetRecoveryRuns, arg.Taint, arg.IssueID)
+	return err
+}
+
+const unionTaskTaint = `-- name: UnionTaskTaint :exec
+UPDATE agent_task_queue
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || $1::text[]) AS t ORDER BY t)
+WHERE id = $2::uuid AND NOT taint_ids @> $1::text[]
+`
+
+type UnionTaskTaintParams struct {
+	Taint []string    `json:"taint"`
+	ID    pgtype.UUID `json:"id"`
+}
+
+// The run a refusal ended on carries the refusal's taint (CHE-2860). Monotonic:
+// the task keeps what it has (the agent_task_inherit_taint trigger unions it
+// again), so a join never makes a run cleaner.
+func (q *Queries) UnionTaskTaint(ctx context.Context, arg UnionTaskTaintParams) error {
+	_, err := q.db.Exec(ctx, unionTaskTaint, arg.Taint, arg.ID)
 	return err
 }

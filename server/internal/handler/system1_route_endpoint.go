@@ -232,9 +232,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			if runTrigger.AssigneeType == "agent" && !th.canInvokeAssignedAgent(writeCtx, r, updated, actorType, actorID) {
 				err = errAgentNotInvocable
 			} else if runTrigger.AssigneeType == "agent" {
-				runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, memberActorUserID(actorType, actorID), overlay)
+				_, runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, pgtype.UUID{}, memberActorUserID(actorType, actorID), overlay)
 			} else {
-				runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, actorType, actorID)
+				_, runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, pgtype.UUID{}, actorType, actorID)
 			}
 			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 			if refused, isRefusal := routeRefusal(err); isRefusal {

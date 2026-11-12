@@ -1456,6 +1456,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := settleQueued(task.ID); err != nil {
 			return err
 		}
+		if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
+			return err
+		}
 		return commit()
 	}
 	// The agent's own unfinished run on the parent closed the stage: no second
@@ -1592,7 +1595,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup"}); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup", SourceWakeupID: w.ID}); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
@@ -1620,6 +1623,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	if err := settleQueued(task.ID); err != nil {
+		return err
+	}
+	if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
 		return err
 	}
 	if !deferring {
