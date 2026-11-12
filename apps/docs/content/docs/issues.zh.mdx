@@ -93,6 +93,8 @@ import { DeliverablesDemo } from "@/components/demos/deliverables-demo";
 
 成员和智能体可以直接修改状态。项目使用[工作流](/workflows)时，只能选择这个工作流中的步骤。进入设有交接的步骤，还会更换负责人，并可能请智能体开始工作。
 
+任务重新进入 `blocked` 时，工作区设置 `blocked_dispatch_dedup.mode` 控制未发生变化的 Tofu 派发。默认值为 `block`；`warn` 会记录本可跳过的派发，但仍会启动运行；`off` 会停用此检查。由成员触发的状态转换始终会启动运行。
+
 智能体会随工作进展更新任务状态：默认开始工作时改为 `in_progress`，交付后改为 `in_review`；项目使用工作流时，按其中的步骤和交接说明推进。
 
 <Callout type="info">
@@ -139,6 +141,8 @@ import { DeliverablesDemo } from "@/components/demos/deliverables-demo";
 成员和智能体在评论里上传的文件，会汇总到任务侧栏的**产物**区。这里直接列出最新的 3 张图片和 4 个其他文件，点**查看全部**可以按评论分组浏览全部产物，并按图片、文档、视频和其他筛选；在文件查看器里按 `G` 也能打开这个页面。任务描述里的附件算作输入材料，不计入产物。
 
 同名、同类型的文件再次上传，算作同一份产物的新版本。产物区只列一份，标出版本号（例如 `v2`），评论里的文件卡片也标着各自是第几版。在查看器里点版本号可以切到旧版本，点**定位到评论**回到上传它的那条评论。
+
+用 `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` 上传到任务的文件，会成为该附件的下一个修订；同一任务上再次上传同名文件也一样。任务里每份文档只显示一张卡片，标着例如 `v4 · 此前 3 个`，点**差异**可以看到相对上一修订的改动（删除行为红色，新增行为绿色，未改动的行折叠；点**显示全部**可展开）。二进制文件只提示大小和 SHA-256 不同。`multica attachment history <attachment-id>` 列出各修订的时间、操作者和 SHA-256，`multica attachment diff <attachment-id> --from 3 --to 4` 输出差异。
 
 <DeliverablesDemo />
 

@@ -12,9 +12,19 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { useT } from "../../i18n";
 
-/** Retry only makes sense for terminal-but-not-success runs. */
+/**
+ * A run the server refused to start (the reviewer already answered this PR
+ * head). The list shows it as a cancelled entry, but it is an activity, not a
+ * task row: its id is no task id, so task-only actions (Retry, transcript)
+ * have nothing to act on.
+ */
+export function isSkippedRun(task: AgentTask): boolean {
+  return task.failure_reason === "review_head_answered";
+}
+
+/** Retry only makes sense for terminal-but-not-success runs that were tasks. */
 export function canRetryRun(task: AgentTask): boolean {
-  return task.status === "failed" || task.status === "cancelled";
+  return !isSkippedRun(task) && (task.status === "failed" || task.status === "cancelled");
 }
 
 // Re-runs one specific past run. Shared by the execution log's rows and the

@@ -211,3 +211,20 @@ func TestRequestRunBudgetApproveURLNamesTheActionTheOwnerCanRead(test *testing.T
 	dbfx.Insert(test, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": other, "role": "member"})
 	fixture.readAction(test, other, got.ActionID).Want(http.StatusForbidden)
 }
+
+// An action card lives in a chat session. The read names it, so the approve page
+// can link to the card when it cannot decide the action itself.
+func TestGetDecisionActionNamesTheChatSessionOfItsCard(test *testing.T) {
+	fixture := newBudgetRequestFixture(test)
+	var got budgetRequestResponse
+	fixture.request(test, fixture.humanID, "pat", map[string]any{"kind": "raise", "new_cap": 9, "window_id": fixture.window}).Want(http.StatusCreated).JSON(&got)
+	var view struct {
+		ChatSessionID string `json:"chat_session_id"`
+	}
+	fixture.readAction(test, fixture.humanID, got.ActionID).Want(http.StatusOK).JSON(&view)
+	var stored string
+	dbfx.QueryRow(test, `SELECT chat_session_id::text FROM decision_request WHERE id = $1`, got.RequestID).Scan(&stored)
+	if stored == "" || view.ChatSessionID != stored {
+		test.Fatalf("chat_session_id = %q, want the card session %q", view.ChatSessionID, stored)
+	}
+}

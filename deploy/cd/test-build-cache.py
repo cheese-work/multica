@@ -73,7 +73,33 @@ class BuildCacheTests(unittest.TestCase):
             self.assertEqual(step['if'], f"matrix.image == '{image}'")
             for flag in ['--platform linux/amd64', '--provenance=mode=max', '--sbom=true', '--push']:
                 self.assertIn(flag, step['run'])
-        self.assertEqual(self.workflow['jobs']['cd-qualification']['needs'], 'build-images')
+        self.assertEqual(sorted(self.workflow['jobs']['cd-qualification']['needs']), ['build-images', 'd1-fixtures'])
+
+    def test_off_x99_jobs_keep_x99_runner_slots_for_image_builds(self):
+        # CHE-3983: queue wait on the shared X99 pool dominated slow runs. Fixtures and
+        # manifest assembly need neither Docker nor X99, so they run on hosted runners.
+        jobs = self.workflow['jobs']
+        for name in ['d1-fixtures', 'cd-qualification']:
+            with self.subTest(job=name):
+                self.assertEqual(jobs[name]['runs-on'], 'ubuntu-24.04')
+        fixtures = '\n'.join(step.get('run', '') for step in jobs['d1-fixtures']['steps'])
+        for suite in ['test-release-manifest.sh', 'test-admission.sh', 'test-record-checks.sh', 'test-build-cache.py',
+                      'test_cache_policy.py', 'test-candidate-preflight.py', 'test-deploy-approval.py', 'test-workflow-path-filters.sh',
+                      'test-isolated-qualification.sh', 'test-tuple-snapshot.sh']:
+            self.assertIn(suite, fixtures)
+        self.assertIn('ensure-pyyaml.sh', fixtures)
+        build = '\n'.join(step.get('run', '') for step in jobs['build-images']['steps'])
+        self.assertNotIn('deploy/cd/test-', build)
+        self.assertTrue(any(step.get('uses', '').startswith('actions/setup-node@') for step in jobs['cd-qualification']['steps']))
+
+    def test_web_builder_extends_deps_instead_of_copying_node_modules(self):
+        web = (ROOT / 'Dockerfile.web').read_text()
+        self.assertIn('FROM deps AS builder', web)
+        self.assertNotIn('COPY --from=deps', web)
+
+    def test_web_image_build_skips_next_typecheck_that_ci_already_runs(self):
+        self.assertIn('ENV NEXT_SKIP_TYPECHECK=true', (ROOT / 'Dockerfile.web').read_text())
+        self.assertIn('NEXT_SKIP_TYPECHECK', (ROOT / 'apps/web/next.config.ts').read_text())
 
     def test_every_buildx_call_is_bound_to_the_named_builder(self):
         # Runner ~/.docker persists across jobs. When the named builder already exists the
@@ -224,7 +250,7 @@ esac
 
     def test_manifest_uses_both_image_digests_and_actual_web_entries(self):
         job = self.workflow['jobs']['cd-qualification']
-        self.assertEqual(job['needs'], 'build-images')
+        self.assertIn('build-images', job['needs'])
         step = next(step for step in job['steps'] if step['name'] == 'Write immutable build-evidence manifest')
         for entries in [None, b'{"entries":[{"title":"Built web entries"}]}\n']:
             with self.subTest(entries=entries), tempfile.TemporaryDirectory() as directory:

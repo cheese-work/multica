@@ -238,6 +238,20 @@ Predict(precedents []string) Prediction
 - Training or fine-tune data is built from this table plus public ask fields.
   DM contents never enter it. Export is a separate, reviewed step.
 
+## Jev availability (slice B0 probe, 8 Nov 2026 02:41 to 02:44 ICT)
+
+Read-only probe for the burn-in plan (CHE-4383, slice CHE-4467). Result: Jev
+is **not available**, so no `jev@<version>` predictor runs in burn-in.
+
+| Check | Command | Exit | Result |
+| --- | --- | --- | --- |
+| Jev registration | `multica workspace get --output json` (read `settings`) | 0 | No `agent_decisions_jev` key: Jev delegation is off, no agent id, no mode. |
+| Brief | `multica decision brief` | 0 | `enabled: true`, 0 decisions, 0 pilot runs. |
+| sub2api model list | `GET /v1/models` with the `hindsight-x99` key (key not recorded) | 0 | HTTP 200, 12 models, none contains `jev`. `jev-latest` is not served for this key group. |
+
+- Same as the 1 Nov 2026 finding (CHE-2946): sub2api does not serve `jev-latest`.
+- To enable Jev later: the owner registers the agent with `PUT /api/agent-decisions/jev`, and sub2api must serve `jev-latest` for the key group. Re-run this probe then.
+
 ## Fine-tune criteria
 
 Fine-tune only when the retrieval baseline shows a **specific gap**:
