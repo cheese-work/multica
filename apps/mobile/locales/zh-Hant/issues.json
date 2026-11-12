@@ -49,7 +49,8 @@
   "list": {
     "empty": "沒有符合篩選條件的任務",
     "count_other": "{{count}} 個任務",
-    "search_placeholder": "搜尋任務和專案"
+    "search_placeholder": "搜尋任務和專案",
+    "unread_mention": "未讀的提及"
   },
   "detail": {
     "properties": "屬性",

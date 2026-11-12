@@ -64,8 +64,21 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		return nil, err
 	}
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
-	if err != nil || def == nil {
+	if err != nil {
 		return nil, err
+	}
+	// Keeping the current status is never a rejected write, even when the
+	// workflow no longer lists it.
+	statusChanging := params.Status.Valid && params.Status.String != prev.Status
+	if def == nil {
+		if !statusChanging {
+			return nil, nil
+		}
+		outside, err := issueworkflow.OutsideProject(ctx, q, prev.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		return nil, issueworkflow.CheckStatusOutsideProject(outside, params.Status.String)
 	}
 	projectMoving := params.ProjectID != prev.ProjectID
 	if projectMoving && !statusExplicit && !def.IsDefault && !def.Has(prev.Status) {
@@ -74,7 +87,9 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		})
 		params.Status = pgtype.Text{String: target, Valid: true}
 	}
-	if params.Status.Valid {
+	// A move into a Default project keeps the issue's status, as it is never
+	// mapped; a named workflow must list the status the issue lands on.
+	if params.Status.Valid && (statusChanging || (projectMoving && !def.IsDefault)) {
 		if err := issueworkflow.CheckStatus(def, params.Status.String); err != nil {
 			return nil, err
 		}
@@ -122,9 +137,47 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok {
 		return nil, nil
 	}
+	if step.KeepOtherAssignee {
+		keep, err := h.keepsOtherAssignee(ctx, q, prev, *def, project, assigneeType, assigneeID)
+		if err != nil {
+			return nil, err
+		}
+		if keep {
+			// The step still hands off, to the assignee it found: entering a
+			// step starts that assignee's run, which a plain status move
+			// would not.
+			assigneeType, assigneeID = prev.AssigneeType.String, prev.AssigneeID
+		}
+	}
 	params.AssigneeType = pgtype.Text{String: assigneeType, Valid: true}
 	params.AssigneeID = assigneeID
 	return &workflowHandoff{def: *def, step: step, project: project}, nil
+}
+
+// keepsOtherAssignee reports whether a step flagged KeepOtherAssignee leaves
+// the issue with its current assignee: one is set, and it is neither the
+// handler the entered step resolved to nor the handler of the step the issue
+// leaves. The second exception keeps the normal chain moving, for example
+// Tofu handing a todo issue to its author. An unassigned issue is handed off.
+//
+// TEMPORARY: CHE-5024 (per-issue workflows) replaces this rule.
+func (h *Handler) keepsOtherAssignee(ctx context.Context, q *db.Queries, prev db.Issue, def issueworkflow.Definition, project db.Project, handlerType string, handlerID pgtype.UUID) (bool, error) {
+	if !prev.AssigneeID.Valid || !prev.AssigneeType.Valid {
+		return false, nil
+	}
+	if prev.AssigneeType.String == handlerType && prev.AssigneeID == handlerID {
+		return false, nil
+	}
+	leaving, ok := def.Step(prev.Status)
+	if !ok || !leaving.HandsOff() {
+		return true, nil
+	}
+	humans, err := h.workflowHumans(ctx, q, leaving, project, prev.WorkspaceID, prev.RequestedByID)
+	if err != nil {
+		return false, err
+	}
+	leaveType, leaveID, ok := issueworkflow.ResolveHandler(leaving, project, prev.CreatorType, prev.CreatorID, humans)
+	return !(ok && prev.AssigneeType.String == leaveType && prev.AssigneeID == leaveID), nil
 }
 
 // checkAgentMove refuses an agent's status write the issue's current step has

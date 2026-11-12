@@ -103,6 +103,8 @@ func TestMain(m *testing.M) {
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
 	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
+	// The run-budget suites spend many runs in seconds; the loop breaker has its own tests.
+	os.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "0")
 	code := m.Run()
 	stopHeartbeat()
 	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {

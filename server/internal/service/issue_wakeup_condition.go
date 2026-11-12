@@ -32,7 +32,7 @@ const (
 // stored facts (a field value, sub-issue status, a linked pull request's
 // state); it does not interpret business meaning.
 type WakeupCondition struct {
-	// issue_field | children_done | pull_request | other_issue | github_run
+	// issue_field | children_done | pull_request | other_issue | github_run | merge_eligibility
 	Type string `json:"type"`
 	// issue_field: status | assignee | label | property
 	Field        string          `json:"field,omitempty"`
@@ -80,7 +80,8 @@ var (
 
 func conditionDiagnostic(err error) bool {
 	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported) ||
-		errors.Is(err, errGHRunNoEvents) || errors.Is(err, errGHRunNoMatch) || errors.Is(err, errGHRunAgedOut) || errors.Is(err, errGHRunStale)
+		errors.Is(err, errGHRunNoEvents) || errors.Is(err, errGHRunNoMatch) || errors.Is(err, errGHRunAgedOut) || errors.Is(err, errGHRunStale) ||
+		errors.Is(err, errMergeFactsUnavailable) || errors.Is(err, errMergePolicyMissing)
 }
 
 func badCondition(msg string) error {
@@ -245,8 +246,10 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}); err != nil {
 			return nil, nil, err
 		}
+	case "merge_eligibility":
+		out = WakeupCondition{Type: c.Type}
 	default:
-		return nil, nil, badCondition("type must be issue_field, children_done, pull_request, other_issue or github_run")
+		return nil, nil, badCondition("type must be issue_field, children_done, pull_request, other_issue, github_run or merge_eligibility")
 	}
 	normalized, _ := json.Marshal(out)
 	return normalized, conditionHints(out), nil
@@ -261,6 +264,16 @@ const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
 	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND NOT (cr.is_status_context AND cr.name='security-gate'))
 	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
 	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
+
+// PRChecksRollupIgnoringVerdict is the PR's rollup with checksRollupIgnoringVerdict
+// applied, so the green wake and the checks_finished rule read one definition.
+func PRChecksRollupIgnoringVerdict(ctx context.Context, db interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, prID pgtype.UUID) (string, error) {
+	var rollup string
+	err := db.QueryRow(ctx, `SELECT `+checksRollupIgnoringVerdict+` FROM github_pull_request pr WHERE pr.id=$1`, prID).Scan(&rollup)
+	return rollup, err
+}
 
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
 // satisfying facts (so a rule fires when they change, not on every tick) and a
@@ -458,6 +471,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
 	case "github_run":
 		return evaluateGitHubRun(ctx, tx, q, w, c)
+	case "merge_eligibility":
+		return s.evaluateMergeEligibility(ctx, tx, q, w)
 	case "other_issue":
 		var status string
 		var number int32
@@ -562,7 +577,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 	isRun := condition.Type == "github_run"
 	if met {
 		newlyMet := fingerprint != state
-		if isRun || (condition.Type == "pull_request" && condition.Event == "conflicts") {
+		if isRun || condition.Type == "merge_eligibility" || (condition.Type == "pull_request" && condition.Event == "conflicts") {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
 		if newlyMet && !conditionDropped(observed, state, fingerprint, condition.Event == "conflicts") {

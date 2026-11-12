@@ -473,7 +473,7 @@ describe("DecisionRequestCard answering", () => {
       renderCard();
       const file = new File(["png"], "x.png", { type: "image/png" });
       const result = await editorProps().onUploadFile?.(file, "upload-1");
-      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined });
+      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined }, expect.any(AbortSignal));
       expect(result).toMatchObject({ markdownLink: "https://app/att-1" });
     });
 
