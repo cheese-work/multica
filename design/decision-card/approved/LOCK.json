@@ -1,0 +1,27 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "aBJFsygiKT",
+  "page_id": "aBJFsygiKT:page1",
+  "page_note": "File 'CHE-5162 · decision-card (test)'. The frame sits on page1. Direction B only; A and C stay on the canvas as history and are not locked.",
+  "screens": [
+    {
+      "screen": "decision-card B (one composer, three modes: Approve, Reject, Reply; passkey icon on every Approve button; open, typed-ok, reply, approved, rejected, batch, phone 358 px; config-change card with computed diff, applied and not-applied outcomes; AgentX and DevX panels)",
+      "frame_id": "Z3bizs5RyO",
+      "updatedAt": "2026-11-11T23:21:50.584Z",
+      "content_sha256": "4c1343c0e13654774d30c6e38b951a156ca6750e43baa79854dd8436e96cd271"
+    }
+  ],
+  "export_sha256": "fa188d1526fb67fcbdcaef9654e886fb051afa7c0b3a0bd6760b7d05e4454fb7",
+  "export_sha256_method": "sha256 of the output of sha256sum for export_files, sorted by file name (one line '<sha256>  <file>' plus newline)",
+  "export_files": {
+    "direction-b.html": "4c1343c0e13654774d30c6e38b951a156ca6750e43baa79854dd8436e96cd271"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; length 22330 characters equals htmlBytes from get_frame",
+  "exported_at": "2026-11-12 07:55 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-5162",
+  "selection_id": "01a1cceb-89b3-7a02-ad8c-ad2530a73801",
+  "selection_source": "decision request aa80db43-66a3-4f3b-8782-e13672508011, Cheese answer comment 01a1cce0-7263-747f-ba85-d09e4ac44ae4 (12 Nov 2026 06:10 ICT): B, plus note that the Approve button needs a passkey icon",
+  "ux_verdict_id": "01a1ccf1-6439-7265-a6a8-8ea6e1a5a7f3"
+}

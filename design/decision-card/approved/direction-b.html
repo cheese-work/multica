@@ -1,0 +1,242 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{margin:0;box-sizing:border-box}
+body{background:#0d0e10;color:#ececee;font:14px/1.45 Inter,"DejaVu Sans","Noto Sans","Liberation Sans",Arial,sans-serif;padding:36px;width:2240px}
+h1{font-size:26px;font-weight:650;letter-spacing:-.01em}
+.sub{color:#a3a3ab;max-width:1300px;margin:8px 0 30px;font-size:15px}
+.grid{display:flex;gap:32px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:30px;width:540px;flex:none}
+.col.ph{width:358px}
+.lbl{font:600 11px/1.3 "DejaVu Sans","Noto Sans",Arial,sans-serif;letter-spacing:.06em;text-transform:uppercase;color:#9a9aa4;margin-bottom:10px}
+.card{background:#17181b;border:1px solid #2d2e33;border-radius:14px;overflow:hidden}
+.hd{padding:13px 18px;border-bottom:1px solid #2d2e33;display:flex;gap:9px;align-items:center;flex-wrap:wrap;font-size:13px;color:#a3a3ab}
+.hd b{color:#ececee;font-weight:600}
+.tag{padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
+.t-open{background:#3a3014;color:#e7bf4a}.t-ok{background:#14341f;color:#6fcf97}.t-no{background:#3b1b1a;color:#f08a82}
+.chip{margin-left:auto;border:1px solid #3a3b41;border-radius:99px;padding:2px 10px;color:#ececee;font-size:12px}
+.bd{padding:18px;display:flex;flex-direction:column;gap:14px}
+.ask{font-size:19px;line-height:1.3;font-weight:650;letter-spacing:-.005em}
+.sum{color:#cfcfd5;font-size:14.5px}
+.sum em{font-style:normal;color:#ececee;font-weight:600}
+.kv{border:1px solid #2d2e33;border-radius:10px}
+.kv>div{display:flex;justify-content:space-between;gap:14px;padding:9px 12px;font-size:13.5px}
+.kv>div+div{border-top:1px solid #2d2e33}
+.kv .k{color:#a3a3ab;flex:none}.kv .v{text-align:right}
+.dim{color:#a3a3ab}
+.btns{display:flex;gap:10px;align-items:center}
+.btn{border:1px solid #3d3e45;background:#212227;color:#ececee;border-radius:9px;padding:10px 16px;font:600 14px "DejaVu Sans","Noto Sans",Arial,sans-serif;white-space:nowrap}
+.btn.p{background:#ececee;color:#111214;border-color:#ececee}
+.btn.p{display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.btn .pk{width:18px;height:18px;flex:none}
+.btn.s{background:#2a2b31;color:#ececee;border-color:#3d3e45}
+.btn.d{background:#3b1b1a;color:#f6b4ae;border-color:#6a2c29}
+.det{font-size:13px;color:#a3a3ab;border-top:1px solid #2d2e33;padding-top:12px}
+.det b{color:#ececee;font-weight:600}
+.det:before{content:"";display:inline-block;border:5px solid transparent;border-left:7px solid #a3a3ab;border-right:0;margin-right:8px}
+.sec{font:600 12px/1.2 "DejaVu Sans","Noto Sans",Arial,sans-serif;color:#a3a3ab;letter-spacing:.02em}
+.seg{display:flex;border:1px solid #3d3e45;border-radius:10px;padding:3px;gap:3px;background:#121316}
+.seg span{flex:1;text-align:center;padding:8px 6px;border-radius:7px;font:600 13.5px "DejaVu Sans","Noto Sans",Arial,sans-serif;color:#a3a3ab}
+.seg .on{background:#ececee;color:#111214}
+.seg .on.r{background:#3b1b1a;color:#f6b4ae}
+.seg .on.q{background:#2f3036;color:#ececee}
+.ta{border:1px solid #3d3e45;border-radius:9px;background:#121316;padding:10px 12px;min-height:46px;color:#8c8c95;font-size:14px}
+.ta.f{color:#ececee;border-color:#6b6c75}
+.hint{display:flex;gap:10px;align-items:flex-start;background:#1c1d21;border:1px solid #2d2e33;color:#cfcfd5;border-radius:9px;padding:10px 12px;font-size:13.5px}
+.hint b{color:#ececee}
+.hint.w{background:#2a2410;border-color:#4c3f14;color:#ecd48a}.hint.w b{color:#f6e3a8}
+.note{background:#1c1d21;border:1px solid #2d2e33;border-radius:9px;padding:10px 12px;font-size:13.5px;color:#cfcfd5}
+.msg{background:#212227;border-radius:10px;padding:9px 12px;font-size:14px;align-self:flex-end;max-width:85%}
+.meta{font-size:12px;color:#9a9aa4}
+.ck{width:16px;height:16px;border-radius:4px;background:#ececee;flex:none;position:relative;top:2px}
+.ck:after{content:"";position:absolute;left:5px;top:1.5px;width:4px;height:8px;border:solid #111214;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.row{display:flex;gap:10px;padding:10px 12px;align-items:flex-start}
+.row+.row{border-top:1px solid #2d2e33}
+.row .m{flex:1;font-size:13.5px}.row .m b{font-weight:600}.row .n{color:#a3a3ab;font-size:12.5px}
+.pan{background:#141518;border:1px solid #2d2e33;border-radius:14px;padding:22px 24px;flex:1}
+.pan h2{font-size:17px;margin-bottom:4px}.pan p{color:#a3a3ab;margin-bottom:12px;font-size:13.5px}
+.code{background:#0f1012;border:1px solid #2d2e33;border-radius:8px;padding:10px 12px;font:12.5px/1.5 ui-monospace,Menlo,monospace;color:#c7c7ce;white-space:pre}
+.cm{color:#7f8089}.kw{color:#8fb8ff}.st{color:#8fd19e}
+.bot{display:flex;gap:32px;margin-top:40px}
+.diff{border:1px solid #2d2e33;border-radius:10px;overflow:hidden;font:12.5px/1.5 ui-monospace,Menlo,monospace}
+.diff .dh{padding:7px 12px;background:#1c1d21;color:#a3a3ab;font:600 12px "DejaVu Sans","Noto Sans",Arial,sans-serif}
+.dl{padding:6px 12px;display:flex;gap:10px}.dl.del{background:#2a1514;color:#f6b4ae}.dl.add{background:#12291a;color:#8fe0a8}.dl .sg{width:10px;flex:none;font-weight:700}
+.dig{font:12.5px ui-monospace,Menlo,monospace;color:#c7c7ce}
+.btn:focus-visible,.det:focus-visible,.ta:focus-visible,.seg span:focus-visible,.chip:focus-visible,.fv{outline:3px solid #8fb8ff;outline-offset:3px}
+.stack{display:flex;flex-direction:column;gap:30px;flex:1}
+</style></head><body>
+<h1>B · One composer, three modes. Enter does what the button says.</h1>
+<p class="sub">The two competing controls become one. A single box with a mode switch: Approve, Reject or Reply. Approve is preselected. The one big button always names the mode, and Enter presses it. A typed “ok” in Approve mode starts the passkey step. Reply mode says “does not approve” on its button. Batches are opened on purpose by the agent, so the card is exact.</p>
+<div class="grid">
+<div class="col">
+<div><div class="lbl">1 · Open (default, Approve selected)</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-open">Open</span><span class="chip">CHE-3461</span></div>
+<div class="bd">
+<div class="ask">Reopen CHE-3461 so the v0.8.0 sync can finish?</div>
+<div class="sum">CHE-3461 stopped at its run limit (<em>44 of 25 runs used</em>). If you approve, it gets a fresh window of 25 runs. <span class="dim">If you do nothing, CHE-3461 stays paused and nothing else changes.</span></div>
+<div class="kv"><div><span class="k">Runs used</span><span class="v">44 of 25 <span class="dim">→</span> <b>0 of 25</b> (new window)</span></div><div><span class="k">Cost</span><span class="v">Up to 25 more runs, from the monthly model budget</span></div><div><span class="k">Affects</span><span class="v">CHE-3461 only</span></div><div><span class="k">Why</span><span class="v">The upstream merge is not finished; the last 3 runs fixed CI.</span></div></div>
+<div class="seg"><span class="on">Approve</span><span>Reject</span><span>Reply</span></div>
+<div class="ta">Add a note (optional)</div>
+<div class="btns"><span class="btn p"><svg class="pk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.5a4.5 4.5 0 0 1 4.5-4.5h3"/><circle cx="17.5" cy="13" r="2.5"/><path d="M17.5 15.5V21l2-1.5-1.5-1.5 1.5-1.5"/></svg>Approve with passkey</span><span class="meta">Enter = passkey prompt</span></div>
+<div class="det"><b>Details</b> · issue.run_budget.top_up v1</div>
+</div></div></div>
+<div><div class="lbl">2 · Cheese types “ok” in Approve mode</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-open">Open</span><span class="chip">CHE-3461</span></div>
+<div class="bd">
+<div class="ask">Reopen CHE-3461 so the v0.8.0 sync can finish?</div>
+<div class="seg"><span class="on">Approve</span><span>Reject</span><span>Reply</span></div>
+<div class="ta f">ok, go ahead</div>
+<div class="hint"><span><b>Enter starts your passkey.</b> “ok, go ahead” is saved as your approval note.</span></div>
+<div class="btns"><span class="btn p"><svg class="pk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.5a4.5 4.5 0 0 1 4.5-4.5h3"/><circle cx="17.5" cy="13" r="2.5"/><path d="M17.5 15.5V21l2-1.5-1.5-1.5 1.5-1.5"/></svg>Approve with passkey</span><span class="meta">Enter = passkey prompt</span></div>
+</div></div></div>
+</div>
+<div class="col">
+<div><div class="lbl">3 · Reply mode (text only)</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-open">Open</span><span class="chip">CHE-3461</span></div>
+<div class="bd">
+<div class="ask">Reopen CHE-3461 so the v0.8.0 sync can finish?</div>
+<div class="seg"><span>Approve</span><span>Reject</span><span class="on q">Reply</span></div>
+<div class="ta f">Is CI on main green yet?</div>
+<div class="hint w"><span><b>Reply does not approve.</b> The ask stays open. x99-claude-gstack is woken to answer.</span></div>
+<div class="btns"><span class="btn s">Send reply (does not approve)</span><span class="meta">Enter sends</span></div>
+</div></div></div>
+<div><div class="lbl">4 · Approved</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-ok">Approved</span><span class="chip">CHE-3461</span></div>
+<div class="bd">
+<div class="ask">Reopen CHE-3461 so the v0.8.0 sync can finish</div>
+<div class="note"><b>Done.</b> You approved with your passkey on 11 Nov 2026, 13:41 ICT. CHE-3461 now shows <b>0 of 25</b> runs. x99-claude-gstack was woken and will continue.</div>
+<div class="msg" style="align-self:flex-start">ok, go ahead</div>
+<div class="det"><b>Details</b> · issue.run_budget.top_up v1 · receipt a91f3c</div>
+</div></div></div>
+<div><div class="lbl">5 · Rejected (Reject mode, reason typed)</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-no">Rejected</span><span class="chip">CHE-3461</span></div>
+<div class="bd">
+<div class="ask">Reopen CHE-3461 so the v0.8.0 sync can finish</div>
+<div class="note"><b>Nothing ran.</b> You rejected this on 11 Nov 2026, 13:41 ICT. CHE-3461 stays paused at 44 of 25 runs. x99-claude-gstack was woken with your reason.</div>
+<div class="msg" style="align-self:flex-start">Not until CI on main is green.</div>
+<div class="det"><b>Details</b> · issue.run_budget.top_up v1</div>
+</div></div></div>
+</div>
+<div class="col">
+<div><div class="lbl">6 · Batch card (agent opened batch b_12)</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-open">Open</span><span class="chip">3 issues</span></div>
+<div class="bd">
+<div class="ask">Reopen 3 issues so the v0.8.0 sync can finish?</div>
+<div class="sum">All 3 stopped at their run limit. Approve and each gets a fresh window of 25 runs: <em>up to 75 runs</em> in total. <span class="dim">If you do nothing, all 3 stay paused.</span></div>
+<div class="kv">
+<div class="row"><span class="ck"></span><span class="m"><b>CHE-3459</b> Sync L4 · merge upstream<div class="n">31 of 25 → 0 of 25</div></span></div>
+<div class="row"><span class="ck"></span><span class="m"><b>CHE-3460</b> Sync L5 · brand v3.1<div class="n">27 of 25 → 0 of 25</div></span></div>
+<div class="row"><span class="ck"></span><span class="m"><b>CHE-3461</b> Sync L6 · Inbox, ZCode<div class="n">44 of 25 → 0 of 25</div></span></div>
+</div>
+<div class="seg"><span class="on">Approve all 3</span><span>Reject</span><span>Reply</span></div>
+<div class="ta">Add a note (optional)</div>
+<div class="btns"><span class="btn p"><svg class="pk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.5a4.5 4.5 0 0 1 4.5-4.5h3"/><circle cx="17.5" cy="13" r="2.5"/><path d="M17.5 15.5V21l2-1.5-1.5-1.5 1.5-1.5"/></svg>Approve all 3 with passkey</span></div>
+<div class="meta">One passkey tap covers all 3. The agent closed the batch before sending, so no card is half-built.</div>
+<div class="det"><b>Details</b> · batch b_12 · 3 × issue.run_budget.top_up v1</div>
+</div></div></div>
+</div>
+<div class="col ph">
+<div><div class="lbl">7 · Phone 358 · open</div>
+<div class="card"><div class="hd" style="padding:12px 14px"><b>Decision request</b> <span class="tag t-open">Open</span><span class="chip">CHE-3461</span></div>
+<div class="bd" style="padding:14px">
+<div class="ask" style="font-size:17px">Reopen CHE-3461 so the v0.8.0 sync can finish?</div>
+<div class="sum" style="font-size:14px">Stopped at its run limit (<em>44 of 25</em>). Approve for a fresh window of 25 runs. <span class="dim">No reply: it stays paused.</span></div>
+<div class="kv"><div><span class="k">Runs used</span><span class="v">44 → <b>0</b> of 25</span></div><div><span class="k">Affects</span><span class="v">CHE-3461 only</span></div></div>
+<div class="seg"><span class="on">Approve</span><span>Reject</span><span>Reply</span></div>
+<div class="ta">Add a note (optional)</div>
+<div class="btns"><span class="btn p" style="flex:1"><svg class="pk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.5a4.5 4.5 0 0 1 4.5-4.5h3"/><circle cx="17.5" cy="13" r="2.5"/><path d="M17.5 15.5V21l2-1.5-1.5-1.5 1.5-1.5"/></svg>Approve with passkey</span></div>
+<div class="det"><b>Details</b></div>
+</div></div></div>
+</div>
+</div>
+<h2 style="font-size:20px;margin:44px 0 6px">Config-change card · added after review (Cheese's 12 Nov 2026 scope addition)</h2>
+<p class="sub" style="margin:0 0 22px">Live evidence: card d6a0e7f4 (<code>workflow.steps.set</code>, Default workflow, 12 Nov 2026, 00:39 ICT) showed hundreds of raw JSON lines for a one-line change. The card now leads with a diff the server computes from the live-vs-after preview (<code>RequiresPreview</code>). Digests, receipt and outcome are example values.</p>
+<div class="grid">
+<div class="col">
+<div><div class="lbl">8 · Config change · open (Approve selected)</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-open">Open</span><span class="chip" tabindex="0">Default workflow</span></div>
+<div class="bd">
+<div class="ask">Send “Agent review” to x99-codex-sol instead of x99-agy-gemini?</div>
+<div class="sum">x99-agy-gemini fails every run (<em>503, no accounts, CHE-5251</em>). If you approve, the Default workflow changes <em>one line</em>. <span class="dim">If you do nothing, Default keeps x99-agy-gemini and Agent review runs keep failing.</span></div>
+<div class="diff"><div class="dh">1 change · 11 other steps unchanged</div><div class="dl del"><span class="sg">−</span>agent_review.handler: x99-agy-gemini</div><div class="dl add"><span class="sg">+</span>agent_review.handler: x99-codex-sol</div></div>
+<div class="kv"><div><span class="k">Applies to</span><span class="v">Issues that enter Agent review after approval</span></div><div><span class="k">Rollback</span><span class="v">Propose the reverse line. One tap, same card.</span></div><div><span class="k">Digest</span><span class="v dig">7c1e9a → b40d52</span></div></div>
+<div class="seg"><span class="on" tabindex="0">Approve</span><span tabindex="0">Reject</span><span tabindex="0">Reply</span></div>
+<div class="ta" tabindex="0">Add a note (optional)</div>
+<div class="btns"><span class="btn p fv" tabindex="0"><svg class="pk" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="7.5" r="3.5"/><path d="M2.5 20v-1.5a4.5 4.5 0 0 1 4.5-4.5h3"/><circle cx="17.5" cy="13" r="2.5"/><path d="M17.5 15.5V21l2-1.5-1.5-1.5 1.5-1.5"/></svg>Approve with passkey</span><span class="meta">Enter = passkey prompt</span></div>
+<div class="meta">Keyboard focus ring shown on the button. Tab reaches the modes, the note and the button.</div>
+<div class="det" tabindex="0"><b>Details</b> · raw steps JSON (212 lines) · workflow.steps.set v1</div>
+</div></div></div>
+</div>
+<div class="col">
+<div><div class="lbl">9 · Approved and applied</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-ok">Applied</span><span class="chip">Default workflow</span></div>
+<div class="bd">
+<div class="ask">Send “Agent review” to x99-codex-sol instead of x99-agy-gemini</div>
+<div class="note"><b>Applied.</b> You approved with your passkey on 12 Nov 2026, 00:52 ICT. The live Default workflow was read back after the write: <span class="dig">b40d52</span>. x99-claude-gstack was woken.</div>
+<div class="diff"><div class="dl add"><span class="sg">+</span>agent_review.handler: x99-codex-sol</div></div>
+<div class="det" tabindex="0"><b>Details</b> · receipt c7d21e · applied_at 12 Nov 2026, 00:52 ICT</div>
+</div></div></div>
+<div><div class="lbl">10 · Approved, not applied</div>
+<div class="card"><div class="hd"><b>Decision request</b> from x99-claude-gstack <span class="tag t-no">Not applied</span><span class="chip">Default workflow</span></div>
+<div class="bd">
+<div class="ask">Send “Agent review” to x99-codex-sol instead of x99-agy-gemini</div>
+<div class="note"><b>Approved, but nothing changed.</b> The live workflow moved after the preview (<span class="dig">7c1e9a → d83f10</span>), so the write was refused. x99-claude-gstack was woken with outcome <b>apply_failed</b> and must propose again.</div>
+<div class="det" tabindex="0"><b>Details</b> · applied_at none · outcome apply_failed (stale preview)</div>
+</div></div></div>
+</div>
+<div class="stack">
+<div class="pan"><h2>AgentX · config change</h2><p>The agent sees the same diff lines Cheese will see, before sending. <code>decision get</code> reports <code>applied_at</code> and outcome, so an agent never says “approved” for a change that did not apply. A config change is a single proposal; it can still join a batch.</p>
+<div class="code"><span class="kw">multica config propose</span> workflow.steps.set --workflow Default \
+  --file steps.json \
+  --ask <span class="st">"Send Agent review to x99-codex-sol."</span> \
+  --why <span class="st">"x99-agy-gemini fails every run (CHE-5251)."</span>
+
+<span class="cm"># preview: same lines as the card</span>
+  1 change · 11 other steps unchanged
+  - agent_review.handler: x99-agy-gemini
+  + agent_review.handler: x99-codex-sol
+  digest 7c1e9a → b40d52
+<span class="cm">→ proposal p_c41d · card sent · wakeup armed</span>
+
+<span class="kw">multica decision get</span> p_c41d
+  status approved · outcome <span class="st">applied</span> · applied_at 2026-11-12 00:52 ICT
+  <span class="cm"># or: outcome apply_failed (stale preview) · applied_at none</span></div></div>
+<div class="pan"><h2>DevX · config action</h2><p>The server derives the diff from <code>RequiresPreview</code> (live vs after). Nobody hand-writes a summary. A registry test fails for any config action with no diff renderer. The mode rule still holds: only Approve mode may start a passkey.</p>
+<div class="code"><span class="kw">registerConfigAction</span>({ id: <span class="st">'workflow.steps.set'</span>, requiresPreview: <span class="kw">true</span>,
+  diff: fieldDiff({ by: <span class="st">'step.key'</span>, fields: [<span class="st">'handler'</span>, <span class="st">'status'</span>] }) })
+  <span class="cm">// text fields use textDiff; none → test fails</span>
+
+<span class="cm">$ go test -run TestEveryPreviewActionHasDiffRenderer</span>
+<span class="cm">FAIL every RequiresPreview action has a diff renderer</span>
+<span class="cm">  agent.instructions.set: no renderer (add fieldDiff or textDiff)</span></div></div>
+</div>
+</div>
+<script>document.querySelectorAll('.btn,.det,.ta,.chip,.seg span').forEach(function(e){if(!e.hasAttribute('tabindex'))e.tabIndex=0})</script>
+<div class="bot">
+<div class="pan"><h2>AgentX · what the proposing agent types</h2><p>One plain sentence and a reason. For one goal, the agent opens a batch, adds proposals, then sends. The server fills the numbers (44 of 25, window id) from the action schema.</p>
+<div class="code"><span class="kw">multica decision batch open</span> --goal <span class="st">"Reopen the v0.8.0 sync issues"</span>   <span class="cm"># → b_12</span>
+
+<span class="kw">multica decision propose</span> issue.run_budget.top_up --batch b_12 \
+  --issue CHE-3461 \
+  --ask <span class="st">"Reopen CHE-3461 so the v0.8.0 sync can finish."</span> \
+  --why <span class="st">"Upstream merge unfinished; last 3 runs fixed CI."</span>
+<span class="cm">  (repeat for CHE-3459, CHE-3460)</span>
+
+<span class="kw">multica decision batch send</span> b_12   <span class="cm"># one card in Cheese's DM · wakeup armed</span>
+
+<span class="cm"># wake payload</span>
+{ <span class="st">"batch"</span>: <span class="st">"b_12"</span>, <span class="st">"outcome"</span>: <span class="st">"approved"</span>, <span class="st">"note"</span>: <span class="st">"ok, go ahead"</span> }</div></div>
+<div class="pan"><h2>DevX · what a person adding an action type writes</h2><p>Every action registers a human template and fixtures. A missing template fails the test, so no action ships without a plain card. This direction adds one mode rule: only Approve mode may start a passkey.</p>
+<div class="code"><span class="kw">registerAction</span>({ id: <span class="st">'issue.run_budget.top_up'</span>, version: 1,
+  human: {
+    title:   (p) =&gt; <span class="st">`Reopen ${p.issue.key}`</span>,
+    summary: (p) =&gt; <span class="st">`${p.issue.key} stopped at its run limit (${p.used} of ${p.limit}).`</span>,
+    change:  (p) =&gt; [<span class="st">'Runs used'</span>, <span class="st">`${p.used} of ${p.limit}`</span>, <span class="st">`0 of ${p.limit}`</span>],
+    ifIgnored: <span class="st">'The issue stays paused.'</span>,
+    batchable: <span class="kw">true</span>,
+  },
+  fixtures: [topUpOpen, topUpOverLimit] })
+
+<span class="cm">$ pnpm test actions</span>
+<span class="cm">FAIL every action has a human template + ≥1 fixture</span>
+<span class="cm">  issue.run_budget.pause_all: missing `human` (add title, summary, change)</span></div></div>
+</div>
+</body></html>
