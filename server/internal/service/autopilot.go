@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -1317,6 +1320,7 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to complete autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunCompleted(autopilot, updatedRun)
 		s.publishRunDone(wsID, updatedRun, "completed")
 	case "failed", "cancelled":
@@ -1329,8 +1333,74 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 			slog.Warn("failed to fail autopilot run from task", "run_id", util.UUIDToString(run.ID), "error", err)
 			return
 		}
+		s.recordScriptAudit(ctx, autopilot, run, task)
 		s.captureAutopilotRunFailed(autopilot, updatedRun, updatedRun.Source, reason)
 		s.publishRunDone(wsID, updatedRun, "failed")
+	}
+}
+
+// scriptArgvSHA256 hashes a script's argv for the audit record. The argv itself
+// is never stored.
+func scriptArgvSHA256(args []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(args, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
+
+// RecordScriptClaim stores the script a daemon was handed at claim as
+// result.script {name, argv_sha256} on the run. The daemon runs exactly what
+// the claim response carried, so the audit is bound to that and not to the
+// autopilot config as it stands at settlement. A later claim of the same run
+// (redelivery) replaces the earlier one. Best effort: a failed write is logged
+// and never fails the claim. CHE-5094.
+func (s *AutopilotService) RecordScriptClaim(ctx context.Context, runID pgtype.UUID, name string, args []string) {
+	patch, err := json.Marshal(map[string]any{"script": map[string]any{
+		"name": name, "argv_sha256": scriptArgvSHA256(args), "exit_code": nil, "duration_ms": nil,
+	}})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: runID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record claim", "run_id", util.UUIDToString(runID), "error", err)
+	}
+}
+
+// recordScriptAudit completes result.script for a settled script-mode run:
+// the exit code and the wall-clock duration are added to the name and argv
+// SHA-256 recorded at claim (RecordScriptClaim). claimed is the run as read
+// before settlement, since a completed run's result is replaced by the task
+// result. Without a recorded claim, name and argv_sha256 are null: the live
+// autopilot config is never used. exit_code is null when no process exit was
+// observed (rejected, timed out, cancelled); duration_ms is null without both
+// timestamps. Best effort: a failed write is logged and never unsettles the
+// run. CHE-5094.
+func (s *AutopilotService) recordScriptAudit(ctx context.Context, ap db.Autopilot, claimed db.AutopilotRun, task db.AgentTaskQueue) {
+	var prior struct {
+		Script struct {
+			Name       *string `json:"name"`
+			ArgvSHA256 *string `json:"argv_sha256"`
+		} `json:"script"`
+	}
+	_ = json.Unmarshal(claimed.Result, &prior) // not an object: no claim was recorded
+	// A recorded claim marks a script run even if the autopilot's mode was
+	// changed after it, so the audit is not lost.
+	if ap.ExecutionMode != "script" && prior.Script.Name == nil {
+		return
+	}
+	audit := map[string]any{"name": prior.Script.Name, "argv_sha256": prior.Script.ArgvSHA256, "exit_code": nil, "duration_ms": nil}
+	if task.Status == "completed" {
+		audit["exit_code"] = 0
+	} else if code, ok := agent.ScriptExitCode(task.Error.String); ok {
+		audit["exit_code"] = code
+	}
+	if task.StartedAt.Valid && task.CompletedAt.Valid {
+		audit["duration_ms"] = task.CompletedAt.Time.Sub(task.StartedAt.Time).Milliseconds()
+	}
+	patch, err := json.Marshal(map[string]any{"script": audit})
+	if err == nil {
+		err = s.Queries.MergeAutopilotRunResult(ctx, db.MergeAutopilotRunResultParams{ID: claimed.ID, Patch: patch})
+	}
+	if err != nil {
+		slog.Warn("script audit: failed to record", "run_id", util.UUIDToString(claimed.ID), "error", err)
 	}
 }
 

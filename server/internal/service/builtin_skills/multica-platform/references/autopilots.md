@@ -23,6 +23,10 @@ Execution modes:
   model session: `--mode script --script <name> [--arg <value>]...`. The
   description is never executed. With no daemon allowlist every script task
   fails closed. `--output json` shows `script_config` (name and args).
+  The server deletes the task token at task end on a best-effort basis; if the
+  delete fails the token stays valid until it expires (no earlier revocation).
+  The run result records `script` (name, argv SHA-256, exit code, duration) and
+  `token_revoke_failed` when a delete failed.
 
 `issue-title-template` only supports `{{date}}`. Do not invent `{{trigger_id}}`,
 `{{branch}}`, or other variables.

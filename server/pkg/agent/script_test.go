@@ -247,3 +247,22 @@ func TestNewScriptRequiresSpec(t *testing.T) {
 		t.Fatal(`New("script") without Config.Script must fail`)
 	}
 }
+
+func TestScriptExitCode(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+		ok   bool
+	}{
+		{"script_failed: exit code 7\nlast line", 7, true},
+		{"script_failed: did not start\n", 0, false},
+		{"script_not_allowlisted: script name is not allowlisted", 0, false},
+		{"script \"x\" timed out after 1s", 0, false},
+		{"", 0, false},
+	} {
+		got, ok := ScriptExitCode(tc.in)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("ScriptExitCode(%q) = %d,%v want %d,%v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}

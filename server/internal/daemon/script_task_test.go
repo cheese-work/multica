@@ -186,3 +186,17 @@ func TestScriptTaskRefusesNonTaskToken(t *testing.T) {
 		t.Fatalf("task started despite bad token: %d", e.starts.Load())
 	}
 }
+
+// CHE-5094: an idle script tick runs no model, so its result carries no usage
+// and the daemon has nothing to report to /usage.
+func TestScriptTaskReportsZeroModelUsage(t *testing.T) {
+	e := newScriptTaskEnv(t)
+	e.allowScript(t, "tick", `echo idle`, nil)
+	res, err := e.run(t, scriptTask("tick"))
+	if err != nil || res.Status != "completed" {
+		t.Fatalf("status=%q err=%v", res.Status, err)
+	}
+	if len(res.Usage) != 0 || res.ContextTokens != 0 {
+		t.Fatalf("script result carries model usage: %+v", res)
+	}
+}
