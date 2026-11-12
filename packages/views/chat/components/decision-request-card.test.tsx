@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -143,7 +143,7 @@ describe("DecisionRequestCard accessibility", () => {
     for (const state of ["answered", "withdrawn"] as const) {
       rerender(view(state));
       expect(container.querySelector("[data-comment-content]")).toBeNull();
-      expect(screen.getByText(/original ask/)).toBeInTheDocument();
+      expect(within(container.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     }
   });
 
@@ -250,7 +250,8 @@ describe("DecisionRequestCard accessibility", () => {
   it("keeps a localized status label and tolerates missing legacy source and invalid time", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, state: "withdrawn", source_comment_id: undefined, created_at: "invalid", reason: "Scope changed." }} /></WorkspaceSlugProvider></QueryClientProvider>, { locale: "zh-Hans" });
     expect(screen.getByRole("region", { name: "决策请求：已撤回" })).toHaveTextContent("Scope changed.");
-    expect(screen.getByText(/original ask/)).toBeInTheDocument();
+    // A withdrawn card is folded: its question shows in the row and the full ask in the body.
+    expect(within(document.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
   });

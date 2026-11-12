@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "決定が必要です",
+    "title_used": "決定",
+    "answered_count": "{{number}} 件回答済み",
     "waiting": "エージェントはまだ決定カードを送信していません。",
     "queued_since": "{{time}} から待機中",
     "running_since": "{{time}} から実行中",
