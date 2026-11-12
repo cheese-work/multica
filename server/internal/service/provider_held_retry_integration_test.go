@@ -20,9 +20,10 @@ import (
 // failing transaction. Every refusal or failure of that effect leaves the
 // failed status and reason committed and the transaction usable.
 
+// heldRetryReasons is the held path's coverage. 429 left it in CHE-5284 (owner
+// option a): it keeps its generic retry until M3b (CHE-1741) releases held rows.
 var heldRetryReasons = []string{
 	"agent_error.provider_server_error",
-	"agent_error.provider_capacity_or_rate_limit",
 }
 
 type heldRetryState struct {
@@ -309,4 +310,28 @@ func TestHeldRetryIsHeldAndCannotDispatchBeforeRelease(t *testing.T) {
 			t.Fatalf("held retry status=%q err=%v after a due promotion tick, want deferred", status, err)
 		}
 	})
+}
+
+// Owner option (a), CHE-5284: until M3b (CHE-1741) can release a held row, a
+// 429 keeps the generic 10-minute retry. It is a plain deferred row: no
+// provider_hold marker (the promotion queries would skip it), no reservation,
+// no receipt.
+func TestHeldRetryLeavesRateLimitOnGenericRetry(t *testing.T) {
+	const reason = "agent_error.provider_capacity_or_rate_limit"
+	o := newOwnerFixture(t)
+	id := o.runningTask(t, nil)
+	s := o.failWith(t, id, reason)
+	s.wantFailed(t, reason)
+	if s.children != 1 || s.reservations != 0 || s.receipts != 0 {
+		t.Fatalf("children=%d reservations=%d receipts=%d, want 1, 0, 0", s.children, s.reservations, s.receipts)
+	}
+	var status string
+	var held bool
+	if err := o.Pool.QueryRow(context.Background(),
+		`SELECT status, COALESCE(context ? 'provider_hold', false) FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1`, id).Scan(&status, &held); err != nil {
+		t.Fatalf("no generic retry for the 429: %v", err)
+	}
+	if held || status != "deferred" {
+		t.Fatalf("429 retry status=%q provider_hold=%t, want a deferred row without the marker", status, held)
+	}
 }
