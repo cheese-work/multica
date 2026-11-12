@@ -22,7 +22,9 @@ func pausedAgentID(test *testing.T) string {
 		test.Skip("no agent in the test workspace")
 	}
 	dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = now() WHERE id = $1`, agentID)
-	test.Cleanup(func() { dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, agentID) })
+	test.Cleanup(func() {
+		dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, agentID)
+	})
 	return agentID
 }
 
@@ -62,7 +64,9 @@ func TestAssigningASquadWhoseLeaderIsPausedIsRefused(test *testing.T) {
 func pauseAgentForTest(test *testing.T, agentID string) {
 	test.Helper()
 	dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = now() WHERE id = $1`, agentID)
-	test.Cleanup(func() { dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, agentID) })
+	test.Cleanup(func() {
+		dbfx.Exec(test, `UPDATE agent SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, agentID)
+	})
 }
 
 // A run for a paused agent is never queued, whichever path asks for it.
