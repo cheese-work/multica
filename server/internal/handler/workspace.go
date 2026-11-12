@@ -187,6 +187,8 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 			Context: ws.Context, Repos: ws.Repos, IssuePrefix: ws.IssuePrefix,
 			IssueCounter: ws.IssueCounter, AvatarUrl: ws.AvatarUrl,
 			AttributionFailClosed: ws.AttributionFailClosed,
+			SchedulingPausedAt:    ws.SchedulingPausedAt,
+			SchedulingPausedBy:    ws.SchedulingPausedBy,
 		})
 		if ws.PinnedAt.Valid {
 			pinnedAt := timestampToString(ws.PinnedAt)

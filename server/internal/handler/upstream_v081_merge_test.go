@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -44,4 +47,46 @@ func TestOwningSquadLeaderKeepsDoneOutcome(t *testing.T) {
 			t.Errorf("owning leader protocol lost %q", want)
 		}
 	}
+}
+
+// The list endpoint rebuilds each db.Workspace by hand, so a field the
+// rebuild skips silently reads as "not paused" in the workspace switcher.
+func TestListWorkspacesKeepsSchedulingPauseFields(t *testing.T) {
+	ctx := context.Background()
+	if _, err := testPool.Exec(ctx, `UPDATE workspace SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET scheduling_paused_at = NULL, scheduling_paused_by = NULL WHERE id = $1`, testWorkspaceID)
+	})
+	pausedAt := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	if _, err := testPool.Exec(ctx, `UPDATE workspace SET scheduling_paused_at = $1, scheduling_paused_by = $2 WHERE id = $3`, pausedAt, testUserID, testWorkspaceID); err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.ListWorkspaces(w, newRequest("GET", "/api/workspaces", nil))
+	if w.Code != 200 {
+		t.Fatalf("ListWorkspaces: %d %s", w.Code, w.Body.String())
+	}
+	var list []WorkspaceResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	for _, ws := range list {
+		if ws.ID != testWorkspaceID {
+			continue
+		}
+		if ws.SchedulingPausedBy == nil || *ws.SchedulingPausedBy != testUserID {
+			t.Errorf("scheduling_paused_by = %v, want %s", ws.SchedulingPausedBy, testUserID)
+		}
+		if ws.SchedulingPausedAt == nil {
+			t.Fatal("scheduling_paused_at missing from workspace list")
+		}
+		if got, err := time.Parse(time.RFC3339, *ws.SchedulingPausedAt); err != nil || !got.Equal(pausedAt) {
+			t.Errorf("scheduling_paused_at = %s, want %s (err %v)", *ws.SchedulingPausedAt, pausedAt.Format(time.RFC3339), err)
+		}
+		return
+	}
+	t.Fatalf("workspace %s missing from list: %s", testWorkspaceID, w.Body.String())
 }
