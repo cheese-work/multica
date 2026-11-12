@@ -292,6 +292,16 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
 ORDER BY session.created_at, session.id
 LIMIT 1;
 
+-- name: GetLatestPlainDM :one
+-- The plain DM a person used most recently with one agent (CHE-5253).
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = sqlc.arg('creator_id')
+  AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 1;
+
 -- name: LockDecisionTopicLane :exec
 -- Serializes the find-or-create of a person's DM for one topic.
 SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || sqlc.arg('workspace_id')::uuid::text || ':' || sqlc.arg('creator_id')::uuid::text || ':' || sqlc.arg('topic_id')::uuid::text, 0));

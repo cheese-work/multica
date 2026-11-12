@@ -1134,6 +1134,30 @@ func (q *Queries) GetLatestDecisionAnswer(ctx context.Context, arg GetLatestDeci
 	return i, err
 }
 
+const getLatestPlainDM = `-- name: GetLatestPlainDM :one
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = $1 AND session.creator_id = $2
+  AND session.agent_id = $3 AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
+LIMIT 1
+`
+
+type GetLatestPlainDMParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// The plain DM a person used most recently with one agent (CHE-5253).
+func (q *Queries) GetLatestPlainDM(ctx context.Context, arg GetLatestPlainDMParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getLatestPlainDM, arg.WorkspaceID, arg.CreatorID, arg.AgentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const hasOpenDecisionRequestForIssue = `-- name: HasOpenDecisionRequestForIssue :one
 SELECT EXISTS (
     SELECT 1 FROM decision_request
