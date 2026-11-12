@@ -4,7 +4,17 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
+import { toast } from "sonner";
 import { chatKeys, openDecisionRequestsOptions } from "@multica/core/chat/queries";
+import {
+  useChatAttentionLater,
+  useChatAttentionUndoXongAll,
+  useChatAttentionXong,
+  useChatAttentionXongAll,
+} from "@multica/core/chat/attention-mutations";
+import { snoozableKeys } from "@multica/core/chat/attention";
+import { createSafeId } from "@multica/core/utils";
+import { Button } from "@multica/ui/components/ui/button";
 import type { Agent, ChatSession, ChatStaleLevel } from "@multica/core/types";
 import { AppLink } from "../../navigation";
 import { useLocale, useT } from "../../i18n";
@@ -64,6 +74,10 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
   const { t } = useT("chat");
   const qc = useQueryClient();
   const query = useQuery(openDecisionRequestsOptions(wsId));
+  const xong = useChatAttentionXong();
+  const later = useChatAttentionLater();
+  const xongAll = useChatAttentionXongAll();
+  const undoXongAll = useChatAttentionUndoXongAll();
   const requests = query.data ?? [];
   const [now, setNow] = useState(Date.now);
   const [showAll, setShowAll] = useState(false);
@@ -133,6 +147,26 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
 
   if (!slug) return null;
 
+  const onActionError = () => toast.error(t(($) => $.needs_you.actions.failed));
+  const keysOf = (s: ChatSession) => s.attention_keys ?? [];
+  const allKeys = rows.flatMap(keysOf);
+  const markAllDone = () =>
+    xongAll.mutate(allKeys, {
+      onError: onActionError,
+      onSuccess: (batch) =>
+        toast(t(($) => $.needs_you.actions.toast, { count: rows.length }), {
+          duration: 10_000,
+          ...(batch.batch_id
+            ? {
+                action: {
+                  label: t(($) => $.needs_you.actions.undo),
+                  onClick: () => undoXongAll.mutate(batch.batch_id, { onError: onActionError }),
+                },
+              }
+            : {}),
+        }),
+    });
+
   const agentName = (s: ChatSession) => agents.find((a) => a.id === s.agent_id)?.name ?? "";
   const rowHref = (s: ChatSession) => `${paths.workspace(slug).chat()}?${new URLSearchParams({ session: s.id })}`;
   const titleOf = (s: ChatSession) => s.title || t(($) => $.session_history.untitled);
@@ -152,9 +186,16 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
   return (
     <section aria-label={t(($) => $.needs_you.title)} className="sticky top-0 z-10 border-b border-surface-border bg-background pb-2">
       <h3 className="flex items-center justify-between px-2 py-2 text-caption font-semibold">
-        {t(($) => $.needs_you.title)}
-        {" "}
-        <span className="tabular-nums text-muted-foreground">{count}</span>
+        <span>
+          {t(($) => $.needs_you.title)}
+          {" "}
+          <span className="tabular-nums text-muted-foreground">{count}</span>
+        </span>
+        {allKeys.length > 0 && (
+          <Button type="button" variant="ghost" size="xs" disabled={xongAll.isPending} onClick={markAllDone}>
+            {t(($) => $.needs_you.actions.done_all)}
+          </Button>
+        )}
       </h3>
       <div className="max-h-64 overflow-y-auto">
         <ul
@@ -173,7 +214,7 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
             const levelLabel = t(($) => $.needs_you.level[level]);
             const age = ageOf(s.attention_since);
             return (
-              <li key={s.id}>
+              <li key={s.id} data-testid={`attention-row-container-${s.id}`}>
                 <AppLink
                   href={rowHref(s)}
                   data-testid="attention-row"
@@ -194,6 +235,37 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
                   </span>
                   <span className="line-clamp-2 font-medium">{titleOf(s)}</span>
                 </AppLink>
+                {keysOf(s).length > 0 && (
+                  <div className="flex gap-1 px-2 pb-1">
+                    {snoozableKeys(keysOf(s)).length > 0 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        aria-label={t(($) => $.needs_you.actions.done_aria, { title: titleOf(s) })}
+                        disabled={xong.isPending}
+                        onClick={() => xong.mutate({ sessionId: s.id, keys: keysOf(s) }, { onError: onActionError })}
+                      >
+                        {t(($) => $.needs_you.actions.done)}
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      aria-label={t(($) => $.needs_you.actions.later_aria, { title: titleOf(s) })}
+                      disabled={later.isPending}
+                      onClick={() =>
+                        later.mutate(
+                          { sessionId: s.id, keys: keysOf(s), requestId: createSafeId() },
+                          { onError: onActionError },
+                        )
+                      }
+                    >
+                      {t(($) => $.needs_you.actions.later)}
+                    </Button>
+                  </div>
+                )}
               </li>
             );
           })}

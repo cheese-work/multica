@@ -43,6 +43,17 @@
       "title": "Unclassified",
       "replies_one": "{{count}} reply",
       "replies_other": "{{count}} replies"
+    },
+    "actions": {
+      "done": "Done",
+      "later": "Later",
+      "done_all": "Done all",
+      "undo": "Undo",
+      "toast_one": "Marked {{count}} DM done",
+      "toast_other": "Marked {{count}} DMs done",
+      "failed": "Could not update. Try again.",
+      "done_aria": "Mark done: {{title}}",
+      "later_aria": "Remind me later: {{title}}"
     }
   },
   "page": {
@@ -90,7 +101,12 @@
     "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade",
     "placeholder_archived_send": "This DM is archived. Send to unarchive it first…",
     "command_no_arguments": "/{{command}} takes no arguments. Send it on its own or remove the leading /.",
-    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}."
+    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}.",
+    "reply_ask_one": "This message answers the open question",
+    "reply_ask_other": "This message answers the {{count}} open questions",
+    "later_set_toast": "Snoozed until {{time}} ICT",
+    "later_bad_duration": "Use a duration from 1s to 7d, for example /later 2h",
+    "later_failed_toast": "Could not snooze. Try again."
   },
   "queue": {
     "title_one": "{{count}} queued message",

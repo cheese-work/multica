@@ -43,6 +43,17 @@
       "title": "Non classé",
       "replies_one": "{{count}} réponse",
       "replies_other": "{{count}} réponses"
+    },
+    "actions": {
+      "done": "Fait",
+      "later": "Plus tard",
+      "done_all": "Tout marquer fait",
+      "undo": "Annuler",
+      "toast_one": "{{count}} DM marqué fait",
+      "toast_other": "{{count}} DM marqués faits",
+      "failed": "Échec de la mise à jour. Réessayez.",
+      "done_aria": "Marquer fait : {{title}}",
+      "later_aria": "Me rappeler plus tard : {{title}}"
     }
   },
   "page": {
@@ -90,7 +101,12 @@
     "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour",
     "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
     "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
-    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}."
+    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}.",
+    "reply_ask_one": "Ce message répond à la question ouverte",
+    "reply_ask_other": "Ce message répond aux {{count}} questions ouvertes",
+    "later_set_toast": "Reporté jusqu'à {{time}} ICT",
+    "later_bad_duration": "Utilisez une durée de 1s à 7d, par exemple /later 2h",
+    "later_failed_toast": "Échec du report. Réessayez."
   },
   "queue": {
     "title_one": "{{count}} message en file d'attente",
