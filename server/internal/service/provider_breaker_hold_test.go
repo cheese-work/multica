@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -27,14 +28,16 @@ import (
 func unguardedProviderHoldPromotions(root string) ([]string, error) {
 	var violations []string
 	comments := regexp.MustCompile(`(?m)--[^\n]*|(?s:/\*.*?\*/)`)
-	update := regexp.MustCompile(`(?is)\bUPDATE\s+(?:public\.)?agent_task_queue\b.*?\bSET\s+.*?\bstatus\s*=\s*'queued'`)
+	update := regexp.MustCompile(`(?is)\bUPDATE\s+(?:public\.)?agent_task_queue(?:\s+\w+)?\s+SET\b(.*?)\bWHERE\b`)
+	queued := regexp.MustCompile(`(?is)\bstatus\s*=\s*'queued'`)
 	deferred := regexp.MustCompile(`(?is)\bstatus\s*=\s*'deferred'`)
-	guard := regexp.MustCompile(`(?is)NOT\s*\(\s*(?:\w+\.)?context\s*\?\s*'provider_hold'\s*\)`)
+	guard := regexp.MustCompile(`(?is)NOT\s*\(\s*(?:COALESCE\(\s*)?(?:\w+\.)?context(?:\s*,\s*'{}'::jsonb\s*\))?\s*\?\s*'provider_hold'\s*\)`)
 	scan := func(path, sql string) {
 		// This one named promoter is chat-only; it cannot reach issue holds.
 		chatOnly := strings.Contains(sql, "-- name: PromoteChannelChatTasksIfMediaReady ")
 		for _, statement := range strings.Split(comments.ReplaceAllString(sql, ""), ";") {
-			if !update.MatchString(statement) || !deferred.MatchString(statement) || guard.MatchString(statement) {
+			assignment := update.FindStringSubmatch(statement)
+			if len(assignment) == 0 || !queued.MatchString(assignment[1]) || !deferred.MatchString(statement) || guard.MatchString(statement) {
 				continue
 			}
 			if chatOnly && regexp.MustCompile(`(?i)\bissue_id\s+IS\s+NULL`).MatchString(statement) {
@@ -132,53 +135,56 @@ func TestProviderHoldBlocksPromotionAndClaims(t *testing.T) {
 				status = "queued"
 			}
 			id := r.task(t, status, "", 0)
-			if _, err := r.pool.Exec(ctx, `UPDATE agent_task_queue SET fire_at=now()-interval '1 minute', context='{"provider_hold":{"provider":"openai","since":"2026-11-12T00:00:00Z","max_hold_until":"2099-01-01T00:00:00Z"}}' WHERE id=$1`, id); err != nil {
+			if _, err := r.pool.Exec(ctx, `UPDATE agent_task_queue SET fire_at=now()-interval '1 minute', context='{"keep":true,"provider_hold":{"provider":"openai","since":"2026-11-12T00:00:00Z","max_hold_until":"2099-01-01T00:00:00Z"}}' WHERE id=$1`, id); err != nil {
 				t.Fatal(err)
 			}
-			var promoted bool
-			switch path {
-			case "runtime":
-				rows, err := q.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{RuntimeID: r.runtimeID, RuntimeStaleSecs: 60})
-				if err != nil {
-					t.Fatal(err)
+			attempt := func() bool {
+				var promoted bool
+				switch path {
+				case "runtime":
+					rows, err := q.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{RuntimeID: r.runtimeID, RuntimeStaleSecs: 60})
+					if err != nil {
+						t.Fatal(err)
+					}
+					promoted = len(rows) != 0
+				case "runtimes":
+					rows, err := q.PromoteDueDeferredTasksForRuntimes(ctx, db.PromoteDueDeferredTasksForRuntimesParams{RuntimeIds: []pgtype.UUID{r.runtimeID}, RuntimeStaleSecs: 60})
+					if err != nil {
+						t.Fatal(err)
+					}
+					promoted = len(rows) != 0
+				case "media":
+					row, err := q.PromoteDeferredChannelIssueTask(ctx, id)
+					if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+						t.Fatal(err)
+					}
+					promoted = row.ID.Valid
+				case "claim":
+					row, err := q.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{AgentID: r.agentID, RuntimeID: r.runtimeID, RuntimeStaleSecs: 60, PrepareLeaseSecs: 60})
+					if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+						t.Fatal(err)
+					}
+					promoted = row.ID.Valid
+				case "candidate":
+					rows, err := q.ListQueuedClaimCandidatesByRuntime(ctx, r.runtimeID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, row := range rows {
+						promoted = promoted || row.ID == id
+					}
+				case "candidates":
+					rows, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{r.runtimeID})
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, row := range rows {
+						promoted = promoted || row.ID == id
+					}
 				}
-				promoted = len(rows) != 0
-			case "runtimes":
-				rows, err := q.PromoteDueDeferredTasksForRuntimes(ctx, db.PromoteDueDeferredTasksForRuntimesParams{RuntimeIds: []pgtype.UUID{r.runtimeID}, RuntimeStaleSecs: 60})
-				if err != nil {
-					t.Fatal(err)
-				}
-				promoted = len(rows) != 0
-			case "media":
-				row, err := q.PromoteDeferredChannelIssueTask(ctx, id)
-				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-					t.Fatal(err)
-				}
-				promoted = row.ID.Valid
-			case "claim":
-				row, err := q.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{AgentID: r.agentID, RuntimeID: r.runtimeID, RuntimeStaleSecs: 60, PrepareLeaseSecs: 60})
-				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-					t.Fatal(err)
-				}
-				promoted = row.ID.Valid
-			case "candidate":
-				rows, err := q.ListQueuedClaimCandidatesByRuntime(ctx, r.runtimeID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, row := range rows {
-					promoted = promoted || row.ID == id
-				}
-			case "candidates":
-				rows, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{r.runtimeID})
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, row := range rows {
-					promoted = promoted || row.ID == id
-				}
+				return promoted
 			}
-			if promoted {
+			if attempt() {
 				t.Fatal("provider-held task became promotable or claimable")
 			}
 			if status == "deferred" {
@@ -186,6 +192,31 @@ func TestProviderHoldBlocksPromotionAndClaims(t *testing.T) {
 				if err != nil || next.Valid {
 					t.Fatalf("held task advertised: %v, %v", next, err)
 				}
+			}
+			r.breaker(t, "closed", time.Hour, 300, pgtype.UUID{})
+			breaker, err := q.GetProviderBreaker(ctx, db.GetProviderBreakerParams{WorkspaceID: r.workspaceID, Provider: "openai"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			released, err := q.ReleaseProviderHeldTask(ctx, db.ReleaseProviderHeldTaskParams{WorkspaceID: r.workspaceID, Provider: "openai", ExpectedVersion: breaker.Version, TaskID: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var metadata map[string]any
+			if err := json.Unmarshal(released.Context, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := metadata["provider_hold"]; exists || metadata["keep"] != true || released.Status != status {
+				t.Fatalf("release changed unrelated state: %s %s", released.Status, released.Context)
+			}
+			if status == "deferred" {
+				next, err := q.NextDeferredTaskFireAtForRuntimes(ctx, db.NextDeferredTaskFireAtForRuntimesParams{RuntimeIds: []pgtype.UUID{r.runtimeID}, RuntimeStaleSecs: 60})
+				if err != nil || !next.Valid {
+					t.Fatalf("released task not advertised: %v %v", next, err)
+				}
+			}
+			if !attempt() {
+				t.Fatal("released task still cannot promote or claim")
 			}
 		})
 	}
