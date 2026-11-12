@@ -791,6 +791,23 @@ type ChatWakeup struct {
 	OnTimeout       string             `json:"on_timeout"`
 }
 
+type CiBrokerAudit struct {
+	ID                int64              `json:"id"`
+	At                pgtype.Timestamptz `json:"at"`
+	RepositoryID      int64              `json:"repository_id"`
+	Repository        string             `json:"repository"`
+	RunID             string             `json:"run_id"`
+	RunAttempt        string             `json:"run_attempt"`
+	WorkflowRef       string             `json:"workflow_ref"`
+	Event             string             `json:"event"`
+	Ref               string             `json:"ref"`
+	RunnerEnvironment string             `json:"runner_environment"`
+	Environment       string             `json:"environment"`
+	Permissions       []byte             `json:"permissions"`
+	Result            string             `json:"result"`
+	Reason            string             `json:"reason"`
+}
+
 type CiFailureEvent struct {
 	ID             pgtype.UUID        `json:"id"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
