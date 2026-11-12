@@ -11,9 +11,10 @@ import (
 // the PR that shrinks its section, never raise one to make a test pass.
 var issueBriefSectionCaps = map[string]int{
 	"Instruction Precedence": 5900, // includes the `### Workflow` subsection
+	"Available Commands":     4150, // wakeup detail lives in references/wakeups.md
 }
 
-const issueBriefTotalCap = 18000
+const issueBriefTotalCap = 17650
 
 func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 	t.Parallel()
