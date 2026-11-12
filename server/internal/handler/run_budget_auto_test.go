@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 type autoRun struct {
 	status    string
 	err       string
-	delivered bool   // the agent commented "did the work"
-	comment   string // the agent's comment text, instead of the default
-	prUpdate  bool   // a linked PR's head moved while the run ran
-	prTouch   bool   // a linked PR's updated_at moved (a PR comment) while the run ran
-	commit    bool   // the run's shell committed, with no PR involved
-	move      bool   // the agent moved the issue's status while the run ran
+	delivered bool     // the run's shell committed (a git commit in a tool result)
+	comment   string   // the agent's comment text: never progress, whatever it says
+	checks    []string // failed check names on the head the run pushed (needs prUpdate)
+	ci        string   // a ci_failure_event workflow on the head the run pushed (needs prUpdate)
+	prUpdate  bool     // a linked PR's head moved while the run ran
+	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
+	commit    bool     // the run's shell committed, with no PR involved
+	move      bool     // the agent moved the issue's status while the run ran
 	tokens    int64
 }
 
@@ -58,12 +61,8 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 			"issue_id": issueID, "status": r.status, "error": r.err,
 			"created_at": done.Add(-time.Minute), "started_at": done.Add(-time.Minute), "completed_at": done,
 		})
-		text := r.comment
-		if text == "" && r.delivered {
-			text = "Implemented the change and pushed it."
-		}
-		if text != "" {
-			dbfx.Comment(t, issueID, text, testutil.Cols{"author_type": "agent", "author_id": a.agentID, "created_at": done})
+		if r.comment != "" {
+			dbfx.Comment(t, issueID, r.comment, testutil.Cols{"author_type": "agent", "author_id": a.agentID, "created_at": done})
 		}
 		if r.prUpdate || r.prTouch {
 			prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
@@ -76,13 +75,28 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				_, _ = testPool.Exec(context.Background(), `DELETE FROM issue_pull_request WHERE pull_request_id = $1`, prID)
 			})
 			if r.prUpdate {
+				head := fmt.Sprintf("%07x", *a.seq+rand.Intn(1<<24))
 				dbfx.Insert(t, "issue_pr_event", testutil.Cols{
 					"workspace_id": testWorkspaceID, "issue_id": issueID, "pull_request_id": prID, "kind": "head_changed",
-					"head_sha": "abc1234", "observed_at": done, "dedupe_key": fmt.Sprintf("auto-%d", *a.seq),
+					"head_sha": head, "observed_at": done, "dedupe_key": fmt.Sprintf("auto-%d-%s", *a.seq, head),
 				})
+				for i, name := range r.checks {
+					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, $3, $4, 'completed', 'failure')`, prID, head, i, name)
+				}
+				t.Cleanup(func() {
+					_, _ = testPool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, prID)
+					_, _ = testPool.Exec(context.Background(), `DELETE FROM ci_failure_event WHERE head_sha = $1`, head)
+				})
+				if r.ci != "" {
+					dbfx.Insert(t, "ci_failure_event", testutil.Cols{
+						"workspace_id": testWorkspaceID, "repo_owner": "test", "repo_name": "auto",
+						"run_id": testutil.Raw("(floor(random() * 1000000000000))::bigint"), "run_attempt": 1,
+						"workflow_name": r.ci, "head_sha": head, "conclusion": "failure",
+					})
+				}
 			}
 		}
-		if r.commit {
+		if r.commit || r.delivered {
 			dbfx.Insert(t, "task_message", testutil.Cols{"task_id": taskID, "seq": 1, "type": "tool_result", "output": "[agent/x 1a2b3c4] feat: change\n 1 file changed, 2 insertions(+)"})
 		}
 		if r.move {
@@ -240,6 +254,8 @@ func TestRunBudgetAutoProgressSignals(t *testing.T) {
 		want bool
 	}{
 		{"no-op comments only", noop(5), false},
+		{"Completed no work.", repeatComment("Completed no work.", 5), false},
+		{"a delivery-sounding comment alone", repeatComment("Implemented the change, merged and pushed it.", 5), false},
 		{"pr updated, no comment", []autoRun{{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}}, true},
 		{"status moved, no comment", []autoRun{{status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}, {status: "completed", move: true}}, true},
 		{"no-op comment with a pr update", []autoRun{{status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}, {status: "completed", comment: "No changes needed.", prUpdate: true}}, true},
@@ -255,35 +271,21 @@ func TestRunBudgetAutoProgressSignals(t *testing.T) {
 	}
 }
 
-// Completed runs that keep reporting the same failing check are a loop, even
-// though every run ended well and commented.
-func TestRunBudgetAutoLoopsOnRepeatedFailingChecks(t *testing.T) {
-	a := newAutoCase(t, 2226900)
-	a.seed(t, a.c.issueID, goodRuns(2)...)
-	a.seed(t, a.c.issueID,
-		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 1"},
-		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 2"},
-		autoRun{status: "completed", comment: "CI check go-test failed: TestRunBudget exit status 3"})
-	if v := a.verdict(t); v.Approve || v.Anomaly != service.RunBudgetAnomalyLoop {
-		t.Fatalf("verdict = %+v, want a loop anomaly", v)
+func repeatComment(text string, n int) []autoRun {
+	runs := make([]autoRun, n)
+	for i := range runs {
+		runs[i] = autoRun{status: "completed", comment: text}
 	}
+	return runs
 }
 
-// A comment that reports being stuck, or that says nothing about the work, is
-// not delivery: five of them are a no-op window, not progress.
-func TestRunBudgetAutoStuckOrUnclearCommentsAreNotProgress(t *testing.T) {
-	for _, text := range []string{
-		"Still blocked; waiting for input.",
-		"Waiting on the reviewer, nothing I can do yet.",
-		"Looked at the issue again.",
-	} {
+// A comment never counts as progress, in either direction: five delivery-sounding
+// comments and no commit, PR event or status move are a no-op window.
+func TestRunBudgetAutoCommentsAreNeverProgress(t *testing.T) {
+	for _, text := range []string{"Completed no work.", "Implemented the change and pushed it.", "Looked at the issue again."} {
 		t.Run(text, func(t *testing.T) {
 			a := newAutoCase(t, 2226900)
-			runs := make([]autoRun, 5)
-			for i := range runs {
-				runs[i] = autoRun{status: "completed", comment: text}
-			}
-			a.seed(t, a.c.issueID, runs...)
+			a.seed(t, a.c.issueID, repeatComment(text, 5)...)
 			if v := a.verdict(t); v.Approve || v.Anomaly != service.RunBudgetAnomalyNoop {
 				t.Fatalf("verdict = %+v, want a noop anomaly", v)
 			}
@@ -318,39 +320,43 @@ func TestRunBudgetAutoCommitAndPRCommentSignals(t *testing.T) {
 	}
 }
 
-// The loop key is the failing check or error, not the surrounding prose, and a
-// comment may report several failures.
-func TestRunBudgetAutoLoopKeyIsTheFailingCheck(t *testing.T) {
+// The loop key is a structured field: a failed check on the head a run pushed, a
+// CI failure on that head, or a failed run's error. Runs that all make progress
+// still loop when the same key repeats; comment text is never parsed.
+func TestRunBudgetAutoLoopKeysAreStructured(t *testing.T) {
+	pushed := func(checks []string, ci string, comment string) autoRun {
+		return autoRun{status: "completed", prUpdate: true, checks: checks, ci: ci, comment: comment}
+	}
+	failed := func(err string) autoRun { return autoRun{status: "failed", err: err} }
 	cases := []struct {
 		name string
-		runs []string
+		runs []autoRun
 		want bool
 	}{
-		{"same check, different explanations", []string{
-			"Pushed a fix, but the go-test check failed because the database was down.",
-			"Retried; go-test is still failing, probably a flaky network.",
-			"Result: FAIL on go-test (timeout after 10 minutes).",
+		{"same failed check on three pushed heads", []autoRun{
+			pushed([]string{"go-test"}, "", ""), pushed([]string{"go-lint", "go-test"}, "", ""), pushed([]string{"go-test"}, "", ""),
 		}, true},
-		{"one repeated check among several failures", []string{
-			"go-lint failed, go-test failed.",
-			"go-test failed again.",
-			"Fixed lint. go-test failed once more, web-e2e failed too.",
+		{"same CI workflow failing on three pushed heads", []autoRun{
+			pushed(nil, "CI", ""), pushed(nil, "CI", ""), pushed(nil, "CI", ""),
 		}, true},
-		{"a different check each run", []string{
-			"The go-test check failed.",
-			"The web-e2e check failed.",
-			"The android-build check failed.",
+		{"a different failed check each run", []autoRun{
+			pushed([]string{"go-test"}, "", ""), pushed([]string{"web-e2e"}, "", ""), pushed([]string{"android-build"}, "", ""),
+		}, false},
+		{"failure words in comments alone are not a key", []autoRun{
+			pushed(nil, "", "go-test failed again: connection refused"), pushed(nil, "", "go-test failed again: connection refused"), pushed(nil, "", "go-test failed again: connection refused"),
+		}, false},
+		{"the same error with varying context", []autoRun{
+			failed("dial tcp 10.0.0.1:5432: connect: connection refused"), failed("dial tcp 10.0.0.7:5433: connect: connection refused"), failed("dial tcp 10.0.0.9:5434: connect: connection refused"),
+		}, true},
+		{"different errors", []autoRun{
+			failed("connection refused"), failed("context deadline exceeded"), failed("permission denied"),
 		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAutoCase(t, 2226900)
 			a.seed(t, a.c.issueID, goodRuns(2)...)
-			runs := make([]autoRun, len(tc.runs))
-			for i, text := range tc.runs {
-				runs[i] = autoRun{status: "completed", comment: text, move: true}
-			}
-			a.seed(t, a.c.issueID, runs...)
+			a.seed(t, a.c.issueID, tc.runs...)
 			v := a.verdict(t)
 			if got := v.Anomaly == service.RunBudgetAnomalyLoop; got != tc.want {
 				t.Fatalf("verdict = %+v, want loop %v", v, tc.want)
