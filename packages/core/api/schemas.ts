@@ -4581,6 +4581,16 @@ export const RoutingAgentSettingSchema = z.lazy(() => z.object({
 }).loose());
 export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
 
+// CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
+// empty; a malformed requires_human_decision reads as true, the fail-closed
+// value the server also uses.
+export const DelegatedWritesSchema = z.lazy(() => z.object({
+  allowed_agents: z.array(z.string()).nullish().transform((v) => v ?? []),
+  allowed_fields: z.array(z.string()).nullish().transform((v) => v ?? []),
+  requires_human_decision: z.boolean().catch(true),
+}).loose());
+export type DelegatedWrites = z.infer<typeof DelegatedWritesSchema>;
+
 // Provider breaker state (CHE-4382). An unknown state reads as `open`: the
 // panel must not tell an admin a breaker is closed when it cannot tell.
 export const ProviderBreakerSchema = z.lazy(() => z.object({
