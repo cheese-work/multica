@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -1117,11 +1118,10 @@ var workspaceDeleteOwnerPageSize int32 = 500
 // tenant with rows left behind.
 const workspaceDeleteVerifyPasses = 3
 
-// workspaceDeleteIssueLockPasses caps how often one task page may widen its set of
-// locked issues because a run created after the lock query named a task of the
-// page as its parent. Hitting the cap fails the teardown; it never proceeds with
-// issues unlocked.
-const workspaceDeleteIssueLockPasses = 5
+// workspaceDeleteMaxRestarts caps how often one delete rolls back and starts again
+// because a task page named an issue it had not locked. Past the cap the delete
+// fails closed with the workspace intact.
+const workspaceDeleteMaxRestarts = 3
 
 // deleteWorkspaceTasks removes every agent_task_queue row a workspace owns,
 // together with the rows that hang off those tasks, in bounded keyset pages.
@@ -1265,6 +1265,17 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 	return nil
 }
 
+// issuesWidenedError reports that a task page names issues the page did not lock
+// before it locked its task rows: a run created after the issue lock query names a
+// task of the page as its parent, on an issue nobody holds. The page must not lock
+// that issue while it holds task rows, so the teardown rolls back, which releases
+// every lock, and starts again with these issues locked first.
+type issuesWidenedError struct{ IDs []pgtype.UUID }
+
+func (e *issuesWidenedError) Error() string {
+	return fmt.Sprintf("task page names %d issue(s) it did not lock first", len(e.IDs))
+}
+
 // lockTaskPageIssuesFirst locks one task page in the order every other writer
 // uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
 // issue and then waits on the run row, so a page that held the run rows and then
@@ -1275,48 +1286,39 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 //  3. The task rows are locked; a row that moved to another owner or is gone drops
 //     out of the returned ids.
 //  4. The children of the locked rows are read again. A child created after step 2
-//     can name an issue that is not locked yet; that issue is added and step 2
-//     runs again, up to workspaceDeleteIssueLockPasses times. Past the cap the
-//     teardown fails rather than proceed with an issue unlocked.
-//
-// A retry locks the added issue after issues it already holds, so a concurrent
-// writer that holds the added issue and waits for one of them can still abort one
-// side; the retry only runs when a child appeared during the page.
+//     can name an issue that is not locked. The page never locks it while it holds
+//     task rows: it returns an issuesWidenedError, and the teardown rolls back,
+//     which releases every lock, and starts again with those issues locked first.
 func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID) ([]pgtype.UUID, error) {
 	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("list issues of task page: %w", err)
 	}
 	held := make(map[pgtype.UUID]struct{}, len(need))
-	var heldIDs []pgtype.UUID
-	for pass := 1; pass <= workspaceDeleteIssueLockPasses; pass++ {
-		for _, id := range need {
-			held[id] = struct{}{}
-			heldIDs = append(heldIDs, id)
-		}
-		if err := qtx.LockIssuesByID(ctx, heldIDs); err != nil {
-			return nil, fmt.Errorf("lock issues of task page: %w", err)
-		}
-		locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
-		if err != nil {
-			return nil, fmt.Errorf("lock task page: %w", err)
-		}
-		current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
-		if err != nil {
-			return nil, fmt.Errorf("list issues of locked task page: %w", err)
-		}
-		need = need[:0]
-		for _, id := range current {
-			if _, ok := held[id]; !ok {
-				need = append(need, id)
-			}
-		}
-		if len(need) == 0 {
-			return locked, nil
+	for _, id := range need {
+		held[id] = struct{}{}
+	}
+	if err := qtx.LockIssuesByID(ctx, need); err != nil {
+		return nil, fmt.Errorf("lock issues of task page: %w", err)
+	}
+	locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
+	if err != nil {
+		return nil, fmt.Errorf("lock task page: %w", err)
+	}
+	current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of locked task page: %w", err)
+	}
+	var unheld []pgtype.UUID
+	for _, id := range current {
+		if _, ok := held[id]; !ok {
+			unheld = append(unheld, id)
 		}
 	}
-	return nil, fmt.Errorf("issues of a task page kept changing after %d lock passes; refusing to proceed with an issue unlocked",
-		workspaceDeleteIssueLockPasses)
+	if len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
+	}
+	return locked, nil
 }
 
 // sweepTasksForOwner deletes one owner's tasks, then re-verifies that owner.
@@ -1457,11 +1459,64 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// delete window would otherwise slip in a session nobody locked, and its
 	// restore would outlive the cascade the same way. Holding the workspace row
 	// FOR UPDATE blocks that insert on its workspace FK (FOR KEY SHARE).
+	// A task page can name an issue created after its lock query. The attempt then
+	// rolls back, which releases every lock, and runs again with that issue locked
+	// first. The restarts are bounded; past the bound the delete fails closed.
+	var extraIssueIDs []pgtype.UUID
+	var snap *workspaceDeleteSnapshot
+	for restarts := 0; ; restarts++ {
+		var widened []pgtype.UUID
+		var ok bool
+		snap, widened, ok = h.deleteWorkspaceAttempt(w, r, requester, workspaceID, extraIssueIDs)
+		if ok {
+			break
+		}
+		if len(widened) == 0 {
+			return
+		}
+		if restarts >= workspaceDeleteMaxRestarts {
+			failWorkspaceDelete(w, r, workspaceID, "lock task page issues",
+				fmt.Errorf("task pages kept naming unlocked issues after %d restarts: %w", restarts, &issuesWidenedError{IDs: widened}))
+			return
+		}
+		extraIssueIDs = service.MergeSortedUUIDs(extraIssueIDs, widened)
+	}
+	for _, runtimeID := range snap.runtimeIDs {
+		h.NotifyRuntimeGone(uuidToString(runtimeID))
+	}
+	for _, machine := range snap.machines {
+		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
+	}
+	h.deleteS3Objects(r.Context(), snap.objectURLs)
+
+	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
+	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
+		"workspace_id": workspaceID,
+	})
+	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// workspaceDeleteSnapshot is what a committed delete attempt read for the work
+// that follows the commit.
+type workspaceDeleteSnapshot struct {
+	runtimeIDs []pgtype.UUID
+	machines   []db.ListMachinesOfWorkspaceRow
+	objectURLs []string
+}
+
+// deleteWorkspaceAttempt runs one delete transaction. It returns the snapshot
+// when the transaction committed. When a task page named an issue it had not
+// locked, it rolls back, writes nothing and returns those issues so the caller
+// can run again. On any other failure it writes the response and returns no
+// snapshot and no issues.
+func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request, requester db.Member, workspaceID string, extraIssueIDs []pgtype.UUID) (*workspaceDeleteSnapshot, []pgtype.UUID, bool) {
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Warn("begin workspace delete tx failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
@@ -1475,12 +1530,18 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	lockTimeoutMs := int(effectiveWorkspaceDeleteLockTimeout() / time.Millisecond)
 	if _, err := tx.Exec(r.Context(), fmt.Sprintf("SET LOCAL lock_timeout = %d", lockTimeoutMs)); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "set lock timeout", err)
-		return
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
-		return
+		return nil, nil, false
+	}
+	// A restart locks the issues the earlier attempt found too late, in id order,
+	// before any task row.
+	if err := qtx.LockIssuesByID(r.Context(), extraIssueIDs); err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "lock issues found by an earlier attempt", err)
+		return nil, nil, false
 	}
 	// Take a best-effort snapshot for post-commit daemon invalidation. Runtime
 	// registration does not participate in the workspace delete lock protocol,
@@ -1489,7 +1550,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list runtimes", err)
-		return
+		return nil, nil, false
 	}
 
 	// The sweep below removes the runtimes and the pauses this workspace set, which
@@ -1499,20 +1560,20 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	machines, err := qtx.ListMachinesOfWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list workspace machines", err)
-		return
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextAttachmentURLs, err = qtx.ListSourceContextAttachmentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context attachment objects", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextIntentURLs, err = qtx.ListSourceContextObjectIntentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context pending objects", err)
-		return
+		return nil, nil, false
 	}
 
 	// Keep the relationship graph in the application layer. Each step is a
@@ -1729,31 +1790,24 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, step := range deleteSteps {
 		if err := step.run(); err != nil {
+			var widened *issuesWidenedError
+			if errors.As(err, &widened) {
+				return nil, widened.IDs, false
+			}
 			failWorkspaceDelete(w, r, workspaceID, step.name, err)
-			return
+			return nil, nil, false
 		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit workspace delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
-	for _, runtimeID := range runtimeIDs {
-		h.NotifyRuntimeGone(uuidToString(runtimeID))
-	}
-	for _, machine := range machines {
-		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
-	}
-	h.deleteS3Objects(r.Context(), append(sourceContextAttachmentURLs, sourceContextIntentURLs...))
-
-	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
-	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
-		"workspace_id": workspaceID,
-	})
-	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
-
-	w.WriteHeader(http.StatusNoContent)
+	return &workspaceDeleteSnapshot{
+		runtimeIDs: runtimeIDs, machines: machines,
+		objectURLs: append(sourceContextAttachmentURLs, sourceContextIntentURLs...),
+	}, nil, true
 }
 
 // deleteWorkspaceComments deletes the workspace's comments after it locks the

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -796,6 +795,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	// otherwise a builder-agent delete can deadlock with a concurrent claim.
 	if _, err := qtx.GetAgentForClaimUpdate(r.Context(), session.AgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock chat agent")
+		return
+	}
+	// Cancelling the session's runs locks run rows, and the issues the agent
+	// delete reaches must be locked before any run row.
+	if err := service.LockIssuesBeforeSystemAgentDelete(r.Context(), qtx, session.AgentID); err != nil {
+		slog.Warn("lock issues of chat agent delete failed", "session_id", sessionID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to lock chat agent issues")
 		return
 	}
 
@@ -2604,10 +2610,8 @@ func normalizeMessageKind(kind string) string {
 
 // deleteSystemAgent removes a session-owned system agent and, through the FKs,
 // its runs. Nulling parent_task_id on the children of those runs runs the
-// children's taint trigger, so their issues are locked first.
+// children's taint trigger, so the caller has locked their issues first with
+// service.LockIssuesBeforeSystemAgentDelete, before it held any run row.
 func deleteSystemAgent(ctx context.Context, qtx *db.Queries, agentID pgtype.UUID) error {
-	if err := qtx.LockIssuesOfAgentTaskChildren(ctx, []pgtype.UUID{agentID}); err != nil {
-		return fmt.Errorf("lock issues of agent task children: %w", err)
-	}
 	return qtx.DeleteSystemAgentByID(ctx, agentID)
 }

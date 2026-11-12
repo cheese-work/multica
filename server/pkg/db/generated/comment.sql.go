@@ -2714,42 +2714,6 @@ func (q *Queries) LockCommentThread(ctx context.Context, threadRootID pgtype.UUI
 	return err
 }
 
-const lockIssuesOfCommentDelete = `-- name: LockIssuesOfCommentDelete :exec
-WITH RECURSIVE chain AS (
-    SELECT c.id, c.parent_id, c.issue_id FROM comment c
-    WHERE c.id = $1 AND c.workspace_id = $2
-    UNION
-    SELECT p.id, p.parent_id, p.issue_id FROM comment p
-    JOIN chain ON p.id = chain.parent_id
-)
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT chain.issue_id FROM chain
-    UNION
-    SELECT t.issue_id FROM agent_task_queue t
-    WHERE t.trigger_comment_id IN (SELECT chain.id FROM chain) AND t.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-type LockIssuesOfCommentDeleteParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Runs before LockCommentForDelete. Deleting a comment nulls
-// agent_task_queue.trigger_comment_id (ON DELETE SET NULL) on every run that
-// names it, and that update runs the run's taint triggers, which lock the run's
-// issue. That issue can differ from the comment's. Taking every such issue
-// here, in ascending id order, keeps the delete in the order every other path
-// uses: issue first, then the run row. The chain covers the ancestors, which
-// the delete prunes when it removes their last reply.
-func (q *Queries) LockIssuesOfCommentDelete(ctx context.Context, arg LockIssuesOfCommentDeleteParams) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfCommentDelete, arg.ID, arg.WorkspaceID)
-	return err
-}
-
 const lockLiveComment = `-- name: LockLiveComment :one
 WITH locked_issue AS MATERIALIZED (
     SELECT issue.id

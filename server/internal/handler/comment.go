@@ -4529,9 +4529,7 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 
 	// The delete nulls the trigger of every run that names this comment, which
 	// locks that run's issue; take those issues before the run rows.
-	if err := qtx.LockIssuesOfCommentDelete(ctx, db.LockIssuesOfCommentDeleteParams{
-		ID: commentID, WorkspaceID: workspaceID,
-	}); err != nil {
+	if err := service.LockIssuesBeforeCommentDelete(ctx, qtx, commentID, workspaceID); err != nil {
 		return out, err
 	}
 	target, err := qtx.LockCommentForDelete(ctx, db.LockCommentForDeleteParams{
