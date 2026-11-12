@@ -118,6 +118,11 @@ Workspace-scoped queries filter by `workspace_id`; membership gates access and `
 - Use shared semantic tokens in `packages/ui/styles/`. Typography uses the role-named `--text-*` scale in `packages/ui/styles/tokens.css`, not Tailwind's default size ramp.
 - Selected states remain identifiable on hover. Handle overflow, long text, and scrolling deliberately; avoid unnecessary local state and dividers.
 
+## Daemon Tool Shims
+
+- The daemon puts a guard `bin/` first on `PATH` for every run, on every runtime, with a `git` and a `gh` shim (`server/internal/daemon/guard_shims.go`, CHE-5194). It does not depend on credential-broker enforcement.
+- A shim execs the first `git`/`gh` on the `PATH` it fronts. Install credential-aware shims (`broker.InstallShims`) on `agentEnv["PATH"]` before calling `frontGuardShims`, so the guard hands over to them and never bypasses the broker. Custom env cannot override `PATH`.
+
 ## Testing
 
 - Tests live beside their implementation: shared logic in core, shared components in views, platform wiring in apps, E2E in `e2e/`, Go tests in server. Do not test shared behavior in app suites.

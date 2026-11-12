@@ -4,8 +4,13 @@ import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
-import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
-import { usePersistedDraft } from "@multica/core/drafts";
+import {
+  type DecisionAnswerDraft as AnswerDraft,
+  EMPTY_DECISION_ANSWER_DRAFT as EMPTY_DRAFT,
+  decisionAnswerDraftKey,
+  useDecisionAnswerDraftStore,
+} from "@multica/core/issues/stores/decision-answer-draft-store";
+import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
 import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
@@ -28,12 +33,8 @@ import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
+import { DecisionRecentRuns } from "./decision-recent-runs";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
-
-interface AnswerDraft {
-  option: string;
-  text: string;
-}
 
 // Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
 const MAX_ANSWER_BYTES = 8 << 10;
@@ -44,13 +45,11 @@ const isConflict = (error: unknown) => error instanceof ApiError && error.status
 // The server prefixes a refusal with its code ("stale_answer: ..."); a 409 with one of these codes leaves the card open.
 const refusalCode = (error: unknown) => (error instanceof ApiError ? error.message.split(":")[0] ?? "" : "");
 const KEEPS_CARD_OPEN = ["stale_answer", "no_passkey", "busy_retry"];
-
-const EMPTY_DRAFT: AnswerDraft = { option: "", text: "" };
 const hasDraft = (draft: AnswerDraft) => draft.option !== "" || draft.text.trim() !== "";
 
 type AnswerMutation = ReturnType<typeof useAnswerDecisionRequest>;
 
-// The parent owns the draft and the send, so a card that turns answered under
+// The parent owns the draft (persisted per request, so it outlives an unmount) and the send, so a card that turns answered under
 // the reader (another tab, the DM, our own realtime event arriving before the
 // HTTP 201) does not unmount the form and drop the draft or the send callbacks.
 function DecisionAnswerForm({
@@ -79,13 +78,60 @@ function DecisionAnswerForm({
   const handoff = needsPasskey && isDesktopShell();
   const sendShortcut = formatShortcut(useShortcut("send"));
   const { text } = draft;
-  const setText = (next: string) => onDraftChange({ text: next });
+  const draftKey = decisionAnswerDraftKey(card.id);
+  // Bound to the workspace this card mounted in, so cleanup after a workspace switch still files the notice there.
+  const [uploadCancelled, setUploadCancelled] = useUploadCancelledNotice(draftKey);
+  // What this editor last reported. A stored text that differs came from the other surface
+  // showing the same request, and is adopted so a send from here cannot overwrite it.
+  const emitted = useRef(text);
+  // Uploads started here and still running. Leaving the card cancels them (Cheese decision,
+  // CHE-3521): nothing is filed into the draft later, so no late write can outlive the card.
+  const uploads = useRef(new Set<AbortController>());
+  // The editor's unmount flush (the last note edit) is applied. What it reports after that, such as
+  // the placeholder of a cancelled upload going away, is dropped. The flush runs synchronously
+  // in this unmount; the microtask flips `closed` before any async report can arrive.
+  const closed = useRef(false);
+  useEffect(() => {
+    closed.current = false;
+    const running = uploads.current;
+    return () => {
+      queueMicrotask(() => { closed.current = true; });
+      if (running.size === 0) return;
+      running.forEach((controller) => controller.abort());
+      running.clear();
+      // In memory only: a storage write here could bring back a draft another tab just cleared.
+      setUploadCancelled(true);
+    };
+  }, [setUploadCancelled]);
+  const onEditorUpdate = (next: string) => { if (!closed.current) setText(next); };
+  const setText = (next: string) => {
+    emitted.current = next;
+    onDraftChange({ text: next });
+  };
   // A tap selects; a second tap on the selected option clears it. Nothing is sent until Send.
   const toggleOption = (label: string) => onDraftChange({ option: draft.option === label ? "" : label });
   const textId = useId();
   const editorRef = useRef<ContentEditorRef>(null);
   const uploadGate = useUploadGate(editorRef);
   const { uploadWithToast } = useEditorUpload();
+  const uploadFile = async (file: File) => {
+    const controller = new AbortController();
+    uploads.current.add(controller);
+    setUploadCancelled(false);
+    try {
+      return await uploadWithToast(file, { issueId: card.issue_id, signal: controller.signal });
+    } finally {
+      uploads.current.delete(controller);
+    }
+  };
+  useEffect(() => {
+    // Read the store, not the render's `text`: a render can lag behind a newer edit.
+    const stored = useDecisionAnswerDraftStore.getState().getDraft(draftKey)?.text ?? "";
+    const editor = editorRef.current;
+    if (stored === emitted.current || !editor || editor.hasActiveUploads()) return;
+    emitted.current = stored;
+    editor.adoptContent(stored);
+  }, [text, draftKey]);
   const tooLong = answerBytes(text) > MAX_ANSWER_BYTES;
   const canSubmit = !handoff && online && !answer.isPending && !uploadGate.uploading && !tooLong;
   const canSend = canSubmit && (draft.option !== "" || text.trim() !== "");
@@ -98,7 +144,9 @@ function DecisionAnswerForm({
     // Enter can arrive while an upload placeholder is still in the document.
     const sendable = !handoff && online && !answer.isPending && !uploadGate.uploading && !uploadGate.isBlocked()
       && answerBytes(live) <= MAX_ANSWER_BYTES && (!!option || live.trim() !== "");
-    if (sendable) onSend(live, option);
+    if (!sendable) return;
+    emitted.current = live;
+    onSend(live, option);
   };
 
   return (
@@ -157,11 +205,12 @@ function DecisionAnswerForm({
             defaultValue={text}
             ariaLabel={card.options?.length ? t(($) => $.decision.answer_note) : t(($) => $.decision.answer_text)}
             ariaDescribedBy={`${textId}-hint`}
-            onUpdate={setText}
+            onUpdate={onEditorUpdate}
             onSubmit={() => send()}
-            onUploadFile={(file) => uploadWithToast(file, { issueId: card.issue_id })}
+            onUploadFile={uploadFile}
             onUploadingChange={uploadGate.onUploadingChange}
             debounceMs={0}
+            flushPendingOnUnmount
             showBubbleMenu={false}
             className="max-h-60 overflow-y-auto"
           />
@@ -170,6 +219,7 @@ function DecisionAnswerForm({
       <p id={`${textId}-hint`} className="text-caption text-muted-foreground">
         {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
       </p>
+      {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="submit" size="sm" disabled={!canSend} className="disabled:opacity-70 max-sm:h-11">
@@ -215,7 +265,7 @@ function MemberGatedApproval({ wsId, action, previewSha256, approveDisabled }: {
 // (missing, empty, malformed, bad digest, unknown action type) means the server
 // could not vouch for the action: say so, keep Approve disabled for who may approve,
 // show it to nobody else, and leave Reject to everyone.
-function ActionPreview({ action }: { action: CardAction }) {
+function ActionPreview({ action, issueId }: { action: CardAction; issueId: string }) {
   const { t } = useT("chat");
   // Once the action left pending there is nothing to preview: only its live outcome shows.
   const pending = !action.state || action.state === "pending";
@@ -229,6 +279,7 @@ function ActionPreview({ action }: { action: CardAction }) {
     <div className="space-y-2">
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && <ConfigChangeViewer change={configChange} />}
+      {pending && action.action_type.startsWith("issue.run_budget.") && <DecisionRecentRuns issueId={issueId} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -351,8 +402,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
   const issueHref = paths.issueDetail(card.issue_id);
-  // Persisted per request: the selection and the note survive unmount and reload until sent or discarded.
-  const [draft, patchDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, card.id, EMPTY_DRAFT);
+  const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
+  const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
   const [refused, setRefused] = useState(false);
   const [needsPasskey, setNeedsPasskey] = useState(false);
   const navigation = useOptionalNavigation();
@@ -361,25 +412,26 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const answer = useAnswerDecisionRequest(card.issue_id);
   const sendAnswer = (text: string, option = "") => {
     // Keep what is sent as the draft, so a refused send shows back the same choice and text.
-    patchDraft({ option, text });
-    answer.mutate(
-      { requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids },
-      {
-        onSuccess: () => {
-          setNeedsPasskey(false);
-          clearDraft();
-          setFormKey((key) => key + 1);
-        },
-        onError: (error) => {
-          const code = refusalCode(error);
-          if (code === "assertion_required") setNeedsPasskey(true);
-          else if (isConflict(error) && !KEEPS_CARD_OPEN.includes(code)) setRefused(true);
-        },
-      },
-    );
+    setDraft({ option, text });
+    // mutateAsync, not mutate's callbacks: those are dropped when the card unmounts mid-send,
+    // which would leave a sent answer in the store.
+    answer
+      .mutateAsync({ requestId: card.id, option: option || undefined, text: text.trim() || undefined, passkey: needsPasskey, covers: card.covers_request_ids })
+      .then(() => {
+        setNeedsPasskey(false);
+        clearDraft();
+        setUploadCancelled(false);
+        setFormKey((key) => key + 1);
+      })
+      .catch((error: unknown) => {
+        const code = refusalCode(error);
+        if (code === "assertion_required") setNeedsPasskey(true);
+        else if (isConflict(error) && !KEEPS_CARD_OPEN.includes(code)) setRefused(true);
+      });
   };
   const discardDraft = () => {
     clearDraft();
+    setUploadCancelled(false);
     setRefused(false);
   };
 
@@ -492,14 +544,14 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AnnotatableAnswer>
         </div>
         {note && <AgentNote note={note} />}
-        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} />}
+        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} />}
         {(refused || card.state !== "open") && hasDraft(draft) && !answer.isPending ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (coveredCardsMissing ? (
             <p role="alert" className="text-destructive" data-testid="decision-request-covers-unavailable">{t(($) => $.decision.covers_unavailable)}</p>
           ) : (
-            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={patchDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
+            <DecisionAnswerForm key={formKey} card={card} draft={draft} answer={answer} onDraftChange={setDraft} onSend={sendAnswer} inIssue={inIssue} needsPasskey={needsPasskey} onOpenWeb={() => navigation && openExternal(navigation.getShareableUrl(issueHref))} />
           ))
         )}
         {shown === "picked_up" && card.answer?.run && (

@@ -29,6 +29,17 @@ Refresh the ledger at each trigger, in the same PR as the change when possible.
 
 A stale result files that one refresh issue for the dev team. The refresh PR moves the pin.
 
+## Upstream candidate steps (CHE-4843)
+
+Two standing steps for every upstream PR candidate. They come from FX045 (#10111): a maintainer commit (`5ab8141e45`) added a 404 guard to our focus refetch, and the watcher never saw the PR.
+
+1. **Failure-class pass.** Applies to any retry, refetch, poll or focus/visibility change.
+   - List the transient failures (network, 5xx) and the terminal ones (404, 403, 410).
+   - Grep upstream for its existing handling: `grep -rn "status === 404" packages/core` (examples: `packages/core/issues/canonical-id.ts`, `packages/core/issues/queries.ts`).
+   - Add one negative test for the terminal case: it must not retry or refetch.
+   - The reviewer checks this item explicitly and names it in the verdict.
+2. **Track at publish.** The task that runs the publisher for a new upstream PR adds the `## Tracked` row in `UPSTREAM-PRS.md` in the same delivery, so `scripts/upstream-pr-watch.mjs` sees the PR from its first poll. No row, no publish.
+
 ## Security-class rows
 
 A row for a defect upstream has not patched (authorization, credential or data exposure) carries the id and a one-line effect only. Evidence reads `security-class; details withheld until upstream fixes it (private report pending)`. Fill in the evidence after upstream fixes it. Redacting a row is a docs edit. Changing the fix itself is a security-class change and needs its own approval.

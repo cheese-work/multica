@@ -27,6 +27,9 @@ const StatusCauseTaskReset = "task_reset"
 // window.
 const StatusCauseWorkflowRemap = "workflow_remap"
 
+// StatusCauseRunBudget is the cause of the block an exhausted run budget makes.
+const StatusCauseRunBudget = "run_budget"
+
 // Causes of the background writers that move a status without a request:
 // a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
 const (
@@ -115,7 +118,7 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 	if !eventID.Valid {
 		eventID = dbid.NewV7()
 	}
-	return qtx.CreateActivity(ctx, db.CreateActivityParams{
+	row, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          eventID,
 		WorkspaceID: issue.WorkspaceID,
 		IssueID:     issue.ID,
@@ -124,6 +127,34 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 		Action:      "status_changed",
 		Details:     body,
 	})
+	if err != nil {
+		return row, err
+	}
+	return row, settleRefusalsOnStatusChange(ctx, qtx, issue, row, trigger)
+}
+
+// settleRefusalsOnStatusChange ties run-budget refusals to the status
+// occurrence this row starts. The block a refusal's hook made is that refusal's
+// occurrence. Any other move starts its own work and ends every non-terminal
+// refusal of the issue with its unfinished hook; the platform's administrative
+// remap only fits the issue to a new workflow, so it leaves them, and the hook's
+// occurrence check retires one it made stale.
+func settleRefusalsOnStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, row db.ActivityLog, trigger StatusTrigger) error {
+	switch {
+	case trigger.Cause.Kind == StatusCauseRunBudget && trigger.Cause.Ref["refusal_id"] != "":
+		id, err := util.ParseUUID(trigger.Cause.Ref["refusal_id"])
+		if err != nil {
+			return err
+		}
+		return qtx.MarkRunBudgetRefusalBlocked(ctx, db.MarkRunBudgetRefusalBlockedParams{ID: id, OccurrenceActivityID: row.ID})
+	case trigger.Cause.Kind == StatusCauseWorkflowRemap:
+		return nil
+	case trigger.Cause.Kind == StatusCauseRunBudget && trigger.Cause.Ref["action_id"] != "":
+		// The resume worker's own restore: it ends the refusal itself, in the
+		// same transaction.
+		return nil
+	}
+	return qtx.SupersedeRunBudgetRefusalsOnStatusChange(ctx, issue.ID)
 }
 
 // ResetIssueForFailedTask moves an issue whose run failed back to todo and

@@ -14,6 +14,7 @@ const change: DecisionConfigChange = {
   after: "keep\nnew line\nadded line",
   before_sha256: "b".repeat(64),
   after_sha256: "c".repeat(64),
+  meta: { workflow_name: "Production flow", status_key: "in_review" },
   sha256: "a".repeat(64),
 };
 
@@ -29,6 +30,18 @@ describe("ConfigChangeViewer", () => {
     expect(tab(/Changes/)).toHaveTextContent("+2 −1");
     expect(tab(/Changes/)).toHaveAttribute("aria-selected", "false");
     expect(screen.queryByRole("region")).toBeNull();
+  });
+
+  it("names the server-resolved workflow and status key of a workflow step change", () => {
+    open();
+    expect(screen.getByTestId("config-change-workflow")).toHaveTextContent("Workflow: Production flow");
+    expect(screen.getByTestId("config-change-status")).toHaveTextContent("Step: in_review");
+  });
+
+  it("names no workflow for another field", () => {
+    open({ ...change, field: "agent.instructions", meta: undefined });
+    expect(screen.queryByTestId("config-change-workflow")).toBeNull();
+    expect(screen.queryByTestId("config-change-status")).toBeNull();
   });
 
   it("shows the server diff when the Changes tab opens, with line prefixes as marks", async () => {

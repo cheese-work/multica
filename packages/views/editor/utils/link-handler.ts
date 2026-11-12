@@ -64,10 +64,10 @@ export function toInternalAppPath(
   } catch {
     return null;
   }
-  if (target.origin !== app.origin) return null;
   // Opaque origins (file:, data:) compare equal to each other; only real web
   // origins identify the app.
   if (target.protocol !== "http:" && target.protocol !== "https:") return null;
+  if (target.origin !== app.origin && !rewriteToCurrentOrigin(href, appOrigin)) return null;
   if (!workspaceSlugForPath(target.pathname)) return null;
   return `${target.pathname}${target.search}${target.hash}`;
 }
@@ -268,6 +268,76 @@ export function openLink(
   } else {
     window.open(href, "_blank", "noopener,noreferrer");
   }
+}
+
+/**
+ * Origins that serve this Multica deployment. Agents paste links on any of
+ * them (decision `card_link` uses the Tailscale host; people use the public
+ * one), so a link on one of these is the same destination as on the current
+ * origin. The single place to add a host.
+ */
+export const KNOWN_MULTICA_ORIGINS: readonly string[] = [
+  "https://multica.congvc.dev",
+  "https://congvc-c00.taila6fa8a.ts.net:19443",
+];
+
+/**
+ * Rewrite an absolute link on a known Multica origin (or the current one) whose
+ * path is a Multica route onto the current origin; `null` for everything else
+ * (external hosts, lookalikes, non-route paths like `/uploads/...`).
+ * Origins are compared through `URL`, never by string prefix.
+ */
+export function rewriteToCurrentOrigin(
+  href: string,
+  appOrigin?: string | null,
+): string | null {
+  let target: URL;
+  try {
+    target = new URL(href);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== "http:" && target.protocol !== "https:") return null;
+  if (target.username || target.password) return null;
+  const known = appOrigin ? [...KNOWN_MULTICA_ORIGINS, appOrigin] : KNOWN_MULTICA_ORIGINS;
+  const isKnown = known.some((o) => {
+    try {
+      return new URL(o).origin === target.origin;
+    } catch {
+      return false;
+    }
+  });
+  if (!isKnown || !workspaceSlugForPath(target.pathname)) return null;
+  return `${appOrigin ?? ""}${target.pathname}${target.search}${target.hash}`;
+}
+
+/**
+ * Parse a DM link: `/{slug}/chat?session=<uuid>[&message=<uuid>]` and nothing
+ * else. `null` for everything else.
+ */
+export function parseWorkspaceChatLink(
+  href: string,
+  appOrigin?: string | null,
+): { sessionId: string; messageId: string | null; slug: string | null } | null {
+  const path = toSameOriginPath(href, appOrigin);
+  if (!path || path.includes("#")) return null;
+  const url = new URL(path, RELATIVE_BASE);
+  const segments = url.pathname.split("/").filter(Boolean);
+  let slug: string | null;
+  if (segments.length === 2 && segments[1] === "chat" && workspaceSlugForPath(url.pathname)) {
+    slug = segments[0] ?? null;
+  } else if (segments.length === 1 && segments[0] === "chat") {
+    slug = null;
+  } else {
+    return null;
+  }
+  const params = url.searchParams;
+  const sessionId = params.get("session");
+  const messageId = params.get("message");
+  if (!sessionId || !UUID_RE.test(sessionId)) return null;
+  if (messageId !== null && !UUID_RE.test(messageId)) return null;
+  if ([...params.keys()].some((k) => k !== "session" && k !== "message")) return null;
+  return { sessionId, messageId, slug };
 }
 
 /** Check if a href is a mention protocol link (should not be opened as a regular link). */

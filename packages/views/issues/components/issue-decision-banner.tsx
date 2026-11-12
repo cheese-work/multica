@@ -34,7 +34,7 @@ export function IssueDecisionBanner({ issueId, status, ownerAgentId }: { issueId
 
   if (cards.length > 0) {
     return (
-      <section aria-label={t(($) => $.decision_banner.title)} className="mt-8 space-y-2 rounded-xl border border-warning/40 bg-warning/5 p-2">
+      <section id="issue-decision-banner" aria-label={t(($) => $.decision_banner.title)} className="mt-8 space-y-2 rounded-xl border border-warning/40 bg-warning/5 p-2">
         <h2 className="flex items-center gap-2 px-1 text-label font-semibold">
           {t(($) => $.decision_banner.title)}
           {cards.length > 1 && <span className="rounded-full bg-warning/10 px-2 text-micro tabular-nums text-warning">{cards.length}</span>}

@@ -4,6 +4,7 @@ import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useStatusLabel } from "../utils/status-label";
 import { useMemo, type ReactNode } from "react";
 import {
+  Bot,
   CalendarClock,
   CalendarDays,
   CircleDashed,
@@ -233,6 +234,7 @@ export function useFilterChips(
   const advancedFilter = useViewStore((s) => s.advancedFilter);
   const negatedFilters = useViewStore((s) => s.negatedFilters);
   const propertyFilters = useViewStore((s) => s.propertyFilters);
+  const agentRunningFilter = useViewStore((s) => s.agentRunningFilter);
   const store = useViewStoreApi();
   const negated = new Set(negatedFilters);
 
@@ -324,6 +326,7 @@ export function useFilterChips(
         : otherNegations,
       propertyFilters: s.propertyFilters,
       advancedFilter: s.advancedFilter,
+      agentRunningFilter: s.agentRunningFilter,
     };
     switch (dimension) {
       case "status":
@@ -450,6 +453,18 @@ export function useFilterChips(
           : t(($) => $.filters.chip_status_count, { count: deltaStatus.length }),
       negated: negated.has("status"),
       onRemove: () => clearDimension("status"),
+    });
+  }
+  if (agentRunningFilter && !baseline?.agentRunning) {
+    chips.push({
+      key: "agentRunning",
+      icon: <Bot className={CHIP_ICON_CLASS} />,
+      label: t(($) => $.filters.section_agent_status),
+      value: t(($) => $.filters.agent_status_running),
+      onRemove: () => {
+        const s = store.getState();
+        if (s.agentRunningFilter) s.toggleAgentRunningFilter();
+      },
     });
   }
   const [onlyPriority] = deltaPriority;

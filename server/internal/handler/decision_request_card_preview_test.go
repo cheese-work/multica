@@ -173,6 +173,35 @@ func TestCardPreviewForAgentCopyIsMissingForASourceTheRecipientCannotSee(test *t
 	}
 }
 
+// The target runtime is read for the card's workspace: another workspace's
+// runtime ID must not leak its name or provider into the card (CHE-4452).
+func TestCardPreviewForAgentCopyIsMissingForARuntimeOfAnotherWorkspace(test *testing.T) {
+	action := newPendingCopy(test, "che4452 foreign runtime copy", nil)
+	var workspaceID, runtimeID string
+	dbfx.QueryRow(test, `INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('che4452 foreign', 'che4452-foreign', '', 'C4F') RETURNING id::text`).Scan(&workspaceID)
+	dbfx.Cleanup(test, `DELETE FROM workspace WHERE id = '`+workspaceID+`'`)
+	dbfx.QueryRow(test, `INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, visibility, owner_id)
+		VALUES ($1, NULL, 'che4452 secret runtime', 'cloud', 'secretprovider', 'online', 'x', '{}'::jsonb, now(), 'public', $2) RETURNING id::text`,
+		workspaceID, testUserID).Scan(&runtimeID)
+	dbfx.Exec(test, `UPDATE decision_action SET params = jsonb_set(params, '{runtime_id}', to_jsonb($2::text)) WHERE id = $1`, action.actionID, runtimeID)
+	card := action.cardAction(test)
+	if card == nil || card.Preview != nil {
+		raw, _ := json.Marshal(card)
+		test.Fatalf("preview of a runtime in another workspace: %s", raw)
+	}
+}
+
+// The executor refuses a runtime private to another member; the preview must
+// not name it to the card's recipient either.
+func TestCardPreviewForAgentCopyIsMissingForAPrivateRuntimeOfAnotherMember(test *testing.T) {
+	action := newPendingCopyOn(test, "che4452 private runtime copy", nil, "private")
+	if card := action.cardAction(test); card == nil || card.Preview != nil {
+		raw, _ := json.Marshal(card)
+		test.Fatalf("preview of a runtime private to another member: %s", raw)
+	}
+}
+
 func TestCardPreviewForEnvPatchIsMissingForAnAgentTheRecipientCannotSee(test *testing.T) {
 	action := newPendingAction(test)
 	dbfx.Exec(test, `UPDATE agent SET owner_id = $2, permission_mode = 'private' WHERE id = $1`, action.agentID, testUserID)
@@ -233,6 +262,52 @@ func TestCardConfigChangeCarriesTheStoredPreview(test *testing.T) {
 	}
 	if card.Preview != nil || !card.OwnerOnly {
 		test.Fatalf("config change is owner-only and has no field preview: %+v", card)
+	}
+}
+
+// Every registered config-change type returns its stored preview and the digest approve compares (CHE-4489).
+func TestCardCarriesTheStoredPreviewForEveryConfigChangeType(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	stored := request.preconditions(test)
+	if len(configChanges) < 2 {
+		test.Fatalf("config change registry has %d types", len(configChanges))
+	}
+	for actionType := range configChanges {
+		dbfx.Exec(test, `UPDATE decision_action SET action_type = $2 WHERE id = $1`, request.action.actionID, actionType)
+		card := request.action.cardAction(test)
+		if card == nil || card.ActionType != actionType || card.ConfigChange == nil || card.ConfigChange.SHA256 != stored["preview_sha256"] {
+			test.Fatalf("%s: card = %+v; want the stored preview with digest %v", actionType, card, stored["preview_sha256"])
+		}
+	}
+}
+
+// A preview stored before diff_kind existed is the json kind (E0b): the card says so, so the client can still approve it.
+func TestCardConfigChangeOfAnOlderPreviewIsTheJSONKind(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET preconditions = jsonb_set(preconditions, '{preview}', (preconditions->'preview') - 'diff_kind') WHERE id = $1`, request.action.actionID)
+	card := request.action.cardAction(test)
+	if card == nil || card.ConfigChange == nil || card.ConfigChange.DiffKind != "json" {
+		test.Fatalf("older preview on the card = %+v; want diff_kind json", card)
+	}
+	if card.ConfigChange.SHA256 != request.preconditions(test)["preview_sha256"] {
+		test.Fatalf("digest changed: %+v", card.ConfigChange)
+	}
+}
+
+// With no stored preview the field is absent from the payload, so an old client's fallback is unchanged.
+func TestCardConfigChangeIsAbsentWithoutAStoredPreview(test *testing.T) {
+	request, _ := requestConfig(test, http.StatusCreated, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET preconditions = preconditions - 'preview' - 'preview_sha256' WHERE id = $1`, request.action.actionID)
+	card := request.action.cardAction(test)
+	if card == nil || card.ConfigChange != nil {
+		test.Fatalf("card without a stored preview = %+v", card)
+	}
+	raw, err := json.Marshal(card)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if strings.Contains(string(raw), "config_change") {
+		test.Fatalf("payload names config_change: %s", raw)
 	}
 }
 

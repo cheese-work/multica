@@ -112,7 +112,6 @@ describe("DM decision cards", () => {
       for (const bad of [
         "x",
         { ...config_change, sha256: "abc" },
-        { ...config_change, diff_kind: "other" },
         { ...config_change, diff: "x" },
         { ...config_change, diff: [{ old_start: 1, new_start: 1, lines: [7] }] },
         { ...config_change, field: undefined },
@@ -122,6 +121,12 @@ describe("DM decision cards", () => {
         expect(parsed?.config_change).toBeUndefined();
         expect(parsed?.id).toBe("action");
       }
+    });
+
+    it("keeps a diff_kind a newer server sends; approval fails closed on it elsewhere", () => {
+      const parsed = parse({ ...action, config_change: { ...config_change, diff_kind: "other" } });
+      expect(parsed?.config_change?.diff_kind).toBe("other");
+      expect(parsed?.id).toBe("action");
     });
 
     it("treats a missing or malformed owner flag as unknown", () => {

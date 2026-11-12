@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { countDiffLines } from "@multica/core/issues/decision-artifacts";
+import { workflowStepTarget } from "@multica/core/issues/decision-action-preview";
 import type { DecisionConfigChange } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
@@ -35,10 +36,12 @@ export function ConfigChangeViewer({ change }: { change: DecisionConfigChange })
       case "workspace.context": return t(($) => $.decision.config_change.field_workspace_context);
       case "workflow.steps": return t(($) => $.decision.config_change.field_workflow_steps);
       case "workflow.instructions": return t(($) => $.decision.config_change.field_workflow_instructions);
+      case "workflow.budget": return t(($) => $.decision.config_change.field_workflow_budget);
       case "workspace.settings": return t(($) => $.decision.config_change.field_workspace_settings);
       default: return change.field;
     }
   })();
+  const stepTarget = change.field === "workflow.instructions" ? workflowStepTarget(change) : undefined;
   const { added, removed } = countDiffLines(change.diff);
   const tabId = (key: TabKey) => `${id}-tab-${key}`;
 
@@ -63,6 +66,16 @@ export function ConfigChangeViewer({ change }: { change: DecisionConfigChange })
         <p className="break-all text-caption text-muted-foreground">
           {t(($) => $.decision.config_change.target)}: <code className="font-mono">{change.target_id}</code>
         </p>
+        {stepTarget && (
+          <>
+            <p data-testid="config-change-workflow" className="break-all text-caption text-muted-foreground">
+              {t(($) => $.decision.config_change.workflow)}: <span className="font-semibold text-foreground">{stepTarget.workflowName}</span>
+            </p>
+            <p data-testid="config-change-status" className="break-all text-caption text-muted-foreground">
+              {t(($) => $.decision.config_change.step_status)}: <code className="font-mono">{stepTarget.statusKey}</code>
+            </p>
+          </>
+        )}
         {change.keys.length > 0 && (
           <p data-testid="config-change-keys" className="break-all text-caption text-muted-foreground">
             {t(($) => $.decision.config_change.keys)}: <code className="font-mono">{change.keys.join(", ")}</code>

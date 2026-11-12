@@ -18,6 +18,7 @@ vi.mock("./route-data-prefetch", () => ({
 vi.mock("./space-panel", () => ({ SpacePanel: () => null }));
 vi.mock("./workspace-presence-prefetch", () => ({ WorkspacePresencePrefetch: () => null }));
 vi.mock("./global-shortcuts", () => ({ GlobalShortcuts: () => null }));
+vi.mock("./open-decisions-chip", () => ({ OpenDecisionsChip: () => null }));
 vi.mock("./app-shell-context", () => ({
   AppShellProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));

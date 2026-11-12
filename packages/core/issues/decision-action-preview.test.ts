@@ -12,6 +12,7 @@ const change: DecisionConfigChange = {
   after: "new",
   before_sha256: "b".repeat(64),
   after_sha256: "c".repeat(64),
+  meta: { workflow_name: "Production flow", status_key: "todo" },
   sha256: digest,
 };
 const action = (patch: Partial<DecisionRequestAction> = {}): DecisionRequestAction => ({
@@ -37,6 +38,25 @@ describe("approvableConfigChange", () => {
     "workspace.routing_agent", "agent.skills", "", "future.field",
   ])("fails closed for the field %s", (field) => {
     expect(approvableConfigChange(action({ config_change: { ...change, field } }))).toBeUndefined();
+  });
+
+  it.each([
+    ["no meta", undefined],
+    ["no workflow name", { status_key: "todo" }],
+    ["an empty workflow name", { workflow_name: "", status_key: "todo" }],
+    ["no status key", { workflow_name: "Production flow" }],
+    ["a non-string status key", { workflow_name: "Production flow", status_key: 3 }],
+  ])("fails closed for a workflow step change with %s", (_label, meta) => {
+    expect(approvableConfigChange(action({ config_change: { ...change, meta } }))).toBeUndefined();
+  });
+
+  it("accepts a workflow run-budget change (CHE-5285)", () => {
+    const budget = { ...change, field: "workflow.budget", diff_kind: "json" as const, after: { max_runs_per_issue: 40, include_child_prs: true }, meta: { workflow_name: "Production flow" } };
+    expect(approvableConfigChange(action({ action_type: "workflow.budget.set", config_change: budget }))).toEqual(budget);
+  });
+
+  it("does not need a workflow name for another field", () => {
+    expect(approvableConfigChange(action({ config_change: { ...change, field: "agent.instructions", meta: undefined } }))).toBeDefined();
   });
 
   it("fails closed without a change or with a bad digest", () => {

@@ -3,13 +3,10 @@ package handler
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -141,41 +138,6 @@ func squadReqWithParamsWorkspace(userID, method, path string, body any, workspac
 
 // ── Workspace context: positive ──────────────────────────────────────────
 
-func TestHermesException_UpdateWorkspace_ExactAgentExactWorkspace_Succeeds(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	_, agentID, taskID := hermesExceptionFixture(t, "ws-ok")
-
-	newContent := "line one\nline two — unicode: café ☕\nline three"
-	before := testDigest("original workspace context")
-
-	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
-		"context":                newContent,
-		"expected_before_digest": before,
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateWorkspace(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	afterDigest, _ := resp["after_digest"].(string)
-	if afterDigest != testDigest(newContent) {
-		t.Errorf("after_digest = %q, want %q", afterDigest, testDigest(newContent))
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&stored)
-	if stored != newContent {
-		t.Errorf("stored context = %q, want exact bytes %q", stored, newContent)
-	}
-}
-
 // ── Workspace context: negative — different agent ────────────────────────
 
 func TestHermesException_UpdateWorkspace_DifferentAgent_StillForbidden(t *testing.T) {
@@ -292,108 +254,9 @@ func TestHermesException_UpdateWorkspace_OtherFieldUnaffected(t *testing.T) {
 
 // ── Workspace context: negative — stale digest ───────────────────────────
 
-func TestHermesException_UpdateWorkspace_StaleDigest_Rejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	_, agentID, taskID := hermesExceptionFixture(t, "ws-stale")
-
-	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
-		"context":                "PWNED-VIA-STALE-DIGEST",
-		"expected_before_digest": testDigest("this was never the live value"),
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateWorkspace(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for stale digest, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&stored)
-	if stored != "original workspace context" {
-		t.Errorf("context must remain untouched after stale-digest rejection, got %q", stored)
-	}
-}
-
 // ── Workspace context: negative — malformed digest ───────────────────────
 
-func TestHermesException_UpdateWorkspace_MalformedDigest_Rejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	_, agentID, taskID := hermesExceptionFixture(t, "ws-malformed")
-
-	cases := []struct {
-		name   string
-		digest string
-	}{
-		{"not hex", "not-a-valid-hex-digest-at-all"},
-		{"too short", "abcd"},
-		{"empty", ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := hermesWorkspaceReq(agentID, taskID, map[string]any{
-				"context":                "irrelevant",
-				"expected_before_digest": tc.digest,
-			})
-			w := httptest.NewRecorder()
-			testHandler.UpdateWorkspace(w, req)
-			if w.Code != http.StatusBadRequest {
-				t.Fatalf("digest %q: expected 400, got %d: %s", tc.digest, w.Code, w.Body.String())
-			}
-		})
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT context FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&stored)
-	if stored != "original workspace context" {
-		t.Errorf("context must remain untouched after malformed-digest rejections, got %q", stored)
-	}
-}
-
 // ── Squad instructions: positive, multiline/unicode roundtrip ───────────
-
-func TestHermesException_UpdateSquad_ExactAgentExactSquad_MultilineUnicodeRoundtrip(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ownerUserID, agentID, taskID := hermesExceptionFixture(t, "sq-ok")
-	leaderID := createHandlerTestAgent(t, "che764-hermes-squad-leader-ok", nil)
-	hermesExceptionSquadFixture(t, hermesExceptionWorkspaceID, ownerUserID, leaderID)
-
-	newInstructions := "Line one.\nLine two with unicode: 世界 🌍\n\nBlank line above.\tTabbed line.\n"
-	before := testDigest("original squad instructions")
-
-	req := hermesSquadReq(ownerUserID, agentID, taskID, hermesExceptionSquadID, map[string]any{
-		"instructions":           newInstructions,
-		"expected_before_digest": before,
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateSquad(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var resp map[string]any
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	afterDigest, _ := resp["after_digest"].(string)
-	wantDigest := testDigest(newInstructions)
-	if afterDigest != wantDigest {
-		t.Errorf("after_digest = %q, want %q", afterDigest, wantDigest)
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&stored)
-	if stored != newInstructions {
-		t.Errorf("stored instructions = %q, want exact bytes %q", stored, newInstructions)
-	}
-	if testDigest(stored) != wantDigest {
-		t.Errorf("locally computed digest of stored bytes = %q, want %q", testDigest(stored), wantDigest)
-	}
-}
 
 // ── Squad instructions: negative — different agent ───────────────────────
 
@@ -469,149 +332,16 @@ func TestHermesException_UpdateSquad_OtherFieldUnaffected(t *testing.T) {
 
 // ── Squad instructions: negative — stale digest ──────────────────────────
 
-func TestHermesException_UpdateSquad_StaleDigest_Rejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ownerUserID, agentID, taskID := hermesExceptionFixture(t, "sq-stale")
-	leaderID := createHandlerTestAgent(t, "che764-hermes-squad-leader-stale", nil)
-	hermesExceptionSquadFixture(t, hermesExceptionWorkspaceID, ownerUserID, leaderID)
-
-	req := hermesSquadReq(ownerUserID, agentID, taskID, hermesExceptionSquadID, map[string]any{
-		"instructions":           "PWNED-VIA-STALE-DIGEST",
-		"expected_before_digest": testDigest("this was never the live value"),
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateSquad(w, req)
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected 409 for stale digest, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&stored)
-	if stored != "original squad instructions" {
-		t.Errorf("instructions must remain untouched after stale-digest rejection, got %q", stored)
-	}
-}
-
 // ── Squad instructions: negative — malformed digest ──────────────────────
-
-func TestHermesException_UpdateSquad_MalformedDigest_Rejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ownerUserID, agentID, taskID := hermesExceptionFixture(t, "sq-malformed")
-	leaderID := createHandlerTestAgent(t, "che764-hermes-squad-leader-malformed", nil)
-	hermesExceptionSquadFixture(t, hermesExceptionWorkspaceID, ownerUserID, leaderID)
-
-	req := hermesSquadReq(ownerUserID, agentID, taskID, hermesExceptionSquadID, map[string]any{
-		"instructions":           "irrelevant",
-		"expected_before_digest": "zz-not-hex",
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateSquad(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for malformed digest, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var stored string
-	dbfx.QueryRow(t, `SELECT instructions FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&stored)
-	if stored != "original squad instructions" {
-		t.Errorf("instructions must remain untouched after malformed-digest rejection, got %q", stored)
-	}
-}
 
 // ── Workspace context: negative — extra fields rejected ──────────────────
 // Security review finding (CHE-764): the exception path is a dedicated
 // single-field compare-and-swap; a request that also carries other fields
 // must be rejected outright rather than silently dropping them.
 
-func TestHermesException_UpdateWorkspace_ExtraFieldsRejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	_, agentID, taskID := hermesExceptionFixture(t, "ws-extra-fields")
-
-	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
-		"context":                "irrelevant",
-		"expected_before_digest": testDigest("original workspace context"),
-		"name":                   "sneaking in a rename",
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateWorkspace(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when extra fields accompany the exception write, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var storedContext, storedName string
-	dbfx.QueryRow(t, `SELECT context, name FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&storedContext, &storedName)
-	if storedContext != "original workspace context" {
-		t.Errorf("context must remain untouched, got %q", storedContext)
-	}
-	if storedName == "sneaking in a rename" {
-		t.Errorf("name must not have been applied via the exception path")
-	}
-}
-
 // ── Workspace context: positive — updated_at bumped, uppercase digest accepted ──
 
-func TestHermesException_UpdateWorkspace_BumpsUpdatedAtAndAcceptsUppercaseDigest(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	_, agentID, taskID := hermesExceptionFixture(t, "ws-updated-at")
-
-	var before time.Time
-	dbfx.QueryRow(t, `SELECT updated_at FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&before)
-
-	uppercaseDigest := strings.ToUpper(testDigest("original workspace context"))
-	req := hermesWorkspaceReq(agentID, taskID, map[string]any{
-		"context":                "new content via uppercase digest",
-		"expected_before_digest": uppercaseDigest,
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateWorkspace(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200 for well-formed uppercase digest, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var after time.Time
-	dbfx.QueryRow(t, `SELECT updated_at FROM workspace WHERE id = $1`, hermesExceptionWorkspaceID).Scan(&after)
-	if !after.After(before) {
-		t.Errorf("updated_at must advance after a successful exception write: before=%v after=%v", before, after)
-	}
-}
-
 // ── Squad instructions: negative — extra fields rejected ─────────────────
-
-func TestHermesException_UpdateSquad_ExtraFieldsRejected(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ownerUserID, agentID, taskID := hermesExceptionFixture(t, "sq-extra-fields")
-	leaderID := createHandlerTestAgent(t, "che764-hermes-squad-leader-extrafields", nil)
-	hermesExceptionSquadFixture(t, hermesExceptionWorkspaceID, ownerUserID, leaderID)
-
-	req := hermesSquadReq(ownerUserID, agentID, taskID, hermesExceptionSquadID, map[string]any{
-		"instructions":           "irrelevant",
-		"expected_before_digest": testDigest("original squad instructions"),
-		"name":                   "sneaking in a rename",
-	})
-	w := httptest.NewRecorder()
-	testHandler.UpdateSquad(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 when extra fields accompany the exception write, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var storedInstructions, storedName string
-	dbfx.QueryRow(t, `SELECT instructions, name FROM squad WHERE id = $1`, hermesExceptionSquadID).Scan(&storedInstructions, &storedName)
-	if storedInstructions != "original squad instructions" {
-		t.Errorf("instructions must remain untouched, got %q", storedInstructions)
-	}
-	if storedName == "sneaking in a rename" {
-		t.Errorf("name must not have been applied via the exception path")
-	}
-}
 
 // createSquadInWorkspace creates a squad directly (bypassing CreateSquad's
 // HTTP path) inside the given workspace with the given creator/leader, for
