@@ -2221,6 +2221,14 @@ export class ApiClient {
     return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
   }
 
+  async pauseWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
+  }
+
   async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
     return this.fetch(`/api/agents/${id}/scheduling-impact`);
   }
