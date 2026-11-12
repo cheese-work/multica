@@ -1,0 +1,146 @@
+-- Issue pre-locks of the legacy-FK deletes (issue, comment, system agent,
+-- runtime). service.LockIssuesBefore* runs them in a savepoint:
+-- list, lock the issues in ascending id order, freeze the rows a late reference
+-- would point at, list again. A second list that names another issue rolls the
+-- savepoint back, so the locks taken after it go, and starts over with the full
+-- sorted set.
+
+-- name: PrelockSavepoint :exec
+SAVEPOINT prelock;
+
+-- name: PrelockRollbackToSavepoint :exec
+ROLLBACK TO SAVEPOINT prelock;
+
+-- name: PrelockReleaseSavepoint :exec
+RELEASE SAVEPOINT prelock;
+
+-- name: ListIssuesOfIssueDelete :many
+-- An issue delete removes the issue's comments through comment.issue_id
+-- ON DELETE CASCADE. Each removed comment nulls trigger_comment_id on every run
+-- that names it, and that update runs the run's taint trigger, which locks the
+-- run's issue. The delete also removes the issue's runs through
+-- agent_task_queue.issue_id ON DELETE CASCADE; each removed run nulls
+-- parent_task_id on its children (ON DELETE SET NULL), a child can belong to
+-- another issue, and that update runs the child's taint trigger. The deleted
+-- issues and those issues are the set to lock.
+SELECT i.id FROM issue i
+WHERE i.id = ANY(@issue_ids::uuid[])
+   OR i.id IN (
+       SELECT t.issue_id FROM agent_task_queue t
+       JOIN comment c ON c.id = t.trigger_comment_id
+       WHERE c.issue_id = ANY(@issue_ids::uuid[]) AND t.issue_id IS NOT NULL
+   )
+   OR i.id IN (
+       SELECT child.issue_id FROM agent_task_queue parent
+       JOIN agent_task_queue child ON child.parent_task_id = parent.id
+       WHERE parent.issue_id = ANY(@issue_ids::uuid[]) AND child.issue_id IS NOT NULL
+   )
+ORDER BY i.id;
+
+-- name: FreezeCommentsOfIssues :exec
+-- FOR UPDATE conflicts with the FOR KEY SHARE that the foreign key check of a
+-- new run (trigger_comment_id) takes on the comment, so no run can name these
+-- comments until the delete ends; after it ends the check fails.
+SELECT 1 FROM comment c
+WHERE c.issue_id = ANY(@issue_ids::uuid[])
+ORDER BY c.id
+FOR UPDATE OF c;
+
+-- name: FreezeRunsOfIssues :exec
+-- Same for parent_task_id: no run can become a child of these runs.
+SELECT 1 FROM agent_task_queue t
+WHERE t.issue_id = ANY(@issue_ids::uuid[])
+ORDER BY t.id
+FOR UPDATE OF t;
+
+-- name: ListIssuesOfCommentDelete :many
+-- Deleting a comment nulls agent_task_queue.trigger_comment_id
+-- (ON DELETE SET NULL) on every run that names it, and that update runs the
+-- run's taint triggers, which lock the run's issue. That issue can differ from
+-- the comment's. The chain covers the ancestors, which the delete prunes when
+-- it removes their last reply.
+WITH RECURSIVE chain AS (
+    SELECT c.id, c.parent_id, c.issue_id FROM comment c
+    WHERE c.id = @id AND c.workspace_id = @workspace_id
+    UNION
+    SELECT p.id, p.parent_id, p.issue_id FROM comment p
+    JOIN chain ON p.id = chain.parent_id
+)
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT chain.issue_id FROM chain
+    UNION
+    SELECT t.issue_id FROM agent_task_queue t
+    WHERE t.trigger_comment_id IN (SELECT chain.id FROM chain) AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id;
+
+-- name: FreezeCommentChain :exec
+-- The comment and its ancestors; see FreezeCommentsOfIssues.
+WITH RECURSIVE chain AS (
+    SELECT c.id, c.parent_id FROM comment c
+    WHERE c.id = @id AND c.workspace_id = @workspace_id
+    UNION
+    SELECT p.id, p.parent_id FROM comment p
+    JOIN chain ON p.id = chain.parent_id
+)
+SELECT 1 FROM comment c
+WHERE c.id IN (SELECT chain.id FROM chain)
+ORDER BY c.id
+FOR UPDATE OF c;
+
+-- name: ListIssuesOfAgentBuilderTaskChildren :many
+-- Deleting a session-owned system agent removes its runs through
+-- agent_task_queue.agent_id ON DELETE CASCADE, and each removed run nulls
+-- parent_task_id on its children (ON DELETE SET NULL). That update runs the
+-- child's taint trigger, which locks the child's issue. The kind and key guards
+-- mirror DeleteSystemAgentByID: any other agent lists nothing.
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT child.issue_id FROM agent a
+    JOIN agent_task_queue parent ON parent.agent_id = a.id
+    JOIN agent_task_queue child ON child.parent_task_id = parent.id
+    WHERE a.id = @agent_id AND a.kind = 'system' AND a.system_key LIKE 'agent_builder:%'
+      AND child.issue_id IS NOT NULL
+)
+ORDER BY i.id;
+
+-- name: FreezeAgentBuilderAgent :exec
+-- The agent row, so no run can be created for it, then its runs, so no run can
+-- become a child of them.
+SELECT 1 FROM agent a
+WHERE a.id = @agent_id AND a.kind = 'system' AND a.system_key LIKE 'agent_builder:%'
+FOR UPDATE OF a;
+
+-- name: FreezeRunsOfAgentBuilderAgent :exec
+SELECT 1 FROM agent_task_queue t
+WHERE t.agent_id IN (
+    SELECT a.id FROM agent a
+    WHERE a.id = @agent_id AND a.kind = 'system' AND a.system_key LIKE 'agent_builder:%'
+)
+ORDER BY t.id
+FOR UPDATE OF t;
+
+-- name: ListIssuesOfSystemAgentTaskChildrenByRuntime :many
+-- The reason is the one on ListIssuesOfAgentBuilderTaskChildren, for every
+-- system agent of the runtime (DeleteSystemAgentsByRuntime).
+SELECT i.id FROM issue i
+WHERE i.id IN (
+    SELECT child.issue_id FROM agent a
+    JOIN agent_task_queue parent ON parent.agent_id = a.id
+    JOIN agent_task_queue child ON child.parent_task_id = parent.id
+    WHERE a.runtime_id = $1 AND a.kind = 'system' AND child.issue_id IS NOT NULL
+)
+ORDER BY i.id;
+
+-- name: FreezeSystemAgentsOfRuntime :exec
+SELECT 1 FROM agent a
+WHERE a.runtime_id = $1 AND a.kind = 'system'
+ORDER BY a.id
+FOR UPDATE OF a;
+
+-- name: FreezeRunsOfSystemAgentsOfRuntime :exec
+SELECT 1 FROM agent_task_queue t
+WHERE t.agent_id IN (SELECT a.id FROM agent a WHERE a.runtime_id = $1 AND a.kind = 'system')
+ORDER BY t.id
+FOR UPDATE OF t;

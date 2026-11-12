@@ -90,6 +90,7 @@ import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/ac
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { AgentPausedBadgeById } from "../../agents/components/agent-scheduling";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { ContentEditor } from "../../editor/content-editor";
 import { ReadonlyContent } from "../../editor/readonly-content";
@@ -621,6 +622,7 @@ function SquadMembersSection({
                 />
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="truncate font-medium">{name}</span>
+                  {m.member_type === "agent" && <AgentPausedBadgeById agentId={m.member_id} />}
                   {leader && (
                     <span className="inline-flex shrink-0 items-center gap-0.5 rounded-sm border px-1 text-caption text-muted-foreground">
                       <Crown className="size-3" />

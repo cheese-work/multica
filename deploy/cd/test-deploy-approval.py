@@ -16,6 +16,7 @@ STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
 PROTECTED = "c00-production"  # reviewer environment; no job of this workflow may use it any more
 OWNER = "congvc-dev"
+DELAY = "c00-readback-delay"  # 15-minute wait timer, main only, no secrets
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
 C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
 C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
@@ -117,28 +118,60 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertIn("needs.schedule-resolve.outputs.sha", notify)
         self.assertNotIn("inputs.ref", notify)
 
-    def test_readback_follows_the_deploy_for_fifteen_minutes_outside_the_lock(self):
+    def test_readback_is_immediate_and_releases_the_runner(self):
         readback = self.jobs["readback"]
         self.assertEqual(needs(readback), ["admission", "deploy"])
         self.assertEqual(readback["runs-on"], C00_RUNNER)
         self.assertEqual(readback["environment"], RUNTIME)
         self.assertNotIn("concurrency", readback)
         self.assertIn("needs.deploy.result == 'success'", readback["if"])
+        self.assertLessEqual(readback["timeout-minutes"], 10)
         text = yaml.safe_dump(readback)
         self.assertIn("post-deploy-readback.sh", text)
-        self.assertIn("900", text)
+        self.assertNotIn("900", text)  # the 15-minute window is no longer held in this job
+        self.assertEqual(set(readback["outputs"]), {"t0", "restarts", "observation", "superseded"})
 
-    def test_failed_readback_rolls_back_under_the_c00_lock(self):
+    def test_the_fifteen_minute_wait_is_an_environment_timer_that_holds_no_c00_runner(self):
+        delay = self.jobs["readback-delay"]
+        self.assertEqual(needs(delay), ["admission", "readback"])
+        self.assertEqual(delay["environment"], DELAY)
+        self.assertIn("needs.readback.result == 'success'", delay["if"])
+        # A newer deploy owns the window: the older run skips delay and confirm, and is not rolled back.
+        self.assertIn("needs.readback.outputs.superseded != 'true'", delay["if"])
+        self.assertNotIn("cheese-c00-deploy", json.dumps(delay["runs-on"]))
+        self.assertNotIn("secrets.", json.dumps(delay))
+
+    def test_readback_confirm_verifies_the_native_health_journal_on_the_c00_runner(self):
+        confirm = self.jobs["readback-confirm"]
+        self.assertEqual(sorted(needs(confirm)), ["admission", "readback", "readback-delay"])
+        self.assertEqual(confirm["runs-on"], C00_RUNNER)
+        self.assertEqual(confirm["environment"], RUNTIME)
+        self.assertNotIn("concurrency", confirm)
+        self.assertLessEqual(confirm["timeout-minutes"], 10)
+        self.assertIn("needs.readback-delay.result == 'success'", confirm["if"])
+        text = yaml.safe_dump(confirm)
+        self.assertIn("post-deploy-confirm.sh", text)
+        self.assertIn("needs.readback.outputs.t0", text)
+        self.assertIn("needs.readback.outputs.restarts", text)
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual(confirm["steps"][0]["uses"].split("@")[0], "actions/checkout")
+        self.assertEqual(confirm["steps"][0]["with"]["ref"], "${{ github.sha }}")
+
+    def test_failed_readback_or_confirm_rolls_back_under_the_c00_lock(self):
         rollback = self.jobs["rollback"]
-        self.assertEqual(needs(rollback), ["admission", "readback"])
+        self.assertEqual(sorted(needs(rollback)), ["admission", "readback", "readback-confirm", "readback-delay"])
         self.assertEqual(rollback["runs-on"], C00_RUNNER)
         self.assertEqual(rollback["environment"], RUNTIME)
         self.assertEqual(rollback["concurrency"]["group"], "cd-deploy-c00")
         self.assertIn("needs.readback.result == 'failure'", rollback["if"])
+        self.assertIn("needs.readback-confirm.result == 'failure'", rollback["if"])
+        # A failed delay skips confirm, so nothing judged the window: that must roll back too.
+        self.assertIn("needs.readback-delay.result == 'failure'", rollback["if"])
         self.assertNotIn("cancelled", rollback["if"])
         self.assertIn("rollback-failed-readback.sh", yaml.safe_dump(rollback))
-        # The readback job stays the one that fails, so the suspension still reads it.
-        self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs["readback"]))
+        # The readback jobs stay the ones that fail, so the suspension still reads them.
+        for name in ["readback", "readback-confirm"]:
+            self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs[name]))
 
     def test_readback_and_rollback_run_the_workflow_revisions_tooling_not_the_candidates(self):
         # CHE-5144: a candidate cut before the readback and rollback scripts existed
@@ -146,7 +179,7 @@ class DeployApprovalTests(unittest.TestCase):
         # checkout of the candidate ref failed with exit 127 and C00 had no watch.
         # The tooling comes from the workflow revision; the candidate's manifest
         # arrives through the cd-deploy-admitted-input artifact.
-        for name in ["readback", "rollback"]:
+        for name in ["readback", "readback-confirm", "rollback"]:
             with self.subTest(job=name):
                 checkouts = [s for s in self.jobs[name]["steps"] if s.get("uses", "").startswith("actions/checkout")]
                 self.assertTrue(checkouts)
@@ -187,8 +220,8 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("40-hex", bad.stderr)
 
-    def test_environment_set_is_runtime_and_ci_app_token_only(self):
-        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {RUNTIME, "ci-app-token"})
+    def test_environment_set_is_runtime_readback_delay_and_ci_app_token_only(self):
+        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {RUNTIME, DELAY, "ci-app-token"})
 
     def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
         # Both jobs that touch C00 run on the target-host runner. A fall-back

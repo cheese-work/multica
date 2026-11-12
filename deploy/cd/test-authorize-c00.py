@@ -197,6 +197,22 @@ class AuthorizeC00Tests(unittest.TestCase):
                 self.assertIn("refused", text)
 
     # -- suspension: a failed automatic deploy stops further auto-deploys ----
+    def test_a_failed_readback_delay_suspends_auto_deploy(self):
+        runs = [(4, [("deploy", "success"), ("readback", "success"), ("readback-delay", "failure"), ("readback-confirm", "skipped")]),
+                (3, [("deploy", "success"), ("readback", "success"), ("readback-delay", "success"), ("readback-confirm", "success")])]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(out["authorized"], "false")
+        self.assertIn("suspended", text)
+
+    def test_a_failed_readback_confirm_suspends_auto_deploy(self):
+        runs = [(4, [("deploy", "success"), ("readback", "success"), ("readback-confirm", "failure")]),
+                (3, [("deploy", "success"), ("readback", "success"), ("readback-confirm", "success")])]
+        code, out, text = self.authorize("workflow_run", pulls=[pull()], runs=runs)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(out["authorized"], "false")
+        self.assertIn("suspended", text)
+
     def test_latest_deploy_failure_suspends_auto_deploy(self):
         for failed in ["deploy", "readback"]:
             with self.subTest(failed=failed):
