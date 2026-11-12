@@ -105,7 +105,10 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 chains[p.name] = on["workflow_run"]["workflows"]
         self.assertEqual(
             chains,
-            {"security-gate-queue.yml": ["security-gate"]},
+            {
+                "security-gate-queue.yml": ["security-gate"],
+                "pr-main-sync.yml": ["Main Build"],  # CHE-4963: one run per main push, as its old Main Build job was
+            },
         )
         # No push-to-main workflow listens to another one's push through `workflow_run` on CI or the gates.
         self.assertNotIn("CI", [w for ws in chains.values() for w in ws])
@@ -118,17 +121,30 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(job["if"].strip(), "${{ always() }}")  # it ran after every completed Main Build before
         self.assertEqual(job["permissions"], {"contents": "read", "actions": "write"})
 
-    def test_main_build_runs_pr_main_sync_and_it_has_no_push_trigger(self):
-        self.assertEqual(triggers(load("pr-main-sync.yml")), {"workflow_dispatch", "workflow_call"})
-        job = load("main-build.yml")["jobs"]["pr-main-sync"]
-        self.assertEqual(job["uses"], "./.github/workflows/pr-main-sync.yml")
-        self.assertEqual(job["permissions"], {"contents": "read"})
-        self.assertNotIn("needs", job)  # it did not wait for the build before either
+    def test_pr_main_sync_follows_a_main_build_push_run_and_main_build_does_not_call_it(self):
+        # CHE-4963: it holds the App key, so the repo guard (CHE-4251) requires a schedule or workflow_run definition.
+        doc = load("pr-main-sync.yml")
+        self.assertEqual(triggers(doc), {"workflow_run", "workflow_dispatch"})
+        run = doc["on"]["workflow_run"]
+        self.assertEqual((run["workflows"], run["types"], run["branches"]), (["Main Build"], ["completed"], ["main"]))
+        gate = doc["jobs"]["sync"]["if"]
+        self.assertIn("github.event.workflow_run.event == 'push'", gate)
+        # A failed or cancelled Main Build still has a main push to sync after, as the old job had no needs (CHE-4963).
+        self.assertNotIn("conclusion", gate)
+        self.assertNotIn("pr-main-sync", load("main-build.yml")["jobs"])
 
     def test_called_workflows_use_a_concurrency_group_other_than_the_callers(self):
         caller = load("main-build.yml")["concurrency"]["group"]
-        for name in ("cache-maintenance.yml", "pr-main-sync.yml"):
+        for name in ("cache-maintenance.yml",):
             self.assertNotEqual(load(name)["concurrency"]["group"], caller)
+
+    def test_pr_main_sync_requests_only_permissions_the_app_installation_grants(self):
+        # Run 43137581396 failed with 422 minting contents:write + pull-requests:write: the installation grants
+        # pull-requests read only (cd-deploy mints it). The script reads PRs and merges through update-branch (CHE-4963).
+        steps = load("pr-main-sync.yml")["jobs"]["sync"]["steps"]
+        mint = next(s["with"] for s in steps if "create-github-app-token" in s.get("uses", ""))
+        perms = {k: v for k, v in mint.items() if k.startswith("permission-")}
+        self.assertEqual(perms, {"permission-contents": "write", "permission-pull-requests": "read"})
 
     def test_pr_main_sync_keeps_its_gate_runner_and_dry_run_switch(self):
         text = (WF / "pr-main-sync.yml").read_text()

@@ -1698,7 +1698,13 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 	gate.Apply(&createParams)
 	var task db.AgentTaskQueue
 	if fireAt.Valid {
+		provider, seconds, configErr := issueProviderHoldConfig(ctx, queries, createParams.AgentID)
+		if configErr != nil {
+			return db.AgentTaskQueue{}, configErr
+		}
 		task, err = queries.CreateDeferredChannelIssueTask(ctx, db.CreateDeferredChannelIssueTaskParams{
+			HoldProvider:         provider,
+			ProviderHoldSeconds:  seconds,
 			ID:                   dbid.NewV7(),
 			AgentID:              createParams.AgentID,
 			RuntimeID:            createParams.RuntimeID,
@@ -1901,7 +1907,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -8651,7 +8657,7 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			ruleVersionID = target.source.RuleVersionID
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
-		task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		task, err := createProviderHeldAgentTask(ctx, s.Queries, db.CreateAgentTaskParams{
 			ID:                   dbid.NewV7(),
 			AgentID:              target.agent.ID,
 			RuntimeID:            target.agent.RuntimeID,
