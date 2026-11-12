@@ -67,6 +67,11 @@ type dbExecutor interface {
 }
 
 type Config struct {
+	// SetupComponents is the registry of Setup component ids the
+	// adoption_linked close gate checks metadata `components` and the `none`
+	// cross-check against (MULTICA_SETUP_COMPONENTS, comma separated). The
+	// registry lives outside this repo, so the operator mirrors its ids here.
+	SetupComponents     []string
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string

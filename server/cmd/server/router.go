@@ -453,6 +453,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmailDomains:            splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		DisableWorkspaceCreation:       os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
 		WorkspaceCreationAllowedEmails: splitAndTrim(os.Getenv("WORKSPACE_CREATION_ALLOWED_EMAILS")),
+		SetupComponents:                splitAndTrim(os.Getenv("MULTICA_SETUP_COMPONENTS")),
 		VCSIntegrationEnabled:          os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                      strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                         appURLFromEnv(),

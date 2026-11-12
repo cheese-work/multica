@@ -740,7 +740,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		handoffResolver = h.createHandoffResolver(r, util.UUIDToString(workspaceID), "member", userID, userID)
 	}
 	result, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
-		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)),
+		HandoffResolver: handoffResolver, EntryGate: h.createEntryGate(workspaceID, "member", util.UUIDToString(userID)), PropertyGate: h.createPropertyGate(workspaceID),
 		WorkspaceID: workspaceID, Title: title, Description: ptrToText(input.Description), Status: status, Priority: priority,
 		AssigneeType: assigneeType, AssigneeID: assigneeID, CreatorType: "member", CreatorID: userID, RequestedByID: userID,
 		ParentIssueID: capture.SourceIssueID, ProjectID: projectID, WorkflowID: overrideID, StartDate: startDate, DueDate: dueDate,
