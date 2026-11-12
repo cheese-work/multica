@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/redis/go-redis/v9"
 )
@@ -191,7 +192,10 @@ func suggestionText(value string) string {
 // never reads description or comment text (CHE-2402: the full issue search
 // scanned ~50k comments and timed out). The LOWER(title) LIKE predicate is
 // served by idx_issue_title_trgm; $1 is the workspace, filled by the caller.
-func buildSuggestionIssueQuery(phrase string, terms []string, queryNum int, hasNum bool) (string, []any) {
+//
+// hiddenProjectIDs are the private projects the caller cannot see; their issues
+// never suggest a title.
+func buildSuggestionIssueQuery(phrase string, terms []string, queryNum int, hasNum bool, hiddenProjectIDs ...pgtype.UUID) (string, []any) {
 	phrase = strings.ToLower(phrase)
 	args := []any{nil, "%" + escapeLike(phrase) + "%", escapeLike(phrase) + "%"}
 	match := "LOWER(title) LIKE $2"
@@ -209,7 +213,12 @@ func buildSuggestionIssueQuery(phrase string, terms []string, queryNum int, hasN
 		match += fmt.Sprintf(" OR number = $%d", len(args))
 		order = fmt.Sprintf("(number = $%d) DESC, ", len(args)) + order
 	}
-	return "SELECT number, title FROM issue WHERE workspace_id = $1 AND (" + match + ") ORDER BY " + order + ", updated_at DESC LIMIT 5", args
+	visible := ""
+	if len(hiddenProjectIDs) > 0 {
+		args = append(args, hiddenProjectIDs)
+		visible = " AND " + hiddenProjectPredicate("project_id", fmt.Sprintf("$%d", len(args)))
+	}
+	return "SELECT number, title FROM issue WHERE workspace_id = $1 AND (" + match + ")" + visible + " ORDER BY " + order + ", updated_at DESC LIMIT 5", args
 }
 
 func (handlers *Handler) SuggestSearch(writer http.ResponseWriter, request *http.Request) {
@@ -222,7 +231,11 @@ func (handlers *Handler) SuggestSearch(writer http.ResponseWriter, request *http
 	}
 	prefix := handlers.getIssuePrefix(ctx, workspace)
 	number, hasNumber := suggestionNumber(query, prefix)
-	sql, args := buildSuggestionIssueQuery(query, splitSearchTerms(query), number, hasNumber)
+	hidden, ok := handlers.searchHiddenProjects(writer, request, uuidToString(workspace))
+	if !ok {
+		return
+	}
+	sql, args := buildSuggestionIssueQuery(query, splitSearchTerms(query), number, hasNumber, hidden.Param()...)
 	args[0] = workspace
 	var suggestions []string
 	err := runSearchQueryWithTimeout(ctx, handlers.TxStarter, sql, args, func(rows pgx.Rows) error {
@@ -237,7 +250,7 @@ func (handlers *Handler) SuggestSearch(writer http.ResponseWriter, request *http
 		return rows.Err()
 	}, suggestionsTimeout)
 	if err == nil {
-		sql, args = buildProjectSearchQuery(query, splitSearchTerms(query), true)
+		sql, args = buildProjectSearchQuery(query, splitSearchTerms(query), true, hidden.Param()...)
 		args[1], args[len(args)-2], args[len(args)-1] = workspace, 50, 0
 		projects := 0
 		err = runSearchQueryWithTimeout(ctx, handlers.TxStarter, sql, args, func(rows pgx.Rows) error {

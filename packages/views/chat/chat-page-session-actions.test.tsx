@@ -28,6 +28,7 @@ const lastInputProps = vi.hoisted(() => ({ current: {} as Record<string, unknown
 
 vi.mock("sonner", () => ({ toast: toastShow }));
 vi.mock("../auth/use-logout", () => ({ useLogout: vi.fn() }));
+vi.mock("../common/app-requests", () => ({ ChatAppRequests: () => null }));
 vi.mock("./components/chat-message-list", () => ({
   ChatMessageList: () => <div>chat-message-list</div>,
   ChatMessageSkeleton: () => <div>chat-message-skeleton</div>,

@@ -254,6 +254,10 @@ func init() {
 		"PUT /api/workspaces/{id}/background-agents",
 		"DELETE /api/workspaces/{id}/background-agents",
 		"POST /api/workspaces/{id}/provider-breakers/{provider}/reset",
+		// Routes added by the upstream v0.8.2 sync (CHE-5321); wired in L5b.
+		"DELETE /api/projects/{id}/members/{userId}",
+		"POST /api/projects/{id}/members",
+		"PUT /api/agents/{id}/apps",
 	} {
 		auditPendingL5b[route] = true
 	}

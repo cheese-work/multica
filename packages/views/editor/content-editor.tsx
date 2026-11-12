@@ -145,6 +145,8 @@ interface ContentEditorBaseProps {
   ariaDescribedBy?: string;
   debounceMs?: number;
   onSubmit?: () => void;
+  /** Fixed annotation keys: Enter saves, Shift+Enter breaks, Mod+Enter submits. */
+  onEnter?: () => void;
   onBlur?: () => void;
   /**
    * Upload transport. `uploadId` is minted by the editor when it inserts the
@@ -396,6 +398,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       ariaDescribedBy,
       debounceMs = 300,
       onSubmit,
+      onEnter,
       onBlur,
       onUploadFile,
       pasteAsFileThreshold,
@@ -442,6 +445,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const inFlightUploadsRef = useRef<Map<string, Promise<UploadResult | null>>>(new Map());
     const onUpdateRef = useRef(onUpdate);
     const onSubmitRef = useRef(onSubmit);
+    const onEnterRef = useRef(onEnter);
     const onBlurRef = useRef(onBlur);
     const onReadyRef = useRef(onReady);
     const onUploadingChangeRef = useRef(onUploadingChange);
@@ -585,6 +589,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // Keep refs in sync without recreating editor
     onUpdateRef.current = onUpdate;
     onSubmitRef.current = onSubmit;
+    onEnterRef.current = onEnter;
     onBlurRef.current = onBlur;
     onReadyRef.current = onReady;
     onUploadingChangeRef.current = onUploadingChange;
@@ -687,6 +692,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         placeholder: () => placeholderRef.current,
         queryClient,
         onSubmitRef,
+        onEnterRef,
         onUploadFileRef,
         pasteAsFileThresholdRef,
         disableMentions,

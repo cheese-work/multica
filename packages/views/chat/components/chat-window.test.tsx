@@ -63,6 +63,7 @@ vi.mock("./use-chat-context-items", () => ({ useChatContextItems: () => [] }));
 vi.mock("./chat-window-messages", () => ({ ChatWindowMessages: () => null }));
 // Fork (CHE-1794): the window opens search hits through the router; these tests only cover the header buttons.
 vi.mock("./use-open-chat-message-hit", () => ({ useOpenChatMessageHit: () => vi.fn() }));
+vi.mock("../../common/app-requests", () => ({ ChatAppRequests: () => null }));
 vi.mock("./chat-input", () => ({ ChatInput: () => null }));
 vi.mock("./chat-queue", () => ({ ChatQueue: () => null }));
 vi.mock("./chat-empty-state", () => ({ EmptyState: () => null }));

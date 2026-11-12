@@ -144,6 +144,18 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"99935_project_member_user_idx":                             "idx_project_member_workspace_user",
+	"99931_app_action_request_chat_idx":                         "idx_app_action_request_chat",
+	"99930_app_tool_call_issue_idx":                             "idx_app_tool_call_issue",
+	"99929_app_action_request_task_idx":                         "idx_app_action_request_task",
+	"99928_app_tool_call_workspace_idx":                         "idx_app_tool_call_workspace",
+	"99927_app_action_request_pending_idx":                      "idx_app_action_request_pending",
+	"99926_app_action_request_issue_idx":                        "idx_app_action_request_issue",
+	"99925_app_action_rule_scope_idx":                           "idx_app_action_rule_scope",
+	"99924_agent_app_workspace_toolkit_idx":                     "idx_agent_app_workspace_toolkit",
+	"99923_agent_app_agent_toolkit_idx":                         "idx_agent_app_agent_toolkit",
+	"99922_workspace_composio_connection_status_idx":            "idx_workspace_composio_connection_status",
+	"99921_workspace_composio_connection_account_idx":           "idx_workspace_composio_connection_account",
 	"99997_skill_version_index":                                 "idx_skill_version_skill_version",
 	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
 	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",

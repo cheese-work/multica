@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -533,8 +534,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			return fmt.Errorf("%w: task start exceeds %d bytes", errInvalidResponseBody, maxStartTaskResponseBytes)
 		}
 		var response struct {
-			SupplementCapability string `json:"supplement_capability"`
-			PREventCapability    string `json:"pr_event_capability"`
+			SupplementCapability     string `json:"supplement_capability"`
+			PREventCapability        string `json:"pr_event_capability"`
+			ProcessCleanupCapability string `json:"process_cleanup_capability"`
 		}
 		// Empty acknowledgements start the task without negotiating supplements.
 		// Invalid JSON fails without retrying; transport read failures can retry.
@@ -547,6 +549,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
 				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
 			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+		}
+		if slices.Contains(capabilities, protocol.DaemonCapabilityMuseAppProcessCleanupV1) && response.ProcessCleanupCapability != protocol.DaemonCapabilityMuseAppProcessCleanupV1 {
+			return fmt.Errorf("%w: Muse app requires server support for remote execution cleanup; upgrade the Multica server before using this runtime", errInvalidResponseBody)
 		}
 		return nil
 	}

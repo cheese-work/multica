@@ -116,7 +116,11 @@ func requireActiveTaskProject(ctx context.Context, queries *db.Queries, task db.
 	return nil
 }
 
-func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateProjectParams, agentWrite bool, audit func(ctx context.Context, queries *db.Queries, previous, updated db.Project) error) (db.Project, error) {
+// ProjectAccessWrite applies a project's visibility and member changes inside
+// UpdateProject's transaction and returns the project as stored afterwards.
+type ProjectAccessWrite func(ctx context.Context, queries *db.Queries, project db.Project) (db.Project, error)
+
+func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtype.UUID, params db.UpdateProjectParams, agentWrite bool, access ProjectAccessWrite, audit func(ctx context.Context, queries *db.Queries, previous, updated db.Project) error) (db.Project, error) {
 	tx, err := service.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.Project{}, err
@@ -139,6 +143,13 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 	project, err := queries.UpdateProject(ctx, params)
 	if err != nil {
 		return db.Project{}, err
+	}
+	// Visibility and member changes share the update's transaction, so a
+	// rejected member list leaves the project untouched.
+	if access != nil {
+		if project, err = access(ctx, queries, project); err != nil {
+			return db.Project{}, err
+		}
 	}
 	var cancelled []db.AgentTaskQueue
 	if ProjectInactive(project.Status) || ProjectInactive(previous.Status) {

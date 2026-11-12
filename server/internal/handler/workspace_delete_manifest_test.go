@@ -246,6 +246,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"plugin_package_version":             workspaceDelete,
 	"plugin_package_file":                workspaceDelete,
 	"project":                            workspaceDelete,
+	"project_member":                     workspaceDelete,
 	"project_resource":                   workspaceDelete,
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
@@ -303,6 +304,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"wecom_install_session":              workspaceDelete,
+	"workspace_composio_connection":      workspaceDelete,
+	"agent_app":                          workspaceDelete,
+	"app_action_rule":                    workspaceDelete,
+	"app_action_request":                 workspaceDelete,
+	"app_tool_call":                      workspaceDelete,
+	"workspace_app_setting":              workspaceDelete,
+	"app_tool_class_override":            workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,

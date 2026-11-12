@@ -30,6 +30,9 @@ func leafPaths(c *cobra.Command, prefix []string, out *[]string) {
 // command has no `multica <path>` mention in the shipped platform skill, so a
 // new verb cannot land without agents being able to learn it.
 func TestEveryCommandIsDocumentedInTheBuiltinSkill(t *testing.T) {
+	// TestMain moves the binary into a scratch home; the relative corpus paths
+	// below resolve from the package directory.
+	t.Chdir(testLaunchDir)
 	var corpus strings.Builder
 	root := filepath.Join("..", "..", "internal", "service", "builtin_skills")
 	// The runtime brief is the other place an agent learns a verb.

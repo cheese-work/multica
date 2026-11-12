@@ -136,6 +136,10 @@ type Service struct {
 	authCache    map[string]string
 	authCacheExp time.Time
 	authCacheTTL time.Duration
+	// authCreateMu serializes creating managed auth configs so two concurrent
+	// connects for the same new app do not register two configs.
+	authCreateMu sync.Mutex
+	tools        toolCache
 }
 
 // NewService validates its inputs and returns a ready Service. It errors when a
@@ -239,8 +243,18 @@ func toolkitLogoURL(slug, upstreamLogoURL string) string {
 // The composio_user_id sent to Composio is the Multica user id verbatim — the
 // invariant the rest of the integration relies on.
 func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitSlug, origin string) (string, error) {
+	return s.BeginConnectReturning(ctx, userID, toolkitSlug, "", origin)
+}
+
+// BeginConnectReturning is BeginConnect whose callback sends the browser back
+// to returnTo, an app path; an unsafe or empty path keeps the settings page.
+// origin is the browser origin that started the flow (see util.ReturnOrigin).
+func (s *Service) BeginConnectReturning(ctx context.Context, userID pgtype.UUID, toolkitSlug, returnTo, origin string) (string, error) {
+	if !SafeReturnPath(returnTo) {
+		returnTo = ""
+	}
 	slug := strings.ToLower(strings.TrimSpace(toolkitSlug))
-	authConfigID, err := s.authConfigForToolkit(ctx, slug)
+	authConfigID, err := s.ensureAuthConfig(ctx, slug)
 	if err != nil {
 		return "", err
 	}
@@ -257,6 +271,7 @@ func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitS
 		ToolkitSlug:  slug,
 		AuthConfigID: authConfigID,
 		Origin:       origin,
+		ReturnTo:     returnTo,
 		Exp:          s.now().Add(s.stateTTL).Unix(),
 	})
 	if err != nil {
@@ -286,23 +301,31 @@ func (s *Service) BeginConnect(ctx context.Context, userID pgtype.UUID, toolkitS
 //
 // Idempotency: the upsert is keyed on (user_id, connected_account_id), so a
 // duplicate callback re-activates the same row instead of creating a second.
-func (s *Service) CompleteCallback(ctx context.Context, state, status, connectedAccountID string) (slug, origin string, err error) {
+func (s *Service) CompleteCallback(ctx context.Context, state, status, connectedAccountID string) (CallbackResult, error) {
 	claims, err := verifyState(s.secret, state, s.now())
 	if err != nil {
-		return "", "", err
+		return CallbackResult{}, err
+	}
+	result := CallbackResult{ToolkitSlug: claims.ToolkitSlug, WorkspaceID: claims.WorkspaceID, ReturnTo: claims.ReturnTo, Origin: claims.Origin}
+	if claims.WorkspaceID == "" {
+		result.UserID = claims.UserID
 	}
 
 	if !strings.EqualFold(strings.TrimSpace(status), "success") {
 		// Honor the state for the redirect slug, but do not write an active row.
-		return claims.ToolkitSlug, claims.Origin, ErrConnectNotSuccessful
+		return result, ErrConnectNotSuccessful
 	}
 	if strings.TrimSpace(connectedAccountID) == "" {
-		return claims.ToolkitSlug, claims.Origin, errors.New("composio: callback missing connected_account_id")
+		return result, errors.New("composio: callback missing connected_account_id")
+	}
+
+	if result.Team() {
+		return result, s.completeTeamCallback(ctx, claims, connectedAccountID)
 	}
 
 	userID, err := util.ParseUUID(claims.UserID)
 	if err != nil {
-		return claims.ToolkitSlug, claims.Origin, fmt.Errorf("composio: state has invalid user id: %w", err)
+		return result, fmt.Errorf("composio: state has invalid user id: %w", err)
 	}
 
 	// The auth_config_id was resolved at BeginConnect and signed into the state,
@@ -322,7 +345,7 @@ func (s *Service) CompleteCallback(ctx context.Context, state, status, connected
 	// composio_user_id == multica user id invariant) and was created under the
 	// toolkit's auth config. Any mismatch fails closed with ErrAccountVerification.
 	if err := s.verifyAccountOwnership(ctx, connectedAccountID, claims.UserID, authConfigID); err != nil {
-		return claims.ToolkitSlug, claims.Origin, err
+		return result, err
 	}
 
 	if _, err := s.store.UpsertUserComposioConnection(ctx, db.UpsertUserComposioConnectionParams{
@@ -333,9 +356,9 @@ func (s *Service) CompleteCallback(ctx context.Context, state, status, connected
 		// Invariant: composio_user_id == Multica user id.
 		ComposioUserID: claims.UserID,
 	}); err != nil {
-		return claims.ToolkitSlug, claims.Origin, fmt.Errorf("composio: upsert connection: %w", err)
+		return result, fmt.Errorf("composio: upsert connection: %w", err)
 	}
-	return claims.ToolkitSlug, claims.Origin, nil
+	return result, nil
 }
 
 // ListConnections returns the user's active connections.
@@ -460,14 +483,34 @@ func (s *Service) CreateMCPSession(ctx context.Context, userID pgtype.UUID) (*MC
 // the Composio tab. The older `/settings/integrations` path was NOT a real
 // route and 404'd after the legacy rewrite. When FrontendBaseURL is unset it
 // returns a site-relative path.
-func (s *Service) CallbackRedirect(slug string, success bool, origin string) string {
-	var path string
-	if success {
-		path = "/settings?tab=integrations&connected=" + url.QueryEscape(slug)
-	} else {
-		path = "/settings?tab=integrations&error=composio_connect_failed"
+func (s *Service) CallbackRedirect(result CallbackResult, success bool) string {
+	// The browser returns to the origin that started the flow when it is still
+	// allowed (util.ReturnOrigin), else the configured frontend URL.
+	base := util.ReturnOrigin(result.Origin, s.frontendURL)
+	if result.ReturnTo != "" && SafeReturnPath(result.ReturnTo) {
+		path, rawQuery, _ := strings.Cut(result.ReturnTo, "?")
+		q, err := url.ParseQuery(rawQuery)
+		if err != nil {
+			q = url.Values{}
+		}
+		if success {
+			q.Set("app_connected", result.ToolkitSlug)
+		} else {
+			q.Set("app_connect_error", result.ToolkitSlug)
+		}
+		return base + path + "?" + q.Encode()
 	}
-	return util.ReturnOrigin(origin, s.frontendURL) + path
+	q := url.Values{}
+	q.Set("tab", "apps")
+	if success {
+		q.Set("connected", result.ToolkitSlug)
+	} else {
+		q.Set("error", "composio_connect_failed")
+	}
+	if result.Team() {
+		q.Set("scope", "team")
+	}
+	return base + "/settings?" + q.Encode()
 }
 
 // rowToConnection maps a DB row to the API-facing Connection view.
@@ -531,7 +574,7 @@ func (s *Service) ListToolkits(ctx context.Context) ([]ToolkitView, error) {
 			seen[slug] = struct{}{}
 			// Filter out toolkits with no enabled auth config: the user has no
 			// working action for them, so they are omitted from the catalog.
-			if _, canConnect := connectable[slug]; !canConnect {
+			if _, canConnect := connectable[slug]; !canConnect && len(tk.ComposioManagedAuthSchemes) == 0 {
 				continue
 			}
 			category := ""
