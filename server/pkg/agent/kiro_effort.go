@@ -60,7 +60,7 @@ func parseKiroModelThinking(raw json.RawMessage) (map[string]*ModelThinking, err
 			seen[value] = true
 			thinking.SupportedLevels = append(thinking.SupportedLevels, ThinkingLevel{
 				Value: value,
-				Label: strings.Title(value), //nolint:staticcheck
+				Label: strings.Title(value), //nolint:staticcheck // ASCII effort names; strings.Title is enough
 			})
 		}
 		if len(thinking.SupportedLevels) == 0 {
