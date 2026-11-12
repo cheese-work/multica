@@ -456,7 +456,7 @@ func discoverDevinModels(ctx context.Context, runtimeCmd Command) ([]Model, erro
 		return nil, fmt.Errorf("devin model discovery: %s", devinDiagnostic(err.Error(), os.Environ()))
 	}
 	if len(models) == 0 {
-		return nil, fmt.Errorf("Devin returned no model choices: set WINDSURF_API_KEY in the daemon environment or run devin auth login as the daemon user, and check your team's model allowlist")
+		return nil, fmt.Errorf("devin returned no model choices: set WINDSURF_API_KEY in the daemon environment or run devin auth login as the daemon user, and check your team's model allowlist")
 	}
 	return models, nil
 }

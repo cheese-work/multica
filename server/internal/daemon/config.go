@@ -1035,7 +1035,7 @@ var zcodeDesktopAppBundlePaths = func() []string {
 		return nil
 	}
 	const bundle = "ZCode.app/Contents/Resources/glm/zcode.cjs"
-	paths := []string{filepath.Join("/Applications", bundle)}
+	paths := []string{"/Applications/" + bundle}
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(home, "Applications", bundle))
 	}
