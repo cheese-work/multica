@@ -114,9 +114,9 @@ The `200` response carries `decision_id`, `action_id`, `action_type`, `action_ve
 - `pending`: waiting for the owner.
 - `approved`: the owner approved with a passkey. `approver_id` and `answered_at` are set.
 - `rejected`: the owner rejected it.
-- `withdrawn`: the request was withdrawn before use. This is how to revoke an approval that was not used yet.
-- `revoked`: the approval was taken back after it was given. `revoked_at` is set.
-- `expired`: the window closed before an answer.
+- `withdrawn`: the request was withdrawn before it was answered.
+- `revoked`: the owner took the approval back after giving it, with a passkey, through the revoke route (`POST /api/decision-requests/{id}/revoke`). This is how to invalidate an approval that was not used yet. `revoked_at` is set.
+- `expired`: the window closed. An approval past its deadline also reads `expired`.
 - `cancelled` and `failed`: the action ended without an approval taking effect.
 
 An unknown decision returns `404`. Any other credential, a PAT without the scope, or a PAT whose user does not own the workspace returns `403`.

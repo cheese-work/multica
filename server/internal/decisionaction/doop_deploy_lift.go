@@ -36,6 +36,9 @@ func normalizeDoopDeployLift(raw json.RawMessage, slots []SecretSlot) (json.RawM
 	return out, nil, err
 }
 
+// The lift is its own inverse: it changes nothing, so undoing it changes
+// nothing either. The owner's revoke (passkey) is what invalidates an approval
+// that has not been used yet.
 func init() {
-	Register(&Definition{Type: "doop.deploy_lift", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Lift the doop deploy train", Summary: "Lets the doop deploy train with the proposed marker go ahead. Nothing else changes."}, MinClass: "deploy", Target: TargetNone, OwnerOnly: true, Normalize: normalizeDoopDeployLift})
+	Register(&Definition{Type: "doop.deploy_lift", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Lift the doop deploy train", Summary: "Lets the doop deploy train with the proposed marker go ahead. Nothing else changes."}, MinClass: "deploy", Target: TargetNone, OwnerOnly: true, Inverse: "doop.deploy_lift", Normalize: normalizeDoopDeployLift})
 }

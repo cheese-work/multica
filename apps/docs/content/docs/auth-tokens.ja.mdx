@@ -114,9 +114,9 @@ curl https://api.multica.ai/api/decisions/<decision-id>/state \
 - `pending`: オーナーの回答待ち。
 - `approved`: オーナーがパスキーで承認しました。`approver_id` と `answered_at` が設定されます。
 - `rejected`: オーナーが却下しました。
-- `withdrawn`: 使用前にリクエストが取り下げられました。未使用の承認を取り消す方法です。
-- `revoked`: 承認が与えられた後に取り消されました。`revoked_at` が設定されます。
-- `expired`: 回答前に期限が切れました。
+- `withdrawn`: 回答される前にリクエストが取り下げられました。
+- `revoked`: オーナーが承認後に、パスキーを使って取り消しルート（`POST /api/decision-requests/{id}/revoke`）で承認を取り消しました。未使用の承認を無効にする方法です。`revoked_at` が設定されます。
+- `expired`: 期限が切れました。期限を過ぎた承認も `expired` と表示されます。
 - `cancelled` と `failed`: 承認が効力を持たないままアクションが終了しました。
 
 存在しない決定は `404` を返します。他の認証情報、このスコープを持たない PAT、ユーザーがワークスペースのオーナーではない PAT は `403` を返します。

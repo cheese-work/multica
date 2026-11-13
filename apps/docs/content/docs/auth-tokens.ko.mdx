@@ -114,9 +114,9 @@ curl https://api.multica.ai/api/decisions/<decision-id>/state \
 - `pending`: 소유자의 답을 기다리는 중.
 - `approved`: 소유자가 패스키로 승인했습니다. `approver_id`와 `answered_at`이 설정됩니다.
 - `rejected`: 소유자가 거절했습니다.
-- `withdrawn`: 사용 전에 요청이 철회되었습니다. 아직 사용하지 않은 승인을 취소하는 방법입니다.
-- `revoked`: 승인이 주어진 뒤 취소되었습니다. `revoked_at`이 설정됩니다.
-- `expired`: 답이 오기 전에 기간이 끝났습니다.
+- `withdrawn`: 답변되기 전에 요청이 철회되었습니다.
+- `revoked`: 소유자가 승인한 뒤 패스키로 취소 경로(`POST /api/decision-requests/{id}/revoke`)를 통해 승인을 취소했습니다. 아직 사용하지 않은 승인을 무효화하는 방법입니다. `revoked_at`이 설정됩니다.
+- `expired`: 기간이 끝났습니다. 기한이 지난 승인도 `expired`로 표시됩니다.
 - `cancelled`와 `failed`: 승인이 효력을 갖지 못한 채 액션이 끝났습니다.
 
 알 수 없는 결정은 `404`를 반환합니다. 다른 자격 증명, 이 범위가 없는 PAT, 사용자가 워크스페이스 소유자가 아닌 PAT는 `403`을 반환합니다.

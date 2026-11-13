@@ -114,9 +114,9 @@ curl https://api.multica.ai/api/decisions/<decision-id>/state \
 - `pending`：等待所有者回答。
 - `approved`：所有者已用通行密钥批准。`approver_id` 和 `answered_at` 已设置。
 - `rejected`：所有者已拒绝。
-- `withdrawn`：请求在使用前被撤回。这是撤销尚未使用的批准的方式。
-- `revoked`：批准在给出之后被收回。`revoked_at` 已设置。
-- `expired`：在回答之前窗口已关闭。
+- `withdrawn`：请求在被答复前已撤回。
+- `revoked`：所有者在批准之后，使用通行密钥通过撤销路由（`POST /api/decision-requests/{id}/revoke`）收回了批准。这是使尚未使用的批准失效的方式。`revoked_at` 已设置。
+- `expired`：窗口已关闭。超过截止时间的批准也显示为 `expired`。
 - `cancelled` 和 `failed`：动作结束，但没有任何批准生效。
 
 未知的决策返回 `404`。其他凭据、没有该范围的 PAT，或用户不是工作区所有者的 PAT，返回 `403`。

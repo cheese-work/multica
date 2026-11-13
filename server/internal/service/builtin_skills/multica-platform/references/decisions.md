@@ -250,8 +250,11 @@ only, owner of the workspace) returns `decision_id`, `action_id`,
 `action_type`, `action_version`, `state`, `approver_id`, `answered_at`,
 `withdrawn_at`, `revoked_at`, `expires_at` and `params`. `state` is `pending`,
 `approved`, `rejected`, `withdrawn`, `revoked`, `expired`, `cancelled` or
-`failed`. Withdrawing the request before the lift runs is the revoke path for
-this action. An unknown id is 404; any other credential is 403.
+`failed`. An approval past its deadline reads `expired`. The owner invalidates
+an approved lift that has not been used with the passkey revoke route
+(`POST /api/decision-requests/{id}/revoke`); the read then says `revoked`.
+`doop.deploy_lift` is its own inverse: the revoke changes nothing else. An
+unknown id is 404; any other credential is 403.
 
 ## Config-change action files
 

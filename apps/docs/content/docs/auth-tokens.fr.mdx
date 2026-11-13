@@ -114,9 +114,9 @@ La réponse `200` contient `decision_id`, `action_id`, `action_type`, `action_ve
 - `pending` : en attente du propriétaire.
 - `approved` : le propriétaire a approuvé avec une passkey. `approver_id` et `answered_at` sont renseignés.
 - `rejected` : le propriétaire a refusé.
-- `withdrawn` : la demande a été retirée avant utilisation. C'est ainsi qu'on révoque une approbation non encore utilisée.
-- `revoked` : l'approbation a été reprise après avoir été donnée. `revoked_at` est renseigné.
-- `expired` : la fenêtre s'est fermée avant une réponse.
+- `withdrawn` : la demande a été retirée avant d'avoir reçu une réponse.
+- `revoked` : le propriétaire a repris l'approbation après l'avoir donnée, avec une passkey, via la route de révocation (`POST /api/decision-requests/{id}/revoke`). C'est ainsi qu'on invalide une approbation non encore utilisée. `revoked_at` est renseigné.
+- `expired` : la fenêtre s'est fermée. Une approbation dont l'échéance est passée vaut aussi `expired`.
 - `cancelled` et `failed` : l'action s'est terminée sans qu'une approbation prenne effet.
 
 Une décision inconnue renvoie `404`. Tout autre identifiant, un PAT sans cette portée ou un PAT dont l'utilisateur n'est pas propriétaire de l'espace de travail renvoie `403`.

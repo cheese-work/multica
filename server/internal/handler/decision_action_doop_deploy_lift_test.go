@@ -32,8 +32,8 @@ func TestDeployLiftIsRegisteredAsAPasskeyOwnerOnlyDeployAction(test *testing.T) 
 	if !found {
 		test.Fatal("doop.deploy_lift@1 is not registered")
 	}
-	if !definition.RequiresPasskey() || definition.MinClass != "deploy" || definition.Inverse != "" || definition.Template.Title == "" {
-		test.Fatalf("definition = %+v, want passkey, class deploy, no inverse, a template", definition)
+	if !definition.RequiresPasskey() || definition.MinClass != "deploy" || definition.Inverse != "doop.deploy_lift" || definition.Template.Title == "" {
+		test.Fatalf("definition = %+v, want passkey, class deploy, itself as inverse, a template", definition)
 	}
 	if decisionActionExecutors["doop.deploy_lift"] == nil {
 		test.Fatal("doop.deploy_lift has no executor")

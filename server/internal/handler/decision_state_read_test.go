@@ -108,13 +108,30 @@ func TestDecisionStateReadsExpired(test *testing.T) {
 	})
 }
 
+// An owner who approved a lift can take the approval back through the public
+// revoke route, and the state read then says so.
 func TestDecisionStateReadsRevoked(test *testing.T) {
+	resetDecisionLease(test)
 	action := newPendingDeployLift(test, deployLiftParams)
 	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
-	dbfx.Exec(test, `UPDATE decision_action SET revoked_at = now(), revoked_by_user_id = $2, revoke_reason = 'test' WHERE id = $1`, action.actionID, action.humanID)
+	action.revoke(test, withVerifier(acceptingVerifier), map[string]any{"reason": "marker was wrong"}, http.StatusOK)
 	read := wantState(test, action, "revoked")
 	if read.RevokedAt == nil || read.ApproverID == nil {
 		test.Fatalf("revoked read = %+v, want the revoke time and the original approver", read)
+	}
+	action.revoke(test, withVerifier(acceptingVerifier), map[string]any{"reason": "again"}, http.StatusConflict)
+}
+
+// An approval whose window has closed no longer lifts anything: the read says
+// expired, not approved, and still names the approver.
+func TestDecisionStateReadsAnApprovalPastItsDeadlineAsExpired(test *testing.T) {
+	action := newPendingDeployLift(test, deployLiftParams)
+	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
+	wantState(test, action, "approved")
+	dbfx.Exec(test, `UPDATE decision_action SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, action.actionID)
+	read := wantState(test, action, "expired")
+	if read.ApproverID == nil {
+		test.Fatalf("expired read = %+v, want the original approver kept", read)
 	}
 }
 

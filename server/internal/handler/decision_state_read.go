@@ -33,7 +33,8 @@ type DecisionStateResponse struct {
 }
 
 // decisionStateOf names the one state a reader acts on. Precedence: a revoke
-// outranks everything, then a withdrawal, a rejection, expiry, approval.
+// outranks everything, then a withdrawal, a rejection, expiry, approval. An
+// approval past its deadline reads expired: it no longer lifts anything.
 func decisionStateOf(request db.DecisionRequest, action db.DecisionAction, now time.Time) string {
 	switch {
 	case action.RevokedAt.Valid:
@@ -41,6 +42,7 @@ func decisionStateOf(request db.DecisionRequest, action db.DecisionAction, now t
 	case request.WithdrawnAt.Valid:
 		return "withdrawn"
 	}
+	pastDeadline := action.ExpiresAt.Valid && !action.ExpiresAt.Time.After(now)
 	switch action.State {
 	case "rejected":
 		return "rejected"
@@ -49,11 +51,14 @@ func decisionStateOf(request db.DecisionRequest, action db.DecisionAction, now t
 	case "cancelled":
 		return "cancelled"
 	case "executed":
+		if pastDeadline {
+			return "expired"
+		}
 		return "approved"
 	case "failed":
 		return "failed"
 	}
-	if action.ExpiresAt.Valid && !action.ExpiresAt.Time.After(now) {
+	if pastDeadline {
 		return "expired"
 	}
 	return "pending"
