@@ -5,8 +5,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   Loader2,
   Pin,
@@ -22,6 +20,9 @@ import { api } from "@multica/core/api";
 import {
   pendingChatTasksOptions,
   chatKeys,
+  filterChatSessions,
+  openDecisionRequestsOptions,
+  sessionActivityTime,
   sortArchivedChatSessions,
   sortChatSessions,
 } from "@multica/core/chat/queries";
@@ -44,8 +45,13 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
-import { formatChatTime } from "./format-chat-time";
+import { formatChatClock } from "./format-chat-time";
+import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
 import { NeedsYouList } from "./needs-you-list";
+import { useAttentionRefresh } from "./use-attention-refresh";
+import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
+import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
+import { useOnline } from "../../settings/components/use-online";
 
 const apiLogger = createLogger("chat.api");
 
@@ -110,6 +116,9 @@ interface ChatThreadListProps {
   onArchive: (session: ChatSession) => void;
   /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
   onOpenSearchHit?: (hit: ChatSearchHit) => void;
+  /** First load of the list. Only shown while there are no rows to show. */
+  loadState?: "loading" | "error";
+  onRetry?: () => void;
 }
 
 function ChatThreadListBody({
@@ -118,6 +127,8 @@ function ChatThreadListBody({
   activeSessionId,
   onSelectSession,
   onArchive,
+  loadState,
+  onRetry,
 }: ChatThreadListProps) {
   const { t } = useT("chat");
   const locale = useLocale();
@@ -135,10 +146,8 @@ function ChatThreadListBody({
   const getShareableUrl = navigation?.getShareableUrl;
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
-  // Split the flat cache locally: active chats fill the default history view,
-  // archived chats fill the "Archived" view. Both sorted pinned-first (then by
-  // activity) so the list stays ordered even after an optimistic pin/archive or
-  // a WS patch mutates the flat cache in place.
+  // One flat cache; the chip decides the slice. Every non-archived chip keeps
+  // pinned-first order, Archived sorts by activity only.
   // A continued DM lives on in its successor's transcript, so only the newest
   // DM of a chain gets a row. A successor missing from the cache leaves its
   // source listed rather than lost.
@@ -146,22 +155,36 @@ function ChatThreadListBody({
     const ids = new Set(sessions.map((s) => s.id));
     return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
   }, [sessions]);
-  const historySessions = useMemo(
-    () => sortChatSessions(rows.filter((s) => s.status !== "archived")),
-    [rows],
-  );
-  const archivedSessions = useMemo(
-    () => sortArchivedChatSessions(rows.filter((s) => s.status === "archived")),
-    [rows],
-  );
 
-  // Which view is showing. Falls back to history when the archived list drains
-  // (last chat unarchived / deleted) so we never strand the user on an empty
-  // archive.
-  const [view, setView] = useState<"history" | "archived">("history");
-  useEffect(() => {
-    if (view === "archived" && archivedSessions.length === 0) setView("history");
-  }, [view, archivedSessions.length]);
+  const listView = useChatStore((s) => s.listView);
+  const setListView = useChatStore((s) => s.setListView);
+  const decisionsQuery = useQuery(openDecisionRequestsOptions(wsId));
+  const decisionRequests = Array.isArray(decisionsQuery.data) ? decisionsQuery.data : undefined;
+  const decisionSessionIds = useMemo(
+    () => new Set((decisionRequests ?? []).map((r) => r.chat_session_id)),
+    [decisionRequests],
+  );
+  const visibleSessions = useMemo(() => {
+    const picked = filterChatSessions(rows, listView, decisionSessionIds);
+    return [
+      ...sortChatSessions(picked.filter((s) => s.status !== "archived")),
+      ...sortArchivedChatSessions(picked.filter((s) => s.status === "archived")),
+    ];
+  }, [rows, listView, decisionSessionIds]);
+  const counts = useMemo<ChatFilterCounts>(() => {
+    if (loadState === "loading" && rows.length === 0) return {};
+    const n = (view: Parameters<typeof filterChatSessions>[1]) =>
+      filterChatSessions(rows, view, decisionSessionIds).length;
+    return {
+      ...(decisionRequests ? { decisions: n("decisions") } : {}),
+      waiting: n("waiting"),
+      unseen: n("unseen"),
+      archived: n("archived"),
+    };
+  }, [rows, decisionSessionIds, decisionRequests, loadState]);
+  const hasUnclassified = rows.some((s) => (s.attention_unclassified_keys?.length ?? 0) > 0);
+  useAttentionRefresh(sessions);
+  const online = useOnline();
 
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
@@ -253,9 +276,12 @@ function ChatThreadListBody({
     const isConfirmingAction = isConfirmingDelete || isConfirmingStop;
     const titleText = session.title?.trim() || t(($) => $.window.untitled);
     const last = session.last_message ?? null;
-    const timeText = last
-      ? formatChatTime(last.created_at, locale)
-      : formatChatTime(session.updated_at, locale);
+    const timeText = formatChatClock(sessionActivityTime(session), locale);
+    const unseen = !isCurrent && (session.has_unread || (session.unread_count ?? 0) > 0);
+    // The active chip already says "Decisions" / "Unseen"; only day-grouped
+    // views need the tag.
+    const showDecisionTag =
+      decisionSessionIds.has(session.id) && listView !== "decisions" && listView !== "unseen";
 
     // The second line: typing/waiting → failed → preview.
     let previewNode: React.ReactNode;
@@ -288,7 +314,7 @@ function ChatThreadListBody({
       );
     } else if (last) {
       previewNode = (
-        <span className={cn("block truncate", unread > 0 ? "text-foreground" : "text-muted-foreground")}>
+        <span className={cn("block truncate", unseen ? "font-semibold text-foreground" : "text-muted-foreground")}>
           {last.role === "user" ? t(($) => $.list.you_prefix) : ""}
           {toPreview(last.content)}
         </span>
@@ -302,7 +328,7 @@ function ChatThreadListBody({
     // is the only place hard-delete lives; the history view offers the
     // reversible archive instead.
     const rowActions: RowActionItem[] =
-      view === "archived"
+      session.status === "archived"
         ? [
             {
               key: "unarchive",
@@ -415,10 +441,10 @@ function ChatThreadListBody({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
-            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unseen ? "font-bold text-foreground" : "font-medium")}>
               {titleText}
             </span>
-            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
+            <span className={cn("ml-auto shrink-0 text-micro", unseen ? "font-semibold text-brand" : "text-muted-foreground")}>{timeText}</span>
           </div>
 
           {/* Line 2: preview + unread badge, or an inline confirm prompt */}
@@ -452,6 +478,22 @@ function ChatThreadListBody({
               ) : (
                 <>
                   <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-caption">
+                    {unseen && (
+                      <span
+                        data-testid="chat-unseen-dot"
+                        role="img"
+                        aria-label={t(($) => $.list.unseen_dot)}
+                        className="size-[7px] shrink-0 rounded-full bg-brand"
+                      />
+                    )}
+                    {showDecisionTag && (
+                      <span
+                        data-testid="chat-decision-tag"
+                        className="shrink-0 rounded-xs bg-brand/15 px-1.5 text-caption font-semibold text-brand"
+                      >
+                        {t(($) => $.list.tag_decision)}
+                      </span>
+                    )}
                     {agentName && (
                       <>
                         <span className="max-w-[40%] shrink-0 truncate font-medium text-muted-foreground">
@@ -511,65 +553,61 @@ function ChatThreadListBody({
     );
   };
 
-  // Archived view: a back header, then the archived rows. Delete lives only
-  // here (via each row's hover actions).
-  if (view === "archived") {
-    return (
-      <>
-        <NeedsYouList sessions={rows} agents={agents} />
-        <button
-          type="button"
-          onClick={() => setView("history")}
-          className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <ChevronLeft className="size-4 shrink-0" />
-          <span className="truncate">{t(($) => $.list.archived_title)}</span>
-          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
-            {archivedSessions.length}
-          </span>
-        </button>
-        <div className="contents" data-testid="chat-thread-group-archived">
-          {archivedSessions.map(renderRow)}
-        </div>
-      </>
-    );
-  }
+  // Pinned rows get their own header in Main / All; everything else sits under
+  // its day. The Pinned chip is all pinned rows, so a header there says nothing.
+  const sections = useMemo(() => {
+    const label: Record<DayGroupKey | "pinned", string> = {
+      pinned: t(($) => $.list.group.pinned),
+      today: `${t(($) => $.list.group.today)} · ${new Date().toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "numeric" })}`,
+      yesterday: t(($) => $.list.group.yesterday),
+      thisWeek: t(($) => $.list.group.this_week),
+      older: t(($) => $.list.group.older),
+    };
+    const splitPinned = listView === "main" || listView === "all";
+    const pinned = splitPinned ? visibleSessions.filter((s) => s.pinned && s.status !== "archived") : [];
+    const rest = pinned.length > 0 ? visibleSessions.filter((s) => !pinned.includes(s)) : visibleSessions;
+    return [
+      { key: "pinned" as const, sessions: pinned },
+      ...groupByDay(rest, new Date(), Intl.DateTimeFormat().resolvedOptions().timeZone),
+    ]
+      .filter((g) => g.sessions.length > 0)
+      .map((g) => ({ ...g, label: label[g.key] }));
+  }, [visibleSessions, listView, locale, t]);
 
-  // History (default) view: active rows + a footer entry into the archive.
-  const archivedEntry = archivedSessions.length > 0 && (
-    <button
-      type="button"
-      onClick={() => setView("archived")}
-      className="mt-1 flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      <span className="flex size-9 shrink-0 items-center justify-center">
-        <Archive className="size-4" />
-      </span>
-      <span className="min-w-0 flex-1 truncate font-medium">{t(($) => $.list.archived_title)}</span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">{archivedSessions.length}</span>
-      <ChevronRight className="size-4 shrink-0 text-faint-foreground" />
-    </button>
-  );
-
-  if (historySessions.length === 0) {
-    return (
-      <>
-        <NeedsYouList sessions={rows} agents={agents} />
-        <div className="px-2 py-1.5 text-caption text-muted-foreground">
-          {t(($) => $.window.no_previous)}
-        </div>
-        {archivedEntry}
-      </>
+  let body: React.ReactNode;
+  if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
+  else if (rows.length === 0 && loadState === "error") body = <ListError onRetry={onRetry} />;
+  else if (listView === "waiting" && (visibleSessions.length > 0 || hasUnclassified))
+    body = <NeedsYouList sessions={rows} agents={agents} refresh={false} />;
+  else if (visibleSessions.length === 0)
+    body = <ListEmpty kind={rows.length === 0 ? "none" : listView === "waiting" ? "waiting" : "view"} />;
+  else
+    body = (
+      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
+        {sections.map((g) => (
+          <section key={g.key}>
+            <div
+              data-testid="chat-day-header"
+              data-group={g.key}
+              style={{ position: "sticky", top: 0 }}
+              className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
+            >
+              {/* Slot for the group checkbox (select mode). */}
+              <span data-slot="group-select" className="empty:hidden" />
+              <span className="min-w-0 flex-1 truncate">{g.label}</span>
+              <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
+            </div>
+            {g.sessions.map(renderRow)}
+          </section>
+        ))}
+      </div>
     );
-  }
 
   return (
     <>
-      <NeedsYouList sessions={rows} agents={agents} />
-      <div className="contents" data-testid="chat-thread-group-recent">
-        {historySessions.map(renderRow)}
-      </div>
-      {archivedEntry}
+      <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
+      {!online && <ListOffline />}
+      {body}
     </>
   );
 }

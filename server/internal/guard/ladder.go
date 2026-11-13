@@ -30,6 +30,7 @@ type Layer struct {
 	Verify  *bool        `json:"verify,omitempty"`
 	Plugins []Plugin     `json:"plugins,omitempty"`
 	Review  []ReviewRule `json:"review,omitempty"`
+	Rules   *Rules       `json:"rules,omitempty"`
 }
 
 // Target is where a call runs: Repo is owner/name and Path is relative to the
@@ -73,7 +74,7 @@ func (l *Layer) validate() error {
 	default:
 		return fmt.Errorf("unknown layer scope %q", l.Scope)
 	}
-	sub := Policy{Version: 1, Plugins: l.Plugins, Review: l.Review}
+	sub := Policy{Version: 1, Plugins: l.Plugins, Review: l.Review, Rules: l.Rules}
 	return sub.validate()
 }
 
@@ -88,7 +89,13 @@ func (p *Policy) hasPathLayer(repo string) bool {
 }
 
 // Resolve flattens the ladder for t into a Policy without layers.
-func (p *Policy) Resolve(t Target) *Policy {
+func (p *Policy) Resolve(t Target) *Policy { return p.resolve(t, nil, nil) }
+
+// resolve is Resolve with a repository file under the ladder: file is the
+// lowest layer, so any rung overrides it key by key, and a lock on a key
+// freezes it against the file too (the file is read first, then overridden).
+// reviewers are the file's, added to the review rule unless it says skip.
+func (p *Policy) resolve(t Target, file *Rules, reviewers []string) *Policy {
 	var layers []Layer
 	for _, l := range p.Layers {
 		if l.applies(t) {
@@ -101,9 +108,13 @@ func (p *Policy) Resolve(t Target) *Policy {
 		}
 		return len(layers[i].Path) < len(layers[j].Path)
 	})
-	layers = append([]Layer{{Locked: p.Locked, Verify: p.Verify, Plugins: p.Plugins, Review: p.Review}}, layers...)
+	layers = append([]Layer{{Locked: p.Locked, Verify: p.Verify, Plugins: p.Plugins, Review: p.Review, Rules: p.Rules}}, layers...)
+	if file != nil {
+		layers = append([]Layer{{Rules: file}}, layers...)
+	}
 
-	out := &Policy{Version: p.Version}
+	out := &Policy{Version: p.Version, fileReviewers: reviewers}
+	acc := &rulesAcc{tokens: map[string]bool{}}
 	frozen := map[string]bool{}
 	var plugins []string // plugin names in first-seen order
 	byPlugin := map[string]Plugin{}
@@ -120,6 +131,7 @@ func (p *Policy) Resolve(t Target) *Policy {
 		if l.Verify != nil {
 			set("verify", l.Locked, func() { v := *l.Verify; out.Verify = &v })
 		}
+		mergeRules(l, set, acc)
 		for _, pl := range l.Plugins {
 			set("plugin:"+pl.Name, l.Locked, func() {
 				if _, ok := byPlugin[pl.Name]; !ok {
@@ -144,6 +156,7 @@ func (p *Policy) Resolve(t Target) *Policy {
 			}
 		}
 	}
+	out.Rules = acc.rules()
 	for _, n := range plugins {
 		out.Plugins = append(out.Plugins, byPlugin[n])
 	}

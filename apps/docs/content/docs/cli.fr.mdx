@@ -412,6 +412,14 @@ multica system1 label submit --observation <observation-id> --kind burn_in|eval 
 
 La file contient des identifiants d'observation et des caractéristiques typées, jamais de prédiction. Elle contient au plus 20 observations du périmètre sans étiquette valide de ce type. Le serveur enregistre les identifiants échantillonnés et la graine lorsqu'il sert la file, et une tâche qui la redemande reçoit le même échantillon. `--supersedes` prend l'identifiant de l'étiquette valide à corriger ; sans lui, une deuxième étiquette pour la même observation reçoit 409.
 
+Tout membre de l'espace de travail lit l'état de qualification System 1 de chaque périmètre et version de prédicteur :
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` vaut `test_first_waiver` ou `ci:<repo>:<protocol>`. Chaque ligne couvre la dernière époque d'une version de prédicteur. Seules comptent les observations créées à partir du début de l'époque, et une nouvelle version ouvre sa propre époque. Un cas est une prédiction avec une étiquette de référence (la plus récente non remplacée). `denominator` compte les cas avec une prédiction non abstentionniste et une étiquette reconnue, `agreed` ceux où elles concordent, `abstained` les cas étiquetés que le prédicteur a laissés de côté, et `unmapped` les réponses en texte libre. `status` vaut `qualified` à 7 jours, avec au moins 20 cas et 90 % d'accord. Il vaut `insufficient_data` après 4 semaines avec moins de 20 cas comptés, `demoted` pour une époque rétrogradée, et `collecting` sinon.
+
 ## ID et formats de sortie
 
 Les tâches utilisent des clés comme `MUL-123` ou des UUID complets ; les préfixes courts d'UUID ne sont pas acceptés.
@@ -546,6 +554,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
 | `guard` | `exec <tool> -- <args>` | Exécuter un appel d'outil via le garde : `gh pr create`, `edit` et `ready` sont forcés en brouillon, étiquetés et relus ; les écritures sur les pull requests via `gh api` sont refusées | Code de sortie : celui de l'outil, 2 si le garde refuse. Env : `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | Vérifier une pull request par rapport à la politique et au fichier `.github/agent-rules.yml` du dépôt, sans la modifier. Le fichier est lu comme donnée à la pointe actuelle de la branche de base protégée de la PR, jamais depuis la branche de la PR ; un fichier absent n'ajoute aucune règle, un fichier mal formé ou une base illisible fait échouer la vérification. À utiliser comme contrôle CI | Code de sortie : 0 conforme, 1 règle enfreinte, 2 refusé. `-R owner/name` désigne le dépôt |
 | `guard` | `plugin list\|get\|set` | Lire la politique du garde enregistrée (`list`, `get <name>`) ou écrire le fichier d'action de décision qui la remplace (`set --file <policy.json> --out <action.json>`, ou `--dry-run`). La politique contient les plugins et règles de revue de l'espace de travail, plus des couches org, dépôt et chemin ; une couche plus profonde remplace une couche moins profonde clé par clé, et une couche ou l'espace de travail marqué `locked` fige ses clés face aux couches plus profondes. `set` n'envoie rien : une personne approuve le `workspace.settings.patch` avec une passkey. Le daemon transmet la politique approuvée à chaque exécution via `MULTICA_GUARD_POLICY` (un fichier hors de l'arbre de travail) avec `MULTICA_GUARD_POLICY_SHA256` | Sortie : lignes JSON (`--output table` pour un tableau) ; `set` affiche `before_sha256` et `after_sha256` |
 
 ### Propositions de décision

@@ -22,7 +22,7 @@ vi.mock("@multica/core/api", () => ({
   },
 }));
 
-import { NeedsYouList } from "./needs-you-list";
+import { NeedsYouList, decisionHeadline } from "./needs-you-list";
 
 const NOW = Date.parse("2026-11-08T03:00:00Z");
 const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
@@ -88,20 +88,14 @@ describe("Needs you box: attention rows", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("shows a plain one-line summary for a proposed action, never raw markdown", async () => {
-    listChatSessions.mockResolvedValue([]);
-    listOpenDecisionRequests.mockResolvedValue([{
-      id: "dr-1", issue_id: "i-1", issue_identifier: "CHE-4678", asking_agent_id: "agent-1", asking_agent_name: "Alpha",
-      ask: "**Proposed action**\n`workflow.steps.set` version 1 on [Issue](mention://issue/01a1bb73-0000-7000-8000-000000000000)\n\n**Parameters**\n```json\n{\n  \"step\": \"review\"\n}\n```",
-      escalation_class: "other", created_at: hoursAgo(1), chat_session_id: "s-1", message_id: "m-1",
-    }]);
-    renderBox();
-    await flush();
-    const row = screen.getByRole("link", { name: /CHE-4678/ });
-    expect(row.textContent).not.toContain("mention://");
-    expect(row.textContent).not.toContain("](");
-    expect(row.textContent).not.toContain("Parameters");
-    expect(row.textContent).toContain("workflow.steps.set v1 on CHE-4678");
+  it("decisionHeadline gives a plain one-line summary for a proposed action, never raw markdown", () => {
+    const ask =
+      "**Proposed action**\n`workflow.steps.set` version 1 on [Issue](mention://issue/01a1bb73-0000-7000-8000-000000000000)\n\n**Parameters**\n```json\n{\n  \"step\": \"review\"\n}\n```";
+    const headline = decisionHeadline(ask, "CHE-4678");
+    expect(headline).not.toContain("mention://");
+    expect(headline).not.toContain("](");
+    expect(headline).not.toContain("Parameters");
+    expect(headline).toBe("workflow.steps.set v1 on CHE-4678");
   });
 
   it("orders red, yellow, fresh, then oldest start, then id", async () => {

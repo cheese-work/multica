@@ -10,11 +10,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var system1Cmd = &cobra.Command{Use: "system1", Short: "System 1 burn-in labelling and qualification"}
+
 // System 1 burn-in labeller commands (CHE-4383 B4b). Both run inside the
 // assigned labeller's agent task: the server reads the task identity from the
 // token, so there is no agent or task flag.
-var system1Cmd = &cobra.Command{Use: "system1", Short: "System 1 burn-in labelling"}
-
 var system1LabelQueueCmd = &cobra.Command{
 	Use: "label-queue", Short: "Read the blind label queue (observation ids and typed features, never a prediction)", Args: cobra.NoArgs, RunE: runSystem1LabelQueue,
 }
@@ -23,6 +23,11 @@ var system1LabelCmd = &cobra.Command{Use: "label", Short: "Write System 1 labels
 
 var system1LabelSubmitCmd = &cobra.Command{
 	Use: "submit", Short: "Write one label for one observation", Args: cobra.NoArgs, RunE: runSystem1LabelSubmit,
+}
+
+// Member-readable System 1 qualification: epoch, counted cases, agreement and status per scope and predictor version.
+var system1ReportCmd = &cobra.Command{
+	Use: "report", Short: "Read the System 1 qualification report", Args: cobra.NoArgs, RunE: runSystem1Report,
 }
 
 func init() {
@@ -34,8 +39,10 @@ func init() {
 	system1LabelSubmitCmd.Flags().String("label", "", "Label value of the scope (required)")
 	system1LabelSubmitCmd.Flags().String("supersedes", "", "Id of the live label this one corrects")
 	system1LabelSubmitCmd.Flags().String("output", "json", "Output format (JSON only)")
+	system1ReportCmd.Flags().String("output", "json", "Output format (JSON only)")
+	system1ReportCmd.Flags().String("scope", "", "Only this scope, such as test_first_waiver or ci:<repo>:P1")
 	system1LabelCmd.AddCommand(system1LabelSubmitCmd)
-	system1Cmd.AddCommand(system1LabelQueueCmd, system1LabelCmd)
+	system1Cmd.AddCommand(system1LabelQueueCmd, system1LabelCmd, system1ReportCmd)
 	rootCmd.AddCommand(system1Cmd)
 }
 
@@ -80,6 +87,24 @@ func runSystem1LabelSubmit(command *cobra.Command, _ []string) error {
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/system1/labels", body, &result); err != nil {
 		return fmt.Errorf("submit label: %w", err)
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
+func runSystem1Report(command *cobra.Command, _ []string) error {
+	client, err := newAPIClient(command)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	path := "/api/system1/report"
+	if scope, _ := command.Flags().GetString("scope"); scope != "" {
+		path += "?" + url.Values{"scope": {scope}}.Encode()
+	}
+	var result map[string]any
+	if err := client.GetJSON(ctx, path, &result); err != nil {
+		return fmt.Errorf("read system1 report: %w", err)
 	}
 	return cli.PrintJSON(os.Stdout, result)
 }

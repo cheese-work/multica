@@ -444,6 +444,10 @@ deleted_system1_predictions AS (
 deleted_system1_label_samples AS (
     DELETE FROM system1_label_sample WHERE workspace_id = $1
 ),
+-- CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
+deleted_system1_epochs AS (
+    DELETE FROM system1_epoch WHERE workspace_id = $1
+),
 -- CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 -- budget tables are per App installation, have no workspace_id, and stay.
 deleted_ci_watch_configs AS (

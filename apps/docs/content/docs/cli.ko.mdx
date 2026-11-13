@@ -412,6 +412,14 @@ multica system1 label submit --observation <observation-id> --kind burn_in|eval 
 
 큐에는 관찰 ID와 타입이 지정된 특성만 들어 있고 예측은 절대 들어 있지 않습니다. 이 범위에서 같은 종류의 유효한 라벨이 아직 없는 관찰을 최대 20개 담습니다. 서버는 큐를 제공할 때 샘플링한 ID와 시드를 저장하며, 같은 작업이 다시 요청하면 같은 샘플을 받습니다. `--supersedes`에는 정정할 유효한 라벨의 ID를 넣습니다. 없이 같은 관찰에 두 번째 라벨을 쓰면 409가 됩니다.
 
+워크스페이스 멤버는 누구나 스코프와 예측기 버전별 System 1 자격 상태를 읽을 수 있습니다:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope`는 `test_first_waiver` 또는 `ci:<repo>:<protocol>`입니다. 각 행은 예측기 버전 하나의 최신 에포크를 다룹니다. 에포크 시작 이후에 만들어진 관측만 세고, 새 예측기 버전은 자체 에포크를 엽니다. 케이스는 기준 라벨(교체되지 않은 가장 최근 라벨)이 있는 예측 하나입니다. `denominator`는 기권이 아닌 예측과 매핑된 라벨이 있는 케이스, `agreed`는 둘이 일치한 케이스, `abstained`는 예측기가 기권한 라벨 케이스, `unmapped`는 자유 텍스트 답변 수입니다. `status`는 7일 이상, `denominator` 20 이상, 일치율 90% 이상이면 `qualified`입니다. 4주 뒤에도 센 케이스가 20 미만이면 `insufficient_data`, 강등된 에포크는 `demoted`, 그 외는 `collecting`입니다.
+
 ## ID와 출력 형식
 
 태스크에는 `MUL-123` 같은 key 또는 전체 UUID를 사용하며 UUID 짧은 접두사는 허용하지 않습니다.
@@ -538,6 +546,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `update` | — | CLI를 최신 버전으로 업데이트 | |
 | `version` | — | 버전 정보 확인 | `--output`(`text` 또는 `json`) |
 | `guard` | `exec <tool> -- <args>` | 가드를 거쳐 도구 실행: `gh pr create`·`edit`·`ready`는 드래프트 강제, 태그 부여, 재조회 확인을 거치고 `gh api`로 풀 리퀘스트에 쓰는 호출은 거부 | 종료 코드: 도구 자체의 코드, 가드가 거부하면 2. 환경 변수: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | 풀 리퀘스트를 정책과 저장소의 `.github/agent-rules.yml`에 비추어 변경 없이 검사합니다. 파일은 PR의 보호된 기본 브랜치의 현재 끝에서 데이터로 읽으며 PR 브랜치에서는 읽지 않습니다. 파일이 없으면 규칙이 추가되지 않고, 형식이 잘못된 파일이나 읽을 수 없는 기본 브랜치는 검사를 실패시킵니다. CI 검사로 사용합니다 | 종료 코드: 0 통과, 1 규칙 위반, 2 거부. `-R owner/name`으로 저장소 지정 |
 | `guard` | `plugin list\|get\|set` | 저장된 가드 정책을 읽거나(`list`, `get <name>`) 이를 대체하는 결정 액션 파일을 작성(`set --file <policy.json> --out <action.json>` 또는 `--dry-run`). 정책에는 워크스페이스 플러그인과 리뷰 규칙, 그리고 org·저장소·경로 레이어가 들어 있다. 더 깊은 레이어가 얕은 레이어를 키 단위로 덮어쓰며, `locked`가 붙은 레이어 또는 워크스페이스는 그 키를 더 깊은 레이어로부터 고정한다. `set`은 아무것도 전송하지 않으며, 사람이 passkey로 `workspace.settings.patch`를 승인한다. 데몬은 승인된 정책을 작업 트리 밖의 파일 `MULTICA_GUARD_POLICY`와 `MULTICA_GUARD_POLICY_SHA256`로 각 실행에 전달한다 | 출력: JSON 행(`--output table`은 표). `set`은 `before_sha256`과 `after_sha256`을 출력 |
 
 ### 결정 제안
