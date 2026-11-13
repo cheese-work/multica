@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -461,7 +462,11 @@ var issueRunsCmd = &cobra.Command{
 		"Defaults to this issue's full execution history, newest first. Narrow it to " +
 		"work in flight with --active, or widen it across the sub-issue family with " +
 		"--siblings when you need to know whether another agent is already working " +
-		"next to you.",
+		"next to you.\n\n" +
+		"With --init-context, table output prints each run's first-prompt token report " +
+		"(one row per part: est. tokens, budget, notes) instead of the run list; a run " +
+		"that did not report one prints a \"not reported\" line. --output json is unchanged: " +
+		"the report is already in each run's result.",
 	Args: exactArgs(1),
 	RunE: runIssueRuns,
 }
@@ -774,6 +779,7 @@ func init() {
 	issueRunsCmd.Flags().String("output", "table", "Output format: table or json")
 	issueRunsCmd.Flags().Bool("full-id", false, "Show full run UUIDs in table output")
 	issueRunsCmd.Flags().Bool("active", false, "Only in-flight runs (queued, dispatched, running, waiting_local_directory) instead of the full execution history. Answers \"is an agent working on this right now\" without pulling every past run.")
+	issueRunsCmd.Flags().Bool("init-context", false, "Show each run's first-prompt token report (per part: est. tokens, budget, notes) in table output. Cannot be combined with --siblings.")
 	issueRunsCmd.Flags().Bool("siblings", false, "Widen to this issue's sub-issue family — its parent (or itself, when it has no parent) plus every child of that parent — so you can see whether another run is already working alongside you before starting overlapping code or PR work. Implies --active. Returns a compact per-run row (run, issue, agent, status, started) rather than the full execution-log record. Ordered running-first, newest-first within a status, and capped at 20 rows; when the cap truncates the answer the CLI says so on stderr, so a short list is never mistaken for a complete one. Advisory only: it reports work in flight, it does not reserve or serialise anything.")
 
 	// issue usage
@@ -3451,6 +3457,12 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 
 	activeOnly, _ := cmd.Flags().GetBool("active")
 	siblings, _ := cmd.Flags().GetBool("siblings")
+	initContext, _ := cmd.Flags().GetBool("init-context")
+	if initContext && siblings {
+		// The family read returns a compact row with no result, so there is
+		// no report to show; failing beats an empty table that reads as "none".
+		return fmt.Errorf("--init-context cannot be combined with --siblings")
+	}
 
 	params := url.Values{}
 	if siblings {
@@ -3492,8 +3504,13 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, runs)
 	}
 
-	actors := loadActorDisplayLookup(ctx, client)
 	fullID, _ := cmd.Flags().GetBool("full-id")
+	if initContext {
+		printInitContextReports(os.Stdout, runs, fullID)
+		return nil
+	}
+
+	actors := loadActorDisplayLookup(ctx, client)
 
 	// The family read returns a different, deliberately smaller row than the
 	// execution log — no completed_at or error, because every row in it is
@@ -3547,6 +3564,53 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// stripControl drops C0, DEL and C1 control runes. The report comes from the
+// runtime, so unescaped ESC/OSC sequences could spoof output or reach the clipboard.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// printInitContextReports prints one token-report table per run. The report
+// lives at result.init_context.parts; runs from older daemons, failed runs and
+// runs still in flight have none, and say so rather than printing an empty table.
+func printInitContextReports(w io.Writer, runs []map[string]any, fullID bool) {
+	for _, r := range runs {
+		id := stripControl(displayID(strVal(r, "id"), fullID))
+		result, _ := r["result"].(map[string]any)
+		report, _ := result["init_context"].(map[string]any)
+		parts, _ := report["parts"].([]any)
+		if len(parts) == 0 {
+			fmt.Fprintf(w, "Run %s: init context not reported\n", id)
+			continue
+		}
+		rows := make([][]string, 0, len(parts))
+		for _, p := range parts {
+			pm, _ := p.(map[string]any)
+			var notes []string
+			if ns, ok := pm["notes"].([]any); ok {
+				for _, n := range ns {
+					if s, ok := n.(string); ok {
+						notes = append(notes, s)
+					}
+				}
+			}
+			rows = append(rows, []string{
+				stripControl(strVal(pm, "part")),
+				stripControl(formatMetadataValue(pm["tokens"])),
+				stripControl(formatMetadataValue(pm["budget"])),
+				stripControl(strings.Join(notes, "; ")),
+			})
+		}
+		fmt.Fprintf(w, "Run %s:\n", id)
+		cli.PrintTable(w, []string{"PART", "TOKENS", "BUDGET", "NOTES"}, rows)
+	}
 }
 
 func runIssueUsage(cmd *cobra.Command, args []string) error {
