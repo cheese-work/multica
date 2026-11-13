@@ -150,7 +150,7 @@ export function ChatFilterChips({
                   aria-hidden="true"
                   className={cn(
                     "tabular-nums",
-                    selected ? "opacity-75" : slot === "waiting" && count > 0 ? "font-semibold text-destructive" : "text-faint-foreground",
+                    selected ? "text-background" : slot === "waiting" && count > 0 ? "font-semibold text-destructive" : "text-faint-foreground",
                   )}
                 >
                   {count}
