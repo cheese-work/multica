@@ -761,9 +761,11 @@ func main() {
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
-	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset.
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
+	// external heartbeat and the probe credential are opt-in via MULTICA_PROVIDER_*
+	// env (CHE-4580).
 	if taskSvc.ProviderFailureProbe != nil {
-		go service.NewProbeHeartbeatMonitor(taskSvc.ProviderFailureProbe, service.SlogProbeAlertSink{}, time.Now, 10*time.Minute).Run(sweepCtx)
+		service.StartProviderProbeMonitor(sweepCtx, os.Getenv, taskSvc.ProviderFailureProbe)
 	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC

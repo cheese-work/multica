@@ -77,6 +77,13 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	if id, ok := extra["action_id"].(string); ok && source == "run_budget" {
 		rec.trigger.Cause.Ref = map[string]string{"action_id": id}
 	}
+	// A merge names the PRs that moved the issue, in the timeline and in the row.
+	if source == "pr_automation" {
+		if prs, ok := extra["pull_requests"].(string); ok {
+			rec.trigger.Cause.Ref = map[string]string{"pr": prs}
+		}
+		rec.trigger.Cause.PRs, _ = extra["pr_refs"].([]service.StatusPRRef)
+	}
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
@@ -161,7 +168,9 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		"source":           source,
 	}
 	for k, v := range extra {
-		payload[k] = v
+		if k != "pr_refs" {
+			payload[k] = v
+		}
 	}
 	if assigneeChanged {
 		payload["prev_assignee_type"] = textToPtr(issue.AssigneeType)

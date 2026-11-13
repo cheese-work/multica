@@ -182,6 +182,9 @@ type Task struct {
 	QuickCreateDueDate            string                 `json:"quick_create_due_date,omitempty"`            // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
 	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
+	BackgroundJob                 string                 `json:"background_job,omitempty"`                   // non-empty for an output_only background task (CHE-4100): the job name, e.g. dm_title
+	BackgroundInput               string                 `json:"background_input,omitempty"`                 // the bounded input the server stored in the task context; the whole prompt for a background task
+	BackgroundRunSeconds          int                    `json:"background_run_secs,omitempty"`              // run deadline from the job spec; 0 keeps the daemon default
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`                     // legacy assignment handoff instruction; rendered only in the per-turn prompt
 	// CheckpointBlock is a pre-rendered checkpoint-briefing block (CHE-489):
 	// the server computes and diffs the prior checkpoint against the live

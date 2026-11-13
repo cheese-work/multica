@@ -188,6 +188,15 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
   });
 
+  it("CHE-4153 carries the displayed keys and the reply-to-ask ids, dropping malformed values", () => {
+    const parsed = ChatSessionSchema.parse({ ...baseSession, attention_keys: ["item:a", "decision:d@1"], attention_ask_ids: ["a"] });
+    expect(parsed.attention_keys).toEqual(["item:a", "decision:d@1"]);
+    expect(parsed.attention_ask_ids).toEqual(["a"]);
+    const bad = ChatSessionSchema.parse({ ...baseSession, attention_keys: "item:a", attention_ask_ids: 3 });
+    expect(bad.attention_keys).toBeUndefined();
+    expect(bad.attention_ask_ids).toBeUndefined();
+  });
+
   it("keeps sessions readable when older servers send lane-summary data", () => {
     for (const summary of [
       { lane_summary: "Legacy private lane", lane_summary_updated_at: "2026-10-12T01:00:00Z" },
