@@ -370,7 +370,8 @@
     "list": "Liste",
     "table": "Grille",
     "gantt": "Gantt",
-    "swimlane": "Couloirs"
+    "swimlane": "Couloirs",
+    "swimlane2": "Couloirs 2.0"
   },
   "table": {
     "select_all": "Sélectionner toutes les tâches visibles",
@@ -457,7 +458,9 @@
     "more_issues": "D'autres tickets ne sont pas chargés.",
     "retry": "Réessayer",
     "load_more": "Charger plus",
-    "no_lane": "Aucune valeur"
+    "no_lane": "Aucune valeur",
+    "timeline_failed": "Impossible de charger la chronologie.",
+    "loading": "Chargement de la chronologie…"
   },
   "gantt2": {
     "clipped_start": "Commencé avant cette fenêtre",

@@ -370,7 +370,8 @@
     "list": "List",
     "table": "Table",
     "gantt": "Gantt",
-    "swimlane": "Swimlane"
+    "swimlane": "Swimlane",
+    "swimlane2": "Swimlane 2.0"
   },
   "table": {
     "select_all": "Select all visible issues",
@@ -457,7 +458,9 @@
     "more_issues": "More issues not loaded.",
     "retry": "Retry",
     "load_more": "Load more",
-    "no_lane": "No value"
+    "no_lane": "No value",
+    "timeline_failed": "Could not load the timeline.",
+    "loading": "Loading timeline…"
   },
   "gantt2": {
     "clipped_start": "Started before this window",
