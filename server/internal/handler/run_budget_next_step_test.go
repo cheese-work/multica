@@ -55,11 +55,6 @@ func (c budgetCase) noticeText(t *testing.T, kind string) string {
 	return content
 }
 
-func (c budgetCase) askRows(t *testing.T) int {
-	t.Helper()
-	return dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'run_budget_ask'`, c.issueID)
-}
-
 func TestRunBudgetRefusedRerunReturnsTypedNextStep(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
