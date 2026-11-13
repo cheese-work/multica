@@ -6,22 +6,23 @@
   "page_note": "File 'CHE-5162 · decision-card (test)'. The frame sits on page1. Direction B only; A and C stay on the canvas as history and are not locked.",
   "screens": [
     {
-      "screen": "decision-card B v4 (two choices, Approve and Reject, none chosen by default; one composer always present; one button that names the result: Discuss more, Approve with passkey, Confirm approval, Confirm Reject; open, discuss, after-reply, approve with and without passkey, reject, batch, approved, rejected, phone 358 px; config-change card with computed diff, applied and not-applied outcomes; state table; AgentX and DevX panels)",
+      "screen": "decision-card B v9 (two choices, Approve and Reject, none chosen by default; one composer always present; one button that names the result and ends with its send key: Discuss more, Approve with passkey, Confirm approval, Confirm Reject; open, discuss, after-reply, approve with and without passkey, reject, batch, approved, rejected, phone 358 px; config-change card as a diff only, with Show full; decided cards collapsed with Revoke; collapse animation; DM and issue views of one record; state table; AgentX and DevX panels)",
       "frame_id": "Z3bizs5RyO",
-      "updatedAt": "2026-11-12T01:38:19.680Z",
-      "content_sha256": "e237e5a38dd3f5f817204f45a57838b70c7ea0749236bba0d6c28d43374c885c"
+      "updatedAt": "2026-11-12T04:18:27.430Z",
+      "updatedAt_note": "Time Luna scored. On 13 Nov 2026 the live frame reads updatedAt 2026-11-12T10:42:54.370Z because doop added 8 data-doop-id attributes (htmlBytes 59326). With those attributes removed the HTML is byte-identical to this export (sha256 matches).",
+      "content_sha256": "300fd764951c572f45f40d87c43c1d968e358fd93f0999407694650c86c98d99"
     }
   ],
-  "export_sha256": "36dd7e913236bea7c412bf8bf64be0b4aeff6c4a721f2289628502dc5cacd938",
+  "export_sha256": "9143dc4c449b3fb5ed789b235fa00ebaa421e362e5cdcdd94a6eb07af87842ad",
   "export_sha256_method": "sha256 of the output of sha256sum for export_files, sorted by file name (one line '<sha256>  <file>' plus newline)",
   "export_files": {
-    "direction-b.html": "e237e5a38dd3f5f817204f45a57838b70c7ea0749236bba0d6c28d43374c885c"
+    "direction-b.html": "300fd764951c572f45f40d87c43c1d968e358fd93f0999407694650c86c98d99"
   },
-  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; length 29745 characters equals htmlBytes from get_frame",
-  "exported_at": "2026-11-12 08:49 ICT",
+  "export_transform": "none: the standalone export of frame v9 (attachment 01a1cdfa-f8bc-7894-8008-a04db1bee2e1 on CHE-5162, re-downloaded and hash-checked 13 Nov 2026), self-contained (system font stack, inline SVG, no external fetch); 59468 bytes. Frame HTML read from doop on 13 Nov 2026 with data-doop-id attributes removed equals it exactly.",
+  "exported_at": "2026-11-13 08:58 ICT",
   "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
   "issue": "CHE-5162",
-  "selection_id": "01a1cd63-7807-7887-ae08-22e9e410cf81",
-  "selection_source": "Cheese comment 01a1cd63-7807-7887-ae08-22e9e410cf81 (12 Nov 2026 08:33 ICT), relayed by Tofu in comment 01a1cd64-81d1-76d2-927e-f948099036e3: still B, but only Approve and Reject (selectable, pick one or none); the CTA follows the choice (Discuss more / Approve with passkey / Confirm approval / Confirm Reject); one composer always present. Supersedes the 06:10 ICT pick (01a1cce0-7263-747f-ba85-d09e4ac44ae4), made in a first-draft state Cheese corrected",
-  "ux_verdict_id": "01a1cd6c-fd03-70c1-bd06-9ff0417b7698"
+  "selection_id": "01a1d284-a560-7d3e-86ea-e6fe32ad5e50",
+  "selection_source": "Cheese's answer on decision card c482d36e (13 Nov 2026 08:27 ICT), recorded on CHE-5162 in comment 01a1d284-a560-7d3e-86ea-e6fe32ad5e50 and relayed by Tofu in 01a1d28f-d84a-717e-aff1-79cfaa3ff6a1: 'Chọn B v9, B thay fold A'. B v9 is the locked direction and supersedes fold direction A (CHE-4431; code PR 1271 and design PR 1183 are already merged). Supersedes the v4 picks 01a1cd63-7807-7887-ae08-22e9e410cf81 and 01a1cce0-7263-747f-ba85-d09e4ac44ae4",
+  "ux_verdict_id": "01a1cdfe-0045-7601-a4e0-a94d9d82ea6e"
 }
