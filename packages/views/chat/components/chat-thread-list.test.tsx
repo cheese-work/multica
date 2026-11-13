@@ -570,6 +570,16 @@ describe("ChatThreadList row shortcuts and context menu", () => {
     expect(pinMutate).not.toHaveBeenCalled();
   });
 
+  it("ignores shortcut keys pressed inside the open ⋯ menu", async () => {
+    const { onArchive } = renderList(null);
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
+    const item = await screen.findByRole("menuitem", { name: ARCHIVE_LABEL_RE });
+
+    fireEvent.keyDown(item, { key: "e" });
+
+    expect(onArchive).not.toHaveBeenCalled();
+  });
+
   it("right-click opens the same items the ⋯ menu lists", async () => {
     renderList(null, { onEnterSelectMode: vi.fn() });
 

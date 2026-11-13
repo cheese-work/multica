@@ -475,7 +475,9 @@ function ChatThreadListBody({
         onKeyDown={(e) => {
           if (isConfirmingAction) return;
           handleRowActivationKey(e, () => onSelectSession(session));
-          handleRowShortcut(e, shortcutItems);
+          // A portal (the open ⋯ menu) still bubbles React events to the row;
+          // only keys pressed inside the row's own DOM are row shortcuts.
+          if (e.currentTarget.contains(e.target as Node)) handleRowShortcut(e, shortcutItems);
         }}
         className={cn(
           // Fixed height so nothing (hover actions, confirm prompts) can change
