@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -187,16 +189,18 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) {
-				s.noteCoalesced(ctx, in, issue.AssigneeID)
+			if pending, carrier := s.hasPendingStepRun(ctx, issue, issue.AssigneeID); pending {
+				s.noteCoalesced(ctx, in, issue.AssigneeID, carrier)
 				return IssueRunTrigger{}, false
 			}
 			if s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
-		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
-			s.noteCoalesced(ctx, in, issue.AssigneeID)
-			return IssueRunTrigger{}, false
+		} else if source == RunSourceStatus {
+			if pending, carrier := s.hasPendingRun(ctx, issue.ID, issue.AssigneeID); pending {
+				s.noteCoalesced(ctx, in, issue.AssigneeID, carrier)
+				return IssueRunTrigger{}, false
+			}
 		}
 		return IssueRunTrigger{
 			IssueID:      issue.ID,
@@ -234,9 +238,11 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {
 			return IssueRunTrigger{}, false
 		}
-		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {
-			s.noteCoalesced(ctx, in, squad.LeaderID)
-			return IssueRunTrigger{}, false
+		if source == RunSourceStatus {
+			if pending, carrier := s.hasPendingRun(ctx, issue.ID, squad.LeaderID); pending {
+				s.noteCoalesced(ctx, in, squad.LeaderID, carrier)
+				return IssueRunTrigger{}, false
+			}
 		}
 		return IssueRunTrigger{
 			IssueID:      issue.ID,
@@ -250,8 +256,9 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 }
 
 // noteCoalesced stores the trigger a pending run absorbs, on the write path
-// only. A failure is logged: the write it follows has already happened.
-func (s *IssueService) noteCoalesced(ctx context.Context, in IssueTriggerInput, agentID pgtype.UUID) {
+// only. carrier is the run the pending check read (zero when it read none).
+// A failure is logged: the write it follows has already happened.
+func (s *IssueService) noteCoalesced(ctx context.Context, in IssueTriggerInput, agentID, carrier pgtype.UUID) {
 	if !in.RecordCoalesced {
 		return
 	}
@@ -259,42 +266,47 @@ func (s *IssueService) noteCoalesced(ctx context.Context, in IssueTriggerInput, 
 	if in.AssigneeChanged || in.IsCreate {
 		source = "assignment"
 	}
-	if err := s.TaskService.RecordCoalescedTrigger(ctx, in.Issue, agentID, pgtype.UUID{}, source); err != nil {
+	if err := s.TaskService.RecordCoalescedTrigger(ctx, in.Issue, agentID, pgtype.UUID{}, source, carrier); err != nil {
 		slog.Error("record coalesced trigger failed", "issue_id", util.UUIDToString(in.Issue.ID), "source", source, "error", err)
 	}
 }
 
 // hasPendingRun reports whether the agent already holds a queued or dispatched
 // task for the issue (the (issue_id, agent_id) unique-index slot). Errors fail
-// closed to "pending" so preview never over-promises a run.
-func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtype.UUID) bool {
-	pending, err := s.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+// closed to "pending" so preview never over-promises a run. The second result
+// is the pending run the check read (zero on error): the carrier the
+// coalescing insert must lock.
+func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtype.UUID) (bool, pgtype.UUID) {
+	carrier, err := s.Queries.PendingCarrierForIssueAndAgent(ctx, db.PendingCarrierForIssueAndAgentParams{
 		IssueID: issueID,
 		AgentID: agentID,
 		// Key dedup on the reviewed head so a pending run against an old HEAD
 		// does not shadow a request after HEAD advanced (TEN-356).
 		HeadSha: headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issueID)),
 	})
-	if err != nil {
-		return true
+	return pendingFromCarrier(carrier, err)
+}
+
+// pendingFromCarrier maps a carrier read to (pending, carrier): no row is not
+// pending, any other error fails closed to pending with no carrier.
+func pendingFromCarrier(carrier pgtype.UUID, err error) (bool, pgtype.UUID) {
+	if err == nil {
+		return true, carrier
 	}
-	return pending
+	return !errors.Is(err, pgx.ErrNoRows), pgtype.UUID{}
 }
 
 // hasPendingStepRun is hasPendingRun for a workflow handoff: a pending run
 // stamped for a step the issue has left does not count. Errors fail closed to
 // "pending", like hasPendingRun.
-func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
-	pending, err := s.Queries.HasPendingTaskForIssueAndAgentAtStep(ctx, db.HasPendingTaskForIssueAndAgentAtStepParams{
+func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, agentID pgtype.UUID) (bool, pgtype.UUID) {
+	carrier, err := s.Queries.PendingCarrierForIssueAndAgentAtStep(ctx, db.PendingCarrierForIssueAndAgentAtStepParams{
 		IssueID: issue.ID,
 		AgentID: agentID,
 		HeadSha: headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)),
 		Step:    issue.Status,
 	})
-	if err != nil {
-		return true
-	}
-	return pending
+	return pendingFromCarrier(carrier, err)
 }
 
 // CancelStaleStepRuns cancels the agent's pending runs on the issue that are

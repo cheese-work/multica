@@ -11483,6 +11483,88 @@ func (q *Queries) PendingAssignmentTaskForAgent(ctx context.Context, arg Pending
 	return id, err
 }
 
+const pendingCarrierForIssueAndAgent = `-- name: PendingCarrierForIssueAndAgent :one
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+ORDER BY (comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($4::uuid)) DESC,
+         (status = 'queued') DESC, created_at ASC, id ASC
+LIMIT 1
+`
+
+type PendingCarrierForIssueAndAgentParams struct {
+	IssueID         pgtype.UUID `json:"issue_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	HeadSha         pgtype.Text `json:"head_sha"`
+	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
+}
+
+// HasPendingTaskForIssueAndAgent returning the pending run, as the carrier a
+// coalesced trigger is recorded against (CHE-5266). The pre-check and the carrier
+// are one read. With several matches: the run in the trigger's own thread first
+// (thread_comment_id NULL selects assignment-level work), a queued run before a
+// dispatched one, then the oldest. The choice is a hint: InsertCoalescedRunInput
+// decides ownership.
+func (q *Queries) PendingCarrierForIssueAndAgent(ctx context.Context, arg PendingCarrierForIssueAndAgentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingCarrierForIssueAndAgent,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.ThreadCommentID,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const pendingCarrierForIssueAndAgentAtStep = `-- name: PendingCarrierForIssueAndAgentAtStep :one
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> $4::text
+  )
+ORDER BY (comment_thread_id IS NULL) DESC, (status = 'queued') DESC, created_at ASC, id ASC
+LIMIT 1
+`
+
+type PendingCarrierForIssueAndAgentAtStepParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+	HeadSha pgtype.Text `json:"head_sha"`
+	Step    string      `json:"step"`
+}
+
+// PendingCarrierForIssueAndAgent for a workflow handoff: the
+// HasPendingTaskForIssueAndAgentAtStep predicate, with the pending run returned.
+func (q *Queries) PendingCarrierForIssueAndAgentAtStep(ctx context.Context, arg PendingCarrierForIssueAndAgentAtStepParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingCarrierForIssueAndAgentAtStep,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.Step,
+	)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const pendingTaskForIssueAndAgent = `-- name: PendingTaskForIssueAndAgent :one
 SELECT id FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2

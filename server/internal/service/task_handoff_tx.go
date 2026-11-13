@@ -111,7 +111,7 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
 	survivor, err := q.PendingAssignmentTaskForAgent(ctx, db.PendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
 	if err == nil {
-		return survivor, nil, s.noteCoalescedIn(ctx, q, issue, issue.AssigneeID, triggerCommentID, "assignment")
+		return survivor, nil, s.noteCoalescedIn(ctx, q, issue, issue.AssigneeID, triggerCommentID, "assignment", survivor)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, nil, fmt.Errorf("check pending run: %w", err)
@@ -141,7 +141,7 @@ func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queri
 		HeadSha: s.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
 	if err == nil {
-		return survivor, nil, s.noteCoalescedIn(ctx, q, issue, leaderID, triggerCommentID, "squad_leader")
+		return survivor, nil, s.noteCoalescedIn(ctx, q, issue, leaderID, triggerCommentID, "squad_leader", survivor)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return pgtype.UUID{}, nil, fmt.Errorf("check pending leader run: %w", err)

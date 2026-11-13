@@ -429,10 +429,12 @@ func recordEnqueuedInput(ctx context.Context, q *db.Queries, issue db.Issue, tas
 // RecordCoalescedTrigger stores the non-comment trigger (a status change, an
 // assignment, a child-done or leader callback) that a queued run of (issue,
 // agent) absorbed in place of a new run, so the run's batch carries it. source
-// names the producer; commentID is its comment, if any. Event id, first match:
+// names the producer; commentID is its comment, if any; carrier is the run the
+// coalescing decision read, or the zero value when the caller holds none (the
+// input is then parked, never owned). Event id, first match:
 // the caller's event id, the trigger comment, the issue's write stamp.
-func (s *TaskService) RecordCoalescedTrigger(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
-	return recordCoalescedTrigger(ctx, s.Queries, issue, agentID, commentID, source)
+func (s *TaskService) RecordCoalescedTrigger(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, source string, carrier pgtype.UUID) error {
+	return recordCoalescedTrigger(ctx, s.Queries, issue, agentID, commentID, source, carrier)
 }
 
 // noteCoalesced records the trigger behind a duplicate-pending refusal and
@@ -440,7 +442,8 @@ func (s *TaskService) RecordCoalescedTrigger(ctx context.Context, issue db.Issue
 // write goes through the pool.
 func (s *TaskService) noteCoalesced(ctx context.Context, err error, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
 	if errors.Is(err, ErrDuplicatePendingTask) {
-		if rerr := s.RecordCoalescedTrigger(ctx, issue, agentID, commentID, source); rerr != nil {
+		// A refused insert names no run: the unique index reports a key, not a task.
+		if rerr := s.RecordCoalescedTrigger(ctx, issue, agentID, commentID, source, pgtype.UUID{}); rerr != nil {
 			slog.Error("record coalesced trigger failed", "issue_id", util.UUIDToString(issue.ID), "source", source, "error", rerr)
 		}
 	}
@@ -450,14 +453,14 @@ func (s *TaskService) noteCoalesced(ctx context.Context, err error, issue db.Iss
 // noteCoalescedIn is noteCoalesced inside the caller's transaction: the
 // pre-check refused before any insert, so the transaction is still usable and
 // the stored trigger commits or rolls back with the caller's write.
-func (s *TaskService) noteCoalescedIn(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
-	if err := recordCoalescedTrigger(ctx, q, issue, agentID, commentID, source); err != nil {
+func (s *TaskService) noteCoalescedIn(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string, carrier pgtype.UUID) error {
+	if err := recordCoalescedTrigger(ctx, q, issue, agentID, commentID, source, carrier); err != nil {
 		return fmt.Errorf("record coalesced trigger: %w", err)
 	}
 	return ErrDuplicatePendingTask
 }
 
-func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string) error {
+func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, agentID, commentID pgtype.UUID, source string, carrier pgtype.UUID) error {
 	if skip, _ := ctx.Value(skipRunInputKey{}).(bool); skip {
 		return nil
 	}
@@ -485,7 +488,7 @@ func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, 
 	})
 	_, err := q.InsertCoalescedRunInput(ctx, db.InsertCoalescedRunInputParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, EventID: event, Kind: kind, Payload: payload,
-		CommentID: commentID,
+		CommentID: commentID, CarrierTaskID: carrier,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil

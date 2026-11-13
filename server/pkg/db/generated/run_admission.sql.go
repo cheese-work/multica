@@ -552,43 +552,52 @@ func (q *Queries) InsertAdmissionRelease(ctx context.Context, arg InsertAdmissio
 
 const insertCoalescedRunInput = `-- name: InsertCoalescedRunInput :one
 WITH slot AS (
-    SELECT t.id FROM agent_task_queue t
-    WHERE t.issue_id = $2 AND t.agent_id = $3 AND t.status = 'queued'
-      AND COALESCE(t.comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid) =
-          COALESCE(CASE WHEN $7::uuid IS NULL THEN NULL
-                        ELSE comment_thread_root_id($7::uuid) END, '00000000-0000-0000-0000-000000000000'::uuid)
+    SELECT COALESCE(CASE WHEN $7::uuid IS NULL THEN NULL
+                         ELSE comment_thread_root_id($7::uuid) END,
+                    '00000000-0000-0000-0000-000000000000'::uuid) AS thread
+), carrier AS (
+    SELECT t.id, t.status,
+           COALESCE(t.comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid) AS thread
+    FROM agent_task_queue t
+    WHERE t.id = $8::uuid AND t.issue_id = $2 AND t.agent_id = $3
     FOR UPDATE
+), verdict AS (
+    SELECT s.thread AS slot_thread, c.id AS carrier_id, c.status AS carrier_status,
+           COALESCE(c.thread = s.thread, false) AS entitled
+    FROM slot s LEFT JOIN carrier c ON true
 )
 INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload, state, owner_task_id, thread_key, park_reason)
 SELECT $1, $2, $3, $4, $5, $6,
-       CASE WHEN s.id IS NULL THEN 'parked' ELSE 'owned' END,
-       s.id,
-       CASE WHEN s.id IS NULL THEN NULL
-            ELSE COALESCE(CASE WHEN $7::uuid IS NULL THEN NULL
-                               ELSE comment_thread_root_id($7::uuid) END, '00000000-0000-0000-0000-000000000000'::uuid) END,
-       CASE WHEN s.id IS NULL THEN 'ambiguous_owner' END
-FROM (SELECT 1) x LEFT JOIN slot s ON true
-WHERE EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.issue_id = $2 AND t.agent_id = $3 AND t.status = 'queued')
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN 'owned' ELSE 'parked' END,
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN v.carrier_id END,
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN v.slot_thread END,
+       CASE WHEN NOT (v.entitled AND v.carrier_status = 'queued') THEN 'ambiguous_owner' END
+FROM verdict v
+WHERE NOT (v.entitled AND v.carrier_status IN ('dispatched', 'running'))
 ON CONFLICT (issue_id, agent_id, event_id) DO NOTHING
 RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key
 `
 
 type InsertCoalescedRunInputParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	EventID     string      `json:"event_id"`
-	Kind        string      `json:"kind"`
-	Payload     []byte      `json:"payload"`
-	CommentID   pgtype.UUID `json:"comment_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	EventID       string      `json:"event_id"`
+	Kind          string      `json:"kind"`
+	Payload       []byte      `json:"payload"`
+	CommentID     pgtype.UUID `json:"comment_id"`
+	CarrierTaskID pgtype.UUID `json:"carrier_task_id"`
 }
 
-// The trigger a queued run absorbed instead of a new run. The owner is the queued
-// carrier of the trigger's own slot (the comment's thread, or no thread for a
-// trigger without a comment), locked and revalidated in this statement. With no
-// such carrier the input is stored parked as ambiguous_owner, thread unknown: no
-// carrier is guessed. Nothing is stored while no run of (issue, agent) is queued.
-// A retry of the same event id changes nothing.
+// The trigger a pending run absorbed instead of a new run (CHE-5266 addendum A5).
+// carrier_task_id is the run the coalescing decision read. The statement locks that
+// row and compares, under the lock, its thread with the trigger's own slot thread
+// (the comment's thread root, the zero UUID for a trigger without a comment), for
+// every status. Entitled and queued: owned by the carrier. Entitled and dispatched
+// or running: absorbed, nothing is stored (slice 1 boundary). Everything else (no
+// carrier, another thread, any other status): parked as ambiguous_owner, no
+// owner, thread unknown, so a member can resume it. A retry of the same event id
+// changes nothing.
 func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalescedRunInputParams) (RunInput, error) {
 	row := q.db.QueryRow(ctx, insertCoalescedRunInput,
 		arg.WorkspaceID,
@@ -598,6 +607,7 @@ func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalesc
 		arg.Kind,
 		arg.Payload,
 		arg.CommentID,
+		arg.CarrierTaskID,
 	)
 	var i RunInput
 	err := row.Scan(

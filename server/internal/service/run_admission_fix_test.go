@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -301,7 +302,10 @@ func (e *admEnv) issueRow(issueID string) db.Issue {
 	return issue
 }
 
-func wantCoalescedRecorded(t *testing.T, e *admEnv, issueID string, produce func(event string) error) {
+// inBatch is whether the producer reads the carrier it coalesced into (a
+// handoff survivor): its triggers ride the claimed batch. A refused enqueue
+// names no run, so its triggers are parked and stay out of the batch.
+func wantCoalescedRecorded(t *testing.T, e *admEnv, issueID string, inBatch bool, produce func(event string) error) {
 	t.Helper()
 	for _, ev := range []string{"evt-A", "evt-A", "evt-B"} {
 		if err := produce(ev); !errors.Is(err, ErrDuplicatePendingTask) {
@@ -312,6 +316,15 @@ func wantCoalescedRecorded(t *testing.T, e *admEnv, issueID string, produce func
 	if got["event:evt-A"] != 1 || got["event:evt-B"] != 1 {
 		t.Fatalf("inputs = %v, want event:evt-A and event:evt-B once each", got)
 	}
+	for _, in := range e.inputs(issueID) {
+		wantState := "owned"
+		if !inBatch {
+			wantState = "parked"
+		}
+		if strings.HasPrefix(in.EventID, "event:") && in.State != wantState {
+			t.Fatalf("input %s state = %s, want %s", in.EventID, in.State, wantState)
+		}
+	}
 	run := e.claim()
 	if run == nil {
 		t.Fatal("no run to claim")
@@ -321,8 +334,8 @@ func wantCoalescedRecorded(t *testing.T, e *admEnv, issueID string, produce func
 	for _, b := range batch {
 		in[b.EventID] = true
 	}
-	if !in["event:evt-A"] || !in["event:evt-B"] {
-		t.Fatalf("claimed batch = %v, want both absorbed triggers", in)
+	if in["event:evt-A"] != inBatch || in["event:evt-B"] != inBatch {
+		t.Fatalf("claimed batch = %v, want absorbed triggers in it: %v", in, inBatch)
 	}
 }
 
@@ -331,7 +344,7 @@ func TestAdmissionCoalescedIssueEnqueueIsRecordedWithProducerEvent(t *testing.T)
 	issueID := e.issue("medium")
 	e.enqueue(issueID)
 	issue := e.issueRow(issueID)
-	wantCoalescedRecorded(t, e, issueID, func(ev string) error {
+	wantCoalescedRecorded(t, e, issueID, false, func(ev string) error {
 		_, err := e.svc.EnqueueTaskForIssue(WithEventID(context.Background(), ev), issue)
 		return err
 	})
@@ -342,7 +355,7 @@ func TestAdmissionCoalescedMentionEnqueueIsRecordedWithProducerEvent(t *testing.
 	issueID := e.issue("medium")
 	e.enqueue(issueID)
 	issue := e.issueRow(issueID)
-	wantCoalescedRecorded(t, e, issueID, func(ev string) error {
+	wantCoalescedRecorded(t, e, issueID, false, func(ev string) error {
 		_, err := e.svc.EnqueueTaskForMention(WithEventID(context.Background(), ev), issue, util.MustParseUUID(e.agent), pgtype.UUID{}, OriginDerived)
 		return err
 	})
@@ -353,7 +366,7 @@ func TestAdmissionCoalescedTxEnqueueIsRecordedWithProducerEvent(t *testing.T) {
 	issueID := e.issue("medium")
 	e.enqueue(issueID)
 	issue := e.issueRow(issueID)
-	wantCoalescedRecorded(t, e, issueID, func(ev string) error {
+	wantCoalescedRecorded(t, e, issueID, true, func(ev string) error {
 		tx, err := e.pool.Begin(context.Background())
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -372,7 +385,7 @@ func TestAdmissionCoalescedSquadLeaderTxEnqueueIsRecordedWithProducerEvent(t *te
 	issueID := e.issue("medium")
 	e.enqueue(issueID)
 	issue := e.issueRow(issueID)
-	wantCoalescedRecorded(t, e, issueID, func(ev string) error {
+	wantCoalescedRecorded(t, e, issueID, true, func(ev string) error {
 		tx, err := e.pool.Begin(context.Background())
 		if err != nil {
 			t.Fatalf("begin: %v", err)
@@ -384,16 +397,4 @@ func TestAdmissionCoalescedSquadLeaderTxEnqueueIsRecordedWithProducerEvent(t *te
 		}
 		return err
 	})
-}
-
-func TestAdmissionCoalescedTriggerWithoutQueuedRunStoresNothing(t *testing.T) {
-	e := newAdmEnv(t)
-	issueID := e.issue("medium")
-	issue := e.issueRow(issueID)
-	if err := e.svc.RecordCoalescedTrigger(WithEventID(context.Background(), "evt-none"), issue, util.MustParseUUID(e.agent), pgtype.UUID{}, "status"); err != nil {
-		t.Fatalf("record: %v", err)
-	}
-	if got := e.eventIDs(issueID); len(got) != 0 {
-		t.Fatalf("inputs = %v, want none: no queued run carries them", got)
-	}
 }
