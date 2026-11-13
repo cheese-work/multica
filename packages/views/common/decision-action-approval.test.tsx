@@ -262,6 +262,22 @@ describe("DecisionActionApproval", () => {
     expect(alert.textContent).toContain("future_code");
   });
 
+  it("keeps Approve disabled after preview_required until the card shows a different preview, and never retries", async () => {
+    api.approveDecisionAction.mockRejectedValue(new ApiError("preview_required: approve against the stored preview", 409, "Conflict"));
+    const view = renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256="old" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("preview_required");
+    expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
+    view.rerender(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256="old" />);
+    expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+    view.rerender(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256="new" />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeEnabled());
+    expect(api.approveDecisionAction).toHaveBeenCalledOnce();
+  });
+
   it("shows a refusal of the challenge too", async () => {
     api.challengeDecisionAction.mockRejectedValue(new ApiError("class_needs_owner: this action needs the workspace owner", 403, "Forbidden"));
     await renderApproval().approve();

@@ -518,7 +518,12 @@
       "field_workflow_steps": "Étapes du workflow",
       "field_workflow_instructions": "Instructions d’étape du workflow",
       "field_workspace_settings": "Paramètres de l’espace de travail",
-      "field_workflow_budget": "Budget d’exécutions du workflow"
+      "field_workflow_budget": "Budget d’exécutions du workflow",
+      "field_workspace_routing_agent": "Agent de routage",
+      "field_workspace_delegated_writes": "Écritures gouvernées déléguées",
+      "field_agent_skills": "Compétences de l’agent",
+      "counts": "Caractères : {{before}} → {{after}}",
+      "counts_cap": "Caractères : {{before}} → {{after}} sur {{cap}} autorisés"
     },
     "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",
