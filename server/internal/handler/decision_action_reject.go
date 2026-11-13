@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -162,7 +163,23 @@ func newDecisionActionOutcome(action db.DecisionAction) decisionActionOutcome {
 // decisionActionCaller is the authenticated human behind a card click.
 type decisionActionCaller struct {
 	workspaceID, actionID, userID pgtype.UUID
+	// note is the person's optional approve note or reject reason; the wake text
+	// to the proposing agent carries it (B v9 S5, CHE-5415).
+	note string
 }
+
+// maxDecisionNote caps a note, reason or discussion message.
+const maxDecisionNote = 1024
+
+// withDecisionNote appends the person's words to a card summary.
+func withDecisionNote(summary, label, note string) string {
+	if note == "" {
+		return summary
+	}
+	return summary + " " + label + ": " + note
+}
+
+var errNoteTooLong = decisionIntentRefusal{http.StatusBadRequest, "note_too_long: keep it to 1024 bytes"}
 
 // authorizeDecisionActionCaller admits only a human actor who is a member of
 // the workspace. Machine credentials never decide an action.
@@ -199,6 +216,17 @@ func (handler *Handler) authorizeDecisionActionCaller(writer http.ResponseWriter
 func (handler *Handler) RejectDecisionAction(writer http.ResponseWriter, request *http.Request) {
 	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
 	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxApproveBody)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		writeError(writer, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if caller.note = strings.TrimSpace(body.Reason); len(caller.note) > maxDecisionNote {
+		writeDecisionActionError(writer, errNoteTooLong)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
@@ -367,7 +395,7 @@ func (handler *Handler) rejectDecisionActionOnce(ctx context.Context, caller dec
 	if err != nil {
 		return empty, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", decisionActionSummary(rejected)); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", withDecisionNote(decisionActionSummary(rejected), "Reason", caller.note)); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {

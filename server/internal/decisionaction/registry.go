@@ -81,6 +81,11 @@ type Definition struct {
 	// class. An action on a non-agent target is owner-only already.
 	OwnerOnly bool
 
+	// Passkey says whether approving the action needs a passkey assertion. The
+	// registry sets it per action type, never the proposer (B v9 S5, CHE-5415).
+	// The zero value is "unset": the handler's registry test fails for it.
+	Passkey Passkey
+
 	// Template is the wording an approver reads for this action. Every action
 	// registers one; the handler's registry test fails for a type without it.
 	Template Template
@@ -89,6 +94,18 @@ type Definition struct {
 	// its action type.
 	Normalize NormalizeFunc
 }
+
+// Passkey is a registry decision, not a proposal field.
+type Passkey uint8
+
+const (
+	PasskeyUnset Passkey = iota
+	PasskeyRequired
+	PasskeyNotRequired
+)
+
+// RequiresPasskey is what the card and `multica decision get` read.
+func (d *Definition) RequiresPasskey() bool { return d.Passkey == PasskeyRequired }
 
 // Template is what a human reads before approving an action. Both fields are
 // static text: the server writes the ask, so no agent-controlled string may
@@ -123,15 +140,15 @@ func Register(def *Definition) {
 }
 
 func init() {
-	Register(&Definition{Type: "agent.copy", Version: 1, Template: Template{Title: "Copy an agent", Summary: "Creates a new agent with the same settings as the source agent."}, MinClass: "reversible", Normalize: normalizeAgentCopy})
-	Register(&Definition{Type: "agent.env.patch", Version: 1, Template: Template{Title: "Change an agent's environment variables", Summary: "Sets or removes environment variable keys on one agent; values are never shown."}, MinClass: "reversible", Normalize: normalizeEnvPatch})
-	Register(&Definition{Type: "agent.pause", Version: 1, Template: Template{Title: "Pause an agent", Summary: "Stops the agent from starting new runs until it is resumed."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.pause")})
-	Register(&Definition{Type: "agent.resume", Version: 1, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
-	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
-	Register(&Definition{Type: "issue.project.set", Version: 1, Template: Template{Title: "Move an issue to another project", Summary: "Moves the issue to the proposed project, which sets the workflow and run budget the issue follows."}, MinClass: "reversible", Target: TargetIssue, Normalize: normalizeIssueProjectSet})
-	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
-	Register(&Definition{Type: "agent.instructions.set", Version: 1, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
-	Register(&Definition{Type: "agent.skills.set", Version: 1, Template: Template{Title: "Replace an agent's skills", Summary: "Replaces the agent's skill list with the proposed list."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
+	Register(&Definition{Type: "agent.copy", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Copy an agent", Summary: "Creates a new agent with the same settings as the source agent."}, MinClass: "reversible", Normalize: normalizeAgentCopy})
+	Register(&Definition{Type: "agent.env.patch", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Change an agent's environment variables", Summary: "Sets or removes environment variable keys on one agent; values are never shown."}, MinClass: "reversible", Normalize: normalizeEnvPatch})
+	Register(&Definition{Type: "agent.pause", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Pause an agent", Summary: "Stops the agent from starting new runs until it is resumed."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.pause")})
+	Register(&Definition{Type: "agent.resume", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
+	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.project.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Move an issue to another project", Summary: "Moves the issue to the proposed project, which sets the workflow and run budget the issue follows."}, MinClass: "reversible", Target: TargetIssue, Normalize: normalizeIssueProjectSet})
+	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
+	Register(&Definition{Type: "agent.instructions.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.skills.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's skills", Summary: "Replaces the agent's skill list with the proposed list."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
 }
 
 // Types lists every allowlisted action type, sorted and without versions.

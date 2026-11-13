@@ -55,6 +55,8 @@ type decisionActionResponse struct {
 	Outcome       string  `json:"outcome,omitempty"`
 	OutcomeReason *string `json:"outcome_reason,omitempty"`
 	AppliedAt     *string `json:"applied_at,omitempty"`
+	// RequiresPasskey is the registry's flag for this action type, never the proposer's.
+	RequiresPasskey bool `json:"requires_passkey"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
@@ -64,6 +66,7 @@ func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse
 		Params: action.Params, Preconditions: action.Preconditions, SecretSlots: action.SecretSlots,
 		PayloadSHA256: action.PayloadSha256, ExpiresAt: timestampToString(action.ExpiresAt), State: action.State,
 		Outcome: outcome, OutcomeReason: reason, AppliedAt: appliedAtOf(action),
+		RequiresPasskey: actionRequiresPasskey(action),
 	}
 }
 
@@ -85,6 +88,24 @@ func decisionActionOutcomeOf(action db.DecisionAction) (string, *string) {
 		return "not_applied", &action.State
 	}
 	return "", nil
+}
+
+// decisionEffectOf is the readback of what the approval did (B v9 S5):
+// applied, not_applied with the reason, or expired. "" means still pending.
+func decisionEffectOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "expired":
+		return "expired", nil
+	case "rejected":
+		reason := "rejected"
+		return "not_applied", &reason
+	}
+	return decisionActionOutcomeOf(action)
+}
+
+func actionRequiresPasskey(action db.DecisionAction) bool {
+	definition, ok := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	return ok && definition.RequiresPasskey()
 }
 
 func appliedAtOf(action db.DecisionAction) *string {
