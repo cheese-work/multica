@@ -10,7 +10,7 @@ import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
-import { setApiInstance } from "@multica/core/api";
+import { getApi, setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { useT } from "../../../packages/views/i18n";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -153,6 +153,7 @@ const OUTCOMES: Record<string, unknown> = {
   "act-rejected": { id: "act-rejected", state: "rejected" },
 };
 setApiInstance({
+  ...getApi(),
   getDecisionActionOutcome: async (id: string) => {
     const outcome = OUTCOMES[id];
     if (!outcome) throw new Error("outcome unavailable");
