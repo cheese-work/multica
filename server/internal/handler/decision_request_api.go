@@ -375,6 +375,9 @@ type openDecisionResponse struct {
 	Options          json.RawMessage              `json:"options"`
 	CoversRequestIDs []string                     `json:"covers_request_ids,omitempty"`
 	CoveredCards     []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
+	// Action is the executable action behind the card, so a page can tell which
+	// card is a run-budget or workflow-budget ask (CHE-5285).
+	Action *DecisionRequestCardAction `json:"action,omitempty"`
 }
 
 func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID pgtype.UUID, rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
@@ -394,6 +397,7 @@ func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID
 			slog.ErrorContext(ctx, "list covered decision cards", "request_id", uuidToString(row.ID), "error", err)
 		}
 		out[i].CoveredCards = covered
+		out[i].Action = handler.decisionCardAction(ctx, workspaceUUID, row.ID)
 	}
 	return out
 }

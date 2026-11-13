@@ -3,7 +3,8 @@ set -euo pipefail
 
 # notify-approval.sh (CHE-2418 B5, CHE-4879): one notice per waiting approval, by
 # webhook and/or a Multica decision card (POST /api/decisions/ci). No route
-# configured, or no route delivered, fails the job. curl and gh are mocked; they
+# configured only warns (the deploy gate does not depend on the notice); a
+# configured route that delivers nothing fails the job. curl and gh are mocked; they
 # record their arguments and can be told to fail.
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -64,10 +65,11 @@ if output="$(run)"; then echo "failing webhook: want non-zero exit" >&2; exit 1;
 [[ "$output" == *"::error"* ]] || { echo "failing webhook: no error: $output" >&2; exit 1; }
 rm "$work_dir/curl-fails"
 
-# No route at all (CHE-4879): the job goes red, nothing is sent.
+# No route at all: a warning, exit 0, nothing sent. Every scheduled run used to
+# turn red for a missing secret, not for a deploy fault.
 rm -f "$work_dir/curl-args"
-if output="$(WEBHOOK_URL= run)"; then echo "no route: want non-zero exit" >&2; exit 1; fi
-[[ "$output" == *"::error"* ]] || { echo "no route: no error: $output" >&2; exit 1; }
+output="$(WEBHOOK_URL= run)" || { echo "no route: want exit 0: $output" >&2; exit 1; }
+[[ "$output" == *"::warning"* && "$output" != *"::error"* ]] || { echo "no route: want warning only: $output" >&2; exit 1; }
 [ ! -e "$work_dir/curl-args" ] || { echo "no route: curl was called" >&2; exit 1; }
 
 # Multica route: one decision card for Cheese with the SHA and the dispatch one-liner.
@@ -106,9 +108,9 @@ for code in 400 403 500; do
   if WEBHOOK_URL= run >/dev/null; then echo "status $code: want non-zero exit" >&2; exit 1; fi
 done
 rm -f "$work_dir/ci-status"
-# No anchor comment configured: the Multica route is not configured, so the job fails.
-if output="$(WEBHOOK_URL= MULTICA_NOTIFY_SOURCE_COMMENT= run)"; then echo "no anchor comment: want non-zero exit" >&2; exit 1; fi
-[[ "$output" == *"::error"* ]] || { echo "no anchor comment: no error: $output" >&2; exit 1; }
+# No anchor comment configured: the Multica route is not configured, so the job only warns.
+output="$(WEBHOOK_URL= MULTICA_NOTIFY_SOURCE_COMMENT= run)" || { echo "no anchor comment: want exit 0: $output" >&2; exit 1; }
+[[ "$output" == *"::warning"* && "$output" != *"::error"* ]] || { echo "no anchor comment: want warning only: $output" >&2; exit 1; }
 touch "$work_dir/gh-fails"
 if WEBHOOK_URL= run >/dev/null; then echo "commit lookup failure: want non-zero exit" >&2; exit 1; fi
 rm -f "$work_dir/gh-fails"

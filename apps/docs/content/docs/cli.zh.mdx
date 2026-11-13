@@ -223,6 +223,19 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 `block` 模式下返回 422，错误信息包含修复命令。`warn` 模式下规则照常创建，只记录一条事件。
 
+### 唤醒规则
+
+工作区和项目的唤醒规则（见 [Issue 唤醒](/issue-wakeups)）有专用命令，除 `create` 和 `get` 外还可使用：
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` 是 `list` 显示的修订号；`update` 传 `--revision 0` 会创建覆盖。`preview` 不保存任何内容，只输出解析后的规则。对条件规则，`already_satisfied` 统计会立即匹配的 issue 数，`issues` 列出这些 issue（`--output table` 以列表形式输出）。预览只查看范围内的前 200 个 issue，并评估其中未关闭且不在 backlog 的 issue；范围更大时 `truncated` 为 `true`，可能还有更多 issue 匹配。事件规则没有条件，其预览没有 `already_satisfied`，也不匹配任何已有 issue。只有所有者或管理员可以编辑或删除规则；任何人类成员都可以预览，智能体等机器凭据会收到 `403`，智能体创建的规则在人启用之前保持禁用。
+
 ### 在 DM 中关注进度
 
 DM 会关注其智能体为你创建的 issue。成员只能在自己创建的 DM 中用 `--chat` 管理关注。智能体不带 `--chat` 运行 `multica issue follow <issue>`：DM 来自它自己的任务，没有 DM 的任务会被拒绝。子 issue 继承父 issue 的有效关注。

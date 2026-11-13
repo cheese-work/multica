@@ -67,12 +67,16 @@ type IssueResponse struct {
 	// field at all: with omitempty a built-in fixture hides it from BOTH
 	// renderings, and the drift guard goes green on a payload that has drifted.
 	// (MUL-6749)
-	StatusName   string  `json:"status_name"`
-	Priority     string  `json:"priority"`
-	AssigneeType *string `json:"assignee_type"`
-	AssigneeID   *string `json:"assignee_id"`
-	CreatorType  string  `json:"creator_type"`
-	CreatorID    string  `json:"creator_id"`
+	StatusName string `json:"status_name"`
+	// RunBudgetBlocked is true while the run budget, not a person, holds the
+	// issue in blocked (CHE-5285). Omitted when false, so a client treats
+	// absence as "not budget-stopped".
+	RunBudgetBlocked bool    `json:"run_budget_blocked,omitempty"`
+	Priority         string  `json:"priority"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	CreatorType      string  `json:"creator_type"`
+	CreatorID        string  `json:"creator_id"`
 	// RequestedByID is the member the issue was made on behalf of: set when an
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
@@ -514,9 +518,18 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 	resolver := issuestatus.NewResolver(wsID)
 	refs := duplicateOriginals{}
 	h.loadDuplicateOriginals(ctx, wsID, refs, originals)
+	// The budget-blocked set is read once, on the first blocked row, so a page
+	// without blocked issues pays nothing. (CHE-5285)
+	var budgetBlocked map[string]bool
 	return func(resp *IssueResponse) {
 		if resp == nil {
 			return
+		}
+		if resp.Status == issuestatus.Blocked {
+			if budgetBlocked == nil {
+				budgetBlocked = h.runBudgetBlockedIssueIDs(ctx, wsID)
+			}
+			resp.RunBudgetBlocked = budgetBlocked[resp.ID]
 		}
 		// Every response that resolves its status also resolves its duplicate
 		// mark, so the two never disagree about which endpoints carry them.
@@ -529,6 +542,22 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 		// free. Built-ins return "" and stay omitted. (MUL-6749)
 		resp.StatusName = resolver.Name(ctx, h.Queries, resp.Status)
 	}
+}
+
+// runBudgetBlockedIssueIDs returns the workspace issues the run budget holds
+// in blocked. A failed read yields an empty set: the chip is a hint, and a
+// list must not fail over it.
+func (h *Handler) runBudgetBlockedIssueIDs(ctx context.Context, wsID pgtype.UUID) map[string]bool {
+	set := map[string]bool{}
+	ids, err := h.Queries.ListRunBudgetBlockedIssueIDs(ctx, wsID)
+	if err != nil {
+		slog.Warn("list run-budget blocked issues failed", "error", err)
+		return set
+	}
+	for _, id := range ids {
+		set[uuidToString(id)] = true
+	}
+	return set
 }
 
 // fillStatusCategory is the single-response form. Only for endpoints that build

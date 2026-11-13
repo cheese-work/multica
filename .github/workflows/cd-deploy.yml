@@ -171,8 +171,9 @@ jobs:
         run: python3 deploy/cd/authorize-c00.py
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
-  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy.
+  # A configured route that delivers nothing fails it (CHE-4879); no route
+  # configured only warns. It runs on X99, which can
   # reach the tailnet-only Multica server.
   notify-approval:
     needs: [schedule-resolve, candidate-preflight, authorize-c00]
@@ -208,7 +209,11 @@ jobs:
 
   candidate-preflight:
     needs: schedule-resolve
-    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != ''
+    # CHE-4500 (CHE-3625 item 2): while main is red the cron sets the repo variable MAIN_RED_PAUSED (an unset
+    # variable reads as ''). A skipped preflight leaves `eligible` empty, so notice, prepare, admission and
+    # deploy are skipped. Nothing needs a rerun: the next 4-hour schedule slot re-evaluates the variable.
+    # The manual workflow_dispatch path is a deliberate human act and is not paused. A schedule_backup dispatch takes the scheduled path and is paused.
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != '' && vars.MAIN_RED_PAUSED == ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.

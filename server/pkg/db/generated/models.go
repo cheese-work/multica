@@ -3329,6 +3329,9 @@ type System1Label struct {
 	Label         string             `json:"label"`
 	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
 type System1Observation struct {
@@ -3354,6 +3357,19 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+}
+
+type System1Prediction struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ObservationID       pgtype.UUID        `json:"observation_id"`
+	Scope               string             `json:"scope"`
+	PredictorID         string             `json:"predictor_id"`
+	PredictorVersion    string             `json:"predictor_version"`
+	PredictedKey        pgtype.Text        `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4      `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4        `json:"predicted_precedents"`
+	PredictedAt         pgtype.Timestamptz `json:"predicted_at"`
 }
 
 type TaskElevation struct {

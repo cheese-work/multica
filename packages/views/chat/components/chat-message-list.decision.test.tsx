@@ -137,7 +137,8 @@ describe("ChatMessageList — decision cards", () => {
     expect(announcement).toHaveTextContent("Withdrawn");
     expect(announcement).toHaveTextContent("Superseded by the new scope.");
     expect(announcement).not.toHaveTextContent(requestCard.ask);
-    expect(screen.getAllByText(requestCard.ask)).toHaveLength(1);
+    // The folded row repeats the question; the ask itself appears once, in the card body.
+    expect(within(region.querySelector<HTMLElement>("[data-fold-body]")!).getAllByText(requestCard.ask)).toHaveLength(1);
     expect(screen.getByRole("link", { name: "Withdrawn in CHE-2088" })).toHaveAttribute("href", "/acme/issues/issue-1#comment-source-1");
     expect(screen.queryByRole("button", { name: "Disclaim" })).toBeNull();
     expect(screen.queryByText("Obsolete text announcement")).toBeNull();
