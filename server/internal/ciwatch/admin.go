@@ -362,8 +362,18 @@ func ApplyConfig(ctx context.Context, db TxBeginner, ws, owner, name, actorID st
 		}
 	}
 	sort.Strings(changed)
+	authChanged, err := syncAuthorization(ctx, tx, ws, owner, name, actorID, p)
+	if err != nil {
+		return ConfigResult{}, err
+	}
 	if len(changed) == 0 {
-		return ConfigResult{Config: old, Changed: changed}, tx.Commit(ctx)
+		cur := old
+		if authChanged {
+			if cur, err = readConfigView(ctx, tx, ws, owner, name, ""); err != nil {
+				return ConfigResult{}, err
+			}
+		}
+		return ConfigResult{Config: cur, Changed: changed}, tx.Commit(ctx)
 	}
 
 	sets, args := make([]string, 0, len(changed)+1), []any{ws, owner, name}
@@ -394,6 +404,50 @@ func ApplyConfig(ctx context.Context, db TxBeginner, ws, owner, name, actorID st
 		return ConfigResult{}, err
 	}
 	return ConfigResult{Config: cur, Changed: changed, Cancelled: cancelled}, tx.Commit(ctx)
+}
+
+// syncAuthorization keeps the watcher's authorization in step with the notify
+// member. A member who names themself as the recipient authorizes the watcher
+// to act as them; naming another member or nobody clears it, so the watcher
+// fails closed (see watchConfig.actor). The row is already locked by the caller.
+// It reports whether the stored authorization changed, and audits each field.
+func syncAuthorization(ctx context.Context, tx pgx.Tx, ws, owner, name, actorID string, p Patch) (bool, error) {
+	v, patched := p.vals["notify_member_id"]
+	if !patched {
+		return false, nil
+	}
+	var want *string
+	if s, _ := v.(string); s == actorID {
+		want = &actorID
+	}
+	var oldBy, oldAt *string
+	if err := tx.QueryRow(ctx, `SELECT authorized_by_member_id::text, authorized_at::text FROM ci_watch_config
+		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`, ws, owner, name).Scan(&oldBy, &oldAt); err != nil {
+		return false, err
+	}
+	if sameText(oldBy, want) {
+		return false, nil
+	}
+	var newAt *string
+	if err := tx.QueryRow(ctx, `UPDATE ci_watch_config SET authorized_by_member_id=$4::uuid,
+			authorized_at=CASE WHEN $4::uuid IS NULL THEN NULL ELSE now() END, updated_at=now()
+		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3 RETURNING authorized_at::text`,
+		ws, owner, name, want).Scan(&newAt); err != nil {
+		return false, err
+	}
+	for _, f := range []struct {
+		field    string
+		old, new *string
+	}{{"authorized_by_member_id", oldBy, want}, {"authorized_at", oldAt, newAt}} {
+		if _, err := tx.Exec(ctx, `INSERT INTO ci_watch_config_audit
+			(workspace_id, config_id, actor_type, actor_id, field, old_value, new_value)
+			SELECT workspace_id, id, 'member', $4::uuid, $5, $6, $7 FROM ci_watch_config
+			WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`,
+			ws, owner, name, actorID, f.field, f.old, f.new); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 // cancelForModeChange cancels scheduled actions a switch to Off or Shadow must
