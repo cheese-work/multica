@@ -56,6 +56,9 @@
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",
     "title": "チャット",
+    "no_agent_title": "チャットできるエージェントはまだいません",
+    "no_agent_description": "エージェントを作成すると、ここで要望を話し合い、タスクに分解してもらえます。",
+    "no_agent_action": "新規エージェント",
     "select_prompt": "会話を選ぶか、＋ で新規作成してください",
     "agent_link_no_access": "このエージェントとチャットする権限がありません。"
   },
@@ -333,6 +336,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "チャットを絞り込む",
+      "all": "すべて",
+      "main": "メイン",
+      "decisions": "決定",
+      "waiting": "あなたの対応待ち",
+      "unseen": "未読",
+      "pinned": "ピン留め",
+      "unpinned": "ピン留めなし",
+      "archived": "アーカイブ済み",
+      "count_aria": "{{label}}、{{count}}件"
+    },
+    "states": {
+      "loading": "チャットを読み込み中…",
+      "empty_title": "チャットはまだありません",
+      "empty_body": "エージェントにメッセージを送って始めましょう。あなたの対応が必要な質問や決定がここに表示されます。",
+      "empty_view": "このビューにチャットはありません",
+      "empty_waiting": "対応待ちはありません",
+      "empty_waiting_body": "すべての質問と決定に回答済みです。",
+      "error_title": "チャットを読み込めませんでした",
+      "error_body": "サーバーがエラーを返しました。メッセージは失われていません。再試行するか、しばらくしてからお試しください。",
+      "retry": "再試行",
+      "offline_title": "オフラインです",
+      "offline_body": "保存済みの一覧を表示しています。自動的に再接続します。"
+    },
     "typing": "入力中…",
     "failed": "送信失敗",
     "you_prefix": "あなた：",
@@ -365,6 +393,7 @@
     "compact_now": "今すぐコンパクト",
     "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
+    "agent_settings": "エージェント設定",
     "rename": "名前を変更",
     "delete": "チャットを削除",
     "archive": "チャットをアーカイブ",

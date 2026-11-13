@@ -72,10 +72,14 @@
     "supplement_failure_provider_rejected": "l’agent a refusé le message",
     "supplement_failure_timeout": "la livraison a expiré",
     "supplement_failure_unknown": "raison inconnue",
+    "supplement_failure_replay_exhausted": "les nouvelles tentatives sont épuisées",
+    "supplement_failure_run_budget_exhausted": "le budget d'exécutions est épuisé",
+    "supplement_failure_agent_paused": "l'agent est en pause",
     "supplement_retry": "Réessayer",
     "supplement_retry_failed": "Impossible de réessayer la livraison.",
     "steer_badge": "Ajouté à l'exécution de {{names}}",
     "steer_waiting": "En attente de lecture par {{name}}",
+    "steer_replay_queued": "{{name}} le lira à la prochaine exécution",
     "steer_read": "Lu par {{name}}",
     "steer_not_received": "{{name}} ne l'a pas reçu · {{reason}}",
     "steer_resend": "Envoyer comme nouvelle exécution",
@@ -166,6 +170,9 @@
     "breadcrumb_title": "Tâches",
     "breadcrumb_workspace_fallback": "Espace de travail",
     "empty_title": "Aucune tâche pour l'instant",
+    "empty_description": "Une tâche est un travail concret confié à un membre ou à un agent. Assignée à un agent, elle démarre seule sur votre runtime.",
+    "break_down_with_chat": "Découper avec le chat",
+    "break_down_prompt": "Voici ce que je veux accomplir. Posez-moi les questions nécessaires, puis découpez-le en tâches dans cet espace de travail :\n\n",
     "move_failed": "Échec du déplacement de la tâche"
   },
   "status": {
@@ -452,6 +459,12 @@
     "load_more": "Charger plus",
     "no_lane": "Aucune valeur"
   },
+  "gantt2": {
+    "clipped_start": "Commencé avant cette fenêtre",
+    "now": "Maintenant",
+    "collapse": "Réduire",
+    "expand": "Développer"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
@@ -472,7 +485,7 @@
       }
     },
     "search_placeholder": "Rechercher des tâches...",
-    "search_empty": "Aucune tâche ne correspond à votre recherche."
+    "search_empty": "Aucune tâche ne correspond à votre recherche"
   },
   "list": {
     "empty_status": "Aucune tâche",
@@ -517,6 +530,7 @@
     "card_load_failed": "Impossible de charger cette tâche.",
     "data_error": "Cette tâche contient des données que l'application ne peut pas lire.",
     "retry": "Réessayer",
+    "not_found_title": "Tâche introuvable",
     "breadcrumb_project_unknown": "Projet inconnu",
     "back": "Retour",
     "title_placeholder": "Titre de la tâche",
@@ -1005,6 +1019,7 @@
     "col_tokens": "Tokens",
     "col_cost": "Coût",
     "tokens_count": "{{tokens}} tokens",
+    "credits_count": "{{credits}} crédits {{provider}}",
     "details_toggle": "Détails de l'exécution",
     "detail_breakdown": "Détail du coût",
     "detail_total": "Total",
@@ -2084,7 +2099,8 @@
       "star": "Ajouter {{name}} à la barre latérale",
       "unstar": "Retirer {{name}} de la barre latérale",
       "row_actions": "Actions pour {{name}}",
-      "no_matches": "Aucune vue ne correspond"
+      "empty_title": "Aucune vue enregistrée pour l'instant",
+      "empty_description": "Réglez les filtres et l'affichage d'une liste de tâches, puis enregistrez-les comme vue."
     }
   },
   "status_history": {

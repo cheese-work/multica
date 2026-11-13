@@ -56,6 +56,9 @@
     "interactive_login_required": "请重新登录以使用聊天。",
     "interactive_login_action": "登录",
     "title": "聊天",
+    "no_agent_title": "还没有可以对话的智能体",
+    "no_agent_description": "创建一个智能体后，就能在这里和它聊需求，让它拆成任务。",
+    "no_agent_action": "新建智能体",
     "select_prompt": "选择一个对话，或点 + 新建",
     "agent_link_no_access": "你没有权限与该智能体聊天。"
   },
@@ -333,6 +336,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "筛选对话",
+      "all": "全部",
+      "main": "主收件箱",
+      "decisions": "决策",
+      "waiting": "等你处理",
+      "unseen": "未读",
+      "pinned": "已置顶",
+      "unpinned": "未置顶",
+      "archived": "已归档",
+      "count_aria": "{{label}}，{{count}} 个"
+    },
+    "states": {
+      "loading": "正在加载对话…",
+      "empty_title": "还没有对话",
+      "empty_body": "给智能体发条消息即可开始。需要你处理的问题和决策会显示在这里。",
+      "empty_view": "此视图下没有对话",
+      "empty_waiting": "没有等你处理的事项",
+      "empty_waiting_body": "所有问题和决策都已回复。",
+      "error_title": "无法加载对话",
+      "error_body": "服务器返回了错误。你的消息没有丢失。请重试，或几分钟后再来。",
+      "retry": "重试",
+      "offline_title": "你已离线",
+      "offline_body": "正在显示已保存的列表，会自动重新连接。"
+    },
     "typing": "正在输入…",
     "failed": "发送失败",
     "you_prefix": "你：",
@@ -365,6 +393,7 @@
     "compact_now": "立即压缩",
     "more_actions": "更多操作",
     "view_profile": "查看智能体资料",
+    "agent_settings": "智能体设置",
     "rename": "重命名会话",
     "delete": "删除会话",
     "archive": "归档会话",

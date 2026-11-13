@@ -2067,6 +2067,7 @@ type InboxItem struct {
 	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
 	DedupeKey     pgtype.Text        `json:"dedupe_key"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Section       pgtype.Text        `json:"section"`
 }
 
 type InstanceTelemetryState struct {
@@ -2673,6 +2674,24 @@ type MemberSetting struct {
 	Key         string             `json:"key"`
 	Value       []byte             `json:"value"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+type MergePauseState struct {
+	RepoOwner    string             `json:"repo_owner"`
+	RepoName     string             `json:"repo_name"`
+	VariableName string             `json:"variable_name"`
+	IsSet        pgtype.Bool        `json:"is_set"`
+	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
+	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeVetoDeadline struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	LastPassAt  pgtype.Timestamptz `json:"last_pass_at"`
+	DueAt       pgtype.Timestamptz `json:"due_at"`
 }
 
 type NotificationChannelPreference struct {
@@ -3484,6 +3503,8 @@ type TaskSupplement struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
 	Implicit        bool               `json:"implicit"`
+	ReplayAttempts  int32              `json:"replay_attempts"`
+	ReplayNextAt    pgtype.Timestamptz `json:"replay_next_at"`
 }
 
 type TaskSupplementCapability struct {
@@ -3523,7 +3544,8 @@ type TaskUsage struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
-	CostUsdTicks pgtype.Int8 `json:"cost_usd_ticks"`
+	CostUsdTicks  pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros pgtype.Int8 `json:"credits_micros"`
 }
 
 type TaskUsageHourly struct {

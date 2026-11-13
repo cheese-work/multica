@@ -277,7 +277,7 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		return
 	}
 	if errors.Is(err, service.ErrRunBudgetExhausted) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonRunBudgetExhausted)
+		h.writeRunBudgetExhausted(w, r, issue)
 		return
 	}
 	if errors.Is(err, service.ErrReviewHeadAnswered) {
