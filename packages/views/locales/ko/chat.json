@@ -502,7 +502,12 @@
       "field_workflow_steps": "워크플로 단계",
       "field_workflow_instructions": "워크플로 단계 지침",
       "field_workspace_settings": "워크스페이스 설정",
-      "field_workflow_budget": "워크플로 실행 예산"
+      "field_workflow_budget": "워크플로 실행 예산",
+      "field_workspace_routing_agent": "라우팅 에이전트",
+      "field_workspace_delegated_writes": "위임된 거버넌스 쓰기",
+      "field_agent_skills": "에이전트 스킬",
+      "counts": "글자 수: {{before}} → {{after}}",
+      "counts_cap": "글자 수: {{before}} → {{after}} (상한 {{cap}})"
     },
     "agent_note": "에이전트 메모(확인되지 않음)",
     "answer_send_passkey": "패스키로 보내기",

@@ -99,6 +99,9 @@ export function DecisionActionApproval({
 }) {
   const { t } = useT("common");
   const [view, setView] = useState<View>({ step: "loading" });
+  // The preview digest the server refused (`preview_required`). Asking again with it gets the same answer,
+  // so Approve stays off until the card shows a different preview.
+  const [refusedPreview, setRefusedPreview] = useState<string | undefined>();
   const onOutcomeRef = useRef(onOutcome);
   onOutcomeRef.current = onOutcome;
   const doneState = view.step === "done" ? view.outcome.state : null;
@@ -141,7 +144,10 @@ export function DecisionActionApproval({
       if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
       else if (!sent && reason === "not_pending") await readBack();
       else if (!sent && reason === "expired") await readBack({ step: "done", outcome: { id: actionId, state: "expired" } });
-      else if (reason) setView({ step: "refused", code: reason });
+      else if (reason) {
+        if (reason === "preview_required") setRefusedPreview(previewSha256 ?? "");
+        setView({ step: "refused", code: reason });
+      }
       else if (!sent || refused) setView({ step: "retry" });
       else await readBack();
     }
@@ -201,7 +207,9 @@ export function DecisionActionApproval({
     );
   }
   if (view.step === "loading") return null;
-  const refusal = view.step === "refused" ? view.code : undefined;
+  const previewRefused = refusedPreview !== undefined && refusedPreview === (previewSha256 ?? "");
+  // A `preview_required` refusal belongs to the preview it answered; a different preview starts clean.
+  const refusal = view.step === "refused" && (view.code !== "preview_required" || previewRefused) ? view.code : undefined;
   const mayApprove = canApprove && !(refusal && FINAL_REFUSALS.includes(refusal));
   return (
     <div className="space-y-1 text-label">
@@ -219,7 +227,7 @@ export function DecisionActionApproval({
       {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
       <div className="flex flex-wrap gap-2">
         {mayApprove && (
-          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={approveDisabled || view.step === "busy" || view.step === "rejecting"}>
+          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={approveDisabled || previewRefused || view.step === "busy" || view.step === "rejecting"}>
             {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
           </Button>
         )}
