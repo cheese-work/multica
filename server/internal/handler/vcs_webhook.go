@@ -268,6 +268,14 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("vcs: commit mirror transaction: %w", err)
 	}
+	// A child's PR event re-runs the parent that counts child PRs (CHE-5242).
+	persisted, err := h.Queries.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+	if err != nil {
+		return fmt.Errorf("vcs: list persisted links: %w", err)
+	}
+	if err := h.addIncludeChildParents(ctx, conn.WorkspaceID, touched, persisted...); err != nil {
+		slog.Warn("pr auto-complete failed", "err", err)
+	}
 	resolver := issuestatus.NewResolver(conn.WorkspaceID)
 	for issueID := range touched {
 		h.maybeAutoCompleteIssue(ctx, conn.WorkspaceID, issueID, resolver)
