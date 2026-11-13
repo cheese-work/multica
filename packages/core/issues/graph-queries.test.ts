@@ -78,6 +78,17 @@ describe("fetchRelationsBatched", () => {
     expect(retry.edges).toHaveLength(2);
   });
 
+  it("onProgress gets the merged result after each page, and a failed page shows as incomplete", async () => {
+    mocked.getIssueRelationsBatch
+      .mockResolvedValueOnce(page([node(1)], [edge(1, 2)], "c1"))
+      .mockResolvedValueOnce(page([node(2)], [edge(2, 3)], "c2"))
+      .mockRejectedValueOnce(new Error("boom"));
+    const seen: [number, number, boolean][] = [];
+    const out = await fetchRelationsBatched("ws", [id(1)], {}, undefined, (p) => seen.push([p.nodes.length, p.edges.length, p.incomplete]));
+    expect(seen).toEqual([[1, 1, false], [2, 2, false]]);
+    expect(out).toMatchObject({ incomplete: true, notLoaded: [id(1)] });
+  });
+
   it("rethrows cancellation instead of reporting it as an incomplete graph", async () => {
     const abort = new DOMException("aborted", "AbortError");
     mocked.getIssueRelationsBatch.mockRejectedValue(abort);
