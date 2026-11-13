@@ -44,12 +44,14 @@ WHERE issue_id = $1 AND pull_request_id = $2;
 -- name: ListIssueLinkedPullRequestStates :many
 -- Delivery PRs across GitHub and self-hosted providers, for the merge decision.
 -- GitHub reference links are excluded. Ordered by number so reasons read stably.
-SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state
+SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state,
+       pr.repo_owner, pr.repo_name, pr.merge_commit_sha
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
 UNION ALL
-SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state
+SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state,
+       pr.repo_owner, pr.repo_name, ''::text AS merge_commit_sha
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
@@ -94,3 +96,24 @@ WHERE i.id = $1
       WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
   )
 RETURNING i.*;
+
+-- name: IssuePullRequestsAllMerged :one
+-- The guard of MoveIssueFromPullRequests as a read, for the workflow handoff
+-- write: at least one delivery PR is linked and none is still unmerged.
+SELECT (
+    EXISTS (
+        SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
+        UNION ALL
+        SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = $1
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_pull_request ipr
+        JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_vcs_pull_request ipr
+        JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = $1 AND pr.state <> 'merged'
+    )
+)::bool AS all_merged;

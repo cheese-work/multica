@@ -8,7 +8,7 @@ import test from "node:test";
 const load = () => import("./pr-close-target-check.mjs");
 const script = new URL("./pr-close-target-check.mjs", import.meta.url).pathname;
 const fixtures = new URL("./fixtures/pr-close-target/", import.meta.url).pathname;
-const workflow = new URL("../.github/workflows/pr-close-target-check.yml", import.meta.url).pathname;
+const workflow = new URL("../.github/workflows/pr-guards.yml", import.meta.url).pathname;
 
 const pullRequest = (overrides = {}) => ({
   title: "fix(x): change (CHE-1926) [squash]",
@@ -251,7 +251,7 @@ test("the CLI skips upstream-sync heads", () => {
 test("the workflow runs the trusted workflow checker on a hosted runner without PR code", () => {
   const content = readFileSync(workflow, "utf8");
   assert.match(content, /pull_request_target:/);
-  assert.match(content, /runs-on: ubuntu-24\.04/);
+  assert.match(content, /runs-on: \$\{\{ vars\.RUNNER_PR_CLOSE_TARGET_CHECK \|\| 'ubuntu-24\.04' \}\}/);
   assert.match(content, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(content, /github\.event\.pull_request\.base\.sha/);
   assert.match(content, /persist-credentials: false/);

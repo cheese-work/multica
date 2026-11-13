@@ -73,7 +73,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
-		i.revision, i.duplicate_of_issue_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
 		CASE WHEN pc.title_score >= $3 THEN 'title' ELSE 'description' END AS match_source,
 		'' AS matched_comment_content
 	FROM page_candidates pc

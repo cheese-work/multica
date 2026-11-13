@@ -176,6 +176,11 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
 	sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
+	if failed, err := taskSvc.FailExpiredProviderHolds(ctx, time.Now(), reconnectRetryExpireBatchSize); err != nil {
+		slog.Warn("runtime sweeper: failed to expire provider holds", "error", err)
+	} else {
+		taskSvc.HandleFailedTasks(ctx, failed)
+	}
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
@@ -194,6 +199,21 @@ func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.Ta
 func runBackgroundDeadlineSweeper(ctx context.Context, taskSvc *service.TaskService) {
 	runPeriodicSweep(ctx, backgroundDeadlineSweepInterval, func() {
 		sweepBackgroundDeadlines(ctx, taskSvc)
+	})
+}
+
+// providerReleaseSweepInterval is the controller tick. The 15 s stagger and the
+// canary cool-off live in the controller and its breaker row, so a faster tick
+// releases nothing extra.
+const providerReleaseSweepInterval = 5 * time.Second
+
+// runProviderReleaseController releases provider-held rows on health evidence
+// or one canary (CHE-1741). All state is in the database, so a restart resumes.
+func runProviderReleaseController(ctx context.Context, taskSvc *service.TaskService) {
+	runPeriodicSweep(ctx, providerReleaseSweepInterval, func() {
+		if err := taskSvc.ReleaseProviderHeldTasks(ctx, time.Now()); err != nil {
+			slog.Warn("provider release controller: round failed", "error", err)
+		}
 	})
 }
 

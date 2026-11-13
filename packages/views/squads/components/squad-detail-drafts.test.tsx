@@ -9,7 +9,7 @@ import {
   AddMemberDialog,
   RoleEditor,
   SquadDescriptionEditor,
-  SquadInstructionsTab,
+  SquadInstructionsSection,
   SquadNameEditor,
 } from "./squad-detail-page";
 
@@ -64,6 +64,20 @@ vi.mock("../../editor/content-editor", async () => {
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+// The section shows saved text read-only until Edit; an unsent draft reopens it.
+function SquadInstructionsTab(props: React.ComponentProps<typeof SquadInstructionsSection>) {
+  return <SquadInstructionsSection {...props} />;
+}
+const openEditor = () => {
+  if (!screen.queryByLabelText("editor")) fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+};
+
+const renderTab = (ui: React.ReactElement) => {
+  const r = renderWithI18n(ui);
+  openEditor();
+  return r;
+};
+
 const squad = { id: "squad-1", instructions: "saved" } as Squad;
 
 beforeEach(() => resetAllRegisteredDrafts());
@@ -77,24 +91,38 @@ describe("squad detail drafts survive unmount and remount", () => {
   it("instructions tab", async () => {
     vi.useFakeTimers();
     const props = { squad, canManage: true, onSave: vi.fn() };
-    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    const first = renderTab(<SquadInstructionsTab {...props} />);
     type("editor", "unsent instructions");
     await flushDebounce();
     first.unmount();
 
-    renderWithI18n(<SquadInstructionsTab {...props} />);
+    renderTab(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("unsent instructions");
   });
 
   it("instructions typed inside the debounce window survive an immediate unmount", () => {
     vi.useFakeTimers();
     const props = { squad, canManage: true, onSave: vi.fn() };
-    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    const first = renderTab(<SquadInstructionsTab {...props} />);
     type("editor", "typed just before a tab change");
     first.unmount();
 
-    renderWithI18n(<SquadInstructionsTab {...props} />);
+    renderTab(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("typed just before a tab change");
+  });
+
+  it("cancel inside the debounce window discards the typed text", async () => {
+    vi.useFakeTimers();
+    const props = { squad, canManage: true, onSave: vi.fn() };
+    renderTab(<SquadInstructionsTab {...props} />);
+    type("editor", "typed then cancelled");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await flushDebounce();
+
+    expect(screen.queryByLabelText("editor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Unsaved changes")).not.toBeInTheDocument();
+    openEditor();
+    expect(screen.getByLabelText("editor")).toHaveValue("saved");
   });
 
   it("instructions edited while a save is pending are not erased when it succeeds", async () => {
@@ -102,7 +130,7 @@ describe("squad detail drafts survive unmount and remount", () => {
     let resolveSave!: () => void;
     const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
     const props = { squad, canManage: true, onSave };
-    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    const first = renderTab(<SquadInstructionsTab {...props} />);
     type("editor", "A");
     await flushDebounce();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -112,7 +140,7 @@ describe("squad detail drafts survive unmount and remount", () => {
 
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     first.unmount();
-    renderWithI18n(<SquadInstructionsTab {...props} />);
+    renderTab(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("AB");
   });
 
@@ -120,7 +148,7 @@ describe("squad detail drafts survive unmount and remount", () => {
     vi.useFakeTimers();
     let resolveSave!: () => void;
     const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
-    const first = renderWithI18n(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
+    const first = renderTab(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
     type("editor", "new");
     await flushDebounce();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -133,7 +161,7 @@ describe("squad detail drafts survive unmount and remount", () => {
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     first.unmount();
 
-    renderWithI18n(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    renderTab(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
     expect(screen.getByLabelText("editor")).toHaveValue("saved");
   });
 
@@ -141,7 +169,7 @@ describe("squad detail drafts survive unmount and remount", () => {
     vi.useFakeTimers();
     let resolveSave!: () => void;
     const onSave = vi.fn(() => new Promise<void>((r) => (resolveSave = r)));
-    const first = renderWithI18n(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
+    const first = renderTab(<SquadInstructionsTab squad={squad} canManage onSave={onSave} />);
     type("editor", "new");
     await flushDebounce();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -153,7 +181,7 @@ describe("squad detail drafts survive unmount and remount", () => {
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     first.unmount();
 
-    renderWithI18n(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
+    renderTab(<SquadInstructionsTab squad={saved} canManage onSave={onSave} />);
     expect(screen.getByLabelText("editor")).toHaveValue("saved");
   });
 
@@ -161,20 +189,20 @@ describe("squad detail drafts survive unmount and remount", () => {
     vi.useFakeTimers();
     const onSave = vi.fn().mockRejectedValueOnce(new Error("boom")).mockResolvedValueOnce(undefined);
     const props = { squad, canManage: true, onSave };
-    const first = renderWithI18n(<SquadInstructionsTab {...props} />);
+    const first = renderTab(<SquadInstructionsTab {...props} />);
     type("editor", "new");
     await flushDebounce();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
     expect(onSave).toHaveBeenCalledTimes(1);
     first.unmount();
-    const second = renderWithI18n(<SquadInstructionsTab {...props} />);
+    const second = renderTab(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("new");
 
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save" })));
     expect(onSave).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     second.unmount();
-    renderWithI18n(<SquadInstructionsTab {...props} />);
+    renderTab(<SquadInstructionsTab {...props} />);
     expect(screen.getByLabelText("editor")).toHaveValue("saved");
   });
 
@@ -209,7 +237,7 @@ describe("squad detail drafts survive unmount and remount", () => {
   it("member role editor reopens in edit mode with the draft", () => {
     const props = { draftKey: "squad-1:role:agent:a1", value: "Dev", onSave: vi.fn() };
     const first = renderWithI18n(<RoleEditor {...props} />);
-    fireEvent.click(screen.getByText("Dev"));
+    fireEvent.click(screen.getByText("· Dev"));
     fireEvent.change(screen.getByPlaceholderText("Role (e.g. Reviewer)"), {
       target: { value: "Lead" },
     });

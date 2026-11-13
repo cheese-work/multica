@@ -41,6 +41,7 @@ export default defineConfig({
       "data/**/*.test.tsx",
       "components/issue/run-cancel-button.test.ts",
       "components/composer/composer-draft.test.tsx",
+      "components/issue/issue-detail-load-error.test.tsx",
     ],
     passWithNoTests: true,
   },

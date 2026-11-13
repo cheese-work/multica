@@ -20,6 +20,7 @@ import {
   releaseVersionLabel,
   unavailableFork,
 } from "./fork-changelog";
+import { ChangeList, DeploySections } from "./fork-deploys";
 
 type ParsedDate = { year: number; month: number; day: number };
 
@@ -90,22 +91,6 @@ function groupByMonth(entries: readonly Release[]): MonthGroup[] {
 
 function anchorId(version: string) {
   return `release-${version.replace(/\./g, "-")}`;
-}
-
-function ChangeList({ items, itemKeys }: { items: string[]; itemKeys?: string[] }) {
-  return (
-    <ul className="mt-2 space-y-2">
-      {items.map((change, index) => (
-        <li
-          key={itemKeys?.[index] ?? `${index}:${change}`}
-          className="flex items-start gap-2.5 text-body leading-[1.7] text-[#0a0d12]/60 sm:text-body-lg"
-        >
-          <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-[#0a0d12]/30" />
-          {change}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 export function ChangelogPageClient({ fork = unavailableFork, buildStamp = "dev" }: { fork?: ForkChangelog; buildStamp?: string }) {
@@ -293,7 +278,9 @@ export function ChangelogPageClient({ fork = unavailableFork, buildStamp = "dev"
                         {release.title}
                       </h2>
 
-                      {hasCategorized ? (
+                      {release.deploys ? (
+                        <DeploySections release={release} />
+                      ) : hasCategorized ? (
                         <div className="mt-4 space-y-5">
                           {release.features && release.features.length > 0 && (
                             <div>

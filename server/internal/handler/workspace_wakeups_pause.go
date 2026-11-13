@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
+	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -78,58 +81,70 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // pause held. The audit record of a flip commits with it, so a flip that
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
-func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine bool) (db.Workspace, string, db.ActivityLog, error) {
+func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine bool) (db.Workspace, string, db.ActivityLog, error) {
+	ctx := r.Context()
 	var activity db.ActivityLog
-	if settings == nil && pause == nil {
-		ws, err := h.Queries.UpdateWorkspace(ctx, params)
-		return ws, "", activity, err
-	}
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
+	// Every update takes the row lock and reads the row it replaces, so the
+	// audit row records the true before-state (CHE-2774).
 	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
+	if err != nil {
+		return db.Workspace{}, "", activity, err
+	}
+	before, err := q.GetWorkspace(ctx, params.ID)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object hold no pause
 	action := ""
-	if settings == nil {
-		// A pause-only patch: start from what is stored, not from the client.
-		clone := maps.Clone(stored)
-		if clone == nil {
-			clone = map[string]any{}
+	if settings != nil || pause != nil {
+		if settings == nil {
+			// A pause-only patch: start from what is stored, not from the client.
+			clone := maps.Clone(stored)
+			if clone == nil {
+				clone = map[string]any{}
+			}
+			settings = clone
 		}
-		settings = clone
+		if incoming, isObject := settings.(map[string]any); isObject {
+			if pause != nil {
+				incoming[wakeupsPausedKey] = *pause
+			}
+			// Only an old client's flip of the retired PR switch needs the stored
+			// value; see reconcilePRMergeSettings.
+			reconcilePRMergeSettings(stored, incoming)
+			reconcileDelegatedWrites(stored, incoming)
+			reconcileAgentDecisionJev(stored, incoming)
+			reconcileRoutingAgent(stored, incoming)
+			reconcileSystem1Labellers(stored, incoming)
+			if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
+				return db.Workspace{}, "", activity, err
+			}
+			if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
+				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+			}
+			if machine && settingsAllowKeyMoved(stored, incoming) {
+				return db.Workspace{}, "", activity, errSettingsPasskeyRequired
+			}
+		} else if machine && settingsAllowKeyMoved(stored, nil) {
+			// A non-object body drops every key, allow-table keys included.
+			return db.Workspace{}, "", activity, errSettingsPasskeyRequired
+		} else if machine && stored[backgroundAgentsKey] != nil {
+			// A non-object body would clear the key: a key-omitting replacement.
+			return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
+		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil || stored[system1LabellersKey] != nil {
+			// A non-object body would replace the whole blob and clear the pause, the
+			// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
+			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}
+		}
+		params.Settings, _ = json.Marshal(settings)
 	}
-	if incoming, isObject := settings.(map[string]any); isObject {
-		if pause != nil {
-			incoming[wakeupsPausedKey] = *pause
-		}
-		// Only an old client's flip of the retired PR switch needs the stored
-		// value; see reconcilePRMergeSettings.
-		reconcilePRMergeSettings(stored, incoming)
-		reconcileDelegatedWrites(stored, incoming)
-		reconcileAgentDecisionJev(stored, incoming)
-		reconcileRoutingAgent(stored, incoming)
-		if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
-			return db.Workspace{}, "", activity, err
-		}
-		if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
-			return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
-		}
-	} else if machine && stored[backgroundAgentsKey] != nil {
-		// A non-object body would clear the key: a key-omitting replacement.
-		return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
-	} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
-		// A non-object body would replace the whole blob and clear the pause, the
-		// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
-		return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}
-	}
-	params.Settings, _ = json.Marshal(settings)
 	ws, err := q.UpdateWorkspace(ctx, params)
 	if err != nil {
 		return ws, "", activity, err
@@ -152,7 +167,26 @@ func (h *Handler) saveWorkspace(ctx context.Context, params db.UpdateWorkspacePa
 			return ws, "", activity, err
 		}
 	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: "workspace.update", WorkspaceID: ws.ID, TargetID: ws.ID,
+		Before: workspaceAuditFields(before), After: workspaceAuditFields(ws),
+	}); err != nil {
+		return ws, "", activity, auditWriteError{err}
+	}
 	return ws, action, activity, tx.Commit(ctx)
+}
+
+// settingsAllowKeyMoved reports whether the incoming blob adds, drops or
+// changes any key on the settings allow table (CHE-3482).
+func settingsAllowKeyMoved(stored, incoming map[string]any) bool {
+	for _, key := range decisionaction.SettingsKeys() {
+		sv, sok := stored[key]
+		iv, iok := incoming[key]
+		if sok != iok || !reflect.DeepEqual(sv, iv) {
+			return true
+		}
+	}
+	return false
 }
 
 // publishWakeupsPauseActivity announces a flip's committed audit record.

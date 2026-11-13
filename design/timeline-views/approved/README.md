@@ -1,0 +1,12 @@
+Locked from doop file `multica` (https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod), page `mRAnnjvGod:page1`. Issue [CHE-4313](mention://issue/01a1b116-c616-78b0-8a18-acc3e6e530d2).
+Picked by Cheese: Gantt B, Swimlane A, Hierarchy A, Sidebar A (decision request `af1dc36e-fabc-49e3-8f5f-10e8691b3638`, record `01a1b4b3-c28c-761e-8bc1-98834f375436`). UX verdicts are in `LOCK.json` (x99-agy-gemini-ux).
+Approved when the lock PR merges. The topic's last implementing PR deletes these reference files.
+
+- `gantt-b-wakeup-lane.html` (frame `huve-k7jLE`): Gantt v2 for Project, Issues and My Issues. Locked: **Direction B**, wakeup lane + focus. Filled actual-start-to-end bar split into status segments, `start_date` and `due_date` as markers, parent/child row tree, 30-day window with "Load earlier".
+- `swimlane-a-causal-columns.html` (frame `20EKgO9pKX`): Swimlane 2.0, first in the view-mode popup. Locked: **Direction A**, causal columns. Lanes by group-by (default assignee); x-axis is causal order, timestamps on hover; wakeup, dependency, parent/child and mention edges (a mention is its own dotted edge, not a wakeup).
+- `hierarchy-a-fan-breadcrumb.html` (frame `mzbsoFU2MX`): Hierarchy infinite zoom in the sidebar dialog. Locked: **Direction A**, fan + breadcrumb. One focus depth at a time, children grouped in one count card, ancestor chain, dashed leaf edges, 60-card cap with "+N". Replaces the 70% semantic-zoom split of CHE-2749. Cheese touched this frame after the first PASS; the re-score found the HTML byte-identical and passed the current version (`LOCK.json`, `ux_verdict_id`).
+- `sidebar-a-mini-preview.html` (frame `aTIpEERfej`): sidebar top card and dialog mode switch. Locked: **Direction A**, mini preview. N-mode switch (hierarchy or Swimlane 2.0, Gantt may join later), persisted per device, shared states.
+- Each file is the frame as read from doop, unchanged, and holds both of its directions (A and B). Only the direction named above is locked; the other is dropped. Its hash is `screens[].content_sha256` in `LOCK.json`.
+- Mockup data is the real CHE-2797 tree (62 issues, 4 levels, 6 stages). Segments, wakeups, assignees and causal links are illustrative.
+- Live screens are `NOT-CAPTURED` (X99 has no signed-in session); "today" panels come from source at `multica main @ 798c9779d1`.
+- Open questions with the drawn default, unchanged by the pick: Q1 mode sync per device; Q2 Gantt 30-day window; Q3 mentions are not wakeups.

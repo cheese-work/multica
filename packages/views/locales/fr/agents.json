@@ -1,19 +1,21 @@
 {
   "page": {
     "title": "Agents",
-    "learn_more": "En savoir plus →",
     "new_agent": "Nouvel agent",
-    "search_placeholder": "Rechercher des agents…",
     "show_archived": "Afficher les archivés ({{count}}) →",
     "of_total": "{{visible}} sur {{total}}",
     "list_load_failed": "Impossible de charger les agents",
     "list_load_failed_default": "Une erreur est survenue lors de la récupération de la liste des agents.",
-    "try_again": "Réessayer"
+    "try_again": "Réessayer",
+    "scope_title": {
+      "mine": "Mes agents",
+      "all": "Tous les agents",
+      "archived": "Agents archivés"
+    }
   },
   "scope": {
     "mine": "Les miens",
-    "all": "Tous",
-    "archived": "Archivés"
+    "all": "Tous"
   },
   "sort": {
     "label_recent": "Activité récente",
@@ -48,10 +50,7 @@
   },
   "no_matches": {
     "title": "Aucune correspondance",
-    "search_archived": "Aucun agent archivé ne correspond à « {{query}} ».",
     "no_archived": "Aucun agent archivé pour l'instant.",
-    "search_active": "Aucun agent ne correspond à « {{query}} ».",
-    "search_active_filtered": "Aucun agent ne correspond à « {{query}} » dans ce filtre.",
     "no_filter_match": "Aucun agent ne correspond à ce filtre.",
     "search_runtime_filtered": "Aucun agent sur « {{machine}} » ne correspond à « {{query}} ».",
     "runtime_filtered": "Aucun agent sur « {{machine}} »."
@@ -136,7 +135,6 @@
     "archive_dialog_confirm": "Archiver"
   },
   "detail": {
-    "back_to_agents": "Agents",
     "back_to_agents_full": "Retour aux agents",
     "not_found_title": "Agent introuvable",
     "not_found_default": "Cet agent a peut-être été archivé ou supprimé.",
@@ -165,7 +163,11 @@
     "runtime_required_toast": "Associez un runtime avant d'exécuter cet agent.",
     "assign_work": "Assigner du travail",
     "more_actions_aria": "Actions de l'agent",
-    "updated": "Mis à jour {{when}}"
+    "advanced_settings": "Paramètres avancés",
+    "copy_link": "Copier le lien",
+    "copy_id": "Copier l'ID de l'agent",
+    "link_copied_toast": "Lien copié",
+    "id_copied_toast": "ID de l'agent copié"
   },
   "inspector": {
     "section_profile": "Profil",
@@ -175,7 +177,6 @@
     "section_properties": "Propriétés",
     "section_details": "Détails",
     "section_details_hint": "Informations de propriété et de cycle de vie, en lecture seule.",
-    "section_skills": "Skills",
     "section_integrations": "Intégrations",
     "section_presets": "Préréglages",
     "preset_default": "Par défaut",
@@ -198,7 +199,6 @@
     "prop_owner": "Propriétaire",
     "prop_created": "Création",
     "prop_updated": "Mise à jour",
-    "no_description_placeholder": "Aucune description",
     "avatar_label": "Avatar",
     "name_label": "Nom",
     "description_label": "Description",
@@ -214,11 +214,26 @@
     "cancel": "Annuler"
   },
   "overview": {
-    "agent_context": "Agent",
-    "access": "Accès",
     "attention_title": "Des exécutions demandent votre attention",
     "attention_queued_one": "{{count}} exécution est en attente car le runtime est indisponible.",
     "attention_queued_other": "{{count}} exécutions sont en attente car le runtime est indisponible."
+  },
+  "sections": {
+    "runs_count_one": "{{count}} exécution",
+    "runs_count_other": "{{count}} exécutions",
+    "recent_this_week_one": "{{count}} cette semaine",
+    "recent_this_week_other": "{{count}} cette semaine",
+    "view_all": "Tout afficher",
+    "open": "Ouvrir",
+    "edit": "Modifier",
+    "add": "Ajouter",
+    "manage": "Gérer",
+    "instructions_empty": "Aucune instruction pour l'instant."
+  },
+  "panel": {
+    "status": "Statut",
+    "runs_7d": "Exécutions (7 j)",
+    "edit_access_aria": "Accès : {{value}}. Modifier l'accès"
   },
   "skill_attach": {
     "trigger_aria": "Rattacher un skill de l'espace de travail",
@@ -273,13 +288,11 @@
     "clear_full": "Effacer la sélection (utiliser la valeur par défaut du fournisseur)"
   },
   "tabs": {
-    "overview": "Vue d'ensemble",
     "work": "Travail",
     "capabilities": "Capacités",
     "settings": "Paramètres",
     "general": "Général",
     "access": "Accès",
-    "page_navigation_aria": "Page de l'agent",
     "section_navigation_aria": "Section de l'agent",
     "activity": "Activité",
     "tasks": "Exécutions",
@@ -301,7 +314,6 @@
     "title": "Créer un agent",
     "squad_title": "Créer un agent pour ce squad",
     "duplicate_title": "Dupliquer {{name}}",
-    "back": "Revenir en arrière",
     "step_ai": "Construire par la conversation",
     "modes": {
       "template": {
@@ -349,6 +361,7 @@
       "switch_runtime_failed": "Impossible de changer de runtime. La conversation se poursuit sur le précédent.",
       "switch_runtime_pending": "Arrêtez la réponse en cours pour changer de runtime.",
       "switch_runtime_success": "Runtime changé. Votre brouillon est conservé et la conversation se poursuit sur le nouveau runtime avec une session de modèle neuve.",
+      "conversation_tab": "Conversation",
       "chat_title": "Agent Builder",
       "runtime_online": "Runtime en ligne",
       "runtime_offline": "Runtime hors ligne",
@@ -385,7 +398,8 @@
       "runtime": "Choisir le runtime",
       "configure": "Configurer",
       "done": "Terminé",
-      "aria": "Étapes de création de l'agent"
+      "aria": "Étapes de création de l'agent",
+      "progress": "Étape {{current}} sur {{total}}"
     },
     "configure_title": "Configurer l'agent",
     "ask_ai": "Laisser l'IA rédiger",
@@ -805,13 +819,6 @@
       "section_now": "Maintenant",
       "section_last_30d": "30 derniers jours",
       "section_recent": "Travaux récents",
-      "subtitle_no_active": "Aucun travail en cours",
-      "subtitle_active_one": "{{count}} exécution active",
-      "subtitle_active_other": "{{count}} exécutions actives",
-      "subtitle_performance": "Performance",
-      "subtitle_no_recent": "Rien de terminé pour l'instant",
-      "subtitle_recent_progress": "{{shown}} exécutions sur {{total}}",
-      "subtitle_recent_latest": "{{count}} exécutions les plus récentes",
       "empty_now": "Cet agent n'exécute rien pour l'instant.",
       "empty_30d": "Aucune tâche terminée ces 30 derniers jours.",
       "empty_recent": "Cet agent n'a encore rien terminé.",
@@ -823,9 +830,7 @@
       "success_hint": "Exécutions terminées divisées par la somme des exécutions terminées et en échec. Les exécutions annulées sont exclues.",
       "success_unavailable": "Aucune exécution terminée ou en échec sur cette période : aucun taux de réussite à afficher.",
       "cancelled_count": "{{count}} annulées",
-      "avg_duration": "moy. {{value}}",
       "avg_duration_label": "durée moyenne",
-      "failed_count": "{{count}} en échec",
       "failed_label": "en échec",
       "source_issue": "Tâche",
       "source_chat": "Discussion",
@@ -961,6 +966,11 @@
     "details_preset_applied": "Appliqué",
     "details_preset_not_reported": "Non signalé",
     "details_preset_agent_defaults": "Valeurs par défaut de l'agent",
+    "details_init_context": "Contexte initial",
+    "details_init_context_total": "{{tokens}} jetons estimés au total",
+    "details_init_context_part": "{{tokens}} jetons estimés",
+    "details_init_context_part_budget": "{{tokens}} / {{budget}} jetons estimés",
+    "details_init_context_over_budget": "Budget dépassé",
     "copy_workdir": "Copier le répertoire de travail",
     "copy_project_directory": "Copier le répertoire du projet",
     "close": "Fermer",
@@ -1066,19 +1076,9 @@
     "none": "Aucune activité (30 j)"
   },
   "toolbar": {
-    "result_count_title": "Agents correspondants / agents dans la portée",
-    "filter_label": "Filtrer",
-    "filter_active_count_one": "{{count}} filtre",
-    "filter_active_count_other": "{{count}} filtres",
-    "clear_filters": "Effacer les filtres",
     "section_availability": "Disponibilité",
     "section_access": "Accès",
     "section_runtime": "Runtime",
-    "display": "Affichage",
-    "sort_by": "Trier par",
-    "direction_asc": "Croissant",
-    "direction_desc": "Décroissant",
-    "section_columns": "Colonnes",
     "section_owner": "Propriétaire",
     "section_model": "Modèle"
   },
@@ -1086,5 +1086,37 @@
     "selected_one": "{{count}} sélectionné",
     "selected_other": "{{count}} sélectionnés",
     "clear_selection": "Effacer la sélection"
+  },
+  "auto_compact": {
+    "title": "Compactage automatique",
+    "hint": "Laissez un champ vide pour utiliser la valeur de l’espace de travail.",
+    "inherit_placeholder": "Valeur de l’espace de travail",
+    "save_failed": "Impossible d’enregistrer le réglage de compactage automatique."
+  },
+  "scheduling": {
+    "paused_badge": "En pause",
+    "pause_action": "Mettre l'agent en pause",
+    "resume_action": "Reprendre l'agent",
+    "pause_title": "Mettre {{name}} en pause ?",
+    "pause_description": "Un agent en pause ne prend plus de nouvelles exécutions. Le travail en file attend la reprise.",
+    "impact_running": "{{count}} en cours",
+    "impact_queued": "{{count}} en file",
+    "impact_issues": "{{count}} tickets ouverts",
+    "impact_wakeups": "{{count}} réveils activés",
+    "impact_loading": "Vérification de l'impact…",
+    "impact_failed": "Impossible de lire l'impact. Vous pouvez quand même mettre en pause.",
+    "cancel_active": "Annuler aussi les exécutions actives maintenant",
+    "cancel_active_hint": "Désactivé : les exécutions en cours se terminent. Activé : les exécutions en cours et en file sont annulées après la pause.",
+    "resume_title": "Reprendre {{name}} ?",
+    "resume_description": "L'agent reprend des exécutions, y compris le travail mis en file pendant la pause.",
+    "keep": "Ne rien changer",
+    "paused_toast": "Agent mis en pause",
+    "resumed_toast": "Agent repris",
+    "failed_toast": "Impossible de modifier la planification de l'agent",
+    "reason_label": "Motif (facultatif)",
+    "reason_placeholder": "Motif (facultatif)",
+    "paused_by_note": "Mis en pause par {{name}} · {{time}}",
+    "paused_at_note": "Mis en pause {{time}}",
+    "paused_reason_note": "Motif : {{reason}}"
   }
 }

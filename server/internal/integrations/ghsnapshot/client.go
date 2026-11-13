@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +59,9 @@ func (e *InstallationGoneError) Error() string {
 // the X-RateLimit-Reset header, or a conservative default.
 type RateLimitError struct {
 	RetryAfter time.Duration
+	// Header is the throttling response's headers, unclamped. Nil when the
+	// error was not built from a response.
+	Header http.Header
 }
 
 func (e *RateLimitError) Error() string {
@@ -244,10 +248,20 @@ func (client *Client) restPost(ctx context.Context, installationID int64, path s
 	return client.restDo(ctx, installationID, http.MethodPost, path, raw, http.StatusCreated)
 }
 
-func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus int) (json.RawMessage, error) {
+func (client *Client) restDo(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, error) {
+	body, _, err := client.restDoFull(ctx, installationID, method, path, payload, okStatus...)
+	return body, err
+}
+
+// restDoHeader is restGet that also returns the response headers (pagination).
+func (client *Client) restDoHeader(ctx context.Context, installationID int64, path string) (json.RawMessage, http.Header, error) {
+	return client.restDoFull(ctx, installationID, http.MethodGet, path, nil, http.StatusOK)
+}
+
+func (client *Client) restDoFull(ctx context.Context, installationID int64, method, path string, payload []byte, okStatus ...int) (json.RawMessage, http.Header, error) {
 	token, err := client.installationToken(ctx, installationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	endpoint := strings.TrimRight(client.apiBase, "/") + path
 	var reqBody io.Reader
@@ -256,7 +270,7 @@ func (client *Client) restDo(ctx context.Context, installationID int64, method, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reqBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -266,24 +280,24 @@ func (client *Client) restDo(ctx context.Context, installationID int64, method, 
 	}
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	const maxBody = 8 << 20
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
-		return nil, errors.New("github REST: failed to read response")
+		return nil, nil, errors.New("github REST: failed to read response")
 	}
 	if isRateLimited(resp, body) {
-		return nil, rateLimitFromResponse(resp, client.now())
+		return nil, nil, rateLimitFromResponse(resp, client.now())
 	}
-	if resp.StatusCode != okStatus {
-		return nil, &StatusError{Status: resp.StatusCode}
+	if !slices.Contains(okStatus, resp.StatusCode) {
+		return nil, nil, &StatusError{Status: resp.StatusCode}
 	}
 	if len(body) > maxBody {
-		return nil, errors.New("github REST: response exceeds size limit")
+		return nil, nil, errors.New("github REST: response exceeds size limit")
 	}
-	return body, nil
+	return body, resp.Header, nil
 }
 
 func isRateLimited(resp *http.Response, body []byte) bool {
@@ -328,5 +342,5 @@ func rateLimitFromResponse(resp *http.Response, now time.Time) *RateLimitError {
 	if wait > 5*time.Minute {
 		wait = 5 * time.Minute
 	}
-	return &RateLimitError{RetryAfter: wait}
+	return &RateLimitError{RetryAfter: wait, Header: resp.Header.Clone()}
 }

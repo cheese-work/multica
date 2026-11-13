@@ -24,7 +24,7 @@
  * does not pull the editor's Tiptap graph into Chat.
  */
 
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toHtml } from "hast-util-to-html";
 import { Check, Copy } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
@@ -127,13 +127,23 @@ export function CodeBlockShell({
 }) {
   const { t } = useT("editor");
   const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | undefined>(undefined);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      window.clearTimeout(copiedTimer.current);
+    };
+  }, []);
   const copyLabel = t(($) => $.code_block.copy_code) || "Copy code";
 
   const handleCopy = async () => {
     if (!code) return;
-    if (await copyText(code)) {
+    if ((await copyText(code)) && mounted.current) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      window.clearTimeout(copiedTimer.current);
+      copiedTimer.current = window.setTimeout(() => setCopied(false), 2000);
     }
   };
 

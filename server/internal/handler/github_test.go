@@ -1428,22 +1428,28 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	default:
 		t.Fatalf("firePRWebhook: unknown lifecycle %q", lifecycle)
 	}
+	// GitHub sends the merge commit only for a merged PR.
+	var mergeSHA any
+	if merged {
+		mergeSHA = fmt.Sprintf("merge%d", prNumber)
+	}
 	payload := map[string]any{
 		"action": action,
 		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
-			"title":      title,
-			"body":       body,
-			"state":      state,
-			"draft":      false,
-			"merged":     merged,
-			"merged_at":  mergedAt,
-			"closed_at":  closedAt,
-			"created_at": "2026-04-28T00:00:00Z",
-			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
-			"user":       map[string]any{"login": "octocat"},
+			"number":           prNumber,
+			"html_url":         fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
+			"title":            title,
+			"body":             body,
+			"state":            state,
+			"draft":            false,
+			"merged":           merged,
+			"merged_at":        mergedAt,
+			"closed_at":        closedAt,
+			"merge_commit_sha": mergeSHA,
+			"created_at":       "2026-04-28T00:00:00Z",
+			"updated_at":       "2026-04-29T00:00:00Z",
+			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},

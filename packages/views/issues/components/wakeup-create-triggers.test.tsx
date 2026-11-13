@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useWakeupFormDraftStore } from "@multica/core/issues/stores";
 import { configureShortcutPlatform } from "@multica/core/shortcuts";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupCreate } from "./wakeup-create";
@@ -83,6 +84,7 @@ function submit(instruction = "Continue") {
 const sent = () => create.mock.calls[0]![0];
 
 beforeEach(() => {
+  useWakeupFormDraftStore.setState({ drafts: {} });
   create.mockReset().mockResolvedValue(undefined);
   configureShortcutPlatform("macos");
 });

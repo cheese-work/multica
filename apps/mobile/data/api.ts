@@ -14,6 +14,7 @@
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
 import type {
+  ChatAttentionView,
   CommentPreview,
   Agent,
   AgentTask,
@@ -67,7 +68,9 @@ import type {
 } from "@multica/core/types";
 import {
   AppConfigSchema,
+  ChatAttentionEnvelopeSchema,
   CommentPreviewSchema,
+  EMPTY_CHAT_ATTENTION_VIEW,
   EMPTY_APP_CONFIG,
   EMPTY_REFRESH_SESSION_RESPONSE,
   RefreshSessionResponseSchema,
@@ -112,7 +115,6 @@ import {
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
-  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -148,7 +150,7 @@ import {
 } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
-import { parseWithFallback } from "@/lib/parse-response";
+import { parseOrThrow, parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
 import { buildCommentUpdateBody } from "./revision";
 
@@ -706,12 +708,9 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    return this.fetchValidated(
-      `/api/issues/${id}`,
-      IssueSchema,
-      EMPTY_ISSUE_FALLBACK,
-      { ...opts, endpoint: "getIssue" },
-    );
+    // No fallback: an empty issue made the screen say "not found" for data it could not read.
+    const raw = await this.fetch<unknown>(`/api/issues/${id}`, { signal: opts?.signal });
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "getIssue" });
   }
 
   /**
@@ -847,6 +846,9 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+          // Mobile has no steer receipt for issue comments, so it never takes
+          // the server's default of folding into a running turn (CHE-5286).
+          steer: false,
         }),
       },
       { endpoint: "createComment" },
@@ -1286,7 +1288,7 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    opts?: { attachmentIds?: string[] },
+    opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1295,10 +1297,20 @@ class ApiClient {
     // server-side `chat.go` back-fills `chat_message_id` on the listed
     // attachments after the message row is inserted (see
     // server/internal/handler/chat.go:410-456).
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    //
+    // `client_message_id` makes a retry idempotent (A22): the server stores
+    // one message per (session, id). `ask_ids` answers displayed asks.
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+      client_message_id?: string;
+      ask_ids?: string[];
+    } = { content };
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
     }
+    if (opts?.clientMessageId) body.client_message_id = opts.clientMessageId;
+    if (opts?.askIds && opts.askIds.length > 0) body.ask_ids = opts.askIds;
     const raw = await this.fetch<unknown>(
       `/api/chat/sessions/${sessionId}/messages`,
       {
@@ -1366,6 +1378,42 @@ class ApiClient {
       throw new ApiError("Resend response invalid", 0, raw);
     }
     return parsed.data;
+  }
+
+  // DM attention actions (plan r4 T3, T5). Each call sends the exact subject
+  // keys the row displayed; the server acts on those keys only.
+  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(
+      raw,
+      ChatAttentionEnvelopeSchema,
+      { attention: EMPTY_CHAT_ATTENTION_VIEW },
+      { endpoint: "POST /api/chat/sessions/:id/attention/xong" },
+    ).attention;
+  }
+
+  async chatAttentionLater(
+    sessionId: string,
+    subjectKeys: string[],
+    options: { durationSeconds?: number; requestId: string },
+  ): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_keys: subjectKeys,
+        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
+        request_id: options.requestId,
+      }),
+    });
+    return parseWithFallback(
+      raw,
+      ChatAttentionEnvelopeSchema,
+      { attention: EMPTY_CHAT_ATTENTION_VIEW },
+      { endpoint: "POST /api/chat/sessions/:id/attention/later" },
+    ).attention;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {

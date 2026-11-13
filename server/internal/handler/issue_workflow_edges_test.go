@@ -28,6 +28,7 @@ type edgeCase struct {
 // it at backlog; enter moves it onto a step as a person would.
 func newEdgeCase(t *testing.T, installationID int64, steps []map[string]any) edgeCase {
 	t.Helper()
+	giveBackRunBudgetHooks()
 	seedTestCatalog(t)
 	fx := newPRMergeWebhookFixture(t, installationID)
 	wf := createTestWorkflowSteps(t, "Edges "+workflowTestSuffix(), steps)

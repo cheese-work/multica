@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,68 @@ func actionTxBusy(err error) bool {
 	return strings.HasPrefix(pgError.Code, "08")
 }
 
+// decisionActionRetryDelays are the pauses before each retry of a whole action
+// transaction that a lock refused. The row locks stay NOWAIT (plan 3.2: never a
+// waiter in a lock cycle), so a short-lived holder, such as the asking agent's
+// claim, is waited out here, between attempts that hold nothing.
+var decisionActionRetryDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second}
+
+// lockStep names the step of an action transaction that a lock refused, for the
+// log line of a busy_retry. It never changes how the error is classified.
+type lockStep struct {
+	step string
+	err  error
+}
+
+func (failure lockStep) Error() string { return failure.step + ": " + failure.err.Error() }
+func (failure lockStep) Unwrap() error { return failure.err }
+
+func atStep(step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return lockStep{step, err}
+}
+
+// lockRefused reports an error the same transaction may succeed after: a lock
+// that was held (55P03, advisory try-locks), or a serialization failure.
+func lockRefused(err error) bool {
+	if errors.Is(err, errBusyRetry) {
+		return true
+	}
+	var pgError *pgconn.PgError
+	return errors.As(err, &pgError) && (pgError.Code == "55P03" || pgError.Code == "40001")
+}
+
+// retryActionTx runs one whole action transaction again while a lock refuses
+// it, within the caller's deadline. The last busy answer is logged with the
+// refusing step; nothing commits before the attempt that succeeds, and the
+// passkey is checked only after every lock, so a refused attempt consumes no
+// challenge.
+func retryActionTx(ctx context.Context, operation string, caller decisionActionCaller, issueID pgtype.UUID, attempt func() (db.DecisionAction, error)) (db.DecisionAction, error) {
+	action, err := attempt()
+	for _, delay := range decisionActionRetryDelays {
+		if !lockRefused(err) {
+			return action, err
+		}
+		select {
+		case <-ctx.Done():
+			return action, err
+		case <-time.After(delay):
+		}
+		action, err = attempt()
+	}
+	if actionTxBusy(err) {
+		step := "unknown"
+		var named lockStep
+		if errors.As(err, &named) {
+			step = named.step
+		}
+		slog.Warn("decision action: busy_retry", "operation", operation, "step", step, "action_id", uuidToString(caller.actionID), "issue_id", uuidToString(issueID), "error", err)
+	}
+	return action, err
+}
+
 // refuseWhileRecovering answers 403 recovery_required while the person is in
 // recovery. The state is read under the share lock the gate check takes, inside
 // the caller's transaction (CHE-2798 P6).
@@ -60,7 +123,7 @@ func refuseWhileRecovering(ctx context.Context, queries *db.Queries, userID pgty
 	recovering, err := passkey.UserRecovering(ctx, queries, userID)
 	switch {
 	case errors.Is(err, passkey.ErrBusy):
-		return errBusyRetry
+		return atStep("recovery_state", errBusyRetry)
 	case err != nil:
 		return err
 	case recovering:
@@ -149,6 +212,9 @@ func (handler *Handler) RejectDecisionAction(writer http.ResponseWriter, request
 		writeDecisionActionError(writer, err)
 		return
 	}
+	if err := handler.publishDecisionActionCardUpdated(context.WithoutCancel(ctx), action); err != nil {
+		slog.Warn("decision action: card update not published", "action_id", uuidToString(action.ID), "error", err)
+	}
 	handler.DecisionWorker.Notify()
 	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))
 }
@@ -171,6 +237,35 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 		return
 	}
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+}
+
+// GetDecisionAction returns the card view of one action to the request's
+// human, so the approval page can show what it asks and name its payload hash.
+func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *http.Request) {
+	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
+	if !ok {
+		return
+	}
+	action, err := handler.Queries.GetDecisionAction(request.Context(), db.GetDecisionActionParams{WorkspaceID: caller.workspaceID, ID: caller.actionID})
+	var decisionRequest db.DecisionRequest
+	if err == nil {
+		decisionRequest, err = handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: action.DecisionRequestID})
+	}
+	if err == nil && decisionRequest.HumanUserID != caller.userID {
+		err = errNotTheHuman
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = errNotTheHuman
+	}
+	if err != nil {
+		writeDecisionActionError(writer, err)
+		return
+	}
+	view := newDecisionActionResponse(action)
+	if decisionRequest.ChatSessionID.Valid {
+		view.ChatSessionID = uuidToString(decisionRequest.ChatSessionID)
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) bool {
@@ -219,6 +314,13 @@ func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decis
 	if err != nil {
 		return empty, err
 	}
+	return retryActionTx(ctx, "reject", caller, located.IssueID, func() (db.DecisionAction, error) {
+		return handler.rejectDecisionActionOnce(ctx, caller, located)
+	})
+}
+
+func (handler *Handler) rejectDecisionActionOnce(ctx context.Context, caller decisionActionCaller, located db.DecisionRequest) (db.DecisionAction, error) {
+	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
 		return empty, err
@@ -226,34 +328,34 @@ func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decis
 	defer transaction.Rollback(context.WithoutCancel(ctx))
 	queries := handler.Queries.WithTx(transaction)
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
-		return empty, err
+		return empty, atStep("workspace", err)
 	}
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return empty, atStep("chat_session", err)
 	}
 	if _, err := queries.LockDecisionAskingAgent(ctx, db.LockDecisionAskingAgentParams{WorkspaceID: caller.workspaceID, ID: located.AskingAgentID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return empty, atStep("agents", err)
 	}
 	if err := lockDecisionThreadAndIssue(ctx, queries, caller.workspaceID, located); err != nil {
 		return empty, err
 	}
 	current, err := queries.LockDecisionRequestNowait(ctx, db.LockDecisionRequestNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ID})
 	if err != nil {
-		return empty, err
+		return empty, atStep("request", err)
 	}
 	if _, err := queries.LockDecisionLiveAnswerNowait(ctx, db.LockDecisionLiveAnswerNowaitParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err == nil {
 		return empty, errNotPending
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return empty, atStep("answer", err)
 	}
 	action, err := queries.LockDecisionActionNowait(ctx, db.LockDecisionActionNowaitParams{ID: caller.actionID, WorkspaceID: caller.workspaceID})
 	if err != nil {
-		return empty, err
+		return empty, atStep("action", err)
 	}
 	if _, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID}); errors.Is(err, pgx.ErrNoRows) {
 		return empty, errNotTheHuman
 	} else if err != nil {
-		return empty, err
+		return empty, atStep("member", err)
 	}
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
@@ -265,7 +367,7 @@ func (handler *Handler) rejectDecisionActionTx(ctx context.Context, caller decis
 	if err != nil {
 		return empty, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", "Rejected "+action.ActionType+"."); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", decisionActionSummary(rejected)); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {

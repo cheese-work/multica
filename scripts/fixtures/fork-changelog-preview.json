@@ -1,13 +1,109 @@
 {
   "prs": [
     {
+      "number": 6,
+      "title": "feat(inbox): live badge",
+      "body": "## Changelog\n\nChangelog: Inbox badges now update the moment a reply lands.\n",
+      "headRef": "agent/preview/6",
+      "mergeSha": "6666666666666666666666666666666666666666",
+      "mergedAt": "2026-11-05T08:30:00Z"
+    },
+    {
+      "number": 7,
+      "title": "fix(issues): list scroll",
+      "body": "## Changelog\n\nChangelog: Issue lists no longer jump back to the top after a reload.\n",
+      "headRef": "agent/preview/7",
+      "mergeSha": "5555555555555555555555555555555555555555",
+      "mergedAt": "2026-11-05T06:10:00Z"
+    },
+    {
+      "number": 4,
+      "title": "feat(search): recents",
+      "body": "## Changelog\n\nChangelog: Search now remembers your recent queries.\n",
+      "headRef": "agent/preview/4",
+      "mergeSha": "4444444444444444444444444444444444444444",
+      "mergedAt": "2026-11-05T03:20:00Z"
+    },
+    {
+      "number": 8,
+      "title": "feat(x): silent",
+      "body": "No changelog line.",
+      "headRef": "agent/preview/8",
+      "mergeSha": "3333333333333333333333333333333333333333",
+      "mergedAt": "2026-11-05T01:00:00Z"
+    },
+    {
       "number": 1,
       "title": "feat(issues): faster issue lists",
-      "body": "## What does this PR do?\n\nPreview fixture.\n\n## Changelog\n\nChangelog: Issue lists now open instantly in large workspaces.\n",
+      "body": "## Changelog\n\nChangelog: Issue lists now open instantly in large workspaces.\n",
       "headRef": "agent/preview/1",
-      "mergeSha": "1111111111111111111111111111111111111111",
-      "mergedAt": "2026-10-13T08:00:00Z"
+      "mergeSha": "2222222222222222222222222222222222222222",
+      "mergedAt": "2026-11-04T15:00:00Z"
     }
   ],
-  "firstParent": ["1111111111111111111111111111111111111111"]
+  "firstParent": [
+    {
+      "sha": "6666666666666666666666666666666666666666",
+      "time": "2026-11-05T08:30:00Z",
+      "message": ""
+    },
+    {
+      "sha": "5555555555555555555555555555555555555555",
+      "time": "2026-11-05T06:10:00Z",
+      "message": ""
+    },
+    {
+      "sha": "4444444444444444444444444444444444444444",
+      "time": "2026-11-05T03:20:00Z",
+      "message": ""
+    },
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "time": "2026-11-05T01:00:00Z",
+      "message": ""
+    },
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "time": "2026-11-04T15:00:00Z",
+      "message": ""
+    },
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "time": "2026-11-04T10:00:00Z",
+      "message": ""
+    }
+  ],
+  "deployments": [
+    {
+      "sha": "5555555555555555555555555555555555555555",
+      "state": "SUCCESS",
+      "createdAt": "2026-11-05T06:30:00Z"
+    },
+    {
+      "sha": "5555555555555555555555555555555555555555",
+      "state": "SUCCESS",
+      "createdAt": "2026-11-05T07:00:00Z"
+    },
+    {
+      "sha": "4444444444444444444444444444444444444444",
+      "state": "FAILURE",
+      "createdAt": "2026-11-05T03:40:00Z"
+    },
+    {
+      "sha": "3333333333333333333333333333333333333333",
+      "state": "SUCCESS",
+      "createdAt": "2026-11-05T01:30:00Z"
+    },
+    {
+      "sha": "1111111111111111111111111111111111111111",
+      "state": "SUCCESS",
+      "createdAt": "2026-11-04T11:00:00Z"
+    }
+  ],
+  "versions": {
+    "6666666666666666666666666666666666666666": "0.7.2-20261105-1530",
+    "5555555555555555555555555555555555555555": "0.7.2-20261105-1310",
+    "3333333333333333333333333333333333333333": "0.7.2-20261105-0800",
+    "1111111111111111111111111111111111111111": "0.7.2-20261104-1700"
+  }
 }
