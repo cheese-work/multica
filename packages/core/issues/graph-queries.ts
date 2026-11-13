@@ -101,7 +101,7 @@ export function issueRelationsOptions(wsId: string, ids: readonly string[], opts
   };
 }
 
-/** Merge timeline pages: issues by id, segments by row id, wakeup events by id; first sighting wins order. */
+/** Merge timeline pages: issues by id, segments by row id (unioned), wakeup events by id; first sighting sets the order. */
 export function mergeTimelinePages(pages: IssueTimelineResponse[]): IssueTimelineResponse {
   const last = pages[pages.length - 1]!;
   const issues = new Map<string, IssueTimelineResponse["issues"][number]>();
@@ -120,14 +120,31 @@ export function mergeTimelinePages(pages: IssueTimelineResponse[]): IssueTimelin
   return { ...last, issues: [...issues.values()], wakeup_events: [...events.values()] };
 }
 
-/** Dedupe by row id; a segment without one falls back to its status and span. */
-function dedupeSegments<T extends { row_id?: string; status: string; from: string | null; to: string | null }>(segments: T[]): T[] {
-  const seen = new Map<string, T>();
+type Segment = IssueTimelineResponse["issues"][number]["segments"][number];
+
+const ms = (t: string) => Date.parse(t);
+
+/**
+ * Union segments that share a row id. The server clips segments to the window,
+ * so a stretch that crosses a window boundary comes back once per window: keep
+ * the earliest `from` (with its `clipped_start`) and the latest `to` (with its
+ * `clipped_end`); a null `to` is an open end and wins. A segment without a row
+ * id falls back to its status and span and is never merged.
+ */
+function dedupeSegments(segments: Segment[]): Segment[] {
+  const byKey = new Map<string, Segment>();
   for (const s of segments) {
     const key = s.row_id ?? `${s.status}|${s.from}|${s.to}`;
-    if (!seen.has(key)) seen.set(key, s);
+    const prev = byKey.get(key);
+    if (!prev || !s.row_id) {
+      byKey.set(key, s);
+      continue;
+    }
+    const head = prev.from !== null && (s.from === null || ms(s.from) < ms(prev.from)) ? s : prev;
+    const tail = prev.to === null ? prev : s.to === null || ms(s.to) > ms(prev.to) ? s : prev;
+    byKey.set(key, { ...prev, from: head.from, clipped_start: head.clipped_start, to: tail.to, clipped_end: tail.clipped_end });
   }
-  return [...seen.values()];
+  return [...byKey.values()];
 }
 
 export function issueActualTimelineOptions(wsId: string, request: Omit<IssueTimelineRequest, "page">) {

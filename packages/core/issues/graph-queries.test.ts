@@ -110,6 +110,29 @@ describe("mergeTimelinePages", () => {
     expect(merged.issues[0]!.segments.map((s) => s.row_id)).toEqual(["r2", "r1"]);
   });
 
+  it("unions the pieces of one segment that the server clipped at the window boundary", () => {
+    const seg = (from: string | null, to: string | null, clipped_start: boolean, clipped_end: boolean) =>
+      ({ row_id: "r1", status: "in_progress", category: "started" as const, from, to, clipped_start, clipped_end });
+    const mk = (n: number, segments: ReturnType<typeof seg>[]) => ({ ...issue(n, []), segments });
+    // Current window sees the tail; the older window sees the head of the same row.
+    const merged = mergeTimelinePages([
+      tl([mk(1, [seg("2026-11-01T00:00:00Z", "2026-11-10T00:00:00Z", true, false)])]),
+      tl([mk(1, [seg("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z", false, true)])]),
+    ]);
+    expect(merged.issues[0]!.segments).toEqual([seg("2026-10-01T00:00:00Z", "2026-11-10T00:00:00Z", false, false)]);
+  });
+
+  it("keeps an open end open when one piece has no end", () => {
+    const seg = (from: string, to: string | null, clipped_end: boolean) =>
+      ({ row_id: "r1", status: "in_progress", category: "started" as const, from, to, clipped_start: false, clipped_end });
+    const mk = (segments: ReturnType<typeof seg>[]) => ({ ...issue(1, []), segments });
+    const merged = mergeTimelinePages([
+      tl([mk([seg("2026-11-01T00:00:00Z", null, false)])]),
+      tl([mk([seg("2026-10-01T00:00:00Z", "2026-11-01T00:00:00Z", true)])]),
+    ]);
+    expect(merged.issues[0]!.segments[0]).toMatchObject({ from: "2026-10-01T00:00:00Z", to: null, clipped_end: false });
+  });
+
   it("merges wakeup events by id", () => {
     const ev = (eid: string) => ({ id: eid, at: "x", target_issue_id: id(1), rule_id: "r", rule_kind: "at", condition_type: "", source_issue_id: null, class: "self" as const, run_id: null });
     const merged = mergeTimelinePages([tl([], [ev("e1")]), tl([], [ev("e1"), ev("e2")])]);
