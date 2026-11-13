@@ -16,6 +16,8 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+var errNotBatchable = decisionIntentRefusal{http.StatusConflict, "not_batchable: this action type cannot be approved in a batch; approve it alone"}
+
 // batchPayloadSHA256 is the hash a human signs for a batch: the hash of the
 // items' payload hashes, sorted, so the order of the card does not matter.
 func batchPayloadSHA256(itemHashes []string) string {
@@ -36,6 +38,11 @@ func (handler *Handler) batchActions(ctx context.Context, caller decisionActionC
 	}
 	hashes := make([]string, len(actions))
 	for index, action := range actions {
+		// A top-up holds its issue's run-budget boundary, and a caller may hold
+		// only one boundary at a time.
+		if action.ActionType == runBudgetTopUpType {
+			return nil, "", errNotBatchable
+		}
 		hashes[index] = action.PayloadSha256
 	}
 	return actions, batchPayloadSHA256(hashes), nil
@@ -89,8 +96,9 @@ type batchApproveResponse struct {
 // assertion over the batch hash. Each item runs under its own savepoint: one
 // that fails ends as failed with its own error code and the others still apply.
 // Any other refusal (not pending, expired, not the human, recovery, owner-only,
-// a wrong hash) refuses the whole batch and applies nothing. Items that need
-// secret values or a preview digest are not batchable and refuse the batch.
+// a wrong hash) refuses the whole batch and applies nothing. Run-budget top-ups
+// are not batchable: each holds a boundary lock. Items that need secret values
+// or a preview digest are not batchable either.
 func (handler *Handler) ApproveDecisionActionBatch(writer http.ResponseWriter, request *http.Request) {
 	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
 	if !ok {
@@ -127,13 +135,6 @@ func (handler *Handler) approveDecisionActionBatch(ctx context.Context, caller d
 		callers[index] = decisionActionCaller{workspaceID: caller.workspaceID, actionID: action.ID, userID: caller.userID}
 		if plans[index], err = handler.planApprove(ctx, callers[index], nil); err != nil {
 			return nil, err
-		}
-		if boundary := plans[index].boundaryIssue; boundary.Valid {
-			leave, err := handler.enterRunBudgetBoundary(ctx, boundary)
-			if err != nil {
-				return nil, errBusyRetry
-			}
-			defer leave()
 		}
 	}
 	// The stored hashes never change, so a wrong claim is refused before any lock.

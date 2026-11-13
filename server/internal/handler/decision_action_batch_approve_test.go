@@ -196,3 +196,20 @@ func TestBatchApproveTwiceIsRefusedAsNotPending(test *testing.T) {
 		test.Fatalf("copies = %d, want 2", copies)
 	}
 }
+
+func TestBatchWithARunBudgetTopUpIsRefusedAndAppliesNothing(test *testing.T) {
+	run := newBatchRun(test, []string{"che5413 topup a", "che5413 topup b"}, nil)
+	dbfx.Exec(test, `UPDATE decision_action SET action_type = $2 WHERE decision_request_id IN (SELECT id FROM decision_request WHERE batch_id = $1) AND params->>'name' = $3`, run.batchID, runBudgetTopUpType, run.names[1])
+	body := run.approve(test, withVerifier(acceptingVerifier), run.claim(test), http.StatusConflict)
+	if !strings.Contains(body, "not_batchable") {
+		test.Fatalf("body %q lacks not_batchable", body)
+	}
+	for _, name := range run.names {
+		if state := run.state(test, name); state != "pending" {
+			test.Fatalf("%s is %s, want pending", name, state)
+		}
+	}
+	if copies := run.copies(test); copies != 0 {
+		test.Fatalf("copies = %d, want 0", copies)
+	}
+}
