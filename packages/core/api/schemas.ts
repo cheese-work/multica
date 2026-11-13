@@ -1157,7 +1157,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
-const DecisionRequestCardSchema = z.lazy(() => z.object({
+export const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
@@ -1200,6 +1200,8 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
+
+export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
   artifacts: z.array(z.object({
@@ -1869,6 +1871,7 @@ export const IssueSchema = z.lazy(() => z.object({
   // this field to make a decision — useStatusLabel resolves the label from the
   // catalog — so dropping it costs a fallback to the key. (MUL-6749)
   status_name: z.string().optional().catch(undefined),
+  run_budget_blocked: z.boolean().optional().catch(undefined),
   priority: z.string(),
   assignee_type: z.string().nullable(),
   assignee_id: z.string().nullable(),

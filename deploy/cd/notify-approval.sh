@@ -10,9 +10,10 @@ set -euo pipefail
 #     open card per SHA, withdraws an older one and refuses a stale SHA.
 #     Needs MULTICA_SERVER_URL, MULTICA_TOKEN, MULTICA_WORKSPACE_ID and
 #     MULTICA_NOTIFY_SOURCE_COMMENT (the anchor comment) too.
-# No route configured, or no route delivered, fails the job: a silent notice
-# left eligible candidates unseen for a day. The deploy gate itself does not
-# depend on this job.
+# No route configured only warns: the deploy gate does not depend on this job,
+# and a missing secret turned every scheduled run red. A configured route that
+# delivers nothing fails the job: a silent notice left eligible candidates
+# unseen for a day (CHE-4879).
 #
 # SOURCE_SHA comes from the schedule-resolve job. A manual dispatch has none, so
 # INPUT_REF (a branch, tag or commit SHA) is fetched and peeled to its commit:
@@ -102,8 +103,8 @@ if [ -n "${MULTICA_TOKEN:-}" ] && [ -n "${MULTICA_SERVER_URL:-}" ] && [ -n "${MU
 fi
 
 if [ "$routes" -eq 0 ]; then
-  echo "::error title=C00 approval notice::no notice route configured (set C00_APPROVAL_WEBHOOK_URL or the MULTICA_* secrets); candidate $version is waiting. Dispatch at $RUN_URL"
-  exit 1
+  echo "::warning title=C00 approval notice::no notice route configured (set C00_APPROVAL_WEBHOOK_URL or the MULTICA_* secrets); candidate $version is waiting. Dispatch at $RUN_URL"
+  exit 0
 fi
 if [ "$delivered" -eq 0 ]; then
   echo "::error title=C00 approval notice::every notice route failed; candidate $version is waiting. Dispatch at $RUN_URL"

@@ -1627,7 +1627,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
@@ -1836,8 +1836,11 @@ func (s *TaskService) enqueuePreparedInTxWithHandoff(ctx context.Context, querie
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
 	}
-	if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived or has no runtime")
+	if agent.ArchivedAt.Valid {
+		return db.AgentTaskQueue{}, ErrAgentArchived
+	}
+	if !agent.RuntimeID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 	params.RuntimeID = agent.RuntimeID
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
@@ -1990,7 +1993,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -6561,7 +6564,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry", SourceTaskID: t.ID}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -7288,7 +7291,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry", SourceTaskID: parent.ID}); err != nil {
 		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrAgentPaused) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
@@ -7366,6 +7369,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	if child.Status == "queued" {
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
+			return nil, err
+		}
+	}
+	if parent.IssueID.Valid {
+		if err := bindRefusedRun(ctx, qtx, parent.IssueID, pgtype.UUID{}, parent.ID, child.ID); err != nil {
 			return nil, err
 		}
 	}

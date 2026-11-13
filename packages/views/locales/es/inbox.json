@@ -25,6 +25,7 @@
     "type": "Tipo",
     "received": "Recibido",
     "type_mention": "Menciones",
+    "mentions_only": "Mentions me",
     "type_comment": "Comentarios y reacciones",
     "type_assign": "Asignaciones y suscripciones",
     "type_review": "Solicitudes de revisión",

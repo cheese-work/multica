@@ -23,6 +23,7 @@
     "type": "通知の種類",
     "received": "受信日時",
     "type_mention": "メンション",
+    "mentions_only": "自分へのメンション",
     "type_comment": "コメントとリアクション",
     "type_assign": "割り当てと購読",
     "type_review": "レビュー依頼",

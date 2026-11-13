@@ -241,5 +241,12 @@
     "star_label": "Поставить звезду Multica на GitHub",
     "later": "Не сейчас",
     "close": "Закрыть"
+  },
+  "workspace_pause": {
+    "paused_by": "Scheduling paused by {{name}} · {{time}}.",
+    "paused_at": "Scheduling paused · {{time}}.",
+    "detail": "No agent claims new runs. Running tasks finish; queued work waits.",
+    "resume": "Resume",
+    "resume_failed": "Could not resume the workspace"
   }
 }

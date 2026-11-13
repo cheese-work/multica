@@ -1745,7 +1745,9 @@
       "retry": "Retry",
       "changed_elsewhere": "This workflow was changed by someone else while you were editing. Your edits are kept.",
       "load_latest": "Load latest",
-      "keep_edits": "Keep my edits"
+      "keep_edits": "Keep my edits",
+      "budget_request_pending": "A run-cap change for this workflow is waiting for an owner to approve it.",
+      "budget_request_pending_cap": "A run-cap change to {{cap}} runs per issue is waiting for an owner to approve it."
     },
     "mapping": {
       "title": "Mover tareas a {{name}}",
@@ -2173,7 +2175,9 @@
     "raise": "Raise",
     "top_up": "Top up",
     "asked": "Asked the workspace owner to approve.",
-    "request_failed": "The request did not go through. Try again."
+    "request_failed": "The request did not go through. Try again.",
+    "chip": "Budget used",
+    "open_request": "Open request below"
   },
   "attachment_revision": {
     "badge": "v{{revision}} · {{earlier}} earlier",

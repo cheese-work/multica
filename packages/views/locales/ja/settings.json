@@ -1011,7 +1011,18 @@
     "prefix_new_label": "新しいプレフィックス",
     "prefix_rule": "英字と数字のみ、最大 10 文字です。",
     "prefix_confirm_action": "{{prefix}} に変更",
-    "prefix_external_warning": "PR タイトル、ブランチ名、ドキュメント、チャット内の古いキー（{{oldExample}} など）は更新されないため、それらのリンクは機能しなくなります。"
+    "prefix_external_warning": "PR タイトル、ブランチ名、ドキュメント、チャット内の古いキー（{{oldExample}} など）は更新されないため、それらのリンクは機能しなくなります。",
+    "scheduling_label": "スケジューリング",
+    "scheduling_hint": "一時停止すると、すべてのエージェントが新しい実行を取得しなくなります。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "scheduling_pause_action": "ワークスペースを一時停止",
+    "scheduling_resume_action": "ワークスペースを再開",
+    "scheduling_pause_title": "このワークスペースを一時停止しますか？",
+    "scheduling_pause_description": "再開するまで、どのエージェントも新しい実行を取得しません。待機中の作業は保持されます。",
+    "scheduling_keep": "そのまま続ける",
+    "scheduling_confirm": "一時停止",
+    "scheduling_paused_toast": "ワークスペースを一時停止しました",
+    "scheduling_resumed_toast": "ワークスペースを再開しました",
+    "scheduling_failed_toast": "ワークスペースのスケジューリングを変更できませんでした"
   },
   "export_privacy": {
     "title": "エクスポートプライバシー",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Filter, RotateCcw, Search } from "@multica/ui/icons";
+import { AtSign, Filter, RotateCcw, Search } from "@multica/ui/icons";
 import { PRIORITY_DISPLAY_ORDER } from "@multica/core/issues/config";
 import { DUE_DATE_FILTERS, FILTER_NONE_VALUE } from "@multica/core/issues/stores/filter-tree";
 import {
@@ -67,7 +67,7 @@ import {
 const EMPTY_ISSUE_IDS: ReadonlySet<string> = new Set();
 const NO_COUNTS = new Map<string, number>();
 
-const NOTIFICATION_KEYS: readonly InboxFilterKey[] = ["unread", "type", "actor", "received"];
+const NOTIFICATION_KEYS: readonly InboxFilterKey[] = ["unread", "mentions", "type", "actor", "received"];
 const ISSUE_KEYS: readonly InboxFilterKey[] = [
   "status",
   "priority",
@@ -168,6 +168,7 @@ export function InboxFilterMenu({
       case "priority":
         return priorityFilterSupport === "supported";
       case "agent":
+      case "mentions":
         return !archived;
       case "actor":
         return actorOptions.length > 0;
@@ -211,6 +212,7 @@ export function InboxFilterMenu({
     assignees: archived ? toMap(facets?.assignees) : localCounts?.assignees ?? NO_COUNTS,
     labels: archived ? toMap(facets?.labels) : localCounts?.labels ?? NO_COUNTS,
     unread: archived ? facets?.unreadCount ?? 0 : localCounts?.unread ?? 0,
+    mentions: localCounts?.mentions ?? 0,
   };
 
   const inboxStatusKeys = useMemo(
@@ -281,6 +283,16 @@ export function InboxFilterMenu({
             icon={<span className="flex size-3.5 items-center justify-center"><span className="size-1.5 rounded-full bg-brand" /></span>}
             label={labels.unread}
             count={counts.unread}
+          />
+        );
+      case "mentions":
+        return (
+          <ValueItem
+            checked={effectiveFilters.mentionsOnly}
+            onToggle={() => store.toggleMentionsOnly(wsId)}
+            icon={<AtSign className="size-3.5 text-muted-foreground" />}
+            label={labels.mentionsMe}
+            count={counts.mentions}
           />
         );
       case "type":
@@ -488,6 +500,13 @@ export function InboxFilterMenu({
       valueHits.push({
         key: "unread", value: "unread", label: labels.unread, icon: null,
         checked: effectiveFilters.unreadOnly, onToggle: () => store.toggleUnreadOnly(wsId),
+      });
+    }
+    if (available("mentions")) {
+      valueHits.push({
+        key: "mentions", value: "mentions", label: labels.mentionsMe,
+        icon: <AtSign className="size-3.5 text-muted-foreground" />,
+        checked: effectiveFilters.mentionsOnly, onToggle: () => store.toggleMentionsOnly(wsId),
       });
     }
     if (available("type")) {

@@ -1403,6 +1403,7 @@ export function useRealtimeSync(
       if (wsId) {
         if (comment.decision_request_id || comment.decision_answer_id) {
           qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+          qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(wsId) });
         }
         invalidateUpdatedAtSortedIssueLists(qc, wsId);
         invalidateLastActivitySortedIssueLists(qc, wsId);
@@ -1420,7 +1421,10 @@ export function useRealtimeSync(
     const unsubDecisionAnswerUpdated = ws.on("decision_answer:updated", (p) => {
       applyDecisionAnswerUpdated(qc, p as DecisionAnswerUpdatedPayload);
       const wsId = getCurrentWsId();
-      if (wsId) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+      if (wsId) {
+        qc.invalidateQueries({ queryKey: chatKeys.openDecisions(wsId) });
+        qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(wsId) });
+      }
     });
 
     const unsubCommentUpdated = ws.on("comment:updated", (p) => {
@@ -1789,7 +1793,10 @@ export function useRealtimeSync(
     });
     const invalidateOpenDecisions = () => {
       const id = getCurrentWsId();
-      if (id) qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+      if (id) {
+        qc.invalidateQueries({ queryKey: chatKeys.openDecisions(id) });
+        qc.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(id) });
+      }
     };
 
     const unsubChatMessage = ws.on("chat:message", (p) => {

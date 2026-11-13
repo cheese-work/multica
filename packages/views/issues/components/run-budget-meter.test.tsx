@@ -30,6 +30,7 @@ describe("RunBudgetMeter (CHE-2861)", () => {
   const requestRunBudgetAction = vi.fn();
   const listMembers = vi.fn();
   const getDecisionAction = vi.fn();
+  const listOpenDecisionRequests = vi.fn();
   const getDecisionActionOutcome = vi.fn();
   const challengeDecisionAction = vi.fn();
   const approveDecisionAction = vi.fn();
@@ -39,6 +40,7 @@ describe("RunBudgetMeter (CHE-2861)", () => {
     getIssueRunBudget.mockReset().mockResolvedValue(snapshot());
     requestRunBudgetAction.mockReset().mockResolvedValue({ requests: [{ request_id: "r1", action_id: "act-1" }] });
     listMembers.mockReset().mockResolvedValue([{ user_id: "user-1", role: "member" }]);
+    listOpenDecisionRequests.mockReset().mockResolvedValue([]);
     getDecisionAction.mockReset().mockResolvedValue({
       id: "act-1", action_type: "issue.run_budget.raise", action_version: 1,
       params: { issue_id: issueId, window_id: "w1", new_cap: 55 }, payload_sha256: "abc", state: "pending",
@@ -47,7 +49,7 @@ describe("RunBudgetMeter (CHE-2861)", () => {
     challengeDecisionAction.mockReset().mockResolvedValue({ challenge_id: "ch", options: { publicKey: {} }, expires_at: "t" });
     approveDecisionAction.mockReset().mockResolvedValue({ id: "act-1", state: "executed", result: { outcome: "cap_applied" } });
     setApiInstance({
-      getIssueRunBudget, requestRunBudgetAction, listMembers, getDecisionAction,
+      getIssueRunBudget, requestRunBudgetAction, listMembers, getDecisionAction, listOpenDecisionRequests,
       getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction,
     } as unknown as ApiClient);
     qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -60,6 +62,31 @@ describe("RunBudgetMeter (CHE-2861)", () => {
         <RunBudgetMeter issueId={issueId} />
       </QueryClientProvider>,
     );
+
+  describe("open request link (CHE-5285)", () => {
+    it("links to the open request on this issue and holds the buttons", async () => {
+      listOpenDecisionRequests.mockResolvedValue([{ id: "req-1", issue_id: issueId, action: { action_type: "issue.run_budget.raise" } }, { id: "req-2", issue_id: "other", action: { action_type: "issue.run_budget.raise" } }]);
+      view();
+      const link = await screen.findByRole("link", { name: "Open request below" });
+      expect(link.getAttribute("href")).toBe("#issue-decision-banner");
+      expect(screen.queryByRole("button", { name: "Top up" })).toBeNull();
+    });
+
+    it("keeps the buttons when the open card on this issue is not a budget card", async () => {
+      listOpenDecisionRequests.mockResolvedValue([{ id: "req-3", issue_id: issueId }, { id: "req-4", issue_id: issueId, action: { action_type: "agent.env.patch" } }]);
+      view();
+      expect(await screen.findByRole("button", { name: "Top up" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Raise" })).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Open request below" })).toBeNull();
+    });
+
+    it("keeps the buttons when no request is open on this issue", async () => {
+      listOpenDecisionRequests.mockResolvedValue([{ id: "req-2", issue_id: "other" }]);
+      view();
+      expect(await screen.findByRole("button", { name: "Top up" })).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Open request below" })).toBeNull();
+    });
+  });
 
   describe("states", () => {
     it("shows used, limit and runs left", async () => {
@@ -84,6 +111,18 @@ describe("RunBudgetMeter (CHE-2861)", () => {
       getIssueRunBudget.mockResolvedValue(snapshot({ runs_used: 42, runs_left: -2, state: "over" }));
       view();
       expect(await screen.findByText("Run budget used up")).toBeTruthy();
+    });
+
+    it.each([
+      ["ok", { runs_used: 20, runs_left: 5, runs_limit: 25 }, "text-foreground"],
+      ["near", { runs_used: 20, runs_left: 5, runs_limit: 25 }, "text-warning"],
+      ["at_limit", { runs_used: 25, runs_left: 0, runs_limit: 25 }, "text-destructive"],
+      ["over", { runs_used: 27, runs_left: -2, runs_limit: 25 }, "text-destructive"],
+    ])("colours the runs line for %s", async (state, counts, cls) => {
+      getIssueRunBudget.mockResolvedValue(snapshot({ ...counts, state }));
+      view();
+      const line = await screen.findByText(`Runs ${counts.runs_used} / 25`);
+      expect(line.className).toContain(cls);
     });
 
     it("renders nothing for an unbudgeted issue and for a malformed response", async () => {

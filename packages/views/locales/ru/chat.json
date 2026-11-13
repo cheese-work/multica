@@ -334,7 +334,9 @@
     "waiting": "The agent has not sent the decision card yet.",
     "queued_since": "Queued since {{time}}",
     "running_since": "Running since {{time}}",
-    "no_run": "No active run."
+    "no_run": "No active run.",
+    "title_used": "Decisions",
+    "answered_count": "{{number}} answered"
   },
   "needs_you": {
     "chip_one": "{{count}} decision needs you",
@@ -541,7 +543,8 @@
       "field_workspace_context": "Workspace context",
       "field_workflow_steps": "Workflow steps",
       "field_workflow_instructions": "Workflow step instructions",
-      "field_workspace_settings": "Workspace settings"
+      "field_workspace_settings": "Workspace settings",
+      "field_workflow_budget": "Workflow run budget"
     },
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",
@@ -590,6 +593,14 @@
       "retry": "Try again",
       "file_missing": "This file was deleted after the ask was sent.",
       "list_failed": "Could not load the files this request approves."
+    },
+    "recent_runs": "Recent runs",
+    "recent_runs_status": {
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled",
+      "running": "Running",
+      "other": "Queued"
     }
   },
   "search": {

@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "需要你做决定",
+    "title_used": "决定",
+    "answered_count": "已回答 {{number}} 项",
     "waiting": "智能体尚未发送决策卡片。",
     "queued_since": "自 {{time}} 起排队中",
     "running_since": "自 {{time}} 起运行中",
@@ -469,6 +471,8 @@
     "action_unavailable": "无法显示详情",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
+    "recent_runs": "最近运行",
+    "recent_runs_status": { "completed": "已完成", "failed": "失败", "cancelled": "已取消", "running": "运行中", "other": "排队中" },
     "config_change": {
       "viewer_label": "待批准的更改",
       "tab_changes": "更改",
@@ -486,7 +490,8 @@
       "field_workspace_context": "工作区上下文",
       "field_workflow_steps": "工作流步骤",
       "field_workflow_instructions": "工作流步骤指令",
-      "field_workspace_settings": "工作区设置"
+      "field_workspace_settings": "工作区设置",
+      "field_workflow_budget": "工作流运行预算"
     },
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",

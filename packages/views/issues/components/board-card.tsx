@@ -30,6 +30,8 @@ import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { CustomStatusChip, useIsCustomStatus } from "./custom-status-chip";
+import { RunBudgetChip } from "./run-budget-chip";
+import { isStoppedByBudget } from "@multica/core/run-budget";
 import { IssueDuplicateOfMarker } from "./issue-duplicates";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import {
@@ -119,6 +121,7 @@ export const BoardCardContent = memo(function BoardCardContent({
   // Keeps the chip row from rendering an empty flex container when the status
   // chip is the only thing in it and it decides to render nothing.
   const showCustomStatus = useIsCustomStatus(issue.status);
+  const showBudgetChip = isStoppedByBudget(issue);
 
   const showAssigneeName = showAssigneeSection && hasAssignee && !showStartDate && !showDueDate;
   const showUpdatedHint = showAssigneeName && !showChildProgress;
@@ -234,9 +237,10 @@ export const BoardCardContent = memo(function BoardCardContent({
       {/* Chip row: status + project + labels + custom property values.
           The status chip renders only for a CUSTOM status — the column header
           already names the category. (MUL-6243) */}
-      {(showCustomStatus || showProject || showWorkflow || showLabels || cardCustomProperties.length > 0) && (
+      {(showCustomStatus || showBudgetChip || showProject || showWorkflow || showLabels || cardCustomProperties.length > 0) && (
         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
           <CustomStatusChip status={issue.status} />
+          <RunBudgetChip issue={issue} />
           {showProject && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground max-w-[160px]">
               <ProjectIcon project={project} size="sm" />

@@ -248,6 +248,91 @@ describe("unread filtering", () => {
   });
 });
 
+describe("mentions-me filtering", () => {
+  const mention = (id: string, issue: string, created_at: string, source?: string) =>
+    item(id, "todo", "high", {
+      issue_id: issue,
+      type: "mentioned",
+      created_at,
+      details: source ? { mention_source: source } : null,
+    });
+  const comment = (id: string, issue: string, created_at: string) =>
+    item(id, "todo", "high", { issue_id: issue, type: "new_comment", created_at });
+  const on = { ...EMPTY_INBOX_FILTERS, mentionsOnly: true };
+
+  it("keeps only rows where the viewer was mentioned and counts as one filter", () => {
+    const rows = [
+      mention("mention", "i1", "2026-08-24T00:00:00Z", "direct"),
+      comment("comment", "i2", "2026-08-24T00:00:00Z"),
+      item("assigned", "todo", "high", { type: "issue_assigned" }),
+    ];
+
+    expect(ids(filterInboxItems(rows, on))).toEqual(["mention"]);
+    expect(inboxFilterCount(on)).toBe(1);
+  });
+
+  it("matches direct and @all mentions but not squad-only or unknown ones", () => {
+    const rows = [
+      mention("direct", "i1", "2026-08-24T00:00:00Z", "direct"),
+      mention("all", "i2", "2026-08-24T00:00:00Z", "all"),
+      mention("squad", "i3", "2026-08-24T00:00:00Z", "squad"),
+      // Written before the server recorded provenance: unknown, so not matched.
+      mention("legacy", "i4", "2026-08-24T00:00:00Z"),
+    ];
+
+    expect(ids(filterInboxItems(rows, on)).sort()).toEqual(["all", "direct"]);
+  });
+
+  it("keeps a mention discoverable after a later comment on the same issue", () => {
+    const rows = [
+      mention("mention", "i1", "2026-08-24T00:00:00Z", "direct"),
+      comment("later", "i1", "2026-08-24T00:05:00Z"),
+    ];
+
+    expect(ids(filterInboxItems(rows, on))).toEqual(["mention"]);
+  });
+
+  it("does not let a squad-only or legacy mention survive a later comment", () => {
+    const rows = [
+      mention("squad", "i1", "2026-08-24T00:00:00Z", "squad"),
+      comment("later", "i1", "2026-08-24T00:05:00Z"),
+      mention("legacy", "i2", "2026-08-24T00:00:00Z"),
+      comment("later2", "i2", "2026-08-24T00:05:00Z"),
+    ];
+
+    expect(filterInboxItems(rows, on)).toEqual([]);
+  });
+
+  it("is dormant on the archive, which has no mention dimension", () => {
+    const effective = effectiveInboxFilters(on, { priority: "supported", issueFields: "supported", archived: true });
+
+    expect(effective.mentionsOnly).toBe(false);
+    expect(archivedInboxQuery(effective)).toEqual({});
+  });
+
+  it("counts the rows its selection would leave", () => {
+    const rows = [
+      mention("m1", "i1", "2026-08-24T00:00:00Z", "direct"),
+      comment("c1", "i1", "2026-08-24T00:05:00Z"),
+      mention("squad", "i2", "2026-08-24T00:00:00Z", "squad"),
+    ];
+
+    expect(inboxFacetCounts(rows, EMPTY_INBOX_FILTERS).mentions).toBe(1);
+  });
+
+  it("survives sanitizing and toggles per workspace", () => {
+    expect(sanitizeInboxFilters({ mentionsOnly: true }).mentionsOnly).toBe(true);
+    expect(sanitizeInboxFilters({}).mentionsOnly).toBe(false);
+
+    const { toggleMentionsOnly, clearFilters } = useInboxFilterStore.getState();
+    toggleMentionsOnly("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]?.mentionsOnly).toBe(true);
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-2"]).toBeUndefined();
+    clearFilters("ws-1");
+    expect(useInboxFilterStore.getState().filtersByWorkspace["ws-1"]).toBeUndefined();
+  });
+});
+
 describe("pinned row with agent filtering", () => {
   it("keeps the open notification after an agent starts on its issue", () => {
     const filters = { ...EMPTY_INBOX_FILTERS, agent: "idle" as const };

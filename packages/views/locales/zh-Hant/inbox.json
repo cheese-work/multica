@@ -23,6 +23,7 @@
     "type": "通知類型",
     "received": "收到時間",
     "type_mention": "提及我",
+    "mentions_only": "提到我的",
     "type_comment": "評論與回應",
     "type_assign": "分配與訂閱",
     "type_review": "審查請求",

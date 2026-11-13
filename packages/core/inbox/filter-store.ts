@@ -28,6 +28,7 @@ interface InboxFilterState {
   togglePriorityFilter: (wsId: string, priority: IssuePriority) => void;
   toggleActorFilter: (wsId: string, actor: string) => void;
   toggleUnreadOnly: (wsId: string) => void;
+  toggleMentionsOnly: (wsId: string) => void;
   /** Selecting the current value again clears the dimension. */
   setReceived: (wsId: string, received: InboxReceivedFilter) => void;
   setAgent: (wsId: string, agent: InboxAgentFilter) => void;
@@ -89,6 +90,8 @@ export const useInboxFilterStore = create<InboxFilterState>()(
         set((state) => update(state, wsId, (current) => toggleListValue(current, "actor", actor))),
       toggleUnreadOnly: (wsId) =>
         set((state) => update(state, wsId, (current) => ({ ...current, unreadOnly: !current.unreadOnly }))),
+      toggleMentionsOnly: (wsId) =>
+        set((state) => update(state, wsId, (current) => ({ ...current, mentionsOnly: !current.mentionsOnly }))),
       setReceived: (wsId, received) =>
         set((state) =>
           update(state, wsId, (current) => ({

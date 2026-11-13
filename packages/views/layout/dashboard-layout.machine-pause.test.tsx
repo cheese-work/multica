@@ -25,6 +25,9 @@ vi.mock("./app-shell-context", () => ({
 vi.mock("./machine-pause-banner", () => ({
   MachinePauseBanner: () => <div data-testid="machine-pause-banner" />,
 }));
+vi.mock("./workspace-pause-banner", () => ({
+  WorkspacePauseBanner: () => null,
+}));
 
 describe("DashboardLayout", () => {
   it("mounts the machine pause banner above the page in the content card", () => {

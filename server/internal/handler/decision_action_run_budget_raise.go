@@ -73,5 +73,9 @@ func executeRunBudgetRaiseAction(ctx context.Context, execution decisionActionEx
 	if err := service.RecordRunBudgetActionRaise(ctx, queries, issue, execution.Action.ID, int(raised.Int32)-current); err != nil {
 		return nil, err
 	}
+	// A raise keeps the window: the resume runs in the window the refusal named.
+	if err := linkRunBudgetRefusal(ctx, queries, issue.ID, params.RefusalID, execution.Action.ID, windowID); err != nil {
+		return nil, err
+	}
 	return json.Marshal(map[string]any{"from": current, "to": raised.Int32, "outcome": "cap_applied"})
 }

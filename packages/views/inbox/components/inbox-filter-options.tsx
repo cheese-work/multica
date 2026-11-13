@@ -45,6 +45,7 @@ import { useT } from "../../i18n";
 
 export const INBOX_FILTER_ICONS: Record<InboxFilterKey, IconComponent> = {
   unread: Eye,
+  mentions: AtSign,
   type: Bell,
   actor: UserRound,
   received: Clock,
@@ -78,6 +79,7 @@ export function useInboxFilterLabels() {
   const { t: tIssues } = useT("issues");
   const dimension: Record<InboxFilterKey, string> = {
     unread: tIssues(($) => $.filters.section_read_state),
+    mentions: t(($) => $.filters.type_mention),
     type: t(($) => $.filters.type),
     actor: t(($) => $.filters.from),
     received: t(($) => $.filters.received),
@@ -113,6 +115,7 @@ export function useInboxFilterLabels() {
     received,
     agent,
     unread: tIssues(($) => $.filters.read_state_unread),
+    mentionsMe: t(($) => $.filters.mentions_only),
     noProject: tIssues(($) => $.filters.no_project),
     noAssignee: tIssues(($) => $.filters.no_assignee),
     dueDate: (bucket: keyof typeof DUE_DATE_LABEL_KEY) => tIssues(($) => $.filters[DUE_DATE_LABEL_KEY[bucket]]),
@@ -141,6 +144,8 @@ export function useInboxFilterChips(wsId: string, filters: InboxFilters): Filter
     switch (key) {
       case "unread":
         return [labels.unread];
+      case "mentions":
+        return [labels.mentionsMe];
       case "type":
         return filters.types.map((type) => labels.type[type]);
       case "actor":

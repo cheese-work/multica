@@ -2240,6 +2240,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.With(handler.RequireHumanActor).Put("/jev", h.SetAgentDecisionJev)
 			})
 
+			// System 1 labels (CHE-4383 B4a): the assigned labeller agent writes with a
+			// task token; the owner assigns the labeller and a task token must not.
+			r.Route("/api/system1", func(r chi.Router) {
+				r.Post("/labels", h.WriteSystem1Label)
+				r.With(handler.RequireHumanActor).Put("/labellers", h.SetSystem1Labeller)
+			})
+
 			// Issues
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/limit-usage", h.GetIssueLimitUsage)
@@ -2796,6 +2803,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/quick-actions/regenerate", h.RegenerateChatQuickActions)
 					r.Get("/messages", h.ListChatMessages)
 					r.Get("/messages/page", h.ListChatMessagesPage)
+					r.Get("/segments", h.ListChatSegments)
+					r.Get("/segment", h.GetChatSegment)
 					r.Get("/pending-task", h.GetPendingChatTask)
 					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
 					r.With(denyRunToken).Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
@@ -2897,6 +2906,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/ci", h.CreateCIDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.With(handler.RequireHumanActor).Get("/issue-cards", h.ListIssueDecisionCards)
 				r.Get("/feed", h.ListDecisionFeed)
 				r.Get("/shadow-report", h.GetSystem1Report)
 				r.Post("/feed/{id}/ack", h.AckDecisionFeed)

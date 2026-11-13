@@ -3188,6 +3188,13 @@ type RunBudgetRefusal struct {
 	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	HookGeneration       int32              `json:"hook_generation"`
+	TaintIds             []string           `json:"taint_ids"`
+	TaskID               pgtype.UUID        `json:"task_id"`
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID     pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID       pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
 }
 
 type RunBudgetWindowCutover struct {
@@ -3433,6 +3440,9 @@ type System1Label struct {
 	Label         string             `json:"label"`
 	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
 type System1Observation struct {
@@ -3458,6 +3468,19 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+}
+
+type System1Prediction struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ObservationID       pgtype.UUID        `json:"observation_id"`
+	Scope               string             `json:"scope"`
+	PredictorID         string             `json:"predictor_id"`
+	PredictorVersion    string             `json:"predictor_version"`
+	PredictedKey        pgtype.Text        `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4      `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4        `json:"predicted_precedents"`
+	PredictedAt         pgtype.Timestamptz `json:"predicted_at"`
 }
 
 type TaskElevation struct {
