@@ -187,7 +187,7 @@
   status: active
   components: ["packages/ui/components/ui/card.tsx", "packages/ui/components/ui/badge.tsx"]
   surfaces: ["agent-mcp-tab", "composio-tab"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=DuqxVys-Eo"}
 - id: settings-table-section
   intent: "Settings table."
   origin: fork
@@ -195,7 +195,7 @@
   components: ["packages/ui/components/ui/table.tsx"]
   surfaces: ["delegated-writes-section", "provider-breakers-tab"]
   open: "2 raw tables here, plus chat-session-stats-dialog."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=zwtKWV4hl7"}
 - id: settings-action-row
   intent: "Pause / resume row with a confirm dialog."
   origin: fork
@@ -203,21 +203,21 @@
   components: []
   surfaces: ["agent-scheduling", "workspace-scheduling-row"]
   build: "One row (2 copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=sG7c6FoEh5"}
 - id: create-shell
   intent: "Agent create page shell."
   origin: fork
   status: active
   components: ["packages/views/agents/create/create-shell.tsx"]
   surfaces: ["ai-create-agent-page", "builder-setup-panel"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=LqGJiAq4L4"}
 - id: confirm-dialog
   intent: "Confirm dialog for a handoff."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/alert-dialog.tsx"]
   surfaces: ["use-archived-send", "batch-handoff-confirm-dialog"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Ii5sqw8rC5"}
 - id: section-eyebrow
   intent: "Uppercase label above a section (text-micro uppercase tracking-wide, 27 files)."
   origin: fork

@@ -33,4 +33,34 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap integration-card-grid \
+  --component packages/ui/components/ui/card.tsx \
+  --component packages/ui/components/ui/badge.tsx \
+  --token text-body --token text-caption --token text-muted-foreground
+
+cap settings-table-section \
+  --component packages/ui/components/ui/table.tsx \
+  --token text-muted-foreground --token tabular-nums
+
+cap settings-action-row \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --component packages/views/settings/components/workspace-scheduling-row.tsx \
+  --token text-body --token text-caption --token text-muted-foreground \
+  --copy "label=settings:workspace.scheduling_label" \
+  --copy "hint=settings:workspace.scheduling_hint" \
+  --copy "pause=settings:workspace.scheduling_pause_action"
+
+cap create-shell \
+  --component packages/views/agents/create/create-shell.tsx \
+  --token text-body --token text-caption --token text-micro \
+  --copy "title=agents:creation_studio.title" \
+  --copy "stepper aria-label=agents:creation_studio.steps.aria"
+
+cap confirm-dialog \
+  --component packages/ui/components/ui/alert-dialog.tsx \
+  --copy "title=settings:workspace.scheduling_pause_title" \
+  --copy "description=settings:workspace.scheduling_pause_description" \
+  --copy "cancel=settings:workspace.scheduling_keep" \
+  --copy "confirm=settings:workspace.scheduling_confirm"
+
 rm -rf "$build"
