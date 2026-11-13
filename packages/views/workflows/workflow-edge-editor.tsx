@@ -1,6 +1,7 @@
 "use client";
 
 import { Trash2 } from "@multica/ui/icons";
+import { PR_MERGE_STATUS_NONE } from "@multica/core/github";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
   EDITABLE_GUARDS,
@@ -44,7 +45,7 @@ export function WorkflowEdgeEditor({
 }) {
   const { t } = useT("issues");
   const labelOf = useStatusLabel(useWorkspaceId());
-  const prMergeChosen = !!prMergeStatus && prMergeStatus !== "none";
+  const prMergeChosen = !!prMergeStatus && prMergeStatus !== PR_MERGE_STATUS_NONE;
   const prMergeUnlisted =
     prMergeChosen && !steps.some((s) => s.status_key === prMergeStatus) ? (
       <p className="text-caption text-muted-foreground">

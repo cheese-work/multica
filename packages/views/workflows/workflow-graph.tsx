@@ -15,6 +15,7 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { PR_MERGE_STATUS_NONE } from "@multica/core/github";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import {
@@ -162,7 +163,7 @@ export function WorkflowGraph({
   const anyStepLabel = t(($) => $.workflows.flow.any_step);
   // The virtual edge starts at the "Any step" marker.
   const endLabel = (key: string) => (key === ANY_STEP ? anyStepLabel : labelOf(key));
-  const prMergeChosen = !!prMergeStatus && prMergeStatus !== "none";
+  const prMergeChosen = !!prMergeStatus && prMergeStatus !== PR_MERGE_STATUS_NONE;
   const prMergedLabel = t(($) => $.workflows.flow.pr_merged);
   const deprecatedLabel = t(($) => $.workflows.flow.deprecated);
   const guardLabel = useCallback(
@@ -215,6 +216,7 @@ export function WorkflowGraph({
               selectable: false,
               connectable: false,
               focusable: false,
+              measured: measured[ANY_STEP],
             },
           ]
         : []),
@@ -281,6 +283,7 @@ export function WorkflowGraph({
           edges={flowEdges}
           nodeTypes={nodeTypes}
           fitView
+          minZoom={0.2}
           nodesDraggable={editable}
           nodesConnectable={editable}
           elementsSelectable={editable}
