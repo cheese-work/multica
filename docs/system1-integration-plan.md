@@ -136,7 +136,7 @@ Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
 ### Blind label queue (CHE-4383 B4b)
 
 `GET /api/system1/label-queue?scope=X&kind=burn_in|eval`. Migration
-`99982_system1_label_sample` (table `system1_label_sample`, no foreign key,
+`9999915_system1_label_sample` (table `system1_label_sample`, no foreign key,
 unique `(task_id, scope, kind)`: `seed`, `observation_ids`, `task_id`,
 `agent_id`).
 
