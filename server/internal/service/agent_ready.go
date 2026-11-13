@@ -160,6 +160,18 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 // be redundant work, not a correctness gap). CHE-588 shipped this trigger-side
 // gate alone and deliberately deferred retry/claim; CHE-607 closed that gap.
 func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
+	return agentReadiness(ctx, lookup, agent, true)
+}
+
+// ScriptAgentReadiness is AgentReadiness without the model-only checks
+// (workspace provider hold, provider breaker). A script task never calls a
+// model, so those gates say nothing about it (CHE-5092). Archived, runtime and
+// access checks are unchanged.
+func ScriptAgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
+	return agentReadiness(ctx, lookup, agent, false)
+}
+
+func agentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent, modelChecks bool) (AgentVerdict, error) {
 	if agent.ArchivedAt.Valid {
 		return AgentVerdict{
 			Availability: AgentBlocked,
@@ -190,16 +202,21 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	// check fails closed. Blanket fail-closed HERE would instead refuse
 	// every dispatch workspace-wide on one flaky read, which is a worse
 	// outage than the one this feature exists to prevent.
-	verdict, blocked, err := providerHoldVerdict(ctx, lookup, agent)
-	if err != nil {
-		return AgentVerdict{}, err
-	}
-	if blocked {
-		return verdict, nil
-	}
-	breakerVerdict, err := providerBreakerVerdict(ctx, lookup, agent)
-	if err != nil {
-		return AgentVerdict{}, err
+	var verdict, breakerVerdict AgentVerdict
+	if modelChecks {
+		var blocked bool
+		var err error
+		verdict, blocked, err = providerHoldVerdict(ctx, lookup, agent)
+		if err != nil {
+			return AgentVerdict{}, err
+		}
+		if blocked {
+			return verdict, nil
+		}
+		breakerVerdict, err = providerBreakerVerdict(ctx, lookup, agent)
+		if err != nil {
+			return AgentVerdict{}, err
+		}
 	}
 	if !agent.RuntimeID.Valid {
 		return AgentVerdict{

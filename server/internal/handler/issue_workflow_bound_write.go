@@ -1,15 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -59,21 +57,9 @@ const (
 
 // workflowStepsHash is the recipe above for steps of the workflow with id.
 func workflowStepsHash(id pgtype.UUID, steps []issueworkflow.Step) string {
-	payload := make([]IssueWorkflowStepPayload, len(steps))
-	for i, s := range steps {
-		payload[i] = stepToPayload(s)
-	}
-	raw, _ := json.Marshal(map[string]any{"steps": payload, "workflow_id": uuidToString(id)}) // a plain struct tree always marshals
-	var generic any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	_ = dec.Decode(&generic)
-	var canonical bytes.Buffer
-	enc := json.NewEncoder(&canonical) // a map encodes with its keys sorted
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(generic)
-	sum := sha256.Sum256(bytes.TrimSuffix(canonical.Bytes(), []byte("\n")))
-	return hex.EncodeToString(sum[:])
+	raw, _ := json.Marshal(stepsPayload(steps)) // a plain struct tree always marshals
+	digest, _ := decisionaction.WorkflowDigest(uuidToString(id), raw)
+	return digest
 }
 
 // workflowWriteField names the governed field a change from before to after
@@ -93,18 +79,17 @@ func workflowWriteField(before, after []issueworkflow.Step) string {
 	return workflowStepsField
 }
 
-// refuseUnboundMachineWrite answers 403 for a machine credential that is not
-// an agent task token carrying a decision id or receipt issue, and reports whether it did. A
-// human caller passes.
-func refuseUnboundMachineWrite(w http.ResponseWriter, r *http.Request, binding DecisionBindingFields) bool {
+// refuseMachineWorkflowWrite answers 403 passkey_action_required for every
+// machine credential, a decision-bound or receipt-bound write included
+// (CHE-3482), and reports whether it did. A human caller passes.
+// ponytail: the bound-write verification below is unreachable from the routes
+// now; delete it in a follow-up.
+func refuseMachineWorkflowWrite(w http.ResponseWriter, r *http.Request) bool {
 	if !isMachineCredentialActor(r) {
 		return false
 	}
-	if r.Header.Get("X-Actor-Source") != "task_token" || (strings.TrimSpace(binding.DecisionID) == "" && strings.TrimSpace(binding.ReceiptIssue) == "") {
-		writeError(w, http.StatusForbidden, "agents may change a workflow only with a decision-bound write (decision_id, before_sha256, after_sha256) or, for step instructions, a PASS receipt (receipt_issue, before_sha256, after_sha256)")
-		return true
-	}
-	return false
+	writePasskeyActionRequired(w, workflowStepsAction)
+	return true
 }
 
 // verifyWorkflowWrite proves an agent's workflow write: the live workflow still
@@ -116,6 +101,18 @@ func (h *Handler) verifyWorkflowWrite(ctx context.Context, tx db.DBTX, qtx *db.Q
 	if strings.TrimSpace(binding.ReceiptIssue) != "" {
 		return h.verifyWorkflowReceipt(ctx, tx, r, workspaceID, workflowID, binding, before, after)
 	}
+	if !protectedStepBlocksUnchanged(before, after) {
+		return decisionIntentRefusal{http.StatusForbidden, "a governed:human block would change"}
+	}
+	return h.verifyBoundDigests(ctx, qtx, r, workspaceID, binding, workflowWriteField(before, after), workflowStepsHash(workflowID, before), workflowStepsHash(workflowID, after))
+}
+
+// verifyBoundDigests is the check every decision-bound write shares: the live
+// state still hashes to before_sha256 (409 when it moved), the state the write
+// would store hashes to after_sha256 (403 when the agent wrote something
+// else), and a workspace owner approved exactly that change of field for this
+// agent. It records the single-use row in qtx's transaction.
+func (h *Handler) verifyBoundDigests(ctx context.Context, qtx *db.Queries, r *http.Request, workspaceID pgtype.UUID, binding DecisionBindingFields, field, liveSHA, afterSHA string) error {
 	decisionID, err := util.ParseUUID(binding.DecisionID)
 	if err != nil {
 		return decisionIntentRefusal{http.StatusBadRequest, "decision_id must be a decision request id"}
@@ -124,19 +121,16 @@ func (h *Handler) verifyWorkflowWrite(ctx context.Context, tx db.DBTX, qtx *db.Q
 	if err != nil {
 		return decisionIntentRefusal{http.StatusForbidden, "agent identity is required"}
 	}
-	if !protectedStepBlocksUnchanged(before, after) {
-		return decisionIntentRefusal{http.StatusForbidden, "a governed:human block would change"}
+	if binding.BeforeSHA256 != liveSHA {
+		return decisionIntentRefusal{http.StatusConflict, "before_sha256 does not match the live " + field + "; read it again and ask for a new decision"}
 	}
-	if binding.BeforeSHA256 != workflowStepsHash(workflowID, before) {
-		return decisionIntentRefusal{http.StatusConflict, "before_sha256 does not match the live workflow; read it again and ask for a new decision"}
-	}
-	if binding.AfterSHA256 != workflowStepsHash(workflowID, after) {
-		return decisionIntentRefusal{http.StatusForbidden, "after_sha256 does not match the steps this write would store"}
+	if binding.AfterSHA256 != afterSHA {
+		return decisionIntentRefusal{http.StatusForbidden, "after_sha256 does not match what this write would store"}
 	}
 	gate := func(ctx context.Context, _ *db.Queries, ws, agent pgtype.UUID, field string) (bool, bool) {
 		return h.delegatedWriteAllowed(ctx, ws, uuidToString(agent), field)
 	}
-	return verifyDecisionBinding(ctx, qtx, gate, workspaceID, decisionID, agentID, workflowWriteField(before, after), binding.BeforeSHA256, binding.AfterSHA256)
+	return verifyDecisionBinding(ctx, qtx, gate, workspaceID, decisionID, agentID, field, binding.BeforeSHA256, binding.AfterSHA256)
 }
 
 // verifyWorkflowReceipt proves a workflow.instructions write by a PASS receipt

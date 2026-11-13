@@ -61,6 +61,40 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 	return err
 }
 
+const createSystem1Prediction = `-- name: CreateSystem1Prediction :exec
+INSERT INTO system1_prediction (workspace_id, observation_id, scope, predictor_id, predictor_version, predicted_key, predicted_confidence, predicted_precedents)
+SELECT o.workspace_id, o.id, o.inputs->>'topic', $1::text, $2::text, $3::text, $4::real, $5::int
+FROM system1_observation o
+WHERE o.kind = 'decision' AND o.subject_id = $6 AND o.workspace_id = $7
+`
+
+type CreateSystem1PredictionParams struct {
+	PredictorID         string        `json:"predictor_id"`
+	PredictorVersion    string        `json:"predictor_version"`
+	PredictedKey        pgtype.Text   `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4 `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
+	SubjectID           pgtype.UUID   `json:"subject_id"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+}
+
+// One predictor's guess for the decision observation of a request (CHE-4383 B3).
+// Runs in the ask transaction right after CreateSystem1Observation, which holds
+// the workspace FOR KEY SHARE lock; if that insert found no workspace, this finds
+// no observation and inserts nothing. A NULL key is an abstention.
+func (q *Queries) CreateSystem1Prediction(ctx context.Context, arg CreateSystem1PredictionParams) error {
+	_, err := q.db.Exec(ctx, createSystem1Prediction,
+		arg.PredictorID,
+		arg.PredictorVersion,
+		arg.PredictedKey,
+		arg.PredictedConfidence,
+		arg.PredictedPrecedents,
+		arg.SubjectID,
+		arg.WorkspaceID,
+	)
+	return err
+}
+
 const getLatestSystem1RouteObservation = `-- name: GetLatestSystem1RouteObservation :one
 SELECT id FROM system1_observation
 WHERE kind = 'route' AND subject_id = $1
@@ -137,6 +171,35 @@ func (q *Queries) ListSystem1PrecedentKeys(ctx context.Context, arg ListSystem1P
 	return items, nil
 }
 
+const listSystem1WaiverPrecedentKeys = `-- name: ListSystem1WaiverPrecedentKeys :many
+SELECT label::text AS label FROM system1_label
+WHERE workspace_id = $1 AND scope = 'test_first_waiver' AND kind = 'burn_in'
+  AND label IN ('waive', 'refuse') AND superseded_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200
+`
+
+// Earlier mapped waiver labels of record, newest first. `unmapped` and superseded labels are not precedents.
+func (q *Queries) ListSystem1WaiverPrecedentKeys(ctx context.Context, workspaceID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSystem1WaiverPrecedentKeys, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		items = append(items, label)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markSystem1RouteOverridden = `-- name: MarkSystem1RouteOverridden :exec
 UPDATE system1_observation SET reversed_at = clock_timestamp()
 WHERE id = (
@@ -180,13 +243,17 @@ SELECT class::text AS class,
     coalesce(percentile_cont(0.5) WITHIN GROUP (ORDER BY time_to_answer_ms), 0)::float8 AS median_answer_ms
 FROM system1_observation
 WHERE workspace_id = $1 AND kind = $2
+  AND ($3::timestamptz IS NULL OR created_at >= $3)
+  AND ($4::timestamptz IS NULL OR created_at < $4)
 GROUP BY class
 ORDER BY class
 `
 
 type System1ReportByClassParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Kind        string      `json:"kind"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
 }
 
 type System1ReportByClassRow struct {
@@ -204,7 +271,12 @@ type System1ReportByClassRow struct {
 // Precision and coverage of the shadow predictions that preceded an answer.
 // other_* is the audit slice: answers where the human did not take the recommendation (another option, or free text).
 func (q *Queries) System1ReportByClass(ctx context.Context, arg System1ReportByClassParams) ([]System1ReportByClassRow, error) {
-	rows, err := q.db.Query(ctx, system1ReportByClass, arg.WorkspaceID, arg.Kind)
+	rows, err := q.db.Query(ctx, system1ReportByClass,
+		arg.WorkspaceID,
+		arg.Kind,
+		arg.Since,
+		arg.Until,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -231,4 +303,74 @@ func (q *Queries) System1ReportByClass(ctx context.Context, arg System1ReportByC
 		return nil, err
 	}
 	return items, nil
+}
+
+const system1RouteWindowReport = `-- name: System1RouteWindowReport :one
+WITH exits AS (
+    SELECT a.id FROM activity_log a
+    WHERE a.workspace_id = $1 AND a.action = 'status_changed' AND a.actor_type = 'agent'
+      AND a.details @> '{"routing_exit": true}'
+      AND a.created_at >= $2 AND a.created_at < $3
+), first_label AS (
+    SELECT DISTINCT ON (event_id) event_id, inputs->>'via' AS via
+    FROM system1_observation
+    WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
+      AND event_id IN (SELECT id FROM exits)
+    ORDER BY event_id, created_at, id
+), numbered AS (
+    SELECT event_id, reversed_at, inputs, created_at,
+        row_number() OVER (PARTITION BY event_id ORDER BY created_at, id) AS rn
+    FROM system1_observation
+    WHERE workspace_id = $1 AND kind = 'route' AND decision_source = 'agent'
+), labels AS (
+    SELECT event_id, reversed_at, inputs, created_at, rn FROM numbered WHERE created_at >= $2 AND created_at < $3
+)
+SELECT
+    (SELECT count(*) FROM exits)::bigint AS eligible_exits,
+    (SELECT count(*) FROM first_label)::bigint AS matched_labels,
+    (SELECT count(*) FROM first_label WHERE via = 'route')::bigint AS via_route_labels,
+    (SELECT count(*) FROM labels WHERE event_id IS NOT NULL AND rn > 1)::bigint AS duplicate_labels,
+    (SELECT count(*) FROM labels)::bigint AS labels_total,
+    (SELECT count(*) FROM labels WHERE event_id IS NULL)::bigint AS owner_only_labels,
+    (SELECT count(*) FROM labels WHERE event_id IS NOT NULL AND inputs->>'routing_exit' = 'false')::bigint AS non_routing_labels,
+    (SELECT count(*) FROM labels WHERE reversed_at IS NOT NULL)::bigint AS overridden
+`
+
+type System1RouteWindowReportParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	Until       pgtype.Timestamptz `json:"until"`
+}
+
+type System1RouteWindowReportRow struct {
+	EligibleExits    int64 `json:"eligible_exits"`
+	MatchedLabels    int64 `json:"matched_labels"`
+	ViaRouteLabels   int64 `json:"via_route_labels"`
+	DuplicateLabels  int64 `json:"duplicate_labels"`
+	LabelsTotal      int64 `json:"labels_total"`
+	OwnerOnlyLabels  int64 `json:"owner_only_labels"`
+	NonRoutingLabels int64 `json:"non_routing_labels"`
+	Overridden       int64 `json:"overridden"`
+}
+
+// CHE-4550: one event population for the route block. eligible_exits are the
+// agent status_changed rows marked routing_exit in [since, until); matched ones
+// have an agent route row on the same event_id (any time). via_route_share counts
+// matched events whose earliest agent route row has via = route. The label counts
+// are over agent route rows created in the window and sit outside coverage.
+// Duplicates are numbered over all time, so a twin of an earlier label counts (spec 23).
+func (q *Queries) System1RouteWindowReport(ctx context.Context, arg System1RouteWindowReportParams) (System1RouteWindowReportRow, error) {
+	row := q.db.QueryRow(ctx, system1RouteWindowReport, arg.WorkspaceID, arg.Since, arg.Until)
+	var i System1RouteWindowReportRow
+	err := row.Scan(
+		&i.EligibleExits,
+		&i.MatchedLabels,
+		&i.ViaRouteLabels,
+		&i.DuplicateLabels,
+		&i.LabelsTotal,
+		&i.OwnerOnlyLabels,
+		&i.NonRoutingLabels,
+		&i.Overridden,
+	)
+	return i, err
 }

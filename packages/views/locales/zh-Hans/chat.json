@@ -1,12 +1,15 @@
 {
   "decision_banner": {
     "title": "需要你做决定",
+    "title_used": "决定",
+    "answered_count": "已回答 {{number}} 项",
     "waiting": "智能体尚未发送决策卡片。",
     "queued_since": "自 {{time}} 起排队中",
     "running_since": "自 {{time}} 起运行中",
     "no_run": "没有活动的运行。"
   },
   "needs_you": {
+    "chip_other": "{{count}} 个决定等你处理",
     "title": "待你决定",
     "loading": "正在加载待处理请求…",
     "error": "无法加载待处理请求。",
@@ -37,6 +40,16 @@
     "unclassified": {
       "title": "未分类",
       "replies_other": "{{count}} 条回复"
+    },
+    "actions": {
+      "done": "完成",
+      "later": "稍后",
+      "done_all": "全部完成",
+      "undo": "撤销",
+      "toast_other": "已将 {{count}} 个私信标为完成",
+      "failed": "更新失败,请重试。",
+      "done_aria": "标为完成:{{title}}",
+      "later_aria": "稍后提醒:{{title}}"
     }
   },
   "page": {
@@ -64,6 +77,7 @@
     "queue_send_tooltip": "排队发送",
     "stop_tooltip": "停止",
     "send_failed_toast": "发送消息失败",
+    "send_unconfirmed_toast": "未能确认发送。草稿已保留；再次发送不会产生重复消息。",
     "compacting_toast": "此私信正在压缩。完成后请重新发送。",
     "rename_failed_toast": "重命名对话失败",
     "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",
@@ -82,7 +96,10 @@
     "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
     "placeholder_archived_send": "此私聊已归档。发送时会先取消归档…",
     "command_no_arguments": "/{{command}} 不接受参数。请单独发送该命令，或去掉开头的 /。",
-    "command_no_attachments": "/{{command}} 不能连同附件一起发送。执行 /{{command}} 前请先移除附件。"
+    "command_no_attachments": "/{{command}} 不能连同附件一起发送。执行 /{{command}} 前请先移除附件。",
+    "later_set_toast": "已暂缓至 {{time}} ICT",
+    "later_bad_duration": "请使用 1s 到 7d 的时长,例如 /later 2h",
+    "later_failed_toast": "暂缓失败,请重试。"
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
@@ -457,12 +474,40 @@
     "answer_helper_issue": "发送会将你的回答发布到 {{issue}}。",
     "answer_hint": "{{shortcut}} 发送",
     "answer_too_long": "回答超过 8 KB。缩短后才能发送。",
+    "answer_upload_cancelled": "由于离开了此卡片，上传已取消。请重新添加文件。",
     "answer_offline": "你已离线。回答已保留，重新连接后即可发送。",
     "answer_conflict": "此卡片已无法接收你的回答，例如已被先回答。你的草稿未被发布。你的草稿：",
     "answer_discard": "丢弃草稿",
     "action_unavailable": "无法显示详情",
     "action_approve": "使用通行密钥批准",
     "action_preview": "批准后将更改的内容",
+    "recent_runs": "最近运行",
+    "recent_runs_status": { "completed": "已完成", "failed": "失败", "cancelled": "已取消", "running": "运行中", "other": "排队中" },
+    "config_change": {
+      "viewer_label": "待批准的更改",
+      "tab_changes": "更改",
+      "tab_result": "结果",
+      "changes_region": "{{field}}的更改",
+      "result_region": "批准后的结果",
+      "no_changes": "没有行更改。",
+      "whitespace_only": "只有空白或行尾符发生变化。",
+      "target": "目标",
+      "workflow": "工作流",
+      "step_status": "步骤",
+      "keys": "键",
+      "field_agent_instructions": "智能体指令",
+      "field_squad_instructions": "小队指令",
+      "field_workspace_context": "工作区上下文",
+      "field_workflow_steps": "工作流步骤",
+      "field_workflow_instructions": "工作流步骤指令",
+      "field_workspace_settings": "工作区设置",
+      "field_workflow_budget": "工作流运行预算",
+      "field_workspace_routing_agent": "路由智能体",
+      "field_workspace_delegated_writes": "委托的受管写入",
+      "field_agent_skills": "智能体技能",
+      "counts": "字符数：{{before}} → {{after}}",
+      "counts_cap": "字符数：{{before}} → {{after}}（上限 {{cap}}）"
+    },
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",
     "answer_open_browser": "在浏览器中打开",

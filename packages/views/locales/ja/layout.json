@@ -64,19 +64,24 @@
     "show_fewer_pins": "表示を減らす"
   },
   "spaces": {
-    "work": "タスク",
+    "work": "作業",
     "team": "チーム"
   },
   "rail": {
     "label": "アプリナビゲーション",
     "sheet_description": "スペースとワークスペースを切り替えます。",
     "inbox": "受信箱",
-    "work": "タスク",
+    "work": "作業",
     "team": "チーム",
     "chat": "チャット",
     "autopilots": "自動化",
     "switch_workspace": "ワークスペースを切り替え",
-    "invitation_from": "{{name}} さんから招待されています"
+    "invitation_from": "{{name}} さんから招待されています",
+    "open_in_new_window": "新しいウィンドウで開く",
+    "open_in_new_window_click": "クリック",
+    "open_in_other_window": "別のウィンドウで開いています",
+    "in_other_window": "別ウィンドウ",
+    "all_workspaces_open": "すべてのワークスペースがすでにウィンドウで開いています"
   },
   "panels": {
     "work": {
@@ -95,6 +100,7 @@
       "assignee_anyone": "全員",
       "assignee_me": "自分",
       "assignee_my_agents": "自分のエージェント",
+      "assignee_me_and_my_agents": "自分と自分のエージェント",
       "reset": "リセット",
       "load_more": "さらに表示",
       "show_less": "表示を減らす",
@@ -168,5 +174,12 @@
   "object_page": {
     "toggle_panel": "右サイドバーを切り替え",
     "properties": "プロパティ"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} がスケジューリングを一時停止しました · {{time}}。",
+    "paused_at": "スケジューリングは一時停止中 · {{time}}。",
+    "detail": "どのエージェントも新しい実行を取得しません。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "resume": "再開",
+    "resume_failed": "ワークスペースを再開できませんでした"
   }
 }

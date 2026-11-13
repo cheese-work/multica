@@ -1,8 +1,8 @@
 -- name: CreateIssueWakeup :one
 -- workflow_step: see migration 801. A run registering a wakeup decides from the
 -- issue's status now, so its wakeup works on that status (CHE-2298).
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires,workflow_step)
-VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),sqlc.narg(expires_at),sqlc.narg(expiry_seconds),sqlc.narg(on_timeout),sqlc.narg(condition),sqlc.narg(max_fires),
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires,purpose,decision_request_id,watch_inputs,workflow_step)
+VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),sqlc.narg(expires_at),sqlc.narg(expiry_seconds),sqlc.narg(on_timeout),sqlc.narg(condition),sqlc.narg(max_fires),sqlc.narg(purpose),sqlc.narg(decision_request_id),COALESCE(@watch_inputs::text[],'{}'),
  CASE WHEN sqlc.narg(source_task_id)::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=sqlc.arg(issue_id)::uuid) END) RETURNING *;
 -- name: ListIssueWakeups :many
 SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w.parent_comment_id,w.instruction,
@@ -15,7 +15,7 @@ SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w
  w.interval_seconds,w.cron_expression,w.timezone,w.next_fire_at,w.enabled,w.disabled_at,w.revision,
  w.last_task_id,w.last_error,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status,
  w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
- w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,
+ w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,w.watch_inputs,
  (w.source_task_id IS NOT NULL)::bool AS created_by_agent,creator.name AS created_by_name,
  (CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END)::uuid AS source_agent_id,creator_agent.name AS source_agent_name
 FROM issue_wakeup w JOIN agent a ON a.id=w.agent_id AND a.workspace_id=w.workspace_id
@@ -118,7 +118,10 @@ WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.n
   -- prompt an evaluation of what still holds on resume.
   OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
   OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
-ORDER BY w.updated_at,w.id LIMIT @row_limit;
+-- CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
+-- updated_at, so a fresh one-shot sorted behind all older recurring rules and
+-- waited out whole passes of them.
+ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT @row_limit;
 -- name: ListPendingWakeupInputGroups :many
 -- Scheduler observability over unprocessed inputs, grouped per rule and by
 -- whether a run still reserves them. Dispatch deliberately keeps some inputs
@@ -333,14 +336,21 @@ SELECT id,COALESCE(context->>'wakeup_id','')::text AS wakeup_id,COALESCE(context
 FROM agent_task_queue WHERE id=ANY(@ids::uuid[]);
 
 -- name: ListWakeupRuns :many
--- The rule's latest runs with what triggered each one, a check-in note when
--- the run ended silently, and whether it left a comment.
-SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
- COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
- COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
- EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
-FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
-ORDER BY t.created_at DESC,t.id DESC LIMIT 10;
+-- The rule's latest fires with what triggered each one, a check-in note when
+-- the run ended silently, and whether it left a comment. A fire the platform
+-- skipped (CHE-4984) has no run: it shows as status 'skipped' with its reason.
+SELECT id,status,created_at,started_at,completed_at,checkin_note,triggers,commented FROM (
+ SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
+  COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
+  COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
+  EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
+ FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
+ UNION ALL
+ SELECT a.id,'skipped'::text,a.created_at,NULL::timestamptz,NULL::timestamptz,
+  COALESCE(a.details->>'reason','')::text,'{}'::text[],false::bool
+ FROM activity_log a WHERE a.action='wakeup_skipped' AND a.issue_id= @issue_id AND a.details->'wakeup'->>'id'= @wakeup_id::text
+) runs
+ORDER BY created_at DESC,id DESC LIMIT 10;
 
 -- name: DeleteIssueWakeupReceipts :exec
 DELETE FROM issue_wakeup_receipt WHERE wakeup_id= @id;
@@ -448,3 +458,10 @@ WHERE r.wakeup_id=w.id AND w.id= @id AND r.processed_at IS NULL AND r.event_type
 -- against. The settings blob may not be an object in a legacy workspace.
 UPDATE workspace SET settings=jsonb_set(settings,'{wakeups_resumed_at}',to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
 WHERE id= @id AND jsonb_typeof(settings)='object';
+
+-- name: GetWakeupDecisionRequest :one
+-- A request a wakeup may bind to (CHE-3345 S1): on this issue, in the asked or
+-- answered state. The caller compares the member and the workspace.
+SELECT id, workspace_id, issue_id, human_user_id, status, origin FROM decision_request
+WHERE id = @id AND issue_id = @issue_id AND workspace_id = @workspace_id
+  AND ((status = 'open' AND origin = 'asked') OR status = 'answered');

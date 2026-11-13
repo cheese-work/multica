@@ -23,7 +23,7 @@ func init() { issueCmd.AddCommand(newIssueWakeupCommand()) }
 func newIssueWakeupCommand() *cobra.Command {
 	wake := &cobra.Command{Use: "wakeup", Short: "Manage event and time wakeups that start ordinary runs"}
 	wake.AddCommand(&cobra.Command{Use: "events", Short: "List supported event types and filters", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
-		return cli.PrintJSON(os.Stdout, map[string]any{"event_types": eventcontract.WakeupTypes, "platform_only_event_types": eventcontract.LifecycleTypes, "platform_only_reason": "Creation precedes subscription; deletion withdraws the issue's wakeups. Cross-issue subscriptions are not supported.", "scope": "current issue", "filters": []string{"filter_agent_id (task events; legacy mutation alias)", "filter_task_id (task events only)", "filter_actor_type + filter_actor_id (member or agent; mutation events only)"}, "modes": []string{"once (default)", "continuous"}, "conditions": []string{"--until-status KEY", "--until-assignee member|agent|squad:ID", "--until-label LABEL_ID", "--until-property PROPERTY_ID=VALUE", "--until-children-done [--stage N]", "--until-pr checks|merged|conflicts|dequeued", "--until-gh-run owner/repo:RUN_ID|owner/repo:WORKFLOW_FILE@SHA|RUN_URL [--until-gh-run-state completed|waiting]", "--until-issue ISSUE [--until-issue-state done|ended|in_review|blocked]"}, "loop_protection": "Events from the registering run and runs started by the same rule are excluded when source identity is available. Repeating rules stop after --max-fires runs (default 20 for continuous event rules). A rule is paused when its trigger chain passes through it a third time without a person in between, or when it starts more than 12 runs in an hour."})
+		return cli.PrintJSON(os.Stdout, map[string]any{"event_types": eventcontract.WakeupTypes, "platform_only_event_types": eventcontract.LifecycleTypes, "platform_only_reason": "Creation precedes subscription; deletion withdraws the issue's wakeups. Cross-issue subscriptions are not supported.", "scope": "current issue", "filters": []string{"filter_agent_id (task events; legacy mutation alias)", "filter_task_id (task events only)", "filter_actor_type + filter_actor_id (member or agent; mutation events only); filter_actor_type agent alone matches any agent and no member", "decision_request_id (--decision; binds a member-eligible rule to a decision request)", "purpose (--purpose observe; an audited, non-waiting rule)"}, "modes": []string{"once (default)", "continuous"}, "conditions": []string{"--until-status KEY", "--until-assignee member|agent|squad:ID", "--until-label LABEL_ID", "--until-property PROPERTY_ID=VALUE", "--until-children-done [--stage N]", "--until-pr checks|merged|conflicts|dequeued", "--until-gh-run owner/repo:RUN_ID|owner/repo:WORKFLOW_FILE@SHA|RUN_URL [--until-gh-run-state completed|waiting]", "--until-issue ISSUE [--until-issue-state done|ended|in_review|blocked]"}, "loop_protection": "Events from the registering run and runs started by the same rule are excluded when source identity is available. Repeating rules stop after --max-fires runs (default 20 for continuous event rules). A rule is paused when its trigger chain passes through it a third time without a person in between, or when it starts more than 12 runs in an hour."})
 	}})
 	for _, action := range []string{"list", "get", "disable", "create", "update", "trigger", "delete", "checkin", "runs"} {
 		action := action
@@ -56,15 +56,17 @@ func newIssueWakeupCommand() *cobra.Command {
 		if action == "create" || action == "update" {
 			c.Long = "Create or replace the complete configuration. Events default to once; every/cron use continuous. Updating explicitly re-enables the configuration. Runs use normal comment delivery."
 			c.Long += " Give waits an end with --expires-in or --expires-at; --on-timeout wake runs the target once if the deadline passes first."
-			c.Long += " For task events, use --task-id for one run or --filter-agent-id for its agent. For comment/issue/reaction/attachment changes, use --filter-actor-type member|agent with --filter-actor-id. To wait for a person to comment, use --event comment.created --filter-actor-type member --filter-actor-id USER_ID. Actor filters identify who made the change, not the original author of an edited comment. Without a source filter, all matching events on this issue can wake the target."
+			c.Long += " For task events, use --task-id for one run or --filter-agent-id for its agent. For comment/issue/reaction/attachment changes, use --filter-actor-type member|agent with --filter-actor-id. To wait for a person to comment, use --event comment.created --filter-actor-type member --filter-actor-id USER_ID. When an agent registers a rule a member can trigger (a comment, issue, reaction or attachment event with no actor filter or a member filter), bind it with --decision REQUEST_ID, or use --purpose observe if no person is awaited, or use --filter-actor-type agent without an ID to watch agents only. Actor filters identify who made the change, not the original author of an edited comment. Without a source filter, all matching events on this issue can wake the target."
 			c.Flags().String("agent-id", "", "Agent to wake (defaults to authenticated agent)")
 			c.Flags().String("instruction", "", "Instruction for the next run")
 			c.Flags().String("instruction-file", "", "Read instruction from a UTF-8 file")
 			c.Flags().String("kind", "event", "event, at, every or cron")
 			c.Flags().String("mode", "", "once or continuous")
 			c.Flags().StringSlice("event", nil, "Event types (comma-separated); see wakeup events")
-			c.Flags().String("filter-actor-type", "", "Event actor: member or agent (requires --filter-actor-id)")
+			c.Flags().String("filter-actor-type", "", "Event actor: member (requires --filter-actor-id) or agent (any agent when --filter-actor-id is omitted)")
 			c.Flags().String("filter-actor-id", "", "Actor user/agent UUID in this workspace; mutation events only")
+			c.Flags().String("decision", "", "Decision request ID (asked or answered, on this issue) that binds a rule a member can trigger; one enabled rule per request")
+			c.Flags().String("purpose", "", "observe: an audited rule that is not a wait for a person (event rules only)")
 			c.Flags().String("filter-agent-id", "", "Run agent filter; legacy alias of actor=agent for mutation-only events")
 			c.Flags().String("task-id", "", "Match this specific run; terminal state is checked on registration")
 			c.Flags().String("parent", "", "Comment thread for result delivery")
@@ -88,6 +90,7 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Flags().String("until-gh-run-state", "completed", "With --until-gh-run: completed or waiting (a job waits at an environment gate)")
 			c.Flags().String("until-issue", "", "Condition: another issue in this workspace reaches --until-issue-state")
 			c.Flags().String("until-issue-state", "done", "With --until-issue: done, ended (done or cancelled), in_review or blocked")
+			c.Flags().StringArray("watch", nil, "Declare what this time wakeup watches. When every declared input is unchanged since the last completed run, the server may skip the fire. Undeclared means always run.")
 			c.Flags().Int32("max-fires", 0, "Repeating rules: stop after this many runs (1-1000; continuous event rules default to 20)")
 		}
 		wake.AddCommand(c)
@@ -167,7 +170,7 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		return cli.PrintJSON(os.Stdout, rows)
 	} else {
 		body := map[string]any{}
-		for flag, key := range map[string]string{"agent-id": "agent_id", "kind": "kind", "mode": "mode", "filter-agent-id": "filter_agent_id", "filter-actor-type": "filter_actor_type", "filter-actor-id": "filter_actor_id", "task-id": "filter_task_id", "parent": "parent_comment_id", "at": "at", "cron": "cron_expression", "timezone": "timezone", "expires-at": "expires_at", "on-timeout": "on_timeout"} {
+		for flag, key := range map[string]string{"agent-id": "agent_id", "kind": "kind", "mode": "mode", "filter-agent-id": "filter_agent_id", "filter-actor-type": "filter_actor_type", "filter-actor-id": "filter_actor_id", "decision": "decision_request_id", "purpose": "purpose", "task-id": "filter_task_id", "parent": "parent_comment_id", "at": "at", "cron": "cron_expression", "timezone": "timezone", "expires-at": "expires_at", "on-timeout": "on_timeout"} {
 			v, _ := cmd.Flags().GetString(flag)
 			if v != "" {
 				body[key] = v
@@ -191,6 +194,9 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 		}
 		if n, _ := cmd.Flags().GetInt32("max-fires"); n != 0 {
 			body["max_fires"] = n
+		}
+		if watch, _ := cmd.Flags().GetStringArray("watch"); len(watch) > 0 {
+			body["watch_inputs"] = watch
 		}
 		for flag, key := range map[string]string{"after": "after_seconds", "every": "interval_seconds", "expires-in": "expires_in_seconds"} {
 			v, _ := cmd.Flags().GetString(flag)
