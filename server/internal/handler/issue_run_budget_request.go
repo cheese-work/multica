@@ -81,7 +81,10 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 			return decisionIntentRefusal{http.StatusConflict, "no owner can be asked to approve"}
 		}
 		links, results, err = h.openRunBudgetActionCards(r.Context(), q, issue, plan, req.Kind, req.NewCap, req.WindowID, runBudgetActionAsk(issue, req))
-		return err
+		if err != nil || len(results) == 0 {
+			return err
+		}
+		return recordRunBudgetAsk(r.Context(), q, issue, "member", parseUUID(userID), runBudgetActionTypes[req.Kind], req.WindowID)
 	})
 	if err != nil {
 		writeDecisionError(w, err, "run budget request")

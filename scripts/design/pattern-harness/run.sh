@@ -15,7 +15,14 @@ const safe = (s, tag) => s.replaceAll("</" + tag, "<\\/" + tag);
 fs.writeFileSync(d + "/page.html", `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${safe(css, "style")}</style></head><body><div id="root"></div><script>${safe(js, "script")}</script></body></html>`);
 ' "$build"
 base="file://$build/page.html?pattern"
-cap() { local id=$1; shift; node scripts/design/capture-frame.mjs --url "$base=$id" --id "$id" --out "$out" "$@"; }
+# ONLY="id1 id2" limits the run; each capture prints its seconds (batch minutes-per-capture evidence).
+cap() {
+  local id=$1; shift
+  [[ -z "${ONLY:-}" || " $ONLY " == *" $id "* ]] || return 0
+  local t0=$SECONDS
+  node scripts/design/capture-frame.mjs --url "$base=$id" --id "$id" --out "$out" "$@"
+  echo "timing $id: $((SECONDS - t0))s"
+}
 
 cap icon-button-action \
   --component packages/ui/components/common/icon-button.tsx \
@@ -169,5 +176,26 @@ cap confirm-dialog \
   --copy "description=settings:workspace.scheduling_pause_description" \
   --copy "cancel=settings:workspace.scheduling_keep" \
   --copy "confirm=settings:workspace.scheduling_confirm"
+
+# S0b raw-element files (CHE-5534, S4b-SS1): one page per audited file, seeded real component.
+cap decision-banner \
+  --component packages/views/issues/components/issue-decision-banner.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap hierarchy-minimap \
+  --component packages/views/issues/components/hierarchy/hierarchy-minimap.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap hierarchy-dialog \
+  --component packages/views/issues/components/hierarchy/hierarchy-dialog.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap wakeup-event-row \
+  --component packages/views/chat/components/wakeup-event-row.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap wakeup-condition-params \
+  --component packages/views/issues/components/wakeup-condition-params.tsx \
+  --token pillClass --token text-muted-foreground
 
 rm -rf "$build"

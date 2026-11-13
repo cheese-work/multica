@@ -20,3 +20,17 @@ export const WorkspaceAvatar = () => null;
 export const useAgentPresenceDetail = () => null;
 export const agentTaskSnapshotOptions = (_wsId?: string, _id?: string) => empty("agent-task-snapshot");
 export const agentRunCounts30dOptions = (_wsId?: string) => empty("agent-run-counts");
+export const workspaceListOptions = () => empty("workspaces");
+export const useWorkspaceSlug = () => "harness";
+// Pulled in by the real editor/hover-card modules the S0b raw-element pages render; never called in a capture.
+export const isGlobalPath = () => false;
+export const isKnownWorkspacePath = () => false;
+export const workspaceSlugForPath = () => null;
+export const mediaPath = (_slug?: string, p?: string) => p ?? "";
+export const agentPresetCompletionsOptions = (_wsId?: string) => empty("agent-preset-completions");
+export const filterPresetCompletions = <T,>(items: T[]) => items;
+export const workspaceKeys = {
+  members: (wsId: string) => ["harness", "members", wsId],
+  agents: (wsId: string) => ["harness", "agents", wsId],
+};
+export const paths = new Proxy({}, { get: () => () => "/harness" }) as Record<string, (...a: string[]) => string>;
