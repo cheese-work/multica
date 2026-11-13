@@ -12,3 +12,13 @@ export function createRequestId(): string {
   const ts = Date.now().toString(36).slice(-4);
   return `${rand}${ts}`;
 }
+
+/**
+ * Idempotency key (`client_message_id`, attention `request_id`): the server
+ * dedupes on it, so it must not collide. `crypto.randomUUID` when the runtime
+ * has it, else three `createRequestId` parts.
+ */
+export function createIdempotencyKey(): string {
+  const uuid = globalThis.crypto?.randomUUID?.();
+  return uuid ?? `${createRequestId()}-${createRequestId()}-${createRequestId()}`;
+}
