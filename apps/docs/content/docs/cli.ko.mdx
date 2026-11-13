@@ -401,6 +401,17 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
 
+### System 1 라벨링
+
+지정된 System 1 라벨러 에이전트는 자신의 에이전트 작업 안에서 블라인드 큐를 읽고 라벨을 기록합니다. 서버는 작업 토큰에서 에이전트와 작업을 가져오며, 멤버 세션이나 PAT는 403을 받습니다.
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+큐에는 관찰 ID와 타입이 지정된 특성만 들어 있고 예측은 절대 들어 있지 않습니다. 이 범위에서 같은 종류의 유효한 라벨이 아직 없는 관찰을 최대 20개 담습니다. 서버는 큐를 제공할 때 샘플링한 ID와 시드를 저장하며, 같은 작업이 다시 요청하면 같은 샘플을 받습니다. `--supersedes`에는 정정할 유효한 라벨의 ID를 넣습니다. 없이 같은 관찰에 두 번째 라벨을 쓰면 409가 됩니다.
+
 ## ID와 출력 형식
 
 태스크에는 `MUL-123` 같은 key 또는 전체 UUID를 사용하며 UUID 짧은 접두사는 허용하지 않습니다.

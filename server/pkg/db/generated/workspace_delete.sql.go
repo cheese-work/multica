@@ -445,6 +445,9 @@ deleted_system1_labels AS (
 deleted_system1_predictions AS (
     DELETE FROM system1_prediction WHERE workspace_id = $1
 ),
+deleted_system1_label_samples AS (
+    DELETE FROM system1_label_sample WHERE workspace_id = $1
+),
 deleted_ci_watch_configs AS (
     DELETE FROM ci_watch_config WHERE workspace_id = $1
 ),
@@ -789,6 +792,7 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 // CHE-4470 System 1 labels: workspace-owned leaf, no FK.
 // CHE-4471 System 1 predictions: workspace-owned leaf, no FK.
+// CHE-4473 System 1 served label samples: workspace-owned leaf, no FK.
 // CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 // budget tables are per App installation, have no workspace_id, and stay.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,

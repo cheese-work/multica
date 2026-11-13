@@ -133,6 +133,37 @@ Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
   lab waits for the B3 prediction table. CI scopes (`ci:<repo>:<protocol>`) come
   with B5/B6.
 
+### Blind label queue (CHE-4383 B4b)
+
+`GET /api/system1/label-queue?scope=X&kind=burn_in|eval`. Migration
+`99982_system1_label_sample` (table `system1_label_sample`, no foreign key,
+unique `(task_id, scope, kind)`: `seed`, `observation_ids`, `task_id`,
+`agent_id`).
+
+- **Who reads:** the assigned labeller's task token only, checked as in B4a
+  (running task, live agent, `system1_labellers`). A member session or an
+  unassigned agent gets 403; an unknown scope or a kind other than `burn_in` or
+  `eval` gets 400.
+- **What it returns:** `{sample_id, scope, kind, seed, items}`. Each item is
+  `observation_id`, `scope`, `created_at` and `features`, a typed whitelist per
+  scope (`waiver` for `test_first_waiver`). It never returns a prediction: not
+  the observation's `predicted_*` columns, not `system1_prediction` rows. It
+  also leaves out `option_keys`, because the stored order puts the asker's
+  recommendation first.
+- **Eligible:** observations of the scope in the workspace with no live
+  labeller row of this kind. More than 20: the first 20 by `md5(id || seed)`, so
+  the seed reproduces the sample.
+- **Stored when served:** `seed` and `observation_ids` go into
+  `system1_label_sample` in the same transaction. The same task asking again
+  gets the stored sample, whatever arrived since. No eligible observation:
+  an empty queue and no row, so a later ask can still sample.
+- **CLI:** `multica system1 label-queue --scope X --kind K --output json` and
+  `multica system1 label submit --observation ID --kind K --label L
+  [--supersedes ID]` (the B4a write route). Both run in the labeller's task; the
+  identity comes from the token.
+- **Not here:** `eval` samples of Act decisions (B7b) and CI scopes (B5/B6)
+  reuse this route; they add scopes and features, not a new route.
+
 ### Waiver predictions (CHE-4383 B3)
 
 Table `system1_prediction` (migration `99968_system1_prediction`, no foreign

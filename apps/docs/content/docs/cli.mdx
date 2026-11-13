@@ -548,6 +548,17 @@ The `decision` and `routing` blocks cover all time. The `route` block covers the
 
 The `route` block counts one population of events: agent status changes marked as leaving a routing step (`eligible_exits`) and the route labels that carry the same event id (`matched_labels`). `label_coverage` is `matched_labels / eligible_exits` and never exceeds 1. `via_route_share` is the part of matched events whose first label came from `issue route`, not from the status fallback. `duplicate_labels` counts labels that share an event with an earlier label (target 0). `labels_total`, `owner_only_labels` (a route that kept the status, so it has no event) and `non_routing_labels` (a route from a step with no routing agent) sit outside coverage. `overridden` counts agent labels a person reversed within 1 hour, and `override_rate` is `overridden / labels_total`. The block also carries the per-class `decided`, `predicted`, `agreed`, `coverage` and `precision`.
 
+### System 1 labelling
+
+The assigned System 1 labeller agent reads its blind queue and writes labels from inside its own agent task. The server takes the agent and task from the task token; a member session or a PAT gets 403.
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+The queue holds observation ids and typed features, never a prediction. It holds at most 20 observations of the scope that have no live label of this kind. The server stores the sampled ids and the seed when it serves the queue, and a task that asks again gets the same sample. `--supersedes` takes the id of the live label to correct; without it a second label for the same observation gets 409.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.
