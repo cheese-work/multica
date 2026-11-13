@@ -156,10 +156,6 @@ type RunBudgetExhausted struct {
 	Since   time.Time
 	Status  string
 	Target  RunTarget
-	// TokensSpent is true when the token balance, not the run count, refused
-	// the run; Tokens is that balance.
-	TokensSpent bool
-	Tokens      int64
 }
 
 // Run-budget notice kinds (CHE-2297 L1a). They are also the kind half of the
@@ -167,8 +163,6 @@ type RunBudgetExhausted struct {
 const (
 	RunBudgetKindWarn80    = "warn80"
 	RunBudgetKindExhausted = "exhausted"
-	// RunBudgetKindWarn80Tokens is the 80% warning of the token balance.
-	RunBudgetKindWarn80Tokens = "warn80_tokens"
 )
 
 // RunBudgetEvent describes one budget notice: its kind, how many runs the issue
@@ -182,10 +176,6 @@ type RunBudgetEvent struct {
 	Max     int
 	Since   time.Time
 	Xid     int64
-	// Tokens and TokenBase are the token balance and the window's allowance
-	// behind a RunBudgetKindWarn80Tokens event.
-	Tokens    int64
-	TokenBase int64
 }
 
 var onRunBudgetEvent atomic.Pointer[func(context.Context, RunBudgetEvent)]
@@ -287,11 +277,6 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 	}
 	runs, max := usage.Runs, usage.Max
 	spent := balance < 1
-	tokens, tokensSpent, err := tokenBalanceSpent(ctx, q, issue, usage)
-	if err != nil {
-		return ReviewGate{}, fmt.Errorf("run budget: %w", err)
-	}
-	spent = spent || tokensSpent
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
 	if spent && isFinishedStatus(ctx, q, issue) {
@@ -312,7 +297,7 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		// issue on its own connection after the caller is done with it.
 		exhausted := RunBudgetExhausted{
 			IssueID: issue.ID, Runs: runs, Max: max, Balance: balance, Since: usage.Since,
-			Status: issue.Status, Target: target, TokensSpent: tokensSpent && balance >= 1, Tokens: tokens,
+			Status: issue.Status, Target: target,
 		}
 		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), exhausted) })
 	}
@@ -334,37 +319,20 @@ func hookSuppressed(ctx context.Context) bool {
 	return suppressed
 }
 
-// RunBudgetRefusalKind names what refuses a run for the issue now: "runs" when
-// the run balance is spent, else "tokens".
-func RunBudgetRefusalKind(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
-	_, balance, err := CurrentRunBudget(ctx, q, issueID)
-	if err != nil {
-		return "", err
-	}
-	if balance < 1 {
-		return "runs", nil
-	}
-	return "tokens", nil
-}
-
 // RunBudgetStillRefuses reports whether the window a refusal was for is still
 // the issue's current window and still refuses a run. A top-up opens a new
 // window and a progress grant restores balance, so the refusal's delayed
 // callback checks this before it writes.
 func RunBudgetStillRefuses(ctx context.Context, q *db.Queries, issueID pgtype.UUID, since time.Time) (bool, error) {
 	ctx = readOnlyRunBudget(ctx)
-	issue, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	_, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (usage == nil || !usage.Since.Equal(since))) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("run budget: %w", err)
 	}
-	if balance < 1 {
-		return true, nil
-	}
-	_, tokensSpent, err := tokenBalanceSpent(ctx, q, issue, usage)
-	return tokensSpent, err
+	return balance < 1, nil
 }
 
 // IsReviewStatus reports whether a status hands the issue to its reviewer: the
