@@ -3368,10 +3368,39 @@ func (h *Handler) suppressImplicitAgentCommentRoutes(ctx context.Context, issue 
 	return targets
 }
 
+func (h *Handler) latestAgentCommentInAgentRootedThread(ctx context.Context, issue db.Issue, parent *db.Comment, opts commentTriggerComputeOptions) (db.Comment, bool) {
+	root, err := h.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{CommentID: parent.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || root.AuthorType != "agent" {
+		return db.Comment{}, false
+	}
+	last, err := h.Queries.GetThreadLatestAgentComment(ctx, db.GetThreadLatestAgentCommentParams{
+		TargetID: parent.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		BeforeCommentID: opts.ExcludeTriggerCommentID,
+	})
+	if err != nil {
+		return db.Comment{}, false
+	}
+	return last, true
+}
+
 // routeMemberCommentTriggers is the implicit routing of a member comment with no
 // mentions: the replied-to agent, the thread's owners, or the issue assignee.
 func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
-	// A deleted parent no longer speaks for its agent author (#8296).
+	// In an agent-rooted thread an unmentioned reply wakes the agent that spoke
+	// last, not the agent that owns the root (CHE-5421). A deleted comment no
+	// longer speaks for its agent author (#8296); the query skips it.
+	if parentComment != nil {
+		if last, ok := h.latestAgentCommentInAgentRootedThread(ctx, issue, parentComment, opts); ok {
+			trigger, ok := h.routeReplyToParentAuthor(ctx, issue, &last, actorType, actorID, opts)
+			if !ok {
+				return nil
+			}
+			return []commentAgentTrigger{trigger}
+		}
+	}
+
+	// Replying directly to an agent comment in a member-rooted thread wakes
+	// that comment's author (#8296: not when it is deleted).
 	if parentComment != nil && parentComment.AuthorType == "agent" && !parentComment.DeletedAt.Valid {
 		trigger, ok := h.routeReplyToParentAuthor(ctx, issue, parentComment, actorType, actorID, opts)
 		if !ok {

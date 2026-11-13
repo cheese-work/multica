@@ -388,6 +388,21 @@ export interface TaskPresetRun {
   applied: (TaskPresetSettings & { reported_at: string }) | null;
 }
 
+/** One part of a run's first prompt, as the daemon accounted it (est. tokens = (bytes+3)/4). */
+export interface TaskInitContextPart {
+  part: "instructions" | "tools" | "skills" | "memory" | "project" | "task" | "seed";
+  bytes: number;
+  tokens: number;
+  /** Est. tokens allowed for the part; 0 when no budget is set. */
+  budget: number;
+  notes?: string[];
+}
+
+/** Stored under `AgentTask.result.init_context`; absent on runs from older daemons. */
+export interface TaskInitContext {
+  parts: TaskInitContextPart[];
+}
+
 export interface AgentTask {
   /** Owning issue labels supplied by subtree execution-history reads. */
   issue_identifier?: string;

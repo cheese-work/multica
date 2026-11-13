@@ -40,6 +40,16 @@
     "unclassified": {
       "title": "未分类",
       "replies_other": "{{count}} 条回复"
+    },
+    "actions": {
+      "done": "完成",
+      "later": "稍后",
+      "done_all": "全部完成",
+      "undo": "撤销",
+      "toast_other": "已将 {{count}} 个私信标为完成",
+      "failed": "更新失败,请重试。",
+      "done_aria": "标为完成:{{title}}",
+      "later_aria": "稍后提醒:{{title}}"
     }
   },
   "page": {
@@ -70,6 +80,7 @@
     "queue_send_tooltip": "排队发送",
     "stop_tooltip": "停止",
     "send_failed_toast": "发送消息失败",
+    "send_unconfirmed_toast": "未能确认发送。草稿已保留；再次发送不会产生重复消息。",
     "compacting_toast": "此私信正在压缩。完成后请重新发送。",
     "rename_failed_toast": "重命名对话失败",
     "fork_unconfirmed": "无法确认分支是否成功。重试前请先查看“已分支到”链接。",
@@ -88,7 +99,10 @@
     "project_context_unsupported": "项目描述不会生效——该智能体的守护进程版本过旧，需要升级",
     "placeholder_archived_send": "此私聊已归档。发送时会先取消归档…",
     "command_no_arguments": "/{{command}} 不接受参数。请单独发送该命令，或去掉开头的 /。",
-    "command_no_attachments": "/{{command}} 不能连同附件一起发送。执行 /{{command}} 前请先移除附件。"
+    "command_no_attachments": "/{{command}} 不能连同附件一起发送。执行 /{{command}} 前请先移除附件。",
+    "later_set_toast": "已暂缓至 {{time}} ICT",
+    "later_bad_duration": "请使用 1s 到 7d 的时长,例如 /later 2h",
+    "later_failed_toast": "暂缓失败,请重试。"
   },
   "queue": {
     "title_other": "{{count}} 条排队消息",
@@ -378,8 +392,6 @@
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",
-    "add": "添加评论",
-    "confirm_add": "添加",
     "save": "保存",
     "note_label": "评论 {{number}}",
     "note_placeholder": "添加评论…",
@@ -491,7 +503,12 @@
       "field_workflow_steps": "工作流步骤",
       "field_workflow_instructions": "工作流步骤指令",
       "field_workspace_settings": "工作区设置",
-      "field_workflow_budget": "工作流运行预算"
+      "field_workflow_budget": "工作流运行预算",
+      "field_workspace_routing_agent": "路由智能体",
+      "field_workspace_delegated_writes": "委托的受管写入",
+      "field_agent_skills": "智能体技能",
+      "counts": "字符数：{{before}} → {{after}}",
+      "counts_cap": "字符数：{{before}} → {{after}}（上限 {{cap}}）"
     },
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",

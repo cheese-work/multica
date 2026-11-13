@@ -52,6 +52,8 @@ type ProjectResponse struct {
 	// DecisionDelegates are the member ids, besides the workspace owner, that a
 	// reversible decision on this project's issues may concern. Owner-only to set.
 	DecisionDelegates []string `json:"decision_delegates"`
+	// WorkflowSplit is the CHE-5238 A/B split; null means none.
+	WorkflowSplit *ProjectWorkflowSplit `json:"workflow_split"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
@@ -74,6 +76,7 @@ func projectToResponse(p db.Project) ProjectResponse {
 		WorkflowID:  uuidToPtr(p.WorkflowID),
 
 		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
+		WorkflowSplit:     decodeWorkflowSplit(p.WorkflowSplit),
 	}
 }
 

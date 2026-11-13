@@ -519,6 +519,36 @@ func (h *Handler) activeIssueViewProperties(w http.ResponseWriter, r *http.Reque
 	return active, true
 }
 
+// viewerUnreadIssueIDs reads every page of the viewer's unread issues in the
+// view's workspace. The result is never nil: no unread issue is an explicit
+// empty list, which the table query reads as "match nothing".
+func (h *Handler) viewerUnreadIssueIDs(r *http.Request, view db.IssueView, userID string) ([]string, error) {
+	ids := []string{}
+	params := db.ListIssueUnreadParams{
+		WorkspaceID: view.WorkspaceID,
+		UserID:      parseUUID(userID),
+		PageLimit:   int32(issueUnreadPageSize + 1),
+	}
+	for {
+		rows, err := h.Queries.ListIssueUnread(r.Context(), params)
+		if err != nil {
+			return nil, err
+		}
+		page := rows
+		if len(page) > issueUnreadPageSize {
+			page = page[:issueUnreadPageSize]
+		}
+		for _, row := range page {
+			ids = append(ids, uuidToString(row.IssueID))
+		}
+		if len(rows) <= issueUnreadPageSize {
+			return ids, nil
+		}
+		last := page[len(page)-1]
+		params.BeforeCreatedAt, params.BeforeIssueID = last.CreatedAt, last.IssueID
+	}
+}
+
 // ListIssueViewIssues lists the issues a saved view shows, in the view's
 // saved order, under the caller's identity: "my" scopes and viewer relations
 // resolve against the requesting user.
@@ -567,6 +597,17 @@ func (h *Handler) ListIssueViewIssues(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// The table query cannot tell what the viewer has read; a view that keeps
+	// only unread issues gets the viewer's unread ids, as the Unread page does.
+	if issueViewBool(decodeIssueViewObject(view.Query)["unreadFilter"]) {
+		unreadIDs, err := h.viewerUnreadIssueIDs(r, view, userID)
+		if err != nil {
+			slog.Warn("resolve view unread issues failed", append(logger.RequestAttrs(r), "error", err)...)
+			writeIssueTableQueryFailure(w, r, "failed to resolve unread issues")
+			return
+		}
+		spec.Filters.UnreadIssueIDs = unreadIDs
 	}
 	rows, ok := h.queryIssueTableRows(w, r, issueTableRowsRequest{
 		Query: spec,

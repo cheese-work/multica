@@ -546,10 +546,13 @@ SELECT * FROM updated_run;
 -- recent already-fired occurrence — exactly the post-deploy
 -- spurious-fire reported on MUL-3551 dev.
 --
+-- next_run_at is read so the scope provider can repair a display value left
+-- in the past (CHE-5500).
+--
 -- Filters out webhook / api triggers, disabled triggers, paused/archived
 -- autopilots, and any trigger missing its cron expression. ORDER BY id
 -- keeps the per-tick scope list stable across replicas.
-SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at
+SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at, t.next_run_at
 FROM autopilot_trigger t
 JOIN autopilot a ON a.id = t.autopilot_id
 WHERE t.kind = 'schedule'

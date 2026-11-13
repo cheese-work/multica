@@ -927,7 +927,7 @@ describe("builtin `/` menu — cached quick action content", () => {
 });
 
 describe("DM statistic, archive, pin and unarchive commands", () => {
-  type Name = "statistic" | "archive" | "pin" | "unarchive" | "unseen";
+  type Name = "statistic" | "archive" | "pin" | "unarchive" | "unseen" | "later";
   const ACTIVE: Name[] = ["statistic", "archive", "pin"];
 
   function offered(enabled: Name[], query = "", canCompact = true): string[] {

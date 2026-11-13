@@ -7281,6 +7281,21 @@ func newIssueSearchTestCmd() *cobra.Command {
 	return cmd
 }
 
+// CHE-4552 (S4 of CHE-4439): multica issue route.
+
+func newIssueRouteTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "route"}
+	cmd.Flags().String("status", "", "")
+	cmd.Flags().String("owner", "", "")
+	cmd.Flags().String("owner-id", "", "")
+	cmd.Flags().String("reason", "", "")
+	cmd.Flags().Float64("confidence", 0, "")
+	cmd.Flags().Bool("no-start", false, "")
+	cmd.Flags().Int64("expected-revision", 0, "")
+	cmd.Flags().String("output", "json", "")
+	return cmd
+}
+
 func TestIssueSearchCommandRegistration(t *testing.T) {
 	for _, flagName := range []string{"limit", "include-closed", "project", "output"} {
 		if issueSearchCmd.Flags().Lookup(flagName) == nil {
@@ -7393,5 +7408,123 @@ func TestRunIssueSearchSendsProjectID(t *testing.T) {
 	}
 	if got := gotQuery.Get("project_id"); got != projectID {
 		t.Errorf("project_id = %q, want %q", got, projectID)
+	}
+}
+
+func routeTestServer(t *testing.T, body *map[string]any) {
+	t.Helper()
+	const agentID = "5fb87ac7-23b5-4a7a-81fa-ed295a54545d"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "in_progress"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/workspaces/ws-1/members":
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agents":
+			json.NewEncoder(w).Encode([]map[string]any{{"id": agentID, "name": "CodeBot"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/squads":
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/issue-1/route":
+			if err := json.NewDecoder(r.Body).Decode(body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"issue": map[string]any{"id": "issue-1", "identifier": "MUL-1"}, "run": map[string]any{"started": true}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+}
+
+func TestRunIssueRouteSendsStatusReasonAndConfidence(t *testing.T) {
+	var body map[string]any
+	routeTestServer(t, &body)
+
+	cmd := newIssueRouteTestCmd()
+	_ = cmd.Flags().Set("status", "in_review")
+	_ = cmd.Flags().Set("reason", "ready for review")
+	_ = cmd.Flags().Set("confidence", "0.8")
+	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueRoute: %v", err)
+	}
+	if body["status"] != "in_review" || body["reason"] != "ready for review" || body["confidence"] != 0.8 {
+		t.Fatalf("body = %#v", body)
+	}
+	for _, k := range []string{"owner_type", "owner_id", "suppress_run", "expected_revision"} {
+		if _, ok := body[k]; ok {
+			t.Fatalf("body has %s without its flag: %#v", k, body)
+		}
+	}
+}
+
+func TestRunIssueRouteSendsOwnerNoStartAndRevision(t *testing.T) {
+	const agentID = "5fb87ac7-23b5-4a7a-81fa-ed295a54545d"
+	var body map[string]any
+	routeTestServer(t, &body)
+
+	cmd := newIssueRouteTestCmd()
+	_ = cmd.Flags().Set("status", "in_review")
+	_ = cmd.Flags().Set("reason", "needs a reviewer")
+	_ = cmd.Flags().Set("confidence", "0")
+	_ = cmd.Flags().Set("owner-id", agentID)
+	_ = cmd.Flags().Set("no-start", "true")
+	_ = cmd.Flags().Set("expected-revision", "3")
+	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueRoute: %v", err)
+	}
+	if body["owner_type"] != "agent" || body["owner_id"] != agentID || body["suppress_run"] != true || body["expected_revision"] != float64(3) || body["confidence"] != float64(0) {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestRunIssueRouteResolvesAnOwnerByName(t *testing.T) {
+	var body map[string]any
+	routeTestServer(t, &body)
+
+	cmd := newIssueRouteTestCmd()
+	_ = cmd.Flags().Set("status", "in_progress")
+	_ = cmd.Flags().Set("reason", "owner only")
+	_ = cmd.Flags().Set("confidence", "0.5")
+	_ = cmd.Flags().Set("owner", "CodeBot")
+	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueRoute: %v", err)
+	}
+	if body["owner_type"] != "agent" || body["owner_id"] != "5fb87ac7-23b5-4a7a-81fa-ed295a54545d" {
+		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestRunIssueRouteRequiresStatusReasonAndConfidence(t *testing.T) {
+	cases := map[string]map[string]string{
+		"status":     {"reason": "r", "confidence": "0.5"},
+		"reason":     {"status": "done", "confidence": "0.5"},
+		"confidence": {"status": "done", "reason": "r"},
+	}
+	for missing, flags := range cases {
+		t.Run(missing, func(t *testing.T) {
+			cmd := newIssueRouteTestCmd()
+			for k, v := range flags {
+				_ = cmd.Flags().Set(k, v)
+			}
+			err := runIssueRoute(cmd, []string{"MUL-1"})
+			if err == nil || !strings.Contains(err.Error(), "--"+missing) {
+				t.Fatalf("err = %v, want a --%s error", err, missing)
+			}
+		})
+	}
+}
+
+func TestRunIssueRouteRejectsAConfidenceOutsideZeroToOne(t *testing.T) {
+	for _, v := range []string{"-0.1", "1.5"} {
+		cmd := newIssueRouteTestCmd()
+		_ = cmd.Flags().Set("status", "done")
+		_ = cmd.Flags().Set("reason", "r")
+		_ = cmd.Flags().Set("confidence", v)
+		if err := runIssueRoute(cmd, []string{"MUL-1"}); err == nil || !strings.Contains(err.Error(), "--confidence") {
+			t.Fatalf("confidence %s: err = %v, want a --confidence error", v, err)
+		}
 	}
 }

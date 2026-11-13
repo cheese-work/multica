@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -242,7 +245,9 @@ func (h *Handler) saveRoutingAgent(ctx context.Context, member db.Member, next R
 		stored = map[string]any{}
 	}
 	prev := routingAgentFromSettings(stored)
-	stored[routingAgentKey] = next
+	if err := setRoutingJob(stored, next); err != nil {
+		return err
+	}
 	settings, err := json.Marshal(stored)
 	if err != nil {
 		return err
@@ -261,4 +266,166 @@ func (h *Handler) saveRoutingAgent(ctx context.Context, member db.Member, next R
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// routingJob is cfg as the background_agents.routing job: empty fields are
+// dropped, and nil means routing is off (no agent), so the job is removed.
+func routingJob(cfg RoutingAgentConfig) (map[string]any, error) {
+	if cfg.AgentID == "" {
+		return nil, nil
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var job map[string]any
+	if err := json.Unmarshal(raw, &job); err != nil {
+		return nil, err
+	}
+	if cfg.FallbackAgentID == "" {
+		delete(job, "fallback_agent_id")
+	}
+	if len(cfg.Overrides) == 0 {
+		delete(job, "overrides")
+	}
+	return job, nil
+}
+
+// setRoutingJob stores cfg as background_agents.routing in settings, keeping
+// the other jobs, and drops background_agents when nothing is left.
+func setRoutingJob(settings map[string]any, cfg RoutingAgentConfig) error {
+	job, err := routingJob(cfg)
+	if err != nil {
+		return err
+	}
+	jobs := bgValue(settings[backgroundAgentsKey])
+	if jobs == nil {
+		jobs = map[string]any{}
+	}
+	if job == nil {
+		delete(jobs, service.RoutingJobKey)
+	} else {
+		jobs[service.RoutingJobKey] = job
+	}
+	if len(jobs) == 0 {
+		delete(settings, backgroundAgentsKey)
+	} else {
+		settings[backgroundAgentsKey] = jobs
+	}
+	return nil
+}
+
+// MigrateRoutingAgentSetting copies settings.routing_agent into
+// background_agents.routing and clears the old key once a read-back shows the
+// same chain (CHE-4116). It is safe to run on every start: a workspace without
+// the old key is untouched, and a value already at the new key wins over the
+// old one. It returns how many workspaces it changed.
+func (h *Handler) MigrateRoutingAgentSetting(ctx context.Context) (int, error) {
+	ids, err := h.Queries.ListWorkspaceIDsWithLegacyRoutingAgent(ctx)
+	if err != nil {
+		return 0, err
+	}
+	migrated := 0
+	for _, id := range ids {
+		done, err := h.migrateRoutingAgentOf(ctx, id)
+		if err != nil {
+			return migrated, fmt.Errorf("workspace %s: %w", uuidToString(id), err)
+		}
+		if done {
+			migrated++
+		}
+	}
+	return migrated, nil
+}
+
+func (h *Handler) migrateRoutingAgentOf(ctx context.Context, ws pgtype.UUID) (bool, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	q := h.Queries.WithTx(tx)
+	storedJSON, err := q.LockWorkspaceSettings(ctx, ws)
+	if err != nil {
+		return false, err
+	}
+	var stored map[string]any
+	_ = json.Unmarshal(storedJSON, &stored)
+	legacy, ok := stored[routingAgentKey]
+	if !ok {
+		return false, nil // another start already moved it
+	}
+	if bgValue(stored[backgroundAgentsKey])[service.RoutingJobKey] == nil {
+		if err := setRoutingJob(stored, routingAgentFromSettings(map[string]any{backgroundAgentsKey: map[string]any{service.RoutingJobKey: legacy}})); err != nil {
+			return false, err
+		}
+		if err := writeSettings(ctx, q, ws, stored); err != nil {
+			return false, err
+		}
+		// Clear the old key only once the new key reads back as the old value.
+		row, err := q.GetWorkspace(ctx, ws)
+		if err != nil {
+			return false, err
+		}
+		var back map[string]any
+		_ = json.Unmarshal(row.Settings, &back)
+		// Compare the stored form of both sides: routing off stores no job, so a
+		// routing-off value with custom statuses reads back as the defaults.
+		want, got := routingAgentFromSettings(map[string]any{backgroundAgentsKey: map[string]any{service.RoutingJobKey: legacy}}), routingAgentFromSettings(back)
+		wantJob, _ := routingJob(want)
+		gotJob, _ := routingJob(got)
+		if !reflect.DeepEqual(wantJob, gotJob) {
+			return false, errors.New("read-back differs from the old value; old key kept")
+		}
+	}
+	delete(stored, routingAgentKey)
+	if err := writeSettings(ctx, q, ws, stored); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
+}
+
+func writeSettings(ctx context.Context, q *db.Queries, ws pgtype.UUID, settings map[string]any) error {
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	_, err = q.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: ws, Settings: raw})
+	return err
+}
+
+func rawToAny(raw json.RawMessage) any {
+	var v any
+	_ = json.Unmarshal(raw, &v)
+	return v
+}
+
+// routingJobRaw is the stored background_agents.routing bytes, or nil.
+func routingJobRaw(stored map[string]json.RawMessage) json.RawMessage {
+	var jobs map[string]json.RawMessage
+	_ = json.Unmarshal(stored[backgroundAgentsKey], &jobs)
+	return jobs[service.RoutingJobKey]
+}
+
+// setRoutingJobRaw is setRoutingJob over raw stored keys: the other jobs keep
+// their exact bytes.
+func setRoutingJobRaw(stored map[string]json.RawMessage, cfg RoutingAgentConfig) error {
+	job, err := routingJob(cfg)
+	if err != nil {
+		return err
+	}
+	jobs := map[string]json.RawMessage{}
+	_ = json.Unmarshal(stored[backgroundAgentsKey], &jobs) // not an object: start over as one
+	delete(jobs, service.RoutingJobKey)
+	if job != nil {
+		if jobs[service.RoutingJobKey], err = json.Marshal(job); err != nil {
+			return err
+		}
+	}
+	if len(jobs) == 0 {
+		delete(stored, backgroundAgentsKey)
+		return nil
+	}
+	stored[backgroundAgentsKey], err = json.Marshal(jobs)
+	return err
 }

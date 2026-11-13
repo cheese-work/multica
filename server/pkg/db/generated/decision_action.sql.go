@@ -19,7 +19,7 @@ INSERT INTO decision_action (
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
 )
-RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id
 `
 
 type CreateDecisionActionParams struct {
@@ -75,6 +75,10 @@ func (q *Queries) CreateDecisionAction(ctx context.Context, arg CreateDecisionAc
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
@@ -100,7 +104,7 @@ const endDecisionAction = `-- name: EndDecisionAction :one
 UPDATE decision_action SET state = $1, updated_at = now()
 WHERE id = $2 AND workspace_id = $3 AND state = 'pending'
   AND $1 IN ('expired', 'cancelled')
-RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id
 `
 
 type EndDecisionActionParams struct {
@@ -136,6 +140,10 @@ func (q *Queries) EndDecisionAction(ctx context.Context, arg EndDecisionActionPa
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
@@ -148,7 +156,7 @@ UPDATE decision_action SET
     error_code = $5, error_message = $6, updated_at = now()
 WHERE id = $7 AND workspace_id = $8 AND state = 'pending'
   AND $1 IN ('executed', 'failed')
-RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id
 `
 
 type FinishDecisionActionRowParams struct {
@@ -199,12 +207,16 @@ func (q *Queries) FinishDecisionActionRow(ctx context.Context, arg FinishDecisio
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
 
 const getDecisionAction = `-- name: GetDecisionAction :one
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action WHERE id = $1 AND workspace_id = $2
 `
 
 type GetDecisionActionParams struct {
@@ -239,12 +251,16 @@ func (q *Queries) GetDecisionAction(ctx context.Context, arg GetDecisionActionPa
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
 
 const getDecisionActionByRequest = `-- name: GetDecisionActionByRequest :one
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE decision_request_id = $1 AND workspace_id = $2
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action WHERE decision_request_id = $1 AND workspace_id = $2
 `
 
 type GetDecisionActionByRequestParams struct {
@@ -279,12 +295,16 @@ func (q *Queries) GetDecisionActionByRequest(ctx context.Context, arg GetDecisio
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
 
 const listDecisionActionsAwaitingPostCommit = `-- name: ListDecisionActionsAwaitingPostCommit :many
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action
 WHERE state IN ('executed', 'failed') AND post_commit_done_at IS NULL
   AND executed_at <= clock_timestamp() - interval '30 seconds'
 ORDER BY executed_at, id
@@ -326,6 +346,72 @@ func (q *Queries) ListDecisionActionsAwaitingPostCommit(ctx context.Context, bat
 			&i.PostCommitDoneAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.RevokedAt,
+			&i.RevokedByUserID,
+			&i.RevokeReason,
+			&i.RevokeWebauthnCredentialID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionBatchActions = `-- name: ListDecisionBatchActions :many
+SELECT action.id, action.workspace_id, action.decision_request_id, action.action_type, action.action_version, action.params, action.preconditions, action.secret_slots, action.payload_sha256, action.expires_at, action.state, action.requested_by_agent_id, action.requested_by_task_id, action.approved_by_user_id, action.approved_at, action.executed_at, action.webauthn_credential_id, action.result, action.error_code, action.error_message, action.post_commit_done_at, action.created_at, action.updated_at, action.revoked_at, action.revoked_by_user_id, action.revoke_reason, action.revoke_webauthn_credential_id FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+WHERE request.workspace_id = $1 AND request.batch_id = $2
+ORDER BY action.id
+`
+
+type ListDecisionBatchActionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+}
+
+// A batch's actions in id order; the first is the batch's lead, the action its
+// passkey challenge names.
+func (q *Queries) ListDecisionBatchActions(ctx context.Context, arg ListDecisionBatchActionsParams) ([]DecisionAction, error) {
+	rows, err := q.db.Query(ctx, listDecisionBatchActions, arg.WorkspaceID, arg.BatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionAction{}
+	for rows.Next() {
+		var i DecisionAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DecisionRequestID,
+			&i.ActionType,
+			&i.ActionVersion,
+			&i.Params,
+			&i.Preconditions,
+			&i.SecretSlots,
+			&i.PayloadSha256,
+			&i.ExpiresAt,
+			&i.State,
+			&i.RequestedByAgentID,
+			&i.RequestedByTaskID,
+			&i.ApprovedByUserID,
+			&i.ApprovedAt,
+			&i.ExecutedAt,
+			&i.WebauthnCredentialID,
+			&i.Result,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.PostCommitDoneAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.RevokedAt,
+			&i.RevokedByUserID,
+			&i.RevokeReason,
+			&i.RevokeWebauthnCredentialID,
 		); err != nil {
 			return nil, err
 		}
@@ -461,7 +547,7 @@ func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDe
 }
 
 const lockDecisionActionNowait = `-- name: LockDecisionActionNowait :one
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR UPDATE NOWAIT
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR UPDATE NOWAIT
 `
 
 type LockDecisionActionNowaitParams struct {
@@ -496,6 +582,10 @@ func (q *Queries) LockDecisionActionNowait(ctx context.Context, arg LockDecision
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
@@ -640,7 +730,7 @@ func (q *Queries) LockDecisionLiveAnswerNowait(ctx context.Context, arg LockDeci
 }
 
 const lockDecisionRequestNowait = `-- name: LockDecisionRequestNowait :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -690,6 +780,7 @@ func (q *Queries) LockDecisionRequestNowait(ctx context.Context, arg LockDecisio
 		&i.ProposalFingerprint,
 		&i.AnswerRevision,
 		&i.WakeSeq,
+		&i.BatchID,
 		&i.CoversRequestIds,
 		&i.AnsweredByBatchRequestID,
 	)
@@ -746,20 +837,37 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 	return i, err
 }
 
-const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+const lockDecisionWorkflowNowaitCols = `-- name: LockDecisionWorkflowNowaitCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
 
-type LockDecisionWorkflowNowaitParams struct {
+type LockDecisionWorkflowNowaitColsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	ID          pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisionWorkflowNowaitParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowait, arg.WorkspaceID, arg.ID)
-	var i IssueWorkflow
+type LockDecisionWorkflowNowaitColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDecisionWorkflowNowaitColsParams) (LockDecisionWorkflowNowaitColsRow, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowaitCols, arg.WorkspaceID, arg.ID)
+	var i LockDecisionWorkflowNowaitColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -774,8 +882,6 @@ func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisi
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
@@ -815,7 +921,7 @@ func (q *Queries) LockDecisionWorkspaceNowait(ctx context.Context, id pgtype.UUI
 }
 
 const lockPendingDecisionAction = `-- name: LockPendingDecisionAction :one
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action
 WHERE workspace_id = $1 AND decision_request_id = $2 AND state = 'pending'
 FOR UPDATE
 `
@@ -854,6 +960,10 @@ func (q *Queries) LockPendingDecisionAction(ctx context.Context, arg LockPending
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
@@ -909,7 +1019,7 @@ func (q *Queries) MarkDecisionActionPostCommitDone(ctx context.Context, arg Mark
 }
 
 const readDecisionActionForShare = `-- name: ReadDecisionActionForShare :one
-SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR SHARE
+SELECT id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id FROM decision_action WHERE id = $1 AND workspace_id = $2 FOR SHARE
 `
 
 type ReadDecisionActionForShareParams struct {
@@ -946,6 +1056,10 @@ func (q *Queries) ReadDecisionActionForShare(ctx context.Context, arg ReadDecisi
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
 	)
 	return i, err
 }
@@ -953,7 +1067,7 @@ func (q *Queries) ReadDecisionActionForShare(ctx context.Context, arg ReadDecisi
 const rejectDecisionActionRow = `-- name: RejectDecisionActionRow :one
 UPDATE decision_action SET state = 'rejected', updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND state = 'pending'
-RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id
 `
 
 type RejectDecisionActionRowParams struct {
@@ -988,6 +1102,138 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
+	)
+	return i, err
+}
+
+const revokeDecisionActionRow = `-- name: RevokeDecisionActionRow :one
+UPDATE decision_action SET
+    revoked_at = clock_timestamp(), revoked_by_user_id = $1,
+    revoke_reason = $2,
+    revoke_webauthn_credential_id = $3, updated_at = now()
+WHERE id = $4 AND workspace_id = $5
+  AND state = 'executed' AND revoked_at IS NULL
+RETURNING id, workspace_id, decision_request_id, action_type, action_version, params, preconditions, secret_slots, payload_sha256, expires_at, state, requested_by_agent_id, requested_by_task_id, approved_by_user_id, approved_at, executed_at, webauthn_credential_id, result, error_code, error_message, post_commit_done_at, created_at, updated_at, revoked_at, revoked_by_user_id, revoke_reason, revoke_webauthn_credential_id
+`
+
+type RevokeDecisionActionRowParams struct {
+	RevokedByUserID            pgtype.UUID `json:"revoked_by_user_id"`
+	RevokeReason               pgtype.Text `json:"revoke_reason"`
+	RevokeWebauthnCredentialID pgtype.UUID `json:"revoke_webauthn_credential_id"`
+	ID                         pgtype.UUID `json:"id"`
+	WorkspaceID                pgtype.UUID `json:"workspace_id"`
+}
+
+// The revoke record commits with the inverse; state stays 'executed'. Only an
+// executed, not yet revoked row matches.
+func (q *Queries) RevokeDecisionActionRow(ctx context.Context, arg RevokeDecisionActionRowParams) (DecisionAction, error) {
+	row := q.db.QueryRow(ctx, revokeDecisionActionRow,
+		arg.RevokedByUserID,
+		arg.RevokeReason,
+		arg.RevokeWebauthnCredentialID,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i DecisionAction
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DecisionRequestID,
+		&i.ActionType,
+		&i.ActionVersion,
+		&i.Params,
+		&i.Preconditions,
+		&i.SecretSlots,
+		&i.PayloadSha256,
+		&i.ExpiresAt,
+		&i.State,
+		&i.RequestedByAgentID,
+		&i.RequestedByTaskID,
+		&i.ApprovedByUserID,
+		&i.ApprovedAt,
+		&i.ExecutedAt,
+		&i.WebauthnCredentialID,
+		&i.Result,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.PostCommitDoneAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+		&i.RevokedByUserID,
+		&i.RevokeReason,
+		&i.RevokeWebauthnCredentialID,
+	)
+	return i, err
+}
+
+const setIssueProjectFromDecision = `-- name: SetIssueProjectFromDecision :one
+UPDATE issue SET project_id = $1::uuid, status = $2::text,
+  revision = revision + 1, updated_at = now()
+WHERE id = $3::uuid AND workspace_id = $4::uuid
+  AND project_id IS NOT DISTINCT FROM $5::uuid
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read
+`
+
+type SetIssueProjectFromDecisionParams struct {
+	ProjectID     pgtype.UUID `json:"project_id"`
+	Status        string      `json:"status"`
+	ID            pgtype.UUID `json:"id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	FromProjectID pgtype.UUID `json:"from_project_id"`
+}
+
+// Moves an issue to the project an approved issue.project.set action names,
+// only while the issue is still in the project the card was asked from. The
+// status is the one the target workflow lists (the issue's own when it does).
+func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueProjectFromDecisionParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, setIssueProjectFromDecision,
+		arg.ProjectID,
+		arg.Status,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.FromProjectID,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+		&i.WorkflowID,
+		&i.RequestedByID,
+		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
 	)
 	return i, err
 }

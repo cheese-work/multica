@@ -110,6 +110,8 @@ import type {
   Attachment,
   AttachmentRevisionDiff,
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -282,6 +284,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
+import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -325,6 +328,10 @@ import {
   EMPTY_CHAT_SUPPLEMENT,
   ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
+  ChatAttentionEnvelopeSchema,
+  ChatAttentionBatchSchema,
+  EMPTY_CHAT_ATTENTION_VIEW,
+  EMPTY_CHAT_ATTENTION_BATCH,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
   IssueDuplicatesResponseSchema,
@@ -1776,6 +1783,28 @@ export class ApiClient {
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
     return graph;
+  }
+
+  /** One keyset page of POST /api/issues/timeline. A malformed body throws. */
+  async getIssueActualTimeline(workspaceId: string, body: IssueTimelineRequest, signal?: AbortSignal): Promise<IssueTimelineResponse> {
+    const { IssueTimelineResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/timeline?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, IssueTimelineResponseSchema, { endpoint: "POST /api/issues/timeline" });
+  }
+
+  /** One keyset page of POST /api/issues/relations/batch. A malformed body throws. */
+  async getIssueRelationsBatch(workspaceId: string, body: RelationsBatchRequest, signal?: AbortSignal): Promise<RelationsBatchResponse> {
+    const { RelationsBatchResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/relations/batch?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, RelationsBatchResponseSchema, { endpoint: "POST /api/issues/relations/batch" });
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
@@ -4541,13 +4570,18 @@ export class ApiClient {
     content: string,
     attachmentIds?: string[],
     decisionRequestId?: string,
+    options?: { clientMessageId?: string; askIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
       decision_request_id?: string;
+      client_message_id?: string;
+      ask_ids?: string[];
     } = { content };
     if (decisionRequestId) body.decision_request_id = decisionRequestId;
+    if (options?.clientMessageId) body.client_message_id = options.clientMessageId;
+    if (options?.askIds && options.askIds.length > 0) body.ask_ids = options.askIds;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
@@ -4693,6 +4727,53 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  // DM attention actions (plan r4 T3-T5). Every call carries the exact subject keys the UI
+  // displayed; the server acts on those keys only.
+  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/xong",
+    }).attention;
+  }
+
+  async chatAttentionLater(
+    sessionId: string,
+    subjectKeys: string[],
+    options: { durationSeconds?: number; requestId: string },
+  ): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_keys: subjectKeys,
+        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
+        request_id: options.requestId,
+      }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/later",
+    }).attention;
+  }
+
+  async chatAttentionXongAll(subjectKeys: string[]): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>("/api/chat/attention/xong-all", {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all",
+    });
+  }
+
+  async chatAttentionUndoXongAll(batchId: string): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>(`/api/chat/attention/xong-all/${batchId}/undo`, { method: "POST" });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all/:id/undo",
+    });
   }
 
   async markChatSessionUnread(sessionId: string): Promise<void> {

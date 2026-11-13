@@ -389,3 +389,38 @@ func TestListIssueViewIssuesHidesOtherMembersPrivateViews(t *testing.T) {
 	listIssueViewIssuesForTest(t, other, view.ID, "").Want(http.StatusNotFound)
 	listIssueViewIssuesForTest(t, testUserID, view.ID, "limit=1").Want(http.StatusOK)
 }
+
+func TestListIssueViewIssuesHonorsUnreadFilter(t *testing.T) {
+	suffix := time.Now().UnixNano()
+	project := dbfx.Project(t, fmt.Sprintf("view unread %d", suffix))
+	title := func(name string) string { return fmt.Sprintf("%s view unread %d", name, suffix) }
+	unread := dbfx.Issue(t, title("a unread"), testutil.Cols{"project_id": project})
+	dbfx.Issue(t, title("b read"), testutil.Cols{"project_id": project})
+	dbfx.Cleanup(t, `DELETE FROM issue_unread WHERE issue_id = $1`, unread)
+
+	view, code, body := createIssueViewForTest(t, map[string]any{
+		"name":       fmt.Sprintf("view unread %d", suffix),
+		"scope_type": "project",
+		"scope_id":   project,
+		"visibility": "workspace",
+		"query":      map[string]any{"unreadFilter": true},
+		"display":    map[string]any{"sortBy": "title", "sortDirection": "asc"},
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create view: %d %s", code, body)
+	}
+
+	// No unread issue: the empty unread list matches nothing.
+	var none issueViewIssuesResponse
+	listIssueViewIssuesForTest(t, testUserID, view.ID, "").Want(http.StatusOK).JSON(&none)
+	if len(none.Issues) != 0 {
+		t.Fatalf("no unread issue: view shows %v", issueViewIssueTitles(none))
+	}
+
+	setIssueUnreadAs(t, testUserID, unread, true).Want(http.StatusOK)
+	var only issueViewIssuesResponse
+	listIssueViewIssuesForTest(t, testUserID, view.ID, "").Want(http.StatusOK).JSON(&only)
+	if got := issueViewIssueTitles(only); !reflect.DeepEqual(got, []string{title("a unread")}) {
+		t.Fatalf("one unread issue: view shows %v", got)
+	}
+}

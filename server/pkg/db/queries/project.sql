@@ -30,6 +30,7 @@ WHERE i.project_id=$1 AND i.workspace_id=$2
 -- The workflow_edges watch is the platform's own, not a rule to settle: it
 -- stays and waits out an inactive project in its evaluator.
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
 ORDER BY w.id FOR UPDATE OF w;
 
 -- name: BumpProjectWakeupRevisions :exec
@@ -102,3 +103,9 @@ FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id = ANY(sqlc.arg('project_ids')::uuid[])
 GROUP BY project_id;
+
+-- name: SetProjectWorkflowSplit :one
+-- NULL clears the split (CHE-5262).
+UPDATE project SET workflow_split = sqlc.narg('workflow_split')::jsonb, updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;

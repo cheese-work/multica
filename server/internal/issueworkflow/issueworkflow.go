@@ -243,11 +243,6 @@ type Definition struct {
 	// RunBudgetSince is when the budget starts counting: runs before it are
 	// free, so issues in flight when the budget shipped start fresh.
 	RunBudgetSince time.Time
-	// TokenAllowance (A) and TokenReserve (E) are the weighted tokens credited
-	// per budget window and held per admitted run. Token accounting is active
-	// only when both are stored.
-	TokenAllowance int64
-	TokenReserve   int64
 	// StartStatusKey is the status where new issues of the workflow start
 	// (CHE-3113); empty means StartStatus.
 	StartStatusKey string
@@ -321,9 +316,6 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time
-	}
-	if row.RunBudgetTokenAllowance.Valid && row.RunBudgetTokenReserve.Valid {
-		def.TokenAllowance, def.TokenReserve = row.RunBudgetTokenAllowance.Int64, row.RunBudgetTokenReserve.Int64
 	}
 	return def, nil
 }

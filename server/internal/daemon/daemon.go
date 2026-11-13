@@ -716,6 +716,13 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// Reload drain (CHE-5453), also guarded by claimMu. While draining, pollers
+	// claim nothing new so the running tasks can finish; reloadKick then wakes
+	// autoUpdateLoop the moment the daemon goes idle. See startReloadDrain.
+	draining     bool
+	drainRetryAt time.Time // no new drain before this (backoff after a timeout)
+	drainTimer   *time.Timer
+	reloadKick   chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -824,6 +831,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		logger:                      logger,
 		terminalReports:             newTerminalReportStore(cfg),
 		terminalReportWakeup:        make(chan struct{}, 1),
+		reloadKick:                  make(chan struct{}, 1),
 		terminalReportNow:           time.Now,
 		terminalReportFlight:        make(map[string]struct{}),
 		workspaces:                  make(map[string]*workspaceState),
@@ -5275,7 +5283,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims || d.heldPauseNow() != nil {
+	if d.pauseClaims || d.draining || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
@@ -5285,8 +5293,9 @@ func (d *Daemon) tryEnterClaim() bool {
 // exitClaim releases the in-flight claim recorded by tryEnterClaim.
 func (d *Daemon) exitClaim() {
 	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
 	d.claimsInFlight--
+	d.claimMu.Unlock()
+	d.kickReloadIfIdle()
 }
 
 // trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
@@ -5558,7 +5567,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
-				defer d.activeTasks.Add(-1)
+				defer d.taskDone()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
@@ -6592,6 +6601,11 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
 	switch {
+	case task.BackgroundJob != "":
+		// No issue, chat or autopilot parent: the task row alone says when
+		// the dir is done, as for quick-create.
+		meta.Kind = execenv.GCKindBackground
+		meta.TaskID = task.ID
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
 		meta.ChatSessionID = task.ChatSessionID
@@ -7980,6 +7994,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// CHE-4101: an output_only background task never enters the full pipeline.
+	if task.BackgroundJob != "" {
+		return d.runBackgroundTask(ctx, task, provider, taskLog)
+	}
 
 	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
 	if task.Script != nil {
@@ -8112,6 +8130,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		BackgroundJob:                    task.BackgroundJob,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -9146,7 +9165,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		PiSkillPaths:               env.PiSkillPaths,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.agentTimeoutFor(provider),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,

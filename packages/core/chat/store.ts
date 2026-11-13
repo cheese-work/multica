@@ -378,6 +378,8 @@ export interface ChatState {
   /** Drop a placeholder (dismiss a failure / interrupted). */
   removeInputDraftUpload: (sessionId: string, clientUploadId: string) => void;
   clearInputDraft: (sessionId: string) => void;
+  /** Move text + attachments from one slot to another and clear the source. */
+  moveInputDraft: (from: string, to: string) => void;
   /** Record that a durable restore reached the composer; survives a reload. */
   markDraftRestoreApplied: (restoreId: string) => void;
   /** Drop the ledger entry once the server row is confirmed gone. */
@@ -637,6 +639,18 @@ export function createChatStore(options: ChatStoreOptions) {
       else delete next[sessionId];
       writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), next);
       set({ inputDraftAttachments: next });
+    },
+    moveInputDraft: (from, to) => {
+      if (from === to) return;
+      const drafts = { ...get().inputDrafts };
+      const attachments = { ...get().inputDraftAttachments };
+      if (from in drafts) drafts[to] = drafts[from]!;
+      if (from in attachments) attachments[to] = attachments[from]!;
+      delete drafts[from];
+      delete attachments[from];
+      writeDrafts(storage, wsKey(DRAFTS_KEY), drafts);
+      writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), attachments);
+      set({ inputDrafts: drafts, inputDraftAttachments: attachments });
     },
     clearInputDraft: (sessionId) => {
       const currentDrafts = get().inputDrafts;

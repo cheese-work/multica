@@ -493,6 +493,31 @@ func (q *Queries) ListDaemonWorkspaces(ctx context.Context, userID pgtype.UUID) 
 	return items, nil
 }
 
+const listWorkspaceIDsWithLegacyRoutingAgent = `-- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
+SELECT id FROM workspace WHERE settings ? 'routing_agent'
+`
+
+// CHE-4116: workspaces still holding the routing setting under its old key.
+func (q *Queries) ListWorkspaceIDsWithLegacyRoutingAgent(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceIDsWithLegacyRoutingAgent)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaces = `-- name: ListWorkspaces :many
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,

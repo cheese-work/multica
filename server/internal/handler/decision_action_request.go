@@ -51,14 +51,79 @@ type decisionActionResponse struct {
 	// ChatSessionID is the chat that holds the action's card. Only the read
 	// sets it; the approve page links to that card when it cannot decide here.
 	ChatSessionID string `json:"chat_session_id,omitempty"`
+	// The outcome readback (CHE-5411): empty while the action is pending.
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	AppliedAt     *string `json:"applied_at,omitempty"`
+	// RequiresPasskey is the registry's flag for this action type, never the proposer's.
+	RequiresPasskey bool `json:"requires_passkey"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
+	outcome, reason := decisionActionOutcomeOf(action)
 	return &decisionActionResponse{
 		ID: uuidToString(action.ID), ActionType: action.ActionType, ActionVersion: action.ActionVersion,
 		Params: action.Params, Preconditions: action.Preconditions, SecretSlots: action.SecretSlots,
 		PayloadSHA256: action.PayloadSha256, ExpiresAt: timestampToString(action.ExpiresAt), State: action.State,
+		Outcome: outcome, OutcomeReason: reason, AppliedAt: appliedAtOf(action),
+		RequiresPasskey: actionRequiresPasskey(action),
 	}
+}
+
+// decisionActionOutcomeOf is the one place a stored action state becomes the
+// outcome the card, the CLI and the wake text state. "" means still pending.
+func decisionActionOutcomeOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "executed":
+		return "applied", nil
+	case "rejected":
+		return "rejected", nil
+	case "failed":
+		reason := action.ErrorMessage.String
+		if reason == "" {
+			reason = action.ErrorCode.String
+		}
+		return "not_applied", &reason
+	case "expired", "cancelled":
+		return "not_applied", &action.State
+	}
+	return "", nil
+}
+
+// decisionEffectOf is the readback of what the approval did (B v9 S5):
+// applied, not_applied with the reason, or expired. "" means still pending.
+func decisionEffectOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "expired":
+		return "expired", nil
+	case "rejected":
+		reason := "rejected"
+		return "not_applied", &reason
+	}
+	return decisionActionOutcomeOf(action)
+}
+
+func actionRequiresPasskey(action db.DecisionAction) bool {
+	definition, ok := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	return ok && definition.RequiresPasskey()
+}
+
+func appliedAtOf(action db.DecisionAction) *string {
+	if action.State != "executed" {
+		return nil
+	}
+	return timestampToPtr(action.ExecutedAt)
+}
+
+// decisionActionSummary is the wake and card text of a terminal action.
+func decisionActionSummary(action db.DecisionAction) string {
+	switch outcome, reason := decisionActionOutcomeOf(action); outcome {
+	case "applied":
+		return "Applied " + action.ActionType + "."
+	case "not_applied":
+		return "Not applied " + action.ActionType + ": " + *reason + "."
+	}
+	return "Rejected " + action.ActionType + "."
 }
 
 // draftDecisionAction validates the wire action against the allowlist.
@@ -302,6 +367,9 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
+		if draft.Type == issueProjectSetType {
+			return issueProjectPreconditions(ctx, queries, issue, draft)
+		}
 		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
 			return nil, err
 		}

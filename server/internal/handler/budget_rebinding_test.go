@@ -240,6 +240,7 @@ func TestBudgetRebindingNarrowingAllowedForNonInteractive(t *testing.T) {
 // mapped here.
 var budgetBindingQueries = map[string]string{
 	"UpdateIssue":                          "guarded: UpdateIssue project change (single, batch, move)",
+	"SetIssueProjectFromDecision":          "guarded: issue.project.set widens only through a spend-class owner approval",
 	"SetIssueWorkflow":                     "guarded: SetIssueWorkflow",
 	"SetProjectWorkflow":                   "guarded: SetProjectWorkflow",
 	"DeleteIssueWorkflow":                  "guarded: DeleteIssueWorkflow",
@@ -337,10 +338,11 @@ func TestBudgetRebindingNeutralProjectSwitchWithIssueOverride(t *testing.T) {
 // budgetGuardFor lists, per rewriting query, the guard its caller must invoke.
 // The query inventory above cannot see a second caller of the same query.
 var budgetGuardFor = map[string][]string{
-	"SetProjectWorkflow":  {"projectSwitchWidensBudget"},
-	"SetIssueWorkflow":    {"issueBinding"},
-	"DeleteIssueWorkflow": {"workflowDeleteWidensBudget"},
-	"UpdateIssue":         {"guardIssueProjectRebinding", "PreserveProject"},
+	"SetProjectWorkflow":          {"projectSwitchWidensBudget"},
+	"SetIssueWorkflow":            {"issueBinding"},
+	"DeleteIssueWorkflow":         {"workflowDeleteWidensBudget"},
+	"UpdateIssue":                 {"guardIssueProjectRebinding", "PreserveProject"},
+	"SetIssueProjectFromDecision": {"loadIssueProjectMove"},
 }
 
 // budgetGuardExempt names callers that cannot change a binding.

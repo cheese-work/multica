@@ -75,6 +75,15 @@ Changelog: <one user-facing sentence, or none>
 2.
 3.
 
+## Patterns
+
+<!-- Required when the PR changes web, desktop, ui or views code (CHE-5420; check `ui-pattern-ref`). Add one line outside
+     this comment, as its own line, with an id from design/patterns.yml:
+       pattern: <id>
+       new-pattern: <id> — <reason>
+       deviation: <id> — <reason>
+     Not a UI change: leave the section empty. -->
+
 ## Cost delta
 
 <!-- Required (CHE-4396). One line each; numbers or a measured range, `unknown` only with how it will be measured. -->

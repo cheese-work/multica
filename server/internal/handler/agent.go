@@ -642,6 +642,9 @@ type AgentTaskResponse struct {
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs []string             `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage      `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
+	BackgroundJob            string               `json:"background_job,omitempty"`              // output_only background task (CHE-4100): job name
+	BackgroundInput          string               `json:"background_input,omitempty"`            // bounded input from the task context
+	BackgroundRunSeconds     int                  `json:"background_run_secs,omitempty"`         // job run deadline
 	WakeupID                 string               `json:"wakeup_id,omitempty"`
 	WakeupSystemRule         string               `json:"wakeup_system_rule,omitempty"`      // set when a platform rule (e.g. child_done) started the run
 	WakeupJoined             string               `json:"wakeup_joined,omitempty"`           // wakeups that fired while this run waited to start and joined it instead of queuing their own

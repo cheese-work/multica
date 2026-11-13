@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -235,21 +233,9 @@ func (handler *Handler) admitProposal(ctx context.Context, queries *db.Queries, 
 	})
 }
 
-var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
+var errProposerSetsPasskey = decisionIntentRefusal{http.StatusBadRequest, "requires_passkey_not_proposable: the registry sets whether an action needs a passkey"}
 
-// composeProposalAsk is the ask text of a proposal. The server writes it from
-// the validated action; the agent's reason appears only as a labelled quote.
-func composeProposalAsk(issueID string, draft *decisionActionDraft, reason string) (string, error) {
-	params, err := json.MarshalIndent(draft.Params, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	ask := "**Proposed action**\n`" + draft.Type + "` version " + strconv.Itoa(draft.Version) + " on [Issue](mention://issue/" + issueID + ")\n\n**Parameters**\n```json\n" + string(params) + "\n```"
-	if reason = strings.TrimSpace(reason); reason != "" {
-		ask += "\n\n**Agent's note (not verified)**\n> " + strings.ReplaceAll(strings.ReplaceAll(reason, "\r", ""), "\n", "\n> ")
-	}
-	return ask, nil
-}
+var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
 
 // ProposeDecisionAction opens a decision request that asks a person to approve
 // one allowlisted action. The agent names the action and its parameters; the
@@ -270,9 +256,17 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		IssueID    string          `json:"issue_id"`
 		For        string          `json:"for"`
 		Reason     string          `json:"reason"`
+		// The registry sets the passkey flag per action type; a proposer that
+		// names it is refused (B v9 S5, CHE-5415).
+		RequiresPasskeySnake *json.RawMessage `json:"requires_passkey"`
+		RequiresPasskeyCamel *json.RawMessage `json:"requiresPasskey"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&body); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	if body.RequiresPasskeySnake != nil || body.RequiresPasskeyCamel != nil {
+		writeDecisionError(writer, errProposerSetsPasskey, "action proposal")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, body.IssueID)
@@ -292,7 +286,12 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	if !ok {
 		return
 	}
-	draft, err := draftDecisionAction(&decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params})
+	wire := &decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params}
+	if err := withIssueTarget(wire, issue.ID); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	draft, err := draftDecisionAction(wire)
 	if err != nil {
 		writeDecisionError(writer, err, "action proposal")
 		return
@@ -311,7 +310,8 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	body.Reason = cleanProposalReason(body.Reason)
-	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
+	change := handler.proposalChange(request.Context(), issue, agentID, recipient, draft)
+	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, change, body.Reason)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to compose proposal")
 		return
@@ -321,8 +321,13 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	paramsHash := sha256.Sum256(draft.Params)
+	class, err := handler.requestClassFor(request.Context(), issue, "reversible", draft)
+	if err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	}
 	input := decisionRequestInput{
-		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+		HumanUserID: recipient, Ask: ask, EscalationClass: class, Action: draft,
 		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr, ChatSessionID: chatSession},
 	}
 	// A duplicate that committed first makes the second pass replay it.

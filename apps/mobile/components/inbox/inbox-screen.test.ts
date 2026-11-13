@@ -8,6 +8,8 @@ const state = vi.hoisted(() => ({ rows: [] as InboxItem[], markRead: vi.fn() }))
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
   useMemo: (create: () => unknown) => create(),
+  // The fork's "Mentions me" filter (CHE-2117) adds state; Inbox() runs outside a render here.
+  useState: (initial: unknown) => [initial, vi.fn()],
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("react-native", () => ({

@@ -4241,6 +4241,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		projectCtx.applyTo(&resp)
 	}
 
+	// Output-only background task (CHE-4100): no issue / chat / autopilot link.
+	// Workspace and input come from the task context; nothing else is hydrated.
+	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+		var bc service.BackgroundTaskContext
+		if json.Unmarshal(task.Context, &bc) == nil && bc.Type == service.BackgroundTaskContextType {
+			resp.BackgroundJob = bc.Job
+			resp.BackgroundInput = bc.Input
+			resp.BackgroundRunSeconds = bc.RunSeconds
+			resp.ThreadName = bc.Job
+			resp.WorkspaceID = bc.WorkspaceID
+			if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
+		}
+	}
+
 	// Quick-create task: no issue / chat / autopilot link — workspace and
 	// prompt come from the task's context JSONB. Resolve workspace from
 	// there so the isolation check below has something to compare.
@@ -6157,8 +6173,8 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A negative counter would turn into a token credit at settlement. Reject
-	// the whole report before anything is written.
+	// Reject a negative counter before anything is written: a report that
+	// subtracts tokens is malformed, not a correction.
 	for _, u := range req.Usage {
 		if u.InputTokens < 0 || u.OutputTokens < 0 || u.CacheReadTokens < 0 || u.CacheWriteTokens < 0 {
 			writeError(w, http.StatusBadRequest, "token counts must not be negative")
@@ -6166,7 +6182,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The rows and their run-budget charge commit together (CHE-2297 L2b).
+	// One report's rows commit together.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Warn("begin task usage transaction failed", "task_id", taskID, "error", err)
@@ -6175,20 +6191,11 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(context.WithoutCancel(r.Context()))
 	qtx := h.Queries.WithTx(tx)
-	// Take a lock before any usage row, so two reports for one task that write
-	// their rows in different orders cannot each hold a row the other waits
-	// for. Settlement needs the issue lock anyway; a task with no issue (a chat
-	// task) is serialized on its own id.
-	var lockErr error
-	if task.IssueID.Valid {
-		if _, err := qtx.LockIssueRunBudget(r.Context(), task.IssueID); !errors.Is(err, pgx.ErrNoRows) {
-			lockErr = err
-		}
-	} else {
-		lockErr = qtx.LockTaskUsageReport(r.Context(), task.ID)
-	}
-	if lockErr != nil {
-		slog.Warn("lock task usage report failed", "task_id", taskID, "error", lockErr)
+	// Take the task's lock before any usage row, so two reports for one task
+	// that write their rows in different orders cannot each hold a row the
+	// other waits for.
+	if err := qtx.LockTaskUsageReport(r.Context(), task.ID); err != nil {
+		slog.Warn("lock task usage report failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store usage")
 		return
 	}
@@ -6231,11 +6238,6 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 		}
 		providers[i] = provider
 		updated = true
-	}
-	if err := service.SettleRunBudgetUsage(r.Context(), qtx, task); err != nil {
-		slog.Warn("settle run budget usage failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to store usage")
-		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit task usage failed", "task_id", taskID, "error", err)

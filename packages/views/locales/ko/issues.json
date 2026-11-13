@@ -443,6 +443,18 @@
     "empty": "일정이 잡힌 태스크가 없습니다. 태스크에 시작일이나 마감일을 설정하면 타임라인에 표시됩니다.",
     "inverted_dates_warning": "시작일이 마감일보다 늦습니다. 막대는 더 이른 날짜부터 더 늦은 날짜까지 표시됩니다."
   },
+  "swimlane2": {
+    "edge_wakeup": "웨이크업",
+    "edge_dependency": "의존성",
+    "edge_parent": "부모 / 자식",
+    "edge_mention": "멘션",
+    "edge_types": "링크 유형",
+    "relations_incomplete": "관계가 불완전합니다: 일부 링크를 불러오지 못했습니다.",
+    "more_issues": "불러오지 않은 이슈가 더 있습니다.",
+    "retry": "다시 시도",
+    "load_more": "더 불러오기",
+    "no_lane": "값 없음"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
