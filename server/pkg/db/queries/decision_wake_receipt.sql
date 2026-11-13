@@ -104,3 +104,26 @@ SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
        coalesce((array_agg(outcome ORDER BY CASE role WHEN 'requester' THEN 0 ELSE 1 END)
                  FILTER (WHERE status = 'delivered' AND outcome IS NOT NULL))[1], 'skipped_ineligible')::text AS outcome
 FROM decision_wake_receipt WHERE event_id = sqlc.arg('event_id');
+
+-- Disclaiming an action answer takes its answered event back. Callers hold the
+-- request and answer locks.
+-- name: SupersedeDecisionAnswerWakeEvents :execrows
+UPDATE decision_wake_event
+SET superseded_at = clock_timestamp(), superseded_reason = 'answer_disclaimed'
+WHERE answer_id = sqlc.arg('answer_id') AND type = 'answered' AND superseded_at IS NULL;
+
+-- A pending receipt of the taken-back answer never presents it.
+-- name: SupersedePendingAnswerWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'superseded'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.answer_id = sqlc.arg('answer_id') AND event.type = 'answered'
+  AND receipt.status = 'pending';
+
+-- The recipients that already got the answer: only they get a retraction.
+-- name: ListDeliveredAnswerWakeRecipients :many
+SELECT receipt.recipient_agent_id, receipt.role, receipt.squad_id
+FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+WHERE event.answer_id = sqlc.arg('answer_id') AND event.type = 'answered' AND receipt.status = 'delivered'
+ORDER BY receipt.role DESC, receipt.id;

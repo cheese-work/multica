@@ -292,6 +292,41 @@ func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSi
 	return items, nil
 }
 
+const listDeliveredAnswerWakeRecipients = `-- name: ListDeliveredAnswerWakeRecipients :many
+SELECT receipt.recipient_agent_id, receipt.role, receipt.squad_id
+FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+WHERE event.answer_id = $1 AND event.type = 'answered' AND receipt.status = 'delivered'
+ORDER BY receipt.role DESC, receipt.id
+`
+
+type ListDeliveredAnswerWakeRecipientsRow struct {
+	RecipientAgentID pgtype.UUID `json:"recipient_agent_id"`
+	Role             string      `json:"role"`
+	SquadID          pgtype.UUID `json:"squad_id"`
+}
+
+// The recipients that already got the answer: only they get a retraction.
+func (q *Queries) ListDeliveredAnswerWakeRecipients(ctx context.Context, answerID pgtype.UUID) ([]ListDeliveredAnswerWakeRecipientsRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveredAnswerWakeRecipients, answerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeliveredAnswerWakeRecipientsRow{}
+	for rows.Next() {
+		var i ListDeliveredAnswerWakeRecipientsRow
+		if err := rows.Scan(&i.RecipientAgentID, &i.Role, &i.SquadID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswerForWake = `-- name: LockDecisionAnswerForWake :one
 SELECT id FROM decision_answer WHERE id = $1 FOR UPDATE
 `
@@ -425,4 +460,37 @@ func (q *Queries) SummarizeDecisionWakeEvent(ctx context.Context, eventID pgtype
 	var i SummarizeDecisionWakeEventRow
 	err := row.Scan(&i.Pending, &i.Outcome)
 	return i, err
+}
+
+const supersedeDecisionAnswerWakeEvents = `-- name: SupersedeDecisionAnswerWakeEvents :execrows
+UPDATE decision_wake_event
+SET superseded_at = clock_timestamp(), superseded_reason = 'answer_disclaimed'
+WHERE answer_id = $1 AND type = 'answered' AND superseded_at IS NULL
+`
+
+// Disclaiming an action answer takes its answered event back. Callers hold the
+// request and answer locks.
+func (q *Queries) SupersedeDecisionAnswerWakeEvents(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeDecisionAnswerWakeEvents, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedePendingAnswerWakeReceipts = `-- name: SupersedePendingAnswerWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'superseded'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.answer_id = $1 AND event.type = 'answered'
+  AND receipt.status = 'pending'
+`
+
+// A pending receipt of the taken-back answer never presents it.
+func (q *Queries) SupersedePendingAnswerWakeReceipts(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedePendingAnswerWakeReceipts, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

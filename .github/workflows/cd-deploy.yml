@@ -171,8 +171,9 @@ jobs:
         run: python3 deploy/cd/authorize-c00.py
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
-  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy.
+  # A configured route that delivers nothing fails it (CHE-4879); no route
+  # configured only warns. It runs on X99, which can
   # reach the tailnet-only Multica server.
   notify-approval:
     needs: [schedule-resolve, candidate-preflight, authorize-c00]
