@@ -804,20 +804,37 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 	return i, err
 }
 
-const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+const lockDecisionWorkflowNowaitCols = `-- name: LockDecisionWorkflowNowaitCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
 
-type LockDecisionWorkflowNowaitParams struct {
+type LockDecisionWorkflowNowaitColsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	ID          pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisionWorkflowNowaitParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowait, arg.WorkspaceID, arg.ID)
-	var i IssueWorkflow
+type LockDecisionWorkflowNowaitColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDecisionWorkflowNowaitColsParams) (LockDecisionWorkflowNowaitColsRow, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowaitCols, arg.WorkspaceID, arg.ID)
+	var i LockDecisionWorkflowNowaitColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -832,8 +849,6 @@ func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisi
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err

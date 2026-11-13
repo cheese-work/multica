@@ -1289,6 +1289,15 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resuming skips the runs missed while the autopilot was not active, so the
+	// display next_run_at left over from before the pause must move to the future.
+	if prev.Status != "active" && autopilot.Status == "active" {
+		if err := refreshScheduleNextRuns(r.Context(), qtx, autopilot.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
+	}
+
 	// A substantive change (target / enabled-state / execution mode) republishes the
 	// rule: append a new version with THIS member as publisher, recording who last
 	// changed what the rule does. Cosmetic edits (title / description / template)
@@ -1362,6 +1371,36 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	resp := autopilotToResponse(autopilot, subs)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{"autopilot": resp})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// refreshScheduleNextRuns recomputes next_run_at from the current time for every
+// enabled schedule trigger of the autopilot. A trigger whose cron no longer parses
+// keeps its value: it cannot fire either way, and it must not block the resume.
+func refreshScheduleNextRuns(ctx context.Context, q *db.Queries, autopilotID pgtype.UUID) error {
+	triggers, err := q.ListAutopilotTriggers(ctx, autopilotID)
+	if err != nil {
+		return err
+	}
+	for _, t := range triggers {
+		if t.Kind != "schedule" || !t.Enabled || t.CronExpression.String == "" {
+			continue
+		}
+		tz := "UTC"
+		if t.Timezone.Valid && t.Timezone.String != "" {
+			tz = t.Timezone.String
+		}
+		next, err := computeNextRun(t.CronExpression.String, tz)
+		if err != nil {
+			continue
+		}
+		if _, err := q.UpdateAutopilotTrigger(ctx, db.UpdateAutopilotTriggerParams{
+			ID:        t.ID,
+			NextRunAt: pgtype.Timestamptz{Time: next, Valid: true},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // autopilotRuleSubstantiveChange reports whether a substantive (publish-worthy)
