@@ -25,7 +25,10 @@ func ciWatcherStorageAllowed(rel string) bool {
 		rel == "cmd/migrate/main.go",           // index registry: names, not access
 		rel == "internal/ghbudget/ghbudget.go", // the budget ledger over gh_installation_budget
 		rel == "pkg/db/queries/ci_watch.sql",
-		rel == "pkg/db/queries/workspace_delete.sql":
+		rel == "pkg/db/queries/workspace_delete.sql",
+		// The installation budget ledger (S3); it is only reached through the
+		// watcher, whose entry point checks CIWatcherEnabled.
+		rel == "internal/ghbudget/ghbudget.go":
 		return true
 	}
 	return false

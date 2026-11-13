@@ -16,6 +16,7 @@ STALE_GATE = "deploy-gate"
 LOCK = "cd-deploy-c00"
 PROTECTED = "c00-production"  # reviewer environment; no job of this workflow may use it any more
 OWNER = "congvc-dev"
+DELAY = "c00-readback-delay"  # 15-minute wait timer, main only, no secrets
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
 C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
 C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
@@ -56,14 +57,14 @@ class DeployApprovalTests(unittest.TestCase):
     def test_gate_runs_for_dispatch_and_for_a_successful_qualification_only(self):
         gate = self.jobs[GATE]
         self.assertIn("workflow_dispatch", gate["if"])
-        self.assertIn("workflow_run", gate["if"])
-        self.assertIn("conclusion == 'success'", gate["if"])
+        self.assertIn("github.event_name == 'schedule'", gate["if"])
+        self.assertIn("needs.schedule-resolve.outputs.sha != ''", gate["if"])
         self.assertNotIn("environment", gate)
         self.assertEqual(gate["permissions"], {"contents": "read", "actions": "read", "pull-requests": "read"})
         step = next(s for s in gate["steps"] if "authorize-c00.py" in s.get("run", ""))
         self.assertEqual(step["env"]["TRIGGERING_ACTOR"], "${{ github.triggering_actor }}")
         self.assertEqual(step["env"]["EVENT_NAME"], "${{ github.event_name }}")
-        self.assertEqual(step["env"]["HEAD_SHA"], "${{ github.event.workflow_run.head_sha }}")
+        self.assertEqual(step["env"]["HEAD_SHA"], "${{ needs.schedule-resolve.outputs.sha }}")
         self.assertEqual(step["env"]["EXTRA_AUTHORIZERS"], "${{ vars.C00_DEPLOY_AUTHORIZERS }}")
         self.assertEqual(set(gate["outputs"]), {"authorized", "candidate_sha"})
 
@@ -88,38 +89,89 @@ class DeployApprovalTests(unittest.TestCase):
 
     def test_push_path_notice_only_for_candidates_nobody_authorized(self):
         notify = self.jobs["notify-approval"]
-        self.assertEqual(sorted(needs(notify)), sorted(["candidate-preflight", GATE]))
-        self.assertIn("workflow_run", notify["if"])
+        self.assertEqual(sorted(needs(notify)), sorted(["schedule-resolve", "candidate-preflight", GATE]))
+        self.assertIn("github.event_name == 'schedule'", notify["if"])
         self.assertIn("needs.authorize-c00.outputs.authorized != 'true'", notify["if"])
+
+    def test_notice_route_needs_only_the_token_secret(self):
+        # CHE-4879 reopen: only the PAT is a secret. The server URL, workspace, issue and
+        # member are plain defaults, so an unset secret never leaves the route empty. A
+        # secret of the same name still overrides the default.
+        step = next(s for s in self.jobs["notify-approval"]["steps"] if "notify-approval.sh" in s.get("run", ""))
+        env = step["env"]
+        self.assertEqual(env["MULTICA_TOKEN"], "${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}")
+        defaults = {
+            "MULTICA_SERVER_URL": ("C00_APPROVAL_MULTICA_SERVER_URL", "https://congvc-c00.taila6fa8a.ts.net:19444"),
+            "MULTICA_WORKSPACE_ID": ("C00_APPROVAL_MULTICA_WORKSPACE_ID", "f2b734e0-b6de-4414-8a27-a2f69b0ef843"),
+            "MULTICA_NOTIFY_ISSUE": ("C00_APPROVAL_MULTICA_ISSUE", "01a1bff0-6ccc-7873-9ac8-580037bc5206"),
+            "MULTICA_NOTIFY_MEMBER_ID": ("C00_APPROVAL_MULTICA_MEMBER_ID", "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff"),
+            # The anchor comment is a default too: the scoped PAT cannot list comments.
+            "MULTICA_NOTIFY_SOURCE_COMMENT": ("C00_APPROVAL_MULTICA_SOURCE_COMMENT", "01a1bff1-cdf8-7856-ad05-da57f3a396f2"),
+        }
+        for name, (secret, default) in defaults.items():
+            with self.subTest(env=name):
+                self.assertEqual(env[name], f"${{{{ secrets.{secret} || '{default}' }}}}")
 
     def test_notice_links_the_dispatch_page_with_the_full_candidate(self):
         notify = json.dumps(self.jobs["notify-approval"]["steps"])
         self.assertIn("actions/workflows/cd-deploy.yml", notify)
-        self.assertIn("workflow_run.head_sha", notify)
+        self.assertIn("needs.schedule-resolve.outputs.sha", notify)
         self.assertNotIn("inputs.ref", notify)
 
-    def test_readback_follows_the_deploy_for_fifteen_minutes_outside_the_lock(self):
+    def test_readback_is_immediate_and_releases_the_runner(self):
         readback = self.jobs["readback"]
         self.assertEqual(needs(readback), ["admission", "deploy"])
         self.assertEqual(readback["runs-on"], C00_RUNNER)
         self.assertEqual(readback["environment"], RUNTIME)
         self.assertNotIn("concurrency", readback)
         self.assertIn("needs.deploy.result == 'success'", readback["if"])
+        self.assertLessEqual(readback["timeout-minutes"], 10)
         text = yaml.safe_dump(readback)
         self.assertIn("post-deploy-readback.sh", text)
-        self.assertIn("900", text)
+        self.assertNotIn("900", text)  # the 15-minute window is no longer held in this job
+        self.assertEqual(set(readback["outputs"]), {"t0", "restarts", "observation", "superseded"})
 
-    def test_failed_readback_rolls_back_under_the_c00_lock(self):
+    def test_the_fifteen_minute_wait_is_an_environment_timer_that_holds_no_c00_runner(self):
+        delay = self.jobs["readback-delay"]
+        self.assertEqual(needs(delay), ["admission", "readback"])
+        self.assertEqual(delay["environment"], DELAY)
+        self.assertIn("needs.readback.result == 'success'", delay["if"])
+        # A newer deploy owns the window: the older run skips delay and confirm, and is not rolled back.
+        self.assertIn("needs.readback.outputs.superseded != 'true'", delay["if"])
+        self.assertNotIn("cheese-c00-deploy", json.dumps(delay["runs-on"]))
+        self.assertNotIn("secrets.", json.dumps(delay))
+
+    def test_readback_confirm_verifies_the_native_health_journal_on_the_c00_runner(self):
+        confirm = self.jobs["readback-confirm"]
+        self.assertEqual(sorted(needs(confirm)), ["admission", "readback", "readback-delay"])
+        self.assertEqual(confirm["runs-on"], C00_RUNNER)
+        self.assertEqual(confirm["environment"], RUNTIME)
+        self.assertNotIn("concurrency", confirm)
+        self.assertLessEqual(confirm["timeout-minutes"], 10)
+        self.assertIn("needs.readback-delay.result == 'success'", confirm["if"])
+        text = yaml.safe_dump(confirm)
+        self.assertIn("post-deploy-confirm.sh", text)
+        self.assertIn("needs.readback.outputs.t0", text)
+        self.assertIn("needs.readback.outputs.restarts", text)
+        self.assertNotIn("continue-on-error", text)
+        self.assertEqual(confirm["steps"][0]["uses"].split("@")[0], "actions/checkout")
+        self.assertEqual(confirm["steps"][0]["with"]["ref"], "${{ github.sha }}")
+
+    def test_failed_readback_or_confirm_rolls_back_under_the_c00_lock(self):
         rollback = self.jobs["rollback"]
-        self.assertEqual(needs(rollback), ["admission", "readback"])
+        self.assertEqual(sorted(needs(rollback)), ["admission", "readback", "readback-confirm", "readback-delay"])
         self.assertEqual(rollback["runs-on"], C00_RUNNER)
         self.assertEqual(rollback["environment"], RUNTIME)
         self.assertEqual(rollback["concurrency"]["group"], "cd-deploy-c00")
         self.assertIn("needs.readback.result == 'failure'", rollback["if"])
+        self.assertIn("needs.readback-confirm.result == 'failure'", rollback["if"])
+        # A failed delay skips confirm, so nothing judged the window: that must roll back too.
+        self.assertIn("needs.readback-delay.result == 'failure'", rollback["if"])
         self.assertNotIn("cancelled", rollback["if"])
         self.assertIn("rollback-failed-readback.sh", yaml.safe_dump(rollback))
-        # The readback job stays the one that fails, so the suspension still reads it.
-        self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs["readback"]))
+        # The readback jobs stay the ones that fail, so the suspension still reads them.
+        for name in ["readback", "readback-confirm"]:
+            self.assertNotIn("continue-on-error", yaml.safe_dump(self.jobs[name]))
 
     def test_readback_and_rollback_run_the_workflow_revisions_tooling_not_the_candidates(self):
         # CHE-5144: a candidate cut before the readback and rollback scripts existed
@@ -127,7 +179,7 @@ class DeployApprovalTests(unittest.TestCase):
         # checkout of the candidate ref failed with exit 127 and C00 had no watch.
         # The tooling comes from the workflow revision; the candidate's manifest
         # arrives through the cd-deploy-admitted-input artifact.
-        for name in ["readback", "rollback"]:
+        for name in ["readback", "readback-confirm", "rollback"]:
             with self.subTest(job=name):
                 checkouts = [s for s in self.jobs[name]["steps"] if s.get("uses", "").startswith("actions/checkout")]
                 self.assertTrue(checkouts)
@@ -168,8 +220,8 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn("40-hex", bad.stderr)
 
-    def test_environment_set_is_runtime_and_ci_app_token_only(self):
-        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {RUNTIME, "ci-app-token"})
+    def test_environment_set_is_runtime_readback_delay_and_ci_app_token_only(self):
+        self.assertEqual({j.get("environment") for j in self.jobs.values()} - {None}, {RUNTIME, DELAY, "ci-app-token"})
 
     def test_c00_jobs_run_on_the_c00_runner_and_never_over_ssh(self):
         # Both jobs that touch C00 run on the target-host runner. A fall-back
@@ -249,6 +301,45 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertLess(script.index('if [ "$decision" = "skip" ]'), script.index("build-cutover-bundle.sh"))
         outcome = next(step for step in steps if step.get("name") == "Record outcome")
         self.assertIn("steps.deploy.outputs.decision != 'skip'", outcome["if"])
+
+
+class MainRedPauseGuardTests(unittest.TestCase):
+    """CHE-4500 (CHE-3625 item 2): no scheduled auto-deploy while the repo variable MAIN_RED_PAUSED exists."""
+
+    def setUp(self):
+        self.jobs = yaml.safe_load((ROOT / ".github/workflows/cd-deploy.yml").read_text())["jobs"]
+
+    def runs(self, job, event_name, paused, backup=""):
+        """Dry-evaluate a job's `if:` for an event, with MAIN_RED_PAUSED set or cleared."""
+        class Ctx:
+            def __init__(self, **kw):
+                self.__dict__.update(kw)
+
+        ctx = {
+            "github": Ctx(event_name=event_name),
+            "needs": Ctx(**{"schedule-resolve": Ctx(outputs=Ctx(sha="abc123"))}),
+            "inputs": Ctx(schedule_backup=backup),
+            "vars": Ctx(MAIN_RED_PAUSED="abc123 backend notice=sent" if paused else ""),
+        }
+        expr = self.jobs[job]["if"].replace("always()", "True").replace("&&", " and ").replace("||", " or ")
+        expr = expr.replace("needs.schedule-resolve.outputs.sha", 'needs.__dict__["schedule-resolve"].outputs.sha')
+        return bool(eval(expr, {"__builtins__": {}}, ctx))  # trusted: our own workflow file
+
+    def test_auto_deploy_skipped_while_paused(self):
+        self.assertFalse(self.runs("candidate-preflight", "schedule", paused=True))
+
+    def test_auto_deploy_runs_when_cleared(self):
+        self.assertTrue(self.runs("candidate-preflight", "schedule", paused=False))
+
+    def test_schedule_backup_dispatch_follows_the_pause(self):
+        self.assertFalse(self.runs("candidate-preflight", "workflow_dispatch", paused=True, backup="true"))
+        self.assertTrue(self.runs("candidate-preflight", "workflow_dispatch", paused=False, backup="true"))
+
+    def test_every_c00_job_hangs_off_the_guarded_preflight(self):
+        # Skipping candidate-preflight leaves eligible empty, so the notice and deploy chain is skipped.
+        for name in ["notify-approval", "prepare-release-candidate", "admission", "deploy"]:
+            with self.subTest(job=name):
+                self.assertIn("candidate-preflight", DeployApprovalTests.ancestors(self, name) | set(needs(self.jobs[name])))
 
 
 class LockModel:
@@ -408,7 +499,7 @@ else:
                 script = step.get("run", "")
                 if "require-current.sh" not in script and step.get("name") != "Deploy to C00 on local runner":
                     continue
-                script = script.replace("${{ github.event.workflow_run.head_sha }}", candidate)
+                script = script.replace("${{ needs.schedule-resolve.outputs.sha }}", candidate)
                 script = script.replace("${{ needs.admission.outputs.source_sha }}", candidate)
                 result = subprocess.run(["/bin/bash", "-c", script], cwd=self.repository,
                                         env=environment, text=True, capture_output=True)

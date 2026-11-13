@@ -296,8 +296,7 @@
     "advanced_group_match_trailing": "충족",
     "advanced_group_hint": "이 그룹의 조건은 '{{word}}'(으)로 연결됩니다",
     "advanced_add_to_group": "그룹에 추가",
-    "advanced_turn_into_group": "그룹으로 전환",
-    "advanced_summary": "조건: {{summary}}"
+    "advanced_turn_into_group": "그룹으로 전환"
   },
   "display": {
     "tooltip": "보기 설정",
@@ -1634,6 +1633,9 @@
       "description": "설명",
       "max_runs": "이슈당 최대 실행 횟수",
       "max_runs_invalid": "1~{{max}} 사이의 정수를 입력하세요. 비워 두면 기본값({{default}})이 적용됩니다.",
+      "budget_request_pending": "이 워크플로의 실행 한도 변경이 소유자 승인을 기다리고 있습니다.",
+      "budget_request_pending_cap": "이슈당 실행 한도를 {{cap}}회로 바꾸는 요청이 소유자 승인을 기다리고 있습니다.",
+      "include_child_prs": "하위 PR 포함",
       "steps": "단계",
       "add_step": "단계 추가",
       "start": "시작",
@@ -2018,5 +2020,28 @@
       "system": "시스템"
     },
     "open": "상태 기록"
+  },
+  "run_budget": {
+    "runs": "실행 {{used}} / {{limit}}",
+    "left_other": "{{count}}회 남음",
+    "near": "80 % 사용",
+    "exhausted": "실행 예산을 모두 사용했습니다",
+    "raise": "한도 올리기",
+    "top_up": "충전",
+    "asked": "워크스페이스 소유자에게 승인을 요청했습니다.",
+    "chip": "예산 소진",
+    "open_request": "아래의 열린 요청",
+    "request_failed": "요청을 보내지 못했습니다. 다시 시도하세요."
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 이전 {{earlier}}개",
+    "diff": "비교",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "v{{from}}에서 v{{to}}까지의 변경, 변경된 부분만",
+    "show_full": "전체 보기",
+    "show_changes": "변경만 보기",
+    "loading": "변경 내용을 불러오는 중",
+    "load_failed": "변경 내용을 불러오지 못했습니다.",
+    "no_changes": "텍스트 변경 사항이 없습니다."
   }
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -639,6 +640,9 @@ func (h *Handler) CreateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	if req.Steps != nil && refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	maxRuns, includeChildPRs, ruleMsg := runRuleParams(req)
 	if ruleMsg != "" {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
@@ -856,12 +860,21 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", ruleMsg)
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	machine := isMachineCredentialActor(r)
+	// A machine credential writes the budget fields only with a workflow.budget
+	// decision (CHE-5228), alone: a budget write carries no step or name edit.
+	// Every other machine write is refused with passkey_action_required (CHE-3482).
+	budgetWrite := machine && (req.MaxRunsPerIssue != nil || req.IncludeChildPRs != nil)
+	if budgetWrite && strings.TrimSpace(req.DecisionID) == "" {
+		writeBudgetRequiresDecision(w)
 		return
 	}
-	machine := isMachineCredentialActor(r)
-	if machine && (req.Steps == nil || req.Name != nil || req.Description != nil || req.IncludeChildPRs != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun) {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+	if !budgetWrite && refuseMachineWorkflowWrite(w, r) {
+		return
+	}
+	carriesMore := req.Name != nil || req.Description != nil || req.StartStatusKey != nil || len(req.StatusMapping) > 0 || req.DryRun
+	if budgetWrite && (req.Steps != nil || carriesMore) {
+		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound budget write carries the budget fields and the decision only")
 		return
 	}
 	ctx := r.Context()
@@ -890,15 +903,18 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "only the workflow owner and workspace admins can change this workflow")
 		return
 	}
-	// The run cap is budget authority (CHE-2798 S1b): only an interactive
-	// session changes it. A write that leaves it as stored keeps its usual
-	// authorization. The budget start has no write path here.
-	if req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32 && r.Header.Get("X-Actor-Source") != "interactive_jwt" {
-		writeErrorCode(w, http.StatusForbidden, "budget_requires_interactive", "changing a workflow's run budget needs an interactive web or desktop session")
+	if budgetWrite {
+		h.updateBoundBudget(w, r, tx, qtx, member, current, req)
 		return
 	}
-	if machine && req.MaxRunsPerIssue != nil {
-		writeErrorCode(w, http.StatusBadRequest, "invalid_workflow", "a decision-bound write carries steps and expected_version only")
+	// The budget fields are budget authority (CHE-2798 S1b, CHE-5228): an
+	// interactive session changes them directly, anyone else through a
+	// workflow.budget decision. A write that leaves them as stored keeps its
+	// usual authorization. The budget start has no write path here.
+	changesBudget := (req.MaxRunsPerIssue != nil && maxRuns.Int32 != current.MaxRunsPerIssue.Int32) ||
+		(req.IncludeChildPRs != nil && includeChildPRs.Bool != current.IncludeChildPrs)
+	if changesBudget && !isInteractiveRequest(r) {
+		writeBudgetRequiresDecision(w)
 		return
 	}
 	// Read under the exclusive catalog lock, so no other save can slip between
@@ -1086,6 +1102,33 @@ func (h *Handler) UpdateIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		h.publishIssueStatusChanged(workspaceID, member, "created", false)
 	}
 	h.publishIssueWorkflowChanged(workspaceID, member, "updated")
+	h.writeIssueWorkflow(w, r, http.StatusOK, row)
+}
+
+// updateBoundBudget applies an agent's workflow.budget write: the owner's card
+// named the budget before and after, and the digests prove this write is that
+// change and nothing wider. It commits qtx's transaction.
+func (h *Handler) updateBoundBudget(w http.ResponseWriter, r *http.Request, tx pgx.Tx, qtx *db.Queries, member db.Member, current db.IssueWorkflow, req IssueWorkflowWriteRequest) {
+	ctx := r.Context()
+	id := uuidToString(current.ID)
+	liveCap, liveChildren := storedBudget(current)
+	afterCap, afterChildren := budgetAfter(current, req.MaxRunsPerIssue, req.IncludeChildPRs)
+	if err := h.verifyBoundDigests(ctx, qtx, r, current.WorkspaceID, req.DecisionBindingFields, workflowBudgetField,
+		decisionaction.WorkflowBudgetDigest(id, liveCap, liveChildren), decisionaction.WorkflowBudgetDigest(id, afterCap, afterChildren)); err != nil {
+		writeDecisionError(w, err, "workflow budget write")
+		return
+	}
+	row, err := qtx.UpdateIssueWorkflow(ctx, budgetUpdateParams(current, req.MaxRunsPerIssue, req.IncludeChildPRs))
+	if err != nil {
+		slog.Warn("UpdateIssueWorkflow budget failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save workflow")
+		return
+	}
+	h.publishIssueWorkflowChanged(uuidToString(current.WorkspaceID), member, "updated")
 	h.writeIssueWorkflow(w, r, http.StatusOK, row)
 }
 
@@ -1424,7 +1467,7 @@ func (h *Handler) SetIssueWorkflowHandoff(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if refuseUnboundMachineWrite(w, r, req.DecisionBindingFields) {
+	if refuseMachineWorkflowWrite(w, r) {
 		return
 	}
 	machine := isMachineCredentialActor(r)
@@ -1851,4 +1894,11 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeBudgetRequiresDecision refuses a direct budget write from a credential
+// that is not an interactive session and names the path that works.
+func writeBudgetRequiresDecision(w http.ResponseWriter) {
+	writeErrorCode(w, http.StatusForbidden, "budget_requires_decision",
+		"changing a workflow's run budget needs the owner's approval: run `multica config propose workflow.budget <workflow-id> --max-runs N` and submit it with `multica decision request`, or use an interactive web or desktop session")
 }

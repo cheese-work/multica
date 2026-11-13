@@ -66,6 +66,10 @@ The confirmation shows which issues keep their status. If the new workflow does 
 
 The project's board now follows the workflow's columns. Each issue's status picker offers the steps in that workflow and shows who takes over. Projects that have not chosen a workflow use **Default**; you can switch back to it later.
 
+## Pick a workflow from the title type
+
+A workspace owner or admin can set `workflow_by_type` in the workspace settings, for example `{"design": "<workflow id>", "plan": "<workflow id>"}`. A new issue whose title starts with a mapped type, such as `design(x): …`, follows that workflow instead of its project's. `--workflow` (CLI) or an explicit workflow choice always wins. A type with no entry, or an entry whose workflow no longer exists, keeps the project's workflow. `multica issue create` prints the chosen workflow. The create dialog shows the chosen workflow's statuses and handoff once the title has a mapped type. The mapping is workspace policy: it applies to every creator, agents included, without the run-budget check an explicit `--workflow` gets from non-interactive callers. If two keys differ only by case, the first in alphabetical order wins. Editing a title later does not change the workflow; the update response carries a one-line `workflow_hint` (printed by `multica issue update`) with the command that moves it.
+
 ## Move work to the next step
 
 Change an issue's status or drag its card to another column. If that step has a handoff, check who will receive it and, for an agent, the instructions it will receive.
@@ -88,7 +92,9 @@ Admins can also set a handoff from the project board: hover a column header and 
 
 Removing a column may ask you to choose a new status for issues already in it. Other issues stay where they are, and this move does not start agents. The status library below the workflows is where you rename or recolor statuses; those changes are shared wherever the status is used.
 
-Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client.
+Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client. The **Include child PRs** switch next to it controls whether PR guards also read the PRs of sub-issues (on by default) and follows the same rule. An agent or token cannot change either field directly: it gets `budget_requires_decision` and proposes the change with `multica config propose workflow.budget`, and an owner approves it with a passkey. The same limit applies when an agent or token creates an issue on, or re-binds an issue to, a workflow with a wider budget (`budget_rebinding_requires_interactive`). It takes the same decision: `multica issue create` and `multica issue update` accept `--workflow <id> --decision-id <id>`.
+
+On an issue with a run budget, the sidebar shows a meter with the runs used, the runs left, a warning at 80 % and a **Run budget used up** state. **Raise** and **Top up** ask a workspace owner to approve more runs. If you are an owner, you approve with your passkey right there; otherwise the owner gets the request. In the list and on the board, an issue the budget stopped shows a **Budget used** chip next to its status.
 
 To delete a workflow, first switch the projects using it to another workflow. Issues keep their current status.
 

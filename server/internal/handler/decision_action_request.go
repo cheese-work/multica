@@ -48,6 +48,9 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
@@ -116,6 +119,15 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentSchedulingParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		if _, err := loadAgent(params.AgentID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`

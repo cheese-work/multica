@@ -296,8 +296,7 @@
     "advanced_group_match_trailing": "に一致",
     "advanced_group_hint": "このグループの条件は「{{word}}」でつながります",
     "advanced_add_to_group": "グループに追加",
-    "advanced_turn_into_group": "グループに変換",
-    "advanced_summary": "条件：{{summary}}"
+    "advanced_turn_into_group": "グループに変換"
   },
   "display": {
     "tooltip": "表示設定",
@@ -1634,6 +1633,9 @@
       "description": "説明",
       "max_runs": "Issue あたりの最大実行数",
       "max_runs_invalid": "1〜{{max}} の整数を入力してください。空欄の場合は既定値（{{default}}）になります。",
+      "budget_request_pending": "このワークフローの実行上限の変更が、オーナーの承認待ちです。",
+      "budget_request_pending_cap": "実行上限を課題あたり{{cap}}回に変更する申請が、オーナーの承認待ちです。",
+      "include_child_prs": "子 PR を含める",
       "steps": "ステップ",
       "add_step": "ステップを追加",
       "start": "開始",
@@ -2018,5 +2020,28 @@
       "system": "システム"
     },
     "open": "ステータス履歴"
+  },
+  "run_budget": {
+    "runs": "実行 {{used}} / {{limit}}",
+    "left_other": "残り {{count}}",
+    "near": "80 % 使用",
+    "exhausted": "実行予算を使い切りました",
+    "raise": "上限を上げる",
+    "top_up": "追加する",
+    "asked": "ワークスペースのオーナーに承認を依頼しました。",
+    "chip": "予算を使い切りました",
+    "open_request": "下の未処理リクエスト",
+    "request_failed": "リクエストを送信できませんでした。もう一度お試しください。"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 以前 {{earlier}} 件",
+    "diff": "差分",
+    "title": "{{name}}: v{{from}} → v{{to}}",
+    "region": "v{{from}} から v{{to}} への変更、変更箇所のみ",
+    "show_full": "全体を表示",
+    "show_changes": "変更のみ表示",
+    "loading": "変更を読み込み中",
+    "load_failed": "変更を読み込めませんでした。",
+    "no_changes": "テキストの変更はありません。"
   }
 }

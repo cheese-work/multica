@@ -147,6 +147,10 @@ func (handler *Handler) cardConfigChange(ctx context.Context, action db.Decision
 	if card.Keys == nil {
 		card.Keys = []string{}
 	}
+	// A preview stored before diff_kind existed is the json kind.
+	if card.DiffKind == "" {
+		card.DiffKind = "json"
+	}
 	if card.Diff == nil {
 		card.Diff = []decisiontx.DiffHunk{}
 	}
@@ -201,6 +205,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
 		return handler.agentCopyPreview(ctx, action, viewer)
+	case agentPauseAction, agentResumeAction:
+		return handler.agentSchedulingPreview(ctx, action, viewer)
 	}
 	return nil, nil
 }
@@ -266,7 +272,7 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 	if err != nil {
 		return nil, fmt.Errorf("copy target runtime: %w", err)
 	}
-	target, err := handler.Queries.GetAgentRuntime(ctx, runtimeID)
+	target, err := handler.runtimeForAction(ctx, action.WorkspaceID, runtimeID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +388,24 @@ func avatarLabel(requested *string) string {
 		return "random emoji"
 	}
 	return *requested
+}
+
+// runtimeForAction reads the target runtime as the executor accepts it: in the
+// card's workspace and usable by the viewer. Anything else is an error, so the
+// card shows "details unavailable" and names nothing about the runtime.
+func (handler *Handler) runtimeForAction(ctx context.Context, workspaceID, runtimeID, viewer pgtype.UUID) (db.AgentRuntime, error) {
+	runtime, err := handler.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: runtimeID, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	member, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: viewer, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	if !canUseRuntimeForAgent(member, runtime) {
+		return db.AgentRuntime{}, errors.New("the card's recipient cannot use the action's runtime")
+	}
+	return runtime, nil
 }
 
 func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string, viewer pgtype.UUID) (db.Agent, error) {

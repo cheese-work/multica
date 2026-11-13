@@ -1,12 +1,15 @@
 {
   "decision_banner": {
     "title": "決定が必要です",
+    "title_used": "決定",
+    "answered_count": "{{number}} 件回答済み",
     "waiting": "エージェントはまだ決定カードを送信していません。",
     "queued_since": "{{time}} から待機中",
     "running_since": "{{time}} から実行中",
     "no_run": "実行中のランはありません。"
   },
   "needs_you": {
+    "chip_other": "{{count}} 件の決定が待っています",
     "title": "あなたの判断待ち",
     "loading": "未回答の依頼を読み込み中…",
     "error": "依頼を読み込めませんでした。",
@@ -464,6 +467,8 @@
     "action_unavailable": "詳細を表示できません",
     "action_approve": "パスキーで承認",
     "action_preview": "承認で変更される内容",
+    "recent_runs": "最近の実行",
+    "recent_runs_status": { "completed": "完了", "failed": "失敗", "cancelled": "キャンセル", "running": "実行中", "other": "待機中" },
     "config_change": {
       "viewer_label": "承認する変更",
       "tab_changes": "変更点",
@@ -481,7 +486,8 @@
       "field_workspace_context": "ワークスペースのコンテキスト",
       "field_workflow_steps": "ワークフローのステップ",
       "field_workflow_instructions": "ワークフローのステップ指示",
-      "field_workspace_settings": "ワークスペース設定"
+      "field_workspace_settings": "ワークスペース設定",
+      "field_workflow_budget": "ワークフローの実行予算"
     },
     "agent_note": "エージェントのメモ（未検証）",
     "answer_send_passkey": "パスキーで送信",

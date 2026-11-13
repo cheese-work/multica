@@ -8,6 +8,7 @@ import {
   resolveProjectWorkflow,
   sharedWorkflowStatusKeys,
   stepHandsOff,
+  workflowIdForTitle,
   statusAcceptsHandoff,
   workflowAllowsStatus,
   workflowMiddleKeys,
@@ -185,5 +186,35 @@ describe("per-issue workflow override", () => {
       ["backlog", "blocked", "cancelled", "done", "editing", "todo"],
     );
     expect(sharedWorkflowStatusKeys([...workflows, narrow], [project], [issues[0]!])?.has("drafting")).toBe(true);
+  });
+});
+
+describe("workflowIdForTitle", () => {
+  const design = "8394690d-632a-4b15-a333-c9f0247b0985";
+  const settings = { workflow_by_type: { Design: design, plan: "not-a-uuid" } };
+
+  it.each([
+    ["design(x): new screen", design],
+    ["Design: new screen", design],
+    ["design!: breaking", design],
+    ["plan(x): thing", null],
+    ["feat(x): thing", null],
+    ["design the thing", null],
+    ["no type", null],
+  ])("%s", (title, want) => {
+    expect(workflowIdForTitle(settings, title)).toBe(want);
+  });
+
+  it.each([undefined, {}, { workflow_by_type: null }, { workflow_by_type: "x" }, { workflow_by_type: [design] }])(
+    "no usable map: %j",
+    (s) => {
+      expect(workflowIdForTitle(s as Record<string, unknown> | undefined, "design: x")).toBeNull();
+    },
+  );
+
+  it("resolves keys that differ only by case in sorted order, like the server", () => {
+    const a = "00000000-0000-0000-0000-000000000001";
+    const b = "00000000-0000-0000-0000-000000000002";
+    expect(workflowIdForTitle({ workflow_by_type: { Design: b, design: a } }, "design: x")).toBe(b);
   });
 });

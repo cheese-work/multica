@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """cd-deploy.yml: a manual dispatch must reach deploy, readback and rollback (CHE-5147).
 
-candidate-preflight only runs on `workflow_run`, so on a dispatch it is skipped.
+candidate-preflight only runs on `schedule`, so on a dispatch it is skipped.
 GitHub's implicit `if: success()` is false when ANY job up the needs chain was
 skipped, so a job downstream of it without an explicit `always()` guard is
 skipped too, even though its direct need succeeded. The automatic path hides
@@ -40,7 +40,7 @@ def downstream_of(jobs, root):
 class DeployJobGuard(unittest.TestCase):
     def test_skipped_on_dispatch_job_is_a_candidate_preflight_gate(self):
         jobs = load_jobs()
-        self.assertIn("workflow_run", jobs[SKIPPED_ON_DISPATCH]["if"])
+        self.assertIn("schedule", jobs[SKIPPED_ON_DISPATCH]["if"])
         self.assertNotIn("workflow_dispatch", jobs[SKIPPED_ON_DISPATCH]["if"])
 
     def test_every_job_downstream_of_a_dispatch_skipped_job_has_explicit_guard(self):

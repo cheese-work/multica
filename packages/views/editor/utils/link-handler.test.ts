@@ -7,6 +7,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   openLink,
   parseWorkspaceEntityLink,
+  parseWorkspaceChatLink,
+  rewriteToCurrentOrigin,
   toInternalAppPath,
 } from "./link-handler";
 
@@ -309,5 +311,34 @@ describe("existing reserved-slug workspaces", () => {
     openLink("/chat/issues", "acme", APP_ORIGIN);
     openLink("/chat", "acme", APP_ORIGIN);
     expect(navigatedPaths()).toEqual(["/chat/issues", "/acme/chat"]);
+  });
+});
+
+describe("known Multica origins (CHE-4832)", () => {
+  const TS = "https://congvc-c00.taila6fa8a.ts.net:19443";
+  const S = "01a1bb4b-8f5d-72ed-81a4-f1af9eff03e9";
+
+  it("rewrites a known-host route to the current origin, keeping query and hash", () => {
+    expect(rewriteToCurrentOrigin(`${TS}/acme/issues/MUL-1?a=1#c`, APP_ORIGIN)).toBe(
+      `${APP_ORIGIN}/acme/issues/MUL-1?a=1#c`,
+    );
+  });
+
+  it("rejects lookalike hosts, external hosts, and non-route paths", () => {
+    expect(rewriteToCurrentOrigin(`https://multica.congvc.dev.evil.com/acme/issues/1`, APP_ORIGIN)).toBeNull();
+    expect(rewriteToCurrentOrigin(`https://evil.com/${TS}/acme/issues/1`, APP_ORIGIN)).toBeNull();
+    expect(rewriteToCurrentOrigin(`${TS}/uploads/a.pdf`, APP_ORIGIN)).toBeNull();
+    expect(rewriteToCurrentOrigin(`https://multica.congvc.dev@evil.com/acme/issues/1`, APP_ORIGIN)).toBeNull();
+  });
+
+  it("parses a DM link with and without message, rejects extras", () => {
+    expect(parseWorkspaceChatLink(`/acme/chat?session=${S}`)).toEqual({ sessionId: S, messageId: null, slug: "acme" });
+    expect(parseWorkspaceChatLink(`/acme/chat?session=${S}&message=${S}`)?.messageId).toBe(S);
+    expect(parseWorkspaceChatLink(`/acme/chat?session=${S}&x=1`)).toBeNull();
+    expect(parseWorkspaceChatLink(`/acme/chat?session=nope`)).toBeNull();
+  });
+
+  it("toInternalAppPath accepts a known host", () => {
+    expect(toInternalAppPath(`${TS}/acme/issues/MUL-1`, APP_ORIGIN)).toBe("/acme/issues/MUL-1");
   });
 });

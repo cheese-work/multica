@@ -300,8 +300,8 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         preflight = self.workflow["jobs"]["candidate-preflight"]
         preparation = self.workflow["jobs"]["prepare-release-candidate"]
         self.assertEqual(preflight["outputs"]["eligible"], "${{ steps.candidate.outputs.eligible }}")
-        self.assertIn("workflow_run", preflight["if"])
-        self.assertIn("conclusion == 'success'", preflight["if"])
+        self.assertIn("github.event_name == 'schedule'", preflight["if"])
+        self.assertIn("needs.schedule-resolve.outputs.sha != ''", preflight["if"])
         checkout = next(step for step in preflight["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
@@ -312,7 +312,7 @@ print(json.dumps({"server_commit": versions[min(index, len(versions) - 1)]}))
         self.assertEqual(selection["env"]["C00_CONFIG_URL"],
                          "${{ vars.C00_CONFIG_URL }}")
         self.assertIn("record-checks.sh", json.dumps(preparation["steps"]))
-        self.assertIn("github.event.workflow_run.head_sha", self.workflow["run-name"])
+        self.assertNotIn("workflow_run", self.workflow["run-name"])
         self.assertIn("inputs.ref", self.workflow["run-name"])
         self.assertIn("needs.authorize-c00.outputs.authorized == 'true'", self.workflow["jobs"]["admission"]["if"])
 

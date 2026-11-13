@@ -8,10 +8,15 @@ variable can never lock the owner out or widen the owner's own rights.
 
 - workflow_dispatch: the triggering actor must be allowed, otherwise exit 1
   before any C00 step. Outputs authorized=true and the candidate_sha input.
-- workflow_run (a successful qualification of a `main` push): the merger of the
+- schedule (the newest qualified `main` commit, resolved by schedule-resolve; CHE-5182): the merger of the
   pull request whose merge commit is HEAD_SHA must be allowed, and the latest
   automatic deploy must not have failed. Anything else is not an error: the
   run builds and stops (authorized=false). A GitHub API error fails the job.
+
+- backup dispatch (CHE-5353): the freshness alarm dispatches cd-deploy.yml with
+  `schedule_backup=true` when GitHub drops a schedule slot. Only the workflow's
+  own robot (ROBOT) may send the marker; any other actor is refused. It then
+  takes the schedule rules above: same merger check, same suspension.
 
 Outputs go to $GITHUB_OUTPUT. `gh` and its token come from the environment.
 """
@@ -21,7 +26,8 @@ import subprocess
 import sys
 
 OWNER = "congvc-dev"
-DEPLOY_JOBS = ("deploy", "readback")
+ROBOT = "github-actions[bot]"
+DEPLOY_JOBS = ("deploy", "readback", "readback-delay", "readback-confirm")
 RUNS_PER_PAGE = 100
 RUN_PAGES = 5
 
@@ -91,8 +97,13 @@ def main():
     event = os.environ["EVENT_NAME"]
     allowed = allowed_logins()
 
-    if event == "workflow_dispatch":
-        actor = os.environ.get("TRIGGERING_ACTOR", "")
+    actor = os.environ.get("TRIGGERING_ACTOR", "")
+    backup = event == "workflow_dispatch" and os.environ.get("INPUT_SCHEDULE_BACKUP", "") != ""
+    if backup and actor != ROBOT:
+        print(f"::error::backup dispatch by '{actor}' refused; only {ROBOT} may send schedule_backup", file=sys.stderr)
+        sys.exit(1)
+
+    if event == "workflow_dispatch" and not backup:
         if actor not in allowed:
             print(f"::error::dispatch by '{actor}' refused; only {', '.join(sorted(allowed))} may deploy to C00", file=sys.stderr)
             sys.exit(1)

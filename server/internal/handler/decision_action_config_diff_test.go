@@ -156,6 +156,46 @@ func TestTextDiffFlagsAWhitespaceOnlyChange(test *testing.T) {
 	}
 }
 
+// A text edit that also changes line endings or the final newline still shows
+// its hunks, and the preview flags the change the line diff cannot show.
+func TestTextDiffFlagsLineEndingChangesAlongsideHunks(test *testing.T) {
+	cases := []struct {
+		name, before, after string
+		want                bool
+	}{
+		{"final newline added", "a\nb", "a\nc\n", true},
+		{"final newline removed", "a\nb\n", "a\nc", true},
+		{"crlf to lf", "a\r\nb\r\n", "a\nc\n", true},
+		{"lf to crlf", "a\nb", "a\r\nc", true},
+		{"same endings", "a\nb\n", "a\nc\n", false},
+		{"same crlf endings", "a\r\nb", "a\r\nc", false},
+		{"crlf file, line added", "a\r\nb\r\n", "a\r\nb\r\nc\r\n", false},
+		{"crlf file, line removed", "a\r\nb\r\nc\r\n", "a\r\nc\r\n", false},
+		{"lf file, line added", "a\nb\n", "a\nb\nc\n", false},
+		{"crlf to mixed", "a\r\nb\r\n", "a\r\nc\n", true},
+	}
+	for _, c := range cases {
+		test.Run(c.name, func(test *testing.T) {
+			_, preview := previewOf(test, textRead(c.before, c.after))
+			if len(decodeHunks(test, preview)) == 0 {
+				test.Fatal("want hunks for the edited line")
+			}
+			var meta map[string]any
+			if raw, has := preview["meta"]; has {
+				if err := json.Unmarshal(raw, &meta); err != nil {
+					test.Fatal(err)
+				}
+			}
+			if got := meta["line_endings_changed"] == true; got != c.want {
+				test.Fatalf("line_endings_changed = %v, want %v (meta %v)", got, c.want, meta)
+			}
+			if meta["whitespace_only"] == true {
+				test.Fatal("whitespace_only is for a change with no hunks")
+			}
+		})
+	}
+}
+
 func TestAgentInstructionsPreviewUsesTheTextDiffWithCodePointCounts(test *testing.T) {
 	test.Skip("CHE-4873 quarantine (CHE-4909): POST /api/decisions returns governed_blocks_changed")
 	const marks = "é \U0001F44D" // combining mark and emoji: 4 code points, 8 bytes
