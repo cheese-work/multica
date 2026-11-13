@@ -28,7 +28,7 @@ func recoveryScenario(t *testing.T) (fixture intentFixture, a, b, eventID string
 	a, b, intentID := twoTargetIntent(t, fixture)
 	dbfx.Exec(t, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, a)
 	endTaskAndSeal(t, fixture, intentID)
-	reconcile(t)
+	reconcileAskGuard(t)
 	dbfx.QueryRow(t, `SELECT id::text FROM ask_guard_event WHERE intent_id = $1`, intentID).Scan(&eventID)
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM ask_recovery_notice WHERE event_id = $1`, eventID)
