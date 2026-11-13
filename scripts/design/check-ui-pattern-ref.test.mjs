@@ -180,7 +180,7 @@ test("ignores raw elements outside packages/views", (t) => {
   assert.deepEqual(r.errors, []);
 });
 
-test("passes a raw element that stays within the file's baseline count", (t) => {
+test("fails an edited raw element: its changed lines count as a new element, a baseline count transfers nothing", (t) => {
   const baseline = "scripts/design/ui-raw-baseline.json";
   const reformatted = withButton().replace("<div>", "<div className=\"x\">");
   const r = run(
@@ -191,7 +191,7 @@ test("passes a raw element that stays within the file's baseline count", (t) => 
     },
     "pattern: selection-annotation",
   );
-  assert.deepEqual(r.errors, []);
+  assert.match(errors(r), /thing\.tsx:\d+ raw <button>/);
 });
 
 test("a shrunken baseline passes", (t) => {
@@ -233,4 +233,36 @@ test("fails a baseline that is deleted or invalid on the head", (t) => {
   const baseline = "scripts/design/ui-raw-baseline.json";
   const r = run(t, { base: { [baseline]: JSON.stringify({ [VIEW]: 1 }) }, head: { [baseline]: "not json" } });
   assert.match(errors(r), /ui-raw-baseline\.json may only shrink/);
+});
+
+test("fails a raw <button> that replaces a different raw <button> in the same file", (t) => {
+  const baseline = "scripts/design/ui-raw-baseline.json";
+  const twoButtons = (a, b) =>
+    `export const Thing = () => (\n  <div>\n    <button type="button">${a}</button>\n    <p>x</p>\n    <button type="button">${b}</button>\n  </div>\n);\n`;
+  const r = run(
+    t,
+    {
+      base: { [VIEW]: twoButtons("Cancel", "Delete"), [baseline]: JSON.stringify({ [VIEW]: 2 }) },
+      head: { [VIEW]: twoButtons("Cancel", "Send") },
+    },
+    "pattern: selection-annotation",
+  );
+  assert.match(errors(r), /thing\.tsx:5 raw <button>/);
+});
+
+test("passes an unchanged raw <button> that only moved lines", (t) => {
+  const r = run(
+    t,
+    { base: { [VIEW]: withButton() }, head: { [VIEW]: withButton("    <p>new text</p>\n") } },
+    "pattern: selection-annotation",
+  );
+  assert.deepEqual(r.errors, []);
+});
+
+test("fails a baseline that is valid JSON but not an object of counts", (t) => {
+  const baseline = "scripts/design/ui-raw-baseline.json";
+  for (const bad of ["false", "[]", JSON.stringify({ [VIEW]: "1" })]) {
+    const r = run(t, { base: { [baseline]: JSON.stringify({ [VIEW]: 1 }) }, head: { [baseline]: bad } });
+    assert.match(errors(r), /ui-raw-baseline\.json may only shrink/, `head baseline ${bad}`);
+  }
 });

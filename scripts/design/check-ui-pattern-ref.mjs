@@ -104,7 +104,7 @@ export function rawElements(source, fileName = "x.tsx") {
       const tag = node.tagName.getText(sf);
       if (Object.hasOwn(PRIMITIVES, tag)) {
         const pos = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
-        found.push({ tag, line: pos(node.getStart(sf)), endLine: pos(node.getEnd()) });
+        found.push({ tag, line: pos(node.getStart(sf)), endLine: pos(node.getEnd()), sig: (ts.isJsxOpeningElement(node) ? node.parent : node).getText(sf).replace(/\s+/g, " ") });
       }
     }
     ts.forEachChild(node, visit);
@@ -113,7 +113,8 @@ export function rawElements(source, fileName = "x.tsx") {
   return found;
 }
 
-const countByTag = (els) => els.reduce((n, e) => ({ ...n, [e.tag]: (n[e.tag] ?? 0) + 1 }), {});
+// An old element is matched once by its normalized JSX element text (tag, props, children). No per-tag count transfers to a different element.
+const countBySig = (els) => els.reduce((n, e) => n.set(e.sig, (n.get(e.sig) ?? 0) + 1), new Map());
 
 const allowReason = (lines, el) => {
   for (let n = Math.max(1, el.line - 1); n <= el.endLine; n++) {
@@ -123,9 +124,12 @@ const allowReason = (lines, el) => {
   return null;
 };
 
+// A baseline is a plain object of non-negative integer counts; anything else reads as null.
 const readJson = (text) => {
   try {
-    return text == null ? null : JSON.parse(text);
+    const v = text == null ? null : JSON.parse(text);
+    const ok = v && typeof v === "object" && !Array.isArray(v) && Object.values(v).every((n) => Number.isInteger(n) && n >= 0);
+    return ok ? v : null;
   } catch {
     return null;
   }
@@ -170,13 +174,19 @@ export function checkUiPatternRef({ cwd = process.cwd(), base, head = "HEAD", bo
     const source = show(cwd, head, f.path);
     if (source == null) continue;
     const els = rawElements(source, f.path);
-    // Per tag, the old file's raw elements are the allowance: a replaced <button> may not become a new <input>.
+    // An added-line element passes only when an unmatched old element has the same element text: a replaced <button> may not become a new <input> or a differently written <button>.
     const oldSource = f.status === "A" ? null : show(cwd, baseRef, f.oldPath);
-    const oldCount = countByTag(oldSource == null ? [] : rawElements(oldSource, f.oldPath));
-    const headCount = countByTag(els);
+    const unmatched = countBySig(oldSource == null ? [] : rawElements(oldSource, f.oldPath));
+    for (const e of els.filter((e) => !f.added.has(e.line))) unmatched.set(e.sig, (unmatched.get(e.sig) ?? 0) - 1);
     const srcLines = source.split("\n");
     const deviation = lines.find((l) => l.kind === "deviation" && l.reason.includes(f.path));
-    for (const el of els.filter((e) => f.added.has(e.line) && headCount[e.tag] > (oldCount[e.tag] ?? 0))) {
+    const fresh = els.filter((e) => {
+      if (!f.added.has(e.line)) return false;
+      const left = unmatched.get(e.sig) ?? 0;
+      if (left > 0) unmatched.set(e.sig, left - 1);
+      return left <= 0;
+    });
+    for (const el of fresh) {
       const where = `${f.path}:${el.line}`;
       const reason = allowReason(srcLines, el);
       if (reason) allowed.push(`${where} <${el.tag}> allowed inline: ${reason}`);
