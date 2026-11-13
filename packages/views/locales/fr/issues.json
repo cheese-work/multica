@@ -452,6 +452,10 @@
     "load_more": "Charger plus",
     "no_lane": "Aucune valeur"
   },
+  "gantt2": {
+    "clipped_start": "Commencé avant cette fenêtre",
+    "now": "Maintenant"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
