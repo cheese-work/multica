@@ -94,8 +94,8 @@ func BackgroundAgentReachable(ctx context.Context, q *db.Queries, job bgagents.J
 }
 
 // failOverBackgroundTask is the failure rule for a background task whose run
-// failed and will not be retried. A provider failure on the primary slot runs
-// the fallback once, if it is still reachable. Any other outcome ends the
+// failed and will not be retried. A provider failure or a missed claim or run
+// deadline on the primary slot runs the fallback once, if it is still reachable. Any other outcome ends the
 // chain: a fallback failure, a non-provider failure, or no reachable fallback.
 // The chain then runs the job's no-agent path. Best effort, like routing.
 func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.AgentTaskQueue, failureReason string) {
@@ -108,6 +108,7 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 	if s.shouldFailOver(ctx, job, workspaceID, slot, c.FallbackAgentID, failureReason) {
 		next := BackgroundTaskInput{
 			Job: job, WorkspaceID: workspaceID, Source: bgagents.Source(c.ChainSource), Input: c.Input,
+			SourceChatSessionID: failed.SourceChatSessionID,
 			Resolve: fixedBackgroundTarget(BackgroundTarget{
 				AgentID: util.MustParseUUID(c.FallbackAgentID), Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback,
 			}),
@@ -125,10 +126,10 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 }
 
 // shouldFailOver is the one failover decision every job shares, routing included
-// (CHE-4117): only a provider failure of the primary's run, with a fallback that
+// (CHE-4117): only a provider failure or missed deadline of the primary's run, with a fallback that
 // is reachable now. An unreachable fallback is logged and ends the chain.
 func (s *TaskService) shouldFailOver(ctx context.Context, job bgagents.Job, workspaceID pgtype.UUID, slot bgagents.SlotName, fallbackAgentID, failureReason string) bool {
-	if !providerFailureReasons[failureReason] || slot != bgagents.Primary || fallbackAgentID == "" {
+	if !(providerFailureReasons[failureReason] || backgroundDeadlineReasons[failureReason]) || slot != bgagents.Primary || fallbackAgentID == "" {
 		return false
 	}
 	if !s.backgroundAgentReachable(ctx, job, workspaceID, fallbackAgentID) {

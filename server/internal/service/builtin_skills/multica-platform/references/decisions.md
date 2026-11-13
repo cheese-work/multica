@@ -12,6 +12,7 @@ multica decision ask --class <class> --ask-file ./ask.json          # same comma
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
+multica decision revoke <request-id> --why "paused the wrong agent"   # the person only; applied + inverse registered (agent.pause)
 multica decision feed --output json   # sweep PAT with the decisions:feed scope only
 multica decision feed ack <answer-id> --version <n>
 multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible

@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -148,8 +150,7 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 }
 
 // TopUpIssueRunBudget opens a new run-budget window on the issue without a
-// status move (CHE-2297 L2d): the window credit is the cap in force, and the
-// token allowance follows once token accounting is active. Members only, for
+// status move (CHE-2297 L2d): the window credit is the cap in force. Members only, for
 // the same reason as a raise: an agent cannot pay for its own runs. The
 // activity row is the window's start, so it commits with the credit.
 func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
@@ -316,36 +317,56 @@ func boundarySlotsOf(starter txStarter) chan struct{} {
 // caller takes a second boundary lock while it holds one, so a slot never
 // waits on its own holder.
 func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (leave func(), err error) {
+	return h.enterRunBudgetBoundaries(ctx, issueID)
+}
+
+// enterRunBudgetBoundaries is one boundary entry for several issues: it takes
+// every issue's turn, in id order so two batches never wait on each other, then
+// one slot. A batch of top-ups holds one slot, not one per issue.
+func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgtype.UUID) (leave func(), err error) {
+	issueIDs = slices.Clone(issueIDs)
+	slices.SortFunc(issueIDs, func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) })
+	issueIDs = slices.Compact(issueIDs)
+
 	boundaryQueue.Lock()
-	turn := boundaryQueue.turns[issueID]
-	if turn == nil {
-		turn = &boundaryTurn{held: make(chan struct{}, 1)}
-		boundaryQueue.turns[issueID] = turn
+	turns := make([]*boundaryTurn, len(issueIDs))
+	for index, issueID := range issueIDs {
+		turn := boundaryQueue.turns[issueID]
+		if turn == nil {
+			turn = &boundaryTurn{held: make(chan struct{}, 1)}
+			boundaryQueue.turns[issueID] = turn
+		}
+		turn.waiting++
+		turns[index] = turn
 	}
-	turn.waiting++
 	boundaryQueue.Unlock()
 
 	slots := boundarySlotsOf(h.TxStarter)
-	var gotTurn, gotSlot bool
+	held := 0 // turns taken, in order
+	var gotSlot bool
 	leave = sync.OnceFunc(func() {
 		if gotSlot {
 			<-slots
 		}
-		if gotTurn {
+		for _, turn := range turns[:held] {
 			<-turn.held
 		}
 		boundaryQueue.Lock()
-		if turn.waiting--; turn.waiting == 0 {
-			delete(boundaryQueue.turns, issueID)
+		for index, turn := range turns {
+			if turn.waiting--; turn.waiting == 0 {
+				delete(boundaryQueue.turns, issueIDs[index])
+			}
 		}
 		boundaryQueue.Unlock()
 	})
-	select {
-	case turn.held <- struct{}{}:
-		gotTurn = true
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
+	for _, turn := range turns {
+		select {
+		case turn.held <- struct{}{}:
+			held++
+		case <-ctx.Done():
+			leave()
+			return nil, ctx.Err()
+		}
 	}
 	select {
 	case slots <- struct{}{}:
@@ -428,11 +449,10 @@ func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, act
 }
 
 // openRunBudgetWindowForMove opens the run-budget window a person's status move
-// started, so its token allowance is claimed when the move is recorded rather
-// than at the next admission or report. It runs after the event is published:
-// the activity listener has written the move by then, and the window begins at
-// that row. A failure is logged; the next admission or report claims the same
-// allowance.
+// started, when the move is recorded rather than at the next admission. It runs
+// after the event is published: the activity listener has written the move by
+// then, and the window begins at that row. A failure is logged; the next
+// admission opens the same window.
 func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
 	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
 		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)

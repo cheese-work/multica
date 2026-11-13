@@ -581,12 +581,7 @@ func (h *Handler) refuseResume(ctx context.Context, row db.RunBudgetRefusal, cau
 		h.failResume(ctx, row, "superseded", "restore_refused")
 		return
 	}
-	kind, err := service.RunBudgetRefusalKind(ctx, h.Queries, row.IssueID)
-	if err != nil {
-		slog.Warn("run budget: read refusal kind failed", "err", err, "refusal_id", uuidToString(row.ID))
-		return
-	}
-	h.failResume(ctx, row, "still_blocked", kind)
+	h.failResume(ctx, row, "still_blocked", "runs")
 }
 
 // failResume records the outcome of the approval the worker resumed. A newer

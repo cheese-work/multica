@@ -34,7 +34,12 @@ const (
 	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
 	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
 	// target, receipts or settings.
-	SystemRuleWorkflowEdges  = "workflow_edges"
+	SystemRuleWorkflowEdges = "workflow_edges"
+	// SystemRulePRMergeOwed is the write-ahead intent that an issue's PR merge
+	// still owes a completion decision (CHE-5243). Unlike a rule that wakes an
+	// agent it has no target or receipts; TaskService.PRMergeOwed settles it,
+	// fenced by the row's (id, revision).
+	SystemRulePRMergeOwed    = "pr_merge_owed"
 	SystemRuleChildDone      = "child_done"
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"
@@ -690,6 +695,15 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	if !active {
 		return finish()
 	}
+	// A sub-issue reaching a terminal state can complete its parent through the
+	// PR-merge path. The intent commits with the claim: if it fails, the claim
+	// rolls back and the event stays unclaimed for the next pass (CHE-5244).
+	owePRMerge := kinds["closed"] && s.Tasks.PRMergeOwe != nil
+	if owePRMerge {
+		if err := s.Tasks.PRMergeOwe(ctx, q, parent.WorkspaceID, parent.ID); err != nil {
+			return err
+		}
+	}
 	ensured, err := EnsureChildDoneRule(ctx, tx, q, parent)
 	if err != nil {
 		return err
@@ -722,6 +736,13 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	}
 	if err := finish(); err != nil {
 		return err
+	}
+	if owePRMerge && s.Tasks.PRMergeOwed != nil {
+		// The inline attempt runs under the row's (id, revision) fence; a
+		// failure leaves the row for the scheduler.
+		if err := s.Tasks.PRMergeOwed(ctx, db.IssueWakeup{WorkspaceID: parent.WorkspaceID, IssueID: parent.ID}); err != nil {
+			slog.Warn("sub-issue wakeups: pr merge attempt failed; scheduler will retry", "error", err, "parent_id", util.UUIDToString(parent.ID))
+		}
 	}
 	for _, task := range withdrawn {
 		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)

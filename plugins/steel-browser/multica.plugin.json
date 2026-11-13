@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "key": "work.cheese.steel-browser",
+  "name": "Steel Browser",
+  "description": "Identity of the Steel browser gateway. The gateway authenticates to Multica with this plugin's install token and pulls lease state from the internal listener. Multica never calls out to the gateway, and an agent never holds a Steel credential.",
+  "version": "0.1.0",
+  "author": { "name": "Cheese Work" },
+  "scopes": ["tasks:read"],
+  "contributes": {
+    "resources": [
+      { "type": "skill", "key": "steel-browser", "entry": "skills/steel-browser/SKILL.md" }
+    ]
+  }
+}

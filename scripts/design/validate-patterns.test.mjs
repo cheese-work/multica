@@ -148,3 +148,39 @@ test("CLI output adds no line the CI warning budget counts as a warning", () => 
   assert.deepEqual(lines, []);
   assert.match(run.stdout, /pending/);
 });
+
+test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const pilots = ["icon-button-action", "property-picker", "issue-mention-chip"];
+  for (const id of pilots) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("batch F2 patterns link a frame on the Patterns page (CHE-5527)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["lazy-detail", "decision-receipt-card", "collapsible-section", "settings-select-row", "pill-menu"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("batch F5 patterns link their captured frames on the Patterns page (CHE-5530)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const frames = {
+    "integration-card-grid": "DuqxVys-Eo",
+    "settings-table-section": "zwtKWV4hl7",
+    "settings-action-row": "sG7c6FoEh5",
+    "create-shell": "LqGJiAq4L4",
+    "confirm-dialog": "Ii5sqw8rC5",
+  };
+  for (const [id, frameId] of Object.entries(frames)) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.equal(frame?.url, `https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=${frameId}`, `${id} frame.url`);
+  }
+});

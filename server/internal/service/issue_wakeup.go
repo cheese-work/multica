@@ -972,8 +972,11 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
-	if w.SystemRule.String == SystemRuleWorkflowEdges {
+	switch w.SystemRule.String {
+	case SystemRuleWorkflowEdges:
 		dispatch = s.dispatchWorkflowEdges
+	case SystemRulePRMergeOwed:
+		dispatch = s.dispatchPRMergeOwed
 	}
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
@@ -982,13 +985,17 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 		if !errors.Is(err, errAggregateCounterBusy) {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		}
-		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		reason := err.Error()
-		if IsProjectInactive(err) {
-			reason = ErrProjectInactive.Error()
+		// A pr_merge_owed attempt records its own failure, fenced by the row's
+		// (id, revision); an id-only note here could write a newer generation.
+		if w.SystemRule.String != SystemRulePRMergeOwed {
+			outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+			reason := err.Error()
+			if IsProjectInactive(err) {
+				reason = ErrProjectInactive.Error()
+			}
+			_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
+			cancel()
 		}
-		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
-		cancel()
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
 	// monopolize the batches. Only scan order depends on this write: dispatch
@@ -2134,6 +2141,16 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 	return s.Tasks.WorkflowEdges(ctx, w)
 }
 
+// dispatchPRMergeOwed hands a due pr_merge_owed row to the handler's evaluator.
+// It starts no run itself: a completion goes through the same status write a
+// person makes.
+func (s *IssueWakeupService) dispatchPRMergeOwed(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.PRMergeOwed == nil {
+		return nil
+	}
+	return s.Tasks.PRMergeOwed(ctx, w)
+}
+
 // waiverFollowupRecorded reports whether this waiver's own result comment exists.
 // The marker carries the decision instance, so another waiver's result on the
 // same issue does not end this check. Only a run this wakeup dispatched can
@@ -2165,6 +2182,8 @@ func (s *IssueWakeupService) DispatchRule(ctx context.Context, workspaceID, id p
 	switch {
 	case w.SystemRule.String == SystemRuleWorkflowEdges:
 		return s.dispatchWorkflowEdges(ctx, w)
+	case w.SystemRule.String == SystemRulePRMergeOwed:
+		return s.dispatchPRMergeOwed(ctx, w)
 	case w.SystemRule.Valid:
 		return s.dispatchSystem(ctx, w)
 	}
