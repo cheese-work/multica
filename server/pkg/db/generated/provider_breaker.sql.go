@@ -50,12 +50,77 @@ func (q *Queries) AcquireProviderBreakerCanary(ctx context.Context, arg AcquireP
 	return result.RowsAffected(), nil
 }
 
+const beginProviderBreakerProbe = `-- name: BeginProviderBreakerProbe :execrows
+UPDATE provider_breaker
+SET state = 'half_open', canary_task_id = $1, opened_at = COALESCE(opened_at, now()),
+    next_probe_at = now(), version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+  AND state IN ('open', 'half_open') AND version = $4
+`
+
+type BeginProviderBreakerProbeParams struct {
+	TaskID          pgtype.UUID `json:"task_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	Provider        string      `json:"provider"`
+	ExpectedVersion int64       `json:"expected_version"`
+}
+
+// open (or a half_open whose canary ended without a verdict) -> half_open bound
+// to the released row. next_probe_at = now() keeps the claim gate open for it.
+func (q *Queries) BeginProviderBreakerProbe(ctx context.Context, arg BeginProviderBreakerProbeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, beginProviderBreakerProbe,
+		arg.TaskID,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const closeDrainedProviderBreaker = `-- name: CloseDrainedProviderBreaker :execrows
+UPDATE provider_breaker
+SET state = 'closed', drain_cutoff_at = NULL, canary_task_id = NULL, next_canary_at = NULL,
+    canary_cool_off_s = $1, version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+  AND state = 'draining' AND version = $4
+`
+
+type CloseDrainedProviderBreakerParams struct {
+	DefaultCoolOffSeconds int32       `json:"default_cool_off_seconds"`
+	WorkspaceID           pgtype.UUID `json:"workspace_id"`
+	Provider              string      `json:"provider"`
+	ExpectedVersion       int64       `json:"expected_version"`
+}
+
+func (q *Queries) CloseDrainedProviderBreaker(ctx context.Context, arg CloseDrainedProviderBreakerParams) (int64, error) {
+	result, err := q.db.Exec(ctx, closeDrainedProviderBreaker,
+		arg.DefaultCoolOffSeconds,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const closeProviderBreakerOnCanary = `-- name: CloseProviderBreakerOnCanary :execrows
 UPDATE provider_breaker
-SET state = 'closed', canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
-    cool_off_s = $1, last_success_at = now(), version = version + 1
-WHERE workspace_id = $2 AND provider = $3
-  AND state = 'half_open' AND canary_task_id = $4 AND version = $5
+SET state = CASE WHEN EXISTS (
+        SELECT 1 FROM agent_task_queue h JOIN agent a ON a.id = h.agent_id
+        WHERE a.workspace_id = provider_breaker.workspace_id AND h.status = 'deferred'
+          AND h.context->'provider_hold'->>'provider' = provider_breaker.provider
+    ) THEN 'draining' ELSE 'closed' END,
+    drain_cutoff_at = now(), canary_task_id = NULL, opened_at = NULL, next_probe_at = NULL,
+    cool_off_s = $1, canary_cool_off_s = $1,
+    next_canary_at = NULL, last_success_at = now(), version = version + 1
+WHERE provider_breaker.workspace_id = $2 AND provider_breaker.provider = $3
+  AND provider_breaker.state = 'half_open' AND provider_breaker.canary_task_id = $4
+  AND provider_breaker.version = $5
 `
 
 type CloseProviderBreakerOnCanaryParams struct {
@@ -66,6 +131,9 @@ type CloseProviderBreakerOnCanaryParams struct {
 	ExpectedVersion       int64       `json:"expected_version"`
 }
 
+// A canary success closes the breaker, or starts the drain (CHE-1741 R3) when
+// provider-held rows are waiting: draining releases that backlog staggered and
+// keeps later arrivals held until it is empty.
 func (q *Queries) CloseProviderBreakerOnCanary(ctx context.Context, arg CloseProviderBreakerOnCanaryParams) (int64, error) {
 	result, err := q.db.Exec(ctx, closeProviderBreakerOnCanary,
 		arg.DefaultCoolOffSeconds,
@@ -81,7 +149,7 @@ func (q *Queries) CloseProviderBreakerOnCanary(ctx context.Context, arg ClosePro
 }
 
 const getProviderBreaker = `-- name: GetProviderBreaker :one
-SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, pb.cool_off_s, pb.canary_task_id, pb.trip_evidence, pb.last_5xx_at, pb.last_success_at, pb.version, (
+SELECT pb.workspace_id, pb.provider, pb.state, pb.opened_at, pb.next_probe_at, pb.cool_off_s, pb.canary_task_id, pb.trip_evidence, pb.last_5xx_at, pb.last_success_at, pb.version, pb.canary_cool_off_s, pb.next_canary_at, pb.canary_starts, pb.last_release_at, pb.drain_cutoff_at, (
     (pb.next_probe_at IS NULL OR pb.next_probe_at <= now())
     AND NOT EXISTS (
         SELECT 1 FROM agent_task_queue t
@@ -96,18 +164,23 @@ type GetProviderBreakerParams struct {
 }
 
 type GetProviderBreakerRow struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	Provider      string             `json:"provider"`
-	State         string             `json:"state"`
-	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
-	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
-	CoolOffS      int32              `json:"cool_off_s"`
-	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
-	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
-	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
-	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
-	Version       int64              `json:"version"`
-	ProbeDue      bool               `json:"probe_due"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	Provider       string               `json:"provider"`
+	State          string               `json:"state"`
+	OpenedAt       pgtype.Timestamptz   `json:"opened_at"`
+	NextProbeAt    pgtype.Timestamptz   `json:"next_probe_at"`
+	CoolOffS       int32                `json:"cool_off_s"`
+	CanaryTaskID   pgtype.UUID          `json:"canary_task_id"`
+	TripEvidence   []pgtype.UUID        `json:"trip_evidence"`
+	Last5xxAt      pgtype.Timestamptz   `json:"last_5xx_at"`
+	LastSuccessAt  pgtype.Timestamptz   `json:"last_success_at"`
+	Version        int64                `json:"version"`
+	CanaryCoolOffS int32                `json:"canary_cool_off_s"`
+	NextCanaryAt   pgtype.Timestamptz   `json:"next_canary_at"`
+	CanaryStarts   []pgtype.Timestamptz `json:"canary_starts"`
+	LastReleaseAt  pgtype.Timestamptz   `json:"last_release_at"`
+	DrainCutoffAt  pgtype.Timestamptz   `json:"drain_cutoff_at"`
+	ProbeDue       bool                 `json:"probe_due"`
 }
 
 // probe_due uses the database clock: NULL next_probe_at counts as due so an
@@ -132,6 +205,11 @@ func (q *Queries) GetProviderBreaker(ctx context.Context, arg GetProviderBreaker
 		&i.Last5xxAt,
 		&i.LastSuccessAt,
 		&i.Version,
+		&i.CanaryCoolOffS,
+		&i.NextCanaryAt,
+		&i.CanaryStarts,
+		&i.LastReleaseAt,
+		&i.DrainCutoffAt,
 		&i.ProbeDue,
 	)
 	return i, err
@@ -166,7 +244,7 @@ func (q *Queries) InsertProviderBreakerAudit(ctx context.Context, arg InsertProv
 }
 
 const listProviderBreakers = `-- name: ListProviderBreakers :many
-SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version FROM provider_breaker WHERE workspace_id = $1 ORDER BY provider
+SELECT workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, canary_task_id, trip_evidence, last_5xx_at, last_success_at, version, canary_cool_off_s, next_canary_at, canary_starts, last_release_at, drain_cutoff_at FROM provider_breaker WHERE workspace_id = $1 ORDER BY provider
 `
 
 func (q *Queries) ListProviderBreakers(ctx context.Context, workspaceID pgtype.UUID) ([]ProviderBreaker, error) {
@@ -190,6 +268,106 @@ func (q *Queries) ListProviderBreakers(ctx context.Context, workspaceID pgtype.U
 			&i.Last5xxAt,
 			&i.LastSuccessAt,
 			&i.Version,
+			&i.CanaryCoolOffS,
+			&i.NextCanaryAt,
+			&i.CanaryStarts,
+			&i.LastReleaseAt,
+			&i.DrainCutoffAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProviderHeldGroups = `-- name: ListProviderHeldGroups :many
+SELECT a.workspace_id, (t.context->'provider_hold'->>'provider')::text AS provider
+FROM agent_task_queue t JOIN agent a ON a.id = t.agent_id
+WHERE t.status = 'deferred' AND t.issue_id IS NOT NULL AND t.context ? 'provider_hold'
+UNION
+SELECT workspace_id, provider FROM provider_breaker WHERE state = 'draining'
+`
+
+type ListProviderHeldGroupsRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Provider    string      `json:"provider"`
+}
+
+// Groups with held rows, plus draining breakers: a drain with no rows left must
+// still be visited so it can close.
+func (q *Queries) ListProviderHeldGroups(ctx context.Context) ([]ListProviderHeldGroupsRow, error) {
+	rows, err := q.db.Query(ctx, listProviderHeldGroups)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProviderHeldGroupsRow{}
+	for rows.Next() {
+		var i ListProviderHeldGroupsRow
+		if err := rows.Scan(&i.WorkspaceID, &i.Provider); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProviderHeldRows = `-- name: ListProviderHeldRows :many
+SELECT t.id, (t.context->'provider_hold'->>'since')::timestamptz AS since,
+       p.completed_at AS failed_at,
+       EXISTS (SELECT 1 FROM provider_failure_recovery r WHERE r.recovery_task_id = t.id)::bool AS is_recovery
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+LEFT JOIN agent_task_queue p ON p.id = t.retry_of_task_id
+WHERE a.workspace_id = $1 AND t.status = 'deferred' AND t.issue_id IS NOT NULL
+  AND t.context->'provider_hold'->>'provider' = $2::text
+  AND (t.context->'provider_hold'->>'max_hold_until')::timestamptz > $3::timestamptz
+ORDER BY (t.context->'provider_hold'->>'since')::timestamptz, t.id
+LIMIT $4::int
+`
+
+type ListProviderHeldRowsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Provider    string             `json:"provider"`
+	Now         pgtype.Timestamptz `json:"now"`
+	MaxRows     int32              `json:"max_rows"`
+}
+
+type ListProviderHeldRowsRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	Since      pgtype.Timestamptz `json:"since"`
+	FailedAt   pgtype.Timestamptz `json:"failed_at"`
+	IsRecovery bool               `json:"is_recovery"`
+}
+
+// Oldest first. failed_at is the completion of the task this row retries; NULL
+// when there is none. Rows past their hold deadline are the expiry sweeper's.
+func (q *Queries) ListProviderHeldRows(ctx context.Context, arg ListProviderHeldRowsParams) ([]ListProviderHeldRowsRow, error) {
+	rows, err := q.db.Query(ctx, listProviderHeldRows,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.Now,
+		arg.MaxRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProviderHeldRowsRow{}
+	for rows.Next() {
+		var i ListProviderHeldRowsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Since,
+			&i.FailedAt,
+			&i.IsRecovery,
 		); err != nil {
 			return nil, err
 		}
@@ -252,6 +430,33 @@ func (q *Queries) LockProviderBreakerTrip(ctx context.Context, lockKey string) e
 	return err
 }
 
+const markProviderReleaseTick = `-- name: MarkProviderReleaseTick :execrows
+UPDATE provider_breaker SET last_release_at = $1::timestamptz, version = version + 1
+WHERE workspace_id = $2 AND provider = $3
+  AND state = 'draining' AND version = $4
+`
+
+type MarkProviderReleaseTickParams struct {
+	Now             pgtype.Timestamptz `json:"now"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Provider        string             `json:"provider"`
+	ExpectedVersion int64              `json:"expected_version"`
+}
+
+// Draining: records the stagger clock only.
+func (q *Queries) MarkProviderReleaseTick(ctx context.Context, arg MarkProviderReleaseTickParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markProviderReleaseTick,
+		arg.Now,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.ExpectedVersion,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const openProviderBreaker = `-- name: OpenProviderBreaker :execrows
 INSERT INTO provider_breaker (workspace_id, provider, state, opened_at, next_probe_at, cool_off_s, trip_evidence, last_5xx_at)
 VALUES ($1, $2, 'open', now(), now() + make_interval(secs => $3::int), $3, $4, now())
@@ -308,6 +513,142 @@ func (q *Queries) RecordProviderSuccess(ctx context.Context, arg RecordProviderS
 	return result.RowsAffected(), nil
 }
 
+const releaseProviderHeldRow = `-- name: ReleaseProviderHeldRow :one
+WITH target AS MATERIALIZED (
+    SELECT t.id, (t.context->>'wakeup_id' IS NULL OR (
+        EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id = (t.context->>'wakeup_id')::uuid
+                AND w.disabled_at IS NULL AND w.revision = (t.context->>'wakeup_revision')::bigint)
+        AND NOT EXISTS (SELECT 1 FROM workspace ws WHERE ws.id = $2 AND ws.scheduling_paused_at IS NOT NULL)
+    )) AS live
+    FROM agent_task_queue t JOIN agent a ON a.id = t.agent_id
+    WHERE t.id = $3 AND a.workspace_id = $2 AND t.issue_id IS NOT NULL
+      AND t.status = 'deferred' AND t.context ? 'provider_hold'
+      AND t.context->'provider_hold'->>'provider' = $4::text
+      AND (t.context->'provider_hold'->>'max_hold_until')::timestamptz > $1::timestamptz
+    FOR UPDATE OF t SKIP LOCKED
+)
+UPDATE agent_task_queue t
+SET context = t.context - 'provider_hold',
+    status = CASE WHEN target.live THEN t.status ELSE 'cancelled' END,
+    failure_reason = CASE WHEN target.live THEN t.failure_reason ELSE 'wakeup_superseded' END,
+    completed_at = CASE WHEN target.live THEN t.completed_at ELSE $1::timestamptz END,
+    fire_at = CASE WHEN target.live AND COALESCE(t.context->>'channel_issue_media_pending', '') <> 'true'
+                   THEN COALESCE(t.fire_at, $1::timestamptz) ELSE t.fire_at END
+FROM target
+WHERE t.id = target.id
+RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason
+`
+
+type ReleaseProviderHeldRowParams struct {
+	Now         pgtype.Timestamptz `json:"now"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	Provider    string             `json:"provider"`
+}
+
+// Removes the hold, or cancels the row as wakeup_superseded when it is bound to
+// a wakeup that is now disabled or at another revision, or the workspace is
+// paused. A locked or no longer held row returns no rows.
+func (q *Queries) ReleaseProviderHeldRow(ctx context.Context, arg ReleaseProviderHeldRowParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, releaseProviderHeldRow,
+		arg.Now,
+		arg.WorkspaceID,
+		arg.TaskID,
+		arg.Provider,
+	)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.ContextTokens,
+		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
+		&i.ChatCompactionEpoch,
+		&i.PresetName,
+		&i.PresetSource,
+		&i.PresetSkips,
+		&i.ClaimedThinkingLevel,
+		&i.ClaimedServiceTier,
+		&i.ClaimedContextArgs,
+		&i.CancelAckedAt,
+		&i.StopUnconfirmedAt,
+		&i.PullRequestID,
+		&i.ReplacementReleasedAt,
+		&i.StopHoldIssueWide,
+		&i.TaintIds,
+		&i.AppliedModel,
+		&i.AppliedThinkingLevel,
+		&i.AppliedServiceTier,
+		&i.AppliedContextArgs,
+		&i.AppliedReportedAt,
+		&i.ExternalRead,
+		&i.Purpose,
+		&i.CancelAckReason,
+	)
+	return i, err
+}
+
 const reopenProviderBreaker = `-- name: ReopenProviderBreaker :execrows
 UPDATE provider_breaker
 SET state = 'open', canary_task_id = NULL, opened_at = now(),
@@ -355,6 +696,45 @@ type ResetProviderBreakerParams struct {
 
 func (q *Queries) ResetProviderBreaker(ctx context.Context, arg ResetProviderBreakerParams) (int64, error) {
 	result, err := q.db.Exec(ctx, resetProviderBreaker, arg.DefaultCoolOffSeconds, arg.WorkspaceID, arg.Provider)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const saveProviderReleaseState = `-- name: SaveProviderReleaseState :execrows
+UPDATE provider_breaker
+SET canary_task_id = $1, canary_cool_off_s = $2,
+    next_canary_at = $3, canary_starts = $4::timestamptz[],
+    last_release_at = $5, version = version + 1
+WHERE workspace_id = $6 AND provider = $7
+  AND state = 'closed' AND version = $8
+`
+
+type SaveProviderReleaseStateParams struct {
+	CanaryTaskID    pgtype.UUID          `json:"canary_task_id"`
+	CanaryCoolOffS  int32                `json:"canary_cool_off_s"`
+	NextCanaryAt    pgtype.Timestamptz   `json:"next_canary_at"`
+	CanaryStarts    []pgtype.Timestamptz `json:"canary_starts"`
+	LastReleaseAt   pgtype.Timestamptz   `json:"last_release_at"`
+	WorkspaceID     pgtype.UUID          `json:"workspace_id"`
+	Provider        string               `json:"provider"`
+	ExpectedVersion int64                `json:"expected_version"`
+}
+
+// Controller bookkeeping on a closed breaker: the canary slot, its cool-off and
+// start log (R2) and the stagger clock (R1).
+func (q *Queries) SaveProviderReleaseState(ctx context.Context, arg SaveProviderReleaseStateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, saveProviderReleaseState,
+		arg.CanaryTaskID,
+		arg.CanaryCoolOffS,
+		arg.NextCanaryAt,
+		arg.CanaryStarts,
+		arg.LastReleaseAt,
+		arg.WorkspaceID,
+		arg.Provider,
+		arg.ExpectedVersion,
+	)
 	if err != nil {
 		return 0, err
 	}

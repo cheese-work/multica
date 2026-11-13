@@ -221,7 +221,7 @@ func TestReleaseControllerCanaryFailureDoublesCoolOff(t *testing.T) {
 	// Each step: release at `at`, the canary fails 30 s later, the controller
 	// notices 1 s after that. Nothing may start before `quiet`; one starts by `due`.
 	steps := []struct{ at, quiet, due time.Duration }{
-		{0, 9 * time.Minute, 12 * time.Minute},                // 5 -> 10 min
+		{0, 9 * time.Minute, 12 * time.Minute},                 // 5 -> 10 min
 		{12 * time.Minute, 31 * time.Minute, 34 * time.Minute}, // 10 -> 20 min
 		{34 * time.Minute, 63 * time.Minute, 66 * time.Minute}, // 20 -> 30 min
 		{66 * time.Minute, 95 * time.Minute, 98 * time.Minute}, // capped at 30, not 40
