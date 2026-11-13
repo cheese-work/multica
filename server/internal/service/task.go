@@ -9416,6 +9416,12 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 	s.Wakeup.NotifyTaskAvailable(runtimeKey, taskID)
 }
 
+// backgroundDispatchKeys are the task-context keys safe to fan out workspace-wide.
+var backgroundDispatchKeys = []string{
+	"type", "job", "workspace_id", "chain_source", "member_id", "slot",
+	"fallback_agent_id", "claim_deadline_seconds", "run_deadline_seconds",
+}
+
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
 	var payload map[string]any
 	if task.Context != nil {
@@ -9424,10 +9430,17 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	// This event fans out to the whole workspace. A background task's input is
-	// the DM owner's text, so only the workload metadata goes out.
+	// This event fans out to the whole workspace. A background task's input and
+	// guard carry the DM owner's text, so only an allowlist of workload
+	// metadata goes out.
 	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
-		delete(payload, "input")
+		safe := map[string]any{}
+		for _, k := range backgroundDispatchKeys {
+			if v, ok := payload[k]; ok {
+				safe[k] = v
+			}
+		}
+		payload = safe
 	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
