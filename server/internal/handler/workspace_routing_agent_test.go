@@ -155,7 +155,7 @@ func TestRoutingAgentTakesTheHandoffOfARoutingStep(t *testing.T) {
 	runtime := dbfx.Runtime(t, "ra-handoff", testutil.Cols{"workspace_id": testWorkspaceID})
 	routing := dbfx.Agent(t, "ra-handoff-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
 	t.Cleanup(func() {
-		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' WHERE id=$1`, testWorkspaceID)
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})
 	projectID := createWorkflowTestProject(t, "Routing handoff project")
 	for _, status := range []string{"todo", "in_progress"} {
@@ -184,7 +184,7 @@ func TestRoutingAgentOverrideIsPerWorkflowStep(t *testing.T) {
 	primary := dbfx.Agent(t, "ra-scoped-primary", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
 	scoped := dbfx.Agent(t, "ra-scoped-scoped", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
 	t.Cleanup(func() {
-		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' WHERE id=$1`, testWorkspaceID)
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})
 	projectID := createWorkflowTestProject(t, "Routing scoped project")
 	setColumnHandoff(t, projectID, "todo", handToAgent(stepAgent, "Do it.")).Want(http.StatusOK)
@@ -235,7 +235,7 @@ func TestRoutingFailoverGivesTheFallbackTheStepBrief(t *testing.T) {
 	routing := dbfx.Agent(t, "ra-failover-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
 	fallback := dbfx.Agent(t, "ra-failover-fallback", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
 	t.Cleanup(func() {
-		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' WHERE id=$1`, testWorkspaceID)
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})
 	projectID := createWorkflowTestProject(t, "Routing failover project")
 	setColumnHandoff(t, projectID, "todo", handToAgent(seededReadyAgentID(t), "Route it.")).Want(http.StatusOK)

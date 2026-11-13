@@ -804,6 +804,14 @@ func main() {
 		slog.Error("invalid GitHub allowlist", "error", err)
 		os.Exit(1)
 	}
+	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
+	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
+	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
+		slog.Error("routing agent setting copy failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
+	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
 	h.PRRefresh.Start(sweepCtx)
