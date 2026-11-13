@@ -158,6 +158,11 @@ func workflowStepsAfter(ctx context.Context, queries *db.Queries, workflow db.Is
 	if err := issueworkflow.Validate(name, description, steps, workflow.IsDefault, catalog); err != nil {
 		return nil, invalidWorkflowSteps("invalid_workflow", err.Error())
 	}
+	if message, err := workflowSteps.refuseNewPRMergedEdge(ctx, queries, workflow.WorkspaceID, live, steps); err != nil {
+		return nil, err
+	} else if message != "" {
+		return nil, invalidWorkflowSteps("invalid_workflow", message)
+	}
 	kept := make([]string, len(steps))
 	for i, step := range steps {
 		kept[i] = step.StatusKey
