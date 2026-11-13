@@ -46,14 +46,18 @@ type LabelSetter interface {
 	Set(ctx context.Context, run Run, label string) error
 }
 
+// FlakeCounter returns the 7-day flake counter for a signature of run's repo.
+type FlakeCounter func(ctx context.Context, run Run, signature string) (int, error)
+
 // Observer writes system1_observation rows (kind=ci_event, decision_source=rule).
 // The write is idempotent (unique index on the run's subject id), so call it on
 // every delivery: a retry after a failed write records the row, a redelivery adds none.
 type Observer struct {
 	W          ObservationWriter
-	Labels     LabelSetter // nil = a P0 result's Label is not applied
-	Jev        Jev         // nil = off
-	JevEnabled bool        // the jev_enabled switch
+	Labels     LabelSetter  // nil = a P0 result's Label is not applied
+	Flake      FlakeCounter // nil = History.FlakeCount7d is used as given
+	Jev        Jev          // nil = off
+	JevEnabled bool         // the jev_enabled switch
 	Log        *slog.Logger
 }
 
@@ -76,8 +80,19 @@ func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) e
 	if err != nil || p == nil {
 		return err
 	}
-	_, err = o.W.CreateSystem1CIObservation(ctx, *p)
-	return err
+	if _, err = o.W.CreateSystem1CIObservation(ctx, *p); err != nil {
+		return err
+	}
+	return o.applyLabel(ctx, run, res)
+}
+
+// applyLabel sets the outcome label a P0 result carries (self_healed). Set is
+// idempotent, so a redelivery is safe.
+func (o Observer) applyLabel(ctx context.Context, run Run, res Result) error {
+	if res.Kind == KindP0 && res.Label != "" && o.Labels != nil {
+		return o.Labels.Set(ctx, run, res.Label)
+	}
+	return nil
 }
 
 // Build returns the row for res, or nil for dropped and label-only results.
@@ -95,6 +110,13 @@ func (o Observer) Build(ctx context.Context, run Run, res Result, h History) (*d
 		class, choice = res.Reason, "P0"
 	case KindEvidence:
 		ev := res.Event
+		if o.Flake != nil {
+			n, err := o.Flake(ctx, run, ev.SignatureHash)
+			if err != nil {
+				return nil, err
+			}
+			h.FlakeCount7d = n
+		}
 		d := Classify(ev, h)
 		class, choice = string(d.Class), d.Protocol
 		names := []string{}
