@@ -605,14 +605,25 @@ const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
-    { data, itemContent, computeItemKey }: {
+    { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
       data: unknown[];
+      initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(virtualWindow.initialIndex);
+    const [firstIndex, setFirstIndex] = useState(
+      Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
+        ? initialTopMostItemIndex.index
+        : virtualWindow.initialIndex,
+    );
+    // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
+    // so deep-link tests can tell "list opened at the target" from "page scrolled".
+    useEffect(() => {
+      if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
