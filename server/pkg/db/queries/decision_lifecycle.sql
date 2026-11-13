@@ -62,7 +62,7 @@ RETURNING *;
 SELECT answer.*, request.workspace_id FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
-WHERE answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
+WHERE request.kind <> 'action' AND answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
   AND answer.disclaimed_at IS NOT NULL AND answer.withdrawal_comment_id IS NOT NULL
   AND answer.retraction_delivered_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND request.id = ANY(episode.request_ids))

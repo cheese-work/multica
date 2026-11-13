@@ -11,7 +11,7 @@ import {
 } from "./commands";
 
 describe("chat command registry", () => {
-  it("registers all eight built-in DM commands in composer order with complete metadata", () => {
+  it("registers all nine built-in DM commands in composer order with complete metadata", () => {
     expect(CHAT_COMMANDS.map((cmd) => cmd.id)).toEqual([
       "statistic",
       "archive",
@@ -21,6 +21,7 @@ describe("chat command registry", () => {
       "rename",
       "fork",
       "unseen",
+      "later",
     ]);
 
     for (const cmd of CHAT_COMMANDS) {
@@ -93,6 +94,7 @@ describe("chat command registry", () => {
       "rename",
       "fork",
       "unseen",
+      "later",
     ]);
 
     const archivedComposer = getAvailableChatCommands({ archived: true, surface: "composer" });
@@ -122,6 +124,7 @@ describe("chat command registry", () => {
       "rename",
       "fork",
       "unseen",
+      "later",
     ]);
     expect(filterChatCommands("", { archived: true }).map((c) => c.id)).toEqual(["unarchive"]);
   });

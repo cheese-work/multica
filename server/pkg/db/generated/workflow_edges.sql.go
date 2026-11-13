@@ -76,7 +76,7 @@ func (q *Queries) HasIssueReviewAdmission(ctx context.Context, arg HasIssueRevie
 
 const latestMemberStatusChange = `-- name: LatestMemberStatusChange :one
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
   AND (
     action = 'run_budget_top_up'
@@ -99,7 +99,7 @@ func (q *Queries) LatestMemberStatusChange(ctx context.Context, issueID pgtype.U
 
 const latestMemberStatusMove = `-- name: LatestMemberStatusMove :one
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
 ORDER BY created_at DESC LIMIT 1
 `
@@ -203,7 +203,7 @@ func (q *Queries) ListEdgePullRequests(ctx context.Context, issueIds []pgtype.UU
 
 const listMemberStatusChangesAfter = `-- name: ListMemberStatusChangesAfter :many
 SELECT created_at FROM activity_log
-WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = $1::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
   AND (
     action = 'run_budget_top_up'

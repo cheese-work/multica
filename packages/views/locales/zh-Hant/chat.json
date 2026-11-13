@@ -40,6 +40,16 @@
     "unclassified": {
       "title": "未分類",
       "replies_other": "{{count}} 則回覆"
+    },
+    "actions": {
+      "done": "完成",
+      "later": "稍後",
+      "done_all": "全部完成",
+      "undo": "復原",
+      "toast_other": "已將 {{count}} 個私訊標為完成",
+      "failed": "更新失敗,請重試。",
+      "done_aria": "標為完成:{{title}}",
+      "later_aria": "稍後提醒:{{title}}"
     }
   },
   "page": {
@@ -66,6 +76,7 @@
     "queue_send_tooltip": "排隊傳送",
     "stop_tooltip": "停止",
     "send_failed_toast": "傳送訊息失敗",
+    "send_unconfirmed_toast": "無法確認傳送。草稿已保留；再次傳送不會產生重複訊息。",
     "send_blocked_toast": "訊息未傳送——你已沒有該 AI 代理的使用權限",
     "runtime_required_toast": "訊息未傳送——請先為該 AI 代理繫結執行時",
     "runtime_access_denied_toast": "訊息未傳送——該 AI 代理無法在其私有執行時上執行。請將該執行時設為公開，或將 AI 代理重新繫結/複製到其所有者可用的執行時",
@@ -85,7 +96,10 @@
     "rename_session_required_toast": "開始對話後才能重命名",
     "placeholder_archived_send": "此私訊已封存。傳送時會先取消封存…",
     "command_no_arguments": "/{{command}} 不接受參數。請單獨傳送該指令，或移除開頭的 /。",
-    "command_no_attachments": "/{{command}} 不能連同附件一起傳送。執行 /{{command}} 前請先移除附件。"
+    "command_no_attachments": "/{{command}} 不能連同附件一起傳送。執行 /{{command}} 前請先移除附件。",
+    "later_set_toast": "已暫緩至 {{time}} ICT",
+    "later_bad_duration": "請使用 1s 到 7d 的時長,例如 /later 2h",
+    "later_failed_toast": "暫緩失敗,請重試。"
   },
   "queue": {
     "title_other": "{{count}} 條排隊訊息",
@@ -452,7 +466,12 @@
       "field_workflow_steps": "工作流程步驟",
       "field_workflow_instructions": "工作流程步驟指令",
       "field_workspace_settings": "工作區設定",
-      "field_workflow_budget": "工作流程執行預算"
+      "field_workflow_budget": "工作流程執行預算",
+      "field_workspace_routing_agent": "路由代理",
+      "field_workspace_delegated_writes": "委派的受管寫入",
+      "field_agent_skills": "代理技能",
+      "counts": "字元數：{{before}} → {{after}}",
+      "counts_cap": "字元數：{{before}} → {{after}}（上限 {{cap}}）"
     },
     "agent_note": "代理備註（未驗證）",
     "answer_send_passkey": "使用通行金鑰傳送",

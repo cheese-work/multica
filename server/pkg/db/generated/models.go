@@ -836,19 +836,33 @@ type CiSignatureOwner struct {
 	SignatureHash string             `json:"signature_hash"`
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	State         string             `json:"state"`
+	ClosedAt      pgtype.Timestamptz `json:"closed_at"`
 }
 
 type CiWatchAction struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RepoOwner     string             `json:"repo_owner"`
-	RepoName      string             `json:"repo_name"`
-	OriginalRunID int64              `json:"original_run_id"`
-	ActionKind    string             `json:"action_kind"`
-	State         string             `json:"state"`
-	LeaseEpoch    int64              `json:"lease_epoch"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RepoOwner         string             `json:"repo_owner"`
+	RepoName          string             `json:"repo_name"`
+	OriginalRunID     int64              `json:"original_run_id"`
+	ActionKind        string             `json:"action_kind"`
+	State             string             `json:"state"`
+	LeaseEpoch        int64              `json:"lease_epoch"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	Protocol          string             `json:"protocol"`
+	SignatureHash     string             `json:"signature_hash"`
+	DueAt             pgtype.Timestamptz `json:"due_at"`
+	RunCompletedAt    pgtype.Timestamptz `json:"run_completed_at"`
+	LeaseUntil        pgtype.Timestamptz `json:"lease_until"`
+	Attempts          int32              `json:"attempts"`
+	ReconcileAttempts int32              `json:"reconcile_attempts"`
+	ExpectedAttempt   pgtype.Int4        `json:"expected_attempt"`
+	PostStartedAt     pgtype.Timestamptz `json:"post_started_at"`
+	DestinationID     pgtype.Text        `json:"destination_id"`
+	Reason            string             `json:"reason"`
+	Diagnostic        string             `json:"diagnostic"`
 }
 
 type CiWatchConfig struct {
@@ -1257,6 +1271,7 @@ type DecisionRequest struct {
 	ProposalFingerprint      pgtype.Text        `json:"proposal_fingerprint"`
 	AnswerRevision           int32              `json:"answer_revision"`
 	WakeSeq                  int64              `json:"wake_seq"`
+	BatchID                  pgtype.UUID        `json:"batch_id"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }
@@ -2438,6 +2453,7 @@ type IssueWakeup struct {
 	Purpose                   pgtype.Text        `json:"purpose"`
 	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
+	WatchInputs               []string           `json:"watch_inputs"`
 }
 
 type IssueWakeupDefinition struct {

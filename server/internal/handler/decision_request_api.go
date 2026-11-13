@@ -202,6 +202,18 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints, action})
 		return
 	}
+	handler.publishDecisionResult(request, issue, &result)
+	var action *decisionActionResponse
+	if result.Action != nil {
+		action = newDecisionActionResponse(*result.Action)
+	}
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
+}
+
+// publishDecisionResult announces the rows of a new request. It records a ping
+// that the transaction did not, and refreshes result.Request. A batch request
+// that does not lead its card has no message to announce.
+func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
@@ -242,16 +254,13 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
-		MessageKind:   result.Message.MessageKind,
-		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
-		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
-	})
-	var action *decisionActionResponse
-	if result.Action != nil {
-		action = newDecisionActionResponse(*result.Action)
+	if result.Message.ID.Valid {
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+			MessageKind:   result.Message.MessageKind,
+			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
+			Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
+		})
 	}
-	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
 }
 
 // decisionRequestResponse adds advisory ask-lint hints to the stored request.
@@ -266,6 +275,10 @@ type decisionRequestResponse struct {
 type decisionReadResponse struct {
 	db.DecisionRequest
 	Answer *decisionAnswerRead `json:"answer,omitempty"`
+	// The outcome of the request's proposed action, once it is terminal (CHE-5411).
+	AppliedAt     *string `json:"applied_at,omitempty"`
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
 }
 
 type decisionAnswerRead struct {
@@ -285,6 +298,14 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	response := decisionReadResponse{DecisionRequest: stored}
+	switch action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: stored.ID, WorkspaceID: stored.WorkspaceID}); {
+	case err == nil:
+		response.Outcome, response.OutcomeReason = decisionActionOutcomeOf(action)
+		response.AppliedAt = appliedAtOf(action)
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision action")
+		return
+	}
 	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
 	switch {
 	case err == nil:
