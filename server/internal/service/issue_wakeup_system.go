@@ -34,7 +34,12 @@ const (
 	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
 	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
 	// target, receipts or settings.
-	SystemRuleWorkflowEdges  = "workflow_edges"
+	SystemRuleWorkflowEdges = "workflow_edges"
+	// SystemRulePRMergeOwed is the write-ahead intent that an issue's PR merge
+	// still owes a completion decision (CHE-5243). Unlike a rule that wakes an
+	// agent it has no target or receipts; TaskService.PRMergeOwed settles it,
+	// fenced by the row's (id, revision).
+	SystemRulePRMergeOwed    = "pr_merge_owed"
 	SystemRuleChildDone      = "child_done"
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"
