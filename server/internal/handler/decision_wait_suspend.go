@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -69,12 +68,8 @@ func (handler *Handler) suspendDecisionEpisode(ctx context.Context, queries *db.
 	}
 	// A person's or agent's own block (flag false) keeps its reason.
 	if blocks || (wasBlocked && wait.RestoreOnResume) {
-		value, err := json.Marshal(suspendBlockedReason(kind))
-		if err != nil {
-			return edgeMove{}, err
-		}
 		// An unchanged value is a no-op that returns no row.
-		_, setErr := queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: value, ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+		_, setErr := setIssueMetadataValue(ctx, queries, issue.WorkspaceID, issue.ID, "blocked_reason", suspendBlockedReason(kind))
 		if setErr != nil && !errors.Is(setErr, pgx.ErrNoRows) {
 			return edgeMove{}, setErr
 		}
