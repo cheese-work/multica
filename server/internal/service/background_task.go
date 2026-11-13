@@ -58,19 +58,27 @@ type BackgroundWriter func(ctx context.Context, q *db.Queries, task db.AgentTask
 type BackgroundTaskInput struct {
 	Job         bgagents.Job
 	WorkspaceID pgtype.UUID
+	AgentID     pgtype.UUID // ignored when Resolve is set
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
-	Input       string
-	// Resolve picks the chain slot. EnqueueBackgroundTask calls it after taking
-	// the member's lock, so a personal write is either fully visible to it or
-	// waits for the insert and then cancels the row (CHE-4114).
+	Source      bgagents.Source
+	Slot        bgagents.SlotName
+	// FallbackAgentID is the agent a provider failure of this run moves to; zero
+	// when this run holds the last slot.
+	FallbackAgentID pgtype.UUID
+	Input           string
+	// Resolve, when set, picks the chain slot instead of AgentID/Source/Slot/
+	// FallbackAgentID. EnqueueBackgroundTask calls it after taking the member's
+	// lock, so a personal write is either fully visible to it or waits for the
+	// insert and then cancels the row (CHE-4114).
 	Resolve BackgroundResolver
 }
 
 // BackgroundTarget is the chain slot a job run goes to.
 type BackgroundTarget struct {
-	AgentID pgtype.UUID
-	Source  bgagents.Source
-	Slot    bgagents.SlotName
+	AgentID         pgtype.UUID
+	Source          bgagents.Source
+	Slot            bgagents.SlotName
+	FallbackAgentID pgtype.UUID
 }
 
 // BackgroundResolver resolves the chain for one enqueue, under the member lock.
@@ -79,15 +87,16 @@ type BackgroundResolver func(ctx context.Context) (BackgroundTarget, error)
 // BackgroundTaskContext is the JSON stored in the task context; the claim
 // handler reads it back.
 type BackgroundTaskContext struct {
-	Type         string `json:"type"`
-	Job          string `json:"job"`
-	WorkspaceID  string `json:"workspace_id"`
-	ChainSource  string `json:"chain_source"`
-	MemberID     string `json:"member_id,omitempty"`
-	Slot         string `json:"slot"`
-	ClaimSeconds int    `json:"claim_deadline_seconds"`
-	RunSeconds   int    `json:"run_deadline_seconds"`
-	Input        string `json:"input"`
+	Type            string `json:"type"`
+	Job             string `json:"job"`
+	WorkspaceID     string `json:"workspace_id"`
+	ChainSource     string `json:"chain_source"`
+	MemberID        string `json:"member_id,omitempty"`
+	Slot            string `json:"slot"`
+	FallbackAgentID string `json:"fallback_agent_id,omitempty"`
+	ClaimSeconds    int    `json:"claim_deadline_seconds"`
+	RunSeconds      int    `json:"run_deadline_seconds"`
+	Input           string `json:"input"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -101,9 +110,6 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	spec, ok := bgagents.SpecFor(in.Job)
 	if !ok || spec.Runner != bgagents.OutputOnly {
 		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundJobNotOutputOnly, in.Job)
-	}
-	if in.Resolve == nil {
-		return db.AgentTaskQueue{}, errors.New("background task: a chain resolver is required")
 	}
 	if s.TxStarter == nil {
 		return db.AgentTaskQueue{}, errors.New("background task enqueue requires transaction support")
@@ -124,9 +130,12 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if err := s.Queries.WithTx(tx).LockWorkspaceSettingsForWakeupDefinition(ctx, in.WorkspaceID); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("lock workspace settings: %w", err)
 	}
-	target, err := in.Resolve(ctx)
-	if err != nil {
-		return db.AgentTaskQueue{}, err
+	target := BackgroundTarget{AgentID: in.AgentID, Source: in.Source, Slot: in.Slot, FallbackAgentID: in.FallbackAgentID}
+	if in.Resolve != nil {
+		var err error
+		if target, err = in.Resolve(ctx); err != nil {
+			return db.AgentTaskQueue{}, err
+		}
 	}
 	if target.Source != bgagents.UserSource && target.Source != bgagents.WorkspaceSource {
 		return db.AgentTaskQueue{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", target.Source)
@@ -150,6 +159,9 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		ChainSource: string(target.Source), Slot: string(target.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
 		Input: input,
+	}
+	if target.FallbackAgentID.Valid {
+		payload.FallbackAgentID = util.UUIDToString(target.FallbackAgentID)
 	}
 	if in.MemberID.Valid {
 		payload.MemberID = util.UUIDToString(in.MemberID)

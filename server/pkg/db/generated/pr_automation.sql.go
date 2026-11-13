@@ -94,13 +94,44 @@ func (q *Queries) IsPullRequestExcludedFromIssue(ctx context.Context, arg IsPull
 	return excluded, err
 }
 
+const issuePullRequestsAllMerged = `-- name: IssuePullRequestsAllMerged :one
+SELECT (
+    EXISTS (
+        SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
+        UNION ALL
+        SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = $1
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_pull_request ipr
+        JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM issue_vcs_pull_request ipr
+        JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
+        WHERE ipr.issue_id = $1 AND pr.state <> 'merged'
+    )
+)::bool AS all_merged
+`
+
+// The guard of MoveIssueFromPullRequests as a read, for the workflow handoff
+// write: at least one delivery PR is linked and none is still unmerged.
+func (q *Queries) IssuePullRequestsAllMerged(ctx context.Context, issueID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, issuePullRequestsAllMerged, issueID)
+	var all_merged bool
+	err := row.Scan(&all_merged)
+	return all_merged, err
+}
+
 const listIssueLinkedPullRequestStates = `-- name: ListIssueLinkedPullRequestStates :many
-SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state
+SELECT pr.id, 'github'::text AS provider, pr.pr_number, pr.state,
+       pr.repo_owner, pr.repo_name, pr.merge_commit_sha
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1 AND ipr.link_kind = 'closing'
 UNION ALL
-SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state
+SELECT pr.id, pr.provider AS provider, pr.pr_number, pr.state,
+       pr.repo_owner, pr.repo_name, ''::text AS merge_commit_sha
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = $1
@@ -108,10 +139,13 @@ ORDER BY pr_number
 `
 
 type ListIssueLinkedPullRequestStatesRow struct {
-	ID       pgtype.UUID `json:"id"`
-	Provider string      `json:"provider"`
-	PrNumber int32       `json:"pr_number"`
-	State    string      `json:"state"`
+	ID             pgtype.UUID `json:"id"`
+	Provider       string      `json:"provider"`
+	PrNumber       int32       `json:"pr_number"`
+	State          string      `json:"state"`
+	RepoOwner      string      `json:"repo_owner"`
+	RepoName       string      `json:"repo_name"`
+	MergeCommitSha string      `json:"merge_commit_sha"`
 }
 
 // Delivery PRs across GitHub and self-hosted providers, for the merge decision.
@@ -130,6 +164,9 @@ func (q *Queries) ListIssueLinkedPullRequestStates(ctx context.Context, issueID 
 			&i.Provider,
 			&i.PrNumber,
 			&i.State,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.MergeCommitSha,
 		); err != nil {
 			return nil, err
 		}
