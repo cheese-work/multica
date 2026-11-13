@@ -94,7 +94,7 @@ func (q *Queries) CountProjectIssuesByStatus(ctx context.Context, arg CountProje
 	return items, nil
 }
 
-const createDefaultIssueWorkflow = `-- name: CreateDefaultIssueWorkflow :many
+const createDefaultIssueWorkflowCols = `-- name: CreateDefaultIssueWorkflowCols :many
 INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, is_default)
 VALUES (
     $1::uuid,
@@ -105,24 +105,41 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key
 `
 
-type CreateDefaultIssueWorkflowParams struct {
+type CreateDefaultIssueWorkflowColsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Steps       []byte      `json:"steps"`
 }
 
+type CreateDefaultIssueWorkflowColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
 // Returns no row when another request created the Default first.
-func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefaultIssueWorkflowParams) ([]IssueWorkflow, error) {
-	rows, err := q.db.Query(ctx, createDefaultIssueWorkflow, arg.WorkspaceID, arg.Steps)
+func (q *Queries) CreateDefaultIssueWorkflowCols(ctx context.Context, arg CreateDefaultIssueWorkflowColsParams) ([]CreateDefaultIssueWorkflowColsRow, error) {
+	rows, err := q.db.Query(ctx, createDefaultIssueWorkflowCols, arg.WorkspaceID, arg.Steps)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []IssueWorkflow{}
+	items := []CreateDefaultIssueWorkflowColsRow{}
 	for rows.Next() {
-		var i IssueWorkflow
+		var i CreateDefaultIssueWorkflowColsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
@@ -137,8 +154,6 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 			&i.MaxRunsPerIssue,
 			&i.IncludeChildPrs,
 			&i.RunBudgetSince,
-			&i.RunBudgetTokenAllowance,
-			&i.RunBudgetTokenReserve,
 			&i.StartStatusKey,
 		); err != nil {
 			return nil, err
@@ -151,7 +166,7 @@ func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefa
 	return items, nil
 }
 
-const createIssueWorkflow = `-- name: CreateIssueWorkflow :one
+const createIssueWorkflowCols = `-- name: CreateIssueWorkflowCols :one
 INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
 VALUES (
     $1::uuid,
@@ -163,10 +178,10 @@ VALUES (
     NULLIF($7::int, 0),
     COALESCE($8::boolean, true)
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key
 `
 
-type CreateIssueWorkflowParams struct {
+type CreateIssueWorkflowColsParams struct {
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 	Name             string      `json:"name"`
 	Description      string      `json:"description"`
@@ -177,8 +192,25 @@ type CreateIssueWorkflowParams struct {
 	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
 }
 
-func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkflowParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, createIssueWorkflow,
+type CreateIssueWorkflowColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) CreateIssueWorkflowCols(ctx context.Context, arg CreateIssueWorkflowColsParams) (CreateIssueWorkflowColsRow, error) {
+	row := q.db.QueryRow(ctx, createIssueWorkflowCols,
 		arg.WorkspaceID,
 		arg.Name,
 		arg.Description,
@@ -188,7 +220,7 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		arg.MaxRunsPerIssue,
 		arg.IncludeChildPrs,
 	)
-	var i IssueWorkflow
+	var i CreateIssueWorkflowColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -203,8 +235,6 @@ func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkfl
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
@@ -240,15 +270,32 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 	return err
 }
 
-const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+const getDefaultIssueWorkflowCols = `-- name: GetDefaultIssueWorkflowCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
 
-func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtype.UUID) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, getDefaultIssueWorkflow, workspaceID)
-	var i IssueWorkflow
+type GetDefaultIssueWorkflowColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) GetDefaultIssueWorkflowCols(ctx context.Context, workspaceID pgtype.UUID) (GetDefaultIssueWorkflowColsRow, error) {
+	row := q.db.QueryRow(ctx, getDefaultIssueWorkflowCols, workspaceID)
+	var i GetDefaultIssueWorkflowColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -263,27 +310,42 @@ func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtyp
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
 }
 
-const getIssueWorkflow = `-- name: GetIssueWorkflow :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+const getIssueWorkflowCols = `-- name: GetIssueWorkflowCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
 
-type GetIssueWorkflowParams struct {
+type GetIssueWorkflowColsParams struct {
 	ID          pgtype.UUID `json:"id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, getIssueWorkflow, arg.ID, arg.WorkspaceID)
-	var i IssueWorkflow
+type GetIssueWorkflowColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) GetIssueWorkflowCols(ctx context.Context, arg GetIssueWorkflowColsParams) (GetIssueWorkflowColsRow, error) {
+	row := q.db.QueryRow(ctx, getIssueWorkflowCols, arg.ID, arg.WorkspaceID)
+	var i GetIssueWorkflowColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -298,8 +360,6 @@ func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowPara
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
@@ -358,26 +418,43 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 	return items, nil
 }
 
-const listIssueWorkflows = `-- name: ListIssueWorkflows :many
+const listIssueWorkflowsCols = `-- name: ListIssueWorkflowsCols :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
+
+type ListIssueWorkflowsColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
 
 // Project workflows (MUL-7420). A workflow selects and orders statuses from
 // the workspace's issue_status catalog. Projects opt in through
 // project.workflow_id; a project without one uses the workspace's Default
 // workflow row. Each step also stores who an issue entering it is handed to.
-func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUID) ([]IssueWorkflow, error) {
-	rows, err := q.db.Query(ctx, listIssueWorkflows, workspaceID)
+func (q *Queries) ListIssueWorkflowsCols(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueWorkflowsColsRow, error) {
+	rows, err := q.db.Query(ctx, listIssueWorkflowsCols, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []IssueWorkflow{}
+	items := []ListIssueWorkflowsColsRow{}
 	for rows.Next() {
-		var i IssueWorkflow
+		var i ListIssueWorkflowsColsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
@@ -392,8 +469,6 @@ func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUI
 			&i.MaxRunsPerIssue,
 			&i.IncludeChildPrs,
 			&i.RunBudgetSince,
-			&i.RunBudgetTokenAllowance,
-			&i.RunBudgetTokenReserve,
 			&i.StartStatusKey,
 		); err != nil {
 			return nil, err
@@ -873,7 +948,7 @@ func (q *Queries) SetProjectWorkflow(ctx context.Context, arg SetProjectWorkflow
 	return i, err
 }
 
-const updateIssueWorkflow = `-- name: UpdateIssueWorkflow :one
+const updateIssueWorkflowCols = `-- name: UpdateIssueWorkflowCols :one
 UPDATE issue_workflow SET
     name = $1::text,
     description = $2::text,
@@ -895,10 +970,10 @@ UPDATE issue_workflow SET
     updated_at = now()
 WHERE id = $8::uuid
   AND workspace_id = $9::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key
 `
 
-type UpdateIssueWorkflowParams struct {
+type UpdateIssueWorkflowColsParams struct {
 	Name             string      `json:"name"`
 	Description      string      `json:"description"`
 	InitialStatusKey string      `json:"initial_status_key"`
@@ -910,8 +985,25 @@ type UpdateIssueWorkflowParams struct {
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkflowParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, updateIssueWorkflow,
+type UpdateIssueWorkflowColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) UpdateIssueWorkflowCols(ctx context.Context, arg UpdateIssueWorkflowColsParams) (UpdateIssueWorkflowColsRow, error) {
+	row := q.db.QueryRow(ctx, updateIssueWorkflowCols,
 		arg.Name,
 		arg.Description,
 		arg.InitialStatusKey,
@@ -922,7 +1014,7 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		arg.ID,
 		arg.WorkspaceID,
 	)
-	var i IssueWorkflow
+	var i UpdateIssueWorkflowColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -937,8 +1029,6 @@ func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkfl
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
