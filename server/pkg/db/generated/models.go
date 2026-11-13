@@ -2874,6 +2874,7 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	WorkflowSplit     []byte             `json:"workflow_split"`
 }
 
 type ProjectResource struct {

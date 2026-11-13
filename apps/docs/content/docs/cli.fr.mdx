@@ -463,7 +463,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `usage <issue-id>` | Afficher la consommation de tokens agrégée | |
 | | `rerun-task <run-id>` | Relancer une exécution précise avec son agent et son contexte de déclenchement d’origine | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | Annuler une exécution en cours ou en file d'attente | `--issue` |
-| `project` | `list/get/create/update/delete` | Gérer les projets | `create` : `--title` (obligatoire), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (répétable) |
+| `project` | `list/get/create/update/delete` | Gérer les projets | `create` : `--title` (obligatoire), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (répétable); `update` split A/B (propriétaire, admin ou responsable du projet) : `--split-arm-b` (ID du workflow), `--split-start`, `--split-end` (RFC 3339), `--split-exclude-assignee` / `--split-exclude-squad` (répétables), `--clear-split` |
 | | `status <id> <status>` | Changer le statut d'un projet | |
 | | `resource list/add/update/remove` | Gérer les ressources d'un projet | `--type`, `--url`, `--default-branch-hint`, `--ref`, `--local-path`, `--daemon-id`, `--execution-mode` (`in_place` / `worktree` pour un répertoire local) |
 | `label` | `list/get/create/update/delete` | Gérer les étiquettes de l'espace de travail | `list` : `--resource-type` (`issue` ou `skill`), `--full-id` ; `create` : `--name`, `--color`, `--resource-type` (`issue` ou `skill`), `--description` |
