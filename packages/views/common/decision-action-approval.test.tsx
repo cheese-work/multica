@@ -39,7 +39,7 @@ describe("DecisionActionApproval", () => {
   it("runs challenge, assertion and approve, then shows executed", async () => {
     api.approveDecisionAction.mockResolvedValue(outcome("executed"));
     await renderApproval().approve();
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
     expect(api.challengeDecisionAction).toHaveBeenCalledWith("a1");
     expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", assertion: envelope });
   });
@@ -48,7 +48,7 @@ describe("DecisionActionApproval", () => {
     api.approveDecisionAction.mockResolvedValue(outcome("executed"));
     const onOutcome = vi.fn();
     await renderApproval(vi.fn(), onOutcome).approve();
-    await screen.findByText("Executed");
+    await screen.findByText("Applied");
     expect(onOutcome).toHaveBeenCalledTimes(1);
     expect(onOutcome).toHaveBeenCalledWith("executed");
   });
@@ -67,8 +67,15 @@ describe("DecisionActionApproval", () => {
   ])("shows failed with code %s", async (code, text) => {
     api.approveDecisionAction.mockResolvedValue(outcome("failed", code));
     await renderApproval().approve();
-    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(await screen.findByText("Not applied")).toBeTruthy();
     expect(screen.getByText(text)).toBeTruthy();
+  });
+
+  it("shows the reason an action was not applied", async () => {
+    api.approveDecisionAction.mockResolvedValue({ ...outcome("failed", "boom"), error_message: "refused by the runtime" });
+    await renderApproval().approve();
+    expect(await screen.findByText("Not applied")).toBeTruthy();
+    expect(screen.getByText("refused by the runtime")).toBeTruthy();
   });
 
   it.each([["rejected", "Rejected"], ["expired", "Expired"]])("shows %s", async (state, label) => {
@@ -81,8 +88,8 @@ describe("DecisionActionApproval", () => {
     [{ outcome: "cap_applied", from: 10, to: 30 }, ["Cap applied", "10 → 30"]],
     [{ outcome: "run_queued" }, ["Run queued"]],
     [{ outcome: "still_blocked:budget_exhausted" }, ["Still blocked: budget_exhausted"]],
-    [{ outcome: "future_thing" }, ["Executed"]],
-    [undefined, ["Executed"]],
+    [{ outcome: "future_thing" }, ["Applied"]],
+    [undefined, ["Applied"]],
   ])("shows the executed outcome %j", async (result, texts) => {
     api.approveDecisionAction.mockResolvedValue({ ...outcome("executed"), result });
     await renderApproval().approve();
@@ -92,7 +99,7 @@ describe("DecisionActionApproval", () => {
   it("shows stale_base as a failed approval that needs a new request", async () => {
     api.approveDecisionAction.mockResolvedValue(outcome("failed", "stale_base"));
     await renderApproval().approve();
-    expect(await screen.findByText("Failed")).toBeTruthy();
+    expect(await screen.findByText("Not applied")).toBeTruthy();
     expect(screen.getByText("The target changed after the request. Ask again.")).toBeTruthy();
   });
 
@@ -156,7 +163,7 @@ describe("DecisionActionApproval", () => {
     api.getDecisionActionOutcome.mockResolvedValueOnce(outcome("pending")).mockResolvedValueOnce(outcome("pending")).mockResolvedValueOnce(outcome("executed"));
     await renderApproval().approve();
     fireEvent.click(await screen.findByRole("button", { name: "Check outcome" }));
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
     expect(api.getDecisionActionOutcome).toHaveBeenCalledTimes(3);
     expect(api.approveDecisionAction).toHaveBeenCalledOnce();
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
@@ -170,13 +177,13 @@ describe("DecisionActionApproval", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
     expect(api.approveDecisionAction).not.toHaveBeenCalled();
     await approve();
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
   });
 
   it("reads the outcome on mount and offers no approve for a decided action", async () => {
     api.getDecisionActionOutcome.mockResolvedValue(outcome("executed"));
     renderApproval();
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
     expect(api.challengeDecisionAction).not.toHaveBeenCalled();
   });
@@ -186,7 +193,7 @@ describe("DecisionActionApproval", () => {
     const { approve } = renderApproval();
     api.getDecisionActionOutcome.mockResolvedValue(outcome("executed"));
     await approve();
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
     expect(api.approveDecisionAction).not.toHaveBeenCalled();
   });
 
@@ -212,7 +219,7 @@ describe("DecisionActionApproval", () => {
     api.approveDecisionAction.mockResolvedValue(outcome("executed"));
     renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" previewSha256="def" />);
     fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" }));
-    expect(await screen.findByText("Executed")).toBeTruthy();
+    expect(await screen.findByText("Applied")).toBeTruthy();
     expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", assertion: envelope, preview_sha256: "def" });
   });
 

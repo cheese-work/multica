@@ -112,7 +112,7 @@ func TestApproveDecisionActionExecutesOnceAndKeepsTheSecretOut(test *testing.T) 
 	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1 AND answer_source = 'card' AND wake_at IS NOT NULL`, action.requestID); n != 1 {
 		test.Fatal("no scheduled card answer")
 	}
-	if n := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND decision_comment_kind = 'quote' AND content LIKE '%executed%'`, action.issueID); n != 1 {
+	if n := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND decision_comment_kind = 'quote' AND content LIKE 'Applied %'`, action.issueID); n != 1 {
 		test.Fatal("no system comment about the execution")
 	}
 	if n := dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE action = 'agent_env_updated' AND details->>'decision_action_id' = $1 AND actor_id = $2`, action.actionID, action.humanID); n != 1 {
@@ -229,7 +229,7 @@ func TestApproveDecisionActionFailureRollsBackTheExecution(test *testing.T) {
 	if n := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'answered'`, action.requestID); n != 1 {
 		test.Fatal("a failed execution must still answer the request")
 	}
-	if n := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND decision_comment_kind = 'quote' AND content LIKE '%failed%'`, action.issueID); n != 1 {
+	if n := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND decision_comment_kind = 'quote' AND content LIKE 'Not applied %'`, action.issueID); n != 1 {
 		test.Fatal("no system comment about the failure")
 	}
 }

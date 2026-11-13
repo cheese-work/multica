@@ -373,7 +373,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if targetKind == decisionaction.TargetAgent && !decisionActionPermitted(action.ActionType, targetAgent, approver) {
 		return empty, errNotPermitted
 	}
-	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
+	finish, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
 		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
@@ -386,7 +386,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if err != nil {
 		return empty, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, finished, "approved", "Approved "+finished.ActionType+": "+summary); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, current, finished, "approved", decisionActionSummary(finished)); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -397,30 +397,30 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 
 // executeInSavepoint runs the executor so a business failure undoes only the
 // execution. Any other error aborts the whole transaction.
-func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Queries, executor decisionActionExecutor, execution decisionActionExecution) (db.FinishDecisionActionRowParams, string, error) {
+func executeInSavepoint(ctx context.Context, transaction pgx.Tx, queries *db.Queries, executor decisionActionExecutor, execution decisionActionExecution) (db.FinishDecisionActionRowParams, error) {
 	finish := db.FinishDecisionActionRowParams{}
 	if _, err := transaction.Exec(ctx, "SAVEPOINT action_exec"); err != nil {
-		return finish, "", err
+		return finish, err
 	}
 	result, err := executor(ctx, execution)
 	var failure actionFailure
 	switch {
 	case errors.As(err, &failure):
 		if _, err := transaction.Exec(ctx, "ROLLBACK TO SAVEPOINT action_exec"); err != nil {
-			return finish, "", err
+			return finish, err
 		}
 		finish.State = "failed"
 		finish.ErrorCode = pgtype.Text{String: failure.Code, Valid: true}
 		finish.ErrorMessage = pgtype.Text{String: failure.Message, Valid: true}
-		return finish, "failed (" + failure.Code + ").", nil
+		return finish, nil
 	case err != nil:
-		return finish, "", err
+		return finish, err
 	}
 	if _, err := transaction.Exec(ctx, "RELEASE SAVEPOINT action_exec"); err != nil {
-		return finish, "", err
+		return finish, err
 	}
 	finish.State, finish.Result = "executed", result
-	return finish, "executed.", nil
+	return finish, nil
 }
 
 // finishApprovalAfterCommit runs the post-commit work for a request that just
