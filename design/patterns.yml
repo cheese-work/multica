@@ -224,27 +224,27 @@
   status: active
   components: []
   build: "One shared eyebrow component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=aYZcVB_0KF"}
 - id: type-role-tokens
   intent: "Use role tokens (text-caption, text-body), not text-xs, text-sm or text-body-sm (not a token)."
   origin: fork
   status: active
   components: ["packages/ui/styles/tokens.css"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=KDOlak_My-"}
 - id: inline-link-action
   intent: "Underlined text link (underline underline-offset-2, 8 files)."
   origin: fork
   status: active
   components: []
   build: "One shared link-action component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=TcNpuNpZTB"}
 - id: choice-card
   intent: "Single-choice card or radio list (role=radio, 7 files)."
   origin: fork
   status: active
   components: []
   build: "One shared choice card; packages/ui has no RadioGroup. dashboard-shared Segmented is the nearest component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=MXcaRpo5JX"}
 - id: settings-page
   intent: "One page title with scope badge, sections of text-body font-semibold, rows of label, optional help, control. SettingsTab, SettingsSection, SettingsCard, SettingsRow."
   origin: upstream

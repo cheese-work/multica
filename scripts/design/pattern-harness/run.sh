@@ -33,4 +33,18 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap section-eyebrow \
+  --token text-micro --token uppercase --token tracking-wide --token text-muted-foreground
+
+cap type-role-tokens \
+  --component packages/ui/styles/tokens.css \
+  --token text-micro --token text-caption --token text-label --token text-body --token text-body-lg --token text-title
+
+cap inline-link-action \
+  --token underline --token underline-offset-2 --token hover:text-foreground
+
+cap choice-card \
+  --component packages/views/projects/components/local-directory-mode-dialog.tsx \
+  --token border-primary --token ring-primary --token text-body --token text-caption --token text-micro
+
 rm -rf "$build"
