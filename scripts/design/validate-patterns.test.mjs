@@ -158,3 +158,13 @@ test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", ()
     assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
   }
 });
+
+test("the five S4b-F1 patterns link a frame on the Patterns page (CHE-5526)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["inline-retry", "inline-notice", "integration-tab", "diff-dialog", "ict-timestamp"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
