@@ -12,7 +12,6 @@ import type { Project, ProjectStatus, ProjectPriority } from "@multica/core/type
 import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useAuthStore } from "@multica/core/auth";
-import { useConfigStore } from "@multica/core/config";
 import { canDeleteProject } from "@multica/core/projects/deletion-permissions";
 import { canChangeProjectLead } from "@multica/core/projects/access";
 import { projectDetailOptions } from "@multica/core/projects/queries";
@@ -130,7 +129,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const wsPaths = useWorkspacePaths();
   const router = useNavigation();
   const userId = useAuthStore((s) => s.user?.id);
-  const privateProjectsEnabled = useConfigStore((s) => s.featureFlags.private_projects_v1 === true);
   const deleteProject = useDeleteProject();
   const deleted = deleteProject.isSuccess && deleteProject.variables === projectId;
   const { data: project, isLoading } = useQuery({
@@ -393,7 +391,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
               </DropdownMenuContent>
             </DropdownMenu>
           </PropRow>
-          {(privateProjectsEnabled || project.visibility === "private") && <PropRow label={t(($) => $.access.label)}>
+          {<PropRow label={t(($) => $.access.label)}>
             <ProjectAccessControl project={project} />
           </PropRow>}
           <PropRow label={t(($) => $.table.lead)}>

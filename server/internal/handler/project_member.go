@@ -10,7 +10,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -25,10 +24,6 @@ import (
 //     owner/admin, or the project's member lead
 //   - ordinary project members: read-only membership, no self-removal
 //   - agents: none of these; an agent's access is derived from humans
-//
-// Only switching a project TO private is behind private_projects_v1. Making
-// a private project public and managing members keep working with the flag
-// off, so turning the flag off never strands an existing private project.
 
 type ProjectMemberResponse struct {
 	ProjectID     string  `json:"project_id"`
@@ -138,10 +133,6 @@ func (h *Handler) prepareProjectAccessUpdate(w http.ResponseWriter, r *http.Requ
 		}
 		if !canManageProjectAccess(member, project) {
 			writeError(w, http.StatusForbidden, "only workspace admins and the project lead can change project visibility")
-			return projectAccessUpdate{}, false
-		}
-		if target == projectaccess.VisibilityPrivate && !featureflags.PrivateProjectsV1Enabled(r.Context(), h.FeatureFlags) {
-			writeFeatureDisabled(w, "private_projects_disabled", "private projects are not enabled")
 			return projectAccessUpdate{}, false
 		}
 		update := projectAccessUpdate{visibility: target}

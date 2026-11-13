@@ -778,6 +778,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         },
         attributes: {
           class: cn("flex-1 rich-text-editor text-body outline-none", className),
+          "data-mc": "content",
           ...(ariaLabel ? { role: "textbox", "aria-multiline": "true", "aria-label": ariaLabel } : {}),
           ...(ariaDescribedBy ? { "aria-describedby": ariaDescribedBy } : {}),
         },

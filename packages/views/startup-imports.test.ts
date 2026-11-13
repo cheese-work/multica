@@ -15,7 +15,6 @@ const STARTUP_FILES = [
   "inbox/components/inbox-detail-label.tsx",
   "../../apps/web/app/[workspaceSlug]/(dashboard)/issues/page.tsx",
   "../../apps/web/app/[workspaceSlug]/(dashboard)/projects/page.tsx",
-  "../../apps/web/features/landing/components/features-section.tsx",
 ];
 
 describe("startup path imports", () => {

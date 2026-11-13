@@ -121,14 +121,6 @@ Things to know:
 
 Push is off until all three are set. Generate one key pair per deployment with the `web-push` tool: `npx web-push generate-vapid-keys`. Changing the key pair ends every existing browser subscription, because a subscription is bound to the key it was created with.
 
-### GitHub Star Prompt (Optional)
-
-| Variable | Description |
-|----------|-------------|
-| `DISABLE_STAR_PROMPT` | Set to `true` to stop the app from asking users to star Multica on GitHub |
-
-The prompt is a small card that can appear after an agent has completed a few issues: at most twice per account, at least 30 days apart, and never again once the user clicks Star. Users can still star Multica from the Help menu. While the card or Help menu is open, the browser asks `api.github.com` for the star count; with the switch on, the server rejects new showings and the card never appears. Changes take effect after restarting the backend; the web UI reads the switch from `/api/config`, so no web rebuild is needed.
-
 ### File Storage (Optional)
 
 Uploads and attachments are written to local disk by default. Set `S3_BUCKET` to

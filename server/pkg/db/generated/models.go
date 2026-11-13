@@ -2215,6 +2215,29 @@ type IssueDescriptionRevision struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueEnvironment struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	TaskID      pgtype.UUID        `json:"task_id"`
+	RuntimeID   pgtype.UUID        `json:"runtime_id"`
+	AgentID     pgtype.UUID        `json:"agent_id"`
+	LocalKey    string             `json:"local_key"`
+	Source      string             `json:"source"`
+	Name        string             `json:"name"`
+	Label       string             `json:"label"`
+	Url         string             `json:"url"`
+	Port        pgtype.Int4        `json:"port"`
+	State       string             `json:"state"`
+	Detail      string             `json:"detail"`
+	StartedAt   pgtype.Timestamptz `json:"started_at"`
+	ExpiresAt   pgtype.Timestamptz `json:"expires_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+	EndedAt     pgtype.Timestamptz `json:"ended_at"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type IssueIdleGuard struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -3272,6 +3295,12 @@ type SilenceAlertReceipt struct {
 	TaskID    pgtype.UUID        `json:"task_id"`
 	SegmentID string             `json:"segment_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SiteCounter struct {
+	Name      string             `json:"name"`
+	Value     int64              `json:"value"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Skill struct {

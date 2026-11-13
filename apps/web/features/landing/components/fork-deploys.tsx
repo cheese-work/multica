@@ -2,13 +2,13 @@ import { type ChangelogRelease, type DeployGroup, forkCategoryLabels } from "./f
 
 export function ChangeList({ items, itemKeys }: { items: string[]; itemKeys?: string[] }) {
   return (
-    <ul className="mt-2 space-y-2">
+    <ul className="mt-3 flex flex-col gap-2.5">
       {items.map((change, index) => (
         <li
           key={itemKeys?.[index] ?? `${index}:${change}`}
-          className="flex items-start gap-2.5 text-body leading-[1.7] text-[#0a0d12]/60 sm:text-body-lg"
+          className="flex items-start gap-3 text-site-body text-site-ink-secondary"
         >
-          <span className="mt-2.5 h-1 w-1 shrink-0 rounded-full bg-[#0a0d12]/30" />
+          <span aria-hidden className="mt-[0.6em] size-1 shrink-0 rounded-full bg-site-line-strong" />
           {change}
         </li>
       ))}
