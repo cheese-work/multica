@@ -31,6 +31,10 @@ var ErrWakeupForbidden = errors.New("wakeup permission denied")
 var ErrWakeupAskGuardBlocked = errors.New("wakeup waits on a person without a decision request")
 var ErrWakeupAskGuardUnavailable = errors.New("ask guard unavailable")
 
+// An agent asked for a timer on an issue whose open PR a condition wakeup can
+// watch without starting a run (CHE-5401).
+var ErrWakeupTimerOpenPR = errors.New("a timer cannot poll an open PR")
+
 // WakeupAskGuard applies the ask guard (CHE-3345 S1) to rules an agent
 // registers. TaskID is the registering run; WarnOnly keeps the event from
 // refusing when the run cannot be recovered through a refusal (a chat lane, or
@@ -129,6 +133,10 @@ type IssueWakeupService struct {
 	Tasks *TaskService
 	// AskGuard is set when an agent registers the rule (see WakeupAskGuard).
 	AskGuard *WakeupAskGuard
+	// RefuseTimerOpenPR is set when an agent registers the rule: an at, every or
+	// cron rule is refused while the issue has a linked open PR, because
+	// --until-pr and --until-gh-run wait for the same fact without a run.
+	RefuseTimerOpenPR bool
 	// ActivationKey names the definition-write activation this service reads
 	// and runs; empty is the production activation. Tests set their own so
 	// parallel packages never share state.
@@ -527,6 +535,9 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 		}
 		// The scheduler evaluates the condition on its first tick.
 		next = pgtype.Timestamptz{Time: now, Valid: true}
+	}
+	if err := s.refuseTimerOpenPR(ctx, tx, issueID, in); err != nil {
+		return out, err
 	}
 	maxFires := pgtype.Int4{Int32: in.MaxFires, Valid: in.MaxFires > 0}
 	if !maxFires.Valid && in.Kind == "event" && in.Mode == "continuous" {
