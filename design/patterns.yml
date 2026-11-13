@@ -39,7 +39,7 @@
   status: active
   components: ["packages/views/issues/components/pickers/property-picker.tsx", "packages/views/common/pill-button.tsx"]
   surfaces: ["concurrency-picker", "visibility-picker", "batch-workflow-picker", "wakeup-pickers", "resource-label-picker"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=eYa0Zk4VLF"}
 - id: ict-timestamp
   intent: "One formatter for ICT times with the ICT suffix."
   origin: fork
@@ -62,7 +62,7 @@
   status: active
   components: ["packages/views/issues/components/issue-chip.tsx"]
   surfaces: ["chat-session-mention-card", "wakeup-event-row", "compact-issue-chips-context", "comment-mention-card"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Lg3vxcesyO"}
 - id: decision-receipt-card
   intent: "Card that records a decision ask, answer or withdrawal."
   origin: fork
@@ -77,7 +77,7 @@
   status: active
   components: ["packages/ui/components/common/icon-button.tsx", "packages/ui/components/ui/button.tsx"]
   surfaces: ["chat-preset-picker", "html-viewer", "issue-inbox-restore-button", "media-context"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=_u8tSKVqwz"}
 - id: collapsible-section
   intent: "Toggle that folds a section."
   origin: fork

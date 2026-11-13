@@ -388,8 +388,6 @@
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
     "source_label": "{{name}} のメッセージ",
-    "add": "コメントを追加",
-    "confirm_add": "追加",
     "save": "保存",
     "note_label": "コメント {{number}}",
     "note_placeholder": "コメントを追加…",
