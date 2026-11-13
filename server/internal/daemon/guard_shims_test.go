@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,44 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
+
+var (
+	guardBinOnce sync.Once
+	guardBinDir  string
+	guardBinPath string
+	guardBinErr  error
+	// guardBuildHome is the HOME before TestMain isolated it.
+	guardBuildHome string
+)
+
+// guardMulticaBin builds the real multica CLI once per test binary, so the
+// shims run the real `multica guard exec`. TestMain removes it.
+func guardMulticaBin(t *testing.T) string {
+	t.Helper()
+	guardBinOnce.Do(func() {
+		guardBinDir, guardBinErr = os.MkdirTemp("", "multica-guard-bin-")
+		if guardBinErr != nil {
+			return
+		}
+		guardBinPath = filepath.Join(guardBinDir, "multica")
+		build := exec.Command("go", "build", "-o", guardBinPath, "github.com/multica-ai/multica/server/cmd/multica")
+		build.Env = append(os.Environ(), "HOME="+guardBuildHome)
+		out, err := build.CombinedOutput()
+		if err != nil {
+			guardBinErr = fmt.Errorf("go build multica: %v\n%s", err, out)
+		}
+	})
+	if guardBinErr != nil {
+		t.Fatal(guardBinErr)
+	}
+	return guardBinPath
+}
+
+func removeGuardMulticaBin() {
+	if guardBinDir != "" {
+		_ = os.RemoveAll(guardBinDir)
+	}
+}
 
 // writeTool writes an executable shell script and returns its path.
 func writeTool(t *testing.T, dir, name, body string) string {
@@ -68,7 +107,7 @@ func TestGuardShimsResolveFirstForEveryRuntime(t *testing.T) {
 			taskTemp := t.TempDir()
 			agentEnv := map[string]string{"PATH": "/opt/multica/bin" + string(os.PathListSeparator) + os.Getenv("PATH")}
 
-			dir, err := frontGuardShims(agentEnv, taskTemp)
+			dir, err := frontGuardShims(agentEnv, taskTemp, guardMulticaBin(t))
 			if err != nil {
 				t.Fatalf("frontGuardShims: %v", err)
 			}
@@ -96,6 +135,85 @@ func TestGuardShimsResolveFirstForEveryRuntime(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// CI-wait calls are refused in the shim of every runtime, with the wakeup line
+// and without reaching the real tool; plain calls pass (CHE-5206, plugin 2).
+// Aliases and `gh api` GraphQL mutations get no way around it. The shims do not
+// depend on the provider, so each runtime's PATH setup is the same call.
+func TestGuardShimsDenyCIWaitForEveryRuntime(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell shims are POSIX only")
+	}
+	for _, provider := range []string{"claude", "codex", "gemini", "hermes"} {
+		t.Run(provider, func(t *testing.T) {
+			tools := t.TempDir()
+			writeTool(t, tools, "git", `echo real-git "$@"`)
+			writeTool(t, tools, "sleep", `echo real-sleep "$@"`)
+			// `gh sw` is a shell alias: the real gh runs gh again from its PATH.
+			writeTool(t, tools, "gh", `case "$1 $2" in
+"alias list") printf 'cw:\tpr checks $1 --watch\n' ;;
+"sw ") exec gh run watch 7 ;;
+*) echo real-gh "$@" ;;
+esac`)
+			t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+			agentEnv := map[string]string{"PATH": tools + string(os.PathListSeparator) + "/usr/bin:/bin"}
+			if _, err := frontGuardShims(agentEnv, t.TempDir(), guardMulticaBin(t)); err != nil {
+				t.Fatal(err)
+			}
+			delete(agentEnv, "HOME")
+
+			for _, script := range []string{
+				"gh run watch 123",
+				"gh pr checks 5 --watch",
+				"gh -R o/r run watch 1",
+				"gh cw 5",
+				"gh sw",
+				"sleep 30",
+				"sleep 10 10",
+				"sleep infinity",
+				"gh api graphql -f query='mutation { markPullRequestReadyForReview(input:{}) { clientMutationId } }'",
+				"gh api repos/o/r/pulls -X POST -f title=x",
+			} {
+				got := runInEnv(t, agentEnv, script+" 2>&1; echo exit=$?")
+				if !strings.HasPrefix(got, "guard: ") || !strings.HasSuffix(got, "\nexit=2") || strings.Contains(got, "real-") {
+					t.Errorf("%s: want one guard line and exit 2 without reaching the real tool, got %q", script, got)
+				}
+			}
+			for script, want := range map[string]string{
+				"gh pr checks 5":                  "real-gh pr checks 5",
+				"gh pr checks 5 --required":       "real-gh pr checks 5 --required",
+				"gh run view 7":                   "real-gh run view 7",
+				"gh api repos/o/r/actions/runs/7": "real-gh api repos/o/r/actions/runs/7",
+				"sleep 5":                         "real-sleep 5",
+				"sleep 0.5":                       "real-sleep 0.5",
+				"git status":                      "real-git status",
+			} {
+				if got := runInEnv(t, agentEnv, script+" 2>&1"); got != want {
+					t.Errorf("%s = %q, want %q", script, got, want)
+				}
+			}
+			if got := runInEnv(t, agentEnv, "gh run watch 1 2>&1; echo exit=$?"); !strings.Contains(got, "--until-gh-run") {
+				t.Errorf("run watch line lacks the wakeup condition: %q", got)
+			}
+		})
+	}
+}
+
+// Without a multica binary the guarded shims hand straight over, like git's.
+func TestGuardShimsWithoutMulticaBinaryPassThrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell shims are POSIX only")
+	}
+	tools := t.TempDir()
+	writeTool(t, tools, "gh", `echo real-gh "$@"`)
+	agentEnv := map[string]string{"PATH": tools}
+	if _, err := frontGuardShims(agentEnv, t.TempDir(), ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := runInEnv(t, agentEnv, "gh run watch 1"); got != "real-gh run watch 1" {
+		t.Fatalf("got %q", got)
 	}
 }
 
@@ -130,7 +248,7 @@ esac`)
 		"GH_TOKEN":     "ambient",
 		"GITHUB_TOKEN": "ambient",
 	}
-	dir, err := frontGuardShims(agentEnv, t.TempDir())
+	dir, err := frontGuardShims(agentEnv, t.TempDir(), guardMulticaBin(t))
 	if err != nil {
 		t.Fatalf("frontGuardShims: %v", err)
 	}
@@ -161,7 +279,7 @@ func TestGuardShimsSkipMissingTool(t *testing.T) {
 	dir := t.TempDir()
 	writeTool(t, dir, "git", "exit 0")
 	agentEnv := map[string]string{"PATH": dir}
-	shims, err := frontGuardShims(agentEnv, t.TempDir())
+	shims, err := frontGuardShims(agentEnv, t.TempDir(), guardMulticaBin(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +298,7 @@ func TestGuardShimsFallBackToDaemonPATH(t *testing.T) {
 	}
 	real := fakeTools(t)
 	env := map[string]string{}
-	dir, err := frontGuardShims(env, t.TempDir())
+	dir, err := frontGuardShims(env, t.TempDir(), guardMulticaBin(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,11 +317,14 @@ func TestRunTaskLaunchesAgentWithGuardShims(t *testing.T) {
 	for _, provider := range []string{"claude", "codex"} {
 		t.Run(provider, func(t *testing.T) {
 			real := fakeTools(t)
+			origResolve := resolveSelfExecutable
+			resolveSelfExecutable = func() (string, error) { return guardMulticaBin(t), nil }
+			t.Cleanup(func() { resolveSelfExecutable = origResolve })
 			seen := filepath.Join(t.TempDir(), "resolved")
 			fake := filepath.Join(t.TempDir(), provider+"-fixture")
 			writeTestExecutable(t, fake, []byte("#!/bin/sh\n"+
 				"case \"$*\" in *--version*) echo '9.9.9'; exit 0;; esac\n"+
-				"{ command -v git; command -v gh; git --version; } > '"+seen+"'\n"+
+				"{ command -v git; command -v gh; command -v sleep; git --version; gh run watch 1 2>&1; echo exit=$?; sleep 30 2>&1; echo exit=$?; } > '"+seen+"'\n"+
 				"exit 0\n"))
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				_, _ = w.Write([]byte(`{}`))
@@ -235,7 +356,7 @@ func TestRunTaskLaunchesAgentWithGuardShims(t *testing.T) {
 				t.Fatalf("%s agent never started with a recorded PATH: %v", provider, err)
 			}
 			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) != 3 {
+			if len(lines) != 8 {
 				t.Fatalf("resolution output = %q", out)
 			}
 			for i, name := range guardShimNames {
@@ -244,8 +365,15 @@ func TestRunTaskLaunchesAgentWithGuardShims(t *testing.T) {
 					t.Fatalf("%s resolves to %q in the %s run, want a guard-bin shim (real is in %s)", name, got, provider, real)
 				}
 			}
-			if lines[2] != "real-git --version" {
-				t.Fatalf("git shim did not reach the real git: %q", lines[2])
+			if lines[3] != "real-git --version" {
+				t.Fatalf("git shim did not reach the real git: %q", lines[3])
+			}
+			// The same shims refuse a CI wait for this runtime's agent process.
+			for i, want := range []string{"gh run watch", "sleep of 20s"} {
+				line, exit := lines[4+2*i], lines[5+2*i]
+				if !strings.HasPrefix(line, "guard: ") || !strings.Contains(line, want) || exit != "exit=2" {
+					t.Fatalf("%s run: %q then %q, want a guard line about %q and exit=2", provider, line, exit, want)
+				}
 			}
 		})
 	}

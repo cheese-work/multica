@@ -119,7 +119,10 @@ type logRecord struct {
 // Exec runs tool with args under the policy and returns the exit code the
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
-	if e.Policy.lockdown {
+	// Only git and gh act on a repository; the lockdown and the layer lookup
+	// below are about repositories, so sleep (plugin 2) skips both.
+	repoCall := tool != "sleep"
+	if repoCall && e.Policy.lockdown {
 		fmt.Fprintf(e.Err, "guard: refused: %s\n", lockdownMessage)
 		return 2, nil
 	}
@@ -127,7 +130,7 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 	t := Target{}
 	// ponytail: one extra gh repo view and git call per guarded call when the
 	// policy has layers; cache per run if that shows up.
-	if len(e.Policy.Layers) > 0 {
+	if repoCall && len(e.Policy.Layers) > 0 {
 		var ok bool
 		var why string
 		if t, ok, why = e.target(ctx, args); !ok {
@@ -174,6 +177,12 @@ func (e *Engine) decide(ctx context.Context, pl *Plugin, args []string) (decisio
 	switch {
 	case pl.Action == ActionPass:
 		return pass(args), nil
+	case pl.Builtin == "ci-wait":
+		line, _ := ciWait(pl.Match.Tool, args)
+		if pl.Message != "" {
+			line = pl.Message
+		}
+		return refuse(2, "%s", line), nil
 	case pl.Builtin == "gh-pr":
 		return e.ghPR(ctx, pl, args)
 	case pl.Builtin == "gh-api":
@@ -193,6 +202,11 @@ func (e *Engine) match(tool string, args []string) *Plugin {
 		pl := &e.pol().Plugins[i]
 		sub := pl.Match.Subcommand
 		if pl.Match.Tool != tool || len(sub) > len(lead) {
+			continue
+		}
+		// A ci-wait plugin is picked only for a CI wait; any other call falls
+		// through to the plugins after it.
+		if _, hit := ciWait(tool, args); pl.Builtin == "ci-wait" && !hit {
 			continue
 		}
 		if strings.Join(sub, " ") == strings.Join(lead[:len(sub)], " ") {
