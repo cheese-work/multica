@@ -133,6 +133,15 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return err
 	}
+	// An anomalous window goes to the day's batch card, not a per-issue one.
+	if e.Kind == service.RunBudgetKindExhausted && h.escalateRunBudgetWindow(ctx, issue, e, recovery) {
+		// The escalation claimed the window's notice, so a replay lands here
+		// again and finds it claimed: retiring the hook once is enough.
+		if hook.id.Valid {
+			return h.Queries.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: hook.id, Generation: hook.generation, Reason: "escalated"})
+		}
+		return nil
+	}
 	usage := h.runBudgetUsageNote(ctx, issue)
 	recent := ""
 	if e.Kind == service.RunBudgetKindExhausted {
