@@ -143,6 +143,7 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "Check
 - **Conditions**: `--until-status`, `--until-assignee`, `--until-label`, `--until-property`, `--until-children-done [--stage N]`, `--until-pr checks|merged|conflicts`, and `--until-issue <issue> --until-issue-state done|ended|in_review|blocked`. Use one `--until-*` per wakeup, and not together with `--event`.
 - **Timers on an open PR**: an agent cannot add an `at`, `every` or `cron` wakeup to an issue with a linked open PR while the server refreshes GitHub checks; it gets a 422 that points to `--until-pr checks|conflicts` or `--until-gh-run`. A person, a draft or merged PR, and an issue with no PR are not affected.
 - **Endings**: the CLI does not add a deadline for you. Use `--expires-in 72h` or `--expires-at <RFC3339 time>`; `--on-timeout wake` makes an event rule wake the agent once more at the deadline. `--max-fires N` (1–1000) caps how many runs a repeating rule starts.
+- **Watched inputs**: on a time wakeup (`at`, `every`, `cron`), repeat `--watch <input>` to declare what it watches: `issue`, `pr`, `children` or `thread:<comment-uuid>`. When every declared input is unchanged since the last completed run, the server may skip the fire. Undeclared means always run. The server only records the declaration for now; it skips nothing yet. Event and condition rules refuse `--watch`.
 - **Where results go**: `--parent <comment-id>` keeps the woken run's reply in the original thread.
 
 To manage existing rules:
