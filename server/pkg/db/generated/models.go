@@ -247,6 +247,7 @@ type AgentTaskQueue struct {
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
+	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 }
 
 type AgentToLabel struct {

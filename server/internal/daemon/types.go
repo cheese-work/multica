@@ -141,6 +141,7 @@ type Task struct {
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
+	TriggerKind                   string                 `json:"trigger_kind,omitempty"`                     // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context for an assignment-style run, not a comment to answer
 	CoalescedCommentIDs           []string               `json:"coalesced_comment_ids,omitempty"`            // MUL-4195: earlier comments folded into this run while it was still queued; the agent must address these in addition to the (newest) triggering comment. Empty for old servers / non-merged runs
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
 	TriggerThreadID               string                 `json:"trigger_thread_id,omitempty"`                // root comment ID for the triggering thread; falls back to trigger_comment_id on old servers
@@ -411,3 +412,7 @@ func (t Task) EffectiveProfile() string {
 func (t Task) DisableProviderWebTools() bool {
 	return t.EffectiveProfile() == "elevated"
 }
+
+// isStatusHandoff reports a run whose trigger comment is handoff context from a
+// status move (CHE-5485), not a comment the run must answer.
+func (t Task) isStatusHandoff() bool { return t.TriggerKind == "status_handoff" }
