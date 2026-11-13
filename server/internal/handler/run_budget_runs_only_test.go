@@ -124,22 +124,26 @@ func TestRunBudgetGrantsAndRefundWriteNoTokenValue(t *testing.T) {
 	}
 }
 
-// No hand-written query names the retired token ledger value or the two
-// workflow token columns. The columns themselves go in S5 (CHE-5509).
+// No query names the retired token ledger value or the two workflow token
+// columns, in the hand-written sources or in the generated query text (a
+// `SELECT *` or `RETURNING *` expands to them). The columns themselves go in
+// S5 (CHE-5509); until then no running binary may depend on them.
 func TestNoQueryNamesRetiredTokenColumns(t *testing.T) {
-	files, err := filepath.Glob("../../pkg/db/queries/*.sql")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("queries not found: %v (%d files)", err, len(files))
-	}
 	retired := regexp.MustCompile(`tokens_delta|run_budget_token_allowance|run_budget_token_reserve`)
-	for _, f := range files {
-		src, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
+	for _, pattern := range []string{"../../pkg/db/queries/*.sql", "../../pkg/db/generated/*.sql.go"} {
+		files, err := filepath.Glob(pattern)
+		if err != nil || len(files) == 0 {
+			t.Fatalf("%s: not found: %v (%d files)", pattern, err, len(files))
 		}
-		for i, line := range strings.Split(string(src), "\n") {
-			if retired.MatchString(line) {
-				t.Errorf("%s:%d names a retired token column: %s", filepath.Base(f), i+1, strings.TrimSpace(line))
+		for _, f := range files {
+			src, err := os.ReadFile(f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, line := range strings.Split(string(src), "\n") {
+				if retired.MatchString(line) {
+					t.Errorf("%s:%d names a retired token column: %s", filepath.Base(f), i+1, strings.TrimSpace(line))
+				}
 			}
 		}
 	}
