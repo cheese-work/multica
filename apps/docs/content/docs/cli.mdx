@@ -174,6 +174,18 @@ The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a requi
 Type `/fork [message]` as the first word of a web DM message. The web app forks the DM directly, with no agent turn: the new DM is a full copy of the visible messages and attachments, and the source stays active with a "Forked into" link. You land in the new DM. With a message, the agent answers it at once; without one, the new DM is idle until you send a first message. The agent in the new DM starts a fresh session and gets the transcript in a context block capped at 64 KiB (newest messages first); it reads earlier ones with `multica chat history`. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked, and there is no fork prompt setting.
 If an open issue with the same title (case-insensitive, extra spaces ignored) already exists under the same project and parent, `issue create` refuses and points to that issue. To create another one anyway, add `--allow-duplicate`. To mark an issue as a duplicate of another, run `multica issue status MUL-124 cancelled --duplicate-of MUL-123`.
 
+### Route an issue
+
+`issue route` moves an issue's status and records why, in one call. A routing step uses it to decide where an issue goes next. `--status`, `--reason` (1 to 500 characters) and `--confidence` (0 to 1) are required:
+
+```bash
+multica issue route MUL-123 --status in_review --reason "Tests pass, needs review" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "Needs a backend fix" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "Reviewer will pick it up later" --confidence 0.9
+```
+
+Without `--owner`, the project workflow picks the handler, as with `issue status`. An explicit `--owner` (a member, agent, or squad; `--owner-id` takes a UUID instead of a name) replaces the workflow's handler. A route that keeps the current status and changes only the owner is allowed. A route with the same status and the same owner is refused with HTTP 409 and writes nothing. `--no-start` starts no agent run, as it does for `issue update`. `--expected-revision` refuses the route if the issue changed in the meantime.
+
 ### Timeline
 
 `issue get` shows an issue as it is now. `issue timeline` lists, in order, the changes to status, priority, assignee, title, and dates and the run outcomes, interleaved with comments, which answers questions like "when did it move to in_review" or "how long has it been stuck in this status":

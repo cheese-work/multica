@@ -149,6 +149,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 Si une tâche ouverte portant le même titre (sans tenir compte de la casse ni des espaces en trop) existe déjà sous le même projet et le même parent, `issue create` refuse et indique cette tâche. Pour en créer une autre malgré tout, ajoutez `--allow-duplicate`. Pour marquer une tâche comme doublon d'une autre, utilisez `multica issue status MUL-124 cancelled --duplicate-of MUL-123`.
 
+### Router une tâche
+
+`issue route` change le statut d'une tâche et enregistre pourquoi, en un seul appel. Une étape de routage s'en sert pour décider où la tâche va ensuite. `--status`, `--reason` (1 à 500 caractères) et `--confidence` (0 à 1) sont obligatoires :
+
+```bash
+multica issue route MUL-123 --status in_review --reason "Les tests passent, relecture nécessaire" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "Correctif backend nécessaire" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "Le relecteur la prendra plus tard" --confidence 0.9
+```
+
+Sans `--owner`, le workflow du projet choisit le responsable, comme avec `issue status`. Un `--owner` explicite (un membre, un agent ou une squad ; `--owner-id` prend un UUID au lieu d'un nom) remplace le responsable du workflow. Une route qui garde le statut actuel et ne change que le responsable est autorisée. Une route avec le même statut et le même responsable est refusée avec un HTTP 409 et n'écrit rien. `--no-start` ne lance aucune exécution d'agent, comme pour `issue update`. `--expected-revision` refuse la route si la tâche a changé entre-temps.
+
 ### Chronologie
 
 `issue get` montre la tâche telle qu'elle est maintenant. `issue timeline` liste dans l'ordre les changements de statut, de priorité, d'assigné, de titre et de dates ainsi que les résultats des exécutions, entremêlés avec les commentaires. C'est la commande pour savoir « quand est-elle passée en in_review » ou « depuis combien de temps est-elle bloquée dans ce statut » :
