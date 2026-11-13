@@ -33,6 +33,9 @@ var workflowSteps = &Handler{}
 func init() {
 	registerConfigChange(decisionaction.WorkflowStepsSet, configChange{
 		Fields: []string{workflowStepsField, workflowInstructionsField},
+		// The write sets the whole row, the cap included, so it follows the
+		// order every cap writer takes: catalog first, then the workflow row.
+		CatalogLock: true,
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, params, http.StatusConflict, false)
 			if err != nil {
