@@ -233,6 +233,8 @@ func (handler *Handler) admitProposal(ctx context.Context, queries *db.Queries, 
 	})
 }
 
+var errProposerSetsPasskey = decisionIntentRefusal{http.StatusBadRequest, "requires_passkey_not_proposable: the registry sets whether an action needs a passkey"}
+
 var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
 
 // ProposeDecisionAction opens a decision request that asks a person to approve
@@ -254,9 +256,17 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		IssueID    string          `json:"issue_id"`
 		For        string          `json:"for"`
 		Reason     string          `json:"reason"`
+		// The registry sets the passkey flag per action type; a proposer that
+		// names it is refused (B v9 S5, CHE-5415).
+		RequiresPasskeySnake *json.RawMessage `json:"requires_passkey"`
+		RequiresPasskeyCamel *json.RawMessage `json:"requiresPasskey"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&body); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	if body.RequiresPasskeySnake != nil || body.RequiresPasskeyCamel != nil {
+		writeDecisionError(writer, errProposerSetsPasskey, "action proposal")
 		return
 	}
 	issue, ok := handler.loadIssueForUser(writer, request, body.IssueID)
