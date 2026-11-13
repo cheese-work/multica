@@ -430,6 +430,18 @@
     "empty": "暂无已排期的任务 — 给任意任务设置开始或截止日期，即可显示在时间轴上。",
     "inverted_dates_warning": "开始日期晚于截止日期——已按区间最小/最大端绘制。"
   },
+  "swimlane2": {
+    "edge_wakeup": "唤醒",
+    "edge_dependency": "依赖",
+    "edge_parent": "父 / 子",
+    "edge_mention": "提及",
+    "edge_types": "连线类型",
+    "relations_incomplete": "关系不完整：部分连线未能加载。",
+    "more_issues": "还有未加载的议题。",
+    "retry": "重试",
+    "load_more": "加载更多",
+    "no_lane": "无值"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

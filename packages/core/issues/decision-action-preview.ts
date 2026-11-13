@@ -5,6 +5,7 @@ import type { DecisionActionPreview, DecisionConfigChange, DecisionRequestAction
 const PREVIEWED_ACTION_TYPES = [
   "issue.run_budget.raise",
   "issue.run_budget.top_up",
+  "issue.project.set",
   "agent.env.patch",
   "agent.copy",
 ] as const;

@@ -33,6 +33,30 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap lazy-detail \
+  --token text-body --token text-caption --token text-muted-foreground --token border-surface-border --token bg-surface
+
+cap decision-receipt-card \
+  --token text-caption --token text-label --token text-micro --token bg-muted --token border-surface-border --token bg-surface
+
+cap collapsible-section \
+  --component packages/ui/components/ui/collapsible.tsx \
+  --token text-caption --token text-muted-foreground --token text-body \
+  --copy "trigger aria-label=chat:message_list.show_earlier_context" \
+  --copy "line=chat:message_list.continued_from"
+
+cap settings-select-row \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --component packages/ui/components/ui/select.tsx \
+  --token SETTINGS_CONTROL_WIDTHS --token text-body --token text-caption --token divide-surface-border \
+  --copy "label=settings:workspace.idle_guard_label" \
+  --copy "description=settings:workspace.idle_guard_hint"
+
+cap pill-menu \
+  --component packages/views/issues/components/wakeup-pickers.tsx \
+  --component packages/ui/components/ui/dropdown-menu.tsx \
+  --token pillClass --token text-label --token border-surface-border --token bg-accent
+
 cap section-eyebrow \
   --token text-micro --token uppercase --token tracking-wide --token text-muted-foreground
 
