@@ -202,6 +202,18 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints, action})
 		return
 	}
+	handler.publishDecisionResult(request, issue, &result)
+	var action *decisionActionResponse
+	if result.Action != nil {
+		action = newDecisionActionResponse(*result.Action)
+	}
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
+}
+
+// publishDecisionResult announces the rows of a new request. It records a ping
+// that the transaction did not, and refreshes result.Request. A batch request
+// that does not lead its card has no message to announce.
+func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
@@ -242,16 +254,13 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
-		MessageKind:   result.Message.MessageKind,
-		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
-		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
-	})
-	var action *decisionActionResponse
-	if result.Action != nil {
-		action = newDecisionActionResponse(*result.Action)
+	if result.Message.ID.Valid {
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+			MessageKind:   result.Message.MessageKind,
+			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
+			Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
+		})
 	}
-	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
 }
 
 // decisionRequestResponse adds advisory ask-lint hints to the stored request.
