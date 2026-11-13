@@ -367,7 +367,7 @@ func (handler *Handler) rejectDecisionActionOnce(ctx context.Context, caller dec
 	if err != nil {
 		return empty, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", "Rejected "+action.ActionType+"."); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", decisionActionSummary(rejected)); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {

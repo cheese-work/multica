@@ -194,12 +194,13 @@ export function DecisionActionApproval({
   }));
 
   if (view.step === "done") {
-    const { state, error_code: code } = view.outcome;
+    const { state, error_code: code, error_message: reason } = view.outcome;
     const detail =
       code === "stale_cap" ? t(($) => $.decision_action.failed_code.stale_cap)
       : code === "stale_window" ? t(($) => $.decision_action.failed_code.stale_window)
       : code === "not_budgeted" ? t(($) => $.decision_action.failed_code.not_budgeted)
       : code === "stale_base" ? t(($) => $.decision_action.failed_code.stale_base)
+      : reason ? reason
       : code ? t(($) => $.decision_action.failed_code.other, { code })
       : null;
     const effect = state === "executed" ? executedEffect(view.outcome.result) : null;
