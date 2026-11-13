@@ -84,6 +84,16 @@ When the previous assignee is an agent with a run underway or waiting to start, 
 
 You can see the handoff and its instructions in the issue's timeline. Open the workflow menu on the project board to view the full flow.
 
+## When a PR merges [#pr-merged]
+
+A merge changes a status through one workspace setting: **Settings → Code → After PRs merge, move the issue to**. See [GitHub integration](/github-integration). The workflow board draws that rule. A dashed arrow labelled **PR merged** runs from an **Any step** marker into the step the setting names, and that step's card says **Set in Settings → Code**. The arrow is read-only: you can't select, move or delete it in the editor, and it is never saved in the workflow. With **Don't change**, no arrow is drawn. If the setting names a status the workflow doesn't list, the editor shows one line saying that PR merges change no status in this workflow, and which status Settings → Code names.
+
+When that step has a handler, the merge hands the issue to it and starts its run, like any other move.
+
+### The `pr.merged` transition is deprecated
+
+An older workflow can store a transition guarded by `pr.merged`. While the setting is not **Don't change**, a stored `pr.merged` transition no longer moves issues itself: it runs the same check as the setting. The editor's guard list no longer offers `pr.merged`, a save that adds one is refused with a message that points to Settings → Code, and a stored one is marked as deprecated. With **Don't change**, stored transitions work as before. They will be removed in a later release.
+
 ## Adjust a workflow
 
 A workflow can be shared by several projects. Changes saved in **Settings → Workflows** apply to every project using it. To give one project a different process, duplicate the workflow and select the copy in that project.
