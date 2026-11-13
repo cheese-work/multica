@@ -11,7 +11,8 @@ const ROOT = id(0);
 const issue = (n: number, parent: number | null = 0) => ({ id: id(n), identifier: `CHE-${n}`, title: `t${n}`, status: "todo", parent_issue_id: parent === null ? null : id(parent), context: false });
 const kids = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => issue(from + i));
 const page = (children: ReturnType<typeof issue>[], next: string | null = null) => ({
-  nodes: [issue(0, null), ...children],
+  // The server marks endpoints outside issue_ids (the children) as context.
+  nodes: [issue(0, null), ...children.map((c) => ({ ...c, context: true }))],
   edges: children.map((c) => ({ source: ROOT, target: c.id, type: "parent" as const })),
   next_cursor: next,
 });
@@ -53,10 +54,20 @@ describe("useHierarchyLevels", () => {
     const { result } = renderHook(() => useHierarchyLevels(ROOT));
     act(() => result.current.expand(0));
     await waitFor(() => expect(result.current.levels[1]?.status).toBe("failed"));
+    expect(capLevel(result.current.levels[1]).pending).toBe(true);
 
     act(() => result.current.expand(0));
     await waitFor(() => expect(result.current.levels[1]?.status).toBe("ready"));
     expect(result.current.levels[1]!.nodes).toHaveLength(5);
+    expect(capLevel(result.current.levels[1]).pending).toBe(false);
+  });
+
+  it("level members are in the response, not context, even though the server flags them as context", async () => {
+    api.getIssueRelationsBatch.mockResolvedValueOnce(page(kids(1, 2)));
+    const { result } = renderHook(() => useHierarchyLevels(ROOT));
+    act(() => result.current.expand(0));
+    await waitFor(() => expect(result.current.levels[1]?.status).toBe("ready"));
+    expect(result.current.levels[1]!.nodes.every((n) => n.context === false)).toBe(true);
   });
 
   it("an older response never replaces a newer one", async () => {

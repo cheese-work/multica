@@ -10,19 +10,19 @@ export interface HierarchyLevel {
   status: "loading" | "ready" | "failed";
 }
 
-/** The 60 cards a level shows, `hidden` for the "+N" tile; `pending` marks N as a lower bound while paging. */
+/** The 60 cards a level shows, `hidden` for the "+N" tile; `pending` marks N as a lower bound until the level is fully loaded (paging or failed). */
 export function capLevel(level: HierarchyLevel | undefined) {
   const nodes = level?.nodes ?? [];
-  return { shown: nodes.slice(0, FOCUS_CAP), hidden: Math.max(0, nodes.length - FOCUS_CAP), pending: level?.status === "loading" };
+  return { shown: nodes.slice(0, FOCUS_CAP), hidden: Math.max(0, nodes.length - FOCUS_CAP), pending: level !== undefined && level.status !== "ready" };
 }
 
-/** Children of `parentIds` in `res`, in response order. */
+/** Children of `parentIds` in `res`, in response order. The server flags them `context` (outside `issue_ids`), but they are the level's members. */
 function childrenOf(res: RelationsResult, parentIds: readonly string[]): TimelineNode[] {
   const parents = new Set(parentIds);
   const kids = new Set(res.edges.filter((e) => e.type === "parent" && parents.has(e.source)).map((e) => e.target));
   return res.nodes
     .filter((n) => kids.has(n.id))
-    .map((n) => ({ id: n.id, identifier: n.identifier, title: n.title, status: n.status, parentId: n.parent_issue_id, context: n.context }));
+    .map((n) => ({ id: n.id, identifier: n.identifier, title: n.title, status: n.status, parentId: n.parent_issue_id, context: false }));
 }
 
 /**
