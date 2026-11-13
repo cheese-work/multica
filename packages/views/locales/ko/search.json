@@ -14,6 +14,7 @@
     "issues": "태스크",
     "autopilots": "오토파일럿",
     "chats": "채팅",
+    "messages": "메시지",
     "skills": "스킬",
     "cancelled": "취소됨",
     "recent": "최근 항목",
@@ -130,7 +131,9 @@
     "no_results": "결과가 없습니다.",
     "no_labels": "라벨이 없습니다",
     "type_to_find_issue": "입력해서 태스크 찾기",
-    "type_to_find_people": "입력해서 멤버와 에이전트 찾기"
+    "type_to_find_people": "입력해서 멤버와 에이전트 찾기",
+    "no_results_for": "“{{query}}”에 대한 결과가 없습니다",
+    "no_results_hint": "다른 검색어를 입력해 보세요."
   },
   "delegate": {
     "heading": "에이전트에게 맡기기",
@@ -168,5 +171,15 @@
   },
   "trigger": {
     "label": "검색..."
+  },
+  "messages": {
+    "untitled": "제목 없는 채팅",
+    "searching": "메시지 검색 중…",
+    "error_title": "메시지 내용을 검색할 수 없습니다",
+    "error_failed": "서버에서 오류가 발생했습니다. 채팅은 제목으로 계속 필터링할 수 있습니다.",
+    "error_timed_out": "검색 시간이 너무 오래 걸렸습니다. 채팅은 제목으로 계속 필터링할 수 있습니다.",
+    "retry": "다시 시도",
+    "offline_title": "오프라인입니다",
+    "offline_body_other": "저장된 채팅 {{count}}개의 제목만 검색하며 메시지 내용은 검색하지 않습니다."
   }
 }
