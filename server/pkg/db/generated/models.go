@@ -2936,17 +2936,22 @@ type ProvenanceExportLog struct {
 }
 
 type ProviderBreaker struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	Provider      string             `json:"provider"`
-	State         string             `json:"state"`
-	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
-	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
-	CoolOffS      int32              `json:"cool_off_s"`
-	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
-	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
-	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
-	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
-	Version       int64              `json:"version"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	Provider       string               `json:"provider"`
+	State          string               `json:"state"`
+	OpenedAt       pgtype.Timestamptz   `json:"opened_at"`
+	NextProbeAt    pgtype.Timestamptz   `json:"next_probe_at"`
+	CoolOffS       int32                `json:"cool_off_s"`
+	CanaryTaskID   pgtype.UUID          `json:"canary_task_id"`
+	TripEvidence   []pgtype.UUID        `json:"trip_evidence"`
+	Last5xxAt      pgtype.Timestamptz   `json:"last_5xx_at"`
+	LastSuccessAt  pgtype.Timestamptz   `json:"last_success_at"`
+	Version        int64                `json:"version"`
+	CanaryCoolOffS int32                `json:"canary_cool_off_s"`
+	NextCanaryAt   pgtype.Timestamptz   `json:"next_canary_at"`
+	CanaryStarts   []pgtype.Timestamptz `json:"canary_starts"`
+	LastReleaseAt  pgtype.Timestamptz   `json:"last_release_at"`
+	DrainCutoffAt  pgtype.Timestamptz   `json:"drain_cutoff_at"`
 }
 
 type ProviderBreakerAudit struct {
