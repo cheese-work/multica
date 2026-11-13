@@ -355,3 +355,37 @@ func TestParsePolicyChecksRules(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckPRRefusesWithExit2OnUnreadableRules(t *testing.T) {
+	pr := &fakePR{Number: 1, Repo: repo, HeadOwner: "cheese-work", HeadRef: "feature/x", Base: "main", Title: "feat: x [squash]", Draft: true}
+	cases := map[string]func(f *fakeEnv){
+		"malformed file": func(f *fakeEnv) { f.setRules(repo, "main", tipV1, "version: 1\nscript: x\n") },
+		"API error":      func(f *fakeEnv) { f.setRules(repo, "main", tipV1, noRule); f.apiFails = true },
+	}
+	for name, setup := range cases {
+		f := newFake()
+		cp := *pr
+		f.prs = append(f.prs, &cp)
+		setup(f)
+		var out, errb bytes.Buffer
+		e := &Engine{Policy: DefaultPolicy(), Runner: f, Out: &out, Err: &errb}
+		code, err := e.CheckPR(context.Background(), []string{"1"})
+		if err != nil || code != 2 {
+			t.Errorf("%s: exit %d err %v %q, want 2", name, code, err, errb.String())
+		}
+	}
+}
+
+func TestCheckPRDoesNotSayARequestFailed(t *testing.T) {
+	f := newFake()
+	f.setRules(repo, "main", tipV1, "version: 1\nreviewers: [alice]\n")
+	f.prs = append(f.prs, &fakePR{Number: 1, Repo: repo, HeadOwner: "cheese-work", HeadRef: "feature/x", Base: "main", Title: "feat: x [squash]", Draft: true})
+	var out, errb bytes.Buffer
+	e := &Engine{Policy: DefaultPolicy(), Runner: f, Out: &out, Err: &errb}
+	if code, _ := e.CheckPR(context.Background(), []string{"1"}); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	if strings.Contains(errb.String(), "request failed") || !strings.Contains(errb.String(), "alice") {
+		t.Errorf("read-only mode made no request: %q", errb.String())
+	}
+}

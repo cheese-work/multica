@@ -326,6 +326,13 @@ func (e *Engine) ensure(ctx context.Context, pl *Plugin, url string, wantDraft b
 	}
 	pol, rerr := e.effective(ctx, repo, info.BaseRefName)
 	if rerr != nil {
+		// The rules could not be read, so the PR was not judged: check-pr refuses (2), never reports a broken rule (1).
+		if e.noRepair {
+			failCode = 2
+		}
+		if isBadRules(rerr) {
+			return fail("cannot be checked: %s; fix the file on the base branch", rerr)
+		}
 		return fail("cannot be checked: %s; it stays as it is, retry once the rules can be read", rerr)
 	}
 	wantRev := pol.githubReviewers(repo)
@@ -362,7 +369,11 @@ func (e *Engine) ensure(ctx context.Context, pl *Plugin, url string, wantDraft b
 		problems = append(problems, "it is not a draft")
 	}
 	if m := needRev(info); len(m) > 0 {
-		problems = append(problems, "reviewers missing ("+strings.Join(m, ", ")+") and the request failed")
+		if e.noRepair {
+			problems = append(problems, "reviewers missing ("+strings.Join(m, ", ")+")")
+		} else {
+			problems = append(problems, "reviewers missing ("+strings.Join(m, ", ")+") and the request failed")
+		}
 	}
 	if needTag(info) {
 		problems = append(problems, "the title has no [merge] or [squash] tag")
