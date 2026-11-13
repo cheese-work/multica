@@ -7,6 +7,7 @@
 // (view store `collapsedIssues.gantt`). Markers, partial-history rows and wakeups are later slices (G2, G4). Not registered in the view-mode popup yet (G5).
 import { useMemo } from "react";
 import { buildGraph } from "@multica/core/issues/graph-core";
+import { Button } from "@multica/ui/components/ui/button";
 import { ChevronRight } from "@multica/ui/icons";
 import type { IssueTimelineResponse } from "@multica/core/api/issue-graph-schema";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -108,15 +109,17 @@ export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onTogg
             <div key={timeline.issue_id + identifier} data-testid="gantt-row" data-issue-id={timeline.issue_id} data-depth={depth} className="flex items-center border-b" style={{ height: ROW_H }}>
               <div className="flex shrink-0 items-center gap-1 truncate px-2 text-caption" style={{ width: LABEL_W, paddingLeft: 8 + depth * INDENT_PX }} title={title}>
                 {onToggleCollapse && !tree.view.isLeaf(timeline.issue_id) && (
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="icon-xs"
                     aria-expanded={!collapsed.has(timeline.issue_id)}
                     aria-label={collapsed.has(timeline.issue_id) ? t(($) => $.gantt2.expand) : t(($) => $.gantt2.collapse)}
                     onClick={() => onToggleCollapse(timeline.issue_id)}
-                    className="shrink-0 rounded-sm hover:bg-accent"
+                    className="shrink-0"
                   >
                     <ChevronRight className={`!size-3 stroke-[2.5] text-muted-foreground transition-transform motion-reduce:transition-none ${collapsed.has(timeline.issue_id) ? "" : "rotate-90"}`} />
-                  </button>
+                  </Button>
                 )}
                 <span className="font-mono text-muted-foreground">{identifier}</span> <span className="truncate">{title}</span>
               </div>
