@@ -108,8 +108,13 @@ type AttachmentResponse struct {
 	// resolved when the document origin proxied /api to the API host.
 	MarkdownURL string `json:"markdown_url"`
 	ContentType string `json:"content_type"`
-	SizeBytes   int64  `json:"size_bytes"`
-	CreatedAt   string `json:"created_at"`
+	// Revision is 1 for a first upload; RevisionOf is the previous revision's
+	// id (CHE-5295).
+	Revision   int     `json:"revision"`
+	RevisionOf *string `json:"revision_of"`
+	SHA256     string  `json:"sha256,omitempty"`
+	SizeBytes  int64   `json:"size_bytes"`
+	CreatedAt  string  `json:"created_at"`
 }
 
 // attachmentURLMode selects how DownloadURL is rendered on a response.
@@ -175,6 +180,12 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 		ContentType:  a.ContentType,
 		SizeBytes:    a.SizeBytes,
 		CreatedAt:    a.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
+		Revision:     int(a.Revision),
+		SHA256:       a.Sha256,
+	}
+	if a.RevisionOf.Valid {
+		s := uuidToString(a.RevisionOf)
+		resp.RevisionOf = &s
 	}
 	// Only CloudFront mode overrides the stable path here; the presign and proxy
 	// modes already leave DownloadURL as the stable path and resolve it at
@@ -342,7 +353,7 @@ func (h *Handler) groupAttachments(r *http.Request, commentIDs []pgtype.UUID) ma
 	}
 	mode := attachmentURLModeFromRequest(r)
 	grouped := make(map[string][]AttachmentResponse, len(commentIDs))
-	for _, a := range attachments {
+	for _, a := range h.readableAttachments(r, attachments) {
 		cid := uuidToString(a.CommentID)
 		grouped[cid] = append(grouped[cid], h.attachmentToResponse(a, mode))
 	}
@@ -469,7 +480,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "upload failed")
 			return
 		}
-		if acting && actor.ExternalRead {
+		if acting && (actor.ExternalRead || len(actor.TaintIds) > 0) {
 			params.ExternalRead = pgtype.Bool{Bool: true, Valid: true}
 		}
 
@@ -567,6 +578,11 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			params.ChatSessionID = task.ChatSessionID
 		}
 
+		if status, msg := h.chainAttachmentRevision(r.Context(), &params, r.FormValue("replaces"), data); status != 0 {
+			writeError(w, status, msg)
+			return
+		}
+
 		link, err := h.Storage.Upload(r.Context(), key, data, contentType, header.Filename)
 		if err != nil {
 			slog.Error("file upload failed", "error", err)
@@ -594,6 +610,12 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			att, err = wakeupWrite(h, r, func(q *db.Queries) (db.CreateAttachmentRow, error) {
 				return q.CreateAttachment(r.Context(), params)
 			})
+		}
+		if err != nil && params.Revision.Valid && isUniqueViolation(err) {
+			// Another upload took this revision number first.
+			h.deleteS3Objects(r.Context(), []string{link})
+			writeError(w, http.StatusConflict, "another revision was uploaded at the same time, retry")
+			return
 		}
 		if err != nil {
 			slog.Error("failed to create attachment record", "error", err)
@@ -667,6 +689,7 @@ func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := attachmentURLModeFromRequest(r)
+	attachments = h.readableAttachments(r, attachments)
 	resp := make([]AttachmentResponse, len(attachments))
 	for i, a := range attachments {
 		resp[i] = h.attachmentToResponse(a, mode)
@@ -796,6 +819,9 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
+	if h.denyWithheldAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 
 	return att, true
 }
@@ -843,14 +869,16 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
-	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
-		return att, true
+	if !h.MembershipCache.Get(r.Context(), userID, workspaceID) {
+		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
+			writeError(w, http.StatusNotFound, "attachment not found")
+			return db.Attachment{}, false
+		}
+		h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	}
-	if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
-		writeError(w, http.StatusNotFound, "attachment not found")
+	if h.denyWithheldAttachment(w, r, att) {
 		return db.Attachment{}, false
 	}
-	h.MembershipCache.Set(r.Context(), userID, workspaceID)
 	return att, true
 }
 

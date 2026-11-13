@@ -26,6 +26,8 @@ const (
 	providerFailureCooldown        = time.Hour
 	providerFailureRecoveryTimeout = time.Second
 	providerFailureChangedState    = "provider_server_error_to_http_401"
+	// providerFailureSuccessState: same-provider success evidence (CHE-4311).
+	providerFailureSuccessState = "provider_success_after_failure"
 )
 
 type ProviderFailureProbeEvidence struct {
@@ -101,9 +103,11 @@ type providerFailureRecoveryAttempt struct {
 	FailedAt     time.Time
 	ProbeAt      time.Time
 	ProbeStatus  int32
-	Scope        providerFailureRecoveryScope
-	SkipReason   string
-	ReturnOwner  bool
+	// SuccessEvidence: ProbeAt is the breaker's last_success_at, not an HTTP probe.
+	SuccessEvidence bool
+	Scope           providerFailureRecoveryScope
+	SkipReason      string
+	ReturnOwner     bool
 	// Cap is set when the reservation was refused by a recovery cap. The caller
 	// sends the notice after its transaction outcome (notifyProviderFailureAttemptCap).
 	Cap *providerFailureOwnerDecision
@@ -174,6 +178,12 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 		attempt.ReturnOwner = true
 		return attempt, nil
 	}
+	if at, ok, err := providerSuccessAfter(ctx, q, snapshot.ID, attempt.FailedAt); err != nil {
+		return nil, err
+	} else if ok {
+		attempt.ProbeAt, attempt.SuccessEvidence = at, true
+		return attempt, nil
+	}
 	if time.Since(attempt.FailedAt) < providerFailureCooldown {
 		attempt.SkipReason = noProviderRecoveryEvidenceReason(attempt.FailedAt, time.Now().UTC())
 		return attempt, nil
@@ -198,6 +208,35 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 		return attempt, nil
 	}
 	return attempt, nil
+}
+
+// providerSuccessAfter is the CHE-1741 R1 evidence: the failed task's provider
+// breaker is closed and its last_success_at is later than the failure. Unknown
+// task, agent, provider or breaker row is "no evidence", never an error.
+func providerSuccessAfter(ctx context.Context, q *db.Queries, failedTaskID pgtype.UUID, failedAt time.Time) (time.Time, bool, error) {
+	task, err := q.GetAgentTask(ctx, failedTaskID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load failed provider task: %w", err)
+	}
+	agent, err := q.GetAgent(ctx, task.AgentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("load failed provider task agent: %w", err)
+	}
+	provider, ok := ResolveModelProvider(agent.Model.String)
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	row, exists, err := providerBreakerRow(ctx, q, agent.WorkspaceID, provider)
+	if err != nil || !exists || row.State != "closed" || !row.LastSuccessAt.Valid || !row.LastSuccessAt.Time.After(failedAt) {
+		return time.Time{}, false, err
+	}
+	return row.LastSuccessAt.Time.UTC(), true, nil
 }
 
 func (s *TaskService) notifyProviderFailureOwner(
@@ -312,6 +351,10 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		attempt.Cap = &decision
 		return false, nil
 	}
+	changed, status := providerFailureChangedState, pgtype.Int4{Int32: attempt.ProbeStatus, Valid: true}
+	if attempt.SuccessEvidence {
+		changed, status = providerFailureSuccessState, pgtype.Int4{}
+	}
 	rows, err := q.RecordProviderFailureRecovery(ctx, db.RecordProviderFailureRecoveryParams{
 		FailedTaskID:     attempt.FailedTaskID,
 		TriggerKind:      attempt.Scope.Kind,
@@ -319,8 +362,8 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 		ConditionKey:     attempt.Scope.ConditionKey,
 		FailedAt:         pgtype.Timestamptz{Time: attempt.FailedAt, Valid: true},
 		ProbeAt:          pgtype.Timestamptz{Time: attempt.ProbeAt, Valid: true},
-		ProbeStatus:      pgtype.Int4{Int32: attempt.ProbeStatus, Valid: true},
-		ChangedCondition: providerFailureChangedState,
+		ProbeStatus:      status,
+		ChangedCondition: changed,
 		RecoveryRunID:    recoveryRunID,
 		RecoveryTaskID:   recoveryTaskID,
 	})
@@ -383,6 +426,9 @@ func providerFailureCooldownReason(attempt *providerFailureRecoveryAttempt) stri
 	}
 	if attempt.SkipReason != "" {
 		return fmt.Sprintf("provider_failure_cooldown: %s; failed_task_id=%s", attempt.SkipReason, util.UUIDToString(attempt.FailedTaskID))
+	}
+	if attempt.SuccessEvidence {
+		return fmt.Sprintf("provider_failure_cooldown: same-provider success after failure; failed_task_id=%s", util.UUIDToString(attempt.FailedTaskID))
 	}
 	return fmt.Sprintf("provider_failure_cooldown: fresh unauthenticated /v1/models probe returned 401; failed_task_id=%s", util.UUIDToString(attempt.FailedTaskID))
 }

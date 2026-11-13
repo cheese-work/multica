@@ -71,7 +71,7 @@ Après l'envoi, le commentaire affiche d'abord « En attente de lecture par … 
 
 ## Regroupement des commentaires consécutifs
 
-Lorsque le même agent a déjà une exécution en attente sur la tâche, les nouveaux commentaires sont fusionnés dans cette exécution et traités ensemble à son démarrage. Si l'agent est déjà en cours d'exécution, chaque commentaire est traité selon le choix fait dans la zone de commentaire (voir la section précédente). Vous pouvez continuer à ajouter des informations sans attendre la réponse de l'agent.
+Lorsque le même agent a déjà une exécution en attente sur la tâche, les nouveaux commentaires sont fusionnés dans cette exécution et traités ensemble à son démarrage. Si l'agent est déjà en cours d'exécution, chaque commentaire est traité selon le choix fait dans la zone de commentaire (voir la section précédente). Un commentaire envoyé sans ce choix, par exemple depuis la CLI ou l'API, est ajouté à l'exécution en cours. Vous pouvez continuer à ajouter des informations sans attendre la réponse de l'agent.
 
 Lorsqu'un commentaire @mentionne plusieurs agents différents, chaque agent obtient sa propre exécution ; plusieurs mentions qui désignent le même agent n'en produisent qu'une seule.
 

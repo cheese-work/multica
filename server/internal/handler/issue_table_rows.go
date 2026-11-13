@@ -393,7 +393,7 @@ SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at,
 	       i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	       i.revision, i.duplicate_of_issue_id,
+	       i.revision, i.duplicate_of_issue_id, i.description_external_read,
 	       %s AS direct_child_count, i.table_sort_key
 	FROM page i
 	ORDER BY %s`, cte, childCountExpr, resolvedSort.orderBy())
@@ -439,6 +439,7 @@ SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 			&row.issue.Properties,
 			&row.issue.Revision,
 			&row.issue.DuplicateOfIssueID,
+			&row.issue.DescriptionExternalRead,
 			&row.childCount,
 			&row.sortKey,
 		); err != nil {
@@ -500,6 +501,7 @@ SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 	committed = true
 
 	prefix := baseHandler.getIssuePrefix(r.Context(), compiled.workspaceID)
+	rf := baseHandler.newReadFilter(r)
 	issueIDs := make([]pgtype.UUID, len(scanned))
 	var originals []pgtype.UUID
 	for index, row := range scanned {
@@ -513,6 +515,7 @@ SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 	responseRows := make([]issueTableRowResponse, len(scanned))
 	for index, row := range scanned {
 		issue := issueListRowToResponse(row.issue, prefix)
+		rf.stubDescriptionOf(baseHandler, row.issue.DescriptionExternalRead, row.issue.Description, row.issue.CreatorType, row.issue.CreatorID, &issue)
 		fillTableRow(&issue)
 		labels := labelsByIssue[issue.ID]
 		if labels == nil {

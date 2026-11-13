@@ -160,6 +160,23 @@ func writeProviderRecoveryReceipt(ctx context.Context, q *db.Queries, reservatio
 	return err
 }
 
+// fenceRecoveryLineage reports whether a retryable failure sits in a provider
+// failure recovery lineage (CHE-1773). A hit is a capped decision (task lineage
+// or a chain deeper than the walk cap: rule 1; revision-aware wakeup lineage:
+// rule 2) and means no generic retry. Every CreateRetryTask caller consults it.
+func (s *TaskService) fenceRecoveryLineage(ctx context.Context, q *db.Queries, taskID pgtype.UUID) (providerFailureOwnerDecision, error) {
+	facts, err := q.GetRecoveryLineageFacts(ctx, taskID)
+	switch {
+	case err != nil:
+		return providerFailureOwnerDecision{}, err
+	case facts.TaskLineage || facts.TooDeep:
+		return providerFailureOwnerDecision{providerOwnerNone, 1}, nil
+	case facts.WakeupLineage:
+		return providerFailureOwnerDecision{providerOwnerNone, 2}, nil
+	}
+	return providerFailureOwnerDecision{}, nil
+}
+
 // notifyProviderFailureCap tells the failed run's accountable user, once, that
 // a capped failure will not be retried. Only cap decisions notify; the other
 // owner results are normal routing.

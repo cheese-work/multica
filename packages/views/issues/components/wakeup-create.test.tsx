@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { ApiError } from "@multica/core/api";
+import { useWakeupFormDraftStore } from "@multica/core/issues/stores";
 import { configureShortcutPlatform } from "@multica/core/shortcuts";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupCreate } from "./wakeup-create";
@@ -44,6 +45,7 @@ async function chooseCondition(label: string) {
 }
 
 beforeEach(() => {
+  useWakeupFormDraftStore.setState({ drafts: {} });
   assigneeAgent = "emacs";
   create.mockReset().mockResolvedValue(undefined);
   // The send shortcut is the primary modifier + Enter; pin the platform so
@@ -117,6 +119,15 @@ describe("WakeupCreateForm", () => {
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ kind: "cron", cron_expression: "0 9 * * *", timezone: "Asia/Shanghai", mode: "continuous" })),
     );
+  });
+
+  it("restores the unsent form after the popover unmounts and remounts", async () => {
+    await renderForm();
+    await chooseCondition("在某个时间");
+    fireEvent.change(screen.getByLabelText("唤醒后要做什么"), { target: { value: "看一下 CI" } });
+    cleanup();
+    await renderForm();
+    expect(screen.getByLabelText("唤醒后要做什么")).toHaveValue("看一下 CI");
   });
 
   it("keeps the draft and explains a capacity refusal", async () => {

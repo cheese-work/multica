@@ -288,6 +288,7 @@ func warnTokensAtEighty(ctx context.Context, q *db.Queries, issue db.Issue, usag
 		return nil
 	}
 	xid, _ := q.CurrentXactID(ctx)
-	go (*hook)(context.WithoutCancel(ctx), RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80Tokens, Since: usage.Since, Xid: xid, Tokens: after, TokenBase: base})
+	event := RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80Tokens, Since: usage.Since, Xid: xid, Tokens: after, TokenBase: base}
+	goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), event) })
 	return nil
 }

@@ -84,6 +84,12 @@ UPDATE issue_workflow SET
         ELSE NULLIF(sqlc.narg('max_runs_per_issue')::int, 0)
     END,
     include_child_prs = COALESCE(sqlc.narg('include_child_prs')::boolean, include_child_prs),
+    -- A start status left out of the write keeps its value; '' clears it back
+    -- to todo.
+    start_status_key = CASE
+        WHEN sqlc.narg('start_status_key')::text IS NULL THEN start_status_key
+        ELSE NULLIF(sqlc.narg('start_status_key')::text, '')
+    END,
     updated_at = now()
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid

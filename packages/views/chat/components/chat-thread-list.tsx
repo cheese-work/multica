@@ -415,7 +415,7 @@ function ChatThreadListBody({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
-            <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
               {titleText}
             </span>
             <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
@@ -516,7 +516,7 @@ function ChatThreadListBody({
   if (view === "archived") {
     return (
       <>
-        <NeedsYouList />
+        <NeedsYouList sessions={rows} agents={agents} />
         <button
           type="button"
           onClick={() => setView("history")}
@@ -554,7 +554,7 @@ function ChatThreadListBody({
   if (historySessions.length === 0) {
     return (
       <>
-        <NeedsYouList />
+        <NeedsYouList sessions={rows} agents={agents} />
         <div className="px-2 py-1.5 text-caption text-muted-foreground">
           {t(($) => $.window.no_previous)}
         </div>
@@ -565,7 +565,7 @@ function ChatThreadListBody({
 
   return (
     <>
-      <NeedsYouList />
+      <NeedsYouList sessions={rows} agents={agents} />
       <div className="contents" data-testid="chat-thread-group-recent">
         {historySessions.map(renderRow)}
       </div>

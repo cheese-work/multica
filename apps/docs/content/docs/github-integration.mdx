@@ -78,6 +78,8 @@ For a reference-only GitHub link, use `Refs MUL-123` or `Part of MUL-123` in the
 
 A bare mention in the body, such as `Related to MUL-123`, doesn't link the PR at all. Commit messages and PR comments don't trigger linking either.
 
+A PR from a fork links automatically only when the fork has the same owner as the base repository. Merging such a PR does not move the issue. Link PRs from forks with other owners by hand.
+
 You can also link a PR by hand: in the issue's **Pull requests** block, click **+** and paste the PR URL. To take a PR off an issue, open the **⋯** menu on its row and choose **Remove from issue**; Multica won't link it again from its title or branch.
 
 ## View PRs on an issue
@@ -162,6 +164,12 @@ Bindings cannot target an agent outside this workspace. The normal invocation-pe
 The comment, queued run, and review receipt commit together. GitHub redelivery cannot create a second run for that review and issue, even after the run completes or its comment is deleted. Failed API fetches or task writes return `500` without a partial comment or receipt, so the same delivery can be retried. Review content is external input; embedded Multica mention links are neutralized.
 
 After deployment, submit a review on a test PR linked to a test issue. Read back the issue comment and the author's run. Redeliver the same review and confirm that the comment/run counts do not increase. Confirm that a bot review does not queue a run, and that a request with an invalid webhook signature is rejected.
+
+## Green-checks wakeups
+
+Set `github_wake_on_ci_success` to `true` in the workspace settings to start a run when the checks of a linked open or draft PR pass on its current head. The setting is off by default. A PR whose only unfinished check is the `security-gate` verdict status counts as passed, so the run does not wait for a review verdict that the run itself may be asked to request. A new head wakes again. A failing run that is re-run to green on the same head wakes once more. The same green delivered again does not.
+
+The run goes to the PR's author agent, resolved as for conflict and failed-check wakeups. If the author is unknown, the run goes to the issue's assignee. When the assignee is a person and no author agent is known, the person gets a notification instead.
 
 ## Wait for a GitHub Actions run
 
