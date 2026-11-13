@@ -10,16 +10,6 @@ import (
 // Round 2 of CHE-4278 review: sent calls are always debited, and a stored
 // permission 403 always reaches the Shadow switch.
 
-func (e *rerunEnv) budgetRemaining(t *testing.T) int {
-	t.Helper()
-	var n int
-	if err := e.pool.QueryRow(context.Background(),
-		`SELECT remaining FROM gh_installation_budget WHERE installation_id=$1`, e.inst).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 func TestRerunSentGetIsDebitedOnEveryPathThatSendsNoPost(t *testing.T) {
 	cases := map[string]func(e *rerunEnv){
 		"manual rerun":  func(e *rerunEnv) { e.gh.setAttempt(2) },
@@ -35,13 +25,17 @@ func TestRerunSentGetIsDebitedOnEveryPathThatSendsNoPost(t *testing.T) {
 				e.schedule(t, run)
 				e.runOne(t)
 			}
-			if got := e.budgetRemaining(t); got >= 4000-3 {
-				t.Fatalf("remaining = %d after 3 sent GETs; the reserve was released without a debit", got)
+			// S5 ghbudget keeps a header-less sent call as a settled reservation
+			// (id nibble 0); a released-without-debit call would leave none.
+			var settled, live int
+			if err := e.pool.QueryRow(context.Background(),
+				`SELECT count(*) FILTER (WHERE substr(id::text,15,1)='0'),
+				        count(*) FILTER (WHERE substr(id::text,15,1)<>'0')
+				   FROM gh_budget_reservation WHERE installation_id=$1`, e.inst).Scan(&settled, &live); err != nil {
+				t.Fatal(err)
 			}
-			var live int
-			_ = e.pool.QueryRow(context.Background(), `SELECT count(*) FROM gh_budget_reservation WHERE installation_id=$1`, e.inst).Scan(&live)
-			if live != 0 {
-				t.Fatalf("%d reservations left", live)
+			if settled != 3 || live != 0 {
+				t.Fatalf("settled=%d live=%d after 3 sent GETs, want 3 and 0", settled, live)
 			}
 			e.wantPosts(t, 0)
 		})
