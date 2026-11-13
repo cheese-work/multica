@@ -10,9 +10,9 @@
  *    reviewer's Sibling row does.
  * 2. A new raw <button|input|select|textarea> in packages/views fails when a @multica/ui primitive exists.
  *    JSX is parsed with the TypeScript compiler API, so a multiline element counts once. Only added lines count
- *    (a renamed file is compared with its old path). Exempt an element with `// ui-pattern-ref: allow <reason>`
- *    on or right above it, or with a `deviation:` line that names its file. A file may keep as many raw elements as
- *    the baseline lists for it; the baseline may only shrink.
+ *    (a renamed file is compared with its old path; per tag, the old file's raw elements are the allowance). Exempt an element with `// ui-pattern-ref: allow <reason>`
+ *    on or right above it, or with a `deviation:` line that names its file. The baseline lists the raw elements that
+ *    exist today; it may only shrink.
  *
  * Run: node scripts/design/check-ui-pattern-ref.mjs [--base <ref>] [--head <ref>] [--body-file <path>] [--write-baseline]
  *   --base   default `git merge-base origin/main HEAD`
@@ -113,6 +113,8 @@ export function rawElements(source, fileName = "x.tsx") {
   return found;
 }
 
+const countByTag = (els) => els.reduce((n, e) => ({ ...n, [e.tag]: (n[e.tag] ?? 0) + 1 }), {});
+
 const allowReason = (lines, el) => {
   for (let n = Math.max(1, el.line - 1); n <= el.endLine; n++) {
     const m = ALLOW.exec(lines[n - 1] ?? "");
@@ -132,7 +134,8 @@ const readJson = (text) => {
 export function checkUiPatternRef({ cwd = process.cwd(), base, head = "HEAD", body = "" }) {
   const errors = [];
   const allowed = [];
-  const files = readDiff(cwd, base ?? git(cwd, ["merge-base", "origin/main", head]).trim(), head);
+  const baseRef = base ?? git(cwd, ["merge-base", "origin/main", head]).trim();
+  const files = readDiff(cwd, baseRef, head);
   const uiFiles = [...files.values()]
     .filter((f) => isUiPath(f.path) || isUiPath(f.oldPath))
     .map((f) => f.path)
@@ -160,17 +163,20 @@ export function checkUiPatternRef({ cwd = process.cwd(), base, head = "HEAD", bo
   }
 
   // 2. raw elements
-  const baseline = readJson(show(cwd, head, BASELINE)) ?? {};
+  const headBaselineText = show(cwd, head, BASELINE);
+  const baseline = readJson(headBaselineText) ?? {};
   for (const f of [...files.values()].sort((a, b) => a.path.localeCompare(b.path))) {
     if (f.status === "D" || f.added.size === 0 || !isViewsJsx(f.path)) continue;
     const source = show(cwd, head, f.path);
     if (source == null) continue;
     const els = rawElements(source, f.path);
-    const keep = baseline[f.path] ?? baseline[f.oldPath] ?? 0;
-    if (els.length <= keep) continue;
+    // Per tag, the old file's raw elements are the allowance: a replaced <button> may not become a new <input>.
+    const oldSource = f.status === "A" ? null : show(cwd, baseRef, f.oldPath);
+    const oldCount = countByTag(oldSource == null ? [] : rawElements(oldSource, f.oldPath));
+    const headCount = countByTag(els);
     const srcLines = source.split("\n");
     const deviation = lines.find((l) => l.kind === "deviation" && l.reason.includes(f.path));
-    for (const el of els.filter((e) => f.added.has(e.line))) {
+    for (const el of els.filter((e) => f.added.has(e.line) && headCount[e.tag] > (oldCount[e.tag] ?? 0))) {
       const where = `${f.path}:${el.line}`;
       const reason = allowReason(srcLines, el);
       if (reason) allowed.push(`${where} <${el.tag}> allowed inline: ${reason}`);
@@ -185,8 +191,10 @@ export function checkUiPatternRef({ cwd = process.cwd(), base, head = "HEAD", bo
   }
 
   // 3. baseline only shrinks
-  const before = readJson(show(cwd, base ?? git(cwd, ["merge-base", "origin/main", head]).trim(), BASELINE));
-  if (before) {
+  const before = readJson(show(cwd, baseRef, BASELINE));
+  if (before && readJson(headBaselineText) == null) {
+    errors.push(`${BASELINE} may only shrink: it is missing or not valid JSON on the head. Fix: restore the file and lower entries only.`);
+  } else if (before) {
     const moved = new Map([...files.values()].filter((f) => f.status === "R").map((f) => [f.path, f.oldPath]));
     for (const [path, count] of Object.entries(baseline)) {
       const was = before[path] ?? before[moved.get(path)];

@@ -202,3 +202,35 @@ test("a shrunken baseline passes", (t) => {
   });
   assert.deepEqual(r.errors, []);
 });
+
+test("fails a raw <input> that replaces a raw <button> in the same file", (t) => {
+  const baseline = "scripts/design/ui-raw-baseline.json";
+  const r = run(
+    t,
+    {
+      base: { [VIEW]: withButton(), [baseline]: JSON.stringify({ [VIEW]: 1 }) },
+      head: { [VIEW]: "export const Thing = () => (\n  <div>\n    <input type=\"text\" />\n  </div>\n);\n" },
+    },
+    "pattern: selection-annotation",
+  );
+  assert.match(errors(r), /thing\.tsx:3 raw <input>/);
+});
+
+test("fails a second raw <button> added next to an existing one", (t) => {
+  const baseline = "scripts/design/ui-raw-baseline.json";
+  const r = run(
+    t,
+    {
+      base: { [VIEW]: withButton(), [baseline]: JSON.stringify({ [VIEW]: 1 }) },
+      head: { [VIEW]: withButton("    <button type=\"button\">More</button>\n") },
+    },
+    "pattern: selection-annotation",
+  );
+  assert.match(errors(r), /raw <button>/);
+});
+
+test("fails a baseline that is deleted or invalid on the head", (t) => {
+  const baseline = "scripts/design/ui-raw-baseline.json";
+  const r = run(t, { base: { [baseline]: JSON.stringify({ [VIEW]: 1 }) }, head: { [baseline]: "not json" } });
+  assert.match(errors(r), /ui-raw-baseline\.json may only shrink/);
+});
