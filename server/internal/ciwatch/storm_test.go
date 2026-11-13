@@ -18,7 +18,7 @@ import (
 // fakeDest writes its rows into ciwatch_test.effect inside the ledger's
 // transaction, so a rollback removes them exactly as the real destinations do.
 type fakeDest struct {
-	e          *ledgerEnv
+	e          *actEnv
 	loseReply  atomic.Bool // insert, then fail: a lost creation response
 	mu         sync.Mutex
 	specs      []IssueSpec
@@ -112,7 +112,7 @@ func (c *fakeClaims) ClaimCheck(_ context.Context, _ pgx.Tx, _, repo, key, holde
 }
 
 type stormEnv struct {
-	*ledgerEnv
+	*actEnv
 	d      *fakeDest
 	claims *fakeClaims
 }
@@ -121,7 +121,7 @@ func newStormEnv(t *testing.T) *stormEnv {
 	t.Helper()
 	e := newLedgerEnv(t)
 	e.ledger = NewLedger(e.pool, NewStormRecheck(e.clock.Now), WithLedgerClock(e.clock.Now))
-	s := &stormEnv{ledgerEnv: e, d: &fakeDest{e: e}, claims: &fakeClaims{held: map[string]string{}}}
+	s := &stormEnv{actEnv: e, d: &fakeDest{e: e}, claims: &fakeClaims{held: map[string]string{}}}
 	// issue rows reference a workspace (legacy FK), so the test workspace is real.
 	if _, err := e.pool.Exec(context.Background(), `INSERT INTO workspace (id, name, slug, issue_prefix)
 		VALUES ($1::uuid, 'ciwatch test', $2, 'CWT')`, e.ws, "ciwatch-"+e.ws); err != nil {
