@@ -14,7 +14,13 @@ export default defineConfig({
   resolve: {
     dedupe: ["react", "react-dom", "@tanstack/react-query", "i18next", "react-i18next"],
     // The harness has no workspace; stub the one hook that reads the URL slug.
-    alias: [{ find: /^@multica\/core\/hooks$/, replacement: resolve(here, "workspace-stub.ts") }],
+    alias: [
+      { find: /^@multica\/core\/hooks$/, replacement: resolve(here, "workspace-stub.ts") },
+      // settings-navigation renders the real SettingsPage shell; its tabs and auth-bound hooks are stubbed.
+      { find: /^@multica\/core\/paths$/, replacement: resolve(here, "paths-stub.ts") },
+      { find: /^@multica\/core\/permissions$/, replacement: resolve(here, "permissions-stub.ts") },
+      { find: /^\.{1,2}\/(?:[\w-]+\/)*[\w-]+-tab$/, replacement: resolve(here, "settings-stubs.tsx") },
+    ],
   },
   build: {
     outDir: process.env.HARNESS_OUT,

@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // Not "@multica/core/i18n/react": its barrel pulls the auth store, which hangs headless Chrome at module init.
@@ -11,6 +11,15 @@ import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
 import { Archive, Copy, Download, Maximize2, RotateCcw, Trash2 } from "@multica/ui/icons";
+import { memberListOptions } from "@multica/core/workspace/queries";
+import { NavigationProvider } from "../../../packages/views/navigation";
+import {
+  SettingsCard, SettingsReadOnlyNotice, SettingsRow, SettingsSaveState, SettingsSection, SettingsTab,
+} from "../../../packages/views/settings/components/settings-layout";
+// Lazy: the SettingsPage module graph is large; the other views must not pay for it (or hang on it) at init.
+const SettingsPage = lazy(() =>
+  import("../../../packages/views/settings/components/settings-page").then((m) => ({ default: m.SettingsPage })),
+);
 import "./globals.css";
 
 const WS = "ws-harness";
@@ -32,6 +41,12 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchO
 qc.setQueryData(issueListOptions(WS).queryKey, {
   byStatus: { [STATUS_ORDER[0]!]: { issues: ISSUES, total: ISSUES.length } },
 });
+
+const member = (id: string, name: string, role: string) => ({ id, user_id: id, workspace_id: WS, name, role, email: `${id}@example.com` });
+qc.setQueryData(memberListOptions(WS).queryKey, [
+  member("m1", "Mai Tran", "owner"), member("m2", "Linh Pham", "admin"), member("m3", "Bao Nguyen", "member"),
+]);
+qc.setQueryData(memberListOptions("ws-no-managers").queryKey, [member("m4", "Bao Nguyen", "member")]);
 
 const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
   <div className="flex items-center gap-4 py-2">
@@ -103,10 +118,82 @@ function IssueMentionChip() {
   );
 }
 
+function SettingsPageDemo() {
+  return (
+    <div className="mx-auto max-w-4xl p-6">
+      <SettingsTab title="Preferences" description="How Multica looks and behaves on this device." scope="device">
+        <SettingsSection title="Appearance" description="Theme and language apply on this device only.">
+          <SettingsCard>
+            <SettingsRow label="Theme" description="Follows the system by default." size="select">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">System</div>
+            </SettingsRow>
+            <SettingsRow label="Language" size="select">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">English</div>
+            </SettingsRow>
+          </SettingsCard>
+        </SettingsSection>
+        <SettingsSection title="Workspace profile" scope="workspace">
+          <SettingsCard>
+            <SettingsRow label="Display name" description="Shown to other members of this workspace." size="text">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">Ada Lovelace</div>
+            </SettingsRow>
+            <SettingsRow label="Issue prefix" size="code">
+              <div className="h-9 rounded-lg border border-input px-3 text-body leading-9">CHE</div>
+            </SettingsRow>
+            <SettingsRow label="Email digest" description="One summary a day, at 09:00 ICT.">
+              <div className="h-5 w-9 rounded-full bg-primary" />
+            </SettingsRow>
+          </SettingsCard>
+        </SettingsSection>
+      </SettingsTab>
+    </div>
+  );
+}
+
+const navAdapter = {
+  push() {}, replace() {}, back() {},
+  pathname: "/acme/settings", searchParams: new URLSearchParams(""), hash: "",
+  getShareableUrl: (path: string) => path,
+};
+function SettingsNavigation() {
+  return (
+    <NavigationProvider value={navAdapter}>
+      <div className="flex h-[900px] w-full">
+        <Suspense fallback={null}><SettingsPage /></Suspense>
+      </div>
+    </NavigationProvider>
+  );
+}
+
+function ReadOnlyMemberView() {
+  return (
+    <div className="max-w-2xl space-y-6 p-6">
+      <Row label="owners and admins named"><div className="w-full"><SettingsReadOnlyNotice wsId={WS} /></div></Row>
+      <Row label="no manager found"><div className="w-full"><SettingsReadOnlyNotice wsId="ws-no-managers" /></div></Row>
+    </div>
+  );
+}
+
+function SaveState() {
+  const labels = { savingLabel: "Saving…", savedLabel: "Saved", errorLabel: "Could not save. Try again." };
+  return (
+    <div className="p-6">
+      <Row label="idle (renders nothing)"><SettingsSaveState status="idle" {...labels} /></Row>
+      <Row label="saving"><SettingsSaveState status="saving" {...labels} /></Row>
+      <Row label="saved"><SettingsSaveState status="saved" {...labels} /></Row>
+      <Row label="error"><SettingsSaveState status="error" {...labels} /></Row>
+    </div>
+  );
+}
+
 const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
   "issue-mention-chip": IssueMentionChip,
+  "settings-page": SettingsPageDemo,
+  "settings-navigation": SettingsNavigation,
+  "read-only-member-view": ReadOnlyMemberView,
+  "save-state": SaveState,
 };
 const id = new URLSearchParams(location.search).get("pattern") ?? "";
 const View = PATTERNS[id];
