@@ -106,6 +106,10 @@ func wakeupError(w http.ResponseWriter, err error) {
 	if askGuardWakeupError(w, err) {
 		return
 	}
+	if errors.Is(err, service.ErrWakeupWatchInput) {
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.ConstraintName == "idx_issue_wakeup_decision_request" {
 		writeErrorCode(w, 409, "wakeup_decision_bound", "another enabled wakeup already waits on this decision request")

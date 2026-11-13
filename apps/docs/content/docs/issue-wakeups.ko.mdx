@@ -143,6 +143,7 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "결�
 - **조건**: `--until-status`, `--until-assignee`, `--until-label`, `--until-property`, `--until-children-done [--stage N]`, `--until-pr checks|merged|conflicts`, `--until-issue <태스크> --until-issue-state done|ended|in_review|blocked`. 깨우기 하나에 `--until-*`는 하나만 쓸 수 있고 `--event`와 함께 쓸 수 없습니다.
 - **열린 PR의 타이머**: 서버가 GitHub 체크를 갱신하는 동안 에이전트는 열린 PR이 연결된 태스크에 `at`, `every`, `cron` 깨우기를 추가할 수 없습니다. `--until-pr checks|conflicts` 또는 `--until-gh-run`을 안내하는 422가 반환됩니다. 사람, 초안 또는 병합된 PR, PR이 없는 태스크는 해당되지 않습니다.
 - **끝내는 방법**: CLI는 대기 기한을 자동으로 붙이지 않습니다. `--expires-in 72h`나 `--expires-at <RFC3339 시간>`으로 끝을 정하세요. `--on-timeout wake`를 붙이면 이벤트 규칙이 기한이 되었을 때 한 번 더 깨웁니다. `--max-fires N`(1–1000)은 반복 규칙의 실행 횟수에 상한을 둡니다.
+- **감시할 입력**: 시간 웨이크업(`at`, `every`, `cron`)에서는 `--watch <입력>`을 반복해서 지정해 감시 대상을 선언합니다. 값은 `issue`, `pr`, `children`, `thread:<comment-uuid>`입니다. 선언한 입력이 모두 마지막으로 완료된 실행 이후 바뀌지 않았다면 서버는 그 실행을 건너뛸 수 있습니다. 선언하지 않으면 항상 실행합니다. 지금은 서버가 선언을 기록만 하고 건너뛰지는 않습니다. 이벤트 규칙과 조건 규칙은 `--watch`를 받지 않습니다.
 - **답이 남는 곳**: `--parent <댓글 ID>`를 붙이면 깨운 뒤의 답글이 원래 스레드에 남습니다.
 
 기존 규칙 관리:
