@@ -55,7 +55,7 @@
   components: []
   surfaces: ["autopilot-dialog-lazy", "deferred-content-editor", "lazy-content-editor", "issue-detail-lazy", "lazy-search-command"]
   build: "One wrapper (3 near-copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Y1a5G3La2l"}
 - id: issue-mention-chip
   intent: "Chip that links an issue."
   origin: fork
@@ -70,7 +70,7 @@
   components: []
   surfaces: ["decision-answer-content", "decision-dm-card", "decision-withdrawal-card", "decision-quote-card"]
   build: "One shared card frame (3 copies of one recipe)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=MzyQik65fF"}
 - id: icon-button-action
   intent: "Icon-only action button."
   origin: fork
@@ -84,7 +84,7 @@
   status: active
   components: ["packages/ui/components/ui/collapsible.tsx"]
   surfaces: ["continuation-block", "predecessor-dms", "project-wakeups-section", "workspace-wakeup-rules"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=oWmmYrlE7R"}
 - id: settings-select-row
   intent: "Settings row with a select."
   origin: fork
@@ -92,7 +92,7 @@
   components: ["packages/views/settings/components/settings-layout.tsx", "packages/ui/components/ui/select.tsx"]
   surfaces: ["runtime-profile-field", "idle-guard-rows", "routing-agent-rows", "runtime-profile-row"]
   open: "runtime-profile-field omits SettingsRow."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=XcnDkQZ9_Q"}
 - id: pill-menu
   intent: "Pill-shaped menu trigger."
   origin: fork
@@ -100,7 +100,7 @@
   components: ["packages/ui/components/ui/select.tsx", "packages/views/issues/components/pickers/property-picker.tsx"]
   surfaces: ["wakeup-condition-params", "wakeup-fields", "wakeup-pickers", "workflow-choice-pill"]
   open: "pillClass in wakeup-pickers is the local source; fold it into the shared pill."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=2g_6AmC_vS"}
 - id: decision-action-approval
   intent: "Approve or reject a decision action."
   origin: fork
@@ -187,7 +187,7 @@
   status: active
   components: ["packages/ui/components/ui/card.tsx", "packages/ui/components/ui/badge.tsx"]
   surfaces: ["agent-mcp-tab", "composio-tab"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=DuqxVys-Eo"}
 - id: settings-table-section
   intent: "Settings table."
   origin: fork
@@ -195,7 +195,7 @@
   components: ["packages/ui/components/ui/table.tsx"]
   surfaces: ["delegated-writes-section", "provider-breakers-tab"]
   open: "2 raw tables here, plus chat-session-stats-dialog."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=zwtKWV4hl7"}
 - id: settings-action-row
   intent: "Pause / resume row with a confirm dialog."
   origin: fork
@@ -203,21 +203,21 @@
   components: []
   surfaces: ["agent-scheduling", "workspace-scheduling-row"]
   build: "One row (2 copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=sG7c6FoEh5"}
 - id: create-shell
   intent: "Agent create page shell."
   origin: fork
   status: active
   components: ["packages/views/agents/create/create-shell.tsx"]
   surfaces: ["ai-create-agent-page", "builder-setup-panel"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=LqGJiAq4L4"}
 - id: confirm-dialog
   intent: "Confirm dialog for a handoff."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/alert-dialog.tsx"]
   surfaces: ["use-archived-send", "batch-handoff-confirm-dialog"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Ii5sqw8rC5"}
 - id: section-eyebrow
   intent: "Uppercase label above a section (text-micro uppercase tracking-wide, 27 files)."
   origin: fork
@@ -275,24 +275,24 @@
   status: active
   components: ["packages/ui/components/ui/button.tsx"]
   docs: ["packages/ui/docs/button.md", "packages/ui/docs/button.zh.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1BY4_9on61"}
 - id: dialogs
   intent: "Dialog for a focused task. AlertDialog for a consequential confirmation. Keep the footer reachable at narrow widths."
   origin: upstream
   status: active
   components: ["packages/ui/components/ui/dialog.tsx", "packages/ui/components/ui/alert-dialog.tsx"]
   docs: ["packages/ui/docs/dialog.md", "packages/ui/docs/dialog.zh.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Ug6-1wtfrk"}
 - id: tabs
   intent: "Roving focus, Left/Right moves, Home/End jump, one tabpanel per tab. Prefer it to SettingsViewTabs (no panel semantics, 28 px high)."
   origin: upstream
   status: active
   components: ["packages/ui/components/ui/tabs.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1EvcnL_auC"}
 - id: ui-copy
   intent: "Help only for a non-obvious choice, constraint, consequence or next step. State each fact once."
   origin: upstream
   status: active
   components: []
   docs: ["AGENTS.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=S1nDnILx1h"}

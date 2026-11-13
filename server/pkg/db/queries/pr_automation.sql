@@ -62,7 +62,9 @@ ORDER BY pr_number;
 -- issue is still in the status the decision saw (two merges racing move it
 -- once), is not already in the target, and the linked PRs are still all merged
 -- when the write runs (a PR linked between the decision and this statement
--- keeps the issue where it is). Repositions and clears a duplicate mark like
+-- keeps the issue where it is). tree_checked skips that own-links guard: the
+-- caller already applied the include_child_prs rule over the issue and its
+-- children (CHE-5242). Repositions and clears a duplicate mark like
 -- UpdateIssueStatus does; the target is never cancelled.
 UPDATE issue AS i SET
     status = sqlc.arg('target_status')::text,
@@ -80,20 +82,25 @@ WHERE i.id = $1
   AND i.workspace_id = $2
   AND i.status = sqlc.arg('expected_status')::text
   AND i.status <> sqlc.arg('target_status')::text
-  AND EXISTS (
-      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
-      UNION ALL
-      SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM issue_pull_request ipr
-      JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM issue_vcs_pull_request ipr
-      JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+  AND (
+      sqlc.arg('tree_checked')::bool
+      OR (
+      EXISTS (
+          SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
+          UNION ALL
+          SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_pull_request ipr
+          JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+          WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_vcs_pull_request ipr
+          JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
+          WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+      )
+      )
   )
 RETURNING i.*;
 
