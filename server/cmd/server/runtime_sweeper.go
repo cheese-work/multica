@@ -190,6 +190,21 @@ func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.Ta
 	})
 }
 
+// providerReleaseSweepInterval is the controller tick. The 15 s stagger and the
+// canary cool-off live in the controller and its breaker row, so a faster tick
+// releases nothing extra.
+const providerReleaseSweepInterval = 5 * time.Second
+
+// runProviderReleaseController releases provider-held rows on health evidence
+// or one canary (CHE-1741). All state is in the database, so a restart resumes.
+func runProviderReleaseController(ctx context.Context, taskSvc *service.TaskService) {
+	runPeriodicSweep(ctx, providerReleaseSweepInterval, func() {
+		if err := taskSvc.ReleaseProviderHeldTasks(ctx, time.Now()); err != nil {
+			slog.Warn("provider release controller: round failed", "error", err)
+		}
+	})
+}
+
 func runRuntimeGCSweeper(ctx context.Context, txStarter runtimeGCTxStarter, queries *db.Queries, metrics *obsmetrics.BusinessMetrics, publisher runtimeGCEventPublisher) {
 	runPeriodicSweep(ctx, runtimeGCSweepInterval, func() {
 		gcRuntimes(ctx, txStarter, queries, metrics, publisher)
