@@ -843,6 +843,18 @@ describe("DecisionRequestCard answering", () => {
         expect(await screen.findByTestId("config-change-keys")).toHaveTextContent("compact_prompt");
       });
 
+      it.each([
+        ["workspace.routing_agent.set", "workspace.routing_agent", "json"],
+        ["workspace.delegated_writes.set", "workspace.delegated_writes", "json"],
+        ["agent.skills.set", "agent.skills", "lines"],
+      ] as const)("shows the %s preview and enables Approve for the owner (CHE-4490)", async (action_type, field, diff_kind) => {
+        show({ ...configAction, action_type, config_change: { ...change, field, diff_kind } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
+        expect(await screen.findByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+        expect(await approve()).toBeEnabled();
+      });
+
       it("keeps the run-budget preview and Approve for a person who is not the owner", async () => {
         member.role = "member";
         show(action);

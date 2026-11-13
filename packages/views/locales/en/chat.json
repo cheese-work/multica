@@ -533,7 +533,12 @@
       "field_workflow_steps": "Workflow steps",
       "field_workflow_instructions": "Workflow step instructions",
       "field_workspace_settings": "Workspace settings",
-      "field_workflow_budget": "Workflow run budget"
+      "field_workflow_budget": "Workflow run budget",
+      "field_workspace_routing_agent": "Routing agent",
+      "field_workspace_delegated_writes": "Delegated governed writes",
+      "field_agent_skills": "Agent skills",
+      "counts": "Characters: {{before}} → {{after}}",
+      "counts_cap": "Characters: {{before}} → {{after}} of {{cap}} allowed"
     },
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",

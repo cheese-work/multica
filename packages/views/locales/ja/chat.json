@@ -517,7 +517,12 @@
       "field_workflow_steps": "ワークフローのステップ",
       "field_workflow_instructions": "ワークフローのステップ指示",
       "field_workspace_settings": "ワークスペース設定",
-      "field_workflow_budget": "ワークフローの実行予算"
+      "field_workflow_budget": "ワークフローの実行予算",
+      "field_workspace_routing_agent": "ルーティングエージェント",
+      "field_workspace_delegated_writes": "委任されたガバナンス書き込み",
+      "field_agent_skills": "エージェントのスキル",
+      "counts": "文字数: {{before}} → {{after}}",
+      "counts_cap": "文字数: {{before}} → {{after}}（上限 {{cap}}）"
     },
     "agent_note": "エージェントのメモ（未検証）",
     "answer_send_passkey": "パスキーで送信",

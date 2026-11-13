@@ -517,7 +517,12 @@
       "field_workflow_steps": "工作流步骤",
       "field_workflow_instructions": "工作流步骤指令",
       "field_workspace_settings": "工作区设置",
-      "field_workflow_budget": "工作流运行预算"
+      "field_workflow_budget": "工作流运行预算",
+      "field_workspace_routing_agent": "路由智能体",
+      "field_workspace_delegated_writes": "委托的受管写入",
+      "field_agent_skills": "智能体技能",
+      "counts": "字符数：{{before}} → {{after}}",
+      "counts_cap": "字符数：{{before}} → {{after}}（上限 {{cap}}）"
     },
     "agent_note": "智能体备注（未验证）",
     "answer_send_passkey": "使用通行密钥发送",
