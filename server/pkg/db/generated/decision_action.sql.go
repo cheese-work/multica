@@ -804,20 +804,37 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 	return i, err
 }
 
-const lockDecisionWorkflowNowait = `-- name: LockDecisionWorkflowNowait :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, run_budget_token_allowance, run_budget_token_reserve, start_status_key FROM issue_workflow
+const lockDecisionWorkflowNowaitCols = `-- name: LockDecisionWorkflowNowaitCols :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key FROM issue_workflow
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
 
-type LockDecisionWorkflowNowaitParams struct {
+type LockDecisionWorkflowNowaitColsParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	ID          pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisionWorkflowNowaitParams) (IssueWorkflow, error) {
-	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowait, arg.WorkspaceID, arg.ID)
-	var i IssueWorkflow
+type LockDecisionWorkflowNowaitColsRow struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	InitialStatusKey string             `json:"initial_status_key"`
+	Steps            []byte             `json:"steps"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+	IsDefault        bool               `json:"is_default"`
+	OwnerID          pgtype.UUID        `json:"owner_id"`
+	MaxRunsPerIssue  pgtype.Int4        `json:"max_runs_per_issue"`
+	IncludeChildPrs  bool               `json:"include_child_prs"`
+	RunBudgetSince   pgtype.Timestamptz `json:"run_budget_since"`
+	StartStatusKey   pgtype.Text        `json:"start_status_key"`
+}
+
+func (q *Queries) LockDecisionWorkflowNowaitCols(ctx context.Context, arg LockDecisionWorkflowNowaitColsParams) (LockDecisionWorkflowNowaitColsRow, error) {
+	row := q.db.QueryRow(ctx, lockDecisionWorkflowNowaitCols, arg.WorkspaceID, arg.ID)
+	var i LockDecisionWorkflowNowaitColsRow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -832,8 +849,6 @@ func (q *Queries) LockDecisionWorkflowNowait(ctx context.Context, arg LockDecisi
 		&i.MaxRunsPerIssue,
 		&i.IncludeChildPrs,
 		&i.RunBudgetSince,
-		&i.RunBudgetTokenAllowance,
-		&i.RunBudgetTokenReserve,
 		&i.StartStatusKey,
 	)
 	return i, err
@@ -1046,6 +1061,73 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 		&i.PostCommitDoneAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setIssueProjectFromDecision = `-- name: SetIssueProjectFromDecision :one
+UPDATE issue SET project_id = $1::uuid, status = $2::text,
+  revision = revision + 1, updated_at = now()
+WHERE id = $3::uuid AND workspace_id = $4::uuid
+  AND project_id IS NOT DISTINCT FROM $5::uuid
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read
+`
+
+type SetIssueProjectFromDecisionParams struct {
+	ProjectID     pgtype.UUID `json:"project_id"`
+	Status        string      `json:"status"`
+	ID            pgtype.UUID `json:"id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	FromProjectID pgtype.UUID `json:"from_project_id"`
+}
+
+// Moves an issue to the project an approved issue.project.set action names,
+// only while the issue is still in the project the card was asked from. The
+// status is the one the target workflow lists (the issue's own when it does).
+func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueProjectFromDecisionParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, setIssueProjectFromDecision,
+		arg.ProjectID,
+		arg.Status,
+		arg.ID,
+		arg.WorkspaceID,
+		arg.FromProjectID,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+		&i.StartDate,
+		&i.Metadata,
+		&i.Stage,
+		&i.Properties,
+		&i.Revision,
+		&i.LastActivityAt,
+		&i.TriageState,
+		&i.DuplicateOfIssueID,
+		&i.WorkflowID,
+		&i.RequestedByID,
+		&i.MaxRunsOverride,
+		&i.DescriptionExternalRead,
 	)
 	return i, err
 }
