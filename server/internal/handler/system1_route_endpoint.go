@@ -67,6 +67,11 @@ func routeRefusal(err error) (string, bool) {
 	return "", false
 }
 
+// routeLockGapHook runs inside the write transaction before the issue row is
+// locked, after the handler read its snapshot. A test lands a concurrent edit
+// here.
+var routeLockGapHook = func() {}
+
 func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	prev, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
@@ -205,6 +210,14 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	err = h.runWithIssueStatusGuard(writeCtx, prev.WorkspaceID, statusKey, true, func(q *db.Queries) error {
 		th := h.onQueries(q)
 		var err error
+		routeLockGapHook()
+		// Status is the only field this call owns. Take every other field from
+		// the locked row so an edit that landed after the snapshot survives.
+		locked, err := q.LockIssueForDescriptionUpdate(writeCtx, db.LockIssueForDescriptionUpdateParams{ID: prev.ID, WorkspaceID: prev.WorkspaceID})
+		if err != nil {
+			return err
+		}
+		keepLockedFields(&params, locked, handoff != nil)
 		if updated, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite); err != nil {
 			return err
 		}
@@ -330,6 +343,16 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		"event_id":       util.UUIDToString(eventID),
 		"run":            outcome,
 	})
+}
+
+// keepLockedFields copies the fields a status route does not change from the
+// locked row. A handoff sets the assignee, so it keeps the workflow's choice.
+func keepLockedFields(params *db.UpdateIssueParams, locked db.Issue, handoff bool) {
+	if !handoff {
+		params.AssigneeType, params.AssigneeID = locked.AssigneeType, locked.AssigneeID
+	}
+	params.StartDate, params.DueDate = locked.StartDate, locked.DueDate
+	params.ParentIssueID, params.ProjectID, params.Stage = locked.ParentIssueID, locked.ProjectID, locked.Stage
 }
 
 func (h *Handler) writeRouteRevisionConflict(w http.ResponseWriter, r *http.Request, prev db.Issue, expected int64) {
