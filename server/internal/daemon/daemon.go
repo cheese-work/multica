@@ -8935,7 +8935,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Hand the guard the workspace's stored policy (CHE-5204); without one it
 	// keeps the compiled default.
 	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
-		taskLog.Warn("guard policy not delivered; guard refuses gh pr calls for this run", "error", err)
+		taskLog.Warn("guard policy not delivered; guard refuses every git and gh call for this run", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.

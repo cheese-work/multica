@@ -33,10 +33,25 @@ func (e *Engine) pol() *Policy {
 	return e.Policy
 }
 
-// target tells where a call runs: the -R/--repo flag or the working
-// directory's repository, and the directory inside it.
-func (e *Engine) target(ctx context.Context, args []string) (Target, bool) {
-	t := Target{}
+// target tells which repository a call acts on and, when a path layer needs it,
+// the directory inside it. The repository is the -R/--repo flag, else the repo
+// of a PR URL given to `gh pr <verb>`, else the working directory's. ok is
+// false when a required fact cannot be learned; the caller refuses the call.
+func (e *Engine) target(ctx context.Context, args []string) (t Target, ok bool, why string) {
+	cwdRepo := ""
+	cwd := func() bool {
+		if cwdRepo != "" {
+			return true
+		}
+		var rv struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		}
+		if err := e.ghJSON(ctx, &rv, "repo", "view", "--json", "nameWithOwner"); err != nil || rv.NameWithOwner == "" {
+			return false
+		}
+		cwdRepo = rv.NameWithOwner
+		return true
+	}
 	for i, a := range args {
 		switch {
 		case (a == "-R" || a == "--repo") && i+1 < len(args):
@@ -45,19 +60,31 @@ func (e *Engine) target(ctx context.Context, args []string) (Target, bool) {
 			t.Repo = strings.TrimPrefix(a, "--repo=")
 		}
 	}
+	if t.Repo == "" && len(args) > 0 && args[0] == "pr" {
+		if _, pos := prSpec.scan(args); len(pos) > 2 {
+			if m := prRepoRe.FindStringSubmatch(pos[2]); m != nil {
+				t.Repo = m[1]
+			}
+		}
+	}
 	if t.Repo == "" {
-		var rv struct {
-			NameWithOwner string `json:"nameWithOwner"`
+		if !cwd() {
+			return t, false, "cannot tell which repository this call targets; run it inside a clone or pass -R owner/name"
 		}
-		if err := e.ghJSON(ctx, &rv, "repo", "view", "--json", "nameWithOwner"); err != nil || rv.NameWithOwner == "" {
-			return t, false
-		}
-		t.Repo = rv.NameWithOwner
+		t.Repo = cwdRepo
 	}
-	if prefix, ok := e.git(ctx, "rev-parse", "--show-prefix"); ok {
-		t.Path = strings.TrimSuffix(prefix, "/")
+	if !e.Policy.hasPathLayer(t.Repo) {
+		return t, true, ""
 	}
-	return t, true
+	if !cwd() || !strings.EqualFold(cwdRepo, t.Repo) {
+		return t, false, "the policy has path layers for " + t.Repo + " and this call runs outside it, so the directory cannot be checked; run it from a clone of " + t.Repo
+	}
+	prefix, ok := e.git(ctx, "rev-parse", "--show-prefix")
+	if !ok {
+		return t, false, "the policy has path layers for " + t.Repo + " and git cannot tell the working directory inside it"
+	}
+	t.Path = strings.TrimSuffix(prefix, "/")
+	return t, true, ""
 }
 
 // decision is what a plugin concluded about one call.
@@ -87,14 +114,19 @@ type logRecord struct {
 // Exec runs tool with args under the policy and returns the exit code the
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
+	if e.Policy.lockdown {
+		fmt.Fprintf(e.Err, "guard: refused: %s\n", lockdownMessage)
+		return 2, nil
+	}
 	args = e.expandAlias(ctx, tool, args)
 	t := Target{}
 	// ponytail: one extra gh repo view and git call per guarded call when the
 	// policy has layers; cache per run if that shows up.
 	if len(e.Policy.Layers) > 0 {
 		var ok bool
-		if t, ok = e.target(ctx, args); !ok {
-			fmt.Fprintln(e.Err, "guard: refused: cannot tell which repository this call targets, and the policy has org, repo or path layers; run it inside a clone or pass -R owner/name")
+		var why string
+		if t, ok, why = e.target(ctx, args); !ok {
+			fmt.Fprintln(e.Err, "guard: refused: "+why)
 			return 2, nil
 		}
 	}

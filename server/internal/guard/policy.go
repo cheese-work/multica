@@ -82,7 +82,13 @@ type Policy struct {
 	// Locked freezes every key this workspace layer sets against deeper layers.
 	Locked bool    `json:"locked,omitempty"`
 	Layers []Layer `json:"layers,omitempty"`
+
+	lockdown bool // set by lockdownPolicy; never read from JSON
 }
+
+// Lockdown reports whether the guard refuses every call because the stored
+// policy could not be delivered or verified.
+func (p *Policy) Lockdown() bool { return p != nil && p.lockdown }
 
 func (p *Policy) verify() bool { return p == nil || p.Verify == nil || *p.Verify }
 
@@ -185,19 +191,16 @@ func LoadPolicy(file, wantSHA string) (*Policy, error) {
 	return p, nil // layers stay: the engine resolves them for each call's target
 }
 
+const lockdownMessage = "the workspace guard policy is unavailable or failed verification; every git and gh call is refused for this run until it is fixed"
+
 // lockdownPolicy stands in for a policy that was set but cannot be loaded or
-// verified. The stored rules are unknown, so the guard cannot tell what a PR
-// call must do and refuses it; the `gh api` write refusal stays.
-func lockdownPolicy() *Policy {
-	p := DefaultPolicy()
-	p.Plugins[0] = Plugin{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionDeny,
-		Message: "the workspace guard policy is unavailable or failed verification; gh pr is refused until it is fixed"}
-	return p
-}
+// verified. The stored rules are unknown, so any guarded call could be one of
+// them (a fail_closed plugin on git, say); the guard refuses every call.
+func lockdownPolicy() *Policy { return &Policy{Version: 1, lockdown: true} }
 
 // PolicyFromEnv returns the daemon-provided policy. With no policy set it
 // returns the compiled default. A policy that is set but does not verify fails
-// closed: gh pr calls are refused and warn explains why. Nothing is read from
+// closed: every guarded call is refused and warn explains why. Nothing is read from
 // the working tree.
 func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	file := getenv(PolicyEnv)
@@ -206,7 +209,7 @@ func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	}
 	p, err := LoadPolicy(file, getenv(PolicySHAEnv))
 	if err != nil {
-		return lockdownPolicy(), "guard: policy unavailable, refusing gh pr calls: " + err.Error()
+		return lockdownPolicy(), "guard: policy unavailable, refusing every git and gh call: " + err.Error()
 	}
 	return p, ""
 }

@@ -77,6 +77,16 @@ func (l *Layer) validate() error {
 	return sub.validate()
 }
 
+// hasPathLayer reports whether a path layer names repo.
+func (p *Policy) hasPathLayer(repo string) bool {
+	for _, l := range p.Layers {
+		if l.Scope == ScopePath && strings.EqualFold(l.Repo, repo) {
+			return true
+		}
+	}
+	return false
+}
+
 // Resolve flattens the ladder for t into a Policy without layers.
 func (p *Policy) Resolve(t Target) *Policy {
 	var layers []Layer

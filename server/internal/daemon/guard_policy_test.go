@@ -86,8 +86,8 @@ func TestWriteGuardPolicyFailureFailsClosed(t *testing.T) {
 			if warn == "" {
 				t.Fatal("guard accepted an undeliverable policy")
 			}
-			if pl := pol.Plugins[0]; pl.Name != "gh-pr" || pl.Action != guard.ActionDeny {
-				t.Fatalf("gh pr not refused: %+v", pl)
+			if !pol.Lockdown() {
+				t.Fatalf("guard does not refuse every call: %+v", pol)
 			}
 		})
 	}

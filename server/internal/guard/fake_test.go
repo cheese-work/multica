@@ -39,6 +39,7 @@ type fakeEnv struct {
 	branch        string // checked-out branch
 	remoteOwner   string // owner of the branch's push remote ("" = unknown)
 	prefix        string // git rev-parse --show-prefix: cwd inside the repository
+	prefixFails   bool   // git rev-parse --show-prefix fails
 	merges        map[string]bool
 	aliases       map[string]string
 
@@ -148,6 +149,9 @@ func (f *fakeEnv) git(args []string) Result {
 		}
 		return Result{Stdout: "tip p1\n"}
 	case len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--show-prefix":
+		if f.prefixFails {
+			return Result{Exit: 128, Stderr: "fatal: not a git repository"}
+		}
 		return Result{Stdout: f.prefix + "\n"}
 	case len(args) >= 1 && args[0] == "merge-base":
 		return Result{Exit: 0}
