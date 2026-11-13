@@ -207,5 +207,12 @@
     "go_to_slide": "{{index}} 枚目に移動",
     "previous": "前へ",
     "next": "次へ"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} がスケジューリングを一時停止しました · {{time}}。",
+    "paused_at": "スケジューリングは一時停止中 · {{time}}。",
+    "detail": "どのエージェントも新しい実行を取得しません。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "resume": "再開",
+    "resume_failed": "ワークスペースを再開できませんでした"
   }
 }

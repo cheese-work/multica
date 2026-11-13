@@ -207,5 +207,12 @@
     "go_to_slide": "{{index}}번째 슬라이드로 이동",
     "previous": "이전",
     "next": "다음"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}}님이 스케줄링을 일시 중지했습니다 · {{time}}.",
+    "paused_at": "스케줄링 일시 중지됨 · {{time}}.",
+    "detail": "어떤 에이전트도 새 실행을 가져가지 않습니다. 실행 중인 작업은 끝나고 대기 중인 작업은 기다립니다.",
+    "resume": "재개",
+    "resume_failed": "워크스페이스를 재개하지 못했습니다"
   }
 }

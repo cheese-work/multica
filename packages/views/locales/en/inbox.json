@@ -25,6 +25,7 @@
     "type": "Type",
     "received": "Received",
     "type_mention": "Mentions",
+    "mentions_only": "Mentions me",
     "type_comment": "Comments & reactions",
     "type_assign": "Assignments & subscriptions",
     "type_review": "Review requests",

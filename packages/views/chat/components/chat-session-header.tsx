@@ -50,6 +50,7 @@ import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
 import { ChatPresetPicker } from "./chat-preset-picker";
+import { OpenDecisionsBadge } from "./open-decisions-badge";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
@@ -287,6 +288,7 @@ export function ChatSessionHeader({
         leaf={leaf}
         actions={
           <>
+            <OpenDecisionsBadge />
             {isArchived ? null : (
               <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
             )}

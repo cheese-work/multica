@@ -25,6 +25,7 @@
     "type": "Type",
     "received": "Reçue",
     "type_mention": "Mentions",
+    "mentions_only": "Mes mentions",
     "type_comment": "Commentaires et réactions",
     "type_assign": "Assignations et abonnements",
     "type_review": "Demandes de relecture",

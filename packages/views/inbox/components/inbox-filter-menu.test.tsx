@@ -382,6 +382,33 @@ describe("InboxFilterMenu", () => {
     expect(screen.queryByRole("menuitem", { name: /^Agent status/ })).toBeNull();
   });
 
+  it("filters to viewer mentions and counts the issues behind it", async () => {
+    renderMenu({
+      items: [
+        item("direct", "todo", "high", { details: { mention_source: "direct" } }),
+        item("squad", "todo", "high", { details: { mention_source: "squad" } }),
+        item("legacy", "done", "low"),
+      ],
+    });
+
+    await openSubmenu("Mentions");
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Mentions me.*1 notification/ }));
+
+    expect(storedFilters()?.mentionsOnly).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "1 active filter" })).toHaveTextContent("1"),
+    );
+  });
+
+  it("hides mentions in the archive and ignores a carried-over selection", async () => {
+    useInboxFilterStore.getState().toggleMentionsOnly("ws-1");
+    renderMenu({ archived: true });
+
+    openMenu();
+    await screen.findByRole("menuitem", { name: /^Status/ });
+    expect(screen.queryByRole("menuitem", { name: /^Mentions/ })).toBeNull();
+  });
+
   it("hides priority and clears its filter for a legacy response", async () => {
     useInboxFilterStore.getState().togglePriorityFilter("ws-1", "high");
     renderMenu({

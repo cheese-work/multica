@@ -234,7 +234,9 @@ type Handler struct {
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter
-	Queries        *db.Queries
+	// ciWatch records completed runs for the CI failure watcher; nil = off.
+	ciWatch ciWatcher
+	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
 	ActionRequestsEnabled  bool
@@ -625,6 +627,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		return err
 	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	h.enableCIWatch(ghClient)
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
 			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)

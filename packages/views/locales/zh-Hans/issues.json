@@ -1661,6 +1661,8 @@
       "description": "描述",
       "max_runs": "每个 Issue 的最大运行次数",
       "max_runs_invalid": "请输入 1 到 {{max}} 的整数，留空则使用默认值（{{default}}）。",
+      "budget_request_pending": "此工作流的运行上限变更正在等待所有者批准。",
+      "budget_request_pending_cap": "将每个工单的运行上限改为 {{cap}} 次的请求正在等待所有者批准。",
       "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步骤",
       "add_step": "添加步骤",
@@ -2060,6 +2062,8 @@
     "raise": "提高上限",
     "top_up": "补充",
     "asked": "已请求工作区所有者批准。",
+    "chip": "预算已用完",
+    "open_request": "见下方未决请求",
     "request_failed": "请求未成功，请重试。"
   },
   "attachment_revision": {

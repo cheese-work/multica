@@ -918,7 +918,18 @@
     "prefix_new_label": "新前缀",
     "prefix_rule": "只能使用字母和数字，最多 10 个字符。",
     "prefix_confirm_action": "修改为 {{prefix}}",
-    "prefix_external_warning": "PR 标题、分支名、文档和聊天里的旧编号（如 {{oldExample}}）不会自动更新，这些链接会失效。"
+    "prefix_external_warning": "PR 标题、分支名、文档和聊天里的旧编号（如 {{oldExample}}）不会自动更新，这些链接会失效。",
+    "scheduling_label": "调度",
+    "scheduling_hint": "暂停后，所有智能体都不会领取新的运行。运行中的任务会完成，排队的工作会等待。",
+    "scheduling_pause_action": "暂停工作区",
+    "scheduling_resume_action": "恢复工作区",
+    "scheduling_pause_title": "暂停此工作区？",
+    "scheduling_pause_description": "恢复之前，没有智能体会领取新的运行。排队的工作会保留。",
+    "scheduling_keep": "保持运行",
+    "scheduling_confirm": "暂停",
+    "scheduling_paused_toast": "工作区已暂停",
+    "scheduling_resumed_toast": "工作区已恢复",
+    "scheduling_failed_toast": "无法更改工作区调度"
   },
   "export_privacy": {
     "title": "导出隐私",

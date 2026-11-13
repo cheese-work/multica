@@ -823,7 +823,18 @@
     "routing_fallback_label": "Fallback agent",
     "routing_fallback_hint": "Takes over a routing step when the routing agent fails with a provider error.",
     "routing_agent_none": "None",
-    "routing_agent_unknown": "Unknown agent"
+    "routing_agent_unknown": "Unknown agent",
+    "scheduling_label": "Scheduling",
+    "scheduling_hint": "Pausing stops every agent from claiming new runs. Running tasks finish; queued work waits.",
+    "scheduling_pause_action": "Pause workspace",
+    "scheduling_resume_action": "Resume workspace",
+    "scheduling_pause_title": "Pause this workspace?",
+    "scheduling_pause_description": "No agent claims new runs until you resume. Queued work is kept.",
+    "scheduling_keep": "Keep running",
+    "scheduling_confirm": "Pause",
+    "scheduling_paused_toast": "Workspace paused",
+    "scheduling_resumed_toast": "Workspace resumed",
+    "scheduling_failed_toast": "Could not change workspace scheduling"
   },
   "delete_workspace_dialog": {
     "title": "Eliminar espacio de trabajo",

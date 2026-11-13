@@ -1615,6 +1615,8 @@
       "description": "描述",
       "max_runs": "每個 Issue 的最大執行次數",
       "max_runs_invalid": "請輸入 1 到 {{max}} 的整數，留空則使用預設值（{{default}}）。",
+      "budget_request_pending": "此工作流程的執行上限變更正在等待擁有者核准。",
+      "budget_request_pending_cap": "將每個工單的執行上限改為 {{cap}} 次的請求正在等待擁有者核准。",
       "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步驟",
       "add_step": "新增步驟",
@@ -2060,6 +2062,8 @@
     "raise": "提高上限",
     "top_up": "補充",
     "asked": "已請求工作區擁有者核准。",
+    "chip": "預算已用完",
+    "open_request": "見下方未決請求",
     "request_failed": "請求未成功，請重試。"
   },
   "attachment_revision": {

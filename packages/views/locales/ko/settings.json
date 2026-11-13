@@ -918,7 +918,18 @@
     "prefix_new_label": "새 접두사",
     "prefix_rule": "영문자와 숫자만, 최대 10자까지 사용할 수 있습니다.",
     "prefix_confirm_action": "{{prefix}}(으)로 변경",
-    "prefix_external_warning": "PR 제목, 브랜치 이름, 문서, 채팅에 있는 이전 키({{oldExample}} 등)는 업데이트되지 않으므로 해당 링크가 작동하지 않습니다."
+    "prefix_external_warning": "PR 제목, 브랜치 이름, 문서, 채팅에 있는 이전 키({{oldExample}} 등)는 업데이트되지 않으므로 해당 링크가 작동하지 않습니다.",
+    "scheduling_label": "스케줄링",
+    "scheduling_hint": "일시 중지하면 모든 에이전트가 새 실행을 가져가지 않습니다. 실행 중인 작업은 끝나고 대기 중인 작업은 기다립니다.",
+    "scheduling_pause_action": "워크스페이스 일시 중지",
+    "scheduling_resume_action": "워크스페이스 재개",
+    "scheduling_pause_title": "이 워크스페이스를 일시 중지할까요?",
+    "scheduling_pause_description": "재개할 때까지 어떤 에이전트도 새 실행을 가져가지 않습니다. 대기 중인 작업은 유지됩니다.",
+    "scheduling_keep": "계속 실행",
+    "scheduling_confirm": "일시 중지",
+    "scheduling_paused_toast": "워크스페이스를 일시 중지했습니다",
+    "scheduling_resumed_toast": "워크스페이스를 재개했습니다",
+    "scheduling_failed_toast": "워크스페이스 스케줄링을 변경하지 못했습니다"
   },
   "export_privacy": {
     "title": "내보내기 개인정보 보호",

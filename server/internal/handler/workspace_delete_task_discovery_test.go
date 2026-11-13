@@ -644,36 +644,46 @@ type lateChildTx struct {
 	agentID, runtimeID string
 	workspaceID        string
 	lateChild, endless bool
-	lists              int
 	lateIssueID        string
+	// armed is set when the page locks its task rows: the discovery and the first
+	// list of the page are real, and only the list after the row lock is changed.
+	armed bool
 }
 
 func (c *lateChildTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
-	if !strings.Contains(sql, "ORDER BY t.issue_id") {
+	if strings.Contains(sql, "LockTaskBatch") && !c.armed {
+		c.armed = true
+		if c.lateChild {
+			c.createLateChild()
+		}
+	}
+	if !c.armed || !strings.Contains(sql, "ORDER BY t.issue_id") {
 		return c.DBTX.Query(ctx, sql, args...)
 	}
-	c.lists++
-	if c.endless && c.lists > 1 {
+	if c.endless {
 		return &oneUUIDRows{id: parseUUID(uuid.NewString())}, nil
 	}
-	rows, err := c.DBTX.Query(ctx, sql, args...)
-	if err == nil && c.lateChild && c.lists == 1 {
-		var issueID string
-		if err := testPool.QueryRow(ctx, `
+	return c.DBTX.Query(ctx, sql, args...)
+}
+
+// createLateChild adds a run, created after the page read its issues, whose
+// parent is the page's task and whose issue nobody locked.
+func (c *lateChildTx) createLateChild() {
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
 INSERT INTO issue (workspace_id, title, creator_type, creator_id, number)
 VALUES ($1, 'late child', 'member', $2,
         (SELECT COALESCE(max(number), 0) + 1 FROM issue WHERE workspace_id = $1))
 RETURNING id`, c.workspaceID, testUserID).Scan(&issueID); err != nil {
-			c.t.Fatalf("create late child issue: %v", err)
-		}
-		c.lateIssueID = issueID
-		if _, err := testPool.Exec(ctx, `
+		c.t.Fatalf("create late child issue: %v", err)
+	}
+	c.lateIssueID = issueID
+	if _, err := testPool.Exec(ctx, `
 INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_at, parent_task_id)
 VALUES ($1, $2, $3, 'completed', now(), $4)`, c.agentID, issueID, c.runtimeID, c.parent); err != nil {
-			c.t.Fatalf("create late child run: %v", err)
-		}
+		c.t.Fatalf("create late child run: %v", err)
 	}
-	return rows, err
 }
 
 // oneUUIDRows is a result set with a single uuid row.
@@ -736,7 +746,8 @@ func TestLockTaskPageIssuesFirstReturnsALateIssueInsteadOfLockingIt(t *testing.T
 		DBTX: tx, t: t, parent: parent, agentID: f.victimAgent,
 		runtimeID: f.victimRuntime, workspaceID: f.neighbourID, lateChild: true,
 	}
-	locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)})
+	held := map[pgtype.UUID]struct{}{parseUUID(f.victimIssue): {}}
+	locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)}, held)
 	var widened *issuesWidenedError
 	if !errors.As(err, &widened) {
 		t.Fatalf("late child: locked=%d err=%v, want an issuesWidenedError", len(locked), err)
@@ -868,5 +879,89 @@ func TestDeleteWorkspaceFailsClosedWhenPagesKeepWidening(t *testing.T) {
 	if err := testPool.QueryRow(context.Background(),
 		`SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, f.victimID).Scan(&exists); err != nil || !exists {
 		t.Fatalf("victim workspace exists = %v (err %v), want true: a refused delete changes nothing", exists, err)
+	}
+}
+
+// orderTx records the name of every statement the delete sends, in order.
+type orderTx struct {
+	pgx.Tx
+	log *[]string
+}
+
+func (o *orderTx) record(sql string) {
+	for _, name := range []string{"LockIssuesByID", "LockTaskBatch", "DeleteTaskBatch"} {
+		if strings.Contains(sql, "name: "+name) || strings.Contains(sql, "-- "+name) || strings.Contains(sql, name) {
+			*o.log = append(*o.log, name)
+			return
+		}
+	}
+}
+func (o *orderTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	o.record(sql)
+	return o.Tx.Exec(ctx, sql, args...)
+}
+func (o *orderTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	o.record(sql)
+	return o.Tx.Query(ctx, sql, args...)
+}
+
+type orderStarter struct {
+	inner txStarter
+	log   []string
+}
+
+func (s *orderStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return tx, err
+	}
+	return &orderTx{Tx: tx, log: &s.log}, nil
+}
+
+// Every issue a delete touches through its task pages is locked before the first
+// task row of any page. Page two must not lock a new issue while the delete holds
+// the rows page one deleted: a writer that holds that issue and waits on one of
+// those run rows would deadlock against it (40P01).
+func TestDeleteWorkspaceLocksEveryPageIssueBeforeTheFirstTaskRow(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	shrinkWorkspaceDeletePagesForTest(t)
+	f := newWorkspaceDeletePathFixture(t, "multipage-locks")
+	// 25 victim-agent tasks, each on its own issue: three task pages, and every
+	// page names issues the pages before it did not.
+	for i := 0; i < 25; i++ {
+		issueID := insertLateIssue(t, f.neighbourID)
+		t.Cleanup(func() {
+			_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		})
+		insertDeletePathTask(t, f.victimAgent, issueID, f.victimRuntime)
+	}
+	s := &orderStarter{inner: testHandler.TxStarter}
+	orig := testHandler.TxStarter
+	testHandler.TxStarter = s
+	defer func() { testHandler.TxStarter = orig }()
+	rec := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+f.victimID, nil), "id", f.victimID)
+	testHandler.DeleteWorkspace(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	firstRow, lastDelete := -1, -1
+	for i, name := range s.log {
+		if name == "LockTaskBatch" && firstRow < 0 {
+			firstRow = i
+		}
+		if name == "DeleteTaskBatch" {
+			lastDelete = i
+		}
+	}
+	if firstRow < 0 || lastDelete < 0 {
+		t.Fatalf("no task page ran: %v", s.log)
+	}
+	for i := firstRow; i < lastDelete; i++ {
+		if s.log[i] == "LockIssuesByID" {
+			t.Fatalf("an issue lock came after the first task row was locked (statement %d of %v)", i, s.log)
+		}
 	}
 }

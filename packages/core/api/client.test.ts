@@ -3625,3 +3625,20 @@ describe("ApiClient getIssue schema failure", () => {
     setSchemaLogger(noopLogger);
   });
 });
+
+describe("workspace scheduling pause", () => {
+  it.each([
+    ["pauseWorkspace", "pause"],
+    ["resumeWorkspace", "resume"],
+  ] as const)("%s POSTs /api/workspaces/:id/%s", async (method, verb) => {
+    const body = { id: "ws-1", scheduling_paused_at: verb === "pause" ? "2026-11-13T00:00:00Z" : null };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test")[method]("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/${verb}`);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
+  });
+});

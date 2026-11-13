@@ -1,5 +1,5 @@
 import type { ZodType } from "zod";
-import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -296,6 +296,7 @@ import {
   DelegatedWritesSchema,
   type DelegatedWrites,
   OpenDecisionRequestListSchema,
+  DecisionRequestCardListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
@@ -2249,6 +2250,14 @@ export class ApiClient {
 
   async resumeAgent(id: string): Promise<Agent> {
     return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
+  }
+
+  async pauseWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
   }
 
   async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
@@ -4461,6 +4470,14 @@ export class ApiClient {
     const raw: unknown = await this.fetch("/api/decisions/open");
     return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
       endpoint: "GET /api/decisions/open",
+    });
+  }
+
+  /** The viewer's own used (answered or withdrawn) decision cards on one issue. */
+  async listIssueDecisionCards(issueId: string): Promise<DecisionRequestCard[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/issue-cards?issue=${encodeURIComponent(issueId)}`);
+    return parseWithFallback(raw, DecisionRequestCardListSchema, [], {
+      endpoint: "GET /api/decisions/issue-cards",
     });
   }
 

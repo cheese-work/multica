@@ -222,6 +222,19 @@ Une règle qu'une personne peut déclencher est une règle d'événement sur un 
 
 En mode `block`, le refus est un 422 dont le message donne la commande de correction. En mode `warn`, la règle est créée et un événement est enregistré.
 
+### Règles de réveil
+
+Les règles de réveil d'espace de travail et de projet (voir [Réveils de ticket](/issue-wakeups)) ont leur propre commande, avec `create` et `get` à côté de celles-ci :
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` est la révision que `list` affiche ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue. Pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement et `issues` les nomme (`--output table` les affiche en liste). L'aperçu examine les 200 premiers tickets du périmètre et évalue ceux qui sont ouverts et hors backlog ; si le périmètre en contient davantage, `truncated` vaut `true` et d'autres tickets peuvent correspondre. Une règle d'événement n'a pas de prédicat : son aperçu n'a pas de `already_satisfied` et ne correspond à aucun ticket existant. Seul un propriétaire ou un administrateur peut modifier ou supprimer une règle. Tout membre humain peut la prévisualiser ; un agent ou une autre identité machine reçoit `403`, et une règle créée par un agent reste désactivée jusqu'à ce qu'un humain l'active.
+
 ### Suivre la progression dans un DM
 
 Un DM suit les tickets que son agent crée pour vous. Les membres gèrent les suivis uniquement dans un DM qu'ils ont créé, avec `--chat`. Un agent exécute `multica issue follow <issue>` sans `--chat` : le DM vient de sa propre tâche, et une tâche sans DM est refusée. Les sous-tickets héritent du suivi actif de leur parent.

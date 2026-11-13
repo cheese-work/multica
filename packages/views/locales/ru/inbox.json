@@ -29,6 +29,7 @@
     "type": "Тип",
     "received": "Получено",
     "type_mention": "Упоминания",
+    "mentions_only": "Упоминания меня",
     "type_comment": "Комментарии и реакции",
     "type_assign": "Назначения и подписки",
     "type_review": "Запросы на ревью",

@@ -23,6 +23,7 @@
     "type": "알림 유형",
     "received": "받은 시간",
     "type_mention": "멘션",
+    "mentions_only": "나를 멘션",
     "type_comment": "댓글 및 반응",
     "type_assign": "할당 및 구독",
     "type_review": "리뷰 요청",
