@@ -16,9 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -460,7 +462,11 @@ var issueRunsCmd = &cobra.Command{
 		"Defaults to this issue's full execution history, newest first. Narrow it to " +
 		"work in flight with --active, or widen it across the sub-issue family with " +
 		"--siblings when you need to know whether another agent is already working " +
-		"next to you.",
+		"next to you.\n\n" +
+		"With --init-context, table output prints each run's first-prompt token report " +
+		"(one row per part: est. tokens, budget, notes) instead of the run list; a run " +
+		"that did not report one prints a \"not reported\" line. --output json is unchanged: " +
+		"the report is already in each run's result.",
 	Args: exactArgs(1),
 	RunE: runIssueRuns,
 }
@@ -628,6 +634,7 @@ func init() {
 	issueCmd.AddCommand(issueGetCmd)
 	issueCmd.AddCommand(issuePullRequestsCmd)
 	issueCmd.AddCommand(issueChildrenCmd)
+	issueCmd.AddCommand(issueUrgentOrphansCmd)
 	issueCmd.AddCommand(issueCreateCmd)
 	issueCmd.AddCommand(issueUpdateCmd)
 	issueCmd.AddCommand(issueAssignCmd)
@@ -684,6 +691,7 @@ func init() {
 	issuePullRequestsUnlinkCmd.Flags().String("output", "json", "Output format: table or json")
 
 	issueChildrenCmd.Flags().String("output", "table", "Output format: table or json")
+	issueUrgentOrphansCmd.Flags().String("output", "table", "Output format: table or json")
 	issueChildrenCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 
 	// issue create
@@ -696,16 +704,19 @@ func init() {
 	issueCreateCmd.Flags().String("priority", "", "Issue priority")
 	issueCreateCmd.Flags().String("assignee", "", "Assignee name (member, agent, or squad; fuzzy match)")
 	issueCreateCmd.Flags().String("assignee-id", "", "Assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
+	issueCreateCmd.Flags().Bool("assignee-picker", false, "Assign to the agent or squad selected in Quick Create (requires quick-create task context; mutually exclusive with --assignee and --assignee-id)")
 	issueCreateCmd.Flags().String("parent", "", "Parent issue ID")
 	issueCreateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) grouping this sub-issue into an ordered barrier group under its parent; omit for unstaged. The parent assignee is woken only when every sub-issue in a stage finishes.")
 	issueCreateCmd.Flags().String("project", "", "Project ID")
 	issueCreateCmd.Flags().String("on-behalf-of", "", "Member (user ID) you are creating the issue for; defaults to the person your run acts for")
-	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead)")
+	issueCreateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's (workspace admins and the project lead). Omit it for standard types: the workspace setting workflow_by_type maps the title type (plan, design, fix...) to a workflow, and create prints the one chosen")
+	issueCreateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
+	issueCreateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueCreateCmd.Flags().String("start-date", "", "Start date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().String("due-date", "", "Due date (calendar day, YYYY-MM-DD)")
 	issueCreateCmd.Flags().Bool("allow-duplicate", false, "Allow creating an issue even when an active duplicate exists")
 	issueCreateCmd.Flags().String("output", "json", "Output format: table or json")
-	issueCreateCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Each file is uploaded and its markdown reference is appended to the description, which is what makes it render on the issue page")
+	issueCreateCmd.Flags().StringArray("attachment", nil, "File path to attach (one literal path per flag; repeat --attachment for multiple files). Each file is uploaded and its markdown reference is appended to the description, which is what makes it render on the issue page")
 	issueCreateCmd.Flags().StringSlice("attachment-id", nil, "Existing attachment UUID(s) to bind to the created issue (can be specified multiple times)")
 	issueCreateCmd.Flags().StringArray("property", nil, `Set a custom property atomically with creation as "Name=Value" (repeatable, one distinct property per flag). Multi-value properties use comma-separated values; multi_text/multi_url also accept JSON arrays (required for commas in entries or values starting with "["). Property and option/member names are case-insensitive; UUIDs are accepted. Filter-only __none__, >=, <=, and != forms are rejected.`)
 
@@ -715,25 +726,27 @@ func init() {
 	issueUpdateCmd.Flags().Bool("description-stdin", false, "Read new description from stdin (preserves multi-line content verbatim)")
 	issueUpdateCmd.Flags().String("description-file", "", "Read new description from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueUpdateCmd.Flags().Bool("allow-external-file", false, "Allow --description-file / --attachment to read a path outside the current working directory. Off by default so a stale temp file from another run/environment can't be picked up (MUL-4252).")
-	issueUpdateCmd.Flags().StringSlice("attachment", nil, "Local file path(s) to attach to the issue description (repeatable); references are appended to the end of the description")
+	issueUpdateCmd.Flags().StringArray("attachment", nil, "Local file path to attach (one literal path per flag; repeat --attachment for multiple files); references are appended to the end of the description")
 	issueUpdateCmd.Flags().String("status", "", "New status")
 	issueUpdateCmd.Flags().String("priority", "", "New priority")
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
 	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
+	issueUpdateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
+	issueUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
 	issueUpdateCmd.Flags().String("due-date", "", "New due date (calendar day, YYYY-MM-DD)")
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run, including a workflow step handler's run.")
 	issueUpdateCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID) and cancel it; --status, if given, must be cancelled, and description/attachment changes must go in a separate update")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 	issueUpdateCmd.Flags().Int64("expected-revision", 0, "Reject the update with a conflict error if the issue's revision on the server no longer matches this value (optimistic concurrency; re-read the issue and retry on conflict)")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
@@ -766,6 +779,7 @@ func init() {
 	issueRunsCmd.Flags().String("output", "table", "Output format: table or json")
 	issueRunsCmd.Flags().Bool("full-id", false, "Show full run UUIDs in table output")
 	issueRunsCmd.Flags().Bool("active", false, "Only in-flight runs (queued, dispatched, running, waiting_local_directory) instead of the full execution history. Answers \"is an agent working on this right now\" without pulling every past run.")
+	issueRunsCmd.Flags().Bool("init-context", false, "Show each run's first-prompt token report (per part: est. tokens, budget, notes) in table output. Cannot be combined with --siblings.")
 	issueRunsCmd.Flags().Bool("siblings", false, "Widen to this issue's sub-issue family — its parent (or itself, when it has no parent) plus every child of that parent — so you can see whether another run is already working alongside you before starting overlapping code or PR work. Implies --active. Returns a compact per-run row (run, issue, agent, status, started) rather than the full execution-log record. Ordered running-first, newest-first within a status, and capped at 20 rows; when the cap truncates the answer the CLI says so on stderr, so a short list is never mistaken for a complete one. Advisory only: it reports work in flight, it does not reserve or serialise anything.")
 
 	// issue usage
@@ -791,6 +805,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-intent", false, "Open a 3-minute decision window for the named people (running non-chat issue tasks only)")
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
+	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -803,7 +818,7 @@ func init() {
 	issueCommentAddCmd.Flags().String("parent", "", "Parent comment ID to reply under. A comment-triggered agent run must reply under its trigger comment; omitting --parent to post a top-level comment is rejected")
 	issueCommentAddCmd.Flags().Bool("resolve-thread", false, "After posting, resolve the thread this reply belongs to (requires --parent). Use it on the final reply when the thread needs nothing more")
 	issueCommentAddCmd.Flags().StringSlice("supersedes", nil, "Comment ID this comment supersedes (repeatable; a reply ID names its whole thread, same issue only). The server resolves each superseded thread unless a human posted its newest reply or it changed after this request began, and links old and new")
-	issueCommentAddCmd.Flags().StringSlice("attachment", nil, "File path(s) to attach (can be specified multiple times). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
+	issueCommentAddCmd.Flags().StringArray("attachment", nil, "File path to attach (one literal path per flag; repeat --attachment for multiple files). Non-image files, HTML included, show as file cards that open in the viewer; to render a chart inside the comment, put a ```html or ```mermaid block in the content instead")
 	issueCommentAddCmd.Flags().StringSlice("steer", nil, "Run ID (full UUID or short prefix) whose in-progress turn should receive this comment instead of a follow-up run (repeatable)")
 	issueCommentAddCmd.Flags().Bool("steer-active", false, "Add this comment to the running turn of every agent on this issue you may steer, and of any other recipient that is running")
 	issueCommentAddCmd.Flags().String("output", "json", "Output format: table or json")
@@ -1736,6 +1751,20 @@ func collectLocalAttachments(cmd *cobra.Command, attachments []string) ([]pendin
 	return pending, nil
 }
 
+func issueAttachmentPaths(cmd *cobra.Command) ([]string, error) {
+	flag := cmd.Flags().Lookup("attachment")
+	if flag == nil {
+		return nil, errors.New("--attachment flag is not registered")
+	}
+	paths, ok := flag.Value.(pflag.SliceValue)
+	if !ok {
+		return nil, errors.New("--attachment flag does not contain a path array")
+	}
+	// GetStringArray round-trips through CSV and loses a single empty string.
+	// Read the stored values so an explicit empty path reaches file validation.
+	return paths.GetSlice(), nil
+}
+
 // appendAttachmentReferences appends the markdown snippet of every uploaded
 // attachment to an issue description, so the file renders on the issue page
 // instead of only existing as a stored row. Each snippet goes in its own
@@ -1808,10 +1837,37 @@ func quickCreateAttachmentIDsFromEnv() ([]string, error) {
 	return appendUniqueStrings(nil, ids...), nil
 }
 
+func pickIssueCreateAssignee(ctx context.Context, client *cli.APIClient, cmd *cobra.Command) (string, string, bool, error) {
+	if cmd.Flags().Changed("assignee-picker") && (cmd.Flags().Changed("assignee") || cmd.Flags().Changed("assignee-id")) {
+		return "", "", false, errors.New("--assignee-picker, --assignee, and --assignee-id are mutually exclusive")
+	}
+	picker, _ := cmd.Flags().GetBool("assignee-picker")
+	if !picker {
+		return pickAssigneeFromFlags(ctx, client, cmd, "assignee", "assignee-id", issueAssigneeKinds)
+	}
+	if strings.TrimSpace(os.Getenv("MULTICA_QUICK_CREATE_TASK_ID")) == "" {
+		return "", "", false, errors.New("--assignee-picker requires a quick-create task context")
+	}
+	aType := os.Getenv("MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_TYPE")
+	if aType != "agent" && aType != "squad" {
+		return "", "", false, errors.New("invalid picker assignee type: MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_TYPE must be agent or squad")
+	}
+	aID := strings.TrimSpace(os.Getenv("MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_ID"))
+	if !uuidRegexp.MatchString(aID) {
+		return "", "", false, errors.New("MULTICA_QUICK_CREATE_DEFAULT_ASSIGNEE_ID must contain a canonical UUID")
+	}
+	// The server validates workspace membership, archive state and invocation
+	// permissions for this typed pair, just as it does for explicit assignees.
+	return aType, aID, true, nil
+}
+
 func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	title, _ := cmd.Flags().GetString("title")
 	if title == "" {
 		return fmt.Errorf("--title is required")
+	}
+	if err := checkIssueWorkflowBindingFlags(cmd); err != nil {
+		return err
 	}
 	statusFlag, _ := cmd.Flags().GetString("status")
 	if statusFlag != "" {
@@ -1833,7 +1889,10 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
-	attachments, _ := cmd.Flags().GetStringSlice("attachment")
+	attachments, err := issueAttachmentPaths(cmd)
+	if err != nil {
+		return err
+	}
 	if len(attachments) > 0 {
 		timeout = cli.AtLeastAPITimeout(60 * time.Second)
 	}
@@ -1892,6 +1951,18 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetString("workflow"); v != "" && v != "none" {
 		body["workflow_id"] = v
 	}
+	if workflowBindingRequested(cmd) {
+		projectID, _ := body["project_id"].(string)
+		if parentID, _ := body["parent_issue_id"].(string); projectID == "" && parentID != "" {
+			var err error
+			if projectID, _, err = liveIssueWorkflow(ctx, client, parentID); err != nil {
+				return err
+			}
+		}
+		if done, err := bindIssueWorkflow(cmd, body, "", projectID, ""); done {
+			return err
+		}
+	}
 	if v, _ := cmd.Flags().GetString("on-behalf-of"); v != "" {
 		body["requested_by_id"] = v
 	}
@@ -1911,7 +1982,7 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	if v, _ := cmd.Flags().GetBool("allow-duplicate"); v {
 		body["allow_duplicate"] = true
 	}
-	aType, aID, hasAssignee, resolveErr := pickAssigneeFromFlags(ctx, client, cmd, "assignee", "assignee-id", issueAssigneeKinds)
+	aType, aID, hasAssignee, resolveErr := pickIssueCreateAssignee(ctx, client, cmd)
 	if resolveErr != nil {
 		return fmt.Errorf("resolve assignee: %w", resolveErr)
 	}
@@ -1997,6 +2068,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		if id := strVal(result, "workflow_id"); id != "" {
+			fmt.Fprintf(os.Stdout, "Workflow: %s\n", id)
+		}
 		printWebURL(os.Stdout, result)
 		return nil
 	}
@@ -2076,7 +2150,10 @@ func revisionConflictMessage(err error) (string, bool) {
 }
 
 func runIssueUpdate(cmd *cobra.Command, args []string) error {
-	attachmentPaths, _ := cmd.Flags().GetStringSlice("attachment")
+	attachmentPaths, err := issueAttachmentPaths(cmd)
+	if err != nil {
+		return err
+	}
 	noStart, _ := cmd.Flags().GetBool("no-start")
 	statusChanged := cmd.Flags().Changed("status")
 	statusFlag, _ := cmd.Flags().GetString("status")
@@ -2094,6 +2171,9 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	}
 	duplicateOf, err := duplicateOfFlag(cmd, statusFlag, statusChanged)
 	if err != nil {
+		return err
+	}
+	if err := checkIssueWorkflowBindingFlags(cmd); err != nil {
 		return err
 	}
 	// The server rejects a mark alongside description or attachment writes,
@@ -2219,6 +2299,15 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 			workflowID = nil
 		}
 		switchBody := map[string]any{"workflow_id": workflowID}
+		if workflowBindingRequested(cmd) {
+			projectID, override, err := liveIssueWorkflow(ctx, client, issueRef.ID)
+			if err != nil {
+				return err
+			}
+			if done, err := bindIssueWorkflow(cmd, switchBody, issueRef.ID, projectID, override); done {
+				return err
+			}
+		}
 		if cmd.Flags().Changed("expected-revision") {
 			switchBody["expected_revision"], _ = cmd.Flags().GetInt64("expected-revision")
 		}
@@ -2311,6 +2400,9 @@ func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
 			strVal(result, "priority"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
+		if hint := strVal(result, "workflow_hint"); hint != "" {
+			fmt.Fprintln(os.Stdout, hint)
+		}
 		return nil
 	}
 
@@ -2995,6 +3087,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
 	decisionVeto, _ := cmd.Flags().GetBool("decision-veto")
+	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
+	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
+		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
 	contextMessage, _ := cmd.Flags().GetString("context-message")
@@ -3014,7 +3110,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if decisionVeto {
 		parent, _ := cmd.Flags().GetString("parent")
 		reasonFile, _ := cmd.Flags().GetString("content-file")
-		attachments, _ := cmd.Flags().GetStringSlice("attachment")
+		attachments, attachErr := issueAttachmentPaths(cmd)
+		if attachErr != nil {
+			return attachErr
+		}
 		if parent == "" || reasonFile == "" || strings.TrimSpace(content) == "" || decisionRecord || decisionIntent || len(messageIDs) > 0 || escalationClass != "" || len(attachments) > 0 {
 			return fmt.Errorf("--decision-veto requires --parent and a non-empty --content-file; it cannot combine with record, intent, messages, class or attachments")
 		}
@@ -3041,7 +3140,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 
 	// Use a longer timeout when attachments are present (file uploads can be slow).
 	timeout := cli.APITimeout()
-	attachments, _ := cmd.Flags().GetStringSlice("attachment")
+	attachments, err := issueAttachmentPaths(cmd)
+	if err != nil {
+		return err
+	}
 	if decisionRecord && len(attachments) > 0 {
 		return fmt.Errorf("--decision-record cannot combine with --attachment")
 	}
@@ -3093,6 +3195,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	body := map[string]any{"content": content}
 	if decisionVeto {
 		body["decision_veto"] = true
+	}
+	if notifyOnly {
+		body["notify_only"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true
@@ -3352,6 +3457,12 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 
 	activeOnly, _ := cmd.Flags().GetBool("active")
 	siblings, _ := cmd.Flags().GetBool("siblings")
+	initContext, _ := cmd.Flags().GetBool("init-context")
+	if initContext && siblings {
+		// The family read returns a compact row with no result, so there is
+		// no report to show; failing beats an empty table that reads as "none".
+		return fmt.Errorf("--init-context cannot be combined with --siblings")
+	}
 
 	params := url.Values{}
 	if siblings {
@@ -3393,8 +3504,13 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, runs)
 	}
 
-	actors := loadActorDisplayLookup(ctx, client)
 	fullID, _ := cmd.Flags().GetBool("full-id")
+	if initContext {
+		printInitContextReports(os.Stdout, runs, fullID)
+		return nil
+	}
+
+	actors := loadActorDisplayLookup(ctx, client)
 
 	// The family read returns a different, deliberately smaller row than the
 	// execution log — no completed_at or error, because every row in it is
@@ -3448,6 +3564,53 @@ func runIssueRuns(cmd *cobra.Command, args []string) error {
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// stripControl drops C0, DEL and C1 control runes. The report comes from the
+// runtime, so unescaped ESC/OSC sequences could spoof output or reach the clipboard.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// printInitContextReports prints one token-report table per run. The report
+// lives at result.init_context.parts; runs from older daemons, failed runs and
+// runs still in flight have none, and say so rather than printing an empty table.
+func printInitContextReports(w io.Writer, runs []map[string]any, fullID bool) {
+	for _, r := range runs {
+		id := stripControl(displayID(strVal(r, "id"), fullID))
+		result, _ := r["result"].(map[string]any)
+		report, _ := result["init_context"].(map[string]any)
+		parts, _ := report["parts"].([]any)
+		if len(parts) == 0 {
+			fmt.Fprintf(w, "Run %s: init context not reported\n", id)
+			continue
+		}
+		rows := make([][]string, 0, len(parts))
+		for _, p := range parts {
+			pm, _ := p.(map[string]any)
+			var notes []string
+			if ns, ok := pm["notes"].([]any); ok {
+				for _, n := range ns {
+					if s, ok := n.(string); ok {
+						notes = append(notes, s)
+					}
+				}
+			}
+			rows = append(rows, []string{
+				stripControl(strVal(pm, "part")),
+				stripControl(formatMetadataValue(pm["tokens"])),
+				stripControl(formatMetadataValue(pm["budget"])),
+				stripControl(strings.Join(notes, "; ")),
+			})
+		}
+		fmt.Fprintf(w, "Run %s:\n", id)
+		cli.PrintTable(w, []string{"PART", "TOKENS", "BUDGET", "NOTES"}, rows)
+	}
 }
 
 func runIssueUsage(cmd *cobra.Command, args []string) error {

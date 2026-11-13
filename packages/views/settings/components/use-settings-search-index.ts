@@ -70,6 +70,11 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "recent-agents",
+        title: t(($) => $.chat.recent_agents_label),
+      },
+      {
+        tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.click),
         description: t(($) => $.issue.opening.hint),
@@ -153,6 +158,12 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "workspace",
+        anchor: "runtime-profile",
+        title: t(($) => $.workspace.runtime_profile_label),
+        description: t(($) => $.workspace.runtime_profile_hint),
+      },
+      {
+        tab: "workspace",
         anchor: "idle-guard",
         title: t(($) => $.workspace.idle_guard_label),
         description: t(($) => $.workspace.idle_guard_hint),
@@ -190,6 +201,11 @@ export function useSettingsSearchIndex(
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),
         description: t(($) => $.wakeups.child_done_description),
+      },
+      {
+        tab: "provider-breakers",
+        title: t(($) => $.page.tabs.provider_breakers),
+        description: t(($) => $.provider_breakers.description),
       },
       {
         tab: "labels",

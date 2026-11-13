@@ -46,14 +46,20 @@ import {
 import { setCurrentWorkspace } from "@multica/core/platform";
 import {
   AUTO_COMPACT_MAX_PCT,
+  AUTO_COMPACT_MAX_TOKENS_1M,
+  AUTO_COMPACT_MAX_TOKENS_200K,
   AUTO_COMPACT_MIN_PCT,
+  AUTO_COMPACT_MIN_TOKENS,
   isValidAutoCompactPct,
   readAutoCompact,
+  resolveAutoCompact,
 } from "@multica/core/workspace/auto-compact";
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
 import { AgentDecisionsRow } from "./agent-decisions-row";
+import { AutoCompactTokensRow } from "./auto-compact-tokens-row";
+import { DelegatedWritesSection } from "./delegated-writes-section";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { useT } from "../../i18n";
 import {
@@ -66,6 +72,8 @@ import {
   type SettingsSaveStatus,
 } from "./settings-layout";
 import { IdleGuardRows } from "./idle-guard-rows";
+import { WorkspaceSchedulingRow } from "./workspace-scheduling-row";
+import { RuntimeProfileRow } from "./runtime-profile-row";
 import { RoutingAgentRows } from "./routing-agent-rows";
 import { useAutoSave } from "./use-auto-save";
 import { useSettingsDraft } from "./use-settings-draft";
@@ -189,6 +197,7 @@ export function WorkspaceTab() {
   // CHE-1806: settings.auto_compact also saves through its own request field.
   // A null draft follows the saved value; an invalid draft is never sent.
   const autoCompact = readAutoCompact(workspace?.settings);
+  const resolvedCompact = resolveAutoCompact(workspace?.settings, undefined);
   const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
   const thresholdText = thresholdDraft ?? String(autoCompact.threshold_pct);
   const thresholdValue = Number(thresholdText);
@@ -303,7 +312,12 @@ export function WorkspaceTab() {
   });
 
   const saveAutoCompact = useCallback(
-    async (next: { enabled?: boolean; threshold_pct?: number }) => {
+    async (next: {
+      enabled?: boolean;
+      threshold_pct?: number;
+      threshold_tokens_200k?: number;
+      threshold_tokens_1m?: number;
+    }) => {
       if (!workspace) return;
       const updated = await api.updateWorkspace(workspace.id, {
         auto_compact: next,
@@ -576,11 +590,16 @@ export function WorkspaceTab() {
           >
             {readOnly ? (
               <p className="text-body text-foreground">
-                {autoCompact.enabled
-                  ? t(($) => $.workspace.auto_compact_readonly_on, {
-                      threshold: autoCompact.threshold_pct,
-                    })
-                  : t(($) => $.workspace.auto_compact_readonly_off)}
+                {!autoCompact.enabled
+                  ? t(($) => $.workspace.auto_compact_readonly_off)
+                  : resolvedCompact.threshold_pct === null
+                    ? t(($) => $.workspace.auto_compact_readonly_on_tokens, {
+                        small: resolvedCompact.tokens_200k,
+                        large: resolvedCompact.tokens_1m,
+                      })
+                    : t(($) => $.workspace.auto_compact_readonly_on, {
+                        threshold: resolvedCompact.threshold_pct,
+                      })}
               </p>
             ) : (
               <Switch
@@ -601,6 +620,29 @@ export function WorkspaceTab() {
           </SettingsRow>
 
           {readOnly ? null : (
+            <>
+              <AutoCompactTokensRow
+                key={`200k-${workspace.id}`}
+                label={t(($) => $.workspace.auto_compact_tokens_200k_label)}
+                invalidText={t(($) => $.workspace.auto_compact_tokens_200k_invalid)}
+                name="workspace-auto-compact-tokens-200k"
+                saved={resolvedCompact.tokens_200k}
+                min={AUTO_COMPACT_MIN_TOKENS}
+                max={AUTO_COMPACT_MAX_TOKENS_200K}
+                disabled={!canManageWorkspace}
+                onSave={(next) => saveAutoCompact({ threshold_tokens_200k: next })}
+              />
+              <AutoCompactTokensRow
+                key={`1m-${workspace.id}`}
+                label={t(($) => $.workspace.auto_compact_tokens_1m_label)}
+                invalidText={t(($) => $.workspace.auto_compact_tokens_1m_invalid)}
+                name="workspace-auto-compact-tokens-1m"
+                saved={resolvedCompact.tokens_1m}
+                min={AUTO_COMPACT_MIN_TOKENS}
+                max={AUTO_COMPACT_MAX_TOKENS_1M}
+                disabled={!canManageWorkspace}
+                onSave={(next) => saveAutoCompact({ threshold_tokens_1m: next })}
+              />
             <SettingsRow
               label={t(($) => $.workspace.auto_compact_threshold_label)}
               size="code"
@@ -625,10 +667,14 @@ export function WorkspaceTab() {
                 </p>
               ) : null}
             </SettingsRow>
+            </>
           )}
+
+          <RuntimeProfileRow workspace={workspace} canEdit={canManageWorkspace && !readOnly} />
 
           {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
           <IdleGuardRows workspace={workspace} canEdit={isOwner} />
+          <WorkspaceSchedulingRow workspace={workspace} canManage={canManageWorkspace} />
           <RoutingAgentRows wsId={workspace.id} canEdit={canManageWorkspace} />
 
           <SettingsRow
@@ -680,6 +726,10 @@ export function WorkspaceTab() {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      {membersFetched && (
+        <DelegatedWritesSection wsId={workspace.id} canEdit={canManageWorkspace} />
+      )}
 
       {/* Danger Zone — gated on the member query settling so the owner-only
           Delete button and the sole-owner Leave guidance don't flash in

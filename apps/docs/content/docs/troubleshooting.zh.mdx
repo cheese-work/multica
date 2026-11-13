@@ -330,3 +330,15 @@ multica daemon start --foreground
 - [守护进程与运行时](/daemon-runtimes) — 运行时注册与在线状态机制。
 - [运行](/tasks) — 状态、超时与失败原因参考。
 - [环境变量](/environment-variables) — 自托管配置的完整参考。
+
+## 提供商熔断器暂停
+
+提供商熔断器暂停新工作时，议题任务会保留持久的 `provider_hold` 标记并处于延迟状态。定时器或媒体准备完成都不能启动这些任务。显式解除暂停时，必须先重新检查熔断器状态，再删除标记。聊天和快速创建请求则返回 `provider_breaker` 拒绝原因。
+
+工作区设置 `provider_breaker_max_hold_seconds` 默认为 **21600 秒（6 小时）**。此设置限制新的暂停；修改设置不会延长已有期限。通过 CLI 创建设置提案，再按常规配置审批流程处理：
+
+```bash
+multica config propose workspace.settings --set provider_breaker_max_hold_seconds:=21600 --out provider-hold.json
+```
+
+到期后，任务以 `provider_breaker_hold_expired` 失败，并向负责的工作区成员发送一条需要处理的收件箱通知。此次失败不会自动重试。重新运行议题前，请先检查提供商。运行时重连重试保持原有行为。

@@ -6,6 +6,7 @@ WHERE request.authority = 'human' AND request.kind <> 'action' AND request.statu
     WHERE answer.decision_request_id = request.id AND answer.disclaimed_at IS NULL
       AND answer.woken_at IS NULL AND answer.wake_at <= clock_timestamp()
 )
+AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND request.id = ANY(episode.request_ids))
 AND (request.decision_intent_id IS NULL OR EXISTS (
     SELECT 1 FROM decision_intent intent
     WHERE intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id

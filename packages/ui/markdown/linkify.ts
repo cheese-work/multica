@@ -31,14 +31,37 @@ const FILE_PATH_REGEX = new RegExp(
 const CJK_URL_TERMINATOR_REGEX =
   /[！-／：-＠［-｀｛-～、。「-】]/
 
-// Markdown inline-formatting delimiters that linkify-it counts as URL characters
-// but which, at the very end of a bare URL, are almost always the author closing
-// an emphasis / strikethrough span (`**url**`, `*url*`, `~~url~~`) rather than
-// part of the URL. We drop a trailing run of them so the surrounding markdown
-// still parses — mirroring GFM's own autolink trailing-punctuation trim. A URL
-// that genuinely ends in `*` / `~` loses that character from the link, exactly
-// as it does on GitHub (MUL-4242).
-const TRAILING_MD_DELIMITER = /[*~]+$/
+// GFM extended-autolink trailing trim. Trailing `? ! . , : ; * _ ~` are sentence
+// punctuation or the author closing an emphasis / strikethrough span
+// (`**url**`, `~~url~~`), not part of the URL; a trailing `)` is dropped only
+// when unbalanced, so `https://x/a_(b)` keeps its `)` but `(see https://x/a)`
+// does not (MUL-4242, CHE-4660). linkify-it keeps some of these (`:`, `_`, `*`,
+// `~`) in the match, so we trim here. Interior punctuation is untouched.
+const TRAILING_PUNCT = /[?!.,:;*_~]$/
+
+export function trimTrailingPunctuation(url: string): string {
+  // Count parentheses once and update the counts as `)` / `(` leave the tail,
+  // so the trim is O(n) even for a long run of `)` mixed with punctuation (CWE-407).
+  let open = 0
+  let close = 0
+  for (let i = 0; i < url.length; i++) {
+    if (url[i] === '(') open++
+    else if (url[i] === ')') close++
+  }
+  let end = url.length
+  while (end > 0) {
+    const last = url[end - 1]!
+    if (TRAILING_PUNCT.test(last)) {
+      end--
+    } else if (last === ')' && close > open) {
+      close--
+      end--
+    } else {
+      break
+    }
+  }
+  return url.slice(0, end)
+}
 
 interface DetectedLink {
   type: 'url' | 'email' | 'file'
@@ -248,8 +271,8 @@ export function rangesOverlap(
  * shifted by `offset`. Two boundary corrections linkify-it doesn't make itself:
  * - CJK punctuation ends a URL (linkify-it only breaks on ASCII); when it merged
  *   several URLs across CJK punctuation we truncate and re-scan the tail; and
- * - a trailing run of markdown delimiters (`*`, `~`) is dropped from the URL so
- *   `**url**` keeps its closing emphasis marker outside the link.
+ * - GFM trailing punctuation (`? ! . , : ; * _ ~`, unbalanced `)`) is dropped
+ *   from the URL, so `**url**` keeps its closing marker and `url:` its colon.
  */
 function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]): void {
   const matches = linkify.match(text)
@@ -260,12 +283,11 @@ function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]
     if (cjkIdx === 0) continue // match starts with CJK punct — skip
 
     const truncate = cjkIdx > 0
-    // URL text up to the first CJK terminator, then minus a trailing markdown
-    // delimiter run (e.g. the closing `**` of `**url**`). matchText stays a
+    // URL text up to the first CJK terminator, then minus GFM trailing punctuation
+    // (e.g. the closing `**` of `**url**`, a sentence-final `:`). matchText stays a
     // prefix of match.text, so the link end is just its length past match.index.
-    const matchText = (truncate ? match.text.slice(0, cjkIdx) : match.text).replace(
-      TRAILING_MD_DELIMITER,
-      ''
+    const matchText = trimTrailingPunctuation(
+      truncate ? match.text.slice(0, cjkIdx) : match.text
     )
 
     if (matchText.length > 0 && shouldAutoLink(matchText)) {

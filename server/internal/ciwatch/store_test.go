@@ -25,7 +25,7 @@ func TestStoreIsIdempotentAndKeepsOnlyRedactedText(t *testing.T) {
 	}
 	defer pool.Close()
 
-	raw := "boom\nclone https://u:s3cretPass@h/x.git\n" + ghToken + "\n-----BEGIN RSA PRIVATE KEY-----\n" + pemBody + "\n"
+	raw := "boom\nclone https://u:s3cretPass@h/x.git\n" + ghToken + "\n-----BEGIN " + "RSA PRIVATE KEY-----\n" + pemBody + "\n"
 	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
 	c, _ := newCollector(gh, &fakeBudget{}, fakeRuns{})
 	in := baseInput()

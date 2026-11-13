@@ -35,14 +35,15 @@ type History struct {
 // Jev is the optional shadow predictor (key space: P1..P4). Nothing acts on its answer.
 type Jev func(ctx context.Context, features map[string]any) (system1.Prediction, error)
 
-// ObservationWriter is the one sqlc query Observer needs.
+// ObservationWriter is the one sqlc query Observer needs. It inserts at most
+// one ci_event row per (workspace, subject) and reports how many it wrote.
 type ObservationWriter interface {
-	CreateSystem1Observation(ctx context.Context, arg db.CreateSystem1ObservationParams) error
+	CreateSystem1CIObservation(ctx context.Context, arg db.CreateSystem1CIObservationParams) (int64, error)
 }
 
 // Observer writes system1_observation rows (kind=ci_event, decision_source=rule).
-// Call it only when Store reported a first insert (or for a P0 row), so a
-// redelivered run adds no row.
+// The write is idempotent (unique index on the run's subject id), so call it on
+// every delivery: a retry after a failed write records the row, a redelivery adds none.
 type Observer struct {
 	W          ObservationWriter
 	Jev        Jev  // nil = off
@@ -52,19 +53,31 @@ type Observer struct {
 
 var observationNS = uuid.MustParse("6f0a8a3e-5d0c-4c1e-9a55-3c1e0b6a4f10")
 
-// subjectID is stable per (repo, run, attempt).
+// subjectID is stable per (workspace, repo, run, attempt).
 func subjectID(r Run) pgtype.UUID {
 	return pgtype.UUID{Bytes: uuid.NewSHA1(observationNS, []byte(fmtKey(r))), Valid: true}
 }
 
 func fmtKey(r Run) string {
-	b, _ := json.Marshal([]any{r.RepoOwner, r.RepoName, r.RunID, r.RunAttempt})
+	b, _ := json.Marshal([]any{r.WorkspaceID, r.RepoOwner, r.RepoName, r.RunID, r.RunAttempt})
 	return string(b)
 }
 
-// Observe records res. Dropped and label-only results write nothing. Features
-// are metadata, job names and the signature hash; no log text ever enters the row.
+// Observe builds and writes the row for res on its own (no surrounding
+// transaction); Pipeline uses Build and writes the row with the event.
 func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) error {
+	p, err := o.Build(ctx, run, res, h)
+	if err != nil || p == nil {
+		return err
+	}
+	_, err = o.W.CreateSystem1CIObservation(ctx, *p)
+	return err
+}
+
+// Build returns the row for res, or nil for dropped and label-only results.
+// Features are metadata, job names and the signature hash; no log text ever
+// enters the row. The optional Jev call happens here, before any transaction.
+func (o Observer) Build(ctx context.Context, run Run, res Result, h History) (*db.CreateSystem1CIObservationParams, error) {
 	feats := map[string]any{
 		"workflow_path": run.WorkflowPath, "event": run.Event, "branch": run.HeadBranch, "conclusion": run.Conclusion,
 	}
@@ -89,20 +102,18 @@ func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) e
 		feats["runner_label"], feats["duration_vs_median"], feats["rate_limit_remaining"] = h.RunnerLabel, h.DurationVsMedian, h.RateLimitRemaining
 		feats["minutes_since_head_merge"], feats["changed_paths"] = h.MinutesSinceHeadMerge, h.ChangedPaths
 	default:
-		return nil
+		return nil, nil
 	}
 	inputs, err := json.Marshal(feats)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var ws pgtype.UUID
 	if err := ws.Scan(run.WorkspaceID); err != nil {
-		return err
+		return nil, err
 	}
-	p := db.CreateSystem1ObservationParams{
-		WorkspaceID: ws, Kind: "ci_event", SubjectID: subjectID(run), Class: class,
-		DecisionSource: pgtype.Text{String: "rule", Valid: true}, Inputs: inputs,
-		ChoiceKey: pgtype.Text{String: choice, Valid: true},
+	p := db.CreateSystem1CIObservationParams{
+		WorkspaceID: ws, SubjectID: subjectID(run), Class: class, Inputs: inputs, ChoiceKey: choice,
 	}
 	if o.JevEnabled && o.Jev != nil && res.Kind == KindEvidence {
 		if pred, err := o.Jev(ctx, feats); err != nil {
@@ -115,5 +126,5 @@ func (o Observer) Observe(ctx context.Context, run Run, res Result, h History) e
 			p.PredictedPrecedents = pgtype.Int4{Int32: int32(pred.Precedents), Valid: true}
 		}
 	}
-	return o.W.CreateSystem1Observation(ctx, p)
+	return &p, nil
 }

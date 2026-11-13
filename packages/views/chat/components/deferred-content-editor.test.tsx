@@ -111,6 +111,16 @@ describe("DeferredContentEditor", () => {
     await waitFor(() => expect(editor.calls).toContain("focus"));
   });
 
+  it("forwards flagMentions to the live editor and ignores it before the editor mounts", async () => {
+    const { ref } = setup({ value: "draft in progress" });
+    act(() => ref.current?.flagMentions(["early"]));
+    expect(editor.calls).not.toContain("flag:early");
+    expect(await screen.findByTestId("live-editor")).toBeInTheDocument();
+    await waitFor(() => expect(ref.current?.hasActiveUploads()).toBe(false));
+    act(() => ref.current?.flagMentions(["a", "b"]));
+    expect(editor.calls).toContain("flag:a,b");
+  });
+
   it("mounts without stealing focus when the draft already has text", async () => {
     setup({ value: "draft in progress" });
     expect(await screen.findByTestId("live-editor")).toBeInTheDocument();

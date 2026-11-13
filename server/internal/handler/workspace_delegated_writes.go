@@ -32,6 +32,7 @@ const (
 var delegatedWriteFields = []string{
 	"workflow.steps", "workflow.instructions", "workspace.context",
 	"squad.instructions", "agent.instructions", "project.description",
+	"workflow.budget", "issue.workflow",
 }
 
 // DelegatedWritesConfig defaults to no agents, no fields and a required human
@@ -65,7 +66,13 @@ func delegatedWritesFromSettings(settings map[string]any) (DelegatedWritesConfig
 }
 
 func (h *Handler) loadDelegatedWrites(ctx context.Context, ws pgtype.UUID) (DelegatedWritesConfig, error) {
-	row, err := h.Queries.GetWorkspace(ctx, ws)
+	return loadDelegatedWritesQ(ctx, h.Queries, ws)
+}
+
+// loadDelegatedWritesQ reads the setting through queries, so an approval
+// transaction can read it under the workspace lock.
+func loadDelegatedWritesQ(ctx context.Context, queries *db.Queries, ws pgtype.UUID) (DelegatedWritesConfig, error) {
+	row, err := queries.GetWorkspace(ctx, ws)
 	if err != nil {
 		return defaultDelegatedWrites(), err
 	}
@@ -78,7 +85,12 @@ func (h *Handler) loadDelegatedWrites(ctx context.Context, ws pgtype.UUID) (Dele
 // field, and whether that write needs a human decision. It fails closed: a
 // read error or malformed setting denies and requires a decision.
 func (h *Handler) delegatedWriteAllowed(ctx context.Context, ws pgtype.UUID, agentID, field string) (requiresDecision, ok bool) {
-	cfg, err := h.loadDelegatedWrites(ctx, ws)
+	return delegatedWriteAllowedQ(ctx, h.Queries, ws, agentID, field)
+}
+
+// delegatedWriteAllowedQ is delegatedWriteAllowed over any *db.Queries.
+func delegatedWriteAllowedQ(ctx context.Context, queries *db.Queries, ws pgtype.UUID, agentID, field string) (requiresDecision, ok bool) {
+	cfg, err := loadDelegatedWritesQ(ctx, queries, ws)
 	if err != nil {
 		return true, false
 	}
@@ -141,35 +153,16 @@ func (h *Handler) UpdateDelegatedWrites(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "allowed_agents and allowed_fields are required lists")
 		return
 	}
-	next := DelegatedWritesConfig{AllowedAgents: []string{}, AllowedFields: []string{}, RequiresHumanDecision: true}
-	if req.RequiresHumanDecision != nil {
-		next.RequiresHumanDecision = *req.RequiresHumanDecision
-	}
-	for _, f := range *req.AllowedFields {
-		if !slices.Contains(delegatedWriteFields, f) {
-			writeError(w, http.StatusBadRequest, "unknown allowed field: "+f)
-			return
-		}
-		if !slices.Contains(next.AllowedFields, f) {
-			next.AllowedFields = append(next.AllowedFields, f)
-		}
-	}
-	for _, a := range *req.AllowedAgents {
-		agentUUID, err := util.ParseUUID(a)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "allowed_agents must hold agent ids")
-			return
-		}
-		if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{ID: agentUUID, WorkspaceID: member.WorkspaceID}); err != nil {
-			writeError(w, http.StatusBadRequest, "allowed agent not in this workspace: "+a)
-			return
-		}
-		if canon := uuidToString(agentUUID); !slices.Contains(next.AllowedAgents, canon) {
-			next.AllowedAgents = append(next.AllowedAgents, canon)
-		}
+	next, invalid := buildDelegatedWrites(r.Context(), h.Queries, member.WorkspaceID, req)
+	if invalid != "" {
+		writeError(w, http.StatusBadRequest, invalid)
+		return
 	}
 
-	if err := h.saveDelegatedWrites(r.Context(), member, next); err != nil {
+	if err := h.saveDelegatedWrites(r.Context(), r, member, next); err != nil {
+		if failedAudit(w, r, err, "workspace.delegated_writes.update") {
+			return
+		}
 		slog.Warn("update delegated writes failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update delegated writes")
 		return
@@ -181,18 +174,71 @@ func (h *Handler) UpdateDelegatedWrites(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, next)
 }
 
+// buildDelegatedWrites validates a request body into the setting it names: the
+// fields must be delegable, the agents must be in the workspace, and both lists
+// lose their duplicates. A non-empty message is the reason it is refused. The
+// route and the workspace.delegated_writes.set action both call it.
+func buildDelegatedWrites(ctx context.Context, queries *db.Queries, ws pgtype.UUID, req updateDelegatedWritesRequest) (DelegatedWritesConfig, string) {
+	next := defaultDelegatedWrites()
+	if req.AllowedAgents == nil || req.AllowedFields == nil {
+		return next, "allowed_agents and allowed_fields are required lists"
+	}
+	if req.RequiresHumanDecision != nil {
+		next.RequiresHumanDecision = *req.RequiresHumanDecision
+	}
+	for _, f := range *req.AllowedFields {
+		if !slices.Contains(delegatedWriteFields, f) {
+			return next, "unknown allowed field: " + f
+		}
+		if !slices.Contains(next.AllowedFields, f) {
+			next.AllowedFields = append(next.AllowedFields, f)
+		}
+	}
+	for _, a := range *req.AllowedAgents {
+		agentUUID, err := util.ParseUUID(a)
+		if err != nil {
+			return next, "allowed_agents must hold agent ids"
+		}
+		if _, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentUUID, WorkspaceID: ws}); err != nil {
+			return next, "allowed agent not in this workspace: " + a
+		}
+		if canon := uuidToString(agentUUID); !slices.Contains(next.AllowedAgents, canon) {
+			next.AllowedAgents = append(next.AllowedAgents, canon)
+		}
+	}
+	return next, ""
+}
+
 // saveDelegatedWrites writes the key and its audit record in one transaction
 // under the workspace row lock, so a change without a record does not happen.
-func (h *Handler) saveDelegatedWrites(ctx context.Context, member db.Member, next DelegatedWritesConfig) error {
+func (h *Handler) saveDelegatedWrites(ctx context.Context, r *http.Request, member db.Member, next DelegatedWritesConfig) error {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
-	storedJSON, err := q.LockWorkspaceSettings(ctx, member.WorkspaceID)
+	prev, err := storeDelegatedWrites(ctx, q, member.WorkspaceID, member.UserID, next)
 	if err != nil {
 		return err
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: "workspace.delegated_writes.update", WorkspaceID: member.WorkspaceID, TargetID: member.WorkspaceID,
+		Before: delegatedWritesAuditFields(prev), After: delegatedWritesAuditFields(next),
+	}); err != nil {
+		return auditWriteError{err}
+	}
+	return tx.Commit(ctx)
+}
+
+// storeDelegatedWrites replaces the key under the workspace row lock and
+// records the change as a delegated_writes_changed activity by actor. It runs
+// in the caller's transaction and returns the setting it replaced. The route
+// and the workspace.delegated_writes.set action both write through it.
+func storeDelegatedWrites(ctx context.Context, q *db.Queries, ws, actor pgtype.UUID, next DelegatedWritesConfig) (DelegatedWritesConfig, error) {
+	storedJSON, err := q.LockWorkspaceSettings(ctx, ws)
+	if err != nil {
+		return DelegatedWritesConfig{}, err
 	}
 	var stored map[string]any
 	_ = json.Unmarshal(storedJSON, &stored) // stored settings that are not an object start over as one
@@ -206,20 +252,18 @@ func (h *Handler) saveDelegatedWrites(ctx context.Context, member db.Member, nex
 	stored[delegatedWritesKey] = next
 	settings, err := json.Marshal(stored)
 	if err != nil {
-		return err
+		return prev, err
 	}
-	if _, err := q.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: member.WorkspaceID, Settings: settings}); err != nil {
-		return err
+	if _, err := q.UpdateWorkspace(ctx, db.UpdateWorkspaceParams{ID: ws, Settings: settings}); err != nil {
+		return prev, err
 	}
 	details, err := json.Marshal(map[string]any{"from": prev, "to": next})
 	if err != nil {
-		return err
+		return prev, err
 	}
-	if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
-		ID: dbid.NewV7(), WorkspaceID: member.WorkspaceID, ActorType: strToText("member"), ActorID: member.UserID,
+	_, err = q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: ws, ActorType: strToText("member"), ActorID: actor,
 		Action: delegatedWritesActivity, Details: details,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	})
+	return prev, err
 }

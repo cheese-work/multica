@@ -1,0 +1,82 @@
+# CHE-4680 (CHE-4658 P2, D16 A). Grouped weekly updates: per ecosystem at most one version-update PR and one
+# security-update PR a week. Titles read `<prefix>(deps): ...`, never feat/fix/perf, so `Changelog line` needs no line.
+# Dependabot cannot append the `[squash]` merge-method tag; the PR author tag is set by the merger. Labels are left at
+# the Dependabot defaults (`dependencies` + ecosystem); `mechanical-tier` classifies by changed path, not by label.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: "/server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build"
+      include: scope
+    groups:
+      gomod-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      gomod-security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build"
+      include: scope
+    groups:
+      npm-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      npm-security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+      include: scope
+    groups:
+      github-actions-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      github-actions-security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      timezone: "Asia/Ho_Chi_Minh"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "build"
+      include: scope
+    groups:
+      docker-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      docker-security-updates:
+        applies-to: security-updates
+        patterns:
+          - "*"

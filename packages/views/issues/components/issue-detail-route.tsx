@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useMarkMentionsReadOnOpen } from "@multica/core/inbox";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
+import { DecisionActionPanel } from "./decision-action-panel";
 import { TranscriptButton } from "../../common/task-transcript";
 import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
 import { IssuePeekHost } from "./issue-peek";
@@ -108,8 +110,14 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const { searchParams } = useNavigation();
   const paths = useWorkspacePaths();
   const runId = searchParams.get("run");
+  // The approve URL a run-budget request prints names the action to approve.
+  const approveId = searchParams.get("approve");
+  const keep = new URLSearchParams();
+  if (runId) keep.set("run", runId);
+  if (approveId) keep.set("approve", approveId);
 
-  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, runId ? `?run=${encodeURIComponent(runId)}` : "");
+  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, keep.size ? `?${keep.toString()}` : "");
+  useMarkMentionsReadOnOpen(canonicalId);
 
   if (isResolving) return <IssueDetailSkeleton />;
 
@@ -131,6 +139,7 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
         highlightCommentId={highlight.commentId}
         authoritative={authoritative}
       />
+      {approveId && <DecisionActionPanel key={approveId} actionId={approveId} issueId={canonicalId} issueLabel={issue?.identifier ?? routeId} />}
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}
     </IssuePeekHost>
   );

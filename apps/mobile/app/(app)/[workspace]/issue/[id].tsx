@@ -10,7 +10,7 @@
  * Stack.Screen with title "Issue". We override that here once the data
  * lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -39,6 +39,12 @@ import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
 import { useAuthStore } from "@/data/auth-store";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { inboxListOptions } from "@/data/queries/inbox";
+import { useMarkInboxRead } from "@/data/mutations/inbox";
+import {
+  createReadRequestTracker,
+  requestMentionReads,
+} from "@multica/core/inbox/unread-mention-items";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { classifyIssueLoadError } from "@/lib/issue-load-error";
@@ -80,6 +86,26 @@ export default function IssueDetail() {
       useViewedIssuesStore.getState().push(wsId, id);
     }
   }, [wsId, id]);
+
+  // Opening the thread reads the viewer's mentions on it, so the list badge
+  // clears. Same rule as web's `useMarkMentionsReadOnOpen`.
+  const { data: inboxItems } = useQuery(inboxListOptions(wsId));
+  const markInboxRead = useMarkInboxRead().mutate;
+  const [mentionReads] = useState(createReadRequestTracker);
+  // A failed read rolls the cache back to the same unread items, so `inboxItems`
+  // may not change; this bump re-runs the effect so the retry happens.
+  const [mentionReadFailures, setMentionReadFailures] = useState(0);
+  useEffect(() => {
+    if (!inboxItems || !id) return;
+    requestMentionReads(inboxItems, id, mentionReads, (itemId, settle) =>
+      markInboxRead(itemId, {
+        onSettled: (_result, error) => {
+          settle(error !== null);
+          if (error) setMentionReadFailures((n) => n + 1);
+        },
+      }),
+    );
+  }, [inboxItems, id, markInboxRead, mentionReads, mentionReadFailures]);
 
   // Screen-scoped state — clear on unmount so re-entering the issue starts
   // from a clean slate (no stale text-selection comment id). The "Replying

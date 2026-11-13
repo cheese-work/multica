@@ -46,6 +46,10 @@ var codexModelsCacheConfigFiles = []string{
 // CodexHomeOptions carries optional inputs for prepareCodexHomeWithOpts that
 // affect the generated per-task config.toml.
 type CodexHomeOptions struct {
+	// Managed (CHE-3706) builds the home from an allowlist: no personal
+	// instructions.md, no shared plugin cache. Skills are handled by
+	// prepareManagedCodex.
+	Managed bool
 	// CodexVersion is the detected Codex CLI version (e.g. "0.121.0"). Empty
 	// means unknown; on macOS, unknown is treated as "probably broken" so the
 	// daemon falls back to danger-full-access for network access. See
@@ -246,6 +250,21 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	for _, name := range codexCopiedFiles {
 		src := filepath.Join(sharedHome, name)
 		dst := filepath.Join(codexHome, name)
+		if opts.Managed {
+			// Personal instructions and the legacy config.json are not in the
+			// managed allowlist; config.toml is rebuilt from it.
+			var err error
+			switch name {
+			case "config.toml":
+				err = writeManagedCodexConfig(src, dst)
+			default:
+				err = os.RemoveAll(dst)
+			}
+			if err != nil {
+				return fmt.Errorf("prepare managed codex %s: %w", name, err)
+			}
+			continue
+		}
 		if err := syncCopiedFile(src, dst); err != nil {
 			logger.Warn("execenv: codex-home sync failed", "file", name, "error", err)
 			if name == "config.toml" {
@@ -279,8 +298,18 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 		}
 	}
 
-	if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
-		logger.Warn("execenv: codex-home plugin cache exposure failed", "error", err)
+	if !opts.Managed {
+		if err := exposeSharedCodexPluginCache(codexHome, sharedHome); err != nil {
+			logger.Warn("execenv: codex-home plugin cache exposure failed", "error", err)
+		}
+	} else {
+		// A reused personal home still links the shared cache; managed excludes it.
+		link := filepath.Join(codexHome, "plugins", "cache")
+		if fi, err := os.Lstat(link); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(link); err != nil {
+				return fmt.Errorf("remove shared plugin cache link: %w", err)
+			}
+		}
 	}
 
 	// Write a daemon-managed sandbox block into config.toml. On macOS we may
@@ -313,7 +342,7 @@ func prepareCodexHomeWithOpts(codexHome string, opts CodexHomeOptions, logger *s
 	// so the parent thread's `turn/completed` is not interpreted as task
 	// completion while spawned subagents are still running. See
 	// codex_multi_agent.go for the full rationale and escape hatch.
-	if err := ensureCodexMultiAgentConfig(filepath.Join(codexHome, "config.toml"), logger); err != nil {
+	if err := ensureCodexMultiAgentConfig(filepath.Join(codexHome, "config.toml"), opts.CodexVersion, logger); err != nil {
 		logger.Warn("execenv: codex-home ensure multi-agent config failed", "error", err)
 	}
 

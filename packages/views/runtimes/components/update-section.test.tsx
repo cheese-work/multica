@@ -176,3 +176,55 @@ describe("UpdateSection read-only and managed states", () => {
     expect(screen.queryByRole("button", { name: "Update" })).not.toBeInTheDocument();
   });
 });
+
+describe("UpdateSection progress", () => {
+  const POLL = { timeout: 4000 };
+
+  it("shows a determinate bar and phase label when the daemon reports progress", async () => {
+    initiateUpdate.mockResolvedValue({ id: "upd-1" });
+    getUpdateResult.mockResolvedValue({
+      status: "running",
+      progress: { phase: "download", bytes_done: 512, bytes_total: 1024 },
+    });
+    renderSection({ runtimeId: "runtime-1", updateStatus: UPDATE });
+
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    const bar = await screen.findByRole("progressbar", {}, POLL);
+    expect(bar).toHaveAttribute("aria-valuenow", "50");
+    expect(screen.getByText("Downloading")).toBeInTheDocument();
+  });
+
+  // The daemon (CHE-3569) sends "downloading" for bytes and the CLI's own
+  // phase lines ("Verifying sha256", ...) verbatim for the rest.
+  it.each([
+    ["downloading", "Downloading"],
+    ["Verifying sha256", "Verifying"],
+    ["Probing --version", "Verifying"],
+    ["Installing", "Installing"],
+    ["Installed", "Installing"],
+  ])("labels the daemon phase %j as %s", async (phase, label) => {
+    initiateUpdate.mockResolvedValue({ id: "upd-1" });
+    getUpdateResult.mockResolvedValue({
+      status: "running",
+      progress: { phase, bytes_done: 1, bytes_total: 2 },
+    });
+    renderSection({ runtimeId: "runtime-1", updateStatus: UPDATE });
+
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await screen.findByRole("progressbar", {}, POLL);
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("falls back to the spinner status when the daemon reports no progress", async () => {
+    initiateUpdate.mockResolvedValue({ id: "upd-1" });
+    getUpdateResult.mockResolvedValue({ status: "running" });
+    renderSection({ runtimeId: "runtime-1", updateStatus: UPDATE });
+
+    fireEvent.click(screen.getByRole("button", { name: "Update" }));
+
+    await screen.findByText("Updating...", {}, POLL);
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+  });
+});

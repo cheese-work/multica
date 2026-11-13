@@ -40,6 +40,8 @@ type Withdrawal struct {
 	Answer          db.DecisionAnswer
 	Comments        []db.Comment
 	ClearedComments []db.Comment
+	// Covered holds the withdrawals of the cards a batch answer decided, taken back with it.
+	Covered []Withdrawal
 }
 
 func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID) (Withdrawal, error) {
@@ -55,6 +57,41 @@ func WithdrawForCard(ctx context.Context, queries *db.Queries, request db.Decisi
 
 func WithdrawByAgent(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, comment db.Comment, suppress bool) (Withdrawal, error) {
 	return withdraw(ctx, queries, request, answer, sessionStatus, reason, pgtype.UUID{}, &comment, suppress, "")
+}
+
+// retractActionAnswer takes an action answer's wake back: its answered event
+// and pending receipts are superseded, and a retracted event (sourced by the
+// withdrawal comment) gets a receipt only for each recipient that already got
+// the answer. An agent veto that suppresses the retraction writes no event.
+// The caller holds the request and answer locks, so wake_seq order is commit order.
+func retractActionAnswer(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answerID, sourceCommentID pgtype.UUID, suppress bool) error {
+	if _, err := queries.SupersedeDecisionAnswerWakeEvents(ctx, answerID); err != nil {
+		return err
+	}
+	if _, err := queries.SupersedePendingAnswerWakeReceipts(ctx, answerID); err != nil {
+		return err
+	}
+	if suppress {
+		return nil
+	}
+	delivered, err := queries.ListDeliveredAnswerWakeRecipients(ctx, answerID)
+	if err != nil || len(delivered) == 0 {
+		return err
+	}
+	seq, err := queries.AllocateDecisionWakeSeq(ctx, request.ID)
+	if err != nil {
+		return err
+	}
+	event, err := queries.InsertDecisionWakeEvent(ctx, db.InsertDecisionWakeEventParams{ID: dbid.NewV7(), RequestID: request.ID, Seq: seq, Type: "retracted", AnswerID: answerID, SourceCommentID: sourceCommentID})
+	if err != nil {
+		return err
+	}
+	for _, recipient := range delivered {
+		if _, err := queries.InsertDecisionWakeReceipt(ctx, db.InsertDecisionWakeReceiptParams{ID: dbid.NewV7(), EventID: event.ID, EventSeq: seq, RecipientAgentID: recipient.RecipientAgentID, Role: recipient.Role, SquadID: recipient.SquadID}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID, veto *db.Comment, suppress bool, cardLink string) (Withdrawal, error) {
@@ -97,6 +134,11 @@ func withdraw(ctx context.Context, queries *db.Queries, request db.DecisionReque
 	result.Answer, err = queries.WithdrawDecisionAnswer(ctx, params)
 	if err != nil {
 		return Withdrawal{}, err
+	}
+	if request.Kind == "action" {
+		if err := retractActionAnswer(ctx, queries, request, answer.ID, comment.ID, params.SuppressRetraction); err != nil {
+			return Withdrawal{}, err
+		}
 	}
 	if request.Status != "answered" {
 		return result, nil
