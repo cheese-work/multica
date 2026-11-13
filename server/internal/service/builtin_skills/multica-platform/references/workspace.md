@@ -11,6 +11,8 @@ multica workspace list [--full-id]
 multica workspace switch <workspace-id|slug|prefix>
 multica workspace create --name "Support" --slug support --issue-prefix SUP
 multica workspace update [workspace-id|slug|prefix] --name ... --description ... --issue-prefix ...
+multica workspace pause [workspace-id|slug|prefix]    # stop claims for every agent
+multica workspace resume [workspace-id|slug|prefix]
 multica workspace member invite <email> [workspace] [--role member|admin]
 ```
 
@@ -20,6 +22,8 @@ multica workspace member invite <email> [workspace] [--role member|admin]
   `MULTICA_WORKSPACE_ID`, then the profile default. It changes where later
   commands go, so a stray `switch` makes them write to the wrong workspace.
   Prefer an explicit `--workspace-id` on each command in an agent run.
+- `pause`/`resume` are person owner/admin only; agent tokens get 403. Running
+  tasks finish and queued work is kept. `resume` on an unpaused target is a no-op.
 - `create` makes you owner. The slug is permanent. It does not change the
   default workspace.
 - `invite` sends a pending invitation; the invitee must accept. Owners cannot

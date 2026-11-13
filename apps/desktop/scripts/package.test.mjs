@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   builderArgsForTarget,
   deriveCliVersion,
@@ -15,6 +15,10 @@ import {
   resolveBuildMatrix,
   stripLeadingSeparator,
 } from "./package.mjs";
+
+// These tests spawn real git/node subprocesses; on a loaded host (X99 load >50)
+// they exceed the global 15s testTimeout. CHE-4425.
+vi.setConfig({ testTimeout: 120_000 });
 
 describe("normalizeGitVersion", () => {
   it("returns null for empty / nullish input", () => {

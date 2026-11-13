@@ -21,7 +21,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func init() {
 	// Spend class: the target is a workflow, so only the owner approves it.
-	Register(&Definition{Type: WorkflowStepsSet, Version: 1, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowStepsSet})
+	Register(&Definition{Type: WorkflowStepsSet, Version: 1, Template: Template{Title: "Replace a workflow's steps", Summary: "Replaces the workflow's step list with the proposed steps."}, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowStepsSet})
 }
 
 func normalizeWorkflowStepsSet(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {

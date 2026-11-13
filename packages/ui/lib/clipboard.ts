@@ -50,6 +50,9 @@ export async function copyText(text: string): Promise<boolean> {
   try {
     textarea.focus();
     textarea.select();
+    // iOS Safari ignores select() on a readonly field; only an explicit range
+    // selects the text.
+    textarea.setSelectionRange(0, text.length);
     return document.execCommand("copy");
   } catch {
     return false;

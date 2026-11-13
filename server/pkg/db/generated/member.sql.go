@@ -249,6 +249,32 @@ func (q *Queries) ListWorkspaceManagerUserIDs(ctx context.Context, workspaceID p
 	return items, nil
 }
 
+const lockMemberByUserAndWorkspace = `-- name: LockMemberByUserAndWorkspace :one
+SELECT id, workspace_id, user_id, role, created_at FROM member
+WHERE user_id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockMemberByUserAndWorkspaceParams struct {
+	UserID      pgtype.UUID `json:"user_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// LockMemberByUserAndWorkspace holds a share lock until the caller's transaction
+// ends, so a concurrent member removal waits for it instead of slipping past.
+func (q *Queries) LockMemberByUserAndWorkspace(ctx context.Context, arg LockMemberByUserAndWorkspaceParams) (Member, error) {
+	row := q.db.QueryRow(ctx, lockMemberByUserAndWorkspace, arg.UserID, arg.WorkspaceID)
+	var i Member
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.UserID,
+		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const updateMemberRole = `-- name: UpdateMemberRole :one
 UPDATE member SET role = $2
 WHERE id = $1

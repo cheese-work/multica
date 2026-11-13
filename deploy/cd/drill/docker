@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# `docker` shim for the C00 rollback drill (CHE-4664 / CHE-4619).
+#
+# cutover.sh builds every compose call from a fixed -f list (ab, flags, jev), so
+# docker-compose.fault-readyz.yml is never loaded by an ordinary cutover. Put
+# this directory first on PATH for ONE cutover.sh run and the shim appends that
+# overlay to exactly one call: the candidate start,
+#   compose ... up ... (with MULTICA_SKIP_MIGRATIONS=1 in the environment).
+# The migrator (`run`), the recovery (`start`) and every other call pass through
+# untouched, so the migration and the incumbent restart still reach the real
+# database. cutover.sh itself is not edited.
+#
+# Inert unless DRILL_FAULT_READYZ=1. The real docker is DRILL_REAL_DOCKER, or
+# the first `docker` on PATH outside this directory.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+real="${DRILL_REAL_DOCKER:-}"
+if [ -z "$real" ]; then
+  clean_path=":${PATH}:"
+  clean_path="${clean_path//:$here:/:}"
+  real="$(PATH="${clean_path#:}" command -v docker)" || { echo "drill shim: real docker not found" >&2; exit 127; }
+fi
+
+[ "${DRILL_FAULT_READYZ:-}" = 1 ] && [ "${1:-}" = compose ] || exec "$real" "$@"
+
+# First non-option word after the global options is the compose subcommand.
+args=("$@")
+last_f=-1 sub=""
+for ((i = 1; i < ${#args[@]}; i++)); do
+  case "${args[i]}" in
+    -f) last_f=$i; i=$((i + 1)) ;;
+    -*) ;;
+    *) sub="${args[i]}"; break ;;
+  esac
+done
+[ "$sub" = up ] && [ "${MULTICA_SKIP_MIGRATIONS:-}" = 1 ] || exec "$real" "$@"
+
+if [ "$last_f" -lt 0 ]; then
+  echo "drill shim: candidate start has no -f compose files; refusing to fault blindly" >&2
+  exit 2
+fi
+overlay="$here/../docker-compose.fault-readyz.yml"
+echo "drill shim: layering $overlay on the candidate start" >&2
+exec "$real" "${args[@]:0:last_f+2}" -f "$overlay" "${args[@]:last_f+2}"

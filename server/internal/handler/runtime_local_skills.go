@@ -880,7 +880,7 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusInternalServerError, failMsg)
 			return
 		}
-		resp, oerr := h.overwriteSkillWithFiles(r.Context(), skillOverwriteInput{
+		resp, oerr := h.overwriteSkillWithFiles(r.Context(), r, skillOverwriteInput{
 			WorkspaceID:   rt.WorkspaceID,
 			TargetSkillID: targetUUID,
 			UserID:        req.CreatorID,
@@ -891,6 +891,11 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 			Files:         files,
 		})
 		if oerr != nil {
+			// An audit failure is not the import's failure: answer 500 so the
+			// daemon retries instead of recording a terminal failed import.
+			if failedAudit(w, r, oerr, "skill.update") {
+				return
+			}
 			switch {
 			case errors.Is(oerr, errSkillOverwriteNotFound):
 				h.failLocalSkillImport(w, r, requestID, "target skill no longer exists")
@@ -931,7 +936,7 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	resp, err := h.createSkillWithFiles(r.Context(), skillCreateInput{
+	resp, err := h.createSkillWithFiles(r.Context(), r, skillCreateInput{
 		WorkspaceID: rt.WorkspaceID,
 		CreatorID:   creatorUUID,
 		Name:        name,
@@ -941,6 +946,9 @@ func (h *Handler) ReportLocalSkillImportResult(w http.ResponseWriter, r *http.Re
 		Files:       files,
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "skill.create") {
+			return
+		}
 		// A unique-violation here means another import won the race between our
 		// lookup and the insert — surface it as a conflict, not a hard failure.
 		if isUniqueViolation(err) {

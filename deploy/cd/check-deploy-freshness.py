@@ -7,6 +7,10 @@ Two rules for the current main head:
 2. Head merged >= 90 min ago and no successful `CD deploy to C00` run named for it whose `deploy` job succeeded
    (manual dispatches named by ref, not SHA, do not count; a run with the deploy job skipped does not count) -> ::error:: with the run
    URL and the first error line.
+3. A `cd-deploy.yml` slot (17 past 01/05/09/13/17/21 UTC) passed >= 30 min ago and no `schedule` run was created since
+   -> ::error:: (CHE-5182: GitHub can drop scheduled runs; the cron sits off the hour for the same reason), and one
+   backup `gh workflow run cd-deploy.yml --ref main -f schedule_backup=true` (CHE-5353) unless a cd-deploy.yml run on main was created since the
+   slot. That run, scheduled or dispatched, is the guard: later alarm runs find it, so a slot gets one dispatch.
 `--live`: compare the revision C00 reports on /api/config (env C00_API_URL, tailnet only, so it runs on an X99
 runner) with main's head; catches a rollback, which run history cannot see.
 GitHub rate limits (403/429) wait for the reset time (capped) and retry instead of failing the alarm.
@@ -22,6 +26,8 @@ import urllib.request
 MAX_WAIT = 600  # seconds per rate-limit wait; the job's 15 min timeout bounds the total
 RETRIES = 2
 DEPLOY_DEADLINE = dt.timedelta(minutes=90)
+SLOT_HOURS_UTC, SLOT_MINUTE = (1, 5, 9, 13, 17, 21), 17  # keep equal to the cron in cd-deploy.yml (test-deploy-schedule.py)
+SLOT_GRACE = dt.timedelta(minutes=30)
 
 
 def _gh(*args):
@@ -62,6 +68,20 @@ def decide(sha, head_time, now, qual_runs, deploy_runs, ran_deploy):
                    for r in deploy_runs)
     return {"rerun": rerun, "alert": not deployed and now - head_time >= DEPLOY_DEADLINE,
             "deployed": deployed, "run": newest}
+
+
+def missed_slot(now, schedule_runs):
+    """Latest cd-deploy.yml slot at least SLOT_GRACE old that has no schedule run created since it, else None."""
+    slots = [dt.datetime(d.year, d.month, d.day, h, SLOT_MINUTE, tzinfo=dt.timezone.utc)
+             for d in (now - dt.timedelta(days=1), now) for h in SLOT_HOURS_UTC]
+    slot = max((s for s in slots if now - s >= SLOT_GRACE), default=None)
+    if slot and not any(parse(r["created_at"]) >= slot for r in schedule_runs):
+        return slot
+    return None
+
+
+def run_since(slot, runs):
+    return any(parse(r["created_at"]) >= slot for r in runs)
 
 
 def first_error(repo, run):
@@ -109,6 +129,18 @@ def main_live(sha, head_time, now):
     return 0
 
 
+def backup_dispatch(repo, slot, deploy_runs):
+    """The marker makes cd-deploy.yml run its scheduled path (resolve, preflight, merger and suspension checks) for this dispatch."""
+    if run_since(slot, deploy_runs):
+        print("A cd-deploy.yml run on main was created since the slot; no backup dispatch.")
+        return
+    try:
+        gh_api("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", repo)
+        print("Sent one backup dispatch of cd-deploy.yml (once per slot).")
+    except subprocess.CalledProcessError as e:
+        print(f"::error::backup dispatch failed: {(e.stderr or '').strip() or e}")
+
+
 def main(argv=()):
     repo = os.environ["GITHUB_REPOSITORY"]
     commit = json.loads(gh_api("api", f"repos/{repo}/commits/main"))
@@ -118,6 +150,12 @@ def main(argv=()):
     runs = lambda wf, query: json.loads(gh_api("api", f"repos/{repo}/actions/workflows/{wf}/runs?{query}&per_page=100"))["workflow_runs"]
     d = decide(sha, head_time, now, runs("cd-qualification.yml", f"head_sha={sha}"), runs("cd-deploy.yml", "status=success"),
                lambda run: deploy_job_succeeded(repo, run))
+    # ponytail: one page (100) of schedule runs; slots are 6/day so the newest page always holds the latest slot.
+    slot = missed_slot(now, runs("cd-deploy.yml", "event=schedule"))
+    if slot:
+        ict = slot + dt.timedelta(hours=7)
+        print(f"::error::cd-deploy.yml slot {slot:%H:%M} UTC ({ict:%H:%M} ICT) passed over 30 min ago and no schedule run exists since")
+        backup_dispatch(repo, slot, runs("cd-deploy.yml", "branch=main"))
     if d["rerun"]:
         gh_api("run", "rerun", str(d["rerun"]), "--failed", "-R", repo)
         print(f"Reran failed jobs of qualification run {d['rerun']} (once per run ID).")
@@ -128,7 +166,7 @@ def main(argv=()):
         print(f"::error::main {sha[:9]} is not on C00 {age} min after merge (limit 90): {where}")
         return 1
     print(f"main {sha[:9]} is deployed to C00." if d["deployed"] else f"main {sha[:9]} not deployed yet, inside the 90 min window.")
-    return 0
+    return 1 if slot else 0
 
 
 if __name__ == "__main__":

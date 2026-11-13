@@ -93,6 +93,8 @@ La démonstration ci-dessous part d'une tâche déjà assignée à un agent et l
 
 Les membres et les agents peuvent modifier directement les statuts. Dans un projet avec un [workflow](/workflows), choisissez parmi ses étapes. Entrer dans une étape avec passage de relais peut aussi changer le responsable et demander à un agent de commencer.
 
+Lorsqu’une tâche revient à `blocked`, le paramètre d’espace de travail `blocked_dispatch_dedup.mode` contrôle les nouvelles exécutions Tofu sans changement. Sa valeur par défaut est `block` ; `warn` journalise une exécution qui aurait été ignorée, mais lance quand même une exécution, et `off` désactive cette vérification. Une transition déclenchée par un membre lance toujours une exécution.
+
 Les agents mettent à jour le statut au fil du travail : par défaut, ils passent la tâche à `in_progress` en commençant et à `in_review` à la livraison. Si le projet utilise un workflow, ils suivent ses étapes et ses consignes de relais.
 
 <Callout type="info">
@@ -114,6 +116,14 @@ Un `owner` ou un `admin` peut ajouter des statuts comme **Revue de code**, **QA*
 
 La bibliothèque contient les statuts disponibles. Le workflow d’un projet choisit ceux que ses tâches utilisent et leur ordre.
 
+### Historique des statuts
+
+Ouvrez **Historique des statuts** dans la barre latérale du ticket pour voir chaque changement de statut, du plus ancien au plus récent. Chaque ligne indique le changement, ce qui l'a déclenché (une personne, une transition de workflow, une PR fusionnée, etc.), l'heure et un lien vers le commentaire de transmission s'il existe. Faites glisser le curseur pour parcourir les changements.
+
+- Un changement antérieur à l'enregistrement des déclencheurs affiche **Déclencheur non enregistré**.
+- Un statut supprimé depuis de l'espace de travail affiche **(supprimé)** après son nom.
+- Lorsque le ticket a plus d'historique que le serveur n'en renvoie, un avis indique que les changements plus anciens ne sont pas affichés.
+
 ## Propriétés personnalisées
 
 Les champs propres à votre équipe, comme la gravité, le client ou le budget, s'ajoutent sous forme de propriétés personnalisées. Un `owner` ou un `admin` de l'espace de travail les gère dans **Paramètres → Propriétés** ; un espace de travail peut avoir jusqu'à 20 propriétés actives.
@@ -131,6 +141,8 @@ Une tâche est l'enregistrement durable d'un travail ; une [exécution](/tasks) 
 Les fichiers que les membres et les agents envoient dans les commentaires sont rassemblés dans la section **Livrables** du panneau latéral de la tâche. Elle affiche les 3 dernières images et les 4 derniers autres fichiers ; « Voir les livrables » ouvre l'ensemble, groupé par commentaire, avec des filtres images, documents, vidéos et autres. `G` dans la visionneuse ouvre la même page. Les pièces jointes de la description sont des éléments d'entrée et ne comptent pas.
 
 Envoyer de nouveau un fichier de même nom et de même type ajoute une version au même livrable. La section ne l'affiche qu'une fois, avec son numéro de version (par exemple `v2`), et chaque carte de fichier dans les commentaires indique sa version. Dans la visionneuse, cliquez sur le numéro de version pour passer à une version plus ancienne, et sur **Afficher dans les commentaires** pour revenir au commentaire qui l'a envoyée.
+
+Un fichier envoyé sur une tâche avec `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` devient la révision suivante de cette pièce jointe ; un nouvel envoi du même nom de fichier sur la même tâche aussi. La tâche n'affiche qu'une carte pour le document, par exemple `v4 · 3 antérieures`, et **Diff** ouvre les modifications depuis la révision précédente (lignes supprimées en rouge, ajoutées en vert, lignes inchangées repliées ; **Tout afficher** les conserve). Pour un fichier binaire, seule la différence de taille et de SHA-256 est indiquée. `multica attachment history <attachment-id>` liste les révisions avec l'heure, l'auteur et le SHA-256, et `multica attachment diff <attachment-id> --from 3 --to 4` affiche le diff.
 
 <DeliverablesDemo />
 

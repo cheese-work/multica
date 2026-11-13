@@ -42,18 +42,26 @@ type gateHarness struct {
 // newGate starts the harness; policy options apply before the proxy serves.
 func newGate(t *testing.T, policy ...func(*egress.Proxy)) *gateHarness {
 	t.Helper()
+	return newGateWith(t, func(g *gateHarness) {
+		for _, f := range policy {
+			f(g.proxy)
+		}
+	})
+}
+
+// newGateWith is newGate with a hook that sees the fake services (so a policy
+// can name their ports) after they exist and before the proxy serves.
+func newGateWith(t *testing.T, before func(*gateHarness)) *gateHarness {
+	t.Helper()
 	l := bridgeLauncher()
 	requireSandbox(t, l)
 	g := &gateHarness{t: t, l: l, ly: newLayout(t), proxy: &egress.Proxy{AllowLoopback: true}}
 
-	for _, f := range policy {
-		f(g.proxy)
-	}
-	g.startProxy()
-
 	g.provider = tlsServer(t, providerMux())
 	g.multica = tlsServer(t, multicaMux())
 	g.mcpURL = tlsServer(t, mcpMux())
+	before(g)
+	g.startProxy()
 
 	g.caFile = filepath.Join(g.ly.work, "ca.pem")
 	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: g.provider.Certificate().Raw})

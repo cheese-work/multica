@@ -64,8 +64,8 @@ export function StatusPicker({
    * The issue's project. When it uses a workflow, only that workflow's steps
    * are offered, in workflow order, each naming who entering it hands the
    * issue to. (MUL-7420) `null` is an issue outside any project: it offers
-   * the Default workflow's statuses, and search still reaches every status.
-   * (MUL-8121) Omit (`undefined`) when the surface spans projects.
+   * only the Default workflow's statuses, search included. (MUL-8121,
+   * MUL-8250) Omit (`undefined`) when the surface spans projects.
    */
   projectId?: string | null;
   /** The issue's own workflow override; it replaces the project's. (CHE-2822) */
@@ -101,7 +101,6 @@ export function StatusPicker({
     workflow,
     project,
     defaultScope,
-    catalog,
     resolved: workflowResolved,
     retry: retryCatalog,
   } = useIssueStatusOptions(wsId, projectId, status, workflowId);
@@ -114,11 +113,8 @@ export function StatusPicker({
   const options = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return allOptions;
-    // Outside a project only the list is narrowed to Default, not what the
-    // issue may take: search reaches every status. (MUL-8121)
-    const pool = defaultScope ? catalog : allOptions;
-    return pool.filter((o) => o.label.toLowerCase().includes(q));
-  }, [allOptions, catalog, defaultScope, query]);
+    return allOptions.filter((o) => o.label.toLowerCase().includes(q));
+  }, [allOptions, query]);
 
   const searchable = !!workflow || !!defaultScope || allOptions.length > SEARCH_THRESHOLD;
   const [pendingStatus, setPendingStatus] = useState<IssueStatus | null>(null);
@@ -152,26 +148,13 @@ export function StatusPicker({
         if (!v) setQuery("");
         setOpen(v);
       }}
-      width={workflow || defaultScope ? "w-60" : "w-52"}
+      width={workflow ? "w-60" : "w-52"}
       align={align}
       triggerRender={triggerRender}
       tooltip={tooltip}
       searchable={searchable}
       searchPlaceholder={t(($) => $.filters.search_status)}
       onSearchChange={setQuery}
-      header={
-        workflow ? (
-          <div className="truncate px-2 pb-1 pt-1.5 text-caption text-muted-foreground">
-            {project
-              ? t(($) => $.workflows.picker.header, { workflow: workflow.name, project: project.title })
-              : workflow.name}
-          </div>
-        ) : defaultScope ? (
-          <div className="truncate px-2 pb-1 pt-1.5 text-caption text-muted-foreground">
-            {t(($) => $.workflows.picker.header_no_project, { workflow: defaultScope.name })}
-          </div>
-        ) : undefined
-      }
       footer={markDuplicate ?? undefined}
       trigger={
         customTrigger ??

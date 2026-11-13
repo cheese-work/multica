@@ -97,6 +97,7 @@ const call = (name: string, ...args: unknown[]) =>
 async function startManager() {
   const manager = await import("./daemon-manager");
   manager.setupDaemonManager(() => ({
+    isDestroyed: () => false,
     webContents: { send: (_c: string, s: { state: string }) => ctx.statuses.push(s.state) },
   }) as never);
   // Let the startup bootstrap run before the renderer reports anything.

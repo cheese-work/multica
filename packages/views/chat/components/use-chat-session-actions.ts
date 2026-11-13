@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 import { useChatStore } from "@multica/core/chat";
 import {
+  useMarkChatSessionUnread,
   useSetChatSessionArchived,
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
@@ -22,6 +23,12 @@ interface ChatSessionActions {
   unarchive: (session: ChatSession) => Promise<boolean>;
   /** Pins or unpins an active DM; an archived DM is never pinned. */
   togglePin: (session: ChatSession) => Promise<boolean>;
+  /**
+   * Moves the read cursor back after the server accepts it, then runs
+   * `onMarked` (the caller leaves the DM). Auto mark-read stays off for the
+   * session until it is opened again. Resolves false when nothing changed.
+   */
+  markUnseen: (session: ChatSession, options?: { onMarked?: () => void }) => Promise<boolean>;
 }
 
 /**
@@ -34,6 +41,7 @@ export function useChatSessionActions(): ChatSessionActions {
   const { t } = useT("chat");
   const setArchived = useSetChatSessionArchived();
   const setPinned = useSetChatSessionPinned();
+  const markUnread = useMarkChatSessionUnread();
 
   const errorText = useCallback(
     (err: unknown, fallback: string) =>
@@ -97,5 +105,24 @@ export function useChatSessionActions(): ChatSessionActions {
     [errorText, setPinned, t],
   );
 
-  return { archive, unarchive, togglePin };
+  const markUnseen = useCallback(
+    async (session: ChatSession, options?: { onMarked?: () => void }): Promise<boolean> => {
+      if (session.status === "archived") return false;
+      // Hold auto mark-read first: the refetch after the request must not
+      // find the open DM and clear the cursor again.
+      useChatStore.getState().suppressAutoRead(session.id);
+      try {
+        await markUnread.mutateAsync(session.id);
+      } catch (err) {
+        useChatStore.getState().suppressAutoRead(null);
+        toast.error(errorText(err, t(($) => $.list.unseen_failed)));
+        return false;
+      }
+      options?.onMarked?.();
+      return true;
+    },
+    [errorText, markUnread, t],
+  );
+
+  return { archive, unarchive, togglePin, markUnseen };
 }
