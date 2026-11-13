@@ -9,7 +9,12 @@ import (
 )
 
 // guardShimNames are the tools the guard shim directory fronts (CHE-5194 T2).
-var guardShimNames = []string{"git", "gh"}
+var guardShimNames = []string{"git", "gh", "sleep"}
+
+// guardedTools are the shims that call `multica guard exec` (CHE-5194 T4): gh
+// for plugins 1 and 2, sleep for plugin 2. git has no guard plugin yet and its
+// shim only hands over to the next git on the PATH.
+var guardedTools = map[string]bool{"gh": true, "sleep": true}
 
 // frontGuardShims puts a guard shim directory first on agentEnv["PATH"] for
 // every run (CHE-5194 T2), whatever the runtime and whether or not credential
@@ -21,8 +26,10 @@ var guardShimNames = []string{"git", "gh"}
 // are on agentEnv["PATH"]: the guard then runs first and hands over to those
 // shims, so the broker still receives every push and gh call. With no broker
 // shims the target is the host tool and the run behaves as before. The guard
-// itself (CHE-5194 T1) hooks into the shim scripts.
-func frontGuardShims(agentEnv map[string]string, taskTempDir string) (string, error) {
+// itself (CHE-5194 T1) runs inside the shims of the guardedTools, through the
+// multica binary at multicaBin; with no binary those shims hand straight over
+// to the target.
+func frontGuardShims(agentEnv map[string]string, taskTempDir, multicaBin string) (string, error) {
 	if runtime.GOOS == "windows" || strings.TrimSpace(taskTempDir) == "" {
 		return "", nil
 	}
@@ -41,6 +48,11 @@ func frontGuardShims(agentEnv map[string]string, taskTempDir string) (string, er
 			continue
 		}
 		script := fmt.Sprintf("#!/bin/sh\nexec '%s' \"$@\"\n", target)
+		if guardedTools[name] && multicaBin != "" && !strings.ContainsAny(multicaBin, "'\n") {
+			// The guard runs the real tool itself, named by MULTICA_GUARD_REAL_<TOOL>.
+			script = fmt.Sprintf("#!/bin/sh\nMULTICA_GUARD_REAL_%[1]s='%[2]s'\nexport MULTICA_GUARD_REAL_%[1]s\nexec '%[3]s' guard exec %[4]s -- \"$@\"\n",
+				strings.ToUpper(name), target, multicaBin, name)
+		}
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
 			return "", fmt.Errorf("guard shims: %w", err)
 		}
