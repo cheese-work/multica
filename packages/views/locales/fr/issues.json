@@ -457,7 +457,9 @@
   },
   "gantt2": {
     "clipped_start": "Commencé avant cette fenêtre",
-    "now": "Maintenant"
+    "now": "Maintenant",
+    "collapse": "Réduire",
+    "expand": "Développer"
   },
   "actor_issues": {
     "scope": {

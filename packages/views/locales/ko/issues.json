@@ -447,7 +447,9 @@
   },
   "gantt2": {
     "clipped_start": "이 기간 이전에 시작됨",
-    "now": "지금"
+    "now": "지금",
+    "collapse": "접기",
+    "expand": "펼치기"
   },
   "actor_issues": {
     "scope": {

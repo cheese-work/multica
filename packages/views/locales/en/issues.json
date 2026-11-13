@@ -457,7 +457,9 @@
   },
   "gantt2": {
     "clipped_start": "Started before this window",
-    "now": "Now"
+    "now": "Now",
+    "collapse": "Collapse",
+    "expand": "Expand"
   },
   "actor_issues": {
     "scope": {
