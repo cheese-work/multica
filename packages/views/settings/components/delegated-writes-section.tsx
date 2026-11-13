@@ -181,7 +181,7 @@ export function DelegatedWritesSection({ wsId, canEdit }: { wsId: string; canEdi
                 <button
                   type="button"
                   aria-label={t(($) => $.delegated_writes.remove_agent, { name: nameOf(id) })}
-                  className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   onClick={() => edit({ allowed_agents: rule.allowed_agents.filter((a) => a !== id) })}
                 >
                   <X aria-hidden="true" className="size-3" />

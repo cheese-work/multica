@@ -571,10 +571,10 @@ func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, w *workflowWrite
 	}
 }
 
-// assigneeActiveRuns lists the active runs of an issue's assignee on it: the
-// agent's own runs, or every run made on a squad's behalf. Members run
-// nothing.
-func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue db.Issue) []db.AgentTaskQueue {
+// assigneeActiveRuns lists the unfinished runs of an issue's assignee on it,
+// including deferred work: the agent's own runs, or every run made on a
+// squad's behalf. Members run nothing. q is the caller's transaction.
+func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue db.Issue) []db.ListAssigneeRunsForHandoffRow {
 	if !issue.AssigneeID.Valid {
 		return nil
 	}
@@ -582,19 +582,14 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 	if assigneeType != "agent" && assigneeType != "squad" {
 		return nil
 	}
-	tasks, err := q.ListActiveTasksByIssue(ctx, issue.ID)
+	tasks, err := q.ListAssigneeRunsForHandoff(ctx, db.ListAssigneeRunsForHandoffParams{
+		IssueID: issue.ID, AssigneeType: assigneeType, AssigneeID: issue.AssigneeID,
+	})
 	if err != nil {
 		slog.Warn("workflow: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
 		return nil
 	}
-	var out []db.AgentTaskQueue
-	for _, task := range tasks {
-		if (assigneeType == "agent" && task.AgentID == issue.AssigneeID) ||
-			(assigneeType == "squad" && task.SquadID == issue.AssigneeID) {
-			out = append(out, task)
-		}
-	}
-	return out
+	return tasks
 }
 
 // claimProjectWorkflow renders the issue's project workflow for a task claim,
@@ -621,7 +616,8 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)
-	if workflowStepMoved(def, issue.Status, task) {
+	stepMoved := workflowStepMoved(def, issue.Status, task)
+	if stepMoved {
 		in.BoundStep = task.WorkflowStep.String
 		in.MovedBy = h.lastIssueStatusMover(ctx, issue)
 	} else if !taskRunsForAssignee(issue, task) {
@@ -630,7 +626,7 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			in.AssigneeName = h.actorDisplayName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 		}
 	}
-	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def)}
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def), stepMoved: stepMoved}
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left

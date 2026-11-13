@@ -41,7 +41,7 @@ func TestWorkspaceResponseKeepsSchedulingPauseNextToPin(t *testing.T) {
 }
 
 func TestOwningSquadLeaderKeepsDoneOutcome(t *testing.T) {
-	owned := squadOperatingProtocolFor(true)
+	owned := squadOperatingProtocolFor(true, leaderNoWorkflow)
 	for _, want := range []string{"multica issue status <issue-id> done", "multica issue status <issue-id> in_review"} {
 		if !strings.Contains(owned, want) {
 			t.Errorf("owning leader protocol lost %q", want)

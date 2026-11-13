@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paths, WorkspaceSlugProvider } from "@multica/core/paths";
-import { useSearchStore } from "@multica/views/search";
+import { useSearchStore } from "@multica/core/command-bar";
 
 const state = vi.hoisted(() => ({
   pathname: "/acme/search",

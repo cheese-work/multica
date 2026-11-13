@@ -1,10 +1,22 @@
-## What does this PR do?
+## Problem
 
-<!-- Describe the change clearly. What problem does it solve? Why is this approach the right one? -->
+<!-- What is the concrete problem, who is affected, and why does it matter? -->
 
+## Goal
 
+<!-- What should be true after this change? State the intended outcome. -->
 
-## Related Issue
+## Proposal
+
+<!-- Explain the high-level design and why it achieves the goal. Make it understandable to a reader without much project background. Keep implementation details to a minimum. -->
+
+## Alternatives (optional)
+
+<!-- If useful, briefly describe other approaches and why you did not choose them. -->
+
+## Screenshots
+
+<!-- Required for UI or interaction changes: attach screenshots or a screen recording from the running app showing the affected screens and states. Without either, these PRs are rejected by default. Before/after comparisons are strongly preferred; for a new screen, include the after screenshot. Upload with scripts/pr-shots (see CONTRIBUTING.md#screenshots-and-recordings) or GitHub's web editor. If there is no UI or interaction impact, write "N/A" and explain why. -->
 
 <!-- Link the issue this PR addresses. If no issue exists, consider creating one first.
      Replace the line below with exactly one disposition, using the issue's full
@@ -125,8 +137,3 @@ M: <merge result, full SHA>
 
 **Prompt / approach:**
 <!-- How did you use AI to produce this code? Share your prompt, conversation link, or describe your approach. This helps the team learn from each other's AI workflows. -->
-
-
-## Screenshots (optional)
-
-<!-- If applicable, add screenshots showing the change in action. -->

@@ -1039,7 +1039,7 @@ func searchIssueSource(wsParam string, likeParams []string, numParam string) str
 			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
 	}
 	return fmt.Sprintf(`(
-		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
+		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number, i.project_id,
 			ist.title_folded AS title, ist.description_folded AS description,
 			ist.title_accents, ist.description_accents
 		FROM (
@@ -1069,7 +1069,7 @@ func foldedLikeAny(column string, likeParams []string) string {
 // the trigram GIN indexes let the planner skip rows that no pattern can match
 // when that is cheaper. Cost is the planner's call, so the SQL never forces an
 // index, and the eligibility rules and ranking read the same flags as before.
-func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string, projectID pgtype.UUID) (string, []any) {
 	// The stored search text is lowered and diacritic-folded (search_fold), so the
 	// patterns are folded the same way. The lowered-only query is kept to rank a
 	// match that also agrees on diacritics above one that matches after folding.
@@ -1137,6 +1137,13 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		}
 	}
 
+	// Bound before limit/offset so the handler's args[len-2]/args[len-1] fill
+	// keeps landing on the pagination placeholders.
+	projectParam := ""
+	if projectID.Valid {
+		projectParam = nextArg(projectID)
+	}
+
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)
 
@@ -1188,6 +1195,9 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	}
 
 	issueWhere := "i.workspace_id = " + wsParam
+	if projectParam != "" {
+		issueWhere += " AND i.project_id = " + projectParam
+	}
 	if terminalStatusesParam != "" {
 		issueWhere += fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", terminalStatusesParam)
 	}
@@ -1265,6 +1275,17 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 			"BOOL_OR("+casedMatch("c.content_accents")+") FILTER (WHERE c.content_accents IS NOT NULL) AS comment_diacritic_match")
 	}
 
+	commentWhere := "c.workspace_id = " + wsParam
+	if terminalStatusesParam != "" || projectParam != "" {
+		// Prune comments for ineligible issues before LOWER(c.content) and
+		// aggregation. Repeating the workspace predicate lets the planner drive
+		// comment index lookups from eligible issues.
+		commentWhere += fmt.Sprintf(
+			" AND EXISTS (SELECT 1 FROM issue i WHERE i.id = c.issue_id AND %s)",
+			issueWhere,
+		)
+	}
+
 	// PostgreSQL otherwise inlines this scalar LATERAL subquery and recomputes
 	// LOWER(c.content) for every flag. OFFSET 0 is the intentional planner fence
 	// that keeps the long comment body lowercased once per row. Future indexable
@@ -1280,14 +1301,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 				SELECT LOWER(c.content) AS lowered
 				OFFSET 0
 			) lowered_comment
-			WHERE c.workspace_id = %s
+			WHERE %s
 			GROUP BY c.issue_id
 		) aggregated_comments
 		WHERE %s
 	)`,
 		searchCommentSource(wsParam, textLikeParams),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
-		wsParam,
+		commentWhere,
 		strings.Join(commentCandidateFlags, " OR "),
 	)
 
@@ -1469,6 +1490,16 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	// Malformed UUIDs return 400, matching ListIssues.
+	var projectFilter pgtype.UUID
+	if p := r.URL.Query().Get("project_id"); p != "" {
+		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
+		if !ok {
+			return
+		}
+		projectFilter = id
+	}
 	terms := splitSearchTerms(q)
 	queryNum, hasNum := parseQueryNumber(q)
 	var terminalStatusKeys []string
@@ -1485,7 +1516,7 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		terminalStatusKeys = resolvedKeys
 	}
 
-	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
+	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys, projectFilter)
 	// Fill placeholder args: $4 = workspace_id, last two = limit, offset
 	args[3] = wsUUID
 	args[len(args)-2] = limit
@@ -3532,7 +3563,14 @@ type CreateIssueRequest struct {
 	OriginType *string `json:"origin_type,omitempty"`
 	OriginID   *string `json:"origin_id,omitempty"`
 
-	AllowDuplicate bool `json:"allow_duplicate,omitempty"`
+	AllowDuplicate         bool `json:"allow_duplicate,omitempty"`
+	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled,omitempty"`
+}
+
+// CreateIssueResponse echoes the atomic PR setting without expanding issue reads.
+type CreateIssueResponse struct {
+	IssueResponse
+	PRAutoCompleteDisabled bool `json:"pr_auto_complete_disabled"`
 }
 
 // UnmarshalJSON rejects duplicate object members before Go's ordinary map
@@ -4116,34 +4154,35 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		markedWriter = acting && (actor.ExternalRead || len(actor.TaintIds) > 0)
 	}
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
-		WorkspaceID:     wsUUID,
-		HandoffResolver: handoffResolver,
-		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
-		MarkedWriter:    markedWriter,
-		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
-		PropertyGate:    h.createPropertyGate(wsUUID),
-		Title:           req.Title,
-		Description:     ptrToText(req.Description),
-		Status:          status,
-		StatusOmitted:   req.Status == "",
-		Priority:        priority,
-		AssigneeType:    assigneeType,
-		AssigneeID:      assigneeID,
-		CreatorType:     creatorType,
-		CreatorID:       parseUUID(actualCreatorID),
-		ParentIssueID:   parentIssueID,
-		ProjectID:       projectID,
-		WorkflowID:      overrideID,
-		RequestedByID:   requestedByID,
-		StartDate:       startDate,
-		DueDate:         dueDate,
-		OriginType:      originType,
-		OriginID:        originID,
-		Stage:           ptrToInt4(req.Stage),
-		AttachmentIDs:   attachmentIDs,
-		LabelIDs:        labelIDs,
-		Properties:      properties,
-		AllowDuplicate:  req.AllowDuplicate,
+		WorkspaceID:            wsUUID,
+		HandoffResolver:        handoffResolver,
+		AssigneeNamed:          req.AssigneeType != nil || req.AssigneeID != nil,
+		MarkedWriter:           markedWriter,
+		EntryGate:              h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		PropertyGate:           h.createPropertyGate(wsUUID),
+		Title:                  req.Title,
+		Description:            ptrToText(req.Description),
+		Status:                 status,
+		StatusOmitted:          req.Status == "",
+		Priority:               priority,
+		AssigneeType:           assigneeType,
+		AssigneeID:             assigneeID,
+		CreatorType:            creatorType,
+		CreatorID:              parseUUID(actualCreatorID),
+		ParentIssueID:          parentIssueID,
+		ProjectID:              projectID,
+		WorkflowID:             overrideID,
+		RequestedByID:          requestedByID,
+		StartDate:              startDate,
+		DueDate:                dueDate,
+		OriginType:             originType,
+		OriginID:               originID,
+		Stage:                  ptrToInt4(req.Stage),
+		AttachmentIDs:          attachmentIDs,
+		LabelIDs:               labelIDs,
+		Properties:             properties,
+		AllowDuplicate:         req.AllowDuplicate,
+		PRAutoCompleteDisabled: req.PRAutoCompleteDisabled,
 	}, service.IssueCreateOpts{
 		ActorID:          actualCreatorID,
 		AnalyticsAgentID: analyticsAgentID,
@@ -4216,6 +4255,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if writeProjectAdmissionError(w, err) {
 		return
 	}
+	if writeIssueNumberCollision(w, err) {
+		return
+	}
 	if err != nil {
 		slog.Warn("create issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create issue")
@@ -4236,7 +4278,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// understood label_ids and skip its legacy post-create attach fallback.
 	labelResponses := labelsToResponse(res.Labels)
 	resp.Labels = &labelResponses
-	writeJSON(w, http.StatusCreated, resp)
+	if req.PRAutoCompleteDisabled {
+		h.recordPRAutoCompleteActivity(r.Context(), issue, creatorType, actualCreatorID, true)
+	}
+	writeJSON(w, http.StatusCreated, CreateIssueResponse{IssueResponse: resp, PRAutoCompleteDisabled: req.PRAutoCompleteDisabled})
 }
 
 type UpdateIssueRequest struct {
@@ -4973,25 +5018,27 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	willRun = willRun && !suppressRun
 
 	updatedPayload := map[string]any{
-		"issue":               resp,
-		"assignee_changed":    assigneeChanged,
-		"status_changed":      statusMoveRecorded(statusChanged, statusRec),
-		"priority_changed":    priorityChanged,
-		"project_changed":     projectChanged,
-		"start_date_changed":  startDateChanged,
-		"due_date_changed":    dueDateChanged,
-		"description_changed": descriptionChanged,
-		"title_changed":       titleChanged,
-		"prev_title":          prevIssue.Title,
-		"prev_assignee_type":  textToPtr(prevIssue.AssigneeType),
-		"prev_assignee_id":    uuidToPtr(prevIssue.AssigneeID),
-		"prev_status":         prevIssue.Status,
-		"prev_priority":       prevIssue.Priority,
-		"prev_start_date":     prevStartDate,
-		"prev_due_date":       prevDueDate,
-		"prev_description":    textToPtr(prevIssue.Description),
-		"creator_type":        prevIssue.CreatorType,
-		"creator_id":          uuidToString(prevIssue.CreatorID),
+		"issue":                resp,
+		"assignee_changed":     assigneeChanged,
+		"status_changed":       statusMoveRecorded(statusChanged, statusRec),
+		"priority_changed":     priorityChanged,
+		"project_changed":      projectChanged,
+		"start_date_changed":   startDateChanged,
+		"due_date_changed":     dueDateChanged,
+		"description_changed":  descriptionChanged,
+		"title_changed":        titleChanged,
+		"parent_changed":       prevIssue.ParentIssueID != issue.ParentIssueID,
+		"prev_parent_issue_id": uuidToPtr(prevIssue.ParentIssueID),
+		"prev_title":           prevIssue.Title,
+		"prev_assignee_type":   textToPtr(prevIssue.AssigneeType),
+		"prev_assignee_id":     uuidToPtr(prevIssue.AssigneeID),
+		"prev_status":          prevIssue.Status,
+		"prev_priority":        prevIssue.Priority,
+		"prev_start_date":      prevStartDate,
+		"prev_due_date":        prevDueDate,
+		"prev_description":     textToPtr(prevIssue.Description),
+		"creator_type":         prevIssue.CreatorType,
+		"creator_id":           uuidToString(prevIssue.CreatorID),
 		// Both ends of a mark change ride here: the activity log records it
 		// and clients refresh the two issues' relations from it.
 		"duplicate_of_issue_id":      liveDuplicateMark(issue.Status, issue.DuplicateOfIssueID),
@@ -5948,6 +5995,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"status_changed":             statusMoveRecorded(statusChanged, statusRec),
 			"priority_changed":           priorityChanged,
 			"project_changed":            projectChanged,
+			"title_changed":              req.Updates.Title != nil && prevIssue.Title != issue.Title,
+			"prev_title":                 prevIssue.Title,
+			"parent_changed":             prevIssue.ParentIssueID != issue.ParentIssueID,
+			"prev_parent_issue_id":       uuidToPtr(prevIssue.ParentIssueID),
 			"prev_status":                prevIssue.Status,
 			"duplicate_of_issue_id":      liveDuplicateMark(issue.Status, issue.DuplicateOfIssueID),
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),

@@ -386,6 +386,8 @@ type TaskIssueStatusData struct {
 // in the per-turn prompt, never in the cached runtime brief.
 type TaskProjectWorkflowData struct {
 	Brief string `json:"brief"`
+	// stepMoved selects the server-side leader briefing without changing the wire.
+	stepMoved bool
 }
 
 // ClaimParentIssue points a sub-issue's run at its parent issue, where the
@@ -461,6 +463,7 @@ type AgentTaskResponse struct {
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	IssueTitle           string                 `json:"issue_title,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
