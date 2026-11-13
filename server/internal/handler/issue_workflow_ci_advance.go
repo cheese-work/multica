@@ -125,6 +125,13 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
+	return h.tryMoveIssueOnEdgeIf(ctx, issue, to, source, extra, startHandler, nil)
+}
+
+// tryMoveIssueOnEdgeIf is tryMoveIssueOnEdge with a guard read in the move's own
+// transaction, just before the write: false leaves the issue where it is and
+// reports no move and no error.
+func (h *Handler) tryMoveIssueOnEdgeIf(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error)) (moved, ranHandler bool, err error) {
 	// The lock holds through the commit, so a person's move cannot read this
 	// issue's status between this write and its grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
@@ -144,6 +151,12 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 		return false, false, err
 	}
 	defer tx.Rollback(ctx)
+	if guard != nil {
+		ok, err := guard(ctx, h.Queries.WithTx(tx))
+		if err != nil || !ok {
+			return false, false, err
+		}
+	}
 	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler, overlay)
 	if err != nil {
 		var notConfirmed *service.StopNotConfirmedError
@@ -177,6 +190,8 @@ func edgeMoveCause(source string) string {
 		return "run_budget"
 	case "idle_started_guard":
 		return "watchdog"
+	case "pr_automation":
+		return service.StatusCausePRMerged
 	}
 	return "system"
 }

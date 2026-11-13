@@ -36,7 +36,7 @@ type settingsPatchParams struct {
 
 func init() {
 	decisionaction.Register(&decisionaction.Definition{
-		Type: settingsPatchAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Type: settingsPatchAction, Version: 1, Passkey: decisionaction.PasskeyRequired, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
 		Template:  decisionaction.Template{Title: "Change workspace settings", Summary: "Sets the proposed workspace setting keys."},
 		Normalize: normalizeSettingsPatch,
 	})

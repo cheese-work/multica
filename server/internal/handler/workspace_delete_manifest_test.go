@@ -313,6 +313,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"ci_failure_event":                   workspaceDelete,     // CHE-4273
 	"ci_watch_action":                    workspaceDelete,     // CHE-4273
 	"ci_signature_owner":                 workspaceDelete,     // CHE-4273
+	"ci_flake_increment":                 workspaceDelete,     // CHE-4280 flake counter; no FK.
 	"ci_watch_event":                     workspaceDelete,     // CHE-4279 storm-breaker event log; no FK.
 	"gh_installation_budget":             workspaceDeleteKeep, // CHE-4273 per GitHub App installation, shared across workspaces; no workspace_id.
 	"gh_budget_reservation":              workspaceDeleteKeep, // CHE-4273 same; no workspace_id.

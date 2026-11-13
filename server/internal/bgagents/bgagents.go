@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -205,3 +206,15 @@ func WorkspaceEligible(a db.Agent) bool {
 
 // Purpose is the agent_task_queue.purpose value for a job's tasks.
 func Purpose(j Job) string { return "bg:" + string(j) }
+
+// Eligible is the resolve-time check for one agent on job: ENG-8, plus, for an
+// output_only job, a provider with a verified no-tool mode.
+func Eligible(job Job, a db.Agent, provider string) bool {
+	if !WorkspaceEligible(a) {
+		return false
+	}
+	if spec, ok := SpecFor(job); ok && spec.Runner == OutputOnly {
+		return agent.OutputOnlyIneligibleReason(provider) == ""
+	}
+	return true
+}

@@ -42,6 +42,7 @@ type ProviderFailureProbe interface {
 type HTTPProviderFailureProbe struct {
 	url    string
 	client *http.Client
+	token  string
 }
 
 var errProviderRecoveryProbeNotConfigured = errors.New("provider recovery probe is not configured")
@@ -82,6 +83,12 @@ func (p *HTTPProviderFailureProbe) Probe(ctx context.Context) (ProviderFailurePr
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
 		return ProviderFailureProbeEvidence{}, fmt.Errorf("create provider recovery probe: %w", err)
+	}
+	if p.token != "" {
+		if !tokenSafeURL(request.URL) {
+			return ProviderFailureProbeEvidence{}, errBearerOverPlainHTTP
+		}
+		request.Header.Set("Authorization", "Bearer "+p.token)
 	}
 	response, err := p.client.Do(request)
 	if err != nil {

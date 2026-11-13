@@ -828,6 +828,17 @@ type CiFailureEvent struct {
 	Excerpts       []byte             `json:"excerpts"`
 }
 
+type CiFlakeIncrement struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Reason        string             `json:"reason"`
+	Ref           string             `json:"ref"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type CiSignatureOwner struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -1591,6 +1602,7 @@ type GithubPullRequest struct {
 	ReviewHeadSha       string             `json:"review_head_sha"`
 	ReviewID            int64              `json:"review_id"`
 	ReviewAt            pgtype.Timestamptz `json:"review_at"`
+	MergeCommitSha      string             `json:"merge_commit_sha"`
 }
 
 type GithubPullRequestCheckRun struct {
@@ -2957,17 +2969,22 @@ type ProvenanceExportLog struct {
 }
 
 type ProviderBreaker struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	Provider      string             `json:"provider"`
-	State         string             `json:"state"`
-	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
-	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
-	CoolOffS      int32              `json:"cool_off_s"`
-	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
-	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
-	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
-	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
-	Version       int64              `json:"version"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	Provider       string               `json:"provider"`
+	State          string               `json:"state"`
+	OpenedAt       pgtype.Timestamptz   `json:"opened_at"`
+	NextProbeAt    pgtype.Timestamptz   `json:"next_probe_at"`
+	CoolOffS       int32                `json:"cool_off_s"`
+	CanaryTaskID   pgtype.UUID          `json:"canary_task_id"`
+	TripEvidence   []pgtype.UUID        `json:"trip_evidence"`
+	Last5xxAt      pgtype.Timestamptz   `json:"last_5xx_at"`
+	LastSuccessAt  pgtype.Timestamptz   `json:"last_success_at"`
+	Version        int64                `json:"version"`
+	CanaryCoolOffS int32                `json:"canary_cool_off_s"`
+	NextCanaryAt   pgtype.Timestamptz   `json:"next_canary_at"`
+	CanaryStarts   []pgtype.Timestamptz `json:"canary_starts"`
+	LastReleaseAt  pgtype.Timestamptz   `json:"last_release_at"`
+	DrainCutoffAt  pgtype.Timestamptz   `json:"drain_cutoff_at"`
 }
 
 type ProviderBreakerAudit struct {
@@ -3367,6 +3384,9 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+	OutcomeLabel        pgtype.Text        `json:"outcome_label"`
+	TimeToGreenMs       pgtype.Int8        `json:"time_to_green_ms"`
+	LabeledAt           pgtype.Timestamptz `json:"labeled_at"`
 }
 
 type System1Prediction struct {
