@@ -1257,6 +1257,7 @@ type DecisionRequest struct {
 	ProposalFingerprint      pgtype.Text        `json:"proposal_fingerprint"`
 	AnswerRevision           int32              `json:"answer_revision"`
 	WakeSeq                  int64              `json:"wake_seq"`
+	BatchID                  pgtype.UUID        `json:"batch_id"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }
