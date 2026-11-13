@@ -445,6 +445,10 @@
     "load_more": "さらに読み込む",
     "no_lane": "値なし"
   },
+  "gantt2": {
+    "clipped_start": "このウィンドウより前に開始",
+    "now": "現在"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

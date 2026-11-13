@@ -156,7 +156,7 @@ func (e *Engine) headOwner(ctx context.Context, branch string) string {
 // Running gh pr create unchecked could open a non-draft PR; nothing exists yet,
 // so a retry is safe. With verify off the call goes through unchecked.
 func (e *Engine) createPreflightFailed(err error, what string) (decision, error) {
-	if !e.Policy.verify() {
+	if !e.pol().verify() {
 		return decision{}, err
 	}
 	return refuse(2, "gh pr create stopped: could not %s (%s); nothing was created, retry the command", what, firstLine(err.Error(), 120)), nil
@@ -173,7 +173,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 	if !ok || strings.TrimSpace(title.value) == "" {
 		return refuse(2, "gh pr create needs a non-empty --title; the guard adds the [merge] or [squash] tag to it"), nil
 	}
-	if d, ok := find(flags, "draft"); ok && d.hasVal && d.value == "false" && e.Policy.verify() {
+	if d, ok := find(flags, "draft"); ok && d.hasVal && d.value == "false" && e.pol().verify() {
 		return refuse(2, "gh pr create must open a draft PR; remove --draft=false and run gh pr ready when it is done"), nil
 	}
 
@@ -245,7 +245,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 		newArgs = withValue(newArgs, title, title.value+" "+tag)
 		fixes = append(fixes, "added "+tag+" to the title")
 	}
-	if missing := missingFrom(e.Policy.githubReviewers(rv.NameWithOwner), values(flags, "reviewer")); len(missing) > 0 && allowed(pl, "--reviewer") {
+	if missing := missingFrom(e.reviewers(rv.NameWithOwner), values(flags, "reviewer")); len(missing) > 0 && allowed(pl, "--reviewer") {
 		if rf, ok := find(flags, "reviewer"); ok && rf.hasVal {
 			newArgs = withValue(newArgs, rf, rf.value+","+strings.Join(missing, ","))
 		} else {
@@ -253,7 +253,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 		}
 		fixes = append(fixes, "requested reviewers "+strings.Join(missing, ", "))
 	}
-	if e.Policy.verify() && allowed(pl, "--draft") && !isOn(flags, "draft") {
+	if e.pol().verify() && allowed(pl, "--draft") && !isOn(flags, "draft") {
 		newArgs = append(newArgs, "--draft")
 		fixes = append([]string{"made it a draft"}, fixes...)
 	}
@@ -287,7 +287,7 @@ func prURL(out string) string { return prURLRe.FindString(out) }
 // prints the url only when the PR passes.
 func (e *Engine) finishCreate(ctx context.Context, pl *Plugin, url string, fresh bool, fixes []string) decision {
 	d := decision{kind: KindFixed, done: true, line: strings.Join(fixes, "; ")}
-	if e.Policy.verify() {
+	if e.pol().verify() {
 		if d = e.ensure(ctx, pl, url, fresh, 1, fixes); d.kind == KindRefused {
 			return d
 		}
@@ -311,7 +311,7 @@ func (e *Engine) ensure(ctx context.Context, pl *Plugin, url string, wantDraft b
 	if m := prRepoRe.FindStringSubmatch(info.URL); m != nil {
 		repo = m[1]
 	}
-	wantRev := e.Policy.githubReviewers(repo)
+	wantRev := e.reviewers(repo)
 	needTag := func(p *prInfo) bool { return !hasTag(p.Title) && allowed(pl, "--title") }
 	needRev := func(p *prInfo) []string {
 		if !allowed(pl, "--add-reviewer") {
@@ -392,7 +392,7 @@ func (e *Engine) prReady(ctx context.Context, pl *Plugin, args []string) (decisi
 	}
 	info, err := e.view(ctx, selector(flags, pos[2:])...)
 	if err != nil {
-		if !e.Policy.verify() {
+		if !e.pol().verify() {
 			return decision{}, err
 		}
 		return refuse(2, "gh pr ready stopped: could not read the PR (%s); it stays draft, retry the command", firstLine(err.Error(), 120)), nil
@@ -430,4 +430,10 @@ func ghAPI(args []string) decision {
 		return refuse(2, "gh api %s on repos/*/%s is not allowed; use gh pr create, edit or ready, or gh issue", method, parts[3])
 	}
 	return pass(args)
+}
+
+// reviewers lists the GitHub logins to request for repo, resolving the policy
+// layers for that repository and the call's directory.
+func (e *Engine) reviewers(repo string) []string {
+	return e.Policy.Resolve(Target{Repo: repo, Path: e.path}).githubReviewers(repo)
 }
