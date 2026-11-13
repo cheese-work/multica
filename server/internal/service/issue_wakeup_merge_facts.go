@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // StoredMergeFacts is the production MergeFactsSource (CHE-5594). It reads only
@@ -17,19 +17,11 @@ import (
 // exact PR head in merge_receipt_fact. It calls no network and runs no PR code.
 // A fact it cannot read stays absent, which the evaluator refuses.
 type StoredMergeFacts struct {
-	Tx TxStarter
+	Tx      TxStarter
+	Queries *db.Queries
 }
 
-var errMergeReceiptMissing = errors.New("no receipt facts are stored for this PR head")
-
-// agentBranchAuthor returns the agent name of an `agent/<name>/...` branch.
-func agentBranchAuthor(branch string) (string, bool) {
-	parts := strings.SplitN(branch, "/", 3)
-	if len(parts) < 3 || parts[0] != "agent" || parts[1] == "" {
-		return "", false
-	}
-	return parts[1], true
-}
+var errMergeReceiptMissing = errors.New("no receipt facts are stored for this PR head and base")
 
 func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (MergeFacts, error) {
 	if s == nil || s.Tx == nil {
@@ -42,11 +34,11 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var f MergeFacts
-	var branch, checks pgtype.Text
+	var checks pgtype.Text
 	var head, snapshotHead string
-	err = tx.QueryRow(ctx, `SELECT branch, checks_rollup_state, head_sha, snapshot_head_sha FROM github_pull_request
+	err = tx.QueryRow(ctx, `SELECT checks_rollup_state, head_sha, snapshot_head_sha FROM github_pull_request
 		WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4`,
-		c.WorkspaceID, c.Owner, c.Repo, c.Number).Scan(&branch, &checks, &head, &snapshotHead)
+		c.WorkspaceID, c.Owner, c.Repo, c.Number).Scan(&checks, &head, &snapshotHead)
 	if err != nil {
 		return MergeFacts{}, fmt.Errorf("read PR snapshot: %w", err)
 	}
@@ -56,13 +48,15 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	}
 	green := checks.Valid && checks.String == "SUCCESS"
 	f.ChecksGreen = &green
-	var merger string
-	if err := tx.QueryRow(ctx, `SELECT name FROM agent WHERE id=$1`, c.MergerAgentID).Scan(&merger); err != nil {
-		return MergeFacts{}, fmt.Errorf("read merger agent: %w", err)
-	}
-	if author, ok := agentBranchAuthor(branch.String); ok {
-		same := strings.EqualFold(author, merger)
-		f.MergerIsAuthor = &same
+	// The author comes from the workspace binding or the task that opened the PR,
+	// never from the branch name alone. An unknown author stays absent and refuses.
+	if s.Queries != nil {
+		if pull, err := s.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{WorkspaceID: c.WorkspaceID, RepoOwner: c.Owner, RepoName: c.Repo, PrNumber: c.Number}); err == nil {
+			if author, err := GitHubPullRequestAuthor(ctx, s.Queries, pull); err == nil {
+				same := author.ID == c.MergerAgentID
+				f.MergerIsAuthor = &same
+			}
+		}
 	}
 
 	f.Paused, f.MainRedPaused, err = storedPauseFacts(ctx, tx, c.Owner, c.Repo)
@@ -77,8 +71,8 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	var paths, labels []string
 	err = tx.QueryRow(ctx, `SELECT tier,classifier_trusted,coverage_complete,pr_bound,security_gate,cross_lab_pass,scope_classified,
 			gate_vetoed,paths,labels,last_pass_at,evidence,observed_at
-		FROM merge_receipt_fact WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4 AND head_sha=$5`,
-		c.WorkspaceID, c.Owner, c.Repo, c.Number, c.HeadSHA).Scan(&f.Tier, &f.ClassifierTrusted, &f.CoverageComplete, &f.PRBound,
+		FROM merge_receipt_fact WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4 AND head_sha=$5 AND base_ref=$6`,
+		c.WorkspaceID, c.Owner, c.Repo, c.Number, c.HeadSHA, c.BaseRef).Scan(&f.Tier, &f.ClassifierTrusted, &f.CoverageComplete, &f.PRBound,
 		&f.SecurityGate, &f.CrossLabPass, &f.ScopeClassified, &f.GateVetoed, &paths, &labels, &f.LastPassAt, &f.Evidence, &f.ObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MergeFacts{}, errMergeReceiptMissing
@@ -126,4 +120,75 @@ func storedPauseObservedAt(ctx context.Context, tx pgx.Tx, owner, repo string) (
 	var oldest pgtype.Timestamptz
 	err := tx.QueryRow(ctx, `SELECT min(fetched_at) FROM merge_pause_state WHERE repo_owner=$1 AND repo_name=$2`, owner, repo).Scan(&oldest)
 	return oldest.Time, err
+}
+
+// MergeReceiptInput is one receipt's facts for one PR head and base. A nil
+// pointer is an absent fact, which the evaluator refuses.
+type MergeReceiptInput struct {
+	Owner, Repo, HeadSHA, BaseRef string
+	Number                        int32
+	Tier                          *int
+	ClassifierTrusted             *bool
+	CoverageComplete              *bool
+	PRBound                       *bool
+	SecurityGate                  string
+	CrossLabPass                  *bool
+	ScopeClassified               *bool
+	GateVetoed                    *bool
+	Paths, Labels                 []string
+	LastPassAt                    *time.Time
+	Evidence                      string
+}
+
+var (
+	errMergeReceiptInvalid  = errors.New("receipt needs repo, PR number, head, base and evidence")
+	errMergeReceiptNotFresh = errors.New("receipt does not match the PR's current head and base")
+)
+
+// IsMergeReceiptConflict reports that the receipt describes a head or base the
+// stored PR snapshot no longer has.
+func IsMergeReceiptConflict(err error) bool { return errors.Is(err, errMergeReceiptNotFresh) }
+
+// IsMergeReceiptInvalid reports a receipt missing a required field.
+func IsMergeReceiptInvalid(err error) bool { return errors.Is(err, errMergeReceiptInvalid) }
+
+// RecordMergeReceipt is the producer of merge_receipt_fact. The caller must
+// already have checked that the credential may assert receipt facts; this stores
+// them only when the PR is open and its stored snapshot has exactly this head
+// and base, and stamps the observation time itself. Rows for any other head or
+// base of the PR are dropped, so a stale receipt cannot come back.
+func RecordMergeReceipt(ctx context.Context, txs TxStarter, workspaceID pgtype.UUID, in MergeReceiptInput, now time.Time) error {
+	if in.Owner == "" || in.Repo == "" || in.Number <= 0 || in.HeadSHA == "" || in.BaseRef == "" || in.Evidence == "" {
+		return errMergeReceiptInvalid
+	}
+	tx, err := txs.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var state, head, snapshotHead, base string
+	err = tx.QueryRow(ctx, `SELECT state, head_sha, snapshot_head_sha, COALESCE(snapshot_base_ref,'') FROM github_pull_request
+		WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4 FOR UPDATE`,
+		workspaceID, in.Owner, in.Repo, in.Number).Scan(&state, &head, &snapshotHead, &base)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errMergeReceiptNotFresh
+	}
+	if err != nil {
+		return err
+	}
+	if state != "open" || head != in.HeadSHA || snapshotHead != in.HeadSHA || base != in.BaseRef {
+		return errMergeReceiptNotFresh
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM merge_receipt_fact WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4`,
+		workspaceID, in.Owner, in.Repo, in.Number); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO merge_receipt_fact(workspace_id,repo_owner,repo_name,pr_number,head_sha,base_ref,tier,classifier_trusted,
+			coverage_complete,pr_bound,security_gate,cross_lab_pass,scope_classified,gate_vetoed,paths,labels,last_pass_at,evidence,observed_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		workspaceID, in.Owner, in.Repo, in.Number, in.HeadSHA, in.BaseRef, in.Tier, in.ClassifierTrusted, in.CoverageComplete, in.PRBound,
+		in.SecurityGate, in.CrossLabPass, in.ScopeClassified, in.GateVetoed, in.Paths, in.Labels, in.LastPassAt, in.Evidence, now); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

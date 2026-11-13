@@ -1,6 +1,7 @@
 -- CHE-5594 (slice D of CHE-5046): receipt-level facts a merge_eligibility rule
--- reads without an agent or a network call. One row per PR head: a new head has
--- no row, so the PR is held until fresh facts are recorded for it. A NULL
+-- reads without an agent or a network call. One row per PR head and base: a new
+-- head or a retarget has no row, so the PR is held until fresh facts are
+-- recorded for it. A NULL
 -- boolean means the fact is absent, which the evaluator treats as a refusal.
 CREATE TABLE merge_receipt_fact (
     workspace_id uuid NOT NULL,
@@ -8,6 +9,7 @@ CREATE TABLE merge_receipt_fact (
     repo_name text NOT NULL,
     pr_number integer NOT NULL,
     head_sha text NOT NULL,
+    base_ref text NOT NULL,
     tier integer,
     classifier_trusted boolean,
     coverage_complete boolean,
@@ -21,5 +23,5 @@ CREATE TABLE merge_receipt_fact (
     last_pass_at timestamptz,
     evidence text NOT NULL,
     observed_at timestamptz NOT NULL,
-    PRIMARY KEY (workspace_id, repo_owner, repo_name, pr_number, head_sha)
+    PRIMARY KEY (workspace_id, repo_owner, repo_name, pr_number, head_sha, base_ref)
 );

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -21,16 +22,26 @@ func mainStyle(t *testing.T, m *mergeFix) {
 	m.s = &IssueWakeupService{Tasks: tasks, Now: func() time.Time { return m.clock }}
 }
 
-// stored records the receipt facts of an eligible PR on its current head, and
-// names an author other than the merger.
+// bindAuthor records who authored the PR the trusted way: the workspace binding.
+func (m *mergeFix) bindAuthor(t *testing.T, agentID string) {
+	t.Helper()
+	m.f.Exec(t, `UPDATE workspace SET settings=settings || jsonb_build_object('github_review_authors',jsonb_build_object('fixture/merge#9',$2::text)) WHERE id=$1`, m.f.WorkspaceID, agentID)
+}
+
+// stored records the receipt facts of an eligible PR through the producer, and
+// names an author other than the merger. mutate adjusts the stored row.
 func (m *mergeFix) stored(t *testing.T, mutate string) {
 	t.Helper()
-	m.f.Exec(t, "UPDATE github_pull_request SET branch='agent/some-author/che-1-x' WHERE id=$1", m.pr)
+	m.bindAuthor(t, m.f.privateAgentOwnedBy(t, m.f.UserID, "author"))
 	m.f.Cleanup(t, "DELETE FROM merge_receipt_fact WHERE workspace_id=$1", m.f.WorkspaceID)
-	m.f.Exec(t, `INSERT INTO merge_receipt_fact(workspace_id,repo_owner,repo_name,pr_number,head_sha,tier,classifier_trusted,coverage_complete,
-		pr_bound,security_gate,cross_lab_pass,scope_classified,gate_vetoed,paths,labels,evidence,observed_at)
-		VALUES($1,'fixture','merge',9,'a',1,true,true,true,'success',true,true,false,ARRAY['server/internal/service/foo.go'],ARRAY[]::text[],'receipt-1',$2)`,
-		m.f.WorkspaceID, m.clock.Add(-10*time.Second))
+	if err := RecordMergeReceipt(context.Background(), m.f.Pool, parseTestUUID(t, m.f.WorkspaceID), MergeReceiptInput{
+		Owner: "fixture", Repo: "merge", Number: 9, HeadSHA: "a", BaseRef: "main",
+		Tier: ptr(1), ClassifierTrusted: ptr(true), CoverageComplete: ptr(true), PRBound: ptr(true), SecurityGate: "success",
+		CrossLabPass: ptr(true), ScopeClassified: ptr(true), GateVetoed: ptr(false),
+		Paths: []string{"server/internal/service/foo.go"}, Labels: []string{}, Evidence: "receipt-1",
+	}, m.clock.Add(-10*time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if mutate != "" {
 		m.f.Exec(t, "UPDATE merge_receipt_fact SET "+mutate+" WHERE workspace_id=$1", m.f.WorkspaceID)
 	}
@@ -56,7 +67,6 @@ func TestStoredMergeFactsDispatchesOneEligiblePR(t *testing.T) {
 }
 
 func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
-	var agentName string
 	cases := []struct {
 		name  string
 		setup func(*testing.T, *mergeFix)
@@ -93,11 +103,16 @@ func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
 		{"escalation path", func(t *testing.T, m *mergeFix) {
 			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['server/migrations/001_x.sql'] WHERE workspace_id=$1", m.f.WorkspaceID)
 		}},
-		{"author equals merger", func(t *testing.T, m *mergeFix) {
-			m.f.QueryRow(t, "SELECT name FROM agent WHERE id=$1", m.agent).Scan(&agentName)
-			m.f.Exec(t, "UPDATE github_pull_request SET branch=$2 WHERE id=$1", m.pr, "agent/"+agentName+"/che-1-x")
+		{"retargeted without a new head", func(t *testing.T, m *mergeFix) {
+			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_base_ref='release' WHERE id=$1", m.pr)
+		}},
+		{"author equals merger", func(t *testing.T, m *mergeFix) { m.bindAuthor(t, m.agent) }},
+		{"misleading branch names another agent", func(t *testing.T, m *mergeFix) {
+			m.bindAuthor(t, m.agent)
+			m.f.Exec(t, "UPDATE github_pull_request SET branch='agent/someone-else/che-1-x' WHERE id=$1", m.pr)
 		}},
 		{"author unknown", func(t *testing.T, m *mergeFix) {
+			m.f.Exec(t, `UPDATE workspace SET settings=settings-'github_review_authors' WHERE id=$1`, m.f.WorkspaceID)
 			m.f.Exec(t, "UPDATE github_pull_request SET branch='feature' WHERE id=$1", m.pr)
 		}},
 	}
@@ -114,5 +129,43 @@ func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
 				t.Fatalf("%d runs, want 0", n)
 			}
 		})
+	}
+}
+
+func TestRecordMergeReceiptStoresOnlyTheCurrentHeadAndBase(t *testing.T) {
+	m := newMergeFix(t, nil, "")
+	ws := parseTestUUID(t, m.f.WorkspaceID)
+	m.f.Cleanup(t, "DELETE FROM merge_receipt_fact WHERE workspace_id=$1", m.f.WorkspaceID)
+	base := MergeReceiptInput{Owner: "fixture", Repo: "merge", Number: 9, HeadSHA: "a", BaseRef: "main", Evidence: "r"}
+	for name, mutate := range map[string]func(*MergeReceiptInput){
+		"old head":   func(in *MergeReceiptInput) { in.HeadSHA = "z" },
+		"other base": func(in *MergeReceiptInput) { in.BaseRef = "release" },
+		"unknown PR": func(in *MergeReceiptInput) { in.Number = 99 },
+	} {
+		in := base
+		mutate(&in)
+		if err := RecordMergeReceipt(context.Background(), m.f.Pool, ws, in, m.clock); !IsMergeReceiptConflict(err) {
+			t.Fatalf("%s: err = %v, want a conflict", name, err)
+		}
+	}
+	in := base
+	in.Evidence = ""
+	if err := RecordMergeReceipt(context.Background(), m.f.Pool, ws, in, m.clock); !IsMergeReceiptInvalid(err) {
+		t.Fatalf("no evidence: err = %v, want invalid", err)
+	}
+	if n := m.f.Count(t, "SELECT count(*) FROM merge_receipt_fact WHERE workspace_id=$1", m.f.WorkspaceID); n != 0 {
+		t.Fatalf("%d rows stored from refused receipts, want 0", n)
+	}
+	if err := RecordMergeReceipt(context.Background(), m.f.Pool, ws, base, m.clock); err != nil {
+		t.Fatal(err)
+	}
+	m.f.Exec(t, "UPDATE github_pull_request SET head_sha='b', snapshot_head_sha='b' WHERE id=$1", m.pr)
+	next := base
+	next.HeadSHA = "b"
+	if err := RecordMergeReceipt(context.Background(), m.f.Pool, ws, next, m.clock); err != nil {
+		t.Fatal(err)
+	}
+	if n := m.f.Count(t, "SELECT count(*) FROM merge_receipt_fact WHERE workspace_id=$1 AND head_sha='a'", m.f.WorkspaceID); n != 0 {
+		t.Fatalf("%d rows kept for the old head, want 0", n)
 	}
 }

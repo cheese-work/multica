@@ -395,7 +395,7 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
 	// CHE-5594: without a facts source every merge_eligibility rule stays pending.
 	if tx != nil {
-		svc.MergeFacts = &StoredMergeFacts{Tx: tx}
+		svc.MergeFacts = &StoredMergeFacts{Tx: tx, Queries: q}
 	}
 	return svc
 }
