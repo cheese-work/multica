@@ -19,6 +19,7 @@ import {
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { DeferredContentEditor as ContentEditor } from "./deferred-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
@@ -63,10 +64,18 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
   return attachmentReferenceUrls(attachment).some((url) => content.includes(url));
 }
 
+const LATER_COMMAND = /^\/later(?:\s+([\s\S]*))?$/i;
+
 interface ChatInputProps {
   /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
   annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
+  /**
+   * Handles `/later [duration]` (the owner snoozes the DM; nothing is sent to
+   * the agent). Receives the raw duration text, "" for the server default. A
+   * handler that resolves `false` keeps the command in the box.
+   */
+  onLater?: (duration: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
@@ -90,12 +99,20 @@ interface ChatInputProps {
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
   testId?: string;
+  /**
+   * Open asks (question cards) the DM is waiting on. Shows a "this message
+   * answers the open question" checkbox: checked by default for exactly one
+   * ask, unchecked for several. When checked, `onSend` gets all of them as
+   * `askIds`; there is no per-ask choice.
+   */
+  replyAskIds?: string[];
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
     commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
     draftAttachments: Attachment[],
     decisionRequestId?: string,
+    askIds?: string[],
   ) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: {
     id: string;
@@ -212,6 +229,8 @@ export function ChatInput({
   annotationScope,
   onSend,
   onRename,
+  onLater,
+  replyAskIds,
   onFork,
   onStatistic,
   onArchive,
@@ -296,6 +315,11 @@ export function ChatInput({
   const [isEmpty, setIsEmpty] = useState(!inputDraft.trim());
   // One inline line for the last failed `/fork`; edits and DM switches retire it.
   const [forkError, setForkError] = useState<string | null>(null);
+  const askCount = replyAskIds?.length ?? 0;
+  // The user's choice is kept per set of asks: a changed set resets to the default.
+  const askKey = (replyAskIds ?? []).join(",");
+  const [askChoice, setAskChoice] = useState<{ key: string; checked: boolean } | null>(null);
+  const replyToAsks = askChoice?.key === askKey ? askChoice.checked : askCount === 1;
   useEffect(() => {
     setForkError(null);
   }, [draftKey]);
@@ -306,6 +330,7 @@ export function ChatInput({
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
     (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!onLater && LATER_COMMAND.test(inputDraft.trim())) ||
     (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
@@ -587,7 +612,8 @@ export function ChatInput({
         dmAttempt && !isLegacyOrdinaryArchiveNow
           ? dmCommandHandlers[dmAttempt.command]
           : undefined;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
+      const laterMatch = onLater ? LATER_COMMAND.exec(editorRef.current?.getText().trim() ?? "") : null;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler && !laterMatch)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -698,6 +724,17 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
+      if (onLater && laterMatch) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "later" }));
+          return false;
+        }
+        setForkError(null);
+        // The command text is cleared only once the server confirmed the snooze.
+        if (!await onLater((laterMatch[1] ?? "").trim())) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
         if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
@@ -716,12 +753,19 @@ export function ChatInput({
         draftKey: keyAtSend,
         attachmentCount: uniqueActiveIds.length,
       });
+      // Trailing args are appended only when set, so plain sends keep the short call.
+      const askIds = askCount > 0 && replyToAsks ? replyAskIds : undefined;
+      const sendTail: [decisionRequestId?: string, askIds?: string[]] = askIds
+        ? [prepared.decisionRequestId, askIds]
+        : prepared.decisionRequestId
+          ? [prepared.decisionRequestId]
+          : [];
       const accepted = await onSend(
         content,
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
-        ...(prepared.decisionRequestId ? [prepared.decisionRequestId] as const : []),
+        ...sendTail,
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for
@@ -946,6 +990,7 @@ export function ChatInput({
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
             enableUnseenCommand={!!onUnseen}
+            enableLaterCommand={!!onLater}
             enableUnarchiveCommand={!!onUnarchive}
             presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
@@ -1023,6 +1068,15 @@ export function ChatInput({
         </div>
         {uploadEnabled && isDragOver && <FileDropOverlay />}
       </div>
+      {askCount > 0 && (
+        <label className={cn(CHAT_COLUMN, "flex items-center gap-1.5 px-1 pt-1.5 text-caption text-muted-foreground")}>
+          <Checkbox
+            checked={replyToAsks}
+            onCheckedChange={(checked) => setAskChoice({ key: askKey, checked: checked === true })}
+          />
+          {t(($) => $.input.reply_ask, { count: askCount })}
+        </label>
+      )}
       {forkError && (
         <p role="alert" className={cn(CHAT_COLUMN, "px-1 pt-1.5 text-caption text-destructive")}>
           {forkError}

@@ -21,6 +21,8 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatSessionUsage,
   ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
@@ -2628,8 +2630,43 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
   next_change_at: z.string().nullable().optional().catch(undefined),
   attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
+  attention_keys: z.array(z.string()).optional().catch(undefined),
+  attention_ask_ids: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
+}).loose());
+
+export const EMPTY_CHAT_ATTENTION_VIEW: ChatAttentionView = {
+  root_id: "",
+  canonical_id: "",
+  stale_level: "none",
+  attention_source: null,
+  attention_since: null,
+  counts: {},
+  keys: [],
+  next_change_at: null,
+};
+
+export const ChatAttentionViewSchema: z.ZodType<ChatAttentionView> = z.lazy(() => z.object({
+  root_id: z.string().default(""),
+  canonical_id: z.string().default(""),
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).catch("none"),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().catch(null),
+  attention_since: z.string().nullable().catch(null),
+  counts: z.record(z.string(), z.number()).catch({}),
+  keys: z.array(z.string()).catch([]),
+  next_change_at: z.string().nullable().catch(null),
+}).loose());
+
+export const ChatAttentionEnvelopeSchema: z.ZodType<{ attention: ChatAttentionView }> = z.lazy(() => z.object({
+  attention: ChatAttentionViewSchema,
+}).loose());
+
+export const EMPTY_CHAT_ATTENTION_BATCH: ChatAttentionBatch = { batch_id: "", attention: [] };
+
+export const ChatAttentionBatchSchema: z.ZodType<ChatAttentionBatch> = z.lazy(() => z.object({
+  batch_id: z.string().default(""),
+  attention: z.array(ChatAttentionViewSchema).catch([]),
 }).loose());
 
 export const EMPTY_CHAT_SESSION: ChatSession = {
