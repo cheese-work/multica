@@ -158,3 +158,13 @@ test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", ()
     assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
   }
 });
+
+test("batch F2 patterns link a frame on the Patterns page (CHE-5527)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["lazy-detail", "decision-receipt-card", "collapsible-section", "settings-select-row", "pill-menu"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
