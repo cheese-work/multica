@@ -52,14 +52,46 @@ describe("layoutFocus per depth (CHE-2797 shape: 4 depths, 3 levels of children)
   });
 });
 
+describe("layoutFocus dashed leaf edges", () => {
+  const into = (l: FocusLayout, c: FocusItem) => l.edges.filter((e) => e.points.at(-1)![0] === c.box.x + c.box.w / 2 && e.points.at(-1)![1] === c.box.y);
+
+  it("the edge into a leaf card is dashed; into a card with children it is solid", () => {
+    const l = layoutFocus({ chain: chainOf(1), level: [node(10, 3), node(11), node(12, 1), node(13)] });
+    const cards = kinds(l, "card") as Extract<FocusItem, { kind: "card" }>[];
+    expect(cards.map((c) => c.leaf)).toEqual([false, true, false, true]);
+    cards.forEach((c) => {
+      const edges = into(l, c);
+      expect(edges).toHaveLength(1);
+      expect(edges[0]!.dashed).toBe(c.leaf);
+    });
+  });
+
+  it("every other edge stays solid: fan, trunk and card-to-count", () => {
+    const l = layoutFocus({ chain: chainOf(1), level: [node(10, 3), node(11), node(12, 1)] });
+    const leafIntoEdges = kinds(l, "card").filter((c) => (c as { leaf: boolean }).leaf).flatMap((c) => into(l, c));
+    expect(l.edges.filter((e) => e.dashed)).toEqual(leafIntoEdges);
+    expect(l.edges.filter((e) => e.dashed)).toHaveLength(1);
+  });
+
+  it("a level of only leaves (depth 3) is all dashed card edges", () => {
+    const l = layoutFocus({ chain: chainOf(1, 2, 3), level: level(50, 4) });
+    const cards = kinds(l, "card");
+    cards.forEach((c) => expect(into(l, c).every((e) => e.dashed)).toBe(true));
+  });
+
+  it("a root leaf at depth 0 has no edge at all", () => {
+    expect(layoutFocus({ chain: [], level: [node(1)] }).edges).toEqual([]);
+  });
+});
+
 describe("layoutFocus rules", () => {
   it("fan edges connect the last chain card to every first-row card", () => {
     const l = layoutFocus({ chain: chainOf(1, 2), level: level(10, 3) });
     const chain = kinds(l, "chain").at(-1)!;
     const cards = kinds(l, "card");
-    const ends = l.edges.map((e) => e.at(-1)!);
+    const ends = l.edges.map((e) => e.points.at(-1)!);
     cards.forEach((c) => expect(ends).toContainEqual([c.box.x + c.box.w / 2, c.box.y]));
-    expect(l.edges.some((e) => e[0]![0] === chain.box.x + chain.box.w / 2 && e[0]![1] === chain.box.y + chain.box.h)).toBe(true);
+    expect(l.edges.some((e) => e.points[0]![0] === chain.box.x + chain.box.w / 2 && e.points[0]![1] === chain.box.y + chain.box.h)).toBe(true);
   });
 
   it("caps the level at 60 cards and adds a '+N' tile; count cards do not count toward the cap", () => {
