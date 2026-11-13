@@ -152,15 +152,15 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{at + ".value", "is a placeholder; give the literal or a source"}
 		}
 	}
+	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+		if agentOwned(field.value) {
+			return &AskError{prefix + "." + field.name, agentOwnedMessage}
+		}
+	}
 	text := step.Action + "\n" + step.Command
 	for _, name := range append(upperName.FindAllString(text, -1), placeholder.FindAllString(text, -1)...) {
 		if !step.declares(name) {
 			return &AskError{prefix, "names " + name + " without a values entry"}
-		}
-	}
-	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
-		if match := implicitWord.FindStringSubmatch(field.value); match != nil {
-			return &AskError{prefix + "." + field.name, "leaves values implicit (" + strings.ToLower(match[1]) + "); write each one"}
 		}
 	}
 	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"verify_done", step.VerifyDone}} {
@@ -196,6 +196,13 @@ func lintHumanSteps(ask Ask) []string {
 		}
 		asksToAct = asksToAct || wantsAction.MatchString(option.Label+" "+option.WhatHappens)
 	}
+	for index, step := range ask.HumanSteps {
+		for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+			if match := implicitWord.FindStringSubmatch(field.value); match != nil {
+				hints = append(hints, fmt.Sprintf("human_steps[%d].%s leaves values implicit (%s); write each one", index, field.name, strings.ToLower(match[1])))
+			}
+		}
+	}
 	if len(ask.HumanSteps) == 0 {
 		if asksToAct {
 			hints = append(hints, "the decision or an option asks you to run, merge, set, click or create something, but there is no human_steps; list each step")
@@ -215,6 +222,10 @@ func lintHumanSteps(ask Ask) []string {
 	}
 	return hints
 }
+
+// FenceFor is the code fence that safely wraps text: longer than any backtick
+// run in it, so quoted text cannot close the fence.
+func FenceFor(text string) string { return fenceFor(text) }
 
 func fenceFor(text string) string {
 	longest, run := 0, 0

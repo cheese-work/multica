@@ -1,11 +1,13 @@
 "use client";
 
+import { ApiError } from "@multica/core/api";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useCompactIssueChips } from "../compact-issue-chips-context";
 import { StatusIcon } from "./status-icon";
 
 /**
@@ -60,6 +62,7 @@ export function IssueChip({
   const wsId = useWorkspaceId();
   const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
   const { data: issues = [] } = useQuery(issueListOptions(wsId));
+  const compact = useCompactIssueChips();
   const listIssue = issues.find((i) => i.id === issueId);
 
   // Fallback fetch for issues outside the list's first page (the first
@@ -67,14 +70,17 @@ export function IssueChip({
   const { data: detailIssue } = useQuery({
     ...issueDetailOptions(wsId, issueId),
     enabled: !listIssue,
-    refetchOnWindowFocus: true,
+    // Recover transient failures on focus without repeatedly fetching missing
+    // issues. Hydrated queries stay fresh until invalidated (staleTime: Infinity).
+    refetchOnWindowFocus: (query) =>
+      !(query.state.error instanceof ApiError && query.state.error.status === 404),
   });
 
   const issue = listIssue ?? detailIssue;
   const cls = className ? `${ISSUE_CHIP_CLASS} ${className}` : ISSUE_CHIP_CLASS;
 
   if (children !== undefined) {
-    return <span className={cls}>{children}</span>;
+    return <span className={cls} data-copy-token={issue?.identifier}>{children}</span>;
   }
 
   if (!issue) {
@@ -88,7 +94,7 @@ export function IssueChip({
   }
 
   return (
-    <span className={cls}>
+    <span className={cls} data-copy-token={issue.identifier}>
       <StatusIcon
         status={issue.status}
         category={issueStatusCategory(issue) ?? undefined}
@@ -99,7 +105,9 @@ export function IssueChip({
       <span className="font-medium text-muted-foreground shrink-0">
         {issue.identifier}
       </span>
-      <span className="min-w-0 truncate text-foreground">{issue.title}</span>
+      {!compact && (
+        <span className="min-w-0 truncate text-foreground">{issue.title}</span>
+      )}
     </span>
   );
 }

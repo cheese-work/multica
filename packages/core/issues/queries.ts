@@ -17,9 +17,12 @@ import type {
   ListGroupedIssuesParams,
   ListIssuesParams,
   ListIssuesCache,
+  ListIssuesResponse,
 } from "../types";
+import type { SidebarIssuesRequest } from "./sidebar-list";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
+import { isSchemaValidationError } from "../api/schema";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -126,6 +129,14 @@ export const issueKeys = {
       projectId,
       assigneeTypes ?? null,
     ] as const,
+  /** Every sidebar issue list — prefix for cross-list refresh. */
+  sidebarAll: (wsId: string) => [...issueKeys.all(wsId), "sidebar"] as const,
+  /**
+   * One expanded sidebar row's issues. `source` (`project:{id}` / `view:{id}` / `builtin:{key}`)
+   * sits at a fixed index so realtime refresh can target a project's lists.
+   */
+  sidebar: (wsId: string, source: string, request: SidebarIssuesRequest, limit: number) =>
+    [...issueKeys.sidebarAll(wsId), source, request, limit] as const,
   detail: (wsId: string, id: string) =>
     [...issueKeys.all(wsId), "detail", id] as const,
   /** Resolve a bare issue identifier (e.g. "MUL-123") to an issue. */
@@ -158,6 +169,10 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  /** Status-history dialog data. Nested under `timeline(issueId)` so every
+   *  timeline invalidation (WS events, reconnect recovery) refreshes it too. */
+  statusHistory: (issueId: string) =>
+    [...issueKeys.timeline(issueId), "status-history"] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
    *  an open composer's trigger preview refreshes when an agent's queue
    *  state changes (the dedup guard makes the answer queue-dependent). */
@@ -464,6 +479,85 @@ export function projectGanttIssuesOptions(
   });
 }
 
+/** Both list endpoints cap a page here, so a longer sidebar list is fetched in pages. */
+const SIDEBAR_MAX_PAGE = 100;
+
+async function listSidebarTableIssues(query: IssueTableQuerySpec, limit: number): Promise<ListIssuesResponse> {
+  const issues: Issue[] = [];
+  let total = 0;
+  let cursor: string | null = null;
+  do {
+    const page = await api.listIssueTableRows({
+      query,
+      group: { kind: "none" },
+      group_key: null,
+      hierarchy: { enabled: false },
+      parent_id: null,
+      page: { limit: Math.min(limit - issues.length, SIDEBAR_MAX_PAGE), cursor },
+    });
+    issues.push(...page.rows.map((row) => row.issue));
+    total = page.total;
+    cursor = page.next_cursor;
+  } while (cursor && issues.length < limit);
+  return { issues, total };
+}
+
+async function listSidebarIssues(params: ListIssuesParams, limit: number): Promise<ListIssuesResponse> {
+  const issues: Issue[] = [];
+  let total = 0;
+  do {
+    const page = await api.listIssues({
+      ...params,
+      limit: Math.min(limit - issues.length, SIDEBAR_MAX_PAGE),
+      offset: issues.length,
+    });
+    issues.push(...page.issues);
+    total = page.total;
+    if (page.issues.length === 0) break;
+  } while (issues.length < limit && issues.length < total);
+  return { issues, total };
+}
+
+/** The first `limit` issues of a sidebar list, with the filtered total. */
+export function sidebarIssuesOptions(
+  wsId: string,
+  source: string,
+  request: SidebarIssuesRequest,
+  limit: number,
+) {
+  return queryOptions({
+    queryKey: issueKeys.sidebar(wsId, source, request, limit),
+    queryFn: () =>
+      "table" in request
+        ? listSidebarTableIssues(request.table, limit)
+        : listSidebarIssues(request, limit),
+  });
+}
+
+const ISSUE_FETCH_MAX_RETRIES = 3;
+
+/**
+ * Retry policy for the issue page's own lookups (route resolve, detail view):
+ * network failures and transient statuses back off and retry, so one dropped
+ * request does not reach the error state. A definite answer (404, other 4xx)
+ * will not change, so it settles at once. Chips, cards and lists keep the
+ * app-wide default.
+ */
+export function retryIssueFetch(failureCount: number, err: Error): boolean {
+  if (failureCount >= ISSUE_FETCH_MAX_RETRIES) return false;
+  // Unreadable data will not change on retry.
+  if (isSchemaValidationError(err)) return false;
+  // Duck-typed on `status`, like `isNotFoundError`: holds across module
+  // boundaries and test mocks. No status means a network failure.
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number") return true;
+  return status >= 500 || status === 408 || status === 429;
+}
+
+export function issueFetchRetryDelay(attempt: number): number {
+  return Math.min(1000 * 2 ** attempt, 8000);
+}
+
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
@@ -491,6 +585,8 @@ export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
+    retry: retryIssueFetch,
+    retryDelay: issueFetchRetryDelay,
     refetchOnMount: authoritative ? false : "always",
     initialData: () => (listRow?.description != null ? listRow : undefined),
   });
@@ -656,6 +752,14 @@ export function issueTimelineOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.timeline(issueId),
     queryFn: () => api.listTimeline(issueId),
+  });
+}
+
+/** Timeline + truncation flag, fetched only while the status history is open. */
+export function issueStatusHistoryOptions(issueId: string) {
+  return queryOptions({
+    queryKey: issueKeys.statusHistory(issueId),
+    queryFn: () => api.listTimelineWithMeta(issueId),
   });
 }
 

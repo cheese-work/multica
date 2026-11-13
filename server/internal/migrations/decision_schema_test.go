@@ -28,7 +28,8 @@ var decisionSchemaMigrations = []string{
 	"615_decision_request_comment_v2_index", "616_decision_request_comment_index_retire",
 	"617_decision_comment_request_check", "618_decision_comment_request_validate",
 	"690_decision_contract", "730_decision_card_answer", "745_decision_card_answer", "773_decision_request_ask_identity", "795_decision_receipt_loop", "800_decision_record_excerpt",
-	"808_decision_authority", "813_decision_answer_feed", "821_decision_request_project",
+	"808_decision_authority", "813_decision_answer_feed", "821_decision_request_project", "857_decision_request_kind",
+	"880_decision_request_proposal_fingerprint", "881_decision_request_proposal_fingerprint_idx", "927_decision_answer_passkey", "943_decision_wake_event_receipt", "9999_decision_batch_cover", "99989_decision_request_batch_id",
 }
 
 func TestDecisionSchemaV14(test *testing.T) {
@@ -62,6 +63,7 @@ func TestDecisionSchemaV14(test *testing.T) {
 		CREATE TABLE chat_message (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), message_kind text NOT NULL DEFAULT 'message');
 		CREATE TABLE workspace (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
 		CREATE TABLE personal_access_token (id uuid PRIMARY KEY DEFAULT gen_random_uuid());
+		CREATE TABLE passkey_assertion_challenge (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), purpose text NOT NULL DEFAULT 'decision_approve');
 	`)
 	legacyComment := fixture.Insert(test, "comment", testutil.Cols{"content": "legacy"})
 	legacyMessage := fixture.Insert(test, "chat_message", testutil.Cols{"message_kind": "message"})

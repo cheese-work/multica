@@ -220,6 +220,61 @@ ORDER BY (
 installation_id, repo_owner, repo_name, pr_number
 LIMIT sqlc.arg('max_rows');
 
+-- name: ListStaleChecksWatchedGitHubPRs :many
+-- Fast sweep source (CHE-5313): open/draft PRs whose checks are still
+-- running and that an enabled "wake when checks finish" rule waits on. The
+-- check_suite webhook normally refreshes them, and the general undecided sweep
+-- only runs every few minutes, so a dropped webhook or a stalled refresh left
+-- the rule waiting long after the last check completed. Decided snapshots
+-- leave this sweep, so it ends once the rule can evaluate. Same address
+-- cursor rotation as the conflict-watch sweep.
+WITH candidates AS (
+    SELECT pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+    FROM github_pull_request AS pr
+    WHERE pr.state IN ('open', 'draft')
+      AND (pr.snapshot_fetched_at IS NULL OR pr.snapshot_fetched_at < sqlc.arg('older_than'))
+      AND (
+          pr.snapshot_fetched_at IS NULL
+          OR pr.snapshot_head_sha IS NULL
+          OR pr.snapshot_head_sha = ''
+          OR pr.checks_rollup_state IS NULL
+          OR pr.checks_rollup_state IN ('PENDING', 'EXPECTED')
+          OR EXISTS (
+              SELECT 1
+              FROM github_pull_request_check_run AS cr
+              WHERE cr.pr_id = pr.id AND cr.status <> 'completed'
+          )
+      )
+      AND EXISTS (
+          SELECT 1
+          FROM workspace w
+          WHERE w.id = pr.workspace_id
+            AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
+      )
+      AND pr.id IN (
+          SELECT ipr.pull_request_id
+          FROM issue_wakeup AS w
+          JOIN issue_pull_request AS ipr ON ipr.issue_id = w.issue_id
+          WHERE w.enabled
+            AND w.condition->>'type' = 'pull_request'
+            AND w.condition->>'event' = 'checks_finished'
+      )
+    GROUP BY pr.installation_id, pr.repo_owner, pr.repo_name, pr.pr_number
+)
+SELECT installation_id, repo_owner, repo_name, pr_number
+FROM candidates
+ORDER BY (
+    ROW(installation_id, repo_owner, repo_name, pr_number) >
+    ROW(
+        sqlc.arg('after_installation_id')::BIGINT,
+        sqlc.arg('after_repo_owner')::TEXT,
+        sqlc.arg('after_repo_name')::TEXT,
+        sqlc.arg('after_pr_number')::INTEGER
+    )
+) DESC,
+installation_id, repo_owner, repo_name, pr_number
+LIMIT sqlc.arg('max_rows');
+
 -- name: ListConflictWatchedGitHubPRNumbersInRepo :many
 -- Open/draft PRs in one repository that an enabled "wake on merge conflict"
 -- rule watches. A merge into the repository can make them conflicting without
@@ -251,7 +306,8 @@ SELECT * FROM github_pull_request WHERE id = $1;
 -- name: InvalidateOpenGitHubPRMergeStateOnBase :many
 -- CHE-1417: a merge moves its base branch, which can make other open PRs on
 -- that base DIRTY or BEHIND without any pull_request event of their own. Their
--- stored merge state no longer describes the base, so it is cleared: the
+-- stored merge state no longer describes the base, so it is cleared (only on the
+-- workspaces the caller passes, i.e. the allowlisted bindings): the
 -- merge handler refreshes the returned PRs, and one the refresh queue drops is
 -- undecided, so ListStaleUndecidedGitHubPRs picks it up. A row whose base is
 -- not known yet (no snapshot since the column was added) is included.
@@ -262,6 +318,7 @@ SET api_mergeable          = NULL,
     api_merge_state_status = NULL,
     updated_at             = now()
 WHERE installation_id = sqlc.arg('installation_id')
+  AND workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
   AND repo_owner = sqlc.arg('repo_owner')
   AND repo_name = sqlc.arg('repo_name')
   AND state IN ('open', 'draft')
@@ -283,6 +340,32 @@ FROM workspace w
 WHERE w.id = gpr.workspace_id
   AND (w.settings ->> 'github_enabled') IS DISTINCT FROM 'false'
   AND gpr.installation_id = sqlc.arg('installation_id')
+  AND gpr.workspace_id = ANY(sqlc.arg('workspace_ids')::uuid[])
   AND gpr.repo_owner = sqlc.arg('repo_owner')
   AND gpr.repo_name = sqlc.arg('repo_name')
   AND gpr.pr_number = sqlc.arg('pr_number');
+
+-- name: MarkGitHubPRClosedReplayPending :exec
+-- CHE-3402: written before a closed-PR replay starts, so a failure after the
+-- mirror row commits still leaves a retry marker.
+INSERT INTO github_pr_closed_replay (installation_id, repo_owner, repo_name, pr_number)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT DO NOTHING;
+
+-- name: ClearGitHubPRClosedReplayPending :exec
+DELETE FROM github_pr_closed_replay
+WHERE installation_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4;
+
+-- name: ClaimGitHubPRClosedReplays :many
+-- Least recently attempted first. Claiming stamps attempted_at, so replays that
+-- keep failing rotate behind newer ones instead of pinning the batch.
+UPDATE github_pr_closed_replay AS owed
+SET attempted_at = now()
+WHERE (owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number) IN (
+    SELECT c.installation_id, c.repo_owner, c.repo_name, c.pr_number
+    FROM github_pr_closed_replay AS c
+    ORDER BY c.attempted_at
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number;

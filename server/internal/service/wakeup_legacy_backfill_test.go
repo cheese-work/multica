@@ -226,14 +226,14 @@ func TestLegacyBackfillRequiresAPositiveLimit(t *testing.T) {
 	}
 }
 
-// Production must keep zero persisted scoped definitions until the layer that
-// opens definition writes activates the backfill: nothing outside tests may
-// call it, in particular no startup or scheduler hook.
-func TestLegacyBackfillIsNotWiredIntoProduction(t *testing.T) {
+// Nothing but the activation may run the backfill in production: it is the only
+// path that verifies completion before definition writes open, so no startup or
+// scheduler hook may call the backfill directly.
+func TestLegacyBackfillRunsOnlyThroughTheActivation(t *testing.T) {
 	root := filepath.Join("..", "..")
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") ||
-			filepath.Base(path) == "wakeup_legacy_backfill.go" || strings.Contains(path, "generated") {
+			filepath.Base(path) == "wakeup_legacy_backfill.go" || filepath.Base(path) == "wakeup_activation.go" || strings.Contains(path, "generated") {
 			return err
 		}
 		src, err := os.ReadFile(path)
@@ -242,7 +242,7 @@ func TestLegacyBackfillIsNotWiredIntoProduction(t *testing.T) {
 		}
 		for _, name := range []string{"RunLegacyWakeupBackfill", "BackfillLegacyWakeupDefinitions", "InsertWakeupDefinitionIfAbsent"} {
 			if strings.Contains(string(src), name) {
-				t.Errorf("%s references %s; the backfill must stay unwired until definition writes are opened", path, name)
+				t.Errorf("%s references %s; only the activation may run the backfill", path, name)
 			}
 		}
 		return nil

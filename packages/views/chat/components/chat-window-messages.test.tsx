@@ -18,12 +18,30 @@ vi.mock("./interactive-login-banner", () => ({
 vi.mock("@multica/core/chat/mutations", () => ({
   useRegenerateChatQuickActions: () => ({ mutateAsync: vi.fn() }),
 }));
+const listProps = vi.hoisted(() => ({
+  current: null as null | { revealKey?: string | null; onRevealed?: () => void },
+}));
 vi.mock("./chat-message-list", () => ({
-  ChatMessageList: ({ active, messages, continuedFromSessionId }: { active: boolean; messages: ChatMessage[]; continuedFromSessionId?: string | null }) => (
-    <div data-testid="messages" data-active={active} data-continued-from={continuedFromSessionId ?? ""}>
-      {messages.map((message) => <p key={message.id}>{message.content}</p>)}
-    </div>
-  ),
+  ChatMessageList: ({
+    active,
+    messages,
+    revealKey,
+    onRevealed,
+    continuedFromSessionId,
+  }: {
+    active: boolean;
+    messages: ChatMessage[];
+    revealKey?: string | null;
+    onRevealed?: () => void;
+    continuedFromSessionId?: string | null;
+  }) => {
+    listProps.current = { revealKey, onRevealed };
+    return (
+      <div data-testid="messages" data-active={active} data-continued-from={continuedFromSessionId ?? ""}>
+        {messages.map((message) => <p key={message.id}>{message.content}</p>)}
+      </div>
+    );
+  },
   ChatMessageSkeleton: () => <div data-testid="skeleton" />,
 }));
 
@@ -46,18 +64,22 @@ function renderWindow(
     interactiveLoginRequired?: boolean;
     seed?: (qc: QueryClient, key: readonly unknown[]) => void;
     onMessages?: (messages: ChatMessage[]) => void;
+    sessionId?: string | null;
+    cached?: boolean;
+    onReady?: () => void;
   } = {},
 ) {
+  const { sessionId = "session-1", cached = true, onReady } = opts;
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = chatKeys.messagesPage("session-1");
   if (opts.seed) opts.seed(qc, key);
-  else qc.setQueryData(key, pages(opts.initial ?? [message("initial message")]));
+  else if (cached) qc.setQueryData(key, pages(opts.initial ?? [message("initial message")]));
   const content = (isOpen: boolean) => (
     <QueryClientProvider client={qc}>
       <AnimatePresence initial={false}>
         {isOpen && (
           <ChatWindowMessages
-            sessionId="session-1"
+            sessionId={sessionId}
             session={opts.session as ChatSession | undefined}
             interactiveLoginRequired={opts.interactiveLoginRequired ?? false}
             onMessages={opts.onMessages}
@@ -67,6 +89,7 @@ function renderWindow(
             onQuickAction={vi.fn()}
             quickActionsDisabled={false}
             quickActionsPendingMessageId={null}
+            onReady={onReady}
           >
             <div>empty</div>
           </ChatWindowMessages>
@@ -83,7 +106,46 @@ function renderWindow(
   };
 }
 
-beforeEach(() => { fetchMessages.mockReset(); });
+beforeEach(() => {
+  fetchMessages.mockReset();
+  listProps.current = null;
+});
+
+// MUL-8417: the window fades in around this area, so it must say when the area
+// has something to show rather than an empty, hidden list.
+describe("floating chat message readiness", () => {
+  it("is ready at once for the empty state of a new chat", () => {
+    const onReady = vi.fn();
+    renderWindow(true, { sessionId: null, onReady });
+    expect(screen.getByText("empty")).toBeInTheDocument();
+    expect(onReady).toHaveBeenCalled();
+  });
+
+  it("is ready at once for the skeleton of an uncached session", () => {
+    fetchMessages.mockReturnValue(new Promise(() => {}));
+    const onReady = vi.fn();
+    renderWindow(true, { cached: false, onReady });
+    expect(screen.getByTestId("skeleton")).toBeInTheDocument();
+    expect(onReady).toHaveBeenCalled();
+  });
+
+  it("leaves a list's readiness to the list, named by its session", () => {
+    const onReady = vi.fn();
+    renderWindow(true, { onReady });
+    expect(screen.getByTestId("messages")).toBeInTheDocument();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(listProps.current?.revealKey).toBe("session-1");
+    expect(listProps.current?.onRevealed).toBe(onReady);
+  });
+
+  it("does not report ready while the area is leaving", () => {
+    const onReady = vi.fn();
+    const { setOpen } = renderWindow(true, { sessionId: null, onReady });
+    onReady.mockClear();
+    setOpen(false);
+    expect(onReady).not.toHaveBeenCalled();
+  });
+});
 
 describe("floating chat message lifetime", () => {
   it("keeps message observers absent when the window starts closed", () => {
@@ -100,10 +162,11 @@ describe("floating chat message lifetime", () => {
 
     setOpen(false);
     expect(screen.getByTestId("messages")).toHaveAttribute("data-active", "false");
-    await waitFor(() => expect(screen.queryByTestId("messages")).not.toBeInTheDocument());
-    // The observer unsubscribes in a passive effect cleanup, which can run
-    // after the node has left the DOM.
-    await waitFor(() => expect(observers()).toBe(0));
+    // The observer leaves in the unmount's passive cleanup, which can trail the DOM removal.
+    await waitFor(() => {
+      expect(screen.queryByTestId("messages")).not.toBeInTheDocument();
+      expect(observers()).toBe(0);
+    });
 
     act(() => qc.setQueryData(key, pages([message("arrived while closed")])));
     setOpen(true);

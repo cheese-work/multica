@@ -58,6 +58,7 @@ import type { MentionItem } from "./extensions/mention-suggestion";
 import type { IssueIdentifierResolver } from "./extensions/issue-identifier-autolink";
 import type { BuiltinCommandSuggestionOptions } from "./extensions/slash-command-suggestion";
 import { createEditorExtensions } from "./extensions";
+import { flagMentions } from "./utils/flag-mentions";
 import {
   uploadAndInsertFile,
   insertUploadPlaceholder,
@@ -74,6 +75,7 @@ import { posFromAnchor, type TextAnchor } from "./text-anchor";
 import { useLinkHover, LinkHoverCard } from "./link-hover-card";
 import { AttachmentDownloadProvider } from "./attachment-download-context";
 import { PersistedEditorMediaProvider } from "../media/media-context";
+import { copyChipKeys } from "../rich-content/chip-copy";
 import "katex/dist/katex.min.css";
 import "./styles/index.css";
 
@@ -212,6 +214,9 @@ interface ContentEditorBaseProps {
   enableStatisticCommand?: boolean;
   enableArchiveCommand?: boolean;
   enablePinCommand?: boolean;
+  enableUnseenCommand?: boolean;
+  /** `/later [duration]` snoozes the DM from the owner; pass it only when the surface handles it. */
+  enableLaterCommand?: boolean;
   enableUnarchiveCommand?: boolean;
   /** `/compact` is offered by default; an archived DM turns it off. */
   enableCompactCommand?: boolean;
@@ -358,6 +363,8 @@ interface ContentEditorRef {
    * targets, so it reads the current document rather than a cached copy.
    */
   flushPendingUpdate: () => string | null;
+  /** Mark the mention chips with these ids as refused by the server (red wavy underline). */
+  flagMentions: (ids: string[]) => void;
   /**
    * Force `markdown` into the document, bypassing the synchronized `value`
    * guards.
@@ -408,6 +415,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       enableStatisticCommand = false,
       enableArchiveCommand = false,
       enablePinCommand = false,
+      enableUnseenCommand = false,
+      enableLaterCommand = false,
       enableUnarchiveCommand = false,
       enableCompactCommand = true,
       slashCommandMode = "skill",
@@ -457,12 +466,16 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       statistic: enableStatisticCommand,
       archive: enableArchiveCommand,
       pin: enablePinCommand,
+      unseen: enableUnseenCommand,
+      later: enableLaterCommand,
       unarchive: enableUnarchiveCommand,
     });
     dmCommandsRef.current = {
       statistic: enableStatisticCommand,
       archive: enableArchiveCommand,
       pin: enablePinCommand,
+      unseen: enableUnseenCommand,
+      later: enableLaterCommand,
       unarchive: enableUnarchiveCommand,
     };
     const enableCompactCommandRef = useRef(enableCompactCommand);
@@ -1088,6 +1101,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         });
         return true;
       },
+      flagMentions: (ids) => {
+        if (editor && !editor.isDestroyed) flagMentions(editor.view.dom, ids);
+      },
       flushPendingUpdate: () => {
         // No armed timer = nothing typed since the last emit. The editor is
         // already clean, so the host has nothing to re-route.
@@ -1135,6 +1151,9 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
             ref={wrapperRef}
             className="relative flex flex-1 min-h-full flex-col"
             onMouseDown={handleContainerMouseDown}
+            // After ProseMirror's own copy: overrides its clipboard only
+            // when the selection holds a chip.
+            onCopy={(e) => copyChipKeys(e.nativeEvent)}
           >
             <EditorContent className="flex flex-1 flex-col" editor={editor} />
             {showBubbleMenu && (

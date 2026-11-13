@@ -133,6 +133,14 @@ func (h *Handler) configSyncOnPullRequest(ctx context.Context, body []byte) {
 		d.Installation.ID == 0 || d.PullRequest.Number <= 0 || d.Repository.Name == "" || d.Repository.Owner.Login == "" {
 		return
 	}
+	allowedRows, err := h.allowedGitHubInstallations(ctx, d.Installation.ID)
+	if err != nil || len(allowedRows) == 0 {
+		return
+	}
+	allowed := map[string]bool{}
+	for _, row := range allowedRows {
+		allowed[uuidToString(row.WorkspaceID)] = true
+	}
 	rows, err := h.DB.Query(ctx, `
 		SELECT c.workspace_id::text, c.settings
 		FROM workspace_config_sync c
@@ -150,7 +158,7 @@ func (h *Handler) configSyncOnPullRequest(ctx context.Context, body []byte) {
 	repo := d.Repository.Owner.Login + "/" + d.Repository.Name
 	for rows.Next() {
 		var wsID, raw string
-		if rows.Scan(&wsID, &raw) != nil {
+		if rows.Scan(&wsID, &raw) != nil || !allowed[wsID] {
 			continue
 		}
 		s, err := configsync.ParseSettings(raw)

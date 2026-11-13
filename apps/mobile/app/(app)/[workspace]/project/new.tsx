@@ -15,7 +15,7 @@
  * On success: dismiss modal → navigate to the new project's detail page so
  * the user can immediately add a lead / attach issues / configure properties.
  */
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   InteractionManager,
@@ -41,6 +41,7 @@ import {
 } from "@/lib/project-status";
 import { useCreateProject } from "@/data/mutations/projects";
 import { useNewProjectDraftStore } from "@/data/stores/new-project-draft-store";
+import { useNewProjectDraft } from "@/data/stores/use-form-drafts";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -60,36 +61,42 @@ export default function NewProject() {
   const { t } = useT("projects");
   const create = useCreateProject();
 
-  const [title, setTitle] = useState("");
-  const [icon, setIcon] = useState("");
-  const [description, setDescription] = useState("");
+  const {
+    title,
+    setTitle,
+    icon,
+    setIcon,
+    description,
+    setDescription,
+    restored,
+    closeMode,
+    settle,
+  } = useNewProjectDraft();
   const status = useNewProjectDraftStore((s) => s.status);
   const priority = useNewProjectDraftStore((s) => s.priority);
   const resetDraft = useNewProjectDraftStore((s) => s.reset);
 
-  const dirty =
-    title.length > 0 ||
-    icon.length > 0 ||
-    description.length > 0 ||
-    status !== "planned" ||
-    priority !== "none";
-
-  const canCreate = title.trim().length > 0 && !create.isPending;
+  const canCreate = restored && title.trim().length > 0 && !create.isPending;
 
   const openPicker = useCallback(
     (field: NewProjectPickerField) => {
-      if (!wsSlug) return;
+      if (!wsSlug || !restored) return;
       router.push({
         pathname: NEW_PROJECT_PICKER_PATHNAMES[field],
         params: { workspace: wsSlug },
       });
     },
-    [wsSlug],
+    [wsSlug, restored],
   );
 
   const onCancel = useCallback(() => {
-    if (!dirty) {
+    if (closeMode === "keep") {
+      router.back();
+      return;
+    }
+    if (closeMode === "discard") {
       resetDraft();
+      settle();
       router.back();
       return;
     }
@@ -103,12 +110,13 @@ export default function NewProject() {
           style: "destructive",
           onPress: () => {
             resetDraft();
+            settle();
             router.back();
           },
         },
       ],
     );
-  }, [dirty, resetDraft, t]);
+  }, [closeMode, resetDraft, settle, t]);
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
@@ -123,6 +131,7 @@ export default function NewProject() {
       {
         onSuccess: (project) => {
           resetDraft();
+          settle();
           router.back();
           // Wait for the modal dismiss animation to finish before pushing
           // the detail screen. `InteractionManager` resolves once iOS
@@ -151,6 +160,7 @@ export default function NewProject() {
     priority,
     wsSlug,
     resetDraft,
+    settle,
     t,
   ]);
 
@@ -192,6 +202,7 @@ export default function NewProject() {
             <TextInput
               value={icon}
               onChangeText={(v) => setIcon(v.slice(0, 4))}
+              editable={restored}
               placeholder="📦"
               placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
               className="text-2xl text-foreground bg-secondary/50 rounded-md px-3 py-2 self-start min-w-[60px] text-center"
@@ -203,6 +214,7 @@ export default function NewProject() {
             <TextInput
               value={title}
               onChangeText={setTitle}
+              editable={restored}
                 placeholder={t("form.title_placeholder")}
               placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
               className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
@@ -215,6 +227,7 @@ export default function NewProject() {
             <AutosizeTextArea
               value={description}
               onChangeText={setDescription}
+              editable={restored}
                   placeholder={t("form.description_placeholder")}
               className="bg-secondary/50 rounded-md px-3 py-2"
               minHeight={MIN_BODY_INPUT_HEIGHT_PX}
@@ -226,6 +239,7 @@ export default function NewProject() {
               <Field label={t("properties.status")}>
                 <Pressable
                   onPress={() => openPicker("status")}
+                  disabled={!restored}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectStatusIcon status={status} size={16} />
@@ -239,6 +253,7 @@ export default function NewProject() {
               <Field label={t("properties.priority")}>
                 <Pressable
                   onPress={() => openPicker("priority")}
+                  disabled={!restored}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectPriorityIcon priority={priority} size={16} />

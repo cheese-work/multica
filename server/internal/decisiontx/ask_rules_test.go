@@ -9,7 +9,6 @@ import (
 
 const (
 	uuidCHE2126 = "01a17cda-b791-7da5-94fc-06fdec20e4ed"
-	splitMsg    = "ask.decision asks more than one question; split into one request per question"
 	inlineMsg   = " has an inline numbered list; put each item on its own line as a Markdown list"
 	bareIDMsg   = " has a bare ID; link it as [what it is](link)"
 	agentDidMsg = "ask.agent_did must say in at least one plain sentence what the agent did; an ID alone is not enough"
@@ -76,8 +75,10 @@ func TestValidAsksPassAllRules(test *testing.T) {
 	}
 }
 
-// Tests 1 and 2: the verbatim CHE-2204 and CHE-2126 asks.
-func TestValidateRefusesMultiQuestionDecision(test *testing.T) {
+// Tests 1 and 2: the verbatim CHE-2204 and CHE-2126 asks. Wording no longer
+// refuses an ask (CHE-3365): CHE-2204 still fails on its inline numbered list,
+// a structural rule, and the rest decode with an advisory hint.
+func TestMultiQuestionDecisionWording(test *testing.T) {
 	cases := []struct {
 		name   string
 		mutate func(map[string]any)
@@ -97,9 +98,20 @@ func TestValidateRefusesMultiQuestionDecision(test *testing.T) {
 	}
 	for _, tc := range cases {
 		test.Run(tc.name, func(test *testing.T) {
-			err := decodeWith(tc.mutate)
-			if got := errString(err); got != splitMsg {
-				test.Fatalf("error = %q, want %q", got, splitMsg)
+			ask := validAskMap()
+			tc.mutate(ask)
+			decoded, err := decodeMap(ask)
+			if tc.name == "CHE-2204" {
+				if want := "ask.decision" + inlineMsg; errString(err) != want {
+					test.Fatalf("error = %q, want %q", errString(err), want)
+				}
+				return
+			}
+			if err != nil {
+				test.Fatalf("refused: %v", err)
+			}
+			if hints := LintAsk(decoded); !hintsContain(hints, "more than one question") {
+				test.Fatalf("hints = %q, want a more-than-one-question hint", hints)
 			}
 		})
 	}

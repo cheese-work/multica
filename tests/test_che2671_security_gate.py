@@ -32,11 +32,11 @@ FAKE_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"  # split so this file does not trip the g
 VULN_DIFF = f'+++ b/app.py\n@@ -1 +1,2 @@\n+aws = "{FAKE_KEY}"\n'
 
 
-def verdict(result="PASS", reviewer="x99-codex-sol (gpt-6.1-sol)", sha=HEAD, findings="none", signed=True,
+def verdict(result="PASS", reviewer="x99-claude-opus (claude-opus-5-5)", sha=HEAD, findings="none", signed=True,
             repo="cheese-work/multica-dotfiles", pr=405, base="main"):
     lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {reviewer}"]
     if signed:
-        lines.append("Signed: x99-codex-sol, 2026-10-30 23:50 ICT")
+        lines.append("Signed: x99-claude-opus, 2026-10-30 23:50 ICT")
     lines += [f"Repo: {repo}", f"PR: {pr}", f"Base: {base}", f"SHA: {sha}", f"Findings: {findings}"]
     return "\n".join(lines)
 
@@ -49,7 +49,7 @@ class GateDecisionTest(unittest.TestCase):
     def run_gate(self, comments, diff=CLEAN_DIFF, pr=PR):
         return sg.evaluate(pr, comments, TRUSTED, diff, human_ids=HUMANS)
 
-    def test_clean_pr_with_cross_lab_pass_on_head_succeeds(self):
+    def test_clean_pr_with_opus_pass_on_head_succeeds(self):
         state, _ = self.run_gate([comment(verdict())])
         self.assertEqual(state, "success")
 
@@ -76,14 +76,16 @@ class GateDecisionTest(unittest.TestCase):
         state, _ = self.run_gate([comment(verdict("FAIL", findings="looks bad"))])
         self.assertEqual(state, "pending")
 
-    def test_same_lab_reviewer_is_rejected(self):
-        state, why = self.run_gate([comment(verdict(reviewer="x99-claude-opus (claude-opus-5-5)"))])
+    def test_opus_never_signs_its_own_pr(self):
+        # CHE-4596: the lab-diversity rule is replaced by named signer roles
+        pr = {**PR, "head_ref": "agent/x99-claude-opus/che-2671-1c5d373a16a5"}
+        state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
-        self.assertIn("lab", why)
+        self.assertIn("own PR", why)
 
-    def test_author_cannot_review_itself(self):
+    def test_sonnet_is_not_a_signer(self):
         state, _ = self.run_gate([comment(verdict(reviewer="x99-claude-sonnet (claude-sonnet-5-5)"))])
-        self.assertEqual(state, "failure")
+        self.assertEqual(state, "pending")
 
     def test_untrusted_commenter_is_ignored(self):
         self.assertEqual(self.run_gate([comment(verdict(), author=999)])[0], "pending")
@@ -95,7 +97,7 @@ class GateDecisionTest(unittest.TestCase):
         self.assertEqual(self.run_gate([comment(verdict(findings="app.py:1 meh"))])[0], "pending")
 
     def test_any_reviewer_fail_on_head_beats_another_pass(self):
-        fail = verdict("FAIL", reviewer="x99-codex-luna (gpt-6-luna)", findings="\n- a.py:3 sqli via id -> dump table")
+        fail = verdict("FAIL", reviewer="x99-codex-sol (gpt-6.1-sol)", findings="\n- a.py:3 sqli via id -> dump table")
         state, _ = self.run_gate([comment(verdict(), cid=1), comment(fail, cid=2)])
         self.assertEqual(state, "failure")
 
@@ -107,17 +109,18 @@ class GateDecisionTest(unittest.TestCase):
         ])
         self.assertEqual(state, "success")
 
-    def test_human_author_gets_any_agent_reviewer(self):
+    def test_human_author_gets_the_opus_reviewer(self):
         pr = {**PR, "head_ref": "feature/x", "author_id": HUMAN}
         self.assertEqual(self.run_gate([comment(verdict())], pr=pr)[0], "success")
 
     def test_unregistered_pr_author_cannot_pick_its_own_reviewer(self):
         # finding 2: a non-agent branch used to mean "external author", so the author could sign their own PASS
         pr = {**PR, "head_ref": "feature/x", "author_id": BOT}
-        state, why = self.run_gate([comment(verdict(reviewer="x99-claude-opus (claude-opus-5-5)"))], pr=pr)
+        state, why = self.run_gate([comment(verdict())], pr=pr)
         self.assertEqual(state, "failure")
         self.assertIn("author", why)
-        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699333}
+        # CHE-4671: dependabot[bot] (49699333) is registered as an author; any other unknown id stays refused
+        pr = {**PR, "head_ref": "dependabot/npm/x", "author_id": 49699334}
         self.assertEqual(self.run_gate([comment(verdict())], pr=pr)[0], "failure")
 
     def test_verdict_for_another_pr_with_the_same_head_does_not_pass(self):
@@ -131,12 +134,21 @@ class GateDecisionTest(unittest.TestCase):
         pr = {**PR, "base_ref": "release", "default_branch": "release"}
         self.assertEqual(self.run_gate([comment(verdict(base="main"))], pr=pr)[0], "pending")
 
-    def test_non_default_target_branch_fails(self):
-        # finding 1: only the protected default branch is supported
+    def test_stacked_base_is_pending_not_failed_and_never_passes(self):
+        # CHE-3035: a stacked layer is not gated yet. Pending (not failure) keeps the PR free of a red check, and
+        # not success keeps the head from reaching the default branch if the retarget event is ever missed.
         pr = {**PR, "base_ref": "evil", "default_branch": "main"}
-        state, why = self.run_gate([comment(verdict(base="evil"))], pr=pr)
-        self.assertEqual(state, "failure")
-        self.assertIn("main", why)
+        for comments in ([], [comment(verdict(base="evil"))]):
+            state, why = self.run_gate(comments, pr=pr)
+            self.assertEqual(state, "pending")
+            self.assertIn("not gated", why)
+            self.assertIn("main", why)
+
+    def test_retarget_to_default_runs_the_real_gate(self):
+        # CHE-3035: the same head, now based on main, is gated as before: a planted secret fails, no verdict is pending
+        self.assertEqual(self.run_gate([], diff=VULN_DIFF)[0], "failure")
+        self.assertEqual(self.run_gate([])[0], "pending")
+        self.assertEqual(self.run_gate([comment(verdict())])[0], "success")
 
     def test_verdict_missing_binding_fields_is_not_valid(self):
         old = "\n".join(l for l in verdict().splitlines() if not l.startswith(("Repo:", "PR:", "Base:")))
@@ -196,9 +208,9 @@ class WrapperTest(unittest.TestCase):
             return ""
 
         def fake_run(cmd, **kw):
-            if sibling_head in cmd[-1] and sibling_diff_error:
+            if sibling_head in os.fsdecode(cmd[-1]) and sibling_diff_error:
                 raise subprocess.CalledProcessError(128, cmd)  # fork head objects were never fetched
-            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF)
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
 
         argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405",
                 "--default-branch", "main", "--post"]
@@ -231,82 +243,186 @@ class WrapperTest(unittest.TestCase):
         self.assertIn("state=failure", posted[0])
 
 
-class MergeGroupStepTest(unittest.TestCase):
-    """The merge queue requires `security-gate` on its own commit, which no PR event ever reaches. The job runs the
-    DEFAULT-branch script, which on the first queue run is still the old one (`--pr` only), so the workflow step
-    re-evaluates the queued PR with that script unchanged and posts the state on the queue commit itself."""
+class QueueRevocationTest(unittest.TestCase):
+    """CHE-3240: a success carried onto a queue head must not outlive the PR-head verdict that earned it."""
 
-    QUEUE = "e" * 40
-    REF = f"refs/heads/gh-readonly-queue/main/pr-405-{'d' * 40}"
-    STUB_GH = ('#!/bin/bash\n'
-               'case "$*" in\n'
-               '  *commits/*) printf "%s\\n" $PARENTS ;;\n'
-               '  *) echo "gh $*" >> "$LOG" ;;\n'
-               'esac\n')
-    STUB_GATE = ('#!/bin/bash\n'  # the old script: --pr N required (an empty N is an argparse error), verdict read live
-                 'echo "gate $*" >> "$LOG"\n'
-                 'case " $* " in *" --pr "[0-9]*) ;; *) exit 2 ;; esac\n'
-                 'echo \'{"context": "security-gate", "sha": "\'$HEAD\'", "state": "\'$STATE\'", "description": "PASS on x"}\'\n')
+    BASE, G1, G2, OTHER = "1" * 40, "2" * 40, "3" * 40, "6" * 40
+    QUEUE_HEADS = {405: G1, 999: G2}  # queue head per tip PR number
 
-    def step_run(self):
-        steps = yaml.safe_load((ROOT / ".github/workflows/security-gate.yml").read_text())["jobs"]["security-gate"]["steps"]
-        gate = [s for s in steps if "security_gate.py" in s.get("run", "")]
-        self.assertEqual(len(gate), 1)
-        return gate[0]["run"]
+    def run_pr(self, comments, queue_heads=None, queue_error=False, compare_error=False, post_fail=(), stacked=False):
+        queue_heads = self.QUEUE_HEADS if queue_heads is None else queue_heads
+        posted, lookups = [], []
+        # a set fails every write to those heads; a dict maps head -> number of writes that fail before one succeeds
+        fails = dict(post_fail) if isinstance(post_fail, dict) else dict.fromkeys(post_fail, 10**9)
+        chains = {self.G1: [{"sha": self.G1, "parents": [self.BASE, HEAD], "message": "Merge pull request #405 from x/y"}],
+                  self.G2: [{"sha": self.G2, "parents": [self.OTHER, "7" * 40], "message": "Merge pull request #999 from x/z"}]}
+        if stacked:  # the second group sits on top of the first, so both carry the PR
+            chains[self.G2] = [{"sha": self.G2, "parents": [self.G1, "7" * 40], "message": "Merge pull request #999 from x/z"}, *chains[self.G1]]
 
-    def run_step(self, ref=REF, parents=("d" * 40, HEAD), state="success", script=""):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            (tmp / "bin").mkdir()
-            (tmp / "scripts/security-gate").mkdir(parents=True)
-            (tmp / "bin/gh").write_text(self.STUB_GH)
-            (tmp / "scripts/security-gate/gate.sh").write_text(self.STUB_GATE)
-            (tmp / "scripts/security-gate/security_gate.py").write_text(script)  # the step runs it via the shadowed python3
-            (tmp / "bin/python3").write_text(
-                '#!/bin/bash\n[ "${1##*/}" = security_gate.py ] && exec bash "$(dirname "$1")/gate.sh" "${@:2}"\n'
-                f'exec {sys.executable} "$@"\n')
-            for path in (tmp / "bin/gh", tmp / "bin/python3", tmp / "scripts/security-gate/gate.sh"):
-                path.chmod(0o755)
-            env = {**os.environ, "PATH": f"{tmp / 'bin'}:{os.environ['PATH']}", "LOG": str(tmp / "log"), "HEAD": HEAD,
-                   "STATE": state, "PARENTS": " ".join(parents), "MERGE_GROUP_REF": ref, "MERGE_GROUP_SHA": self.QUEUE,
-                   "PR_NUMBER": "", "GH_TOKEN": "t", "DEFAULT_BRANCH": "main", "GITHUB_REPOSITORY": "o/r",
-                   "GITHUB_SERVER_URL": "https://github.com", "GITHUB_RUN_ID": "7"}
-            done = subprocess.run(["bash", "-c", self.step_run()], cwd=tmp, env=env, capture_output=True, text=True)
-            log = (tmp / "log").read_text().splitlines() if (tmp / "log").exists() else []
-        return done, log
+        def fake_gh(*args):
+            path = " ".join(args)
+            if "git/matching-refs/heads/gh-readonly-queue/main/" in path or "/branches" in path:
+                lookups.append(path)
+                if queue_error is True or (queue_error == "primary" and "matching-refs" in path):
+                    raise subprocess.CalledProcessError(1, ["gh"])
+                return "\n".join(queue_heads.values())
+            if "compare/main..." in path:
+                if compare_error:
+                    raise subprocess.CalledProcessError(1, ["gh"])
+                return "\n".join(json.dumps(c) for c in chains[path.split("...")[1].split()[0]])
+            if args[0] == "--paginate":
+                return json.dumps(c) if (c := comments[0]) and "issues/405/comments" in path else ""
+            if "commits/" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(args)
+                sha = path.split("statuses/")[1].split()[0]
+                if fails.get(sha, 0) > 0:
+                    fails[sha] -= 1
+                    raise subprocess.CalledProcessError(1, ["gh"])
+            return ""
 
-    def posted(self, log):
-        return [l for l in log if l.startswith("gh ") and f"statuses/{self.QUEUE}" in l]
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                "--default-branch", "main", "--post"]
+        fake_run = lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch.object(sg.time, "sleep"), mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            code = sg.main()
+        self.lookups = lookups
+        return code, posted
 
-    def test_queued_pr_verdict_is_posted_on_the_queue_commit(self):
-        done, log = self.run_step()
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(len(self.posted(log)), 1, log)
-        self.assertIn("state=success", self.posted(log)[0])
-        self.assertIn("--pr 405", " ".join(l for l in log if l.startswith("gate ")))
-        self.assertNotIn("--post", " ".join(log))  # the old script would post on the PR head, not the queue commit
+    REVOKE_ARGV = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica", "--pr", "405",
+                   "--default-branch", "main", "--run-url", "u", "--revoke-only"]
 
-    def test_queue_run_scans_with_semgrep_once_the_gate_script_supports_it(self):
-        done, log = self.run_step(script='ap.add_argument("--semgrep")')
-        self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+    @staticmethod
+    def live_status(state):
+        """A `_gh` fake for the live reads of --revoke-only: the PR head, then the head's security-gate status."""
+        def fake_gh(*args):
+            if args[0].endswith("/pulls/405"):
+                return json.dumps({"head": {"sha": HEAD}})
+            if args[0].endswith(f"/commits/{HEAD}/status"):
+                return state
+            raise AssertionError(args)
+        return fake_gh
 
-    def test_queue_run_omits_semgrep_for_an_older_gate_script(self):
-        done, log = self.run_step()
-        self.assertNotIn("--semgrep", " ".join(l for l in log if l.startswith("gate ")))
+    def test_revoke_only_retries_the_queue_flip_without_reading_the_verdict(self):
+        # CHE-4385 sweep: a PR already non-success whose queue flip failed gets only the flip again, no scan.
+        with mock.patch.object(sg, "revoke_queue") as revoke, mock.patch.object(sg, "gate_pr") as gate, \
+                mock.patch.object(sg, "_gh", self.live_status("pending")), mock.patch("sys.argv", self.REVOKE_ARGV):
+            code = sg.main()
+        self.assertEqual(code, 0)
+        revoke.assert_called_once_with("cheese-work/multica", 405, "main", "u")
+        gate.assert_not_called()
 
-    def test_verdict_is_read_fresh_at_queue_time(self):
-        done, log = self.run_step(state="pending")
-        self.assertIn("state=pending", self.posted(log)[0])
+    def test_revoke_only_skips_a_pr_whose_live_status_recovered_to_success(self):
+        # P2 (CHE-4385): the sweep listed the PR as non-success, then a gate run turned it green. Revoking its queue
+        # heads now would drop a good entry; the live status is re-read right before the flip.
+        with mock.patch.object(sg, "revoke_queue") as revoke, mock.patch.object(sg, "gate_pr") as gate, \
+                mock.patch.object(sg, "_gh", self.live_status("success")), mock.patch("sys.argv", self.REVOKE_ARGV):
+            code = sg.main()
+        self.assertEqual(code, 0)
+        revoke.assert_not_called()
+        gate.assert_not_called()
 
-    def test_pr_head_that_is_not_a_parent_fails(self):
-        done, log = self.run_step(parents=("d" * 40, OLD))
-        self.assertIn("state=failure", self.posted(log)[0])
+    def test_a_revoked_verdict_flips_the_queue_head_that_carries_the_pr_to_failure(self):
+        code, posted = self.run_pr([comment("no verdict any more")])
+        self.assertEqual(code, 0)
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted if "statuses/" in a[0]}
+        self.assertIn(HEAD, by_sha)  # the PR head status itself
+        self.assertIn("state=pending", by_sha[HEAD])
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertIn("#405", " ".join(by_sha[self.G1]))
+        self.assertNotIn(self.G2, by_sha)  # a group without the PR is untouched
 
-    def test_queue_for_another_branch_fails_without_evaluating(self):
-        done, log = self.run_step(ref=f"refs/heads/gh-readonly-queue/dev/pr-405-{'d' * 40}")
-        self.assertIn("state=failure", self.posted(log)[0])
-        self.assertFalse([l for l in log if l.startswith("gate ")])
+    def test_a_still_green_pr_leaves_the_queue_alone(self):
+        _, posted = self.run_pr([comment(verdict("PASS", repo="cheese-work/multica"))])
+        self.assertEqual([a[0].rsplit("/", 1)[1] for a in posted], [HEAD])
+
+    def test_a_failing_ref_lookup_falls_back_to_the_branch_listing_and_still_flips_the_head(self):
+        # review round 4 finding 1: one failing endpoint must not leave the carried success on the queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], queue_error="primary")
+        by_sha = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        self.assertIn("state=failure", by_sha[self.G1])
+        self.assertTrue(any("/branches" in l for l in self.lookups))
+
+    def test_both_lookups_failing_is_retried_then_raises(self):
+        with mock.patch.object(sg.time, "sleep"), self.assertRaises(subprocess.CalledProcessError):
+            self.run_pr([comment("no verdict any more")], queue_error=True)
+
+    def test_a_group_that_cannot_be_read_is_failed_closed_in_the_persisted_status(self):
+        # review round 3 finding 1: a compare error must not leave the carried success on that queue head
+        with mock.patch.object(sg.time, "sleep"):
+            _, posted = self.run_pr([comment("no verdict any more")], compare_error=True)
+        heads = {a[0].rsplit("/", 1)[1]: a for a in posted}
+        for g in (self.G1, self.G2):
+            self.assertIn("state=failure", heads[g])
+
+    def test_a_failed_status_write_on_one_head_does_not_skip_the_later_heads_and_fails_the_job(self):
+        # review round 8: one failed write must not leave later queue heads on a carried success
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G2])
+
+    def test_every_failed_head_is_named_when_all_status_writes_fail(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G1, self.G2})
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertIn(self.G2, str(ctx.exception))
+
+    def test_a_failed_write_after_a_good_one_still_raises_and_keeps_the_good_flip(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr_capture([comment("no verdict any more")], post_fail={self.G2})
+        self.assertIn(self.G2, str(ctx.exception))
+        self.assertNotIn(self.G1, str(ctx.exception))
+        self.assertIn("state=failure", self.captured[self.G1])
+
+    def writes_to(self, posted, sha):
+        return [a for a in posted if a[0].endswith(f"statuses/{sha}")]
+
+    def test_a_transient_status_write_failure_is_retried_and_the_head_ends_on_failure(self):
+        # review round 9: one failed attempt must not leave the carried success while the API has recovered
+        code, posted = self.run_pr([comment("no verdict any more")], post_fail={self.G1: 2}, stacked=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.writes_to(posted, self.G1)), 3)
+        self.assertIn("state=failure", self.writes_to(posted, self.G1)[-1])
+        self.assertEqual(len(self.writes_to(posted, self.G2)), 1)
+
+    def test_a_write_that_fails_on_every_bounded_retry_is_named_and_the_other_heads_are_still_flipped(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9}, stacked=True)
+        self.assertIn(self.G1, str(ctx.exception))
+        self.assertNotIn(self.G2, str(ctx.exception))
+
+    def test_retries_are_bounded_at_three_attempts_per_head(self):
+        attempts = []
+        real = sg._post
+
+        def spy(github, sha, *rest):
+            attempts.append(sha)
+            return real(github, sha, *rest)
+
+        with mock.patch.object(sg, "_post", spy), self.assertRaises(RuntimeError):
+            self.run_pr([comment("no verdict any more")], post_fail={self.G1: 10**9, self.G2: 10**9}, stacked=True)
+        self.assertEqual([attempts.count(self.G1), attempts.count(self.G2)], [3, 3])
+
+    def run_pr_capture(self, comments, post_fail):
+        # run_pr raises before it can return `posted`; capture the attempted writes through the mock instead
+        seen = {}
+        real = sg._post
+
+        def spy(github, sha, state, desc, run_url):
+            seen[sha] = (f"state={state}",)
+            return real(github, sha, state, desc, run_url)
+
+        self.captured = seen
+        with mock.patch.object(sg, "_post", spy):
+            return self.run_pr(comments, post_fail=post_fail, stacked=True)
 
 
 class WorkflowTest(unittest.TestCase):
@@ -314,28 +430,84 @@ class WorkflowTest(unittest.TestCase):
         self.text = (ROOT / ".github/workflows/security-gate.yml").read_text()
         self.doc = yaml.safe_load(self.text)
 
-    def test_runs_from_base_and_never_checks_out_head(self):
-        self.assertIn("pull_request_target", self.doc[True])
-        self.assertIn("issue_comment", self.doc[True])
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", self.text)
-        self.assertNotIn("pull_request.head.ref", self.text)
+    def test_pr_guards_calls_the_gate_on_a_push_and_a_retarget_needs_a_dispatch(self):
+        # findings 3 and 4, moved twice by CHE-4385: `edited` (retarget) is no longer a pr-guards trigger (Cheese chose the
+        # run cut), so a retarget re-runs the gate only through a push or `workflow_dispatch`. A stale status fails closed:
+        # a PR retargeted onto the default branch stays "not gated yet" (pending), and `merge_group` re-reads the verdicts.
+        guards = yaml.safe_load((ROOT / ".github/workflows/pr-guards.yml").read_text())
+        self.assertNotIn("edited", guards[True]["pull_request_target"]["types"])
+        self.assertIn("synchronize", guards[True]["pull_request_target"]["types"])
+        self.assertEqual(guards["jobs"]["security-gate"]["uses"], "./.github/workflows/security-gate.yml")
+        self.assertIn("workflow_dispatch", self.doc[True])
+        self.assertIn("merge_group", self.doc[True])
 
-    def test_privileged_job_runs_the_default_branch_not_the_pr_base(self):
-        # finding 1: base.sha of a PR into an unprotected branch is attacker-influenced code
-        self.assertIn("github.event.repository.default_branch", self.text)
-        self.assertNotIn(".base.sha", self.text)
-        self.assertIn("--default-branch", self.text)
-
-    def test_retarget_and_comment_deletion_retrigger_the_gate(self):
-        # findings 3 and 4
-        self.assertIn("edited", self.doc[True]["pull_request_target"]["types"])
-        self.assertIn("deleted", self.doc[True]["issue_comment"]["types"])
+    def test_dispatch_takes_one_digits_only_pull_request_number(self):
+        self.assertEqual(list(self.doc[True]["workflow_dispatch"]["inputs"]), ["pr"])
+        self.assertIn("github.event.inputs.pr", self.doc["jobs"]["security-gate"]["env"]["PR_NUMBER"])
+        self.assertIn("pr must be digits only", self.text)
 
     def test_merge_queue_commit_gets_the_status(self):
         self.assertIn("checks_requested", self.doc[True]["merge_group"]["types"])
 
     def test_only_status_write_is_added(self):
         self.assertEqual(self.doc["permissions"], {"contents": "read", "pull-requests": "read", "statuses": "write"})
+
+class FreshnessRaceTest(unittest.TestCase):
+    """CHE-4385: a success must not be posted over a verdict that changed while the evaluation was running."""
+
+    def run_main(self, fail_after_read=None, churn=False):
+        """`fail_after_read`: a FAIL verdict comment appears right after this (1-based) fingerprint read.
+        `churn`: the comment list differs on every fingerprint read."""
+        fail = comment(verdict("FAIL", findings="\n- app.py:7 shell=True on user input"), cid=2, updated="2026-10-30T17:00:00Z")
+        store, posted, reads = [comment(verdict())], [], []
+
+        def fake_gh(*args):
+            path = " ".join(args)
+            if args[0] == "--paginate" and "issues/405/comments" in path:
+                if "author_id" in path:  # the evaluation's own read
+                    return "\n".join(json.dumps(c) for c in store)
+                reads.append(1)  # a fingerprint read
+                if len(reads) == fail_after_read:
+                    store.append(fail)
+                extra = f"\nn{len(reads)}" if churn else ""
+                return "\n".join(f"{c['id']} {c['updated_at']}" for c in store) + extra
+            if "pulls/405" in path:
+                return json.dumps({"head": {"sha": HEAD, "ref": PR["head_ref"]}, "base": {"sha": "d" * 40, "ref": "main"},
+                                   "user": {"id": BOT}})
+            if "statuses/" in path:
+                posted.append(path)
+            if "commits/" in path and "/pulls" in path:
+                return json.dumps({"number": 405, "head": HEAD})
+            return "success" if "commits/" in path else ""
+
+        def fake_run(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=CLEAN_DIFF if kw.get("text") else CLEAN_DIFF.encode())
+
+        argv = ["x", "--repo", str(ROOT), "--github", "cheese-work/multica-dotfiles", "--pr", "405", "--default-branch", "main", "--post"]
+        with mock.patch.object(sg, "_gh", fake_gh), mock.patch.object(sg.subprocess, "run", fake_run), \
+                mock.patch("sys.argv", argv), mock.patch("builtins.print"):
+            try:
+                code = sg.main()
+            except SystemExit as e:
+                code = e.code
+        return code, posted
+
+    def test_a_verdict_that_lands_during_the_evaluation_is_read_before_any_success_is_posted(self):
+        # read 1 is before the first evaluation, read 2 after it: the FAIL arrives between them.
+        code, posted = self.run_main(fail_after_read=2)
+        self.assertEqual(code, 0)
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
+        self.assertTrue(any("state=failure" in p for p in posted), posted)
+
+    def test_an_unchanged_verdict_set_still_posts_the_success(self):
+        code, posted = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertEqual([("state=success" in p) for p in posted], [True])
+
+    def test_a_verdict_set_that_never_settles_posts_no_success_and_fails_the_job(self):
+        code, posted = self.run_main(churn=True)
+        self.assertNotIn(code, (0, None))
+        self.assertFalse([p for p in posted if "state=success" in p], posted)
 
 
 if __name__ == "__main__":

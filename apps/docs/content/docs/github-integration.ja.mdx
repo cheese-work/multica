@@ -74,6 +74,8 @@ Resolves MUL-123
 
 本文に `Related to MUL-123` のような通常の参照を書いただけでは、そのタスクへまったく紐づきません。Commit message と PR コメントも紐づけの対象外です。
 
+フォークからの PR は、フォークのオーナーがベースリポジトリと同じ場合にのみ自動で紐づきます。そのような PR をマージしても、タスクのステータスは変わりません。他のオーナーのフォークからの PR は手動で紐づけてください。
+
 手動で紐づけることもできます。タスクの **Pull requests** セクションで **+** をクリックし、PR の URL を貼り付けます。PR をタスクから外すには、その行の **⋯** メニューから **タスクから外す** を選びます。以後、Multica がタイトルやブランチから再び紐づけることはありません。
 
 ## タスクから PR を確認する
@@ -122,6 +124,12 @@ PR の紐づけ方は結果に影響しません。タイトル、ブランチ�
 **設定 → コード** の GitHub の行で **⋯** メニューから**接続解除**を選ぶと、現在の Multica ワークスペースと installation の関係だけが削除されます。GitHub から App がアンインストールされることはありません。既存の PR 記録は保持されますが、新しいイベントはこのワークスペースに届かなくなります。
 
 GitHub 側のリポジトリアクセスを取り消す場合は、個人または organization の GitHub App installations ページで App をアンインストールするか、リポジトリの範囲を変更してください。App をアンインストールすると、その installation に接続していたすべての Multica ワークスペースがイベントを受信しなくなります。
+
+## チェック成功による起動
+
+ワークスペース設定で `github_wake_on_ci_success` を `true` にすると、リンクされたオープンまたはドラフトの PR のチェックが現在のヘッドで成功したときに実行を開始します。既定ではオフです。未完了のチェックが `security-gate` の判定ステータスだけの PR は、成功として扱います。新しいヘッドでは再び起動します。失敗した実行を同じヘッドで再実行して成功した場合は、もう一度起動します。同じ成功が再配信されても起動しません。
+
+実行は、コンフリクトやチェック失敗の起動と同じ方法で決まる PR の作成者エージェントに送られます。作成者が不明な場合は、課題の担当者に送られます。担当者が人で作成者エージェントが不明な場合は、その人に通知が届きます。
 
 ## GitHub Actions の実行を待つ
 
@@ -186,13 +194,21 @@ Repository permissions:
 |---|---|
 | Metadata | Read-only |
 | Pull requests | Read-only |
-| Members | Read-only。接続ユーザーが organization の active admin であることを確認するために必要 |
+| Actions | Read-only。`--until-gh-run` wakeup に必要 |
 | Checks | Read-only。CI の状態表示に使用 |
 | Commit statuses | Read-only。legacy status 形式の CI 集計に使用 |
+
+Organization permissions:
+
+| 権限 | レベル |
+|---|---|
+| Members | Read-only。接続ユーザーが organization の active admin であることを確認するために必要 |
 
 次のイベントを購読します。
 
 - **Pull request**
+- **Pull request review**、**Pull request review comment**、**Issue comment**。human review wakeup を設定する場合に使用します。
+- **Workflow run**、**Workflow job**。`--until-gh-run` wakeup に必要です。
 - **Check suite**、**Check run**、**Status**。CI とマージ可能性を更新するために使用します。
 
 PR スナップショットは Pull requests、Checks、Commit statuses の REST API から取得します。Contents 権限は不要です。
@@ -227,7 +243,15 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 
 接続ボタンには GitHub の 6 つの値がすべて必要です。新規接続では、Multica が GitHub のユーザー認可 code を交換し、App として installation を解決したうえで、個人アカウントの ID と login の完全一致、または organization の active admin membership を要求します。ユーザーの installation 一覧に表示されるだけでは organization の権限証明になりません。検証エラーはすべて接続を拒否し、一時的な user token は確認後に失効させます。
 
-既存の App に Members 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。
+既存の App に Members または Actions 権限を追加する場合、新しいワークスペースへ接続する前に対象 organization ごとに権限変更を承認してください。既存の installation は新しい権限を承認する必要があります。承認されるまで、`--until-gh-run` wakeup は workflow イベントを受け取りません。
+
+必要に応じて `GITHUB_ALLOWED_ACCOUNT_IDS` に、GitHub アカウントの数値 ID（login ではなく、ユーザーまたは organization の `id`）をカンマ区切りで設定します。未設定または空の場合は、上記の検証を通過したアカウントならどれでも接続できます。設定すると、アカウント ID が一覧にない installation の binding を Multica は拒否します。setup callback は `github_error=installation_not_allowed` でリダイレクトし、binding は作成しません。code のない **Redirect on update** の callback は、その binding に保存済みのアカウント ID で判定します。保存済みのアカウント ID がない binding は拒否されます（fail closed）。login など不正な値は、起動時にサーバーを停止させます。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub の `deleted` と `suspend` イベントは、一覧に関係なく常に binding を削除します。
 
 </Step>
 <Step>
@@ -244,6 +268,7 @@ GITHUB_APP_PRIVATE_KEY=<complete PEM private key, including BEGIN/END lines and 
 - **接続ボタンを使用できない**: `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID`、`GITHUB_APP_PRIVATE_KEY` が API プロセスに設定されていることを確認します。
 - **インストール直後に接続が失敗する**: **Request user authorization (OAuth) during installation** を有効にし、callback URL と setup URL の両方を `/api/github/setup` に設定して、Members read-only を付与します。接続ユーザーは個人アカウントの所有者、または organization の active admin である必要があります。
 - **Webhook が 401 を返す**: GitHub App と API が同じ Webhook secret を使っていることを確認し、GitHub の **Recent Deliveries** から再配信します。
+- **GitHub でマージ済みなのに Multica で PR が open のまま**: `closed` Webhook が失われています。`GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定されていれば、次の CI 更新が GitHub から PR を読み、Webhook が届いた場合と同じようにマージまたはクローズを記録します。タスクを開くと更新が始まります。定期的なバックグラウンド更新を待つこともできます。認証情報がない場合は **Recent Deliveries** からイベントを再配信します。
 - **PR が紐づかない**: リポジトリが App の許可範囲にあること、PR の自動紐づけが有効であること、番号が現在のワークスペースのものであること、誰かがタスクから外していないかを確認します。
 - **本文に番号を書いても紐づかない**: `Closes MUL-123` を使うか、番号をブランチ名または PR タイトルに入れるか、手動で紐づけます。
 - **CI の状態がない**: `GITHUB_APP_ID` と `GITHUB_APP_PRIVATE_KEY` が設定済みで、App に Pull requests、Checks、Commit statuses の read-only 権限があり、関連イベントを購読していることを確認します。Contents 権限は不要です。インストール済み App に権限を追加した場合は、各 installation の所有者が GitHub 上で承認するまで有効になりません。

@@ -191,6 +191,8 @@ func TestPRWakeupLedgerHasDetachedUniqueIndex(t *testing.T) {
 }
 
 func TestPRWakeupRatePauseRetainsEventsAndRecovers(t *testing.T) {
+	// The loop breaker (6 runs in 30 min) trips before the hourly wakeup cap this test drives.
+	t.Setenv(loopBreakerMaxRunsEnv, "0")
 	f, s, issue, agent := wakeFixture(t)
 	assignPRWakeupIssue(t, f, issue, agent)
 	ctx := context.Background()

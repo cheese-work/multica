@@ -79,13 +79,13 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	hasOpen := slices.ContainsFunc(requests, func(request db.DecisionRequest) bool { return request.Status == "open" })
 	// A request cancelled outside the answer path (lane archived, recipient
 	// removed, expired, withdrawn) leaves its park behind; undo it here.
-	if restored, ok, err := unparkIssueAfterDecision(ctx, queries, issue, nil); err != nil {
+	if restored, recorded, err := unparkIssueAfterDecision(ctx, queries, issue, nil); err != nil {
 		return err
-	} else if ok {
+	} else if recorded != nil {
 		if err := transaction.Commit(ctx); err != nil {
 			return err
 		}
-		handler.publishDecisionStatusChange(ctx, issue, restored, "decision_cancel")
+		handler.publishDecisionStatusChange(ctx, issue, restored, recorded, "decision_cancel")
 		return nil
 	}
 	eligible, err := decisionWaitEligible(ctx, queries, issue)
@@ -197,11 +197,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 }
 
 func setDecisionWaitMetadata(ctx context.Context, queries *db.Queries, issue db.Issue, key string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	_, err = queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: key, Value: raw})
+	_, err := setIssueMetadataValue(ctx, queries, issue.WorkspaceID, issue.ID, key, value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

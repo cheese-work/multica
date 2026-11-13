@@ -436,6 +436,33 @@ func TestForkChatSessionTaskKeyUsesInputOwner(test *testing.T) {
 	}
 }
 
+func TestForkChatSessionTaskReplayOmitsTheSavedFirstMessage(test *testing.T) {
+	ctx := context.Background()
+	agentID, sourceID, _, _ := setupDirectChatSession(test, ctx, "Replay")
+	forkMessage(test, sourceID, testutil.Cols{"role": "user", "content": "history", "created_at": testutil.Raw("now() - interval '2 minutes'")})
+	forkMessage(test, sourceID, testutil.Cols{"role": "assistant", "content": "answer", "created_at": testutil.Raw("now() - interval '1 minute'")})
+	var made ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, forkChatRequest(test, sourceID, "person-key", map[string]any{"message": "secret first message"})).Want(http.StatusCreated).JSON(&made)
+	cleanupChatFork(test, made.Session.ID)
+	if made.Message == nil {
+		test.Fatal("the person's fork returned no first message")
+	}
+
+	reading := sendDirectChat(test, ctx, agentID, sourceID, "read me")
+	markTaskRunning(test, ctx, reading)
+	request := forkChatRequest(test, "", "", map[string]any{"idempotency_key": "person-key"})
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Task-ID", reading)
+	var replay ChatForkResponse
+	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusOK).JSON(&replay)
+	if replay.Session.ID != made.Session.ID {
+		test.Fatalf("replay child = %s, want %s", replay.Session.ID, made.Session.ID)
+	}
+	if replay.Message != nil || len(replay.AttachmentIDs) != 0 {
+		test.Fatalf("a task token replay returned the child's saved first message: %+v", replay.Message)
+	}
+}
+
 func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 	agentID := createHandlerTestAgent(test, "fork-auth", []byte("[]"))
 	builderID := createHandlerTestAgent(test, "fork-builder", []byte("[]"))
@@ -515,7 +542,7 @@ func TestForkChatSessionAuthorizationAndValidation(test *testing.T) {
 				test.Fatalf("empty rejection = %s", response.Text())
 			}
 			after, err := testHandler.Queries.GetChatSession(context.Background(), parseUUID(sourceID))
-			if err != nil || before != after || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 0 {
+			if err != nil || !reflect.DeepEqual(before, after) || dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID) != 0 {
 				test.Fatalf("rejected fork changed source or created a child: %+v, %v", after, err)
 			}
 		})
@@ -771,6 +798,17 @@ func TestForkChatSessionRejectsBodyPaddedPastTheCap(test *testing.T) {
 	testutil.Call(test, testHandler.ForkChatSession, request).Want(http.StatusBadRequest)
 	if count := dbfx.Count(test, `SELECT count(*) FROM chat_session WHERE forked_from_session_id = $1`, sourceID); count != 0 {
 		test.Fatalf("a padded body created %d children", count)
+	}
+}
+
+func TestForkTitleLongMessageHasNoEllipsis(test *testing.T) {
+	got := forkTitle("Src", strings.Repeat("word ", 40))
+	if strings.Contains(got, "…") {
+		test.Fatalf("fork title carries an ellipsis: %q", got)
+	}
+	want := "Src (fork: " + strings.TrimSpace(strings.Repeat("word ", 16)) + ")"
+	if got != want {
+		test.Fatalf("forkTitle = %q, want %q", got, want)
 	}
 }
 

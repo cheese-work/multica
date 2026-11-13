@@ -34,7 +34,7 @@ import { useLocale, useTimeAgo } from "../../i18n";
 import { RichTableDeferContext } from "../../rich-content";
 import { bodyPrefix } from "../../rich-content/body-prefix";
 import { SupersedesLine } from "./supersession-links";
-import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, Attachment as AttachmentRenderer, AttachmentDownloadProvider, useUploadGate, useComposerSubmit } from "../../editor";
+import { ContentEditor, type ContentEditorRef, ReadonlyContent, useFileDropZone, FileDropOverlay, useUploadGate, useComposerSubmit } from "../../editor";
 import { useCommentUploads } from "./use-comment-uploads";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { api, dispatchReasonCode, errorCode } from "@multica/core/api";
@@ -48,11 +48,6 @@ import { contentReferencesAttachment } from "@multica/core/types";
 import { isDeletedComment } from "@multica/core/issues/comment-deletion";
 import { commentSupplementReceipts, isSupplementInFlight } from "@multica/core/issues/run-steering";
 import { useConfigStore } from "@multica/core/config";
-import {
-  orderStandaloneAttachments,
-  selectStandaloneAttachments,
-  standaloneAttachmentGroup,
-} from "@multica/core/attachments/image-sequence";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { useT } from "../../i18n";
@@ -63,11 +58,11 @@ import { InlineCommentRun, PlacedInlineCommentRun, useInlineCommentRunState, typ
 import { EMPTY_COMMENT_RUNS, isRunFailureNotice, showCommentRunInHeader, type CommentRun } from "./comment-runs";
 import { descriptionPreview } from "./description-preview";
 import { useCommentAnnotations } from "./use-comment-annotations";
-import { useAttachmentVersions } from "./deliverables/attachment-versions";
-import { VersionBadge } from "./deliverables/version-badge";
+import { AttachmentList } from "./attachment-list";
 import { useRunCommentMotion } from "./use-run-comment-motion";
 import { WakeupSourceChip } from "./wakeup-source-chip";
 import { DecisionAskJump, DecisionQuoteCard, DecisionWithdrawalLine, decisionDisplayActor } from "./decision-quote-card";
+import { rejectInvalidAgentMentions, type InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 const commentActionClassName =
   "text-muted-foreground aria-expanded:bg-transparent aria-expanded:hover:bg-muted dark:aria-expanded:hover:bg-muted/50";
@@ -148,7 +143,7 @@ interface CommentCardProps {
    * `CommentRow` has to rerun the rule per row.
    */
   canModerate?: boolean;
-  onReply: (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean>;
+  onReply: (parentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], steerTaskIds?: string[]) => Promise<string | boolean | InvalidMentionRejection>;
   onReplyAccepted?: (commentId: string) => void;
   onEdit: (commentId: string, content: string, attachmentIds: string[], suppressAgentIds?: string[], contentBase?: string) => Promise<void>;
   onDelete: (commentId: string) => void;
@@ -200,7 +195,7 @@ interface CommentCardProps {
    */
   forceThreadExpanded?: boolean;
   /**
-   * CHE-554: a strict SUBSET of `forceThreadExpanded`'s reasons — every
+   * CHE-554: a SUBSET of `forceThreadExpanded`'s reasons (see CHE-5437 below) — every
    * reason that pin has EXCEPT a bare focus/selection pin with no other
    * reason active. `forceThreadExpanded` alone cannot gate the Show-more
    * button's render guard below, because focus/selection is itself the
@@ -217,8 +212,14 @@ interface CommentCardProps {
    * active run, highlighted reply) still fully expands the length exactly
    * as `forceThreadExpanded` does. Defaults to `forceThreadExpanded` so
    * callers that don't pass it keep identical behavior.
+   *
+   * CHE-5437: NOT a strict subset any more. Reply-draft TEXT pins the length
+   * but no longer pins `forceThreadExpanded`, so manual Collapse works while
+   * the composer holds unsent text. Show less is withheld on either pin.
    */
   forceThreadLengthExpanded?: boolean;
+  /** CHE-5437: the user pressed the thread's collapse/expand button. */
+  onManualCollapseChange?: (rootId: string, collapsed: boolean) => void;
   /**
    * True while in-page find owns this thread's forced-open reveal
    * specifically (never for a target/draft/run pin — those aren't "would
@@ -277,66 +278,7 @@ function DeleteCommentDialog({
   );
 }
 
-// Standalone attachment list — renders attachments not already in the markdown
-
-export function AttachmentList({
-  attachments,
-  content,
-  className,
-  onRemove,
-}: {
-  attachments?: Attachment[];
-  content?: string;
-  className?: string;
-  onRemove?: (attachmentId: string) => void;
-}) {
-  const versions = useAttachmentVersions();
-  if (!attachments?.length) return null;
-  // Skip attachments whose URL (stable or legacy) is already referenced in the
-  // markdown content, and duplicates of the same file that are referenced.
-  // Shared with the image-sequence builder (MUL-5752) so the cards rendered
-  // here and the images the viewer pages through can't disagree — as is the
-  // grouping below, so paging follows the screen (MUL-7649).
-  const standalone = orderStandaloneAttachments(
-    selectStandaloneAttachments(content, attachments),
-  );
-  if (!standalone.length) return null;
-
-  const images = standalone.filter((a) => standaloneAttachmentGroup(a) === "image");
-  const files = standalone.filter((a) => standaloneAttachmentGroup(a) === "file");
-  const render = (a: Attachment) => {
-    const version = versions?.get(a.id);
-    return (
-      <AttachmentRenderer
-        key={a.id}
-        attachment={{ kind: "record", attachment: a }}
-        layout="card"
-        badge={version ? <VersionBadge version={version} /> : undefined}
-        editable={!!onRemove}
-        onDelete={onRemove ? () => onRemove(a.id) : undefined}
-      />
-    );
-  };
-
-  // Every image shows at its full size, one under another, so it reads
-  // without opening (MUL-7736). Every other file — HTML too: an uploaded file
-  // is a deliverable to open, not part of the text — is a card in a grid, not
-  // a full-width row each.
-  return (
-    <AttachmentDownloadProvider attachments={attachments}>
-      <div className={cn("flex flex-col gap-2", className)}>
-        {images.length > 0 && (
-          <div className="flex flex-col items-start gap-2">{images.map(render)}</div>
-        )}
-        {files.length > 0 && (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(min(15rem,100%),1fr))] gap-2">
-            {files.map(render)}
-          </div>
-        )}
-      </div>
-    </AttachmentDownloadProvider>
-  );
-}
+export { AttachmentList };
 
 function collectActiveAttachmentIds(
   content: string,
@@ -585,6 +527,11 @@ function useEditAttachmentState(
         setRevisionConflict(false);
         return true;
       } catch (err) {
+        const rejected = rejectInvalidAgentMentions(err, trimmed, t);
+        if (rejected) {
+          editorRef.current?.flagMentions(rejected.invalidMentionIds);
+          return false;
+        }
         if (errorCode(err) === "revision_conflict") {
           setRevisionConflict(true);
         }
@@ -1172,6 +1119,7 @@ function CommentCardImpl({
   onThreadLengthExpandChange,
   forceThreadExpanded = false,
   forceThreadLengthExpanded = forceThreadExpanded,
+  onManualCollapseChange,
   findManualCollapseDisabled = false,
   findManualCollapseDisabledReason,
 }: CommentCardProps) {
@@ -1211,10 +1159,18 @@ function CommentCardImpl({
   // useCommentCollapseStore, so ending the pin's reason simply stops passing
   // `true` here without mutating the persisted manual-collapse preference.
   const open = !isCollapsed || forceThreadExpanded;
-  const handleToggle = useCallback(
-    () => toggleCollapse(issueId, entry.id),
-    [toggleCollapse, issueId, entry.id],
-  );
+  // CHE-5437: the button acts on what the user SEES. While open, it collapses
+  // (even if a pin keeps a stale stored "collapsed" flag open); the caller is
+  // told so a click outranks its soft pins (target, highlight, focus/selection).
+  const handleToggle = useCallback(() => {
+    if (open) {
+      if (!isCollapsed) toggleCollapse(issueId, entry.id);
+      onManualCollapseChange?.(entry.id, true);
+    } else {
+      toggleCollapse(issueId, entry.id);
+      onManualCollapseChange?.(entry.id, false);
+    }
+  }, [open, isCollapsed, toggleCollapse, issueId, entry.id, onManualCollapseChange]);
 
   const edit = useEditAttachmentState(issueId, entry, onEdit);
 
@@ -1398,6 +1354,7 @@ function CommentCardImpl({
                       title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
                       aria-expanded={open}
                       aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                      data-thread-toggle
                       // Only collapsing (from `open`) can hide a match — expanding
                       // never does, so the control stays live in that direction
                       // even while find owns this thread's reveal.
@@ -1816,15 +1773,18 @@ function CommentCardImpl({
               })}
               {/* Show less — remembers the compact length choice per root for
                   the rest of the session. `forceThreadExpanded` (set by
-                  issue-detail.tsx's forceThreadOpen) refuses it while this
-                  thread has: a pending agent run with no reply yet; an
-                  in-progress reply draft/upload on this thread's own
-                  composer; or an active inline edit session (with unsaved
-                  content or a pending upload) on the root or any reply. It
+                  issue-detail.tsx's forceThreadOpen) and `forceThreadLengthExpanded`
+                  refuse it while this thread has: a pending agent run with no
+                  reply yet; an in-progress reply draft/upload on this thread's
+                  own composer; or an active inline edit session (with unsaved
+                  content or a pending upload) on the root or any reply. The
+                  length pin must be checked too: reply TEXT no longer pins
+                  `forceThreadExpanded` (CHE-5437) but still pins the length,
+                  so a Show less click would be a dead press. It
                   does NOT detect bare focus/selection with no unsaved change
                   yet — that produces no signal issue-detail.tsx can read
                   today (see its rootIdsWithActiveReplyDraft comment). */}
-              {renderFooter && lengthExpanded && canShowLess && !forceThreadExpanded && (
+              {renderFooter && lengthExpanded && canShowLess && !forceThreadExpanded && !forceThreadLengthExpanded && (
                 <button
                   type="button"
                   onClick={() => onThreadLengthExpandChange?.(entry.id, false)}

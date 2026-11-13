@@ -3,12 +3,17 @@ set -euo pipefail
 
 source_sha=$1
 checks_path=$2
+export CHECKS_DEADLINE=${CHECKS_DEADLINE:-$(( $(date +%s) + ${CHECKS_WAIT_SECONDS:-3600} ))}
 
 echo 'eligible=false' >> "$GITHUB_OUTPUT"
 printf '## C00 deploy candidate `%s`\n\n' "$source_sha" >> "$GITHUB_STEP_SUMMARY"
 
+# shellcheck source=deploy/cd/refresh-api-token.sh
+. deploy/cd/refresh-api-token.sh
+
 require_current() {
   local result
+  refresh_api_token
   result="$(GITHUB_OUTPUT=/dev/stdout bash deploy/cd/require-current.sh "$source_sha")"
   [ "$result" = 'current=true' ] || exit 0
 }

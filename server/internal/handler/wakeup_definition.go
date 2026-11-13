@@ -20,7 +20,7 @@ import (
 // Scoped wakeup definition API (CHE-1082 L4). One set of handlers serves the
 // workspace, project and issue scopes; WakeupDefinitionAPI binds the scope.
 // Writes sit behind the activation gate (featureflags.WakeupDefinitionWrites,
-// closed by default). Reads and previews never persist, so they are not gated.
+// closed until the legacy backfill completed). Reads and previews never persist, so they are not gated.
 
 type wakeupDefinitionAPI struct {
 	h    *Handler
@@ -98,6 +98,15 @@ type wakeupSatisfiedResponse struct {
 	Satisfied int  `json:"satisfied"`
 	Examined  int  `json:"examined"`
 	Truncated bool `json:"truncated"`
+	// Issues names the satisfied issues, one per Satisfied. Older servers
+	// omit it; clients treat a missing list as unknown.
+	Issues []wakeupMatchedIssueResponse `json:"issues"`
+}
+
+type wakeupMatchedIssueResponse struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
 }
 
 type wakeupEffectiveResponse struct {
@@ -144,9 +153,11 @@ type wakeupDefinitionCaller struct {
 // caller resolves the scope and enforces who may touch it. Reads need workspace
 // membership (and issue access for an issue scope). Writes need a human: an
 // owner or admin for workspace and project scope, any member with issue access
-// for an issue scope. Agents never write, so they cannot broaden defaults or
-// override human-managed rules.
-func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, write bool) (wakeupDefinitionCaller, bool) {
+// for an issue scope. An agent may only create a workspace or project rule,
+// which save stores disabled until a human enables it; it cannot edit, enable
+// or delete a rule, so it cannot broaden defaults or override human-managed
+// rules. agentCreate marks that one call.
+func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, write, agentCreate bool) (wakeupDefinitionCaller, bool) {
 	h := a.h
 	var c wakeupDefinitionCaller
 	c.ref.Kind = a.kind
@@ -194,16 +205,22 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 	if !write {
 		return c, true
 	}
+	// The one agent write: create a workspace or project rule, stored disabled
+	// by save. A task token is the agent's own credential and the server sets
+	// its agent id, so it may do this whatever its owner's role, because the
+	// rule cannot take effect until a human admin enables it; any other
+	// machine credential may not.
+	agentMayCreate := agentCreate && a.kind != service.WakeupScopeIssue && c.actorType == "agent" && c.actorID != ""
 	switch {
-	case isMachineCredentialActor(r):
+	case isMachineCredentialActor(r) && !(agentMayCreate && r.Header.Get("X-Actor-Source") == "task_token"):
 		// A task token or cloud-node PAT carries its owner's user id and role, so
 		// the checks below would otherwise let it write as that human.
 		writeError(w, http.StatusForbidden, "machine credentials cannot manage wakeup definitions")
-	case c.actorType == "agent":
-		writeError(w, http.StatusForbidden, "agents cannot manage wakeup definitions")
-	case a.kind != service.WakeupScopeIssue && !roleAllowed(member.Role, "owner", "admin"):
+	case c.actorType == "agent" && !agentMayCreate:
+		writeError(w, http.StatusForbidden, "agents can only create workspace and project wakeup definitions")
+	case a.kind != service.WakeupScopeIssue && !agentMayCreate && !roleAllowed(member.Role, "owner", "admin"):
 		writeError(w, http.StatusForbidden, "only owners and admins can manage workspace and project wakeup definitions")
-	case !featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags):
+	case !h.wakeupDefinitionWritesOpen(r):
 		writeFeatureDisabled(w, "wakeup_definition_writes_closed", "wakeup definition writes are not enabled")
 	default:
 		return c, true
@@ -211,9 +228,22 @@ func (a wakeupDefinitionAPI) caller(w http.ResponseWriter, r *http.Request, writ
 	return c, false
 }
 
+// wakeupDefinitionWritesOpen is the activation gate: open once the legacy
+// backfill completed, unless the flag says otherwise. An unreadable activation
+// state is closed, never assumed done.
+func (h *Handler) wakeupDefinitionWritesOpen(r *http.Request) bool {
+	svc := service.IssueWakeupService{Tasks: h.TaskService, ActivationKey: h.WakeupActivationKey}
+	activated, err := svc.WakeupDefinitionsActivated(r.Context())
+	if err != nil {
+		slog.Warn("wakeup activation state unreadable; definition writes stay closed", "error", err)
+		activated = false
+	}
+	return featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags, activated)
+}
+
 func (h *Handler) wakeupCapabilities(r *http.Request) wakeupCapabilities {
 	return wakeupCapabilities{
-		DefinitionWrites: featureflags.WakeupDefinitionWritesEnabled(r.Context(), h.FeatureFlags),
+		DefinitionWrites: h.wakeupDefinitionWritesOpen(r),
 		TriggerKinds:     service.WakeupDefinitionTriggerKinds(),
 		Fields:           service.WakeupDefinitionFields(),
 	}
@@ -289,7 +319,7 @@ func (a wakeupDefinitionAPI) service() *service.IssueWakeupService {
 }
 
 func (a wakeupDefinitionAPI) List(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.caller(w, r, false)
+	c, ok := a.caller(w, r, false, false)
 	if !ok {
 		return
 	}
@@ -322,7 +352,7 @@ func (a wakeupDefinitionAPI) Put(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKey string, status int) {
-	c, ok := a.caller(w, r, true)
+	c, ok := a.caller(w, r, true, ruleKey == "")
 	if !ok {
 		return
 	}
@@ -334,7 +364,10 @@ func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKe
 		writeError(w, http.StatusBadRequest, "rule_key belongs in the path")
 		return
 	}
-	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch})
+	if c.actorType == "agent" {
+		patch.Disable()
+	}
+	saved, err := a.service().SaveWakeupDefinition(r.Context(), c.ref, c.member, service.WakeupDefinitionWrite{RuleKey: ruleKey, Revision: int64(body.Revision), Patch: patch, Pending: c.actorType == "agent"})
 	if err != nil {
 		wakeupError(w, err)
 		return
@@ -350,7 +383,7 @@ func (a wakeupDefinitionAPI) save(w http.ResponseWriter, r *http.Request, ruleKe
 // Delete removes an override or custom rule at this scope, or resets it to the
 // inherited settings. The observed revision is required.
 func (a wakeupDefinitionAPI) Delete(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.caller(w, r, true)
+	c, ok := a.caller(w, r, true, false)
 	if !ok {
 		return
 	}
@@ -368,7 +401,7 @@ func (a wakeupDefinitionAPI) Delete(w http.ResponseWriter, r *http.Request) {
 
 // Effective resolves one rule as it applies at this scope.
 func (a wakeupDefinitionAPI) Effective(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.caller(w, r, false)
+	c, ok := a.caller(w, r, false, false)
 	if !ok {
 		return
 	}
@@ -378,7 +411,7 @@ func (a wakeupDefinitionAPI) Effective(w http.ResponseWriter, r *http.Request) {
 // Preview resolves what a definition would do without saving it. An empty
 // rule_key previews a new custom root rule.
 func (a wakeupDefinitionAPI) Preview(w http.ResponseWriter, r *http.Request) {
-	c, ok := a.caller(w, r, false)
+	c, ok := a.caller(w, r, false, false)
 	if !ok {
 		return
 	}
@@ -414,7 +447,12 @@ func (a wakeupDefinitionAPI) effective(w http.ResponseWriter, r *http.Request, c
 		Capabilities: a.h.wakeupCapabilities(r),
 	}
 	if eff.AlreadySatisfied != nil {
-		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated}
+		prefix := a.h.getIssuePrefix(r.Context(), c.ref.WorkspaceID)
+		issues := make([]wakeupMatchedIssueResponse, 0, len(eff.AlreadySatisfied.Issues))
+		for _, m := range eff.AlreadySatisfied.Issues {
+			issues = append(issues, wakeupMatchedIssueResponse{ID: m.ID, Identifier: service.IssueIdentifier(prefix, m.Number), Title: m.Title})
+		}
+		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated, Issues: issues}
 	}
 	for field, scope := range eff.Sources {
 		out.Sources[field] = string(scope)

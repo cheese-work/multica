@@ -40,6 +40,12 @@ pre.rich-text-editor {
   overflow-x: auto;
 }
 
+/* The hover/touch toolbar (language + copy) overlays the block's top-right
+   corner; reserve its row so it never covers the first line of code. */
+.rich-text-editor .code-block-wrapper > pre {
+  padding-top: 2.25rem;
+}
+
 .rich-text-editor pre code,
 pre.rich-text-editor code {
   font-variant-ligatures: none;

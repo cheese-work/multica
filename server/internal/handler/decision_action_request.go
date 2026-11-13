@@ -48,14 +48,61 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
+	// The outcome readback (CHE-5411): empty while the action is pending.
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	AppliedAt     *string `json:"applied_at,omitempty"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
+	outcome, reason := decisionActionOutcomeOf(action)
 	return &decisionActionResponse{
 		ID: uuidToString(action.ID), ActionType: action.ActionType, ActionVersion: action.ActionVersion,
 		Params: action.Params, Preconditions: action.Preconditions, SecretSlots: action.SecretSlots,
 		PayloadSHA256: action.PayloadSha256, ExpiresAt: timestampToString(action.ExpiresAt), State: action.State,
+		Outcome: outcome, OutcomeReason: reason, AppliedAt: appliedAtOf(action),
 	}
+}
+
+// decisionActionOutcomeOf is the one place a stored action state becomes the
+// outcome the card, the CLI and the wake text state. "" means still pending.
+func decisionActionOutcomeOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "executed":
+		return "applied", nil
+	case "rejected":
+		return "rejected", nil
+	case "failed":
+		reason := action.ErrorMessage.String
+		if reason == "" {
+			reason = action.ErrorCode.String
+		}
+		return "not_applied", &reason
+	case "expired", "cancelled":
+		return "not_applied", &action.State
+	}
+	return "", nil
+}
+
+func appliedAtOf(action db.DecisionAction) *string {
+	if action.State != "executed" {
+		return nil
+	}
+	return timestampToPtr(action.ExecutedAt)
+}
+
+// decisionActionSummary is the wake and card text of a terminal action.
+func decisionActionSummary(action db.DecisionAction) string {
+	switch outcome, reason := decisionActionOutcomeOf(action); outcome {
+	case "applied":
+		return "Applied " + action.ActionType + "."
+	case "not_applied":
+		return "Not applied " + action.ActionType + ": " + *reason + "."
+	}
+	return "Rejected " + action.ActionType + "."
 }
 
 // draftDecisionAction validates the wire action against the allowlist.
@@ -116,6 +163,15 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentSchedulingParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		if _, err := loadAgent(params.AgentID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`
@@ -170,32 +226,82 @@ type decisionActionPreviewer func(ctx context.Context, queries *db.Queries, work
 // decisionActionPreviews maps an action type to its previewer.
 var decisionActionPreviews = map[string]decisionActionPreviewer{}
 
+// targetParamID reads the UUID the action names under key.
+func targetParamID(params json.RawMessage, key string) (pgtype.UUID, bool) {
+	var fields map[string]json.RawMessage
+	var raw string
+	if json.Unmarshal(params, &fields) != nil || json.Unmarshal(fields[key], &raw) != nil {
+		return pgtype.UUID{}, false
+	}
+	id, err := parseUUIDStrict(raw)
+	return id, err == nil
+}
+
+// targetMismatch is the refusal for a target that is not in the request's
+// workspace: the same answer for a missing, malformed or foreign id.
+func targetMismatch(kind, rule string, status int) decisionIntentRefusal {
+	return decisionIntentRefusal{status, "target_" + kind + "_mismatch: params." + kind + "_id must be " + rule}
+}
+
 // loadWorkflowTarget resolves params.workflow_id in the workspace, so a request
-// or approval cannot reach another workspace's workflow.
-func loadWorkflowTarget(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage, status int) (db.IssueWorkflow, error) {
-	mismatch := decisionIntentRefusal{status, "target_workflow_mismatch: params.workflow_id must be a workflow of this workspace"}
-	var target struct {
-		WorkflowID string `json:"workflow_id"`
-	}
-	if json.Unmarshal(params, &target) != nil {
+// or approval cannot reach another workspace's workflow. Approval locks the row.
+func loadWorkflowTarget(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage, status int, lock bool) (db.IssueWorkflow, error) {
+	mismatch := targetMismatch("workflow", "a workflow of this workspace", status)
+	id, ok := targetParamID(params, "workflow_id")
+	if !ok {
 		return db.IssueWorkflow{}, mismatch
 	}
-	id, err := parseUUIDStrict(target.WorkflowID)
-	if err != nil {
-		return db.IssueWorkflow{}, mismatch
+	var workflow db.IssueWorkflow
+	var err error
+	if lock {
+		workflow, err = queries.LockDecisionWorkflowNowait(ctx, db.LockDecisionWorkflowNowaitParams{ID: id, WorkspaceID: workspaceID})
+	} else {
+		workflow, err = queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: workspaceID})
 	}
-	workflow, err := queries.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: id, WorkspaceID: workspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.IssueWorkflow{}, mismatch
 	}
 	return workflow, err
 }
 
+// loadSquadTarget resolves params.squad_id in the workspace. Approval locks the row.
+func loadSquadTarget(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage, status int, lock bool) (db.Squad, error) {
+	mismatch := targetMismatch("squad", "a squad of this workspace", status)
+	id, ok := targetParamID(params, "squad_id")
+	if !ok {
+		return db.Squad{}, mismatch
+	}
+	var squad db.Squad
+	var err error
+	if lock {
+		squad, err = queries.LockDecisionSquadNowait(ctx, db.LockDecisionSquadNowaitParams{ID: id, WorkspaceID: workspaceID})
+	} else {
+		squad, err = queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Squad{}, mismatch
+	}
+	return squad, err
+}
+
+// loadWorkspaceTarget requires params.workspace_id to be the request's own
+// workspace: an action never reaches another one. Approval locks the row.
+func loadWorkspaceTarget(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage, status int, lock bool) (db.Workspace, error) {
+	mismatch := targetMismatch("workspace", "the workspace of this request", status)
+	if id, ok := targetParamID(params, "workspace_id"); !ok || id != workspaceID {
+		return db.Workspace{}, mismatch
+	}
+	if lock {
+		return queries.LockDecisionWorkspaceNowait(ctx, workspaceID)
+	}
+	return queries.GetWorkspace(ctx, workspaceID)
+}
+
 // workflowPreconditions records the workflow the approver must still find, the
 // status key and base digest the agent named, and for an action that
 // RequiresPreview the server's own preview with its digest.
 func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
-	workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, draft.Params, http.StatusBadRequest)
+	workflow, err := loadWorkflowTarget(ctx, queries, workspaceID, draft.Params, http.StatusBadRequest, false)
 	if err != nil {
 		return nil, err
 	}
@@ -232,9 +338,12 @@ func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID
 }
 
 // actionPreconditions records what the approver must still find true: the
-// issue for an issue target, the workflow for a workflow target, otherwise the
-// agent's snapshot.
-func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+// issue, workflow, squad or workspace the action names, otherwise the agent's
+// snapshot.
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, proposer pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
+	if change, ok := configChanges[draft.Type]; ok {
+		return configChangePreconditions(ctx, queries, issue.WorkspaceID, proposer, draft, change)
+	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
 		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
@@ -243,6 +352,18 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 		return map[string]any{"issue_id": uuidToString(issue.ID)}, nil
 	case decisionaction.TargetWorkflow:
 		return workflowPreconditions(ctx, queries, issue.WorkspaceID, draft)
+	case decisionaction.TargetSquad:
+		squad, err := loadSquadTarget(ctx, queries, issue.WorkspaceID, draft.Params, http.StatusBadRequest, false)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"squad_id": uuidToString(squad.ID)}, nil
+	case decisionaction.TargetWorkspace:
+		workspace, err := loadWorkspaceTarget(ctx, queries, issue.WorkspaceID, draft.Params, http.StatusBadRequest, false)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"workspace_id": uuidToString(workspace.ID)}, nil
 	}
 	return snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
 }
@@ -251,7 +372,7 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preconditions, err := actionPreconditions(ctx, queries, issue, draft)
+	preconditions, err := actionPreconditions(ctx, queries, issue, request.AskingAgentID, draft)
 	if err != nil {
 		return empty, err
 	}
@@ -346,4 +467,11 @@ func digestAgentCopySettings(source db.Agent, targets []db.AgentInvocationTarget
 	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
+}
+
+// actionOwnerOnly reports whether only the workspace owner may approve the
+// action: its definition says so, or it acts on something other than an agent.
+func actionOwnerOnly(action db.DecisionAction) bool {
+	definition, found := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	return found && (definition.OwnerOnly || definition.Target != decisionaction.TargetAgent)
 }

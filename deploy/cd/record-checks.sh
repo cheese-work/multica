@@ -14,12 +14,17 @@
 # usage: record-checks.sh <source-sha> <output>
 # env:   GITHUB_REPOSITORY, GH_TOKEN,
 #        CHECKS_WAIT_SECONDS (default 3600), CHECKS_POLL_SECONDS (default 30)
+#        APP_TOKEN, FALLBACK_TOKEN (optional, CHE-4251): the App budget is re-read before every poll
 set -euo pipefail
+
+# shellcheck source=deploy/cd/refresh-api-token.sh
+. deploy/cd/refresh-api-token.sh
 
 source_sha=$1
 output=$2
 wait_seconds=${CHECKS_WAIT_SECONDS:-3600}
 poll_seconds=${CHECKS_POLL_SECONDS:-30}
+deadline=${CHECKS_DEADLINE:-$(( $(date +%s) + wait_seconds ))}
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -32,17 +37,18 @@ trap 'rm -rf "$work_dir"' EXIT
 # admission.mjs re-derives the match; nothing here asserts a check may be
 # skipped. The workflows are parsed with a real YAML parser (see
 # workflow-path-filters.py for why), so run ensure-pyyaml.sh first.
-gh api "repos/${GITHUB_REPOSITORY}/commits/${source_sha}" \
+refresh_api_token
+python3 deploy/cd/github-api-retry.py "$deadline" "repos/${GITHUB_REPOSITORY}/commits/${source_sha}" \
   --jq '{files: [.files[]?.filename], truncated: ((.files | length) >= 300)}' > "$work_dir/commit-files.json"
 python3 deploy/cd/workflow-path-filters.py > "$work_dir/path-filters.json"
 
-deadline=$(( $(date +%s) + wait_seconds ))
 while :; do
+  refresh_api_token
   # admission.mjs requires backend, frontend, mobile and cd-qualification to
   # all be "success" for this exact SHA. Take them from the commit's check
   # runs — the same source a human reading the PR would use — rather than
   # asserting them here. A running check has a null conclusion.
-  gh api "repos/${GITHUB_REPOSITORY}/commits/${source_sha}/check-runs?per_page=100" \
+  python3 deploy/cd/github-api-retry.py "$deadline" "repos/${GITHUB_REPOSITORY}/commits/${source_sha}/check-runs?per_page=100" \
     --paginate --jq '.check_runs[] | {name, conclusion, id}' > "$work_dir/check-runs.jsonl"
 
   SOURCE_SHA="$source_sha" node -e '
@@ -81,5 +87,8 @@ while :; do
     exit 0
   fi
   echo "waiting for required checks: $(echo $pending)"
+  remaining=$(( deadline - $(date +%s) ))
+  [ "$remaining" -gt 0 ] || continue
+  [ "$poll_seconds" -le "$remaining" ] || poll_seconds=$remaining
   sleep "$poll_seconds"
 done

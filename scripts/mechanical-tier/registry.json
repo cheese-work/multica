@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "note": "CHE-3339 multica capability registry. Rules follow the multica-dotfiles registry (CHE-1298), with multica paths. Proposed until the CHE-1286 owner rollout is read back. The classifier runs from the trusted base and reads this file from the base commit only. Edits here are Tier 2 and never classify themselves.",
+  "tier2": [
+    {"id": "ci-release-deploy", "capability": "CI execution, release or production deployment",
+     "globs": [".github/**", ".goreleaser*", "release/**", "deploy/**", "deployment/**", "docker/**", "Dockerfile*",
+               "docker-compose*.yml"]},
+    {"id": "persistent-migration", "capability": "Persistent-data migration",
+     "globs": ["server/migrations/**", "migrations/**", "**/migrations/**", "server/sqlc.yaml", "server/pkg/db/**", "server/cmd/migrate/**"]},
+    {"id": "auth-security", "capability": "Authentication, session and security-gate code",
+     "globs": ["server/internal/auth/**", "server/internal/middleware/**", "server/internal/passkey/**",
+               "scripts/security-gate/**", "tests/test_che2671*", "tests/test_che3121*"]},
+    {"id": "build-install-daemon", "capability": "Build, install and release scripts, and code that runs agents on user machines",
+     "globs": ["Makefile", "scripts/install*", "scripts/build-daemon-binaries.sh", "scripts/daemon-artifact-version.sh",
+               "apps/desktop/electron-builder*.yml", "server/internal/daemon/**"],
+     "pure_exceptions": ["**/*_test.go", "**/*.test.sh", "**/*.test.mjs", "**/*.test.ps1"]},
+    {"id": "public-contract", "capability": "Public contract",
+     "globs": ["server/internal/handler/*.go", "server/cmd/multica/*.go"],
+     "pure_exceptions": ["**/*_test.go"]},
+    {"id": "public-contract-wire", "capability": "Public contract",
+     "globs": ["packages/core/api/**", "openapi/**", "proto/**"]},
+    {"id": "decision-action-governance", "capability": "Governed-field and workspace-settings allowlists and their refusal logic",
+     "globs": ["server/internal/decisionaction/**"],
+     "pure_exceptions": ["**/*_test.go"]},
+    {"id": "instruction-policy", "capability": "Instruction, permission and review-policy trust boundary",
+     "globs": ["AGENTS.md", "CLAUDE.md", "**/AGENTS.md", "**/CLAUDE.md", ".agents/**", ".codex/**", "skills/**", "docs/cheese-work/**"]}
+  ],
+  "sensitive_tokens": [],
+  "tier0_allowlist": [
+    "docs/**", "README*", "CHANGELOG*", "CONTRIBUTING*", "LICENSE*", "tests/**", "test/**", "**/__tests__/**",
+    "**/*_test.go", "**/test_*.py", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx",
+    "**/*.test.sh", "**/*.test.mjs", "**/*.test.ps1"
+  ],
+  "covered_scopes": [
+    {"id": "apps-docs-content-docs-cli-fr-mdx", "glob": "apps/docs/content/docs/cli.fr.mdx", "analysis": "path-registry"},
+    {"id": "apps-docs-content-docs-cli-ja-mdx", "glob": "apps/docs/content/docs/cli.ja.mdx", "analysis": "path-registry"},
+    {"id": "apps-docs-content-docs-cli-ko-mdx", "glob": "apps/docs/content/docs/cli.ko.mdx", "analysis": "path-registry"},
+    {"id": "apps-docs-content-docs-cli-mdx", "glob": "apps/docs/content/docs/cli.mdx", "analysis": "path-registry"},
+    {"id": "apps-docs-content-docs-cli-zh-mdx", "glob": "apps/docs/content/docs/cli.zh.mdx", "analysis": "path-registry"},
+    {"id": "server-internal-decisionaction-config-go", "glob": "server/internal/decisionaction/config.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-agent-go", "glob": "server/internal/handler/agent.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-issue-status-go", "glob": "server/internal/handler/issue_status.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-issue-system-wakeup-go", "glob": "server/internal/handler/issue_system_wakeup.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-issue-workflow-go", "glob": "server/internal/handler/issue_workflow.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-issue-workflow-bound-write-go", "glob": "server/internal/handler/issue_workflow_bound_write.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-passkey-action-required-go", "glob": "server/internal/handler/passkey_action_required.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-squad-go", "glob": "server/internal/handler/squad.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-workspace-go", "glob": "server/internal/handler/workspace.go", "analysis": "path-registry"},
+    {"id": "server-internal-handler-workspace-wakeups-pause-go", "glob": "server/internal/handler/workspace_wakeups_pause.go", "analysis": "path-registry"}
+  ]
+}

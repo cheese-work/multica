@@ -26,9 +26,7 @@ func registerWorkflowActions(test *testing.T) {
 	}
 	decisionaction.Register(&decisionaction.Definition{Type: workflowNoopAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkflow, Normalize: normalize})
 	decisionaction.Register(&decisionaction.Definition{Type: workflowPreviewAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkflow, RequiresPreview: true, Normalize: normalize})
-	noop := func(context.Context, decisionActionExecution) (json.RawMessage, error) {
-		return json.RawMessage(`{"ok":true}`), nil
-	}
+	noop := noopAssertingTarget("workflow_id", func(execution decisionActionExecution) pgtype.UUID { return execution.Workflow.ID })
 	decisionActionExecutors[workflowNoopAction], decisionActionExecutors[workflowPreviewAction] = noop, noop
 	decisionActionPreviews[workflowPreviewAction] = func(context.Context, *db.Queries, db.IssueWorkflow, json.RawMessage) (any, error) {
 		return map[string]string{"before": "old", "after": "new"}, nil

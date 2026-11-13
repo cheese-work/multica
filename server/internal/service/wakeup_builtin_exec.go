@@ -69,6 +69,9 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 	if err != nil || len(rows) == 0 {
 		return nil, err
 	}
+	if pending, err := wakeupActivationPending(ctx, q); err != nil || pending {
+		return nil, err
+	}
 	in := WakeupResolveInput{RuleKey: rule, IssueProjectID: issue.ProjectID, IssueTarget: issue.AssigneeType.String + ":" + wakeupUUIDString(issue.AssigneeID)}
 	var stored *WakeupDefinition
 	for _, row := range rows {
@@ -84,6 +87,12 @@ func loadBuiltinWakeup(ctx context.Context, q *db.Queries, issue db.Issue, rule 
 		case WakeupScopeIssue:
 			in.Issue = &def
 		}
+	}
+	// A backfilled override (no member wrote it) is a snapshot of the customized
+	// legacy row, which an older client keeps editing: the row stays the source
+	// of truth until a member writes the definition.
+	if legacy != nil && legacy.CustomizedAt.Valid && in.Issue != nil && !in.Issue.UpdatedBy.Valid {
+		in.Issue = nil
 	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
@@ -340,6 +349,7 @@ const (
 	wakeupOutcomeTargetUnavailable  = "target_unavailable"
 	wakeupOutcomeTargetUnauthorized = "target_unauthorized"
 	wakeupOutcomeFiltered           = "filtered_out"
+	wakeupOutcomeOwnChange          = "own_change"
 )
 
 // rebaseBuiltinConfig moves the instance to the configuration it now resolves

@@ -17,6 +17,21 @@
   // version (see apps/mobile/CLAUDE.md). Neither is covered by this config.
   "ignoreWorkspaces": ["apps/mobile"],
 
+  // Dead upstream (multica-ai/multica) files kept on purpose: deleting them in
+  // the fork turns any later upstream edit into a modify/delete sync conflict.
+  // Drop an entry when upstream deletes the file.
+  "ignore": [
+    "apps/docs/components/architecture-diagram.tsx",
+    "apps/docs/components/mermaid.tsx",
+    "apps/web/test/helpers.tsx",
+    "packages/views/agents/components/inspector/concurrency-picker.tsx",
+    "packages/views/agents/components/inspector/skill-attach.tsx",
+    "packages/views/agents/components/inspector/visibility-picker.tsx",
+    "packages/views/chat/components/quick-agent-bar.tsx",
+    "packages/views/labels/index.ts",
+    "packages/views/workflows/index.ts"
+  ],
+
   "workspaces": {
     ".": {
       "entry": ["scripts/*.mjs"],
@@ -32,15 +47,19 @@
     },
 
     "apps/desktop": {
-      // window-state.node-test.mjs is run by hand (`node --test`, see its
-      // header) rather than by a package script, so nothing imports it.
-      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs"],
+      // window-state.node-test.mjs and bundle-cli.node-test.mjs are run by
+      // hand (`node --test`) rather than by a package script, so nothing
+      // imports them.
+      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs", "scripts/*.node-test.mjs"],
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
       "ignoreDependencies": ["@multica/tsconfig"]
     },
 
-    "apps/docs": {},
+    "apps/docs": {
+      // Imported only by the ignored components/mermaid.tsx above.
+      "ignoreDependencies": ["mermaid"]
+    },
 
     // The three shared packages export raw .ts/.tsx compiled by their
     // consumers (CLAUDE.md "Project Shape"), so `entry` names only the config
@@ -61,16 +80,20 @@
     // export and knip picks that directory back up; the script reads the same
     // manifest, so the two stay in step without overlapping.
     "packages/ui": {
-      "entry": ["eslint.config.mjs"],
+      // Loaded by e2e/shimmer-text.spec.ts, which sits outside every workspace.
+      "entry": ["eslint.config.mjs", "test/shimmer-text-bundle.mjs"],
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/views": {
-      "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/core": {
       "entry": ["eslint.config.mjs"],
       "project": ["**/*.{ts,tsx}"]
+    },
+
+    "packages/plugin-sdk": {
+      "entry": ["eslint.config.mjs"]
     },
 
     "packages/eslint-config": {},

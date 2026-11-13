@@ -24,9 +24,12 @@ type RunBudgetSnapshot struct {
 	RunsLimit       int       `json:"runs_limit"`
 	RunsSource      string    `json:"runs_source,omitempty"` // "workflow" or "issue"
 	WindowStartedAt time.Time `json:"window_started_at"`
-	RunsState       string    `json:"runs_state,omitempty"`
-	State           string    `json:"state,omitempty"`
-	Blocking        []string  `json:"blocking"`
+	// WindowID is opaque to clients: a budget action echoes it back so the
+	// server can tell whether the window it was asked about is still open.
+	WindowID  string   `json:"window_id"`
+	RunsState string   `json:"runs_state,omitempty"`
+	State     string   `json:"state,omitempty"`
+	Blocking  []string `json:"blocking"`
 	// TokensActive is true once the issue is activated for token accounting;
 	// the balance is then A credits minus the tokens used and held, and a
 	// negative balance is overshoot.
@@ -59,7 +62,7 @@ const (
 func NewRunBudgetSnapshot(used int64, limit int, left int64, source string, windowStart time.Time) RunBudgetSnapshot {
 	snap := RunBudgetSnapshot{
 		Budgeted: true, RunsUsed: used, RunsLeft: left, RunsLimit: limit, RunsSource: source,
-		WindowStartedAt: windowStart, Blocking: []string{},
+		WindowStartedAt: windowStart, WindowID: runBudgetWindowID(windowStart), Blocking: []string{},
 	}
 	switch {
 	case left < 0:

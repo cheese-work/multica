@@ -221,6 +221,10 @@ func init() {
 	workspaceUpdateCmd.Flags().String("compact-prompt-file", "", "Set the /compact summary prompt from a file, byte-for-byte; pass null to reset to the built-in default. Changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("idle-guard-mode", "", "Set the idle-issue guard mode: off, shadow (log only) or act (move idle started issues). Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().Int("idle-guard-after-hours", 0, "Set the idle-issue guard threshold in whole hours, 1 to 72. Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("routing-agent", "", "Set the routing agent (agent id) that handles routing-only workflow steps; pass none to turn routing off. Human owner/admin only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("routing-fallback-agent", "", "Set the agent used when the routing agent is archived (agent id); pass none to clear")
+	workspaceUpdateCmd.Flags().String("routing-statuses", "", "Comma-separated status keys that count as routing steps (default todo,blocked,merged,need_decision)")
+	workspaceUpdateCmd.Flags().String("routing-overrides", "", "Comma-separated status=agent-id pairs sending one routing status to another agent; a key <workflow-id>:<status> limits it to one workflow; pass none to clear")
 	workspaceUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the context value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires the context to be set via --context-stdin or --context-file (inline --context is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
 	workspaceUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
 	workspaceUpdateCmd.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. Requires --expected-before-digest; sends decision_id, before_sha256 and after_sha256. Agent task tokens only; alternative to --vote-issue.")
@@ -550,13 +554,14 @@ func printWorkspace(cmd *cobra.Command, ws map[string]any) error {
 			runes := []rune(wsContext)
 			wsContext = string(runes[:57]) + "..."
 		}
-		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT"}
+		headers := []string{"ID", "NAME", "SLUG", "DESCRIPTION", "CONTEXT", "PAUSED"}
 		rows := [][]string{{
 			strVal(ws, "id"),
 			strVal(ws, "name"),
 			strVal(ws, "slug"),
 			desc,
 			wsContext,
+			strVal(ws, "scheduling_paused_at"),
 		}}
 		cli.PrintTable(os.Stdout, headers, rows)
 		return nil
@@ -647,7 +652,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
 			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (context)", name)
@@ -800,11 +805,31 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, or --idle-guard-after-hours")
+	routing := routingFlagsChanged(cmd)
+	if len(body) == 0 && !routing {
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, or a --routing-* flag")
 	}
 
+	if routing {
+		var current map[string]any
+		if err := client.GetJSON(ctx, "/api/workspaces/"+wsID+"/routing-agent", &current); err != nil {
+			return fmt.Errorf("read routing agent: %w", err)
+		}
+		next, err := mergeRoutingFlags(cmd, current)
+		if err != nil {
+			return err
+		}
+		if err := client.PutJSON(ctx, "/api/workspaces/"+wsID+"/routing-agent", next, nil); err != nil {
+			return fmt.Errorf("update routing agent: %w", err)
+		}
+	}
 	var ws map[string]any
+	if len(body) == 0 {
+		if err := client.GetJSON(ctx, "/api/workspaces/"+wsID, &ws); err != nil {
+			return fmt.Errorf("read workspace: %w", err)
+		}
+		return printWorkspace(cmd, ws)
+	}
 	if err := client.PatchJSON(ctx, "/api/workspaces/"+wsID, body, &ws); err != nil {
 		return fmt.Errorf("update workspace: %w", err)
 	}
@@ -1110,4 +1135,59 @@ func runWorkspaceMemberInvite(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "Invitation sent to %s (role: %s, status: %s)\n",
 		strVal(inv, "invitee_email"), strVal(inv, "role"), strVal(inv, "status"))
 	return nil
+}
+
+var routingFlagKeys = map[string]string{
+	"routing-agent": "agent_id", "routing-fallback-agent": "fallback_agent_id",
+	"routing-statuses": "statuses", "routing-overrides": "overrides",
+}
+
+func routingFlagsChanged(cmd *cobra.Command) bool {
+	for name := range routingFlagKeys {
+		if cmd.Flags().Changed(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeRoutingFlags lays the changed --routing-* flags over the current
+// routing agent setting; the endpoint replaces the whole setting, so unnamed
+// fields must be sent back as they are.
+func mergeRoutingFlags(cmd *cobra.Command, current map[string]any) (map[string]any, error) {
+	next := map[string]any{}
+	for _, key := range routingFlagKeys {
+		if v, ok := current[key]; ok {
+			next[key] = v
+		}
+	}
+	for _, name := range []string{"routing-agent", "routing-fallback-agent"} {
+		if !cmd.Flags().Changed(name) {
+			continue
+		}
+		v, _ := cmd.Flags().GetString(name)
+		if v == "none" {
+			v = ""
+		}
+		next[routingFlagKeys[name]] = v
+	}
+	if cmd.Flags().Changed("routing-statuses") {
+		v, _ := cmd.Flags().GetString("routing-statuses")
+		next["statuses"] = strings.Split(v, ",")
+	}
+	if cmd.Flags().Changed("routing-overrides") {
+		v, _ := cmd.Flags().GetString("routing-overrides")
+		overrides := map[string]string{}
+		if v != "none" {
+			for _, pair := range strings.Split(v, ",") {
+				status, agent, ok := strings.Cut(pair, "=")
+				if !ok || strings.TrimSpace(status) == "" || strings.TrimSpace(agent) == "" {
+					return nil, fmt.Errorf("--routing-overrides entries must be status=agent-id, got %q", pair)
+				}
+				overrides[strings.TrimSpace(status)] = strings.TrimSpace(agent)
+			}
+		}
+		next["overrides"] = overrides
+	}
+	return next, nil
 }

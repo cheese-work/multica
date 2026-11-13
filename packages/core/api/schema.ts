@@ -43,13 +43,52 @@ export function parseWithFallback<T>(
 ): T {
   const result = schema.safeParse(data);
   if (result.success) return result.data as T;
-  schemaLogger.warn(
-    `API response failed schema validation: ${opts.endpoint}`,
-    {
-      endpoint: opts.endpoint,
-      issues: result.error.issues,
-      received: data,
-    },
-  );
+  logSchemaFailure(result.error.issues, data, opts);
   return fallback;
+}
+
+/** Dotted failing paths of a zod error, e.g. `metadata.decision_park`. */
+export function schemaIssuePaths(issues: readonly { path: readonly PropertyKey[] }[]): string[] {
+  return [...new Set(issues.map((i) => i.path.map(String).join(".") || "(root)"))];
+}
+
+/**
+ * A 2xx body that failed its schema. Distinct from a network error and from a
+ * 404 so the UI can say "this data is unreadable" instead of "check your
+ * connection". Duck-typed by `name` in `isSchemaValidationError` so it holds
+ * across module boundaries and test mocks.
+ */
+export class SchemaValidationError extends Error {
+  readonly endpoint: string;
+  readonly paths: string[];
+  constructor(endpoint: string, paths: string[]) {
+    super(`API response failed schema validation: ${endpoint} (${paths.join(", ")})`);
+    this.name = "SchemaValidationError";
+    this.endpoint = endpoint;
+    this.paths = paths;
+  }
+}
+
+export function isSchemaValidationError(err: unknown): err is SchemaValidationError {
+  return err instanceof Error && err.name === "SchemaValidationError";
+}
+
+/** Like `parseWithFallback`, but throws `SchemaValidationError` on failure. */
+export function parseOrThrow<T>(data: unknown, schema: ZodType, opts: ParseOptions): T {
+  const result = schema.safeParse(data);
+  if (result.success) return result.data as T;
+  logSchemaFailure(result.error.issues, data, opts);
+  throw new SchemaValidationError(opts.endpoint, schemaIssuePaths(result.error.issues));
+}
+
+function logSchemaFailure(
+  issues: readonly { path: readonly PropertyKey[] }[],
+  received: unknown,
+  opts: ParseOptions,
+): void {
+  const paths = schemaIssuePaths(issues);
+  schemaLogger.warn(
+    `API response failed schema validation: ${opts.endpoint} (${paths.join(", ")})`,
+    { endpoint: opts.endpoint, paths, issues, received },
+  );
 }

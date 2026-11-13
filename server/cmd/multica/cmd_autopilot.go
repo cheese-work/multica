@@ -130,7 +130,9 @@ func init() {
 	autopilotCreateCmd.Flags().String("title", "", "Autopilot title (required)")
 	autopilotCreateCmd.Flags().String("description", "", "Autopilot description (used as the run prompt)")
 	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID) — required")
-	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue or run_only (required)")
+	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue, run_only or script (required)")
+	autopilotCreateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
+	autopilotCreateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
 	autopilotCreateCmd.Flags().String("project", "", "Project ID (optional)")
 	autopilotCreateCmd.Flags().String("issue-title-template", "", "Template for issue titles (create_issue mode). Only {{date}} (UTC, YYYY-MM-DD) is interpolated; any other {{...}} token is rejected at create-time.")
 	autopilotCreateCmd.Flags().StringArray("subscriber", nil, "Member subscriber to notify for issues this autopilot creates (name or user ID; repeatable)")
@@ -143,7 +145,9 @@ func init() {
 	autopilotUpdateCmd.Flags().String("agent", "", "New assignee agent (name or ID)")
 	autopilotUpdateCmd.Flags().String("project", "", "New project ID (use empty string to clear)")
 	autopilotUpdateCmd.Flags().String("status", "", "New status (active, paused)")
-	autopilotUpdateCmd.Flags().String("mode", "", "New execution mode (create_issue or run_only)")
+	autopilotUpdateCmd.Flags().String("mode", "", "New execution mode (create_issue, run_only or script)")
+	autopilotUpdateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
+	autopilotUpdateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
 	autopilotUpdateCmd.Flags().String("issue-title-template", "", "New issue title template. Only {{date}} (UTC, YYYY-MM-DD) is interpolated; any other {{...}} token is rejected.")
 	autopilotUpdateCmd.Flags().StringArray("subscriber", nil, "Replace subscribers with this member (name or user ID; repeatable)")
 	autopilotUpdateCmd.Flags().Bool("clear-subscribers", false, "Remove all autopilot subscribers")
@@ -384,6 +388,32 @@ func webhookTokenHint(token string) string {
 	return token[len(token)-4:]
 }
 
+func validAutopilotMode(mode string) bool {
+	return mode == "create_issue" || mode == "run_only" || mode == "script"
+}
+
+// autopilotScriptConfigFromFlags builds the script_config body from --script
+// and --arg. isScriptMode says whether this command sets --mode script. It
+// returns nil for non-script commands, and rejects --script/--arg without
+// --mode script and --mode script without --script.
+func autopilotScriptConfigFromFlags(cmd *cobra.Command, isScriptMode bool) (map[string]any, error) {
+	name, _ := cmd.Flags().GetString("script")
+	args, _ := cmd.Flags().GetStringArray("arg")
+	if !isScriptMode {
+		if cmd.Flags().Changed("script") || len(args) > 0 {
+			return nil, fmt.Errorf("--script and --arg require --mode script")
+		}
+		return nil, nil
+	}
+	if name == "" {
+		return nil, fmt.Errorf("--mode script requires --script <name>")
+	}
+	if args == nil {
+		args = []string{}
+	}
+	return map[string]any{"name": name, "args": args}, nil
+}
+
 func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -402,11 +432,15 @@ func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("--agent is required (agent name or ID)")
 	}
 	mode, _ := cmd.Flags().GetString("mode")
-	if mode == "" {
-		return fmt.Errorf("--mode is required (create_issue or run_only)")
+	scriptCfg, err := autopilotScriptConfigFromFlags(cmd, mode == "script")
+	if err != nil {
+		return err
 	}
-	if mode != "create_issue" && mode != "run_only" {
-		return fmt.Errorf("--mode must be create_issue or run_only")
+	if mode == "" {
+		return fmt.Errorf("--mode is required (create_issue, run_only or script)")
+	}
+	if !validAutopilotMode(mode) {
+		return fmt.Errorf("--mode must be create_issue, run_only or script")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())
@@ -421,6 +455,9 @@ func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 		"title":          title,
 		"assignee_id":    agentID,
 		"execution_mode": mode,
+	}
+	if scriptCfg != nil {
+		body["script_config"] = scriptCfg
 	}
 	if v, _ := cmd.Flags().GetString("description"); v != "" {
 		body["description"] = v
@@ -458,6 +495,16 @@ func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 
 func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	modeVal, _ := cmd.Flags().GetString("mode")
+	modeChanged := cmd.Flags().Changed("mode")
+	if modeChanged && !validAutopilotMode(modeVal) {
+		return fmt.Errorf("--mode must be create_issue, run_only or script")
+	}
+	scriptCfg, err := autopilotScriptConfigFromFlags(cmd, modeChanged && modeVal == "script")
 	if err != nil {
 		return err
 	}
@@ -521,11 +568,13 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		body["status"] = v
 	}
 	if cmd.Flags().Changed("mode") {
-		v, _ := cmd.Flags().GetString("mode")
-		if v != "create_issue" && v != "run_only" {
-			return fmt.Errorf("--mode must be create_issue or run_only")
+		body["execution_mode"] = modeVal
+		if scriptCfg != nil {
+			body["script_config"] = scriptCfg
+		} else {
+			// Leaving script mode: the server rejects a stored config on any other mode.
+			body["script_config"] = nil
 		}
-		body["execution_mode"] = v
 	}
 	if cmd.Flags().Changed("issue-title-template") {
 		v, _ := cmd.Flags().GetString("issue-title-template")
@@ -547,7 +596,7 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, etc.")
+		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, or --arg")
 	}
 
 	var result map[string]any

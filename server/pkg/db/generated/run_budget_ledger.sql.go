@@ -144,6 +144,7 @@ const hasMemberMoveToStatusSince = `-- name: HasMemberMoveToStatusSince :one
 SELECT EXISTS (
   SELECT 1 FROM activity_log
   WHERE issue_id = $1::uuid AND action = 'status_changed' AND actor_type = 'member'
+    AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
     AND created_at >= $2::timestamptz AND details->>'to' = $3::text
 )
 `

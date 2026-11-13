@@ -1,19 +1,37 @@
 /**
  * @vitest-environment jsdom
  */
-import { QueryClient, QueryClientProvider, QueryObserver, type InvalidateQueryFilters, type QueryKey } from "@tanstack/react-query";
+import {
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+  type InvalidateQueryFilters,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { WSClient } from "../api/ws-client";
+import { EMPTY_ISSUE_VIEW_PREFERENCE } from "../api/schemas";
 import { defaultStorage } from "../platform/storage";
-import { issueKeys } from "../issues/queries";
-import { chatKeys } from "../chat/queries";
+import { issueKeys, issueTimelineOptions } from "../issues/queries";
+import { githubKeys } from "../github/queries";
+import { pinKeys } from "../pins/queries";
+import { vcsKeys } from "../vcs/queries";
+import {
+  chatKeys,
+  chatMessagesOptions,
+  chatMessagesPageOptions,
+  chatSessionsOptions,
+} from "../chat/queries";
 import { runtimeKeys } from "../runtimes/queries";
-import { workspaceWorkingAgentsKeys } from "../agents/queries";
+import { agentTasksKeys, workspaceWorkingAgentsKeys } from "../agents/queries";
 import { workspaceKeys } from "../workspace/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
 import { issueWorkflowKeys } from "../issue-workflows/queries";
+import { issueViewKeys } from "../issue-views/queries";
+import { issueViewPrefKeys } from "../issue-views/preferences";
 import {
   markWorkspaceDeletePending,
   unmarkWorkspaceDeletePending,
@@ -126,16 +144,14 @@ describe("useRealtimeSync — ws instance change", () => {
     const ws2 = createMockWs();
     rerender({ ws: ws2 });
 
-    // Should have called invalidateQueries for all workspace-scoped keys
-    // (17 workspace-scoped [incl. property definitions and workflows] + 6
-    // per-issue prefixes + the workspace working-agents projection + 6
-    // per-chat prefixes + 1 workspaceKeys.list() + 1 cross-workspace inbox
-    // unread summary = 32 calls).
+    // Should invalidate workspace-scoped and event-fed account-level keys,
+    // plus the cross-workspace inbox summary.
+    // Plus the issue unread marks.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(33));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(48));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -172,6 +188,39 @@ describe("useRealtimeSync — ws instance change", () => {
     // A catalog edit made while this client was disconnected is otherwise
     // invisible for the query's whole 5-minute staleTime.
     expect(calls).toContainEqual(issueStatusKeys.all("ws-1"));
+    expect(calls).toContainEqual(issueViewKeys.all("ws-1"));
+    expect(calls).toContainEqual(issueViewPrefKeys.all("ws-1"));
+  });
+
+  it("follows saved views and the member's own preferences changed elsewhere", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+
+    onAny({ type: "issue_view:changed", payload: { view_id: "v1", action: "created" } } as never);
+    onAny({ type: "issue_view_preference:changed", payload: { scope_type: "sidebar_projects", scope_id: "u1" } } as never);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: issueViewKeys.all("ws-1") });
+    expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: issueViewPrefKeys.all("ws-1") }));
+  });
+
+  it("refreshes every preference document except one with a write still in flight here", async () => {
+    const projectsKey = issueViewPrefKeys.scope("ws-1", { scope_type: "sidebar_projects" });
+    const sidebarKey = issueViewPrefKeys.scope("ws-1", { scope_type: "sidebar" });
+    qc.setQueryData(projectsKey, EMPTY_ISSUE_VIEW_PREFERENCE);
+    qc.setQueryData(sidebarKey, EMPTY_ISSUE_VIEW_PREFERENCE);
+    const write = qc.getMutationCache().build(qc, { mutationKey: projectsKey, mutationFn: () => new Promise(() => {}) });
+    void write.execute(undefined);
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+
+    onAny({ type: "issue_view_preference:changed", payload: { scope_type: "sidebar", scope_id: "u1" } } as never);
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    expect(qc.getQueryState(sidebarKey)?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(projectsKey)?.isInvalidated).toBe(false);
   });
 
   it.each(["project:created", "project:updated", "project:deleted"])("refreshes workflow usage after %s", (type) => {
@@ -187,6 +236,8 @@ describe("useRealtimeSync — ws instance change", () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: issueWorkflowKeys.all("ws-1") });
       expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: issueWorkflowKeys.all("ws-2") });
+      // A deleted project takes its scoped saved views with it.
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: issueViewKeys.all("ws-1") });
     } finally {
       vi.useRealTimers();
     }
@@ -297,6 +348,124 @@ describe("useRealtimeSync — ws instance change", () => {
     expect(calls).toContainEqual(chatKeys.messagesPageAll());
     expect(calls).toContainEqual(chatKeys.pendingTaskAll());
     expect(calls).toContainEqual(chatKeys.wakeupsAll());
+  });
+
+  it("invalidates event-fed account and integration caches on reconnect", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    invalidateSpy.mockClear();
+    vi.mocked(ws.onReconnect).mock.calls[0]?.[0]?.();
+
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["invitations", "mine"] }));
+    const keys = invalidateSpy.mock.calls.map(
+      (call: [{ queryKey?: unknown }, ...unknown[]]) => call[0].queryKey,
+    );
+    expect(keys).toContainEqual(pinKeys.workspace("ws-1"));
+    expect(keys).toContainEqual(["notification-preferences", "ws-1"]);
+    expect(keys).toContainEqual(["github", "ws-1"]);
+    expect(keys).toContainEqual(githubKeys.pullRequestsAll());
+    expect(keys).toContainEqual(["lark", "ws-1"]);
+    expect(keys).toContainEqual(["slack", "ws-1"]);
+    expect(keys).toContainEqual(["dingtalk", "ws-1"]);
+    expect(keys).toContainEqual(["wecom", "ws-1"]);
+    expect(keys).toContainEqual(["telegram", "ws-1"]);
+    expect(keys).toContainEqual(vcsKeys.all("ws-1"));
+    expect(keys).toContainEqual(["issues", "comment-trigger-preview"]);
+  });
+
+  it("refetches mounted issue timeline and DM caches on reconnect", async () => {
+    const timelineEntry = { type: "comment", id: "comment-1" };
+    const message = {
+      id: "message-1",
+      chat_session_id: "session-1",
+      role: "assistant",
+      content: "hello",
+      task_id: null,
+      created_at: "2026-11-04T00:00:00Z",
+    };
+    const session = {
+      id: "session-1",
+      workspace_id: "ws-1",
+      agent_id: "agent-1",
+      creator_id: "u1",
+      title: "DM",
+      status: "active",
+      has_unread: true,
+      unread_count: 1,
+      created_at: "2026-11-04T00:00:00Z",
+      updated_at: "2026-11-04T00:00:00Z",
+    };
+    const listTimeline = vi.fn().mockResolvedValue([]);
+    const listChatMessages = vi.fn().mockResolvedValue([]);
+    const listChatMessagesPage = vi.fn().mockResolvedValue({
+      messages: [], limit: 50, has_more: false,
+    });
+    const listChatSessions = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listTimeline, listChatMessages, listChatMessagesPage, listChatSessions } as unknown as ApiClient);
+
+    const observers = [
+      new QueryObserver(qc, issueTimelineOptions("issue-1")),
+      new QueryObserver(qc, chatMessagesOptions("session-1")),
+      new InfiniteQueryObserver(qc, chatMessagesPageOptions("session-1")),
+      new QueryObserver(qc, chatSessionsOptions("ws-1")),
+    ];
+    const unsubscribers = observers.map((observer) => observer.subscribe(() => undefined));
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    await waitFor(() => {
+      expect(listTimeline).toHaveBeenCalledTimes(1);
+      expect(listChatMessages).toHaveBeenCalledTimes(1);
+      expect(listChatMessagesPage).toHaveBeenCalledTimes(1);
+      expect(listChatSessions).toHaveBeenCalledTimes(1);
+    });
+
+    listTimeline.mockResolvedValue([timelineEntry]);
+    listChatMessages.mockResolvedValue([message]);
+    listChatMessagesPage.mockResolvedValue({ messages: [message], limit: 50, has_more: false });
+    listChatSessions.mockResolvedValue([session]);
+    const reconnect = vi.mocked(ws.onReconnect).mock.calls[0]?.[0];
+    reconnect?.();
+
+    try {
+      await waitFor(() => {
+        expect(qc.getQueryData(issueKeys.timeline("issue-1"))).toEqual([timelineEntry]);
+        expect(qc.getQueryData(chatKeys.messages("session-1"))).toEqual([message]);
+        expect(qc.getQueryData(chatKeys.messagesPage("session-1"))).toMatchObject({
+          pages: [{ messages: [message] }],
+        });
+        expect(qc.getQueryData(chatKeys.sessions("ws-1"))).toEqual([session]);
+      });
+    } finally {
+      unsubscribers.forEach((unsubscribe) => unsubscribe());
+      setApiInstance(undefined as unknown as ApiClient);
+    }
+  });
+
+  it("does not fetch inactive issue or DM caches on reconnect", async () => {
+    const listTimeline = vi.fn().mockResolvedValue([]);
+    const listChatMessages = vi.fn().mockResolvedValue([]);
+    const listChatMessagesPage = vi.fn().mockResolvedValue({ messages: [], limit: 50, has_more: false });
+    const listChatSessions = vi.fn().mockResolvedValue([]);
+    setApiInstance({ listTimeline, listChatMessages, listChatMessagesPage, listChatSessions } as unknown as ApiClient);
+    qc.setQueryData(issueKeys.timeline("issue-2"), []);
+    qc.setQueryData(chatKeys.messages("session-2"), []);
+    qc.setQueryData(chatKeys.messagesPage("session-2"), {
+      pages: [{ messages: [], limit: 50, has_more: false }], pageParams: [null],
+    });
+    qc.setQueryData(chatKeys.sessions("ws-1"), []);
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+    vi.mocked(ws.onReconnect).mock.calls[0]?.[0]?.();
+
+    await waitFor(() => expect(qc.getQueryState(issueKeys.timeline("issue-2"))?.isInvalidated).toBe(true));
+    expect(qc.getQueryState(chatKeys.messages("session-2"))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(chatKeys.messagesPage("session-2"))?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(chatKeys.sessions("ws-1"))?.isInvalidated).toBe(true);
+    expect(listTimeline).not.toHaveBeenCalled();
+    expect(listChatMessages).not.toHaveBeenCalled();
+    expect(listChatMessagesPage).not.toHaveBeenCalled();
+    expect(listChatSessions).not.toHaveBeenCalled();
+    setApiInstance(undefined as unknown as ApiClient);
   });
 
   it("invalidates one issue attachment cache after detached channel media binds", () => {
@@ -438,6 +607,52 @@ describe("useRealtimeSync — queued chat promotion", () => {
   });
 });
 
+describe("useRealtimeSync — comment folded into a queued run", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("refreshes the issue's runs so the queued block moves under the folded comment", async () => {
+    vi.useFakeTimers();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, createStores()), { wrapper: createWrapper(qc) });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+    qc.setQueryData(issueKeys.tasks("issue-1"), []);
+
+    onAny({
+      type: "task:coalesced",
+      payload: { task_id: "task-1", agent_id: "agent-1", issue_id: "issue-1", status: "queued" },
+    } as never);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(qc.getQueryState(issueKeys.tasks("issue-1"))?.isInvalidated).toBe(true);
+  });
+});
+
+describe("useRealtimeSync — live usage", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("refreshes open run and usage queries without a task lifecycle change", async () => {
+    vi.useFakeTimers();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, createStores()), { wrapper: createWrapper(qc) });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+    const keys = [issueKeys.tasks("issue-1"), issueKeys.usage("issue-1"), agentTasksKeys.detail("ws-1", "agent-1")];
+    for (const key of keys) qc.setQueryData(key, []);
+
+    onAny({ type: "task:usage", payload: { task_id: "task-1" } });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    for (const key of keys) expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
+  });
+});
+
 describe("useRealtimeSync — Table server membership invalidation", () => {
   let qc: QueryClient;
   let stores: RealtimeSyncStores;
@@ -489,6 +704,10 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
       ];
       (filters.working_only || filters.working_issue_ids ? affected : untouched).push(...keys);
     }
+    // A saved view's sidebar preview filters on working_only server-side.
+    affected.push(issueKeys.sidebar("ws-1", "view:v1", { table: { ...spec, filters: { working_only: true } } }, 5));
+    untouched.push(issueKeys.sidebar("ws-1", "view:v2", { table: spec }, 5));
+    untouched.push(issueKeys.sidebar("ws-1", "project:p1", { project_id: "p1" }, 5));
     for (const key of [...untouched, ...affected]) qc.setQueryData(key, []);
     emit("task:completed");
     await vi.advanceTimersByTimeAsync(1_000);

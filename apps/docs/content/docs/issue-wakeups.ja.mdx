@@ -60,7 +60,7 @@ import { WakeupDemo } from "@/components/demos/wakeup-demo";
 | 関連 | 別のタスクのステータス | 別のタスクが完了、完了またはキャンセル、レビュー中になったとき。 |
 | | カスタムイベント | リアクション、添付ファイル、コメントの編集、スレッドの解決など、25 種類のイベントから選びます。 |
 
-フィールド、サブタスク、PR、別のタスクの条件は Multica 自身が確認します。作成した時点で条件がすでに成り立っていれば、次の確認（約 30 秒以内）で起動します。CI だけは例外で、作成後に終わったチェックしか数えません。
+フィールド、サブタスク、PR、別のタスクの条件は Multica 自身が確認します。作成した時点で条件がすでに成り立っていれば、次の確認（約 30 秒以内）で起動します。CI だけは例外で、以前のプッシュで終わったチェックは無視しますが、PR の現在の head ですでに終わっているチェックは約 30 秒以内に起動します。 同じエージェントの前の「CI 完了」ルールがすでに起動した PR head には、2 つ目の「CI 完了」ルールを作れません。リクエストは `409`（`wakeup_head_unchanged`）と`head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`を返します。新しい head をプッシュするか、代わりにステータスを待ってください。
 
 時間以外の条件は「何かが起きるのを待つ」ルールで、設定がさらに 3 つあります。
 
@@ -141,7 +141,9 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "成�
 - **時間**：`--kind at` に `--after 10m` または `--at <RFC3339 の時刻>`。`--kind every --every 1h` で一定間隔（最短 1 分）。`--kind cron --cron "<5 フィールドの式>"` には `--timezone` を付けます（既定は UTC）。
 - **イベント**：`--event` のあとにイベント名をカンマ区切りで書きます。`multica issue wakeup events` ですべてのイベントとフィルターを一覧できます。`--mode continuous` で繰り返し起動になります。
 - **条件**：`--until-status`、`--until-assignee`、`--until-label`、`--until-property`、`--until-children-done [--stage N]`、`--until-pr checks|merged|conflicts`、`--until-issue <タスク> --until-issue-state done|ended|in_review|blocked`。1 つのウェイクアップに使える `--until-*` は 1 つだけで、`--event` とは併用できません。
+- **オープンな PR へのタイマー**：サーバーが GitHub のチェックを更新している間、エージェントはオープンな PR が紐づくタスクに `at`、`every`、`cron` のウェイクアップを追加できません。`--until-pr checks|conflicts` または `--until-gh-run` を案内する 422 が返ります。人、ドラフトまたはマージ済みの PR、PR のないタスクは対象外です。
 - **終わり方**：CLI は待つ期限を自動では付けません。`--expires-in 72h` か `--expires-at <RFC3339 の時刻>` で終わりを決めます。`--on-timeout wake` を付けると、イベントのルールは期限が来たときにもう一度起こします。`--max-fires N`（1〜1000）で繰り返すルールの実行回数に上限を付けます。
+- **監視する入力**：時間のウェイクアップ（`at`、`every`、`cron`）では、`--watch <入力>` を繰り返し指定して監視対象を宣言します。指定できる値は `issue`、`pr`、`children`、`thread:<comment-uuid>` です。宣言した入力がすべて、前回完了した実行から変わっていなければ、サーバーはその起動をスキップすることがあります。宣言しなければ必ず実行します。現時点ではサーバーは宣言を記録するだけで、スキップはしません。イベントと条件のルールは `--watch` を受け付けません。
 - **返信先**：`--parent <コメント ID>` を付けると、起動後の返信が元のスレッドに入ります。
 
 既存のルールを管理するコマンド：
@@ -158,6 +160,75 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "成�
 | `multica issue wakeup checkin <タスク> <ウェイクアップ ID> --note "..."` | 返信が必要なことがない定期チェックを静かに終える。このルールが始めた実行からだけ呼べる |
 
 `list`、`get`、`runs` は `--output table` で表形式になります。ほかのコマンドは [CLI を使う](/cli)を参照してください。
+
+## ワークスペースまたはプロジェクトの既定のウェイクアップ [#defaults]
+
+オーナーと管理者は、ワークスペース全体または特定のプロジェクトに既定のウェイクアップを設定できます。対象のすべての課題に、手作業で作らなくてもルールが適用されます。メンバーは、1 つの課題でその既定を上書きしたりオフにしたりできます。
+
+**優先順位。** 組み込みの既定値、ワークスペース、プロジェクト、課題の順です。各レベルは変更したフィールドだけを保存し、残りは上のレベルから引き継ぎます。`"enabled": false` はそのレベルでルールをオフにします。`trigger`、`target`、`schedule`、`filters`、`rate_limit`、`active_run` のような入れ子の設定は、継承した値をまとめて置き換えます。
+
+| 範囲 | 場所 | 変更できる人 |
+|---|---|---|
+| ワークスペース | **設定 → ウェイクアップ → ワークスペースのルール** | オーナーと管理者 |
+| プロジェクト | プロジェクトページの**プロジェクトのルール** | オーナーと管理者 |
+| 課題 | 課題の**既定のウェイクアップ**リスト：**上書き**、**上書きを編集**、**リセット** | メンバー |
+
+各既定には、値の出どころ（**ワークスペースから継承**、プロジェクトから継承、または**この課題で上書き**）と状態（**オン**、**無効**、理由付きの**一時停止**）が表示されます。**リセット**は上書きを削除し、課題は再び上のレベルに従います。
+
+**API。** 3 つの範囲すべてを API から使えます。`revision` は文字列で送ります。作成時は `"0"`、更新時は直前の読み取りで得たリビジョンです。古いリビジョンは `409` を返すので、読み直して再試行してください。
+
+```bash
+# Workspace default: turn "PR merged" on with an instruction (owner or admin)
+curl -X PUT "$MULTICA_URL/api/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": true, "instruction": "Summarise the merge."}}'
+
+# Project override: change only the instruction for one project
+curl -X PUT "$MULTICA_URL/api/projects/$PROJECT_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "instruction": "Check the release notes."}}'
+
+# Issue override: turn the rule off for this issue only
+curl -X PUT "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": false}}'
+
+# What the issue ends up with, where each field came from, and the runtime state
+curl "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged/effective" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+
+# The same read from the CLI (workspace scope; add --project or --issue)
+multica wakeup-definition get pr_merged --issue "$ISSUE_ID"
+
+# Reset the issue override (revision comes from the last read)
+curl -X DELETE "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged?revision=1" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+```
+
+`effective` のレスポンスは、アプリに表示される内容と同じです。`sources` は各フィールドの提供元の範囲、`overrides` はこの範囲が継承値を上書きしているフィールド、`execution` は課題の範囲だけに現れ、課題にそのルールの実行インスタンスがある場合にのみ含まれます。
+
+```json
+{
+  "scope": "issue",
+  "rule_key": "pr_merged",
+  "applicable": true,
+  "enabled": false,
+  "sources": { "enabled": "issue", "instruction": "project" },
+  "overrides": ["enabled"],
+  "execution": { "instance_id": "…", "enabled": true, "paused_reason": "loop" }
+}
+```
+
+**制限。**
+
+- ワークスペースの既存のウェイクアップ設定の変換が終わるまで、書き込みは閉じています（`403`、コード `wakeup_definition_writes_closed`）。その間、アプリは編集を表示しません。読み取りとプレビューは使えます。
+- エージェントができるのは、ワークスペースまたはプロジェクトのルールの提案だけです。実行中に `multica wakeup-definition create --config-file rule.json`（プロジェクトのルールには `--project <project>` を追加）を使うか、実行トークンで `POST /api/wakeup-definitions` や `POST /api/projects/{id}/wakeup-definitions` を呼びます。サーバーはリクエストの内容にかかわらずルールを `enabled: false` で保存し、ワークスペースのオーナーまたは管理者が有効にするまで、その下のどのスコープでも、メンバーの課題オーバーライドがあっても動作しません。エージェントは定義の編集・削除・プレビューや課題スコープへの書き込みができません（`403`）。それ以外のマシン認証情報は書き込みがまったくできません（`403`、何も保存されません）。
+- CLI では `multica wakeup-definition get pr_merged` でワークスペースのルールの解決後の値を読めます。プロジェクトのルールは `--project <project>`、Issue は `--issue <issue>` を付けます。API と同じ `effective` JSON を出力し、`--output table` では 1 行で表示します。ワークスペースとプロジェクトのルールは CLI の `list`・`update`・`delete`・`preview` でも扱えます（[CLI ページ](/cli)を参照）。Issue スコープの書き込みは API とアプリで行います（エージェントは `create` でルールを提案することもできます）。`multica issue wakeup list` と `get` が表示するのは、ルールの実行中インスタンス（一時停止を含む）です。
+- ルールの対象は、ルールを書く人が呼び出せるエージェントまたはスクワッドである必要があります。対象エージェントを見られない閲覧者には、対象と指示のないルールが表示されます。
+- 新しいカスタムルールは、1 時間あたり 12 回のウェイクアップ上限で始まります。エディタの**プレビュー**で、保存前に条件に合う未完了の課題の数を確認できます。
 
 ## オートパイロットとの違い [#vs-autopilots]
 

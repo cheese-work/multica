@@ -26,7 +26,7 @@ func newAgentDecisionFixture(t *testing.T) agentDecisionFixture {
 		dbfx.Exec(t, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, f.issueID, task)
 	}
 	f.scope = map[string]any{
-		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign",
+		"work_author_id": f.writerID, "waived_gate": "screenshot_evidence", "route": "cosign", "decision_class": "reversible_gate",
 		"signers":  []string{f.leaderID, f.peerID},
 		"evidence": []map[string]string{{"url": "https://example.com/frozen.md", "sha256": boundAfter}},
 	}
@@ -236,5 +236,32 @@ func TestAgentDecisionRetractionAndConflictingVote(t *testing.T) {
 	f.post(t, f.leaderID, "Retract: decision:"+f.instance, http.StatusBadRequest)
 	if got := dbfx.Count(t, `SELECT count(*) FROM agent_decision_live_vote WHERE instance_id=$1 AND verdict='PASS'`, f.instance); got != 1 {
 		t.Fatalf("retracted PASS counted: %d", got)
+	}
+}
+
+func TestAgentDecisionLinkIsRelativeEvenWithAppURL(test *testing.T) {
+	h := &Handler{cfg: Config{AppURL: "https://multica.test"}}
+	proposal := "c1"
+	for _, c := range []struct {
+		name     string
+		proposal *string
+		want     string
+	}{
+		{"issue", nil, "/ws/issues/CHE-1"},
+		{"comment", &proposal, "/ws/issues/CHE-1#comment-c1"},
+	} {
+		if got := h.agentDecisionLink("ws", "CHE-1", c.proposal); got != c.want {
+			test.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAgentDecisionRecordRefChatIsMarkdownLink(test *testing.T) {
+	link := "/ws/issues/CHE-1#comment-c1"
+	if got := agentDecisionRecordRef(link, false); got != link {
+		test.Errorf("inbox: got %q, want plain %q", got, link)
+	}
+	if got, want := agentDecisionRecordRef(link, true), "[open the record]("+link+")"; got != want {
+		test.Errorf("chat: got %q, want %q", got, want)
 	}
 }

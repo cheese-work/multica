@@ -31,15 +31,24 @@ const (
 	// existing Triage issues workable.
 	TriageV1 = "triage_v1"
 	// WakeupDefinitionWrites (CHE-1082) is the server-side activation gate for
-	// scoped wakeup definition writes (create, update, delete). It is CLOSED by
-	// default and nothing but an explicit rule opens it: production must hold
-	// zero scoped definitions until the layer that backfills and activates
-	// them. Reads and previews are not gated; they never persist.
+	// scoped wakeup definition writes (create, update, delete). Its default is
+	// the completed legacy backfill (service.WakeupDefinitionsActivated), so it
+	// is closed until production holds the backfilled definitions and opens
+	// with the deploy that ran it; an explicit rule overrides either way.
+	// Reads and previews are not gated; they never persist.
 	WakeupDefinitionWrites = "wakeup_definition_writes"
 	// PasskeyEnrollment (CHE-2233) opens first-passkey enrollment. It is CLOSED
 	// in every environment until Cheese records that no agent or automation can
 	// read the account mailbox that receives the enrollment code.
 	PasskeyEnrollment = "passkey_enrollment"
+	// CIWatcher (CHE-4273) gates the CI failure watcher (CHE-4265): reading or
+	// writing its tables, and every code path built on them. Server-side only,
+	// read from MULTICA_FEATURE_FLAGS_FILE, and OFF unless a rule turns it on.
+	CIWatcher = "ci_watcher"
+	// CITokenBroker (CHE-4257) gates the CI token broker: the endpoint answers
+	// 404 unless a rule in MULTICA_FEATURE_FLAGS_FILE turns it on. OFF by default.
+	// Server-side only.
+	CITokenBroker = "ci_token_broker"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -125,12 +134,13 @@ func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Servic
 }
 
 // WakeupDefinitionWritesEnabled reports whether scoped wakeup definition writes
-// are open. A nil service or provider is closed, never "unset".
-func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, WakeupDefinitionWrites, false)
+// are open. activated is the persisted state of the legacy backfill: writes
+// stay closed until it completed and open by themselves after it, with no
+// operator step. An explicit off rule is the kill switch. No rule, and no
+// explicit on rule, opens writes before the activation completed: production
+// holds zero definitions until then.
+func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service, activated bool) bool {
+	return activated && flags.IsEnabled(ctx, WakeupDefinitionWrites, true)
 }
 
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
@@ -159,4 +169,22 @@ func PasskeyEnrollmentEnabled(ctx context.Context, flags *featureflag.Service) b
 		return false
 	}
 	return flags.IsEnabled(ctx, PasskeyEnrollment, false)
+}
+
+// CIWatcherEnabled reports whether the CI failure watcher may run. A nil
+// service or provider is closed, never "unset".
+func CIWatcherEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, CIWatcher, false)
+}
+
+// CITokenBrokerEnabled reports whether the CI token broker (CHE-4257) may
+// answer. A nil service or provider is closed, never "unset".
+func CITokenBrokerEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, CITokenBroker, false)
 }

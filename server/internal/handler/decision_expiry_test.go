@@ -153,7 +153,7 @@ func TestDecisionExpiryDigestGroupingAndNextDay(test *testing.T) {
 		test.Fatal("digest included another recipient's private ask")
 	}
 	var body string
-	if err := testPool.QueryRow(ctx, `SELECT body FROM inbox_item WHERE recipient_id = $1 AND details->>'kind' = 'decision_expiry_digest'`, first.humanID).Scan(&body); err != nil || !strings.Contains(body, uuidToString(first.decision.IssueCommentID)) || !strings.Contains(body, uuidToString(second.decision.IssueCommentID)) || !strings.Contains(body, "not an answer or permission") {
+	if err := testPool.QueryRow(ctx, `SELECT body FROM inbox_item WHERE recipient_id = $1 AND details->>'kind' = 'decision_expiry_digest'`, first.humanID).Scan(&body); err != nil || !strings.Contains(body, uuidToString(first.decision.IssueCommentID)) || !strings.Contains(body, uuidToString(second.decision.IssueCommentID)) || !strings.Contains(body, "not an answer or permission") || !strings.Contains(body, "\n  /") || !strings.Contains(body, "/issues/") || strings.Contains(body, "https://") {
 		test.Fatalf("digest lost source links or safety statement: body=%q, error=%v", body, err)
 	}
 	late := newFixture()

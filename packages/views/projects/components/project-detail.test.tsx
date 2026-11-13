@@ -21,7 +21,10 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
   copyText: mocks.copyText,
 }));
 
-vi.mock("../../workflows/project-workflow-menu", () => ({ ProjectWorkflowMenu: () => null }));
+vi.mock("../../workflows/project-workflow-menu", () => ({
+  ProjectWorkflowMenuHost: ({ children }: { children: (submenu: null) => React.ReactNode }) => children(null),
+}));
+vi.mock("../../workflows/project-workflow-row", () => ({ ProjectWorkflowControl: () => null }));
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey?: readonly unknown[] }) => {
@@ -224,6 +227,12 @@ vi.mock("./project-resources-section", () => ({
   ProjectResourcesSection: () => null,
 }));
 
+vi.mock("./project-wakeups-section", () => ({
+  ProjectWakeupsSection: ({ projectId, canManage }: { projectId: string; canManage: boolean }) => (
+    <div data-testid="project-wakeups" data-project={projectId} data-can-manage={String(canManage)} />
+  ),
+}));
+
 vi.mock("./project-start-date-picker", () => ({
   ProjectStartDatePicker: () => null,
 }));
@@ -233,12 +242,25 @@ vi.mock("./project-due-date-picker", () => ({
 }));
 
 vi.mock("../../issues/surface/issue-surface", () => ({
-  IssueSurface: () => null,
+  IssueSurface: ({
+    renderHeader,
+  }: {
+    renderHeader?: (ctx: { controller: unknown }) => React.ReactNode;
+  }) => <>{renderHeader?.({ controller: {} })}</>,
 }));
 
-vi.mock("../../layout/breadcrumb-header", () => ({
-  BreadcrumbHeader: ({ actions }: { actions: React.ReactNode }) => (
-    <header>{actions}</header>
+vi.mock("../../issue-views/view-header", () => ({
+  IssueViewHeader: ({
+    baseMenu,
+    trailing,
+  }: {
+    baseMenu?: React.ReactNode;
+    trailing?: React.ReactNode;
+  }) => (
+    <header>
+      {baseMenu}
+      {trailing}
+    </header>
   ),
 }));
 
@@ -318,6 +340,20 @@ describe("ProjectDetail sharing", () => {
     expect(mocks.copyText).toHaveBeenCalledWith(
       "https://app.example/test-workspace/projects/project-1",
     );
+  });
+});
+
+describe("ProjectDetail wakeups", () => {
+  it.each([
+    ["admin", "true"],
+    ["member", "false"],
+  ])("puts the project's wakeup rules in the sidebar for a %s (manage: %s)", (role, canManage) => {
+    mocks.role = role;
+    renderProjectDetail();
+
+    const section = screen.getByTestId("project-wakeups");
+    expect(section).toHaveAttribute("data-project", PROJECT.id);
+    expect(section).toHaveAttribute("data-can-manage", canManage);
   });
 });
 

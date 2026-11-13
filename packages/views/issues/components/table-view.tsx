@@ -1202,6 +1202,7 @@ function IssueTableBodyCell({
             status={issue.status}
             onUpdate={onUpdate}
             projectId={issue.project_id}
+            workflowId={issue.workflow_id}
             issue={issue}
             align="start"
             open={editorOpen}

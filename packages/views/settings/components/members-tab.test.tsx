@@ -1,3 +1,4 @@
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { useSyncExternalStore, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -229,6 +230,44 @@ describe("MembersTab", () => {
     expect(screen.getByRole("dialog", { name: "Invite member" })).toBeInTheDocument();
   });
 
+  it("keeps an unsent invite across closing the dialog and remounting (CHE-3527)", async () => {
+    const user = userEvent.setup();
+    const first = renderWithI18n(<MembersTab />);
+
+    await user.click(screen.getByRole("button", { name: "Invite member" }));
+    let dialog = await screen.findByRole("dialog", { name: "Invite member" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Email" }), "draft@acme.dev");
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    first.unmount();
+
+    renderWithI18n(<MembersTab />);
+    await user.click(screen.getByRole("button", { name: "Invite member" }));
+    dialog = await screen.findByRole("dialog", { name: "Invite member" });
+    expect(within(dialog).getByRole("textbox", { name: "Email" })).toHaveValue("draft@acme.dev");
+  });
+
+  it("clears the unsent invite once it is sent, and keeps it when sending fails (CHE-3527)", async () => {
+    const user = userEvent.setup();
+    mockCreateMember.mockRejectedValueOnce(new Error("nope"));
+    const first = renderWithI18n(<MembersTab />);
+    await user.click(screen.getByRole("button", { name: "Invite member" }));
+    let dialog = await screen.findByRole("dialog", { name: "Invite member" });
+    await user.type(within(dialog).getByRole("textbox", { name: "Email" }), "new@acme.dev");
+    await user.click(within(dialog).getByRole("button", { name: "Invite" }));
+    await waitFor(() => expect(mockCreateMember).toHaveBeenCalledTimes(1));
+    expect(within(dialog).getByRole("textbox", { name: "Email" })).toHaveValue("new@acme.dev");
+
+    mockCreateMember.mockResolvedValueOnce({});
+    await user.click(within(dialog).getByRole("button", { name: "Invite" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    first.unmount();
+
+    renderWithI18n(<MembersTab />);
+    await user.click(screen.getByRole("button", { name: "Invite member" }));
+    dialog = await screen.findByRole("dialog", { name: "Invite member" });
+    expect(within(dialog).getByRole("textbox", { name: "Email" })).toHaveValue("");
+  });
+
   it("links seat usage to billing when subscriptions are on", () => {
     configStore
       .getState()
@@ -256,3 +295,5 @@ describe("MembersTab", () => {
     expect(screen.queryByRole("button", { name: /^Actions for/ })).toBeNull();
   });
 });
+
+beforeEach(() => resetAllRegisteredDrafts());

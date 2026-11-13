@@ -33,6 +33,9 @@ func LintAsk(ask Ask) []string {
 	for index, option := range ask.Options {
 		check(fmt.Sprintf("options[%d].what_happens", index), option.WhatHappens)
 	}
+	if asksSeveral(ask) {
+		hints = append(hints, "decision looks like more than one question; split into one request per question")
+	}
 	context := lintLinks.ReplaceAllString(ask.ContextELI10, " ")
 	sentences := 0
 	for _, part := range lintSentences.Split(strings.TrimSpace(context), -1) {

@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   merge_group:
@@ -17,9 +15,9 @@ concurrency:
 
 jobs:
   warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, daemon-artifact, image-budget, installer, script-checks, deploy-cd, frontend-quality]
+    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
     if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_WARNING_BUDGET || 'ubuntu-24.04' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -45,10 +43,34 @@ jobs:
           path: warning-budget-report.json
           retention-days: 14
 
+  # CHE-2696 / CHE-4385: scans the commits a PR adds. Lives here, not in its own workflow, so a PR push starts no extra run.
+  gitleaks:
+    name: gitleaks
+    if: ${{ github.event_name == 'pull_request' && !startsWith(github.head_ref, 'upstream-sync/') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Cache the gitleaks download
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/gitleaks-8.30.1
+          key: gitleaks-${{ hashFiles('scripts/secret-scan.sh') }}
+      - name: Scan the added commits
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/secret-scan.sh "$PR_BASE..$PR_HEAD"
+
   migration-prefix-check:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 1
+    runs-on: ${{ vars.RUNNER_MIGRATION_PREFIX_CHECK || 'ubuntu-24.04' }}
+    timeout-minutes: 3
     permissions:
       contents: read
       pull-requests: read
@@ -80,6 +102,10 @@ jobs:
           persist-credentials: false
       - name: Test the guard
         run: bash scripts/check-no-upstream-update-source.test.sh
+      - name: Test the upstream-main mirror script
+        run: bash scripts/mirror-upstream-main.test.sh
+      - name: Test the upstream-main rulesets
+        run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
         run: bash scripts/check-no-upstream-update-source.sh
 
@@ -106,12 +132,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04] # macOS leg halted (CHE-1012): no free macOS runners
+        os:
+          - ${{ vars.RUNNER_CURSOR_BACKGROUND_LIFECYCLE || 'ubuntu-24.04' }} # macOS leg halted (CHE-1012): no free macOS runners
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           cache-dependency-path: server/go.sum
       - name: Verify Cursor background lifecycle and watchdog races
         shell: bash
@@ -132,7 +159,7 @@ jobs:
   # a `go test -race` run. The outputs are consumed by the focused jobs
   # below.
   changes:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_CHANGES || 'ubuntu-24.04' }}
     permissions:
       contents: read
       pull-requests: read
@@ -150,6 +177,9 @@ jobs:
       full: ${{ steps.decide.outputs.full }}
       merge_group_green: ${{ steps.decide.outputs.merge_group_green }}
       push_full: ${{ steps.decide.outputs.push_full }}
+      push_backend: ${{ steps.decide.outputs.push_backend }}
+      push_frontend: ${{ steps.decide.outputs.push_frontend }}
+      push_sqlc: ${{ steps.decide.outputs.push_sqlc }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -160,7 +190,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/ci-runners.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
 
       - name: Filter paths
         id: filter
@@ -187,8 +217,8 @@ jobs:
 
   sqlc-check:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
-    runs-on: ubuntu-24.04
+    if: ${{ needs.changes.outputs.push_sqlc == 'true' }}
+    runs-on: ${{ vars.RUNNER_SQLC_CHECK || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -220,8 +250,8 @@ jobs:
   # increases total runner-minutes but reduces wall-clock feedback time.
   frontend-build:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
-    runs-on: ubuntu-24.04
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
+    runs-on: ${{ vars.RUNNER_FRONTEND_BUILD || 'ubuntu-24.04' }}
     env:
       # Pin turbo's filesystem cache somewhere actions/cache can address.
       TURBO_CACHE_DIR: .turbo/cache
@@ -260,8 +290,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Build, type check, and lint
@@ -282,8 +314,8 @@ jobs:
 
   frontend-test:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
-    runs-on: ubuntu-24.04
+    if: ${{ needs.changes.outputs.push_frontend == 'true' }}
+    runs-on: ${{ vars.RUNNER_FRONTEND_TEST || 'ubuntu-24.04' }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -300,6 +332,9 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
+        # Desktop unit tests mock `electron`; skip its binary download (CHE-4820).
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
         run: pnpm install
 
       - name: Resolve runtime for cache key
@@ -314,8 +349,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test web, core, and desktop
@@ -339,7 +376,7 @@ jobs:
             total: 2
           - index: 2
             total: 2
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_FRONTEND_VIEWS_TEST || 'ubuntu-24.04' }}
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
@@ -370,8 +407,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .turbo/cache
-          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-
+            turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-refs/heads/main-${{ hashFiles('pnpm-lock.yaml') }}-
             turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
@@ -418,13 +457,13 @@ jobs:
   frontend:
     needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_FRONTEND || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"frontend-build":"push_full","frontend-test":"push_full","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
+          JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -470,9 +509,23 @@ jobs:
   # replay cached results. Migrations are read from disk at run time rather
   # than embedded, so a schema change is invisible to a test binary's hash and
   # a cached "ok" from an untouched package could mask a real failure.
-  backend-tests:
+  #
+  # CHE-4268: one job took 15-16 min and was the merge-queue critical path, so
+  # the work is a matrix of runners, one partition each: four handler shards,
+  # internal/service (the slowest non-handler package) and every other
+  # package. The `backend-tests` job below is the aggregate that keeps the
+  # required check name. Each partition still builds its own test binaries;
+  # Build, Vet and the script checks run once, on `rest`.
+  backend-test-shards:
+    name: backend-test-shards (${{ matrix.partition }})
     needs: [changes, migration-prefix-check]
-    if: ${{ !cancelled() && needs.changes.outputs.push_full == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
+    strategy:
+      # A red shard must not cancel the others: the slowest evidence is the
+      # most useful, and the aggregate fails on any non-success anyway.
+      fail-fast: false
+      matrix:
+        partition: [handler-0, handler-1, handler-2, handler-3, service, rest]
     # Stays off cheese-x99 (CHE-748): this is the only job in the repo that
     # uses `services`, and the self-hosted runners talk to a nested Docker
     # daemon (`DOCKER_HOST=tcp://dind-N:2376`) living in a *different*
@@ -492,7 +545,7 @@ jobs:
     # namespace split. Making this job work on cheese-x99 still needs the
     # runner and dind to share a namespace, which is a runner-fleet change,
     # not a workflow change.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_BACKEND_TESTS || 'ubuntu-24.04' }}
     # `services` cannot be conditional, so the Postgres and Redis containers
     # still start on a filtered PR. That is ~1 minute of runner time against
     # the several minutes the gated steps below cost; job-level `if` would
@@ -531,6 +584,7 @@ jobs:
       # directly so they run alongside the Postgres-backed suite.
       REDIS_TEST_URL: redis://localhost:6379/1
       GOFLAGS: -count=1
+      MULTICA_HANDLER_SHARDS: "4"
     steps:
       - name: Require migration prefix result
         env:
@@ -567,12 +621,19 @@ jobs:
         id: gocache
         run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
 
+      # The partition goes after the ref and go.sum hash so every shard saves
+      # its own entry (one key cannot be saved twice) while a restore still
+      # falls back to any shard's entry under the same prefix.
       - name: Restore Go build cache
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
 
       # Go refreshes a cache entry's mtime when it uses it, but only once that
       # mtime is an hour old. So after the run, an entry no newer than an hour
@@ -583,6 +644,7 @@ jobs:
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
       - name: Build
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
 
       # The `agentintegration` files execute real agent CLIs, so no CI job runs
@@ -592,23 +654,38 @@ jobs:
       # untagged job still green. vet type-checks test files, so this is the
       # cheapest gate that keeps them honest without needing an agent CLI.
       - name: Vet tag-gated agent integration tests
+        if: ${{ matrix.partition == 'rest' }}
         run: cd server && go vet -race -tags agentintegration ./...
 
       - name: Run migrations
         run: cd server && go run ./cmd/migrate up
 
       - name: Verify Go test wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/test-go.test.sh
 
       # Runs against the freshly migrated template database; leaves it unchanged.
       - name: Verify per-package test database wrapper
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-db-exec.test.sh
 
       - name: Verify handler test sharding
+        if: ${{ matrix.partition == 'rest' }}
         run: bash scripts/go-test-handler-shards.test.sh
 
       - name: Verify integration database startup policy
+        if: ${{ matrix.partition == 'rest' }}
         run: bash server/cmd/server/integration_startup.test.sh
+
+      # CHE-4270: merge_group only. A failed test reruns once by name, so a
+      # flake no longer ejects the PR from the queue (see the Test step).
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
+
+      - name: Verify merge_group test rerun
+        if: ${{ github.event_name == 'merge_group' && matrix.partition == 'rest' }}
+        run: bash scripts/test-go-rerun.test.sh
 
       - name: Test
         env:
@@ -616,8 +693,44 @@ jobs:
           # CHE-2418: each package gets its own database cloned from the
           # migrated one, so test-go.sh runs packages with -p 4, not -p 1.
           MULTICA_TEST_DB_PER_PACKAGE: "1"
+          # CHE-4270: merge_group reruns failed tests once; pull_request and
+          # push stay unchanged so authors see every failure.
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
-        run: bash scripts/test-go.sh --race --only regular
+        run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
+      # red shard still reports where its time went.
+      - name: Summarize test timing
+        if: ${{ !cancelled() }}
+        run: node scripts/go-test-timing.mjs "${{ matrix.partition }}" < "$RUNNER_TEMP/test.log" > "$RUNNER_TEMP/timing.json"
+
+      - name: Upload test timing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: go-test-timing-${{ matrix.partition }}
+          path: ${{ runner.temp }}/timing.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-tests-${{ matrix.partition }}
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
       # Go's own trim (cmd/go/internal/cache) with this run as the window
       # instead of five days: only `-a`/`-d` entries, and an executable entry
@@ -639,7 +752,25 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ matrix.partition }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Required check `backend-tests` (ci-policy.yml): runs no tests itself, only
+  # turns the shard matrix into one result. `if` matches the shards so a
+  # filtered run reports `skipped` exactly as before; a shard that is red,
+  # cancelled or missing fails it.
+  backend-tests:
+    needs: [changes, migration-prefix-check, backend-test-shards]
+    if: ${{ !cancelled() && needs.changes.outputs.push_backend == 'true' }}
+    runs-on: ${{ vars.RUNNER_BACKEND_TESTS_GATE || 'ubuntu-24.04' }}
+    steps:
+      - name: Require shard results
+        env:
+          SHARDS_RESULT: ${{ needs.backend-test-shards.result }}
+        run: |
+          if [ "$SHARDS_RESULT" != "success" ]; then
+            echo "::error::backend-test-shards expected success, got $SHARDS_RESULT"
+            exit 1
+          fi
 
   # pkg/agent used to run as the tail of backend-tests: ~2m20s for a single
   # package, throttled to -parallel 2 because its subprocess-backed tests carry
@@ -659,7 +790,7 @@ jobs:
   backend-agent-tests:
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    runs-on: ubuntu-24.04  # CHE-522: do NOT move to Blacksmith.
+    runs-on: ${{ vars.RUNNER_BACKEND_AGENT_TESTS || 'ubuntu-24.04' }}  # CHE-522: do NOT move to Blacksmith.
     env:
       # Same policy as backend-tests: CI always executes the tests it reports.
       GOFLAGS: -count=1
@@ -690,18 +821,46 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
+          key: ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ${{ steps.gocache.outputs.prefix }}${{ github.ref }}-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}refs/heads/main-${{ hashFiles('server/go.sum') }}-
+            ${{ steps.gocache.outputs.prefix }}
+
+      # CHE-4270: same merge_group rerun as backend-tests.
+      - name: Install gotestsum
+        if: ${{ github.event_name == 'merge_group' }}
+        run: go install gotest.tools/gotestsum@v1.13.0
 
       - name: Test agent package
+        env:
+          MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         run: bash scripts/test-go.sh --race --only agent
+
+      - name: Record flaky tests
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        env:
+          MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
+        run: |
+          mkdir -p "$MULTICA_FLAKE_DIR"
+          node scripts/go-test-flakes.mjs "$MULTICA_FLAKE_DIR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload flakes.json
+        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: flakes-backend-agent-tests
+          path: ${{ runner.temp }}/flakes/flakes.json
+          if-no-files-found: ignore
+          retention-days: 30
 
   # Keep the live vulnerability database from hiding build and test results.
   # The aggregate backend job below still treats both jobs as one merge gate.
   go-vulnerability-scan:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
-    runs-on: ubuntu-24.04
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
+    runs-on: ${{ vars.RUNNER_GO_VULNERABILITY_SCAN || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -728,10 +887,14 @@ jobs:
   # merge base to diff against, and its branch was already checked.
   go-lint:
     needs: changes
-    if: ${{ needs.changes.outputs.push_full == 'true' }}
+    if: ${{ needs.changes.outputs.push_backend == 'true' }}
     # GitHub-hosted (CHE-748): no service containers, no X99-only
     # dependency — plain checkout + golangci-lint.
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_GO_LINT || 'ubuntu-24.04' }}
+    env:
+      # Pinned: a floating version turns an upstream release into a surprise red build on an unrelated pull request.
+      GOLANGCI_LINT_VERSION: "2.13.2"
+      GOLANGCI_LINT_SHA256: "2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6"  # golangci-lint-2.13.2-linux-amd64.tar.gz
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
@@ -744,163 +907,79 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.26.9"
+          # Stays on 1.26.x (>= 1.26.10, the GO-2026-6809 fix) on purpose:
+          # golangci-lint v2.13.2 is built with Go 1.26 and cannot read Go 1.27
+          # export data ("export data version 5 is greater than max"). The lint
+          # job builds no shipped binary. Raise with a golangci-lint built on 1.27.
+          go-version: "~1.26.10"
           check-latest: true
-          cache-dependency-path: server/go.sum
+          # CHE-5128: this job runs on pull requests only, so main never holds a 1.26.x
+          # entry and each PR ref would save its own ~397 MB copy. Modules re-download.
+          cache: false
+
+      # CHE-4877: golangci-lint-action downloads the binary on every run and failed on HTTP 504. Fetch the pinned
+      # tarball ourselves (5xx retry, sha256 check on every run, so a restored cache is never trusted unverified).
+      - name: Cache the golangci-lint download
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/golangci-lint-dl
+          key: golangci-lint-${{ env.GOLANGCI_LINT_VERSION }}-linux-amd64
+
+      - name: Install golangci-lint
+        if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
+        run: |
+          set -euo pipefail
+          tgz="$RUNNER_TEMP/golangci-lint-dl/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          bash scripts/fetch-verified.sh "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/$(basename "$tgz")" "$GOLANGCI_LINT_SHA256" "$tgz"
+          mkdir -p "$RUNNER_TEMP/golangci-lint-bin"
+          tar -xzf "$tgz" --strip-components=1 -C "$RUNNER_TEMP/golangci-lint-bin" "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint"
+          echo "$RUNNER_TEMP/golangci-lint-bin" >> "$GITHUB_PATH"
 
       - name: Run golangci-lint
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: golangci/golangci-lint-action@v9
+        working-directory: server
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        # Diff-only against the already-fetched local merge base: the action's only-new-issues reads the PR diff
+        # through GitHub's API, which rejects the upstream-sync PR at 300 files.
+        run: golangci-lint run --new-from-merge-base="origin/$BASE_REF"
+
+  # CHE-4666: fails a PR that adds a high or critical vulnerable dependency; findings already on the base never fail it.
+  # Always runs so the `backend` gate can expect success on every event; the action itself needs a pull_request diff.
+  # Output stays limited to what the PR adds: no PR comment, and the public logs never list the fork's existing findings.
+  dependency-review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependencies the PR adds
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
-          # Pinned: a floating version turns an upstream release into a
-          # surprise red build on an unrelated pull request.
-          version: v2.13.2
-          working-directory: server
-          # golangci-lint-action's only-new-issues fetches the PR diff through
-          # GitHub's API, which rejects this upstream-sync PR at 300 files.
-          # Use the already-fetched local merge base instead.
-          args: --new-from-merge-base=origin/${{ github.base_ref }}
+          fail-on-severity: high
+          fail-on-scopes: runtime, development
+          comment-summary-in-pr: never
 
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
-    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd]
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
-          JOB_SCOPES: '{"backend-tests":"push_full","backend-agent-tests":"backend","sqlc-check":"push_full","go-vulnerability-scan":"push_full","go-lint":"push_full","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd"}'
+          JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
         run: node scripts/ci-scope.mjs gate
-
-  push-go-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      CI: "true"
-      GOFLAGS: -count=1
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
-        id: go
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache: false
-      - name: Restore Go module cache
-        uses: actions/cache@v6
-        with:
-          path: ~/go/pkg/mod
-          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
-      - name: Resolve Go build cache key
-        id: gocache
-        run: echo "prefix=go-build-race-${{ runner.os }}-${{ runner.arch }}-$ImageOS-${{ steps.go.outputs.go-version }}-" >> "$GITHUB_OUTPUT"
-      - name: Restore Go build cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-          restore-keys: ${{ steps.gocache.outputs.prefix }}
-      - name: Mark Go build cache epoch
-        id: goepoch
-        run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
-      - name: Compile race test binaries without executing TestMain
-        working-directory: server
-        run: ../scripts/go-test-with-agent-cli-guard.sh -- go test -race -run '^$' -exec /bin/true ./...
-      - name: Prune Go build cache to this run's entries
-        if: ${{ !cancelled() && steps.goepoch.outcome == 'success' }}
-        run: |
-          find ~/.cache/go-build -mindepth 2 -maxdepth 2 \( -name '*-a' -o -name '*-d' \) \
-            ! -newer "$RUNNER_TEMP/go-build-epoch" -exec rm -rf {} +
-      - name: Save Go build cache
-        if: ${{ !cancelled() && steps.gocache.outcome == 'success' }}
-        uses: actions/cache/save@v6
-        with:
-          path: ~/.cache/go-build
-          key: ${{ steps.gocache.outputs.prefix }}${{ github.sha }}
-
-  push-turbo-cache-warm:
-    needs: changes
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.merge_group_green == 'true' }}
-    runs-on: ubuntu-24.04
-    env:
-      TURBO_CACHE_DIR: .turbo/cache
-    steps:
-      - uses: actions/checkout@v6
-      - name: Setup pnpm
-        run: bash scripts/setup-pnpm.sh
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install
-      - name: Resolve runtime for cache key
-        id: runtime
-        run: echo "node=$(node --version)" >> "$GITHUB_OUTPUT"
-      - name: Restore turbo cache
-        uses: actions/cache@v6
-        with:
-          path: .turbo/cache
-          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.sha }}
-          restore-keys: |
-            turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-
-      - name: Warm build, type check, and lint cache
-        run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
-
 
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
   # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
-
-  # Bootstrap only (CHE-1980). Daemons update from their own Multica server
-  # now, but a daemon still on the earlier GitHub-based updater reaches its
-  # first server-built version through this artifact: `multica-daemon-<goos>-<goarch>`
-  # holding one file named `multica`. Delete this job once every host runs a
-  # server-only build.
-  daemon-artifact:
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        goarch: [amd64, arm64]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0 # commit history for version/commit stamping
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "~1.27.3"
-          check-latest: true
-          cache-dependency-path: server/go.sum
-      - name: Build daemon binary
-        working-directory: server
-        env:
-          CGO_ENABLED: "0"
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-        # main.version uses <upstream>-YYYYMMDD-hhmm from UPSTREAM_VERSION and
-        # commit timestamp so capability gates accept it (scripts/daemon-artifact-version.sh
-        # fails closed otherwise); the exact full commit goes separately into
-        # main.commit, which the updater requires the candidate's `--version` to report.
-        run: |
-          mkdir -p ../dist
-          version=$(cd .. && scripts/daemon-artifact-version.sh)
-          go build -trimpath \
-            -ldflags "-s -w -X main.version=${version} -X main.commit=${GITHUB_SHA} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -o ../dist/multica ./cmd/multica
-      - name: Upload daemon artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: multica-daemon-linux-${{ matrix.goarch }}
-          path: dist/multica
-          if-no-files-found: error
-          retention-days: 30
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -909,7 +988,7 @@ jobs:
     # and the branch it came from was already checked.
     needs: changes
     if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_IMAGE_BUDGET || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -940,7 +1019,7 @@ jobs:
         os:
           # GitHub-hosted (CHE-748): free on this public repo, no Blacksmith,
           # no X99-only dependency — plain checkout + shell tests.
-          - ubuntu-24.04
+          - ${{ vars.RUNNER_INSTALLER || 'ubuntu-24.04' }}
           # macOS leg halted (CHE-1012): no free macOS runners.
     runs-on: ${{ matrix.os }}
     steps:
@@ -960,7 +1039,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.26.9"
+          go-version: "~1.27.3"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -977,7 +1056,7 @@ jobs:
     # Sync-head exclusion lives here, not only in candidate-controlled
     # scripts/ci-scope.mjs (CHE-1381).
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_SCRIPT_CHECKS || 'ubuntu-24.04' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
@@ -987,6 +1066,12 @@ jobs:
       - name: Check runner routing
         run: python3 .github/tests/test_runner_routing.py
 
+      - name: Test mechanical-tier classifier paths (CHE-3339)
+        run: python3 -m unittest tests.test_che3339_mechanical_tier
+
+      - name: Test workflow run budget and cascade triggers (CHE-4250, CHE-4385)
+        run: python3 -m unittest tests.test_che4385_run_budget
+
       - name: Test pinned pnpm setup
         run: node --test scripts/setup-pnpm.test.mjs
 
@@ -995,6 +1080,8 @@ jobs:
 
       - name: Test check script
         run: bash scripts/check.test.sh
+      - name: Test the verified-download helper
+        run: bash scripts/fetch-verified.test.sh
 
       - name: Test worktree database cleanup
         run: bash scripts/worktree-db.test.sh
@@ -1044,7 +1131,7 @@ jobs:
     # D1 does not exercise.
     needs: changes
     if: ${{ needs.changes.outputs.deploy_cd == 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.RUNNER_DEPLOY_CD || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -1061,9 +1148,23 @@ jobs:
           bash deploy/cd/ensure-pyyaml.sh
           python3 deploy/cd/test-candidate-preflight.py
           python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-deploy-job-guard.py
+          python3 deploy/cd/test-deploy-schedule.py
+          python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-post-deploy-confirm.py
+          python3 deploy/cd/test-health-window.py
+          python3 deploy/cd/test-install-health-observer.py
+          python3 .github/scripts/test_ci_wait_policy.py
+          python3 .github/scripts/ci-wait-policy.py
+          python3 deploy/cd/test-rollback-failed-readback.py
           python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh
           bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
+          bash deploy/cd/test-resolve-scheduled.sh
+          python3 deploy/cd/test-github-api-retry.py
 
       # CHE-773: A/B cutover port agreement, pre-drain refusal, gated
       # incumbent recovery, and the public-route health alarm.
@@ -1073,6 +1174,8 @@ jobs:
           bash deploy/cd/test-ab-health-check.sh
           bash deploy/cd/test-notify-approval.sh
           bash deploy/cd/test-jev-overlay.sh
+          bash deploy/cd/test-github-allowlist-compose.sh
+          bash deploy/cd/test-passkey-overlay-compose.sh
           bash deploy/cd/test-flagfile-check.sh
 
       # CHE-823: the CLI default wall-clock bound must cover docker exec

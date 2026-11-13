@@ -78,7 +78,7 @@ Si la session locale n'existe plus, si le contexte ne peut pas être poursuivi, 
 
 ## Suivre et arrêter une exécution
 
-Pendant l'exécution de l'agent, l'interface affiche la phase en cours et l'activité des outils. Dépliez **Afficher les détails** pour inspecter l'exécution en entier.
+Pendant l'exécution de l'agent, l'interface affiche la phase en cours et l'activité des outils. Dépliez **Afficher les détails** pour inspecter l'exécution en entier. Les messages que l'agent écrit entre deux appels d'outils apparaissent dans la conversation au fur et à mesure, sans qu'il soit nécessaire de déplier les détails pour les lire.
 
 Pour l'interrompre, cliquez sur le bouton Arrêter à côté de la zone de saisie (affiché quand la zone est vide). Le contenu déjà renvoyé dans la conversation est conservé.
 
@@ -117,6 +117,23 @@ Si une conversation est liée à un canal externe (comme Slack), l'archiver romp
 <Callout type="warning">
 La suppression d'une conversation est irréversible et arrête toutes les exécutions qu'elle contient et qui ne sont pas terminées. Archivez-la plutôt si vous n'en avez simplement plus besoin pour le moment.
 </Callout>
+
+## Décisions en attente
+
+Tant qu'un agent attend votre décision, une pastille « N décisions vous attendent » s'affiche sur chaque page. Sur la page de discussion, le même compte apparaît dans l'en-tête sous forme de bouton : un clic liste toutes les décisions en attente et en ouvre une sans déplacer la liste des messages. Ailleurs, un clic sur la pastille ouvre la plus ancienne : le ticket au commentaire de la carte, ou le ticket si la carte n'a pas de commentaire. La même décision apparaît aussi dans votre boîte de réception et dans la liste « Needs you ». Une réponse en texte libre sans option ferme quand même la carte, et l'agent lit vos mots.
+
+### Vider la liste « Needs you »
+
+Chaque ligne de la liste « Needs you » propose deux actions :
+
+- **Fait** marque la ligne comme traitée. Une carte de décision ne peut pas être marquée faite ; répondez-y.
+- **Plus tard** masque la ligne jusqu'à l'heure choisie (2 heures par défaut, affichée en ICT). Une décision reste ouverte ; seule sa place dans la liste est reportée.
+
+**Tout marquer fait** traite toutes les lignes d'un coup, sauf les décisions. Un message en bas de l'écran propose **Annuler** pendant 10 secondes.
+
+La commande `/later [durée]` reporte tout ce que le DM affiche dans « Needs you ». La durée est un nombre suivi de `s`, `m`, `h` ou `d`, de 1 seconde à 7 jours (2 heures par défaut). Rien n'est envoyé à l'agent.
+
+Quand un DM attend la réponse à une question ouverte, la zone de saisie affiche la case « Ce message répond à la question ouverte ». Elle est cochée si une seule question est ouverte et décochée s'il y en a plusieurs ; la cocher répond à toutes. Un message qui ne répond pas à la question la laisse ouverte.
 
 ## Étapes suivantes
 

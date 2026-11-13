@@ -20,7 +20,7 @@ func TestCommentDecisionHint(test *testing.T) {
 			case "decision_intent":
 				intent, wantHint = true, false
 			case "agent_mention":
-				content, wantHint = "[@Agent](mention://agent/11111111-1111-4111-8111-111111111111)", false
+				content, wantHint = fmt.Sprintf("[@Agent](mention://agent/%s)", fixture.agentID), false
 			case "human_author":
 				agent, wantHint = false, false
 			case "no_mention":

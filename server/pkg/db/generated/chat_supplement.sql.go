@@ -256,6 +256,44 @@ func (q *Queries) DeleteChatTaskSupplementsBySession(ctx context.Context, arg De
 	return err
 }
 
+const getDeliveredChatTaskSupplement = `-- name: GetDeliveredChatTaskSupplement :one
+SELECT message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at FROM chat_task_supplement
+WHERE chat_session_id = $1
+  AND message_id = $2
+  AND task_id = $3
+  AND status = 'delivered'
+`
+
+type GetDeliveredChatTaskSupplementParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	MessageID     pgtype.UUID `json:"message_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
+}
+
+// A steered message the provider holds for this exact run. Pending, delivering,
+// uncertain and failed receipts do not match: the agent may not have seen them.
+func (q *Queries) GetDeliveredChatTaskSupplement(ctx context.Context, arg GetDeliveredChatTaskSupplementParams) (ChatTaskSupplement, error) {
+	row := q.db.QueryRow(ctx, getDeliveredChatTaskSupplement, arg.ChatSessionID, arg.MessageID, arg.TaskID)
+	var i ChatTaskSupplement
+	err := row.Scan(
+		&i.MessageID,
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AuthorID,
+		&i.Status,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.ResentTaskID,
+		&i.ResentUncertain,
+		&i.AckedAfterResendAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const getLatestChatTaskSupplement = `-- name: GetLatestChatTaskSupplement :one
 SELECT message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at FROM chat_task_supplement
 WHERE chat_session_id = $1 AND message_id = $2
@@ -328,6 +366,81 @@ func (q *Queries) ListChatTaskSupplementsByMessageIDs(ctx context.Context, arg L
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeliveredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveredSteeredChatMessages = `-- name: ListDeliveredSteeredChatMessages :many
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_task_supplement s
+JOIN chat_message m ON m.id = s.message_id AND m.chat_session_id = s.chat_session_id
+WHERE s.chat_session_id = $1
+  AND s.workspace_id = $2
+  AND s.status = 'delivered'
+  AND m.created_at < $3
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_answer a
+      WHERE m.id = ANY(a.chat_message_ids) AND a.disclaimed_at IS NULL
+  )
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $4
+`
+
+type ListDeliveredSteeredChatMessagesParams struct {
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Before        pgtype.Timestamptz `json:"before"`
+	RowLimit      int32              `json:"row_limit"`
+}
+
+// Delivered steered messages of a DM that no live decision answer quotes yet.
+// A steered message keeps task_id of its cancelled follow-up, so no turn lists
+// it as input.
+func (q *Queries) ListDeliveredSteeredChatMessages(ctx context.Context, arg ListDeliveredSteeredChatMessagesParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listDeliveredSteeredChatMessages,
+		arg.ChatSessionID,
+		arg.WorkspaceID,
+		arg.Before,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
 		); err != nil {
 			return nil, err
 		}

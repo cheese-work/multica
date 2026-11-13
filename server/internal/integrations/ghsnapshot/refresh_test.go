@@ -295,3 +295,60 @@ func TestScheduleChaseBounded(t *testing.T) {
 		t.Fatal("chase past the cap must stop and clear attempts")
 	}
 }
+
+// CHE-3419: an installation that fails the allowlist policy is never queued;
+// the denial is logged once per sweep interval, and an allowed one is unchanged.
+func TestEnqueueSkipsDisallowedInstallation(t *testing.T) {
+	m := NewManager(enabledClient(t), nil, nil, nil)
+	now := time.Unix(30000, 0)
+	m.now = func() time.Time { return now }
+	m.SetInstallationFilter(func(id int64) bool { return id == 1 })
+
+	m.Enqueue(2, "o", "r", 7)
+	m.Enqueue(2, "o", "r", 8)
+	if len(m.queue) != 0 || len(m.active) != 0 {
+		t.Fatalf("disallowed installation queued %d items (active %d), want 0", len(m.queue), len(m.active))
+	}
+	m.Enqueue(1, "o", "r", 7)
+	if len(m.queue) != 1 {
+		t.Fatalf("allowed installation queued %d items, want 1", len(m.queue))
+	}
+	m.MaybeEnqueueOnView(2, "o", "r", 9, time.Time{}, false)
+	if len(m.queue) != 1 {
+		t.Fatalf("view trigger queued a disallowed installation: queue=%d", len(m.queue))
+	}
+}
+
+// CHE-5313: a refresh that hangs (blocked fetch or write) must not hold its
+// worker forever; with every worker wedged no snapshot refreshes and every
+// checks_finished wakeup stalls.
+func TestHungRefreshDoesNotWedgeWorker(t *testing.T) {
+	m := NewManager(enabledClient(t), nil, nil, nil)
+	m.concurrency = 1
+	m.processTimeout = 100 * time.Millisecond
+	m.jitter = func() time.Duration { return 0 }
+	m.listRows = func(context.Context, db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error) {
+		return []db.ListGitHubPRRowsByAddressRow{{State: "open"}}, nil
+	}
+	second := make(chan struct{}, 1)
+	m.fetch = func(ctx context.Context, _ *Client, _ int64, _ string, _ string, number int32) (*PRSnapshot, error) {
+		if number == 1 {
+			<-ctx.Done() // a stuck GitHub call that only the context can end
+			return nil, ctx.Err()
+		}
+		second <- struct{}{}
+		return nil, errors.New("stop after fetch")
+	}
+	m.Enqueue(1, "o", "r", 1)
+	m.Enqueue(1, "o", "r", 2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	m.Start(ctx)
+
+	select {
+	case <-second:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a hung refresh wedged the only worker")
+	}
+}

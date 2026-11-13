@@ -48,7 +48,10 @@ export function CommentMentionCard({
       newTabTitle={data.issue_identifier}
       className="issue-mention align-middle"
     >
-      <span className={`${commentChipClass()} cursor-pointer hover:bg-accent transition-colors`}>
+      <span
+        className={`${commentChipClass()} cursor-pointer hover:bg-accent transition-colors`}
+        data-copy-token={`${data.issue_identifier}#comment-${data.comment_id}`}
+      >
         <span className="font-medium text-muted-foreground shrink-0">
           {data.issue_identifier} ·
         </span>

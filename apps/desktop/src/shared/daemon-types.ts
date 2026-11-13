@@ -13,8 +13,15 @@ export type DaemonState =
   // this, an auth failure silently sticks at "starting" forever — see #3512.
   | "auth_expired";
 
+/** Managed CLI download progress, sent with `installing_cli` only. */
+export interface CliDownloadProgress {
+  bytesDone: number;
+  bytesTotal: number;
+}
+
 export interface DaemonStatus {
   state: DaemonState;
+  cliDownload?: CliDownloadProgress;
   pid?: number;
   uptime?: string;
   daemonId?: string;
