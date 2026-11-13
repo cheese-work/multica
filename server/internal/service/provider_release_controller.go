@@ -172,7 +172,11 @@ func releaseClosed(ctx context.Context, q *db.Queries, row db.GetProviderBreaker
 		case canary.Status == "failed" && canary.FailureReason.String == providerServerErrorReason:
 			// A failed canary leaves the evidence missing and doubles the cool-off.
 			save.CanaryCoolOffS = min(row.CanaryCoolOffS*2, providerCanaryMaxCoolOff)
-			save.NextCanaryAt = releaseTS(canary.CompletedAt.Time.Add(time.Duration(save.CanaryCoolOffS) * time.Second))
+			failedAt := now // a failed row without completed_at still waits a full cool-off
+			if canary.CompletedAt.Valid {
+				failedAt = canary.CompletedAt.Time
+			}
+			save.NextCanaryAt = releaseTS(failedAt.Add(time.Duration(save.CanaryCoolOffS) * time.Second))
 		case canary.Status == "completed":
 			save.CanaryCoolOffS, save.NextCanaryAt = providerBreakerCoolOff, pgtype.Timestamptz{}
 		}
