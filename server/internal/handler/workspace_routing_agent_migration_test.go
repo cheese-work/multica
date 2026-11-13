@@ -116,3 +116,21 @@ func TestRoutingAgentStartupCopyKeepsAnExistingNewValue(t *testing.T) {
 		t.Fatal("old key not cleared")
 	}
 }
+
+// A routing-off value that keeps custom statuses is a legitimate old value
+// (--routing-agent none keeps the statuses). The copy must move it, not fail.
+func TestRoutingAgentStartupCopyMovesARoutingOffValueWithStatuses(t *testing.T) {
+	wsID, _, _, _ := routingFixture(t, "ra-copy-off")
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_build_object(
+		'routing_agent', jsonb_build_object('agent_id', '', 'statuses', jsonb_build_array('todo'), 'overrides', jsonb_build_object())) WHERE id=$1`, wsID)
+	if _, err := testHandler.MigrateRoutingAgentSetting(context.Background()); err != nil {
+		t.Fatalf("copy of a routing-off value failed: %v", err)
+	}
+	settings := workspaceSettingsMap(t, wsID)
+	if _, old := settings[routingAgentKey]; old {
+		t.Fatalf("old key not cleared: %v", settings)
+	}
+	if _, ok := settings[backgroundAgentsKey]; ok {
+		t.Fatalf("routing off left a background_agents value: %v", settings)
+	}
+}

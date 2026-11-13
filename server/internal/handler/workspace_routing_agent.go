@@ -369,8 +369,12 @@ func (h *Handler) migrateRoutingAgentOf(ctx context.Context, ws pgtype.UUID) (bo
 		}
 		var back map[string]any
 		_ = json.Unmarshal(row.Settings, &back)
-		want := routingAgentFromSettings(map[string]any{backgroundAgentsKey: map[string]any{service.RoutingJobKey: legacy}})
-		if !reflect.DeepEqual(routingAgentFromSettings(back), want) {
+		// Compare the stored form of both sides: routing off stores no job, so a
+		// routing-off value with custom statuses reads back as the defaults.
+		want, got := routingAgentFromSettings(map[string]any{backgroundAgentsKey: map[string]any{service.RoutingJobKey: legacy}}), routingAgentFromSettings(back)
+		wantJob, _ := routingJob(want)
+		gotJob, _ := routingJob(got)
+		if !reflect.DeepEqual(wantJob, gotJob) {
 			return false, errors.New("read-back differs from the old value; old key kept")
 		}
 	}
