@@ -6597,6 +6597,11 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
 	switch {
+	case task.BackgroundJob != "":
+		// No issue, chat or autopilot parent: the task row alone says when
+		// the dir is done, as for quick-create.
+		meta.Kind = execenv.GCKindBackground
+		meta.TaskID = task.ID
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
 		meta.ChatSessionID = task.ChatSessionID
@@ -7984,6 +7989,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// CHE-4101: an output_only background task never enters the full pipeline.
+	if task.BackgroundJob != "" {
+		return d.runBackgroundTask(ctx, task, provider, taskLog)
+	}
 
 	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
 	if task.Script != nil {
@@ -8116,6 +8125,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		BackgroundJob:                    task.BackgroundJob,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -9148,7 +9158,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		PiSkillPaths:               env.PiSkillPaths,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.agentTimeoutFor(provider),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,

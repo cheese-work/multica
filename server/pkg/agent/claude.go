@@ -89,7 +89,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// instead of inheriting from the outer Claude Code session.
 	var mcpConfigPath string
 	var mcpFileCleanup func() // non-nil while this function owns the temp file
-	if hasManagedMcpConfig(opts.McpConfig) {
+	if !opts.OutputOnly && hasManagedMcpConfig(opts.McpConfig) {
 		path, err := writeMcpConfigToTemp(opts.McpConfig)
 		if err != nil {
 			cancel()
@@ -1220,7 +1220,34 @@ var claudeBlockedArgs = map[string]blockedArgMode{
 	"--effort": blockedWithValue,
 }
 
+// buildClaudeOutputOnlyArgs is the whole launch line of an output_only
+// background job (CHE-4101). It ignores McpConfig, ResumeSessionID,
+// ClaudeSettingsPath, ExtraArgs and CustomArgs, so no setting can re-enable a
+// tool. `--safe-mode` disables host CLAUDE.md, settings hooks, skills, plugins
+// and MCP servers while keeping OAuth auth; `--bare` is avoided because it
+// requires ANTHROPIC_API_KEY.
+func buildClaudeOutputOnlyArgs(opts ExecOptions) []string {
+	args := []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--input-format", "stream-json",
+		"--verbose",
+		"--tools", "",
+		"--strict-mcp-config",
+		"--disable-slash-commands",
+		"--no-session-persistence",
+		"--safe-mode",
+	}
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+	}
+	return args
+}
+
 func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
+	if opts.OutputOnly {
+		return buildClaudeOutputOnlyArgs(opts)
+	}
 	args := []string{
 		"-p",
 		"--output-format", "stream-json",
