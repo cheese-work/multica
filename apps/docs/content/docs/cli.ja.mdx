@@ -149,6 +149,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
+### タスクをルーティングする
+
+`issue route` は、タスクのステータスを変更し、その理由を 1 回の呼び出しで記録します。ルーティングステップが、タスクの次の行き先を決めるときに使います。`--status`、`--reason`（1〜500 文字）、`--confidence`（0〜1）は必須です。
+
+```bash
+multica issue route MUL-123 --status in_review --reason "テスト合格、レビューが必要" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "バックエンドの修正が必要" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "レビュー担当が後で対応する" --confidence 0.9
+```
+
+`--owner` を指定しない場合は、`issue status` と同じく、プロジェクトのワークフローが担当者を決めます。明示的な `--owner`（メンバー、エージェント、スクワッド。`--owner-id` は名前の代わりに UUID を取ります）は、ワークフローの担当者を置き換えます。現在のステータスを保ったまま担当者だけを変えるルートは許可されます。ステータスも担当者も同じルートは HTTP 409 で拒否され、何も書き込まれません。`--no-start` は `issue update` と同じく、エージェントの実行を開始しません。`--expected-revision` を指定すると、その間にタスクが変更されていた場合にルートを拒否します。
+
 ### タイムライン
 
 `issue get` はタスクの現在の状態を返します。`issue timeline` はステータス、優先度、担当者、タイトル、日付の変更と実行結果を時系列に並べ、コメントも混ぜて表示します。「いつ in_review に移ったか」「今のステータスにどれだけ留まっているか」を調べるときに使います。

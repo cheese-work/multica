@@ -149,6 +149,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
 
+### 路由任务
+
+`issue route` 在一次调用中修改任务状态并记录原因。路由步骤用它决定任务下一步去哪里。`--status`、`--reason`（1 到 500 个字符）和 `--confidence`（0 到 1）为必填：
+
+```bash
+multica issue route MUL-123 --status in_review --reason "测试通过，需要评审" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "需要后端修复" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "评审人稍后接手" --confidence 0.9
+```
+
+不带 `--owner` 时，由项目工作流选择处理人，与 `issue status` 相同。显式的 `--owner`（成员、智能体或小队；`--owner-id` 接受 UUID 而不是名称）会替换工作流的处理人。保持当前状态、只修改负责人的路由是允许的。状态和负责人都相同的路由会被拒绝并返回 HTTP 409，不写入任何内容。`--no-start` 与 `issue update` 一样，不会启动智能体运行。`--expected-revision` 会在任务期间发生变化时拒绝该路由。
+
 ### 时间线
 
 `issue get` 给出任务现在的状态；`issue timeline` 按时间顺序列出状态、优先级、负责人、标题、日期的改动和运行结果，并混排评论，用来回答"什么时候进入 in_review""卡在当前状态多久了"：
