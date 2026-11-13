@@ -67,10 +67,14 @@
     "supplement_failure_provider_rejected": "エージェントがメッセージを拒否しました",
     "supplement_failure_timeout": "配信がタイムアウトしました",
     "supplement_failure_unknown": "原因不明",
+    "supplement_failure_replay_exhausted": "再試行を使い切りました",
+    "supplement_failure_run_budget_exhausted": "実行の予算を使い切りました",
+    "supplement_failure_agent_paused": "エージェントは一時停止中です",
     "supplement_retry": "再試行",
     "supplement_retry_failed": "配信を再試行できませんでした。",
     "steer_badge": "{{names}} の実行に追加",
     "steer_waiting": "{{name}} が読むのを待っています",
+    "steer_replay_queued": "{{name}} が次の実行で読みます",
     "steer_read": "{{name}} が読みました",
     "steer_not_received": "{{name}} は受け取れませんでした · {{reason}}",
     "steer_resend": "新しい実行として送信",
@@ -447,7 +451,9 @@
   },
   "gantt2": {
     "clipped_start": "このウィンドウより前に開始",
-    "now": "現在"
+    "now": "現在",
+    "collapse": "折りたたむ",
+    "expand": "展開"
   },
   "actor_issues": {
     "scope": {

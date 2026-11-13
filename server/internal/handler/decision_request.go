@@ -793,6 +793,15 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	if err != nil {
 		return empty, err
 	}
+	if input.Action != nil && isRunBudgetActionType(input.Action.Type) {
+		window, err := runBudgetWindowOf(input.Action.Params)
+		if err != nil {
+			return empty, err
+		}
+		if err := recordRunBudgetAsk(ctx, queries, issue, "agent", agent.ID, input.Action.Type, window); err != nil {
+			return empty, err
+		}
+	}
 	// The ping commits with the request: a ping failure refuses the whole call.
 	// A batch pings once, for its lead; the others are recorded as handled.
 	if input.Batch.writesCard() {

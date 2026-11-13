@@ -24,10 +24,14 @@
     "supplement_failure_provider_rejected": "AI 代理拒絕了該訊息",
     "supplement_failure_timeout": "送達超時",
     "supplement_failure_unknown": "原因未知",
+    "supplement_failure_replay_exhausted": "重試次數已用完",
+    "supplement_failure_run_budget_exhausted": "執行預算已用完",
+    "supplement_failure_agent_paused": "AI 代理已暫停",
     "supplement_retry": "重試",
     "supplement_retry_failed": "無法重試送達。",
     "steer_badge": "插話給 {{names}}",
     "steer_waiting": "等待 {{name}} 讀取",
+    "steer_replay_queued": "{{name}} 將在下一次執行中讀取",
     "steer_read": "{{name}} 已讀取",
     "steer_not_received": "{{name}} 未收到 · {{reason}}",
     "steer_resend": "作為新一輪傳送",
@@ -404,7 +408,9 @@
   },
   "gantt2": {
     "clipped_start": "在此時間視窗之前開始",
-    "now": "現在"
+    "now": "現在",
+    "collapse": "摺疊",
+    "expand": "展開"
   },
   "actor_issues": {
     "scope": {
