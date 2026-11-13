@@ -489,6 +489,8 @@ A batch card closes the per-issue cards it covers. Pass `--covers <request-id>` 
 
 If a decision-intent comment is still open for the task, the older two-step flow applies: pass `--session` or `--new-dm --for`, and the ask replies under the intent comment. `--parent` is refused there.
 
+`--recovers <event-id>` marks the request as the answer to an ask guard event, for example one named in a refused operation or a recovery notice. The server clears that event in the same transaction as the request, but only when the event is on this issue and was raised for the person the request asks. A request for one person never clears another person's event, and a request without `--recovers` clears nothing, even an unrelated one for the same person. An event for another issue or person is refused with `400`. A request recovers one event only: a retry of the same request that names a second event is refused with `400`.
+
 ### Decision proposals
 
 A running task token proposes a governed action for a person to approve with a passkey. The proposal changes nothing itself.

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -15,8 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/passkey"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
-
-var errNotBatchable = decisionIntentRefusal{http.StatusConflict, "not_batchable: this action type cannot be approved in a batch; approve it alone"}
 
 // batchPayloadSHA256 is the hash a human signs for a batch: the hash of the
 // items' payload hashes, sorted, so the order of the card does not matter.
@@ -38,11 +37,6 @@ func (handler *Handler) batchActions(ctx context.Context, caller decisionActionC
 	}
 	hashes := make([]string, len(actions))
 	for index, action := range actions {
-		// A top-up holds its issue's run-budget boundary, and a caller may hold
-		// only one boundary at a time.
-		if action.ActionType == runBudgetTopUpType {
-			return nil, "", errNotBatchable
-		}
 		hashes[index] = action.PayloadSha256
 	}
 	return actions, batchPayloadSHA256(hashes), nil
@@ -96,9 +90,9 @@ type batchApproveResponse struct {
 // assertion over the batch hash. Each item runs under its own savepoint: one
 // that fails ends as failed with its own error code and the others still apply.
 // Any other refusal (not pending, expired, not the human, recovery, owner-only,
-// a wrong hash) refuses the whole batch and applies nothing. Run-budget top-ups
-// are not batchable: each holds a boundary lock. Items that need secret values
-// or a preview digest are not batchable either.
+// a wrong hash) refuses the whole batch and applies nothing. The batch enters
+// the run-budget boundary once for all its top-ups. Items that need secret
+// values or a preview digest are not batchable: the batch carries neither.
 func (handler *Handler) ApproveDecisionActionBatch(writer http.ResponseWriter, request *http.Request) {
 	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
 	if !ok {
@@ -141,10 +135,24 @@ func (handler *Handler) approveDecisionActionBatch(ctx context.Context, caller d
 	if body.PayloadSHA256 != hash {
 		return nil, errPayloadMismatch
 	}
+	var boundary []pgtype.UUID
+	for _, plan := range plans {
+		if plan.boundaryIssue.Valid {
+			boundary = append(boundary, plan.boundaryIssue)
+		}
+	}
+	// One entry for every top-up's issue: a slot per item would exhaust them.
+	if len(boundary) > 0 {
+		leave, err := handler.enterRunBudgetBoundaries(ctx, boundary...)
+		if err != nil {
+			return nil, errBusyRetry
+		}
+		defer leave()
+	}
 	var finished []db.DecisionAction
 	_, err = retryActionTx(ctx, "approve_batch", callers[0], plans[0].located.IssueID, func() (db.DecisionAction, error) {
 		var err error
-		finished, err = handler.approveBatchTx(ctx, body, callers, plans)
+		finished, err = handler.approveBatchTx(ctx, body, callers, plans, boundary)
 		return db.DecisionAction{}, err
 	})
 	var uncertain uncertainCommit
@@ -162,12 +170,20 @@ func (handler *Handler) approveDecisionActionBatch(ctx context.Context, caller d
 // approveBatchTx locks and checks every item, verifies the one assertion, then
 // executes each item in its own savepoint. An item whose target drifted ends as
 // failed without executing.
-func (handler *Handler) approveBatchTx(ctx context.Context, body batchApproveBody, callers []decisionActionCaller, plans []approvePlan) ([]db.DecisionAction, error) {
+func (handler *Handler) approveBatchTx(ctx context.Context, body batchApproveBody, callers []decisionActionCaller, plans []approvePlan, boundary []pgtype.UUID) ([]db.DecisionAction, error) {
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
 		return nil, err
 	}
 	defer transaction.Rollback(context.WithoutCancel(ctx))
+	// The boundary locks come first, in id order, so two batches never wait on
+	// each other; each item's own lock after them is re-entrant.
+	slices.SortFunc(boundary, func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) })
+	for _, issueID := range slices.Compact(boundary) {
+		if err := handler.Queries.WithTx(transaction).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
+			return nil, err
+		}
+	}
 	locked := make([]approveLocked, len(plans))
 	targets := make([]approveTargets, len(plans))
 	drifted := make([]bool, len(plans))

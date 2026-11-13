@@ -8,6 +8,13 @@ WITH candidate AS MATERIALIZED (
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = @task_id
       AND t.status IN ('dispatched', 'waiting_local_directory')
+      -- CHE-4103: a background task past its start bound (the claim deadline,
+      -- counted from the claim) never becomes running; the deadline sweep fails it.
+      AND (
+          t.context->>'type' IS DISTINCT FROM 'background'
+          OR COALESCE((t.context->>'claim_deadline_seconds')::int, 0) <= 0
+          OR COALESCE(t.dispatched_at, now()) >= now() - make_interval(secs => (t.context->>'claim_deadline_seconds')::double precision)
+      )
     FOR UPDATE OF t
 ), capability AS (
     INSERT INTO task_supplement_capability (task_id, workspace_id, issue_id, capability)

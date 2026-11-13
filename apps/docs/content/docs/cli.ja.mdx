@@ -147,6 +147,8 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+`multica decision request` の `--recovers <event-id>` は、そのリクエストが ask ガードのイベント（拒否された操作や復旧通知に示されたもの）への回答であることを示します。サーバーは、イベントがこの課題にあり、リクエストが問い合わせる本人に対して発生したものである場合に限り、リクエストと同じトランザクションでそのイベントを解消します。ある人へのリクエストが別の人のイベントを解消することはなく、`--recovers` のないリクエストは何も解消しません。別の課題や別の人のイベントは `400` で拒否されます。1 つのリクエストが復旧できるイベントは 1 件だけです。同じリクエストの再試行が 2 件目のイベントを指定すると `400` で拒否されます。
+
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
 ### タスクをルーティングする
