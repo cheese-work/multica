@@ -101,6 +101,7 @@
       "assignee_anyone": "Tout le monde",
       "assignee_me": "Moi",
       "assignee_my_agents": "Mes agents",
+      "assignee_me_and_my_agents": "Moi et mes agents",
       "reset": "Réinitialiser",
       "load_more": "Afficher plus",
       "show_less": "Afficher moins",
@@ -180,5 +181,12 @@
   "object_page": {
     "toggle_panel": "Afficher ou masquer le panneau de droite",
     "properties": "Propriétés"
+  },
+  "workspace_pause": {
+    "paused_by": "Planification suspendue par {{name}} · {{time}}.",
+    "paused_at": "Planification suspendue · {{time}}.",
+    "detail": "Aucun agent ne prend de nouvelle exécution. Les tâches en cours se terminent ; le travail en file attend.",
+    "resume": "Reprendre",
+    "resume_failed": "Impossible de reprendre l'espace de travail"
   }
 }

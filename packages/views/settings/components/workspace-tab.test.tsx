@@ -60,6 +60,7 @@ vi.mock("@multica/core/issues/queries", () => ({
 vi.mock("@multica/core/workspace/mutations", () => ({
   useLeaveWorkspace: () => ({ mutateAsync: vi.fn() }),
   useDeleteWorkspace: () => ({ mutateAsync: vi.fn() }),
+  useSetWorkspaceScheduling: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -89,6 +90,12 @@ vi.mock("./agent-decisions-row", () => ({
 vi.mock("./routing-agent-rows", () => ({
   RoutingAgentRows: ({ canEdit }: { canEdit: boolean }) => (
     <div data-testid="routing-agent-rows" data-can-edit={String(canEdit)} />
+  ),
+}));
+
+vi.mock("./delegated-writes-section", () => ({
+  DelegatedWritesSection: ({ canEdit }: { canEdit: boolean }) => (
+    <div data-testid="delegated-writes-section" data-can-edit={String(canEdit)} />
   ),
 }));
 
@@ -312,6 +319,17 @@ describe("WorkspaceTab — automatic updates", () => {
     render(<WorkspaceTab />, { wrapper: I18nWrapper });
 
     expect(screen.queryByTestId("agent-decisions-row") !== null).toBe(shown);
+  });
+
+  it.each([
+    ["owner", "true"],
+    ["admin", "true"],
+    ["member", "false"],
+  ] as const)("lets a %s edit delegated governed writes: %s", (role, canEdit) => {
+    membersRef.current = [{ user_id: "user-1", role, name: "Ada" }];
+    render(<WorkspaceTab />, { wrapper: I18nWrapper });
+
+    expect(screen.getByTestId("delegated-writes-section")).toHaveAttribute("data-can-edit", canEdit);
   });
 
   it.each([

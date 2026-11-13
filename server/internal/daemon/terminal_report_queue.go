@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 )
 
 const (
@@ -58,6 +60,8 @@ type persistedTerminalTaskReport struct {
 	RetiredSessionID      string    `json:"retired_session_id,omitempty"`
 	ContextTokens         int64     `json:"context_tokens,omitempty"`
 	ContextWindow         int64     `json:"context_window,omitempty"`
+
+	InitContext *initctx.Report `json:"init_context,omitempty"`
 
 	PermanentRejectionCount   int        `json:"permanent_rejection_count,omitempty"`
 	FirstPermanentRejectionAt *time.Time `json:"first_permanent_rejection_at,omitempty"`
@@ -150,6 +154,7 @@ func persistedTerminalReport(report terminalTaskReport, createdAt time.Time) (pe
 		RetiredSessionID:      report.retiredSessionID,
 		ContextTokens:         report.contextTokens,
 		ContextWindow:         report.contextWindow,
+		InitContext:           report.initContext,
 	}, nil
 }
 
@@ -183,6 +188,7 @@ func (record persistedTerminalTaskReport) terminalReport() (terminalTaskReport, 
 		retiredSessionID:      record.RetiredSessionID,
 		contextTokens:         record.ContextTokens,
 		contextWindow:         record.ContextWindow,
+		initContext:           record.InitContext,
 	}, nil
 }
 

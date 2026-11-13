@@ -617,6 +617,7 @@ func main() {
 	registerActivityListeners(bus, queries)
 	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
+	registerIssueUnreadListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -775,6 +776,7 @@ func main() {
 	go runSourceContextSweeper(sweepCtx, taskSvc)
 	go runWebhookNonceSweeper(sweepCtx, queries)
 	go h.RunElevationFenceSweeper(sweepCtx)
+	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -840,6 +842,14 @@ func main() {
 		go h.ChannelMediaReconciler.Run(sweepCtx)
 	}
 
+	// WeCom scan-code install worker: drives QR generate + poll out of band, so
+	// no HTTP request waits on WeCom. Started even when the scan flow is
+	// unconfigured, so any session already in flight reaches a terminal state
+	// instead of spinning forever in the admin's dialog.
+	if h.WecomInstallWorker != nil {
+		go h.WecomInstallWorker.Run(sweepCtx)
+	}
+
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
 	// `sys_cron_executions` table into the distributed lease + audit
 	// log for internal periodic jobs. The first job is
@@ -883,6 +893,9 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
 		slog.Error("scheduler: register stage queue release", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.AdmissionDeferralReleaseJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register admission deferral release", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)

@@ -5,6 +5,8 @@ import {
   AlertCircle,
   Copy,
   ExternalLink,
+  Pause,
+  Play,
   RotateCcw,
   Square,
   Trash2,
@@ -34,6 +36,7 @@ import {
 import { useT } from "../../i18n";
 import { AppLink, useIntentNavigate } from "../../navigation";
 import { CollectionRowMenu } from "../../layout/collection-list";
+import { AgentSchedulingDialog } from "./agent-scheduling";
 
 interface AgentRowActionsProps {
   agent: Agent;
@@ -43,6 +46,8 @@ interface AgentRowActionsProps {
   // the server is still the source of truth, this only hides UI for ops
   // the user can't perform.
   canManage: boolean;
+  // Workspace owner/admin only: pause / resume is refused for anyone else.
+  canSchedule?: boolean;
   // Destination of "Duplicate" — the manual create form, pre-populated with
   // this agent's config as a template. A href rather than a callback so the
   // menu item is a real link (modifier-click opens it in a new tab).
@@ -59,6 +64,7 @@ export function AgentRowActions({
   agent,
   presence,
   canManage,
+  canSchedule = false,
   duplicateHref,
 }: AgentRowActionsProps) {
   const { t } = useT("agents");
@@ -70,6 +76,7 @@ export function AgentRowActions({
 
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [schedulingAction, setSchedulingAction] = useState<"pause" | "resume" | null>(null);
 
   const isArchived = !!agent.archived_at;
   const runningCount = presence?.runningCount ?? 0;
@@ -154,6 +161,22 @@ export function AgentRowActions({
             {t(($) => $.row_actions.cancel_all_tasks)}
           </DropdownMenuItem>
         )}
+        {canSchedule && !isArchived && (
+          <DropdownMenuItem
+            onClick={() =>
+              setSchedulingAction(agent.scheduling_paused_at ? "resume" : "pause")
+            }
+          >
+            {agent.scheduling_paused_at ? (
+              <Play className="h-3.5 w-3.5" />
+            ) : (
+              <Pause className="h-3.5 w-3.5" />
+            )}
+            {agent.scheduling_paused_at
+              ? t(($) => $.scheduling.resume_action)
+              : t(($) => $.scheduling.pause_action)}
+          </DropdownMenuItem>
+        )}
         {showDuplicate && (
           <DropdownMenuItem render={<AppLink href={duplicateHref} />}>
             <Copy className="h-3.5 w-3.5" />
@@ -179,6 +202,14 @@ export function AgentRowActions({
           </>
         )}
       </CollectionRowMenu>
+
+      {schedulingAction && (
+        <AgentSchedulingDialog
+          agent={agent}
+          action={schedulingAction}
+          onClose={() => setSchedulingAction(null)}
+        />
+      )}
 
       {confirmCancel && (
         <AlertDialog

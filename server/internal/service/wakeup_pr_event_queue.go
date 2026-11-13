@@ -176,6 +176,14 @@ func (s *IssueWakeupService) bridgePREvent(ctx context.Context, tx pgx.Tx, q *db
 		activity, err := s.notePREventQueued(ctx, q, w, e)
 		return nil, activity, err
 	}
+	own, err := s.prEventIsOwnChange(ctx, tx, q, issue, config, w, e)
+	if err != nil {
+		return nil, nil, err
+	}
+	if own {
+		activity, err := s.notePREventOwnChange(ctx, tx, q, w, e)
+		return nil, activity, err
+	}
 	var withdrawn []db.AgentTaskQueue
 	if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
 		return nil, nil, err
@@ -209,6 +217,49 @@ func (s *IssueWakeupService) notePREventQueued(ctx context.Context, q *db.Querie
 	a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
 		"rule": SystemRulePRAttention, "outcome": wakeupOutcomeQueuedNextTurn, "event_id": id,
 		"message": fmt.Sprintf("PR event queued for next turn: %s on PR #%d", e.Kind, e.PrNumber),
+	})
+	return []wakeupActivity{a}, err
+}
+
+// ownChangeGrace is how long after a run ends a push or close it made can still
+// reach the server: the webhook and the snapshot refresh trail the action.
+const ownChangeGrace = 5 * time.Minute
+
+// prEventIsOwnChange reports whether the agent this event would wake caused the
+// event itself (CHE-5184): a head_changed or closed event observed while a run of
+// that agent on the issue was live, or within ownChangeGrace after one ended.
+// GitHub cannot say which agent acted. Agents share one bot identity and one git
+// author, so the push actor, the commit author and the installation all name the
+// same account for every agent. The run window on the issue is the only
+// per-agent signal the server holds. Other kinds (checks_failed, conflict) and
+// events with no agent target (member, squad without a leader) always wake.
+func (s *IssueWakeupService) prEventIsOwnChange(ctx context.Context, tx pgx.Tx, q *db.Queries, issue db.Issue, config *builtinWakeup, w db.IssueWakeup, e db.ListNextTurnPREventsRow) (bool, error) {
+	if e.Kind != "head_changed" && e.Kind != "closed" {
+		return false, nil
+	}
+	target, err := builtinTarget(ctx, s, q, issue, config, w)
+	if err != nil || target.Refused != "" || !target.Agent.ID.Valid {
+		return false, err
+	}
+	var own bool
+	err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM agent_task_queue t
+		WHERE t.issue_id=$1 AND t.agent_id=$2 AND t.started_at IS NOT NULL
+		  AND t.started_at <= $3
+		  AND (t.completed_at IS NULL OR t.completed_at + $4::interval >= $3))`,
+		issue.ID, target.Agent.ID, e.ObservedAt, ownChangeGrace.String()).Scan(&own)
+	return own, err
+}
+
+// notePREventOwnChange retires an own-change event so no later pass offers it
+// again, and keeps it on the timeline.
+func (s *IssueWakeupService) notePREventOwnChange(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, e db.ListNextTurnPREventsRow) ([]wakeupActivity, error) {
+	if _, err := tx.Exec(ctx, `UPDATE issue_pr_event SET status='superseded' WHERE id=$1 AND status IN ('accepted','next_turn')`, e.ID); err != nil {
+		return nil, err
+	}
+	a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
+		"rule": SystemRulePRAttention, "outcome": wakeupOutcomeOwnChange, "event_id": util.UUIDToString(e.ID),
+		"message": fmt.Sprintf("PR event not delivered, the agent made it: %s on PR #%d", e.Kind, e.PrNumber),
 	})
 	return []wakeupActivity{a}, err
 }

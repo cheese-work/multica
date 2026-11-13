@@ -100,6 +100,7 @@
       "assignee_anyone": "모두",
       "assignee_me": "나",
       "assignee_my_agents": "내 에이전트",
+      "assignee_me_and_my_agents": "나와 내 에이전트",
       "reset": "초기화",
       "load_more": "더 보기",
       "show_less": "간단히 보기",
@@ -173,5 +174,12 @@
   "object_page": {
     "toggle_panel": "오른쪽 사이드바 전환",
     "properties": "속성"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}}님이 스케줄링을 일시 중지했습니다 · {{time}}.",
+    "paused_at": "스케줄링 일시 중지됨 · {{time}}.",
+    "detail": "어떤 에이전트도 새 실행을 가져가지 않습니다. 실행 중인 작업은 끝나고 대기 중인 작업은 기다립니다.",
+    "resume": "재개",
+    "resume_failed": "워크스페이스를 재개하지 못했습니다"
   }
 }

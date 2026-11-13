@@ -8,6 +8,7 @@ import enChat from "../../locales/en/chat.json";
 import { NavigationProvider } from "../../navigation";
 
 const listChatSessions = vi.fn();
+const listOpenDecisionRequests = vi.fn();
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...await importOriginal<typeof import("@multica/core/paths")>(),
@@ -17,7 +18,7 @@ vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/api", () => ({
   api: {
     listChatSessions: (...args: unknown[]) => listChatSessions(...args),
-    listOpenDecisionRequests: () => Promise.resolve([]),
+    listOpenDecisionRequests: (...args: unknown[]) => listOpenDecisionRequests(...args),
   },
 }));
 
@@ -83,8 +84,25 @@ describe("Needs you box: attention rows", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.setSystemTime(NOW);
     listChatSessions.mockReset();
+    listOpenDecisionRequests.mockReset().mockResolvedValue([]);
   });
   afterEach(() => vi.useRealTimers());
+
+  it("shows a plain one-line summary for a proposed action, never raw markdown", async () => {
+    listChatSessions.mockResolvedValue([]);
+    listOpenDecisionRequests.mockResolvedValue([{
+      id: "dr-1", issue_id: "i-1", issue_identifier: "CHE-4678", asking_agent_id: "agent-1", asking_agent_name: "Alpha",
+      ask: "**Proposed action**\n`workflow.steps.set` version 1 on [Issue](mention://issue/01a1bb73-0000-7000-8000-000000000000)\n\n**Parameters**\n```json\n{\n  \"step\": \"review\"\n}\n```",
+      escalation_class: "other", created_at: hoursAgo(1), chat_session_id: "s-1", message_id: "m-1",
+    }]);
+    renderBox();
+    await flush();
+    const row = screen.getByRole("link", { name: /CHE-4678/ });
+    expect(row.textContent).not.toContain("mention://");
+    expect(row.textContent).not.toContain("](");
+    expect(row.textContent).not.toContain("Parameters");
+    expect(row.textContent).toContain("workflow.steps.set v1 on CHE-4678");
+  });
 
   it("orders red, yellow, fresh, then oldest start, then id", async () => {
     listChatSessions.mockResolvedValue([

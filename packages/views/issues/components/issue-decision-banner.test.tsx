@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderWithI18n } from "../../test/i18n";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { IssueDecisionBanner } from "./issue-decision-banner";
 
 vi.mock("@multica/core/hooks", async (importActual) => ({
@@ -17,6 +18,7 @@ vi.mock("../../navigation", async (importActual) => ({
 
 const api = vi.hoisted(() => ({
   listOpenDecisionRequests: vi.fn(),
+  listIssueDecisionCards: vi.fn(),
   listTasksByIssue: vi.fn(),
   answerDecisionRequest: vi.fn(),
   listDecisionArtifacts: vi.fn(),
@@ -49,7 +51,9 @@ function show(status = "in_progress", ownerAgentId: string | null = "owner") {
 describe("IssueDecisionBanner", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     api.listDecisionArtifacts.mockResolvedValue([]);
+    api.listIssueDecisionCards.mockResolvedValue([]);
     api.listTasksByIssue.mockResolvedValue([]);
   });
 
@@ -179,10 +183,106 @@ describe("IssueDecisionBanner", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Could not load open asks.");
   });
 
-  it("renders nothing for answered or withdrawn requests", async () => {
+  it("renders nothing when the issue has no decision cards at all", async () => {
     api.listOpenDecisionRequests.mockResolvedValue([]);
     const { container } = show("in_progress");
-    await waitFor(() => expect(api.listOpenDecisionRequests).toHaveBeenCalled());
+    await waitFor(() => expect(api.listIssueDecisionCards).toHaveBeenCalledWith("issue"));
     expect(container).toBeEmptyDOMElement();
+  });
+
+  describe("used cards", () => {
+    const used = (id: string, extra = {}) => ({
+      ...open(id, "issue"), state: "answered", record_comment_id: "rec",
+      answer: { state: "picked_up", chosen_option_index: 0, option_label: "Ship it", answered_at: "2026-11-01T05:10:00Z", run: { id: "t", agent_name: "Terra" } },
+      ...extra,
+    });
+    const rowOf = (id: string) => screen.getByRole("button", { name: new RegExp(`Ask ${id}`) });
+
+    it.each([
+      ["picked_up", used("done")],
+      ["withdrawn", used("done", { state: "withdrawn", answer: undefined, withdrawn_at: "2026-11-01T05:20:00Z" })],
+      ["disclaimed", used("done", { answer: { state: "disclaimed", answered_at: "2026-11-01T05:10:00Z" } })],
+    ])("loads a %s card folded: one row, collapsed, body inert", async (_, card) => {
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([card]);
+      show();
+      expect(await screen.findByRole("region", { name: "Decisions" })).toBeInTheDocument();
+      expect(rowOf("done")).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByTestId("decision-request-card").querySelector("[data-fold-body]")).toHaveAttribute("inert");
+    });
+
+    it("expands a folded card on click", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([used("done")]);
+      show();
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("button", { name: /Ask done/ }));
+      expect(rowOf("done")).toHaveAttribute("aria-expanded", "true");
+    });
+
+    it("keeps a not_picked_up card expanded", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([used("late", { answer: { state: "delivered", chosen_option_index: 0, option_label: "Ship it", answered_at: "2026-11-01T05:00:00Z" } })]);
+      show();
+      expect(await screen.findByTestId("decision-request-card")).toHaveAttribute("data-state", "not_picked_up");
+      expect(screen.queryByTestId("decision-request-fold-toggle")).toBeNull();
+    });
+
+    it("shows open and used cards together, open first and expanded", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([open("new", "issue")]);
+      api.listIssueDecisionCards.mockResolvedValue([used("old")]);
+      show();
+      const cards = await screen.findAllByTestId("decision-request-card");
+      expect(cards).toHaveLength(2);
+      expect(cards[0]).toHaveAttribute("data-state", "open");
+      expect(cards[1]).toHaveAttribute("data-state", "picked_up");
+    });
+
+    it("folds the same card in place when its answer is picked up", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([open("r1", "issue")]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderWithI18n(
+        <QueryClientProvider client={client}>
+          <WorkspaceSlugProvider slug="acme"><IssueDecisionBanner issueId="issue" status="in_progress" ownerAgentId="owner" /></WorkspaceSlugProvider>
+        </QueryClientProvider>,
+      );
+      const card = await screen.findByTestId("decision-request-card");
+      expect(card).toHaveAttribute("data-state", "open");
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([used("r1")]);
+      await act(() => client.invalidateQueries());
+      await waitFor(() => expect(rowOf("r1")).toHaveAttribute("aria-expanded", "false"));
+      expect(screen.getByTestId("decision-request-card")).toBe(card);
+    });
+
+    it("does not unmount a card between the two refetches of one answer", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([open("r1", "issue")]);
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderWithI18n(
+        <QueryClientProvider client={client}>
+          <WorkspaceSlugProvider slug="acme"><IssueDecisionBanner issueId="issue" status="in_progress" ownerAgentId="owner" /></WorkspaceSlugProvider>
+        </QueryClientProvider>,
+      );
+      const card = await screen.findByTestId("decision-request-card");
+      // The open list answers first and no longer has the card; the used list is still in flight.
+      let finishUsed: (cards: unknown[]) => void = () => {};
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockReturnValue(new Promise((resolve) => { finishUsed = resolve; }));
+      await act(() => { void client.invalidateQueries(); });
+      await waitFor(() => expect(api.listIssueDecisionCards).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId("decision-request-card")).toBe(card);
+      await act(async () => finishUsed([used("r1")]));
+      await waitFor(() => expect(rowOf("r1")).toHaveAttribute("aria-expanded", "false"));
+      expect(screen.getByTestId("decision-request-card")).toBe(card);
+    });
+
+    it("titles an all-used banner neutrally with the answered count", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([used("a"), used("b")]);
+      show();
+      const region = await screen.findByRole("region", { name: "Decisions" });
+      expect(region).toHaveTextContent("2 answered");
+      expect(region.className).not.toMatch(/warning/);
+    });
   });
 });

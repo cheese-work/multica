@@ -48,8 +48,8 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint, batch_id)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'), sqlc.narg('batch_id'))
 ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING *;
 
@@ -195,6 +195,12 @@ SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
 
+-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND status = 'open'
+)::boolean;
+
 -- name: ListDecisionPingRetries :many
 SELECT * FROM decision_request
 WHERE authority = 'human' AND origin = 'asked' AND ping_notified_at IS NULL
@@ -284,6 +290,16 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
 ORDER BY session.created_at, session.id
+LIMIT 1;
+
+-- name: GetLatestPlainDM :one
+-- The plain DM a person used most recently with one agent (CHE-5253).
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = sqlc.arg('creator_id')
+  AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1;
 
 -- name: LockDecisionTopicLane :exec
@@ -602,3 +618,19 @@ FOR UPDATE;
 UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
 RETURNING *;
+
+-- name: ListCIDecisionRequests :many
+-- Every card a CI job opened on the issue, any status. The fingerprint carries
+-- the candidate SHA and its commit time; the caller holds the workspace lock.
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND request_fingerprint LIKE 'server:ci:%'
+ORDER BY created_at, id;
+
+-- name: GetLatestDecisionAnswer :one
+-- The newest answer of a request, disclaimed or not: what a reader of the request
+-- needs to see that the person answered, and whether the answer still stands.
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;

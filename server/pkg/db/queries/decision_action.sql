@@ -14,6 +14,14 @@ SELECT * FROM decision_action WHERE id = $1 AND workspace_id = $2;
 -- name: GetDecisionActionByRequest :one
 SELECT * FROM decision_action WHERE decision_request_id = $1 AND workspace_id = $2;
 
+-- A batch's actions in id order; the first is the batch's lead, the action its
+-- passkey challenge names.
+-- name: ListDecisionBatchActions :many
+SELECT action.* FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.batch_id = sqlc.arg('batch_id')
+ORDER BY action.id;
+
 -- The approve and reject transaction takes every row lock NOWAIT (plan 3.2):
 -- it is never a waiter in a lock cycle. Each row is locked once, at the
 -- strongest mode a later statement needs.

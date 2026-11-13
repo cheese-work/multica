@@ -1,12 +1,16 @@
 {
   "decision_banner": {
     "title": "Décision requise",
+    "title_used": "Décisions",
+    "answered_count": "{{number}} répondu(s)",
     "waiting": "L’agent n’a pas encore envoyé la carte de décision.",
     "queued_since": "En file depuis {{time}}",
     "running_since": "En cours depuis {{time}}",
     "no_run": "Aucune exécution active."
   },
   "needs_you": {
+    "chip_one": "{{count}} décision vous attend",
+    "chip_other": "{{count}} décisions vous attendent",
     "title": "À vous de décider",
     "loading": "Chargement des demandes…",
     "error": "Impossible de charger les demandes.",
@@ -41,6 +45,17 @@
       "title": "Non classé",
       "replies_one": "{{count}} réponse",
       "replies_other": "{{count}} réponses"
+    },
+    "actions": {
+      "done": "Fait",
+      "later": "Plus tard",
+      "done_all": "Tout marquer fait",
+      "undo": "Annuler",
+      "toast_one": "{{count}} DM marqué fait",
+      "toast_other": "{{count}} DM marqués faits",
+      "failed": "Échec de la mise à jour. Réessayez.",
+      "done_aria": "Marquer fait : {{title}}",
+      "later_aria": "Me rappeler plus tard : {{title}}"
     }
   },
   "page": {
@@ -69,6 +84,7 @@
     "queue_send_tooltip": "Mettre le message en file d'attente",
     "stop_tooltip": "Arrêter",
     "send_failed_toast": "Échec de l'envoi du message",
+    "send_unconfirmed_toast": "Envoi non confirmé. Votre brouillon est conservé ; renvoyez pour réessayer sans doublon.",
     "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
@@ -87,7 +103,10 @@
     "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour",
     "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
     "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
-    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}."
+    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}.",
+    "later_set_toast": "Reporté jusqu'à {{time}} ICT",
+    "later_bad_duration": "Utilisez une durée de 1s à 7d, par exemple /later 2h",
+    "later_failed_toast": "Échec du report. Réessayez."
   },
   "queue": {
     "title_one": "{{count}} message en file d'attente",
@@ -470,12 +489,15 @@
     "answer_helper_issue": "Envoyer publie votre réponse sur {{issue}}.",
     "answer_hint": "{{shortcut}} envoie",
     "answer_too_long": "Cette réponse dépasse 8 Ko. Raccourcissez-la pour l'envoyer.",
+    "answer_upload_cancelled": "Téléversement annulé car vous avez quitté cette carte. Joignez de nouveau le fichier.",
     "answer_offline": "Vous êtes hors ligne. Votre réponse est conservée. Envoyer se réactive à la reconnexion.",
     "answer_conflict": "Cette carte ne peut plus recevoir votre réponse, par exemple parce qu'elle a déjà été répondue. Rien de votre brouillon n'a été publié. Votre brouillon :",
     "answer_discard": "Supprimer le brouillon",
     "action_unavailable": "Détails indisponibles",
     "action_approve": "Approuver avec une clé d’accès",
     "action_preview": "Ce que l’approbation modifie",
+    "recent_runs": "Runs récents",
+    "recent_runs_status": { "completed": "Terminé", "failed": "Échec", "cancelled": "Annulé", "running": "En cours", "other": "En attente" },
     "config_change": {
       "viewer_label": "Changement à approuver",
       "tab_changes": "Modifications",
@@ -493,7 +515,13 @@
       "field_workspace_context": "Contexte de l’espace de travail",
       "field_workflow_steps": "Étapes du workflow",
       "field_workflow_instructions": "Instructions d’étape du workflow",
-      "field_workspace_settings": "Paramètres de l’espace de travail"
+      "field_workspace_settings": "Paramètres de l’espace de travail",
+      "field_workflow_budget": "Budget d’exécutions du workflow",
+      "field_workspace_routing_agent": "Agent de routage",
+      "field_workspace_delegated_writes": "Écritures gouvernées déléguées",
+      "field_agent_skills": "Compétences de l’agent",
+      "counts": "Caractères : {{before}} → {{after}}",
+      "counts_cap": "Caractères : {{before}} → {{after}} sur {{cap}} autorisés"
     },
     "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",

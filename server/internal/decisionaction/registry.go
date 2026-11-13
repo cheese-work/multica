@@ -81,9 +81,24 @@ type Definition struct {
 	// class. An action on a non-agent target is owner-only already.
 	OwnerOnly bool
 
+	// Template is the wording an approver reads for this action. Every action
+	// registers one; the handler's registry test fails for a type without it.
+	Template Template
+
 	// Normalize is exported so a package that owns an executor can register
 	// its action type.
 	Normalize NormalizeFunc
+}
+
+// Template is what a human reads before approving an action. Both fields are
+// static text: the server writes the ask, so no agent-controlled string may
+// reach it through a template. The before → after rows come from the action's
+// preview, never from the template.
+type Template struct {
+	// Title names the action in plain words.
+	Title string
+	// Summary is one line saying what approval changes.
+	Summary string
 }
 
 type NormalizeFunc func(params json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error)
@@ -108,11 +123,38 @@ func Register(def *Definition) {
 }
 
 func init() {
-	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
-	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
-	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
-	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
-	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.copy", Version: 1, Template: Template{Title: "Copy an agent", Summary: "Creates a new agent with the same settings as the source agent."}, MinClass: "reversible", Normalize: normalizeAgentCopy})
+	Register(&Definition{Type: "agent.env.patch", Version: 1, Template: Template{Title: "Change an agent's environment variables", Summary: "Sets or removes environment variable keys on one agent; values are never shown."}, MinClass: "reversible", Normalize: normalizeEnvPatch})
+	Register(&Definition{Type: "agent.pause", Version: 1, Template: Template{Title: "Pause an agent", Summary: "Stops the agent from starting new runs until it is resumed."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.pause")})
+	Register(&Definition{Type: "agent.resume", Version: 1, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
+	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
+	Register(&Definition{Type: "agent.instructions.set", Version: 1, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.skills.set", Version: 1, Template: Template{Title: "Replace an agent's skills", Summary: "Replaces the agent's skill list with the proposed list."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
+}
+
+// Types lists every allowlisted action type, sorted and without versions.
+func Types() []string {
+	seen := map[string]bool{}
+	for _, def := range registry {
+		seen[def.Type] = true
+	}
+	return sortedKeys(seen)
+}
+
+// Definitions lists every registered action, sorted by type then version.
+func Definitions() []*Definition {
+	definitions := make([]*Definition, 0, len(registry))
+	for _, definition := range registry {
+		definitions = append(definitions, definition)
+	}
+	sort.Slice(definitions, func(i, j int) bool {
+		if definitions[i].Type != definitions[j].Type {
+			return definitions[i].Type < definitions[j].Type
+		}
+		return definitions[i].Version < definitions[j].Version
+	})
+	return definitions
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {

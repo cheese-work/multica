@@ -34,8 +34,7 @@ describe("approvableConfigChange", () => {
   });
 
   it.each([
-    "project.description", "members.roles", "passkeys", "workspace.delete", "workspace.delegated_writes",
-    "workspace.routing_agent", "agent.skills", "", "future.field",
+    "project.description", "members.roles", "passkeys", "workspace.delete", "", "future.field",
   ])("fails closed for the field %s", (field) => {
     expect(approvableConfigChange(action({ config_change: { ...change, field } }))).toBeUndefined();
   });
@@ -48,6 +47,20 @@ describe("approvableConfigChange", () => {
     ["a non-string status key", { workflow_name: "Production flow", status_key: 3 }],
   ])("fails closed for a workflow step change with %s", (_label, meta) => {
     expect(approvableConfigChange(action({ config_change: { ...change, meta } }))).toBeUndefined();
+  });
+
+  it("accepts a workflow run-budget change (CHE-5285)", () => {
+    const budget = { ...change, field: "workflow.budget", diff_kind: "json" as const, after: { max_runs_per_issue: 40, include_child_prs: true }, meta: { workflow_name: "Production flow" } };
+    expect(approvableConfigChange(action({ action_type: "workflow.budget.set", config_change: budget }))).toEqual(budget);
+  });
+
+  it.each([
+    ["workspace.routing_agent.set", "workspace.routing_agent", "json"],
+    ["workspace.delegated_writes.set", "workspace.delegated_writes", "json"],
+    ["agent.skills.set", "agent.skills", "lines"],
+  ] as const)("accepts the %s change and the field it writes (CHE-4490)", (action_type, field, diff_kind) => {
+    const config_change = { ...change, field, diff_kind, meta: undefined };
+    expect(approvableConfigChange(action({ action_type, config_change }))).toEqual(config_change);
   });
 
   it("does not need a workflow name for another field", () => {
