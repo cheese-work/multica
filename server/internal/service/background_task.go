@@ -58,24 +58,26 @@ type BackgroundWriter func(ctx context.Context, q *db.Queries, task db.AgentTask
 type BackgroundTaskInput struct {
 	Job         bgagents.Job
 	WorkspaceID pgtype.UUID
+	AgentID     pgtype.UUID // ignored when Resolve is set
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
-	Input       string
-	// Source is the chain source EnqueueBackgroundChain and the failover rule
-	// stamp on the target they build; a caller with its own Resolve leaves it zero.
-	Source bgagents.Source
-	// Resolve picks the chain slot. EnqueueBackgroundTask calls it after taking
-	// the member's lock, so a personal write is either fully visible to it or
-	// waits for the insert and then cancels the row (CHE-4114).
+	Source      bgagents.Source
+	Slot        bgagents.SlotName
+	// FallbackAgentID is the agent a provider failure of this run moves to; zero
+	// when this run holds the last slot.
+	FallbackAgentID pgtype.UUID
+	Input           string
+	// Resolve, when set, picks the chain slot instead of AgentID/Source/Slot/
+	// FallbackAgentID. EnqueueBackgroundTask calls it after taking the member's
+	// lock, so a personal write is either fully visible to it or waits for the
+	// insert and then cancels the row (CHE-4114).
 	Resolve BackgroundResolver
 }
 
 // BackgroundTarget is the chain slot a job run goes to.
 type BackgroundTarget struct {
-	AgentID pgtype.UUID
-	Source  bgagents.Source
-	Slot    bgagents.SlotName
-	// FallbackAgentID is the agent a provider failure of this run moves to; zero
-	// when this run holds the last slot.
+	AgentID         pgtype.UUID
+	Source          bgagents.Source
+	Slot            bgagents.SlotName
 	FallbackAgentID pgtype.UUID
 }
 
@@ -109,9 +111,6 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if !ok || spec.Runner != bgagents.OutputOnly {
 		return db.AgentTaskQueue{}, fmt.Errorf("%w: %q", ErrBackgroundJobNotOutputOnly, in.Job)
 	}
-	if in.Resolve == nil {
-		return db.AgentTaskQueue{}, errors.New("background task: a chain resolver is required")
-	}
 	if s.TxStarter == nil {
 		return db.AgentTaskQueue{}, errors.New("background task enqueue requires transaction support")
 	}
@@ -131,9 +130,12 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if err := s.Queries.WithTx(tx).LockWorkspaceSettingsForWakeupDefinition(ctx, in.WorkspaceID); err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("lock workspace settings: %w", err)
 	}
-	target, err := in.Resolve(ctx)
-	if err != nil {
-		return db.AgentTaskQueue{}, err
+	target := BackgroundTarget{AgentID: in.AgentID, Source: in.Source, Slot: in.Slot, FallbackAgentID: in.FallbackAgentID}
+	if in.Resolve != nil {
+		var err error
+		if target, err = in.Resolve(ctx); err != nil {
+			return db.AgentTaskQueue{}, err
+		}
 	}
 	if target.Source != bgagents.UserSource && target.Source != bgagents.WorkspaceSource {
 		return db.AgentTaskQueue{}, fmt.Errorf("background task: chain source must be user or workspace, got %q", target.Source)
