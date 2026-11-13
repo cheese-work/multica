@@ -132,6 +132,17 @@ func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, so
 // transaction, just before the write: false leaves the issue where it is and
 // reports no move and no error.
 func (h *Handler) tryMoveIssueOnEdgeIf(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error)) (moved, ranHandler bool, err error) {
+	return h.tryMoveIssueOnEdgeSettle(ctx, issue, to, source, extra, startHandler, guard, nil)
+}
+
+// edgeRunSettle runs in the move's transaction, only when the move inserted the
+// handler's run (taskID). An error rolls the whole move back. The returned func,
+// if any, runs after the commit.
+type edgeRunSettle func(ctx context.Context, tx pgx.Tx, taskID pgtype.UUID) (func(context.Context), error)
+
+// tryMoveIssueOnEdgeSettle is tryMoveIssueOnEdgeIf with a settle step that
+// shares the move's transaction (CHE-5241).
+func (h *Handler) tryMoveIssueOnEdgeSettle(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error), settle edgeRunSettle) (moved, ranHandler bool, err error) {
 	// The lock holds through the commit, so a person's move cannot read this
 	// issue's status between this write and its grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
@@ -167,10 +178,19 @@ func (h *Handler) tryMoveIssueOnEdgeIf(ctx context.Context, issue db.Issue, to, 
 		}
 		return false, false, err
 	}
+	var afterSettle func(context.Context)
+	if settle != nil && move.RunRefused == nil && move.TaskID.Valid {
+		if afterSettle, err = settle(ctx, tx, move.TaskID); err != nil {
+			return false, false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, false, fmt.Errorf("commit edge move: %w", err)
 	}
 	release()
+	if afterSettle != nil {
+		afterSettle(ctx)
+	}
 	if move.RunRefused != nil && !errors.Is(move.RunRefused, service.ErrDuplicatePendingTask) {
 		slog.Debug("workflow edge: run refused", "err", move.RunRefused, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
 	}

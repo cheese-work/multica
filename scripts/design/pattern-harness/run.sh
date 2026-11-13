@@ -33,6 +33,36 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap decision-action-approval \
+  --component packages/views/common/decision-action-approval.tsx \
+  --component packages/ui/components/ui/button.tsx \
+  --token text-caption --token text-destructive --token text-muted-foreground \
+  --copy "approve=common:decision_action.approve" \
+  --copy "reject=common:decision_action.reject"
+
+cap description-disclosure \
+  --component packages/views/issues/components/description-disclosure.tsx \
+  --component packages/ui/components/ui/button.tsx \
+  --token DESCRIPTION_PREVIEW_LINES --token text-body \
+  --copy "show=chat:needs_you.show_all" \
+  --copy "less=chat:needs_you.show_less"
+
+cap status-pill \
+  --component packages/ui/components/ui/badge.tsx \
+  --token text-caption --token bg-destructive/10 --token text-destructive
+
+cap header-chip-popover \
+  --component packages/ui/components/ui/popover.tsx \
+  --component packages/ui/components/ui/button.tsx \
+  --token border-warning/40 --token bg-warning/10 --token text-warning \
+  --copy "chip=chat:needs_you.chip"
+
+cap form-dialog \
+  --component packages/ui/components/ui/input.tsx \
+  --component packages/ui/components/ui/field.tsx \
+  --component packages/ui/components/ui/alert.tsx \
+  --token text-title-sm --token text-micro --token text-muted-foreground --token text-destructive
+
 cap buttons \
   --component packages/ui/components/ui/button.tsx \
   --token button-height-default --token button-padding-default --token text-body --token bg-primary
@@ -47,6 +77,7 @@ cap tabs \
   --token bg-muted --token text-muted-foreground --token ring-ring
 cap ui-copy \
   --token text-caption --token text-muted-foreground --token text-label
+
 cap lazy-detail \
   --token text-body --token text-caption --token text-muted-foreground --token border-surface-border --token bg-surface
 
@@ -97,6 +128,20 @@ cap diff-dialog \
 
 cap ict-timestamp \
   --token text-body --token text-destructive
+
+cap section-eyebrow \
+  --token text-micro --token uppercase --token tracking-wide --token text-muted-foreground
+
+cap type-role-tokens \
+  --component packages/ui/styles/tokens.css \
+  --token text-micro --token text-caption --token text-label --token text-body --token text-body-lg --token text-title
+
+cap inline-link-action \
+  --token underline --token underline-offset-2 --token hover:text-foreground
+
+cap choice-card \
+  --component packages/views/projects/components/local-directory-mode-dialog.tsx \
+  --token border-primary --token ring-primary --token text-body --token text-caption --token text-micro
 
 cap integration-card-grid \
   --component packages/ui/components/ui/card.tsx \

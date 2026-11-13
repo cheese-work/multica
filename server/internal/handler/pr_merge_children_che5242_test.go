@@ -125,6 +125,28 @@ func TestPRMergeIncludeChildPRsClosedUnmergedDoesNotBlock(t *testing.T) {
 // Without include_child_prs the issue's own PRs decide, and every child must be
 // done or cancelled. The last child reaching done moves the parent with no new
 // GitHub event.
+// The last event is a close that changes no link: the persisted links of the
+// closed PR still owe the parent its decision (CHE-5244).
+func TestPRMergeIncludeChildPRsClosedUnmergedLastMovesParent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	const installationID int64 = 5244001
+	c := newPRChildCase(t, installationID, true, false)
+
+	c.pr(t, installationID, 0, 31, "opened")
+	c.pr(t, installationID, 1, 32, "opened")
+	c.pr(t, installationID, 1, 32, "merged")
+	if got := c.parentStatus(t); got == "merged" {
+		t.Fatalf("parent = %q before the other child PR settled", got)
+	}
+	c.pr(t, installationID, 0, 31, "closed")
+
+	if got := c.parentStatus(t); got != "merged" {
+		t.Fatalf("parent = %q, want merged: one merged child PR and none open", got)
+	}
+}
+
 func TestPRMergeOwnPRsWaitForChildrenThenMoveOnChildTerminal(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("handler test fixture not initialized (no DB?)")
