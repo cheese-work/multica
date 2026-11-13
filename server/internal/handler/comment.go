@@ -2002,6 +2002,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var tx pgx.Tx
 	var qtx *db.Queries
 	var cleared []db.Comment
+	var unboundIDs []pgtype.UUID
 	var err error
 	var intentTargets []pgtype.UUID
 	var decisionAnnotation *agentDecisionAnnotation
@@ -2017,6 +2018,21 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		qtx = h.Queries.WithTx(tx)
+		// Ownerless uploads are locked before anything takes the issue row,
+		// matching issue updates; existing issue attachments are locked only
+		// after CreateComment takes the issue (issue -> comment -> child).
+		if len(attachmentIDs) > 0 {
+			unboundIDs, err = qtx.LockUnboundAttachmentsForCommentLink(r.Context(), db.LockUnboundAttachmentsForCommentLinkParams{
+				WorkspaceID:   issue.WorkspaceID,
+				AttachmentIds: attachmentIDs,
+			})
+			if err != nil {
+				_ = tx.Rollback(r.Context())
+				slog.Warn("lock comment attachments failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
+				writeError(w, http.StatusInternalServerError, "failed to create comment")
+				return
+			}
+		}
 		decisionAnnotation, err = prepareAgentDecision(r.Context(), tx, createParams, r.Header.Get("X-Actor-Source") == "task_token")
 		if err == nil && decisionAnnotation != nil && req.DecisionIntent {
 			err = agentDecisionRefusal("a protocol action cannot open a human decision intent")
@@ -2101,16 +2117,17 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		// while this waited is refused before the comment is committed, rather
 		// than the comment committing without it.
 		var missing pgtype.UUID
-		missing, err = lockCommentAttachments(r.Context(), qtx, issue.WorkspaceID, issue.ID, attachmentIDs)
+		missing, err = lockCommentAttachments(r.Context(), qtx, issue.WorkspaceID, issue.ID, attachmentIDs, unboundIDs)
 		if err == nil && missing.Valid {
 			writeError(w, http.StatusConflict, "attachment "+uuidToString(missing)+" is no longer available")
 			return
 		}
 		if err == nil {
 			err = qtx.LinkAttachmentsToComment(r.Context(), db.LinkAttachmentsToCommentParams{
-				CommentID: created.ID,
-				IssueID:   issue.ID,
-				Column3:   attachmentIDs,
+				CommentID:     created.ID,
+				IssueID:       issue.ID,
+				WorkspaceID:   issue.WorkspaceID,
+				AttachmentIds: attachmentIDs,
 			})
 		}
 
@@ -2682,6 +2699,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
+	}
+	if errors.Is(err, service.ErrProjectAccessDenied) {
+		return ReasonProjectAccessBlocked
 	}
 	return ReasonInternalError
 }
@@ -4049,6 +4069,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
+	if !h.requireIssueIDVisible(w, r, workspaceID, existing.IssueID, http.StatusNotFound, "comment not found") {
+		return
+	}
 	if bound, err := h.Queries.CommentHasTaskSupplement(r.Context(), db.CommentHasTaskSupplementParams{
 		CommentID: existing.ID, WorkspaceID: wsUUID,
 	}); err != nil {
@@ -4376,6 +4399,9 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "comment not found")
 		return
 	}
+	if !h.requireIssueIDVisible(w, r, workspaceID, comment.IssueID, http.StatusNotFound, "comment not found") {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -4487,12 +4513,10 @@ type commentDeletion struct {
 	IssueRevision  int64
 }
 
-// lockCommentAttachments locks the unbound issue attachments a comment is
-// being created with and reports the first requested id that is not among
-// them: never eligible, or deleted while the lock waited. The caller must
-// already hold the issue's row lock — these are its children, and taking them
-// first is the inversion CreateComment documents.
-func lockCommentAttachments(ctx context.Context, qtx *db.Queries, workspaceID, issueID pgtype.UUID, ids []pgtype.UUID) (missing pgtype.UUID, err error) {
+// lockCommentAttachments validates and pins the full requested set, including
+// existing issue attachments. The caller must already hold the issue's row
+// lock and have locked ownerless uploads before it; see CreateComment.
+func lockCommentAttachments(ctx context.Context, qtx *db.Queries, workspaceID, issueID pgtype.UUID, ids, unboundIDs []pgtype.UUID) (missing pgtype.UUID, err error) {
 	locked, err := qtx.LockAttachmentsForCommentLink(ctx, db.LockAttachmentsForCommentLinkParams{
 		WorkspaceID:   workspaceID,
 		IssueID:       issueID,
@@ -4501,7 +4525,10 @@ func lockCommentAttachments(ctx context.Context, qtx *db.Queries, workspaceID, i
 	if err != nil {
 		return pgtype.UUID{}, err
 	}
-	have := make(map[pgtype.UUID]struct{}, len(locked))
+	have := make(map[pgtype.UUID]struct{}, len(locked)+len(unboundIDs))
+	for _, id := range unboundIDs {
+		have[id] = struct{}{}
+	}
 	for _, id := range locked {
 		have[id] = struct{}{}
 	}
@@ -4808,6 +4835,9 @@ func (h *Handler) loadCommentForActor(w http.ResponseWriter, r *http.Request) (d
 	// A deleted comment's tombstone cannot be a thread's resolution.
 	if err != nil || comment.DeletedAt.Valid {
 		writeError(w, http.StatusNotFound, "comment not found")
+		return db.Comment{}, "", "", "", false
+	}
+	if !h.requireIssueIDVisible(w, r, workspaceID, comment.IssueID, http.StatusNotFound, "comment not found") {
 		return db.Comment{}, "", "", "", false
 	}
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)

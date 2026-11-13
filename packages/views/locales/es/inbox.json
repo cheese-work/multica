@@ -97,6 +97,10 @@
     "autopilot_paused": "Automatización en pausa",
     "children_done": "Sub-tareas finalizadas",
     "autopilot_quota_exceeded": "Límite de ejecuciones de automatizaciones alcanzado",
+    "app_action_requested": "Necesita tu confirmación",
+    "app_action_reminder": "La confirmación caduca pronto",
+    "app_connect_requested": "Conectar una aplicación",
+    "app_action_result": "Resultado de la acción de la aplicación",
     "machine_drained": "Safe to shut down"
   },
   "labels": {

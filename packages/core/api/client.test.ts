@@ -293,6 +293,25 @@ describe("ApiClient edit guards", () => {
     expect(parsedLegacy.issues[0]).not.toHaveProperty("revision");
     await expect(client.listIssues()).resolves.toEqual({ issues: [], total: 0 });
   });
+
+  it("sends status category filters so custom statuses count with their phase", async () => {
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        new Response(JSON.stringify({ issues: [], total: 0 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await client.listIssues({ status_categories: ["done", "closed"] });
+    await client.listIssues({ status_category: "started" });
+
+    const query = (call: number) => new URL(fetchMock.mock.calls[call]![0]).searchParams;
+    expect(query(0).get("status_categories")).toBe("done,closed");
+    expect(query(1).get("status_category")).toBe("started");
+  });
 });
 
 describe("ApiClient pull-request response schema", () => {
@@ -402,6 +421,64 @@ describe("ApiClient pull-request response schema", () => {
     expect(result.auto_complete).toBeNull();
     expect(result.pull_requests).toHaveLength(1);
     expect(result.pull_requests[0]?.link_source).toBeUndefined();
+  });
+});
+
+describe("ApiClient issue environments response schema", () => {
+  const validEnvironment = {
+    id: "env-1",
+    issue_id: "issue-1",
+    task_id: "task-1",
+    runtime_id: "rt-1",
+    agent_id: "agent-1",
+    source: "config",
+    name: "web",
+    label: "Web app",
+    url: "http://localhost:41000",
+    port: 41000,
+    state: "running",
+    detail: "",
+    started_at: "2026-11-10T09:00:00Z",
+    expires_at: "2026-11-11T09:00:00Z",
+    last_seen_at: "2026-11-10T09:05:00Z",
+    ended_at: null,
+  };
+
+  function stubEnvironments(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+  }
+
+  it("parses a valid environment list", async () => {
+    stubEnvironments({ environments: [validEnvironment] });
+    const result = await new ApiClient("https://api.example.test").listIssueEnvironments("issue-1");
+    expect(result.environments).toEqual([validEnvironment]);
+  });
+
+  it("drops a malformed environment and keeps the rest", async () => {
+    stubEnvironments({ environments: [{ ...validEnvironment, id: 7 }, { ...validEnvironment, id: "env-2" }] });
+    const result = await new ApiClient("https://api.example.test").listIssueEnvironments("issue-1");
+    expect(result.environments.map((env) => env.id)).toEqual(["env-2"]);
+  });
+
+  it("reads an unknown state from a newer server as unreachable", async () => {
+    stubEnvironments({ environments: [{ ...validEnvironment, state: "hibernating", source: "remote" }] });
+    const result = await new ApiClient("https://api.example.test").listIssueEnvironments("issue-1");
+    expect(result.environments[0]).toMatchObject({ state: "unreachable", source: "detected" });
+  });
+
+  it("falls back to an empty list when the body is not a list", async () => {
+    stubEnvironments({ environments: "nope" });
+    await expect(
+      new ApiClient("https://api.example.test").listIssueEnvironments("issue-1"),
+    ).resolves.toEqual({ environments: [] });
   });
 });
 
@@ -3491,6 +3568,19 @@ describe("ApiClient shared credential across windows", () => {
     await expect(client.markOnboardingComplete()).rejects.toBeInstanceOf(ApiError);
 
     expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("ignores a late 401 if a bearer session started after the request", async () => {
+    const onUnauthorized = vi.fn();
+    const client = new ApiClient("https://api.example.test", { onUnauthorized });
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      client.setToken("signed-in");
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }));
+
+    await expect(client.markOnboardingComplete()).rejects.toBeInstanceOf(ApiError);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(client.getToken()).toBe("signed-in");
   });
 
   // ...but a genuine expiry still ends the session: nothing replaced the

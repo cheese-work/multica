@@ -13,6 +13,7 @@ import {
   ListPlus,
   Lock,
   MessagesSquare,
+  Palette,
   Plug,
   Search,
   Server,
@@ -40,6 +41,7 @@ import { resolveSettingsLocation, settingsHref } from "./settings-navigation";
 import { AppLink, useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
+import { AppearanceTab } from "./appearance-tab";
 import { TokensTab } from "./tokens-tab";
 import { PasskeysTab } from "./passkeys-tab";
 import { WorkspaceTab } from "./workspace-tab";
@@ -167,6 +169,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               <PreferencesTab />,
             ),
             entry(
+              "appearance",
+              t(($) => $.page.tabs.appearance),
+              Palette,
+              <AppearanceTab />,
+            ),
+            entry(
               "notifications",
               t(($) => $.page.tabs.notifications),
               Bell,
@@ -178,9 +186,6 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               Keyboard,
               <KeyboardShortcutsTab />,
             ),
-            ...(appsAvailable
-              ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
-              : []),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
             entry("passkeys", t(($) => $.page.tabs.passkeys), Lock, <PasskeysTab />),
           ],
@@ -276,6 +281,9 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               MessagesSquare,
               <ChannelsTab />,
             ),
+            ...(appsAvailable
+              ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
+              : []),
             entry("mcp", t(($) => $.page.tabs.mcp), Server, <McpTab />, {
               adminOnly: true,
             }),
@@ -470,7 +478,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:flex-row">
+    <div data-mc="settings-page" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:flex-row">
       <ListColumn
         collapsed={listCollapsed}
         // Below md the navigation stacks above the content as a select.

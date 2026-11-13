@@ -1647,6 +1647,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		return db.CreateAgentTaskParams{}, attribution.Result{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2009,6 +2012,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		return db.CreateAgentTaskParams{}, attribution.Result{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2184,6 +2190,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// owner), or is refused if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// The claim hands this run the project's description and resources (and
+	// the parent issue for a sub-issue), so it is gated like an issue run.
+	if err := s.guardQuickCreateProjectAccess(ctx, workspaceID, agent, requesterID, attr.AccountableUserID, projectID, parentIssueID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -7972,6 +7983,32 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	return cancelled, nil
 }
 
+// settleTerminalWithMuseRecovery settles failed tasks after recording, in the
+// same transaction, that a started Muse worker's remote cleanup is unconfirmed.
+// A terminal infrastructure error does not stop an independent Muse worker, so
+// that uncertainty must be durable before retry decisions or another claim can
+// observe the failed rows. It updates failed in place.
+func settleTerminalWithMuseRecovery(ctx context.Context, q *db.Queries, failed []db.AgentTaskQueue) error {
+	var startedIDs []pgtype.UUID
+	indices := make(map[pgtype.UUID]int)
+	for i, task := range failed {
+		if task.Status == "failed" && task.StartedAt.Valid {
+			startedIDs = append(startedIDs, task.ID)
+			indices[task.ID] = i
+		}
+	}
+	if len(startedIDs) > 0 {
+		unconfirmed, err := q.MarkMuseAppRecoveryCleanupUnconfirmed(ctx, startedIDs)
+		if err != nil {
+			return fmt.Errorf("record Muse recovery cleanup: %w", err)
+		}
+		for _, task := range unconfirmed {
+			failed[indices[task.ID]] = task
+		}
+	}
+	return SettleTerminalTaskState(ctx, q, failed...)
+}
+
 // terminateTasksInTx ends a batch of tasks and settles them in one tx, holding the chat_session row
 // of every chat task in the batch first. The one lock order is chat_session -> runtime -> agent ->
 // agent_task_queue (chat enqueue takes the session, then the agent; see lockChatSessionForTaskWrite). A report that reads a task's status under that session row, such as
@@ -7987,7 +8024,7 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 		if err != nil {
 			return nil, err
 		}
-		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+		return failed, settleTerminalWithMuseRecovery(ctx, s.Queries, failed)
 	}
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -8028,7 +8065,7 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 			return nil, fmt.Errorf("lock chat sessions: %w", err)
 		}
 	}
-	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
+	if err := settleTerminalWithMuseRecovery(ctx, qtx, failed); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, err)
 	}
@@ -8069,12 +8106,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			}
 		}
 		if !retryPending {
-			if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
-				slog.Warn("handle failed tasks: delegated failure recovery failed",
-					"task_id", util.UUIDToString(t.ID),
-					"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
-					"error", err,
-				)
+			if t.FailureReason.String != taskfailure.ReasonProcessCleanupUnconfirmed.String() && t.FailureReason.String != taskfailure.ReasonProcessCleanupBlocked.String() {
+				if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
+					slog.Warn("handle failed tasks: delegated failure recovery failed",
+						"task_id", util.UUIDToString(t.ID),
+						"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
+						"error", err,
+					)
+				}
 			}
 			// Same terminal-failure comment FailTaskWithTransition posts, so
 			// swept tasks are not silent on their issue.
@@ -9431,17 +9470,14 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 }
 
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
-	var payload map[string]any
-	if task.Context != nil {
-		json.Unmarshal(task.Context, &payload)
+	// Dispatch is a workspace-wide invalidation hint. Task context may contain
+	// private prompts; the daemon receives it through the claim response.
+	payload := map[string]any{
+		"task_id":    util.UUIDToString(task.ID),
+		"runtime_id": util.UUIDToString(task.RuntimeID),
+		"issue_id":   util.UUIDToString(task.IssueID),
+		"agent_id":   util.UUIDToString(task.AgentID),
 	}
-	if payload == nil {
-		payload = map[string]any{}
-	}
-	payload["task_id"] = util.UUIDToString(task.ID)
-	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
-	payload["issue_id"] = util.UUIDToString(task.IssueID)
-	payload["agent_id"] = util.UUIDToString(task.AgentID)
 	// chat_session_id is the routing key the chat window uses to writethrough
 	// `chatKeys.pendingTask` to status="running" the moment the daemon claims
 	// the task. Without it the pill stays stuck at "Queued" until completion.

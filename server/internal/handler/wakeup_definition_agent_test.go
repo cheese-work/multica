@@ -42,7 +42,7 @@ func TestWakeupDefinitionMemberOwnedRunCreatesDisabledRule(t *testing.T) {
 		s.put(created.RuleKey, created.Revision, body, run).Want(http.StatusForbidden)
 		s.preview("", body, run).Want(http.StatusForbidden)
 		// The member alone, without a run, is still refused.
-		s.create(body, asUser(member)).Want(http.StatusForbidden)
+		s.create(body, wdAsUser(member)).Want(http.StatusForbidden)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestWakeupDefinitionAgentRootVetoesIssueOverride(t *testing.T) {
 	for _, s := range []wdScope{k.workspace(), k.project()} {
 		wipeWakeupDefinitions(t)
 		root := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
-		k.issue().put(root.RuleKey, 0, override, asUser(member)).Want(http.StatusOK)
+		k.issue().put(root.RuleKey, 0, override, wdAsUser(member)).Want(http.StatusOK)
 		if eff := k.issue().effective(root.RuleKey); eff.Enabled {
 			t.Fatalf("%s: a member's issue override enabled an unapproved agent rule: %+v", s.kind, eff)
 		}
@@ -115,7 +115,7 @@ func TestWakeupDefinitionAgentRootVetoesIssueOverride(t *testing.T) {
 	wipeWakeupDefinitions(t)
 	off := cfg(map[string]any{"enabled": false, "trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x", "target": map[string]any{"type": "agent", "id": handlerTestAgentID(t)}})
 	human := decodeDefinition(t, k.workspace().create(off).Want(http.StatusCreated))
-	k.issue().put(human.RuleKey, 0, override, asUser(member)).Want(http.StatusOK)
+	k.issue().put(human.RuleKey, 0, override, wdAsUser(member)).Want(http.StatusOK)
 	if eff := k.issue().effective(human.RuleKey); !eff.Enabled {
 		t.Fatalf("human-disabled root no longer re-enabled by an issue override: %+v", eff)
 	}
@@ -133,8 +133,8 @@ func TestWakeupDefinitionPendingRootStillAuthorizesInheritedTarget(t *testing.T)
 	for _, s := range []wdScope{k.workspace(), k.project()} {
 		wipeWakeupDefinitions(t)
 		root := decodeDefinition(t, s.create(body, agentRun).Want(http.StatusCreated))
-		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"instruction": "run my text"}), asUser(member)).Want(http.StatusForbidden)
-		k.issue().preview(root.RuleKey, cfg(map[string]any{"instruction": "run my text"}), asUser(member)).Want(http.StatusForbidden)
+		k.issue().put(root.RuleKey, 0, cfg(map[string]any{"instruction": "run my text"}), wdAsUser(member)).Want(http.StatusForbidden)
+		k.issue().preview(root.RuleKey, cfg(map[string]any{"instruction": "run my text"}), wdAsUser(member)).Want(http.StatusForbidden)
 		// After the admin approves, the refused text is not what runs.
 		s.put(root.RuleKey, root.Revision, body).Want(http.StatusOK)
 		if eff := k.issue().effective(root.RuleKey); !eff.Enabled || strings.Contains(string(eff.Config), "run my text") {

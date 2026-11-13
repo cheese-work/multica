@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -22,6 +22,11 @@ interface IssueDetailRouteProps {
    */
   routeId: string;
   onDelete?: () => void;
+  /**
+   * The decoded file name of a `/{ws}/issues/{segment}/deliverables/{name}`
+   * link: open the newest version of that deliverable.
+   */
+  deliverable?: string;
 }
 
 /**
@@ -35,11 +40,16 @@ export function useCanonicalIssueUrl(
   routeId: string,
   identifier: string | undefined,
   hash = "",
+  deliverable?: string,
   search = "",
 ) {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
-  const canonicalHref = identifier ? `${paths.issueDetail(identifier)}${search}${hash}` : null;
+  // A deliverable link keeps its `/deliverables/{name}` tail: dropping it
+  // would turn the address into a plain issue link while the file is open.
+  const canonicalHref = identifier
+    ? `${deliverable ? paths.issueDeliverable(identifier, deliverable) : paths.issueDetail(identifier)}${search}${hash}`
+    : null;
   // `useWorkspacePaths()` and the navigation adapter are both rebuilt on
   // render, so this ref — not the dependency array — is what guarantees the
   // replace runs once per target instead of on every commit.
@@ -103,11 +113,12 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  *    the route and only the route — the inbox renders `IssueDetail` in a side
  *    panel, where replacing the URL would navigate the user out of the inbox.
  */
-export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
+export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
   const { canonicalId, issue, isResolving, notFound, loadError, dataError, retry, authoritative } = useCanonicalIssue(wsId, routeId);
   const highlight = useCommentHighlightHash();
-  const { searchParams } = useNavigation();
+  const navigation = useNavigation();
+  const { searchParams } = navigation;
   const paths = useWorkspacePaths();
   const runId = searchParams.get("run");
   // The approve URL a run-budget request prints names the action to approve.
@@ -115,9 +126,21 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   const keep = new URLSearchParams();
   if (runId) keep.set("run", runId);
   if (approveId) keep.set("approve", approveId);
+  const keepSearch = keep.size ? `?${keep.toString()}` : "";
 
-  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, keep.size ? `?${keep.toString()}` : "");
+  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, deliverable, keepSearch);
   useMarkMentionsReadOnOpen(canonicalId);
+
+  // Once the link has opened its file and the viewer has closed (or the file
+  // is missing), the address becomes the plain issue page. A replace: Back
+  // should leave the issue, not re-open the file.
+  const issueRef = issue?.identifier ?? routeId;
+  const latestNav = useRef({ paths, navigation, keepSearch });
+  latestNav.current = { paths, navigation, keepSearch };
+  const onDeliverableLinkDone = useCallback(() => {
+    const { paths, navigation, keepSearch } = latestNav.current;
+    navigation.replace(`${paths.issueDetail(issueRef)}${keepSearch}`);
+  }, [issueRef]);
 
   if (isResolving) return <IssueDetailSkeleton />;
 
@@ -138,6 +161,8 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
         onDelete={onDelete}
         highlightCommentId={highlight.commentId}
         authoritative={authoritative}
+        openDeliverable={deliverable}
+        onDeliverableLinkDone={deliverable ? onDeliverableLinkDone : undefined}
       />
       {approveId && <DecisionActionPanel key={approveId} actionId={approveId} issueId={canonicalId} issueLabel={issue?.identifier ?? routeId} />}
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}

@@ -20,7 +20,7 @@ func TestInactiveProjectResumeClearsWakeupError(test *testing.T) {
 	for _, status := range []string{"paused", "in_progress"} {
 		_, err := wakeups.Tasks.UpdateProject(context.Background(), util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
 			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
-		}, false, nil)
+		}, false, nil, nil)
 		if err != nil {
 			test.Fatal(err)
 		}

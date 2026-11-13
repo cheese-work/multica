@@ -142,6 +142,10 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	hidden, ok := h.requestHiddenProjects(w, r, uuidToString(issue.WorkspaceID))
+	if !ok {
+		return
+	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	readFilter := h.newReadFilter(r)
 	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID)
@@ -153,6 +157,7 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 			WorkspaceID: issue.WorkspaceID,
 		})
 		switch {
+		case err == nil && !hidden.CanSeeProject(original.ProjectID):
 		case err == nil:
 			resp := issueToResponse(original, prefix)
 			readFilter.stubDescription(h, original, &resp)
@@ -174,6 +179,7 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list duplicates")
 		return
 	}
+	rows = filterVisibleIssues(hidden, rows)
 	duplicates := make([]IssueResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issueToResponse(row, prefix)

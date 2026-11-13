@@ -97,6 +97,10 @@
     "autopilot_paused": "Autopilot paused",
     "children_done": "Sub-issues finished",
     "autopilot_quota_exceeded": "Autopilot run limit reached",
+    "app_action_requested": "Needs your confirmation",
+    "app_action_reminder": "Confirmation expiring soon",
+    "app_connect_requested": "Connect an app",
+    "app_action_result": "App action result",
     "machine_drained": "Safe to shut down"
   },
   "labels": {

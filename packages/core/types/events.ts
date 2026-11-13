@@ -79,6 +79,8 @@ export type WSEventType =
   | "label:deleted"
   | "issue_labels:changed"
   | "issue_unread:changed"
+  | "app_request:changed"
+  | "app_call:created"
   | "issue_metadata:changed"
   | "issue_properties:changed"
   | "property:created"
@@ -98,7 +100,8 @@ export type WSEventType =
   | "github_installation:deleted"
   | "pull_request:linked"
   | "pull_request:updated"
-  | "pull_request:unlinked";
+  | "pull_request:unlinked"
+  | "environment:changed";
 
 export interface WSMessage<T = unknown> {
   type: WSEventType;
@@ -739,6 +742,7 @@ export interface WSEventPayloadMap {
   "pull_request:linked": unknown;
   "pull_request:updated": unknown;
   "pull_request:unlinked": unknown;
+  "environment:changed": { issue_id: string };
 }
 
 /**

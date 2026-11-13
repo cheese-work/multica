@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -68,7 +69,7 @@ func scanSearchProject(rows pgx.Rows) (searchProjectResult, error) {
 		&result.project.ID, &result.project.WorkspaceID, &result.project.Title, &result.project.Description,
 		&result.project.Icon, &result.project.Status, &result.project.Priority, &result.project.LeadType,
 		&result.project.LeadID, &result.project.StartDate, &result.project.DueDate,
-		&result.project.CreatedAt, &result.project.UpdatedAt,
+		&result.project.CreatedAt, &result.project.UpdatedAt, &result.project.Visibility,
 		&result.project.CreatorType, &result.project.CreatorID, &result.matchSource,
 	)
 	return result, err
@@ -132,6 +133,26 @@ func effectiveSearchStatementTimeout() time.Duration {
 		return searchStatementTimeoutOverride
 	}
 	return searchStatementTimeout
+}
+
+// searchHiddenProjects resolves the private projects the caller cannot see
+// before a search runs. The lookup reads the project tables outside the search
+// transaction, so it carries the same bound as the search statement itself:
+// a locked table answers 503 within the fuse, never a stalled request
+// (CHE-2402, upstream private projects).
+func (h *Handler) searchHiddenProjects(w http.ResponseWriter, r *http.Request, workspaceID string) (projectaccess.Hidden, bool) {
+	ctx, cancel := context.WithTimeout(r.Context(), effectiveSearchStatementTimeout())
+	defer cancel()
+	hidden, err := h.hiddenProjects(r.WithContext(ctx), workspaceID)
+	if err != nil && errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
+		slog.Warn("search project access timed out", "workspace_id", workspaceID, "timeout", effectiveSearchStatementTimeout())
+		writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
+		return projectaccess.Hidden{}, false
+	}
+	if err != nil {
+		return h.requestHiddenProjects(w, r, workspaceID)
+	}
+	return hidden, true
 }
 
 // runSearchQuery executes a search SQL query inside a short-lived read-only

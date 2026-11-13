@@ -125,7 +125,7 @@ func cfg(fields map[string]any) map[string]any {
 	return out
 }
 
-func asUser(userID string) wdAs {
+func wdAsUser(userID string) wdAs {
 	return func(r *http.Request) *http.Request { r.Header.Set("X-User-ID", userID); return r }
 }
 
@@ -221,10 +221,10 @@ func TestWakeupDefinitionAccessMatrix(t *testing.T) {
 		// expected status per scope: workspace, project, issue
 		want [3]int
 	}{
-		{"owner", asUser(testUserID), [3]int{200, 200, 200}},
-		{"admin", asUser(admin), [3]int{200, 200, 200}},
-		{"member", asUser(member), [3]int{403, 403, 200}},
-		{"outsider", asUser(outsider), [3]int{403, 403, 403}},
+		{"owner", wdAsUser(testUserID), [3]int{200, 200, 200}},
+		{"admin", wdAsUser(admin), [3]int{200, 200, 200}},
+		{"member", wdAsUser(member), [3]int{403, 403, 200}},
+		{"outsider", wdAsUser(outsider), [3]int{403, 403, 403}},
 		{"agent", agentRun, [3]int{403, 403, 403}},
 	}
 	scopes := []wdScope{k.workspace(), k.project(), k.issue()}
@@ -242,7 +242,7 @@ func TestWakeupDefinitionAccessMatrix(t *testing.T) {
 	}
 	// An agent can read what it may see; its disabled-only create is covered by
 	// TestWakeupDefinitionAgentCreatesDisabledRule.
-	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), asUser(member)).Want(http.StatusForbidden)
+	k.project().create(cfg(map[string]any{"trigger": map[string]any{"kind": "pr_merged"}, "instruction": "x"}), wdAsUser(member)).Want(http.StatusForbidden)
 	k.workspace().list(agentRun)
 }
 
@@ -299,17 +299,17 @@ func TestWakeupDefinitionTargetNeedsInvocationPermission(t *testing.T) {
 	target := func(id string) map[string]any {
 		return cfg(map[string]any{"target": map[string]any{"type": "agent", "id": id}})
 	}
-	k.issue().put("child_done", 0, target(private), asUser(member)).Want(http.StatusForbidden)
-	k.project().put("child_done", 0, target(private), asUser(admin)).Want(http.StatusForbidden)
+	k.issue().put("child_done", 0, target(private), wdAsUser(member)).Want(http.StatusForbidden)
+	k.project().put("child_done", 0, target(private), wdAsUser(admin)).Want(http.StatusForbidden)
 	k.issue().put("child_done", 0, target(archived)).Want(http.StatusForbidden)
 	if n := wdCount(t); n != 0 {
 		t.Fatalf("%d definitions persisted from denied writes", n)
 	}
-	k.issue().put("child_done", 0, target(memberOwned), asUser(member)).Want(http.StatusOK)
+	k.issue().put("child_done", 0, target(memberOwned), wdAsUser(member)).Want(http.StatusOK)
 	k.workspace().put("pr_merged", 0, target(private)).Want(http.StatusOK)
 	// A squad is invoked through its leader.
 	squad := dbfx.Squad(t, "wd squad", private)
-	k.project().put("pr_merged", 0, cfg(map[string]any{"target": map[string]any{"type": "squad", "id": squad}}), asUser(admin)).Want(http.StatusForbidden)
+	k.project().put("pr_merged", 0, cfg(map[string]any{"target": map[string]any{"type": "squad", "id": squad}}), wdAsUser(admin)).Want(http.StatusForbidden)
 	k.project().put("pr_merged", 0, cfg(map[string]any{"target": map[string]any{"type": "squad", "id": squad}})).Want(http.StatusOK)
 }
 
@@ -604,12 +604,12 @@ func TestWakeupDefinitionRedactsTargetsTheViewerCannotSee(t *testing.T) {
 	if len(owner) == 0 || owner[0].Redacted || !strings.Contains(string(owner[0].Config), "secret prompt") {
 		t.Fatalf("owner view: %+v", owner)
 	}
-	for _, view := range k.workspace().list(asUser(member)).Definitions {
+	for _, view := range k.workspace().list(wdAsUser(member)).Definitions {
 		if !view.Redacted || strings.Contains(string(view.Config), "secret prompt") || strings.Contains(string(view.Config), private) {
 			t.Fatalf("member view leaks the private target: %+v", view)
 		}
 	}
-	eff := k.issue().effective("pr_merged", asUser(member))
+	eff := k.issue().effective("pr_merged", wdAsUser(member))
 	if !eff.Redacted || strings.Contains(string(eff.Config), "secret prompt") || strings.Contains(string(eff.Config), private) {
 		t.Fatalf("effective view leaks the private target: %+v", eff)
 	}
@@ -617,7 +617,7 @@ func TestWakeupDefinitionRedactsTargetsTheViewerCannotSee(t *testing.T) {
 		t.Fatalf("owner effective view: %+v", full)
 	}
 	// A preview by the member cannot probe the hidden agent either.
-	k.issue().preview("pr_merged", cfg(map[string]any{"target": map[string]any{"type": "agent", "id": private}}), asUser(member)).Want(http.StatusForbidden)
+	k.issue().preview("pr_merged", cfg(map[string]any{"target": map[string]any{"type": "agent", "id": private}}), wdAsUser(member)).Want(http.StatusForbidden)
 }
 
 // ---- correction round (Sol P1/P2, OCR high) --------------------------------
@@ -667,7 +667,7 @@ func TestWakeupDefinitionListRedactsOnTheResolvedTarget(t *testing.T) {
 		k.issue().put(rule, 0, cfg(map[string]any{"instruction": "issue secret"})).Want(http.StatusOK)
 	}
 	for name, s := range map[string]wdScope{"workspace": k.workspace(), "project": k.project(), "issue": k.issue()} {
-		list := s.list(asUser(member)).Definitions
+		list := s.list(wdAsUser(member)).Definitions
 		if len(list) < 2 {
 			t.Fatalf("%s: expected both rules listed, got %+v", name, list)
 		}
@@ -1019,10 +1019,10 @@ func TestWakeupDefinitionAuthorizesTheResolvedTarget(t *testing.T) {
 			"mode":        {"mode": "continuous"},
 			"enabled":     {"enabled": true},
 		} {
-			if resp := k.issue().put(rule, 0, cfg(sparse), asUser(member)); resp.Code != http.StatusForbidden {
+			if resp := k.issue().put(rule, 0, cfg(sparse), wdAsUser(member)); resp.Code != http.StatusForbidden {
 				t.Errorf("%s: %s override by a member who cannot invoke the target: got %d: %s", rule, name, resp.Code, resp.Text())
 			}
-			if resp := k.issue().preview(rule, cfg(sparse), asUser(member)); resp.Code != http.StatusForbidden {
+			if resp := k.issue().preview(rule, cfg(sparse), wdAsUser(member)); resp.Code != http.StatusForbidden {
 				t.Errorf("%s: %s preview: got %d", rule, name, resp.Code)
 			}
 		}
@@ -1031,8 +1031,8 @@ func TestWakeupDefinitionAuthorizesTheResolvedTarget(t *testing.T) {
 		}
 		// Turning the inherited rule off runs nothing, so it stays allowed, and so does a
 		// person who can invoke the target.
-		resp := k.issue().put(rule, 0, cfg(map[string]any{"enabled": false}), asUser(member)).Want(http.StatusOK)
-		k.issue().del(rule, strconv.FormatInt(int64(decodeDefinition(t, resp).Revision), 10), asUser(member)).Want(http.StatusNoContent)
+		resp := k.issue().put(rule, 0, cfg(map[string]any{"enabled": false}), wdAsUser(member)).Want(http.StatusOK)
+		k.issue().del(rule, strconv.FormatInt(int64(decodeDefinition(t, resp).Revision), 10), wdAsUser(member)).Want(http.StatusNoContent)
 		k.issue().put(rule, 0, cfg(map[string]any{"instruction": "owner text"})).Want(http.StatusOK)
 	}
 }

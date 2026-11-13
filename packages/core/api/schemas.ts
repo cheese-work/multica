@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { normalizeIssueStatusCategory } from "../issues/config/status";
 import type {
+  AppCatalogResponse,
+  AppsOverview,
+  TeamAppImpact,
   WorkflowHandoffPreview,
   IssueWorkflow,
   IssueWorkflowDryRunResponse,
@@ -59,6 +62,7 @@ import type {
   GroupedIssuesResponse,
   GitHubConnectResponse,
   IssuePullRequestsResponse,
+  IssueEnvironmentsResponse,
   InboxItem,
   InboxWorkspaceUnread,
   IssueUnread,
@@ -467,6 +471,44 @@ export const IssuePullRequestsResponseSchema = z.lazy(() => z.object({
 export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: IssuePullRequestsResponse = {
   pull_requests: [],
   auto_complete: null,
+};
+
+// One malformed environment drops out of the list instead of taking the
+// whole section with it; an unknown state from a newer server reads as
+// unreachable, which offers no Open action.
+export const IssueEnvironmentSchema = z.lazy(() => z.object({
+  id: z.string(),
+  issue_id: z.string(),
+  task_id: z.string(),
+  runtime_id: z.string().nullable().optional().default(null),
+  agent_id: z.string().nullable().optional().default(null),
+  source: z.enum(["config", "detected"]).catch("detected"),
+  name: z.string(),
+  label: z.string().optional().default(""),
+  url: z.string().optional().default(""),
+  port: z.number().nullable().optional().default(null),
+  state: z.enum(["starting", "running", "exited", "stopped", "unreachable"]).catch("unreachable"),
+  detail: z.string().optional().default(""),
+  started_at: z.string(),
+  expires_at: z.string().nullable().optional().default(null),
+  last_seen_at: z.string(),
+  ended_at: z.string().nullable().optional().default(null),
+}).loose());
+
+export const IssueEnvironmentsResponseSchema = z.lazy(() => z.object({
+  environments: z
+    .array(z.unknown())
+    .default([])
+    .transform((items) =>
+      items.flatMap((item) => {
+        const parsed = IssueEnvironmentSchema.safeParse(item);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    ),
+}).loose());
+
+export const EMPTY_ISSUE_ENVIRONMENTS_RESPONSE: IssueEnvironmentsResponse = {
+  environments: [],
 };
 
 // Label responses are consumed by settings tables and resource pickers. Keep
@@ -1928,6 +1970,7 @@ export const ProjectSchema = z.lazy(() => z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string(),
+  visibility: z.enum(["workspace", "private"]).default("workspace").catch("private"),
   description: z.string().nullable(),
   icon: z.string().nullable(),
   status: z.string(),
@@ -1962,6 +2005,19 @@ export const ListProjectsResponseSchema = z.lazy(() => z.object({
 }).loose());
 
 export const EMPTY_LIST_PROJECTS_RESPONSE: ListProjectsResponse = { projects: [], total: 0 };
+
+export const ProjectMemberSchema = z.lazy(() => z.object({
+  project_id: z.string(),
+  user_id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  avatar_url: z.string().nullable().default(null),
+}).loose());
+
+export const ListProjectMembersResponseSchema = z.lazy(() => z.object({
+  members: z.array(ProjectMemberSchema),
+  total: z.number(),
+}).loose());
 
 const SearchProjectResultSchema = z.lazy(() => ProjectSchema.unwrap().extend({
   match_source: z.string(),
@@ -3312,6 +3368,10 @@ export const UserSchema = z.lazy(() => z.object({
   // No default: absence is the "server cannot track" signal. A malformed
   // value degrades to that state instead of discarding the whole user.
   whats_new_seen_version: z.string().nullable().optional().catch(undefined),
+  // Same "absent means unsupported" contract as above.
+  star_prompt_shown_count: z.number().int().nonnegative().optional().catch(undefined),
+  star_prompt_last_shown_at: z.string().nullable().optional().catch(undefined),
+  star_prompt_starred_at: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose());
@@ -4789,6 +4849,179 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
 export const ProviderBreakerListSchema = z.lazy(() => z.object({
   breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
 }));
+
+// Connected Apps (MUL-8516). Enum fields the UI indexes into label tables
+// fall back to their most cautious value, so a value this client does not
+// know yet renders as something safe instead of a missing label; statuses
+// and outcomes stay strings because their renderers already handle unknowns.
+
+const appNullableString = z.lazy(() => z.string().nullish().transform((v) => v ?? null));
+const AppAccountScopeSchema = z.lazy(() => z.enum(["team", "personal"]).catch("personal"));
+const AppAccessLevelSchema = z.lazy(() => z.enum(["read", "confirm_writes", "write"]).catch("confirm_writes"));
+const AppActionClassSchema = z.lazy(() => z.enum(["read", "write", "send", "delete", "share"]).catch("send"));
+const AppActionPolicySchema = z.lazy(() => z.enum(["allow", "confirm", "block"]).catch("confirm"));
+const AppCatalogModeSchema = z.lazy(() => z.enum(["all", "curated", "custom"]).catch("curated"));
+
+const AppConnectionSchema = z.lazy(() => z.object({
+  id: z.string(),
+  toolkit_slug: z.string(),
+  status: z.string().default("active"),
+  connected_by: appNullableString,
+  connected_at: z.string().default(""),
+  last_used_at: appNullableString,
+  actions_blocked: z.boolean().default(false).catch(false),
+}).loose());
+
+const AgentAppSchema = z.lazy(() => z.object({
+  agent_id: z.string(),
+  toolkit_slug: z.string(),
+  account_scope: AppAccountScopeSchema,
+  level: AppAccessLevelSchema,
+}).loose());
+
+export const AppsOverviewSchema = z.lazy(() => z.object({
+  catalog_mode: AppCatalogModeSchema,
+  allowed_toolkits: z.array(z.string()).default([]).catch([]),
+  can_manage: z.boolean().default(false).catch(false),
+  team: z.array(AppConnectionSchema).default([]),
+  personal: z.array(AppConnectionSchema).default([]),
+  agent_apps: z.array(AgentAppSchema).default([]),
+}).loose());
+
+const AppCatalogEntrySchema = z.lazy(() => z.object({
+  slug: z.string(),
+  name: z.string().default(""),
+  logo: z.string().optional().catch(undefined),
+  category: z.string().optional().catch(undefined),
+  curated: z.boolean().default(false).catch(false),
+  recommended_scope: AppAccountScopeSchema.optional(),
+  allowed: z.boolean().optional().catch(undefined),
+}).loose());
+
+export const AppCatalogResponseSchema = z.lazy(() => z.object({
+  catalog_mode: AppCatalogModeSchema,
+  apps: z.array(AppCatalogEntrySchema).default([]),
+}).loose());
+
+export const AppSettingsResponseSchema = z.lazy(() => z.object({
+  catalog_mode: AppCatalogModeSchema,
+  allowed_toolkits: z.array(z.string()).default([]).catch([]),
+}).loose());
+
+export const AppRulesResponseSchema = z.lazy(() => z.object({
+  rules: z.array(z.object({
+    action_class: AppActionClassSchema,
+    policy: AppActionPolicySchema,
+    default_policy: AppActionPolicySchema,
+    custom: z.boolean().default(false).catch(false),
+  }).loose()).default([]),
+}).loose());
+
+export const AppActivityResponseSchema = z.lazy(() => z.object({
+  calls: z.array(z.object({
+    id: z.string(),
+    agent_id: z.string(),
+    issue_id: appNullableString,
+    chat_session_id: appNullableString,
+    triggered_by: appNullableString,
+    tool_slug: z.string(),
+    action_class: AppActionClassSchema,
+    outcome: z.string(),
+    error: appNullableString,
+    created_at: z.string(),
+  }).loose()).default([]),
+}).loose());
+
+export const TeamAppImpactSchema = z.lazy(() => z.object({
+  agents: z.array(z.object({ id: z.string(), name: z.string().default("") }).loose()).default([]),
+  active_tasks: z.number().default(0).catch(0),
+  active_autopilots: z.number().default(0).catch(0),
+  pending_requests: z.number().default(0).catch(0),
+}).loose());
+
+export const AgentAppsResponseSchema = z.lazy(() => z.object({
+  apps: z.array(AgentAppSchema).default([]),
+}).loose());
+
+export const AppRequestSchema = z.lazy(() => z.object({
+  id: z.string(),
+  kind: z.enum(["action", "connect"]).catch("action"),
+  status: z.string(),
+  agent_id: z.string(),
+  issue_id: appNullableString,
+  chat_session_id: appNullableString,
+  approver_user_id: z.string(),
+  account_scope: AppAccountScopeSchema,
+  toolkit_slug: z.string(),
+  tool_slug: z.string().default(""),
+  action_class: AppActionClassSchema,
+  summary: z.string().default(""),
+  arguments: z.record(z.string(), z.unknown()).optional().catch(undefined),
+  approved_arguments: z.record(z.string(), z.unknown()).optional().catch(undefined),
+  result: z.unknown().optional(),
+  error: appNullableString,
+  reason: appNullableString,
+  // Withhold the details unless the server said otherwise.
+  redacted: z.boolean().default(true).catch(true),
+  expires_at: z.string(),
+  decided_by: appNullableString,
+  decided_at: appNullableString,
+  created_at: z.string(),
+}).loose());
+
+export const AppRequestListSchema = z.lazy(() => z.object({
+  requests: z.array(AppRequestSchema).default([]),
+  next_before: appNullableString,
+}).loose());
+
+export const AppToolsResponseSchema = z.lazy(() => z.object({
+  tools: z.array(z.object({
+    slug: z.string(),
+    name: z.string().default(""),
+    description: z.string().default(""),
+    auto_class: AppActionClassSchema,
+    class: AppActionClassSchema,
+    overridden: z.boolean().default(false).catch(false),
+  }).loose()).default([]),
+}).loose());
+
+export const IssueAppCallsResponseSchema = z.lazy(() => z.object({
+  calls: z.array(z.object({
+    id: z.string(),
+    task_id: appNullableString,
+    agent_id: z.string(),
+    account_scope: AppAccountScopeSchema,
+    account_owner_user_id: appNullableString,
+    toolkit_slug: z.string(),
+    tool_slug: z.string(),
+    action_class: AppActionClassSchema,
+    outcome: z.string(),
+    request_id: appNullableString,
+    error: appNullableString,
+    created_at: z.string(),
+  }).loose()).default([]),
+}).loose());
+
+export const AppConnectInitSchema = z.lazy(() => z.object({ redirect_url: z.string().min(1) }).loose());
+
+export const EMPTY_APPS_OVERVIEW: AppsOverview = {
+  catalog_mode: "curated",
+  allowed_toolkits: [],
+  can_manage: false,
+  team: [],
+  personal: [],
+  agent_apps: [],
+};
+
+export const EMPTY_APP_CATALOG: AppCatalogResponse = { catalog_mode: "curated", apps: [] };
+
+export const EMPTY_TEAM_APP_IMPACT: TeamAppImpact = {
+  agents: [],
+  active_tasks: 0,
+  active_autopilots: 0,
+  pending_requests: 0,
+};
+
 // Only `pinned_at` is new here; every other field keeps its pre-schema
 // leniency so one odd workspace can never empty the whole switcher.
 export const WorkspaceListItemSchema = z.lazy(() => z.object({
