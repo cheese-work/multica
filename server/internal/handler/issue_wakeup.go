@@ -225,7 +225,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	member := parseUUID(originator)
-	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType)}
+	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType), RefuseTimerOpenPR: actorType == "agent"}
 	existingID := pgtype.UUID{}
 	if rawID := chi.URLParam(r, "wakeupID"); rawID != "" {
 		var valid bool
@@ -305,7 +305,7 @@ func (h *Handler) EnableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 403, "a human originator is required")
 		return
 	}
-	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType)}
+	svc := service.IssueWakeupService{Tasks: h.TaskService, AskGuard: h.wakeupAskGuard(r, actorType), RefuseTimerOpenPR: actorType == "agent"}
 	result, err := svc.Enable(r.Context(), issue.ID, parseUUID(originator), h.wakeupSourceTaskID(r), id, in)
 	if err != nil {
 		wakeupError(w, err)

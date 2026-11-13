@@ -16,7 +16,7 @@ type WorkflowStepInstructionsSetParams struct {
 
 func init() {
 	// Spend class: the target is a workflow, so only the owner approves it.
-	Register(&Definition{Type: WorkflowStepInstructionsSet, Version: 1, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowStepInstructionsSet})
+	Register(&Definition{Type: WorkflowStepInstructionsSet, Version: 1, Template: Template{Title: "Replace a workflow step's instructions", Summary: "Replaces the instructions of one workflow step with the proposed text."}, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowStepInstructionsSet})
 }
 
 func normalizeWorkflowStepInstructionsSet(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
