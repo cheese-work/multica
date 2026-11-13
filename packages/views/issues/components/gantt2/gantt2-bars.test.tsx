@@ -193,3 +193,35 @@ describe("Gantt2Bars markers and incomplete history (T4, T6, T7)", () => {
     expect(parseFloat(barOf(container).style.left)).toBeCloseTo((10 / 30) * 100, 1);
   });
 });
+
+describe("Gantt2Bars parent/child rows (G3)", () => {
+  const node = (id: string, parentId: string | null) => ({ ...row(id, {}), parentId, timeline: { ...row(id, {}).timeline, issue_id: id } });
+  const tree = [node("p", null), node("c1", "p"), node("c2", "p"), node("g", "c1"), node("q", null)];
+  const ids = () => screen.getAllByTestId("gantt-row").map((r) => r.dataset.issueId);
+
+  it("lists children under their parent in tree order, indented by depth", () => {
+    renderWithI18n(<Gantt2Bars rows={[tree[4]!, tree[3]!, tree[2]!, tree[1]!, tree[0]!]} window={window} asOf={new Date(AS_OF).toISOString()} />);
+    // K1 order: pre-order, input order among siblings.
+    expect(ids()).toEqual(["q", "p", "c2", "c1", "g"]);
+  });
+
+  it("collapsing a parent hides its whole subtree; the toggle reports expanded state", () => {
+    const onToggle = vi.fn();
+    const { rerender } = renderWithI18n(
+      <Gantt2Bars rows={tree} window={window} asOf={new Date(AS_OF).toISOString()} collapsed={new Set()} onToggleCollapse={onToggle} />,
+    );
+    expect(ids()).toEqual(["p", "c1", "g", "c2", "q"]);
+    // p and c1 have children; c2, g and q are leaves
+    expect(screen.getAllByRole("button", { name: /collapse/i, expanded: true })).toHaveLength(2);
+    expect(screen.getAllByTestId("gantt-row")[2]!.dataset.depth).toBe("2");
+    rerender(<Gantt2Bars rows={tree} window={window} asOf={new Date(AS_OF).toISOString()} collapsed={new Set(["p"])} onToggleCollapse={onToggle} />);
+    expect(ids()).toEqual(["p", "q"]);
+    screen.getByRole("button", { name: /expand/i, expanded: false }).click();
+    expect(onToggle).toHaveBeenCalledWith("p");
+  });
+
+  it("a leaf has no toggle", () => {
+    renderWithI18n(<Gantt2Bars rows={[node("q", null)]} window={window} asOf={new Date(AS_OF).toISOString()} collapsed={new Set()} onToggleCollapse={vi.fn()} />);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+});

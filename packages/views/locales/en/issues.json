@@ -72,10 +72,14 @@
     "supplement_failure_provider_rejected": "the agent rejected the message",
     "supplement_failure_timeout": "delivery timed out",
     "supplement_failure_unknown": "unknown reason",
+    "supplement_failure_replay_exhausted": "the retries ran out",
+    "supplement_failure_run_budget_exhausted": "the run budget is used up",
+    "supplement_failure_agent_paused": "the agent is paused",
     "supplement_retry": "Retry",
     "supplement_retry_failed": "Could not retry delivery.",
     "steer_badge": "Added to {{names}}'s run",
     "steer_waiting": "Waiting for {{name}} to read it",
+    "steer_replay_queued": "{{name}} will read it in the next run",
     "steer_read": "Read by {{name}}",
     "steer_not_received": "{{name}} didn't get it · {{reason}}",
     "steer_resend": "Send as a new run",
@@ -461,7 +465,9 @@
     "start_marker": "Start date",
     "due_marker": "Due date",
     "no_history": "No recorded history",
-    "before_records": "Before records"
+    "before_records": "Before records",
+    "collapse": "Collapse",
+    "expand": "Expand"
   },
   "actor_issues": {
     "scope": {

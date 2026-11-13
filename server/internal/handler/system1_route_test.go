@@ -3,11 +3,14 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -340,5 +343,154 @@ func TestCaptureRouteLabelOnTheAtomicBranch(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT id::text FROM activity_log WHERE issue_id = $1 AND action = 'status_changed'`, c.issueID).Scan(&activityID)
 	if observed != "todo" || obsEvent != activityID {
 		t.Errorf("atomic branch: observed_status=%q event %q vs activity %q", observed, obsEvent, activityID)
+	}
+}
+
+// enableRouting makes agentID the routing agent of the given statuses for the
+// workspace until the test ends.
+func enableRouting(t *testing.T, agentID string, statuses ...string) {
+	t.Helper()
+	var before []byte
+	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&before)
+	t.Cleanup(func() { dbfx.Exec(t, `UPDATE workspace SET settings = $1 WHERE id = $2`, before, testWorkspaceID) })
+	list, _ := json.Marshal(statuses)
+	dbfx.Exec(t, `UPDATE workspace SET settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object('background_agents', jsonb_build_object('routing', jsonb_build_object('agent_id', $1::text, 'statuses', $2::jsonb))) WHERE id = $3`, agentID, string(list), testWorkspaceID)
+}
+
+// writeOnBranch runs one status write (to in_progress) on the plain-status
+// branch (writeIssueLocked) or the status-plus-description branch
+// (updateIssueAtomically).
+func (c routeWriteCase) writeOnBranch(t *testing.T, atomic bool) error {
+	t.Helper()
+	if !atomic {
+		_, err := c.write(t, "in_progress", nil)
+		return err
+	}
+	ctx := withRouteCapture(withStatusRecord(context.Background(), c.rec), c.hook)
+	_, _, _, err := testHandler.updateIssueAtomically(ctx, parseUUID(testWorkspaceID),
+		db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_progress", Valid: true}, Description: pgtype.Text{String: "fallback description", Valid: true}},
+		nil, nil, nil, nil, "", nil)
+	return err
+}
+
+func TestCaptureRouteLabelFallbackOnBothBranches(t *testing.T) {
+	for _, branch := range []struct {
+		name   string
+		atomic bool
+	}{{"status", false}, {"status plus description", true}} {
+		t.Run(branch.name+"/routing exit labels", func(t *testing.T) {
+			c := newRouteWriteCase(t)
+			c.hook.Fallback = true
+			enableRouting(t, c.agentID, "todo")
+			if err := c.writeOnBranch(t, branch.atomic); err != nil {
+				t.Fatal(err)
+			}
+			var observed, via string
+			var rowExit, activityExit bool
+			dbfx.QueryRow(t, `SELECT inputs->>'observed_status', inputs->>'via', (inputs->>'routing_exit')::boolean FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID).Scan(&observed, &via, &rowExit)
+			dbfx.QueryRow(t, `SELECT coalesce((details->>'routing_exit')::boolean, false) FROM activity_log WHERE issue_id = $1 AND action = 'status_changed'`, c.issueID).Scan(&activityExit)
+			if observed != "todo" || via != "status" || !rowExit || !activityExit {
+				t.Errorf("observed/via/row exit/activity exit = %q/%q/%v/%v, want todo/status/true/true", observed, via, rowExit, activityExit)
+			}
+		})
+		t.Run(branch.name+"/failed capture keeps the status write", func(t *testing.T) {
+			c := newRouteWriteCase(t)
+			c.hook.Fallback = true
+			c.hook.DecisionSource = "bogus" // the decision_source CHECK refuses the row
+			enableRouting(t, c.agentID, "todo")
+			if err := c.writeOnBranch(t, branch.atomic); err != nil {
+				t.Fatalf("a fallback capture error must not fail the write: %v", err)
+			}
+			var status string
+			dbfx.QueryRow(t, `SELECT status FROM issue WHERE id = $1`, c.issueID).Scan(&status)
+			if status != "in_progress" {
+				t.Errorf("status = %q, want in_progress", status)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID); n != 0 {
+				t.Errorf("route rows = %d, want 0", n)
+			}
+			var activityExit bool
+			dbfx.QueryRow(t, `SELECT coalesce((details->>'routing_exit')::boolean, false) FROM activity_log WHERE issue_id = $1 AND action = 'status_changed'`, c.issueID).Scan(&activityExit)
+			if !activityExit {
+				t.Errorf("status_changed lost routing_exit = true after a failed capture")
+			}
+		})
+		t.Run(branch.name+"/not a routing exit writes no label", func(t *testing.T) {
+			c := newRouteWriteCase(t) // routing is off for the workspace
+			c.hook.Fallback = true
+			if err := c.writeOnBranch(t, branch.atomic); err != nil {
+				t.Fatal(err)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID); n != 0 {
+				t.Errorf("route rows = %d, want 0 outside a routing exit", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'status_changed' AND details ? 'routing_exit'`, c.issueID); n != 0 {
+				t.Errorf("status_changed carries routing_exit outside a routing exit")
+			}
+		})
+	}
+}
+
+func TestUpdateIssueArmsTheFallbackForARoutingAgentRun(t *testing.T) {
+	c := newRouteCase(t)
+	caller := c.otherAgent(t)
+	enableRouting(t, caller, "in_progress")
+	headers := c.agentRun(t, caller, "in_progress")
+
+	update := func(headers map[string]string) {
+		req := withURLParam(workflowRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_review"}), "id", c.issueID)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	}
+	update(headers)
+	var via string
+	var exit bool
+	dbfx.QueryRow(t, `SELECT inputs->>'via', (inputs->>'routing_exit')::boolean FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID).Scan(&via, &exit)
+	if via != "status" || !exit {
+		t.Fatalf("via/routing_exit = %q/%v, want status/true", via, exit)
+	}
+	if n := c.activityRows(t, "status_changed"); n != 1 {
+		t.Fatalf("status_changed rows = %d, want 1", n)
+	}
+}
+
+func TestUpdateIssueDoesNotArmTheFallbackForAMember(t *testing.T) {
+	c := newRouteCase(t)
+	enableRouting(t, c.otherAgent(t), "in_progress")
+	req := withURLParam(workflowRequest("PUT", "/api/issues/"+c.issueID, map[string]any{"status": "in_review"}), "id", c.issueID)
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+	if n := c.routeRows(t); n != 0 {
+		t.Fatalf("route rows after a member status change = %d, want 0", n)
+	}
+}
+
+func TestWorkflowBriefInputMarksARoutingStep(t *testing.T) {
+	c := newRouteCase(t)
+	ctx := context.Background()
+	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := testHandler.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: parseUUID(c.projectID), WorkspaceID: parseUUID(testWorkspaceID)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def, err := issueworkflow.ForProjectRow(ctx, testHandler.Queries, project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if testHandler.workflowBriefInput(ctx, issue, *def, project).Routing {
+		t.Fatal("routing is off: the brief keeps the status commands")
+	}
+	enableRouting(t, c.handlerID, "in_progress")
+	in := testHandler.workflowBriefInput(ctx, issue, *def, project)
+	if !in.Routing {
+		t.Fatal("in_progress has a routing agent: the brief must use the route commands")
+	}
+	issue.Status = "todo"
+	if testHandler.workflowBriefInput(ctx, issue, *def, project).Routing {
+		t.Fatal("todo has no routing agent in this configuration")
 	}
 }

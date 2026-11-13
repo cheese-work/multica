@@ -237,6 +237,7 @@ Repository permissions:
 | Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
+| Variables | Read-only; needed to read the `AGENT_MERGE_PAUSED` and `MAIN_RED_PAUSED` repository variables for merge pause checks |
 | Actions | Optional, read-only; lets CI status ignore a cancelled run that a newer run of the same workflow replaced on the same commit |
 
 Organization permissions:
