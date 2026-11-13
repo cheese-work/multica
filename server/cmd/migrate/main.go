@@ -161,6 +161,7 @@ var concurrentIndexCleanups = map[string]string{
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
+	"999f_run_input_owner_idx":                                  "idx_run_input_owner_owned",
 	"99961_browser_profile_name_idx":                            "browser_profile_workspace_name_uidx",
 	"99962_browser_instance_name_idx":                           "browser_instance_workspace_name_uidx",
 	"99963_browser_lease_one_holder_idx":                        "browser_lease_one_holder_uidx",

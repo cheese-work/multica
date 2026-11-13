@@ -31,6 +31,21 @@ type RunInput struct {
 	WorkspaceID, IssueID, AgentID pgtype.UUID
 	EventID, Kind                 string
 	Payload                       []byte
+	// OwnerTaskID is the run this input is written for; ThreadKey is that run's
+	// slot thread (the zero UUID when it has none). Both are required.
+	OwnerTaskID, ThreadKey pgtype.UUID
+}
+
+// zeroThread is the thread key of a run with no comment thread, the same
+// convention as the pending-run unique index.
+var zeroThread = pgtype.UUID{Valid: true}
+
+// threadKeyOf is the slot thread of a run: its comment thread, or zeroThread.
+func threadKeyOf(t db.AgentTaskQueue) pgtype.UUID {
+	if t.CommentThreadID.Valid {
+		return t.CommentThreadID
+	}
+	return zeroThread
 }
 
 type skipRunInputKey struct{}
@@ -89,7 +104,7 @@ func admitClaimedTask(ctx context.Context, q *db.Queries, task db.AgentTaskQueue
 	if !task.IssueID.Valid {
 		return false, nil
 	}
-	if _, err := q.BindHeldRunInputs(ctx, db.BindHeldRunInputsParams{TaskID: task.ID, IssueID: task.IssueID, AgentID: task.AgentID}); err != nil {
+	if _, err := q.BindOwnedRunInputs(ctx, task.ID); err != nil {
 		return false, fmt.Errorf("bind run inputs: %w", err)
 	}
 	return false, nil
@@ -352,9 +367,13 @@ func recordRunInput(ctx context.Context, q *db.Queries, in RunInput) (bool, erro
 	if len(payload) == 0 {
 		payload = []byte(`{}`)
 	}
+	if !in.OwnerTaskID.Valid || !in.ThreadKey.Valid {
+		return false, errors.New("run input needs an owner task and a thread key")
+	}
 	_, err := q.InsertRunInput(ctx, db.InsertRunInputParams{
 		WorkspaceID: in.WorkspaceID, IssueID: in.IssueID, AgentID: in.AgentID,
 		EventID: in.EventID, Kind: in.Kind, Payload: payload,
+		OwnerTaskID: in.OwnerTaskID, ThreadKey: in.ThreadKey,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -403,7 +422,7 @@ func recordEnqueuedInput(ctx context.Context, q *db.Queries, issue db.Issue, tas
 		"trigger_evidence":     p.TriggerEvidenceKind.String,
 		"trigger_evidence_ref": util.UUIDToString(p.TriggerEvidenceRefID),
 	})
-	_, err := recordRunInput(ctx, q, RunInput{WorkspaceID: issue.WorkspaceID, IssueID: task.IssueID, AgentID: task.AgentID, EventID: event, Kind: kind, Payload: payload})
+	_, err := recordRunInput(ctx, q, RunInput{WorkspaceID: issue.WorkspaceID, IssueID: task.IssueID, AgentID: task.AgentID, EventID: event, Kind: kind, Payload: payload, OwnerTaskID: task.ID, ThreadKey: threadKeyOf(task)})
 	return err
 }
 
@@ -466,6 +485,7 @@ func recordCoalescedTrigger(ctx context.Context, q *db.Queries, issue db.Issue, 
 	})
 	_, err := q.InsertCoalescedRunInput(ctx, db.InsertCoalescedRunInputParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agentID, EventID: event, Kind: kind, Payload: payload,
+		CommentID: commentID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
@@ -494,7 +514,9 @@ func settleAdmissionRelease(ctx context.Context, q *db.Queries, tasks ...db.Agen
 }
 
 // settleRunInputs is the acknowledgement. Only a completed run delivers its
-// batch; every other end parks it. Runs in the same transaction as the end.
+// batch; every other end parks it. Inputs a run still owns follow the run: a
+// completed run hands them to a successor, any other end parks them. Runs in the
+// same transaction as the end, after the status update.
 func settleRunInputs(ctx context.Context, q *db.Queries, tasks ...db.AgentTaskQueue) error {
 	for _, t := range tasks {
 		if !t.IssueID.Valid {
@@ -504,43 +526,138 @@ func settleRunInputs(ctx context.Context, q *db.Queries, tasks ...db.AgentTaskQu
 			if err := q.DeliverRunInputs(ctx, t.ID); err != nil {
 				return fmt.Errorf("deliver run inputs: %w", err)
 			}
+			if err := handOverLeftovers(ctx, q, t); err != nil {
+				return err
+			}
 			continue
 		}
 		reason := pgtype.Text{String: t.Status, Valid: true}
 		if err := q.ParkRunInputs(ctx, db.ParkRunInputsParams{TaskID: t.ID, ParkReason: reason, FailureClass: t.FailureReason}); err != nil {
 			return fmt.Errorf("park run inputs: %w", err)
 		}
-		if !t.DispatchedAt.Valid && !t.StartedAt.Valid {
-			// Ended before any claim: the inputs it was holding are parked too.
-			if err := q.ParkHeldRunInputs(ctx, db.ParkHeldRunInputsParams{IssueID: t.IssueID, AgentID: t.AgentID, ParkReason: reason, FailureClass: t.FailureReason}); err != nil {
-				return fmt.Errorf("park held run inputs: %w", err)
-			}
+		if err := q.ParkOwnedRunInputs(ctx, db.ParkOwnedRunInputsParams{TaskID: t.ID, ParkReason: reason, FailureClass: t.FailureReason}); err != nil {
+			return fmt.Errorf("park owned run inputs: %w", err)
 		}
 	}
 	return nil
 }
 
+// handOverLeftovers moves the inputs a completed run A still owns (written for a
+// dispatched carrier) to the run that will carry them: the pending run of A's
+// slot, or a successor created for them. The successor copies identity fields
+// only; it takes no retry budget and none of A's trigger. A leftover that cannot
+// be handed to a run of A's thread is parked, never guessed onto another run.
+func handOverLeftovers(ctx context.Context, q *db.Queries, a db.AgentTaskQueue) error {
+	left, err := q.LockOwnedRunInputs(ctx, a.ID)
+	if err != nil {
+		return fmt.Errorf("lock owned run inputs: %w", err)
+	}
+	if len(left) == 0 {
+		return nil
+	}
+	tk := threadKeyOf(a)
+	owner, err := q.LockSlotCarrier(ctx, db.LockSlotCarrierParams{IssueID: a.IssueID, AgentID: a.AgentID, ThreadKey: tk})
+	if errors.Is(err, pgx.ErrNoRows) {
+		owner, err = createInputSuccessor(ctx, q, a, tk)
+	}
+	if err != nil {
+		return fmt.Errorf("successor for run inputs: %w", err)
+	}
+	if owner.ID.Valid && threadKeyOf(owner) == tk {
+		if err := q.MoveOwnedRunInputs(ctx, db.MoveOwnedRunInputsParams{OldOwnerTaskID: a.ID, NewOwnerTaskID: owner.ID, ThreadKey: tk}); err != nil {
+			return fmt.Errorf("move run inputs: %w", err)
+		}
+	}
+	// Whatever could not move parks with the run that ended.
+	return q.ParkOwnedRunInputs(ctx, db.ParkOwnedRunInputsParams{TaskID: a.ID, ParkReason: pgtype.Text{String: "no_successor", Valid: true}})
+}
+
+// createInputSuccessor queues a run in A's slot to carry A's leftover inputs. It
+// has attempt 0 and no parent; its thread is A's (the thread root comment is its
+// trigger when the thread is a comment thread).
+func createInputSuccessor(ctx context.Context, q *db.Queries, a db.AgentTaskQueue, tk pgtype.UUID) (db.AgentTaskQueue, error) {
+	p := db.CreateAgentTaskParams{
+		AgentID: a.AgentID, RuntimeID: a.RuntimeID, IssueID: a.IssueID, Priority: a.Priority,
+		OriginatorUserID: a.OriginatorUserID, AccountableUserID: a.AccountableUserID,
+		OriginatorSource: a.OriginatorSource, SquadID: a.SquadID, IsLeaderTask: pgtype.Bool{Bool: a.IsLeaderTask, Valid: true},
+		ID: dbid.NewV7(), CoalescedCommentIds: []pgtype.UUID{},
+	}
+	if tk != zeroThread {
+		if _, err := q.GetComment(ctx, tk); err != nil {
+			return db.AgentTaskQueue{}, nil // not a comment thread: no successor, the inputs park
+		}
+		p.TriggerCommentID = tk
+	}
+	t, err := createProviderHeldAgentTask(ctx, q, p)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.AgentTaskQueue{}, nil
+	}
+	return t, err
+}
+
 // redeliverToRetry is the failed-run recovery path: the retry child gets the
 // parent's batch again, same event ids, marked as a redelivery of the parent.
-func redeliverToRetry(ctx context.Context, q *db.Queries, parent db.AgentTaskQueue) error {
+// Only the rows of the child's own thread move; any other row of the batch (a
+// legacy batch can hold several threads) stays parked for a member.
+func redeliverToRetry(ctx context.Context, q *db.Queries, parent, child db.AgentTaskQueue) error {
 	if !parent.IssueID.Valid {
 		return nil
 	}
 	if err := q.ParkRunInputs(ctx, db.ParkRunInputsParams{TaskID: parent.ID, ParkReason: pgtype.Text{String: "failed", Valid: true}, FailureClass: parent.FailureReason}); err != nil {
 		return err
 	}
-	_, err := q.ReheldParkedRunInputs(ctx, db.ReheldParkedRunInputsParams{IssueID: parent.IssueID, AgentID: parent.AgentID, FromTaskID: parent.ID})
-	return err
+	tk := threadKeyOf(child)
+	ids, err := q.LockParkedRunInputsForRetry(ctx, db.LockParkedRunInputsForRetryParams{ParentID: parent.ID, RetryThreadKey: tk})
+	if err != nil {
+		return fmt.Errorf("lock parked run inputs for retry: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	moved, err := q.ReheldRunInputsByID(ctx, db.ReheldRunInputsByIDParams{Ids: int8s(ids), OwnerTaskID: child.ID, ThreadKey: tk})
+	if err != nil {
+		return fmt.Errorf("rehold run inputs: %w", err)
+	}
+	if len(moved) != len(ids) {
+		return fmt.Errorf("rehold run inputs: %d of %d rows moved", len(moved), len(ids))
+	}
+	return nil
 }
 
-// ResumeParkedInputs is the explicit resume: parked inputs return to held and a
-// run is queued to carry them, in one transaction. Nothing is re-held for an
-// agent the issue is no longer assigned to; a refused carrier run rolls the
-// re-hold back, so no input is left held without a run.
-func (s *TaskService) ResumeParkedInputs(ctx context.Context, issueID, agentID pgtype.UUID) (int, error) {
-	var count int
-	var after func()
+func int8s(in []pgtype.Int8) []int64 {
+	out := make([]int64, len(in))
+	for i, v := range in {
+		out[i] = v.Int64
+	}
+	return out
+}
+
+// ResumeResult counts what one member resume did.
+type ResumeResult struct {
+	Resumed                  int `json:"count"`
+	SkippedUnknownThread     int `json:"skipped_unknown_thread"`
+	SkippedUnresumableThread int `json:"skipped_unresumable_thread"`
+	SkippedSlotBusy          int `json:"skipped_slot_busy"`
+	SkippedChanged           int `json:"skipped_changed"`
+}
+
+// ErrResumeConflict means a row named by an explicit unknown-thread recovery
+// changed under the caller, or the slot is busy; nothing was changed.
+var ErrResumeConflict = errors.New("parked inputs changed or the slot is busy")
+
+// ErrResumeInvalid means the explicit recovery named a thread or rows that do
+// not belong to the issue and agent.
+var ErrResumeInvalid = errors.New("invalid thread or inputs")
+
+// ResumeParkedInputs is the explicit resume: parked inputs return to owned, one
+// thread group at a time, each by exact row id to the carrier of its own thread.
+// Lock order is the slot first, then the rows. Groups of unknown thread are
+// skipped. Nothing is re-held for an agent the issue is no longer assigned to.
+func (s *TaskService) ResumeParkedInputs(ctx context.Context, issueID, agentID pgtype.UUID) (ResumeResult, error) {
+	var res ResumeResult
+	var afters []func()
 	err := s.runInTx(ctx, func(q *db.Queries) error {
+		res, afters = ResumeResult{}, nil
 		issue, err := q.GetIssue(ctx, issueID)
 		if err != nil {
 			return err
@@ -548,28 +665,164 @@ func (s *TaskService) ResumeParkedInputs(ctx context.Context, issueID, agentID p
 		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
 			return nil
 		}
-		rows, err := q.ReheldParkedRunInputs(ctx, db.ReheldParkedRunInputsParams{IssueID: issueID, AgentID: agentID})
+		refs, err := q.ListParkedRunInputRefs(ctx, db.ListParkedRunInputRefsParams{IssueID: issueID, AgentID: agentID})
 		if err != nil {
-			return fmt.Errorf("resume parked inputs: %w", err)
+			return fmt.Errorf("list parked inputs: %w", err)
 		}
-		if len(rows) == 0 {
-			return nil
+		groups := map[pgtype.UUID][]int64{}
+		var keys []pgtype.UUID
+		for _, r := range refs {
+			if !r.ThreadKey.Valid {
+				res.SkippedUnknownThread++
+				continue
+			}
+			if _, ok := groups[r.ThreadKey]; !ok {
+				keys = append(keys, r.ThreadKey)
+			}
+			groups[r.ThreadKey] = append(groups[r.ThreadKey], r.Seq.Int64)
 		}
-		// A pending run already carries the held inputs when it is claimed.
-		_, after, err = s.TxScoped(q).EnqueueIssueRunInTx(context.WithValue(ctx, skipRunInputKey{}, true), q, issue, pgtype.UUID{}, pgtype.UUID{}, nil)
-		if err != nil && !errors.Is(err, ErrDuplicatePendingTask) {
-			return err
+		slices.SortFunc(keys, func(a, b pgtype.UUID) int { return slices.Compare(a.Bytes[:], b.Bytes[:]) })
+		for _, k := range keys {
+			ids := groups[k]
+			if k != zeroThread {
+				if _, err := q.GetCommentInIssue(ctx, db.GetCommentInIssueParams{ID: k, IssueID: issueID}); err != nil {
+					res.SkippedUnresumableThread += len(ids)
+					continue
+				}
+			}
+			carrier, busy, after, err := s.carrierForSlot(ctx, q, issue, k)
+			if err != nil {
+				return err
+			}
+			if busy {
+				res.SkippedSlotBusy += len(ids)
+				continue
+			}
+			locked, err := q.LockParkedRunInputsInThread(ctx, db.LockParkedRunInputsInThreadParams{Ids: ids, ThreadKey: k})
+			if err != nil {
+				return fmt.Errorf("lock parked inputs: %w", err)
+			}
+			res.SkippedChanged += len(ids) - len(locked)
+			if len(locked) == 0 {
+				continue
+			}
+			moved, err := q.ReheldRunInputsByID(ctx, db.ReheldRunInputsByIDParams{Ids: int8s(locked), OwnerTaskID: carrier.ID, ThreadKey: k})
+			if err != nil {
+				return fmt.Errorf("rehold parked inputs: %w", err)
+			}
+			if len(moved) != len(locked) {
+				return fmt.Errorf("rehold parked inputs: %d of %d rows moved", len(moved), len(locked))
+			}
+			res.Resumed += len(moved)
+			if after != nil {
+				afters = append(afters, after)
+			}
 		}
-		count = len(rows)
 		return nil
 	})
 	if err != nil {
-		return 0, err
+		return ResumeResult{}, err
+	}
+	for _, after := range afters {
+		after()
+	}
+	return res, nil
+}
+
+// carrierForSlot returns the run that will carry inputs of one thread: the
+// queued run of the slot, or a new one. A dispatched run is busy: its claim is
+// done and cannot take more.
+func (s *TaskService) carrierForSlot(ctx context.Context, q *db.Queries, issue db.Issue, k pgtype.UUID) (db.AgentTaskQueue, bool, func(), error) {
+	agentID := issue.AssigneeID
+	slot, err := q.LockSlotCarrier(ctx, db.LockSlotCarrierParams{IssueID: issue.ID, AgentID: agentID, ThreadKey: k})
+	if err == nil {
+		return slot, slot.Status != "queued", nil, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return db.AgentTaskQueue{}, false, nil, err
+	}
+	var trigger pgtype.UUID
+	if k != zeroThread {
+		trigger = k
+	}
+	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(context.WithValue(ctx, skipRunInputKey{}, true))
+	carrier, attr, err := s.TxScoped(q).enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, trigger, nil, false, "", pgtype.UUID{}, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, nil)
+	if err != nil {
+		return db.AgentTaskQueue{}, false, nil, err
+	}
+	if threadKeyOf(carrier) != k {
+		return db.AgentTaskQueue{}, false, nil, fmt.Errorf("carrier thread %s differs from the group thread %s", util.UUIDToString(threadKeyOf(carrier)), util.UUIDToString(k))
+	}
+	after := func() {
+		notifyAfterCommit()
+		s.afterCommit().RecordHumanDelegation(ctx, attr)
+		s.afterCommit().PublishTaskEnqueued(ctx, carrier)
+	}
+	return carrier, false, after, nil
+}
+
+// ResumeUnknownThreadInputs is the explicit member choice for inputs whose
+// thread is unknown: the member names the thread and the exact rows. Slot lock
+// first, then the exact rows; any mismatch rolls the whole call back.
+func (s *TaskService) ResumeUnknownThreadInputs(ctx context.Context, issueID, agentID, threadKey pgtype.UUID, inputIDs []int64) (ResumeResult, error) {
+	var res ResumeResult
+	var after func()
+	if len(inputIDs) == 0 {
+		return res, ErrResumeInvalid
+	}
+	err := s.runInTx(ctx, func(q *db.Queries) error {
+		res, after = ResumeResult{}, nil
+		issue, err := q.GetIssue(ctx, issueID)
+		if err != nil {
+			return err
+		}
+		if issue.AssigneeType.String != "agent" || issue.AssigneeID != agentID {
+			return ErrResumeInvalid
+		}
+		if threadKey != zeroThread {
+			if _, err := q.GetCommentInIssue(ctx, db.GetCommentInIssueParams{ID: threadKey, IssueID: issueID}); err != nil {
+				return ErrResumeInvalid
+			}
+		}
+		carrier, busy, af, err := s.carrierForSlot(ctx, q, issue, threadKey)
+		if err != nil {
+			return err
+		}
+		if busy {
+			return ErrResumeConflict
+		}
+		after = af
+		locked, err := q.LockParkedNullThreadRunInputs(ctx, db.LockParkedNullThreadRunInputsParams{Ids: inputIDs, IssueID: issueID, AgentID: agentID})
+		if err != nil {
+			return fmt.Errorf("lock unknown-thread inputs: %w", err)
+		}
+		if len(locked) != len(inputIDs) {
+			return ErrResumeConflict
+		}
+		set, err := q.AssignParkedInputThread(ctx, db.AssignParkedInputThreadParams{Ids: inputIDs, IssueID: issueID, AgentID: agentID, ThreadKey: threadKey})
+		if err != nil || len(set) != len(inputIDs) {
+			if err == nil {
+				err = ErrResumeConflict
+			}
+			return err
+		}
+		moved, err := q.ReheldRunInputsByID(ctx, db.ReheldRunInputsByIDParams{Ids: inputIDs, OwnerTaskID: carrier.ID, ThreadKey: threadKey})
+		if err != nil || len(moved) != len(inputIDs) {
+			if err == nil {
+				err = ErrResumeConflict
+			}
+			return err
+		}
+		res.Resumed = len(moved)
+		return nil
+	})
+	if err != nil {
+		return ResumeResult{}, err
 	}
 	if after != nil {
 		after()
 	}
-	return count, nil
+	return res, nil
 }
 
 // DiscardParkedInputs drops the parked batch for good.

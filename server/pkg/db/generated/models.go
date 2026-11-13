@@ -3203,6 +3203,8 @@ type RunInput struct {
 	FailureClass       pgtype.Text        `json:"failure_class"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	OwnerTaskID        pgtype.UUID        `json:"owner_task_id"`
+	ThreadKey          pgtype.UUID        `json:"thread_key"`
 }
 
 type RuntimeProfile struct {

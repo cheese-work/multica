@@ -14,7 +14,7 @@ import (
 // heldInputEvents returns the event ids of the issue's held inputs.
 func heldInputEvents(t *testing.T, issueID string) []string {
 	t.Helper()
-	rows, err := testPool.Query(t.Context(), `SELECT event_id FROM run_input WHERE issue_id = $1 AND state = 'held' ORDER BY event_id`, issueID)
+	rows, err := testPool.Query(t.Context(), `SELECT event_id FROM run_input WHERE issue_id = $1 AND state = 'owned' ORDER BY event_id`, issueID)
 	if err != nil {
 		t.Fatal(err)
 	}

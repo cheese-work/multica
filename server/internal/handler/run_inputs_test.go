@@ -9,8 +9,8 @@ import (
 
 func seedParkedInput(test *testing.T, issueID, agentID, event string) {
 	test.Helper()
-	dbfx.Exec(test, `INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload, state, park_reason)
-		VALUES ($1, $2, $3, $4, 'comment', '{}', 'parked', 'failed')`, testWorkspaceID, issueID, agentID, event)
+	dbfx.Exec(test, `INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload, state, park_reason, thread_key)
+		VALUES ($1, $2, $3, $4, 'comment', '{}', 'parked', 'failed', '00000000-0000-0000-0000-000000000000')`, testWorkspaceID, issueID, agentID, event)
 	test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM run_input WHERE issue_id = $1`, issueID) })
 }
 
@@ -51,7 +51,7 @@ func TestRunInputsResumeQueuesRunWithSameEventIDs(test *testing.T) {
 	if out["count"] != 1 {
 		test.Fatalf("resumed %d, want 1", out["count"])
 	}
-	if n := dbfx.Count(test, `SELECT count(*) FROM run_input WHERE issue_id = $1 AND event_id = 'evt-a' AND state = 'held' AND redelivery_of_task_id IS NULL`, issueID); n != 1 {
+	if n := dbfx.Count(test, `SELECT count(*) FROM run_input WHERE issue_id = $1 AND event_id = 'evt-a' AND state = 'owned' AND redelivery_of_task_id IS NULL`, issueID); n != 1 {
 		test.Fatalf("resumed input is not held with its event id: %d", n)
 	}
 }

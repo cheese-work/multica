@@ -99,8 +99,8 @@ func TestAdmissionResumeWithChangedAssigneeKeepsInputsParked(t *testing.T) {
 	if _, err := e.pool.Exec(context.Background(), `UPDATE issue SET assignee_id = $2 WHERE id = $1`, issue, e.agent2); err != nil {
 		t.Fatal(err)
 	}
-	n, _ := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
-	if n != 0 {
+	res, _ := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
+	if n := res.Resumed; n != 0 {
 		t.Fatalf("resume re-held %d inputs for an agent that is no longer the assignee", n)
 	}
 	if got := e.inputStates(issue); !eqStrings(got, []string{"parked"}) {
@@ -141,8 +141,8 @@ func TestAdmissionHeldInputWithQueuedRunIsNotSwept(t *testing.T) {
 	if err := e.svc.ReconcileAdmission(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.inputStates(issue); !eqStrings(got, []string{"held"}) {
-		t.Fatalf("input with a queued run = %v, want [held]", got)
+	if got := e.inputStates(issue); !eqStrings(got, []string{"owned"}) {
+		t.Fatalf("input with a queued run = %v, want [owned]", got)
 	}
 }
 
