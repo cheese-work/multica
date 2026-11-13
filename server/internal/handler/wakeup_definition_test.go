@@ -1190,6 +1190,13 @@ func TestWakeupDefinitionCustomTriggersAreAcceptedBehindTheGate(t *testing.T) {
 	if preview.AlreadySatisfied == nil || preview.AlreadySatisfied.Satisfied != 1 || preview.AlreadySatisfied.Examined != 1 || preview.AlreadySatisfied.Truncated {
 		t.Fatalf("already satisfied = %+v, want the project's one todo issue", preview.AlreadySatisfied)
 	}
+	// It names that issue, so an owner sees which issue the rule would act on.
+	var number int
+	dbfx.QueryRow(t, `SELECT number FROM issue WHERE id = $1`, k.issueID).Scan(&number)
+	got := preview.AlreadySatisfied.Issues
+	if len(got) != 1 || got[0].ID != k.issueID || got[0].Title != "wd issue" || !strings.HasSuffix(got[0].Identifier, "-"+strconv.Itoa(number)) {
+		t.Fatalf("preview issues = %+v, want %s (number %d) titled %q", got, k.issueID, number, "wd issue")
+	}
 	if n := wdCount(t); n != 0 {
 		t.Fatalf("a preview persisted %d definitions", n)
 	}

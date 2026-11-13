@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, MessageSquareQuote } from "@multica/ui/icons";
+import { Ban, Check, ChevronDown, Loader2, MessageSquareQuote, Undo2 } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import { ApiError } from "@multica/core/api";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
@@ -389,6 +389,26 @@ function useNow(card: RequestCard) {
   return now;
 }
 
+// An answer nobody needs to act on any more: the card folds to one row (design `decision-card-fold`, direction A).
+const FOLDS = new Set(["picked_up", "withdrawn", "disclaimed"]);
+const FOLD_ICONS = { picked_up: Check, withdrawn: Undo2, disclaimed: Ban } as const;
+
+// The folded row names the question: the first line of the ask, markdown marks dropped.
+const questionOf = (ask: string, fallback: string) => {
+  const line = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).find(Boolean);
+  return line || fallback;
+};
+
+const ictFormat = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Asia/Bangkok",
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
 // `inIssue`: shown on the source issue page, where there is no DM message box.
 export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
   const { t } = useT("chat");
@@ -401,6 +421,12 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
+  const ictText = validDate ? `${ictFormat.format(date)} ICT` : "";
+  // Expand state is local and never saved. A card already done at load starts folded, so its
+  // first paint has nothing to animate; a later change of state runs the CSS transition.
+  const [expanded, setExpanded] = useState(false);
+  const folded = FOLDS.has(shown) && !expanded;
+  const bodyId = useId();
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
   const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
@@ -446,6 +472,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     );
   }
 
+  const StateIcon = FOLD_ICONS[shown as keyof typeof FOLD_ICONS] ?? MessageSquareQuote;
   return (
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
@@ -453,6 +480,39 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
       data-state={shown}
       className="min-w-0 rounded-xl border border-surface-border bg-surface text-body"
     >
+      {FOLDS.has(shown) && (
+        <button
+          type="button"
+          aria-expanded={!folded}
+          aria-controls={bodyId}
+          onClick={() => setExpanded((open) => !open)}
+          data-testid="decision-request-fold-toggle"
+          className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-label focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
+        >
+          <StateIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <span className="sr-only">{state}: </span>
+          <span className="min-w-0 flex-1 truncate font-medium">{questionOf(facts, card.issue_title || card.issue_identifier || card.issue_id)}</span>
+          {card.answer?.chosen_option_index !== undefined && shown !== "disclaimed" && (
+            <span className="max-w-[40%] shrink-0 truncate rounded-xs border px-1.5 text-micro">
+              {t(($) => $.decision.receipt_option, { number: card.answer.chosen_option_index + 1 })}
+              {card.answer.option_label && <span className="max-sm:hidden"> · {card.answer.option_label}</span>}
+            </span>
+          )}
+          {ictText && <time dateTime={timestamp} className="shrink-0 text-caption text-muted-foreground max-sm:hidden">{ictText}</time>}
+          <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-200 ease-out motion-reduce:transition-none", !folded && "rotate-180")} aria-hidden />
+        </button>
+      )}
+      <div
+        id={bodyId}
+        data-fold-body
+        data-folded={folded}
+        inert={folded}
+        className={cn(
+          "grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+          folded ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
+        )}
+      >
+      <div className={cn("min-h-0", FOLDS.has(shown) && "overflow-hidden")}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
         <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="font-medium">{t(($) => $.decision.request_title)}</span>
@@ -568,18 +628,10 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </p>
         )}
         {validDate && (
-          <time dateTime={timestamp} className="block text-caption text-muted-foreground">
-            {new Intl.DateTimeFormat("en-GB", {
-              timeZone: "Asia/Bangkok",
-              day: "2-digit",
-              month: "short",
-              year: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-              hourCycle: "h23",
-            }).format(date)} ICT
-          </time>
+          <time dateTime={timestamp} className="block text-caption text-muted-foreground">{ictText}</time>
         )}
+      </div>
+      </div>
       </div>
     </section>
   );

@@ -3553,6 +3553,10 @@ WHERE message.chat_session_id = $1
     )
   )
   AND (message.created_at, message.id) >= ($3::timestamptz, $4::uuid)
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2
 `
@@ -3562,6 +3566,8 @@ type ListChatMessagesNewerPageParams struct {
 	Limit          int32              `json:"limit"`
 	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
 	AfterID        pgtype.UUID        `json:"after_id"`
+	FloorCreatedAt pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID        pgtype.UUID        `json:"floor_id"`
 }
 
 // Oldest-first page starting at (after_created_at, after_id), inclusive. Same
@@ -3575,6 +3581,8 @@ func (q *Queries) ListChatMessagesNewerPage(ctx context.Context, arg ListChatMes
 		arg.Limit,
 		arg.AfterCreatedAt,
 		arg.AfterID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 	)
 	if err != nil {
 		return nil, err
@@ -3654,6 +3662,10 @@ WHERE message.chat_session_id = $1
     $3::timestamptz IS NULL
     OR (message.created_at, message.id) < ($3::timestamptz, $4::uuid)
   )
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2
 `
@@ -3663,14 +3675,20 @@ type ListChatMessagesPageParams struct {
 	Limit           int32              `json:"limit"`
 	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
 	BeforeID        pgtype.UUID        `json:"before_id"`
+	FloorCreatedAt  pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID         pgtype.UUID        `json:"floor_id"`
 }
 
+// floor_created_at/floor_id (both or neither) hide the rows at or before a
+// segment floor: agent-token reads pass the session's floor (CHE-2819 Rule P).
 func (q *Queries) ListChatMessagesPage(ctx context.Context, arg ListChatMessagesPageParams) ([]ChatMessage, error) {
 	rows, err := q.db.Query(ctx, listChatMessagesPage,
 		arg.ChatSessionID,
 		arg.Limit,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 	)
 	if err != nil {
 		return nil, err
@@ -3742,8 +3760,12 @@ WHERE message.chat_session_id = $1
     $3::timestamptz IS NULL
     OR (message.created_at, message.id) < ($3::timestamptz, $4::uuid)
   )
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
-LIMIT $5
+LIMIT $7
 `
 
 type ListChatMessagesPageForChannelContextParams struct {
@@ -3751,6 +3773,8 @@ type ListChatMessagesPageForChannelContextParams struct {
 	ChannelContextRevision pgtype.Int8        `json:"channel_context_revision"`
 	BeforeCreatedAt        pgtype.Timestamptz `json:"before_created_at"`
 	BeforeID               pgtype.UUID        `json:"before_id"`
+	FloorCreatedAt         pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID                pgtype.UUID        `json:"floor_id"`
 	PageLimit              int32              `json:"page_limit"`
 }
 
@@ -3764,7 +3788,95 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 		arg.ChannelContextRevision,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegmentMessagesPage = `-- name: ListChatSegmentMessagesPage :many
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids, message.client_message_id, message.reanchored_at FROM chat_message AS message
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = message.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < ($1::timestamptz, $2::uuid)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE message.chat_session_id = $3
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (message.created_at, message.id) <= ($1::timestamptz, $2::uuid)
+  AND (prev.id IS NULL OR (message.created_at, message.id) > (prev.created_at, prev.id))
+  AND (
+    $4::timestamptz IS NULL
+    OR (message.created_at, message.id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT $6
+`
+
+type ListChatSegmentMessagesPageParams struct {
+	EndCreatedAt    pgtype.Timestamptz `json:"end_created_at"`
+	EndID           pgtype.UUID        `json:"end_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeID        pgtype.UUID        `json:"before_id"`
+	RowLimit        int32              `json:"row_limit"`
+}
+
+// One closed segment, newest first, paged by the same before cursor as
+// ListChatMessagesPage. The segment ends at the divider (end_created_at,
+// end_id), inclusive, and starts after the previous divider.
+func (q *Queries) ListChatSegmentMessagesPage(ctx context.Context, arg ListChatSegmentMessagesPageParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatSegmentMessagesPage,
+		arg.EndCreatedAt,
+		arg.EndID,
+		arg.ChatSessionID,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.RowLimit,
 	)
 	if err != nil {
 		return nil, err
@@ -3888,6 +4000,56 @@ func (q *Queries) ListChatSegmentTail(ctx context.Context, arg ListChatSegmentTa
 			&i.ClientMessageID,
 			&i.ReanchoredAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegments = `-- name: ListChatSegments :many
+SELECT d.id AS divider_id, d.created_at,
+       (SELECT count(*) FROM chat_message m
+        WHERE m.chat_session_id = d.chat_session_id
+          AND m.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+          AND (m.created_at, m.id) <= (d.created_at, d.id)
+          AND (prev.id IS NULL OR (m.created_at, m.id) > (prev.created_at, prev.id)))::int AS message_count
+FROM chat_message d
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = d.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (d.created_at, d.id)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE d.chat_session_id = $1 AND d.message_kind = 'compaction_summary'
+ORDER BY d.created_at, d.id
+`
+
+type ListChatSegmentsRow struct {
+	DividerID    pgtype.UUID        `json:"divider_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	MessageCount int32              `json:"message_count"`
+}
+
+// Closed segments of a DM, oldest first (CHE-2819 L2a). A segment is the
+// messages after the previous divider up to and including its own divider; the
+// divider id names it. The current segment has no divider and is not listed.
+// Counts use the member-visible rows (no channel commands, no onboarding kickoff).
+func (q *Queries) ListChatSegments(ctx context.Context, chatSessionID pgtype.UUID) ([]ListChatSegmentsRow, error) {
+	rows, err := q.db.Query(ctx, listChatSegments, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSegmentsRow{}
+	for rows.Next() {
+		var i ListChatSegmentsRow
+		if err := rows.Scan(&i.DividerID, &i.CreatedAt, &i.MessageCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
