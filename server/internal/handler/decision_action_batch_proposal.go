@@ -122,7 +122,7 @@ func (handler *Handler) ProposeDecisionActionBatch(writer http.ResponseWriter, r
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(anchor.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	recipient, chatSession, ok := handler.proposalRecipient(writer, request, anchor, taskID, body.For)
+	recipient, chatSession, ok := handler.proposalRecipient(writer, request, anchor, taskID, body.For, pgtype.UUID{})
 	if !ok {
 		return
 	}
