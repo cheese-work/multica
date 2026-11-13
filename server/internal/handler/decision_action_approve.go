@@ -778,6 +778,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		}
 		return change.Publish(ctx, handler, action)
 	}
+	if action.ActionType == issueProjectSetType {
+		return handler.publishIssueProjectSet(ctx, action)
+	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
 	}

@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 const projectSetAction = "issue.project.set"
@@ -17,10 +21,26 @@ type projectMoveFixture struct {
 	fromWorkflow, toWorkflow string
 }
 
-// workflowProject creates a project whose workflow caps an issue at cap runs.
+// workflowProject creates a project whose workflow caps an issue at cap runs
+// and lists the statuses the fixture issues use.
 func workflowProject(test *testing.T, title string, cap int) (projectID, workflowID string) {
 	test.Helper()
-	dbfx.QueryRow(test, `INSERT INTO issue_workflow (workspace_id, name, initial_status_key, steps, max_runs_per_issue, run_budget_since) VALUES ($1, $2, 'todo', '[]'::jsonb, $3, '2026-01-01T00:00:00Z') RETURNING id`, testWorkspaceID, title+" wf", cap).Scan(&workflowID)
+	return workflowProjectWithStatuses(test, title, cap, "backlog", "todo", "in_progress", "done")
+}
+
+// workflowProjectWithStatuses is workflowProject for a workflow that lists
+// only the given statuses.
+func workflowProjectWithStatuses(test *testing.T, title string, cap int, statuses ...string) (projectID, workflowID string) {
+	test.Helper()
+	steps := make([]map[string]any, 0, len(statuses))
+	for _, status := range statuses {
+		steps = append(steps, map[string]any{"status_key": status, "handler": map[string]any{"type": "none"}})
+	}
+	encoded, err := json.Marshal(steps)
+	if err != nil {
+		test.Fatal(err)
+	}
+	dbfx.QueryRow(test, `INSERT INTO issue_workflow (workspace_id, name, initial_status_key, steps, max_runs_per_issue, run_budget_since) VALUES ($1, $2, 'todo', $3::jsonb, $4, '2026-01-01T00:00:00Z') RETURNING id`, testWorkspaceID, title+" wf", string(encoded), cap).Scan(&workflowID)
 	dbfx.Cleanup(test, `DELETE FROM issue_workflow WHERE id = $1`, workflowID)
 	projectID = dbfx.Project(test, title)
 	dbfx.Exec(test, `UPDATE project SET workflow_id = $1 WHERE id = $2`, workflowID, projectID)
@@ -215,5 +235,102 @@ func TestProjectSetActionCardPreviewSaysWhenTheBudgetDoesNotWiden(test *testing.
 	fields := previewFields(test, move.cardAction(test))
 	if got := fields["Run budget"][1]; !strings.Contains(got, "does not widen") {
 		test.Fatalf("Run budget = %q; want it to say the move does not widen", got)
+	}
+}
+
+// newPendingStatusMove is a pending move of an issue sitting in status from the
+// default-listing project into a project whose workflow lists only toStatuses.
+func newPendingStatusMove(test *testing.T, status string, toStatuses ...string) projectMoveFixture {
+	test.Helper()
+	fixture := newActionFixture(test)
+	move := projectMoveFixture{}
+	move.fromProject, move.fromWorkflow = workflowProject(test, "Status from", 10)
+	move.toProject, move.toWorkflow = workflowProjectWithStatuses(test, "Status to", 10, toStatuses...)
+	dbfx.Exec(test, `UPDATE issue SET project_id = $1, status = $2 WHERE id = $3`, move.fromProject, status, fixture.issueID)
+	dbfx.Cleanup(test, `UPDATE issue SET project_id = NULL, status = 'todo' WHERE id = $1`, fixture.issueID)
+	dbfx.Cleanup(test, `DELETE FROM activity_log WHERE issue_id = $1`, fixture.issueID)
+	var created actionResponse
+	fixture.respond(test, fixture.projectSetBody(move.toProject, true), http.StatusCreated, &created)
+	dbfx.Cleanup(test, `DELETE FROM decision_answer WHERE decision_request_id = $1`, created.ID)
+	move.pendingAction = pendingAction{fixture, created.ID, created.Action.ID}
+	return move
+}
+
+func (move projectMoveFixture) issueStatus(test *testing.T) string {
+	test.Helper()
+	var status string
+	dbfx.QueryRow(test, `SELECT status FROM issue WHERE id = $1`, move.issueID).Scan(&status)
+	return status
+}
+
+func TestProjectSetActionMapsAStatusTheTargetWorkflowLacks(test *testing.T) {
+	// backlog and todo share a lifecycle category; the target lists todo only.
+	move := newPendingStatusMove(test, "backlog", "todo", "in_progress", "done")
+	fields := previewFields(test, move.cardAction(test))
+	if got := fields["Status"]; got != [2]string{"backlog", "todo"} {
+		test.Fatalf("Status = %v; want [backlog todo]", got)
+	}
+	if out := move.approveAccepted(test); out.State != "executed" {
+		test.Fatalf("outcome = %+v; want executed", out)
+	}
+	if got := move.issueStatus(test); got != "todo" {
+		test.Fatalf("issue status = %s; want the mapped todo", got)
+	}
+}
+
+func TestProjectSetActionKeepsAStatusTheTargetWorkflowLists(test *testing.T) {
+	move := newPendingStatusMove(test, "in_progress", "todo", "in_progress", "done")
+	if got := previewFields(test, move.cardAction(test))["Status"]; got != [2]string{"in_progress", "in_progress"} {
+		test.Fatalf("Status = %v; want in_progress on both sides", got)
+	}
+	if out := move.approveAccepted(test); out.State != "executed" {
+		test.Fatalf("outcome = %+v; want executed", out)
+	}
+	if got := move.issueStatus(test); got != "in_progress" {
+		test.Fatalf("issue status = %s; want in_progress kept", got)
+	}
+}
+
+func TestProjectSetActionRefusesAMoveThatLeavesNoValidStatus(test *testing.T) {
+	fixture := newActionFixture(test)
+	from, _ := workflowProject(test, "No status from", 10)
+	to, _ := workflowProjectWithStatuses(test, "No status to", 10, "done")
+	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, from, fixture.issueID)
+	dbfx.Cleanup(test, `UPDATE issue SET project_id = NULL WHERE id = $1`, fixture.issueID)
+	body := fixture.respond(test, fixture.projectSetBody(to, true), http.StatusBadRequest, nil)
+	if !strings.Contains(string(body), "invalid_status") {
+		test.Fatalf("body %s; want invalid_status", body)
+	}
+}
+
+func TestProjectSetActionPublishesAnIssueUpdatedEvent(test *testing.T) {
+	move := newPendingStatusMove(test, "backlog", "todo", "in_progress", "done")
+	var active atomic.Bool
+	active.Store(true)
+	test.Cleanup(func() { active.Store(false) })
+	updates := make(chan map[string]any, 8)
+	testHandler.Bus.SubscribeAll(func(event events.Event) {
+		payload, ok := event.Payload.(map[string]any)
+		if !active.Load() || event.Type != protocol.EventIssueUpdated || !ok {
+			return
+		}
+		if issue, ok := payload["issue"].(IssueResponse); ok && issue.ID == move.issueID {
+			updates <- payload
+		}
+	})
+	if out := move.approveAccepted(test); out.State != "executed" {
+		test.Fatalf("outcome = %+v; want executed", out)
+	}
+	select {
+	case payload := <-updates:
+		issue := payload["issue"].(IssueResponse)
+		if payload["project_changed"] != true || payload["status_changed"] != true || issue.ProjectID == nil || *issue.ProjectID != move.toProject || issue.Status != "todo" {
+			test.Fatalf("payload %+v; want project_changed and status_changed with the new project and status", payload)
+		}
+		if payload["prev_status"] != "backlog" {
+			test.Fatalf("prev_status = %v; want backlog", payload["prev_status"])
+		}
+	default:
+		test.Fatal("no issue:updated event after the move")
 	}
 }

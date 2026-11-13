@@ -172,8 +172,10 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')
 
 -- name: SetIssueProjectFromDecision :one
 -- Moves an issue to the project an approved issue.project.set action names,
--- only while the issue is still in the project the card was asked from.
-UPDATE issue SET project_id = sqlc.arg('project_id')::uuid, updated_at = now()
+-- only while the issue is still in the project the card was asked from. The
+-- status is the one the target workflow lists (the issue's own when it does).
+UPDATE issue SET project_id = sqlc.arg('project_id')::uuid, status = sqlc.arg('status')::text,
+  revision = revision + 1, updated_at = now()
 WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id IS NOT DISTINCT FROM sqlc.narg('from_project_id')::uuid
 RETURNING *;

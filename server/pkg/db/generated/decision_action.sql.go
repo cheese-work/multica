@@ -1051,24 +1051,28 @@ func (q *Queries) RejectDecisionActionRow(ctx context.Context, arg RejectDecisio
 }
 
 const setIssueProjectFromDecision = `-- name: SetIssueProjectFromDecision :one
-UPDATE issue SET project_id = $1::uuid, updated_at = now()
-WHERE id = $2::uuid AND workspace_id = $3::uuid
-  AND project_id IS NOT DISTINCT FROM $4::uuid
+UPDATE issue SET project_id = $1::uuid, status = $2::text,
+  revision = revision + 1, updated_at = now()
+WHERE id = $3::uuid AND workspace_id = $4::uuid
+  AND project_id IS NOT DISTINCT FROM $5::uuid
 RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read
 `
 
 type SetIssueProjectFromDecisionParams struct {
 	ProjectID     pgtype.UUID `json:"project_id"`
+	Status        string      `json:"status"`
 	ID            pgtype.UUID `json:"id"`
 	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 	FromProjectID pgtype.UUID `json:"from_project_id"`
 }
 
 // Moves an issue to the project an approved issue.project.set action names,
-// only while the issue is still in the project the card was asked from.
+// only while the issue is still in the project the card was asked from. The
+// status is the one the target workflow lists (the issue's own when it does).
 func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueProjectFromDecisionParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, setIssueProjectFromDecision,
 		arg.ProjectID,
+		arg.Status,
 		arg.ID,
 		arg.WorkspaceID,
 		arg.FromProjectID,
