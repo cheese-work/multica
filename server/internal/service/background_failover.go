@@ -36,28 +36,43 @@ func (s *TaskService) EnqueueBackgroundChain(ctx context.Context, in BackgroundT
 			logBackgroundFailover(in.Job, c.Slot, "unreachable")
 			continue
 		}
-		in.AgentID, in.Slot, in.FallbackAgentID = util.MustParseUUID(c.AgentID), c.Slot, pgtype.UUID{}
+		target := BackgroundTarget{AgentID: util.MustParseUUID(c.AgentID), Source: in.Source, Slot: c.Slot}
 		if c.Slot == bgagents.Primary && i+1 < len(chain) {
-			in.FallbackAgentID = util.MustParseUUID(chain[i+1].AgentID)
+			target.FallbackAgentID = util.MustParseUUID(chain[i+1].AgentID)
 		}
+		in.Resolve = fixedBackgroundTarget(target)
 		return s.EnqueueBackgroundTask(ctx, in)
 	}
 	return db.AgentTaskQueue{}, ErrNoReachableBackgroundAgent
+}
+
+// fixedBackgroundTarget is a resolver that returns a target chosen outside the
+// insert transaction; EnqueueBackgroundTask still re-checks the chain under its
+// locks (checkChainStillNames).
+func fixedBackgroundTarget(t BackgroundTarget) BackgroundResolver {
+	return func(context.Context) (BackgroundTarget, error) { return t, nil }
 }
 
 // backgroundAgentReachable mirrors what the claim needs: an eligible agent on a
 // runtime that is online with a fresh heartbeat and, for an output_only job, a
 // daemon that advertises the capability. A lookup error counts as unreachable.
 func (s *TaskService) backgroundAgentReachable(ctx context.Context, job bgagents.Job, workspaceID pgtype.UUID, agentID string) bool {
+	return BackgroundAgentReachable(ctx, s.Queries, job, workspaceID, agentID)
+}
+
+// BackgroundAgentReachable is the reachability rule every job shares, routing
+// included (CHE-4117): used at enqueue to skip to the next slot and before a
+// failover to the fallback.
+func BackgroundAgentReachable(ctx context.Context, q *db.Queries, job bgagents.Job, workspaceID pgtype.UUID, agentID string) bool {
 	id, err := util.ParseUUID(agentID)
 	if err != nil {
 		return false
 	}
-	agent, err := s.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
 	if err != nil || !agent.RuntimeID.Valid {
 		return false
 	}
-	rt, err := s.Queries.GetAgentRuntime(ctx, agent.RuntimeID)
+	rt, err := q.GetAgentRuntime(ctx, agent.RuntimeID)
 	if err != nil || rt.Status != "online" || !bgagents.Eligible(job, agent, rt.Provider) {
 		return false
 	}
@@ -89,27 +104,39 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 		return
 	}
 	job, slot := bgagents.Job(c.Job), bgagents.SlotName(c.Slot)
-	if (providerFailureReasons[failureReason] || backgroundDeadlineReasons[failureReason]) && slot == bgagents.Primary && c.FallbackAgentID != "" {
-		workspaceID, _ := util.ParseUUID(c.WorkspaceID)
-		if s.backgroundAgentReachable(ctx, job, workspaceID, c.FallbackAgentID) {
-			next := BackgroundTaskInput{
-				Job: job, WorkspaceID: workspaceID, AgentID: util.MustParseUUID(c.FallbackAgentID),
-				Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback, Input: c.Input,
-				SourceChatSessionID: failed.SourceChatSessionID,
-			}
-			next.MemberID, _ = util.ParseUUID(c.MemberID)
-			if _, err := s.EnqueueBackgroundTask(ctx, next); err == nil {
-				logBackgroundFailover(job, slot, failureReason)
-				return
-			}
-		} else {
-			logBackgroundFailover(job, bgagents.Fallback, "unreachable")
+	workspaceID, _ := util.ParseUUID(c.WorkspaceID)
+	if s.shouldFailOver(ctx, job, workspaceID, slot, c.FallbackAgentID, failureReason) {
+		next := BackgroundTaskInput{
+			Job: job, WorkspaceID: workspaceID, Source: bgagents.Source(c.ChainSource), Input: c.Input,
+			SourceChatSessionID: failed.SourceChatSessionID,
+			Resolve: fixedBackgroundTarget(BackgroundTarget{
+				AgentID: util.MustParseUUID(c.FallbackAgentID), Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback,
+			}),
+		}
+		next.MemberID, _ = util.ParseUUID(c.MemberID)
+		if _, err := s.EnqueueBackgroundTask(ctx, next); err == nil {
+			logBackgroundFailover(job, slot, failureReason)
+			return
 		}
 	}
 	logBackgroundFailover(job, slot, failureReason)
 	if run := s.BackgroundNoAgent[failed.Purpose.String]; run != nil {
 		run(ctx, failed)
 	}
+}
+
+// shouldFailOver is the one failover decision every job shares, routing included
+// (CHE-4117): only a provider failure or missed deadline of the primary's run, with a fallback that
+// is reachable now. An unreachable fallback is logged and ends the chain.
+func (s *TaskService) shouldFailOver(ctx context.Context, job bgagents.Job, workspaceID pgtype.UUID, slot bgagents.SlotName, fallbackAgentID, failureReason string) bool {
+	if !(providerFailureReasons[failureReason] || backgroundDeadlineReasons[failureReason]) || slot != bgagents.Primary || fallbackAgentID == "" {
+		return false
+	}
+	if !s.backgroundAgentReachable(ctx, job, workspaceID, fallbackAgentID) {
+		logBackgroundFailover(job, bgagents.Fallback, "unreachable")
+		return false
+	}
+	return true
 }
 
 // logBackgroundFailover carries the job, slot and reason only: no transcript
