@@ -1,8 +1,8 @@
 -- name: InsertAskGuardEvent :one
 -- A conflict on the operation key returns no row; the caller reads the
 -- existing event with GetAskGuardEventByOperation.
-INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (task_id, operation_kind, payload_sha256, mode) DO NOTHING
 RETURNING *;
 
