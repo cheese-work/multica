@@ -102,3 +102,9 @@ FROM issue
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id = ANY(sqlc.arg('project_ids')::uuid[])
 GROUP BY project_id;
+
+-- name: SetProjectWorkflowSplit :one
+-- NULL clears the split (CHE-5262).
+UPDATE project SET workflow_split = sqlc.narg('workflow_split')::jsonb, updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;
