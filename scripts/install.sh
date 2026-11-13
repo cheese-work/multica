@@ -128,7 +128,16 @@ install_cli_brew() {
     return 1
   fi
   # brew install exits non-zero if already installed on older Homebrew versions
-  if ! brew install "$BREW_PACKAGE" >"$brew_log" 2>&1; then
+  local installed=0
+  if [ -t 2 ]; then
+    phase "Updating Homebrew"
+    brew update >/dev/null 2>&1 || true
+    phase "Downloading and installing via Homebrew"
+    run_brew_measured "$brew_log" - brew install "$BREW_PACKAGE" && installed=1
+  else
+    brew install "$BREW_PACKAGE" >"$brew_log" 2>&1 && installed=1
+  fi
+  if [ "$installed" -eq 0 ]; then
     if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
       rm -f "$brew_log"
       ok "Multica CLI already installed via Homebrew"
@@ -140,6 +149,7 @@ install_cli_brew() {
     fi
   else
     rm -f "$brew_log"
+    phase "Installed"
     ok "Multica CLI installed via Homebrew"
   fi
 }
@@ -147,36 +157,104 @@ install_cli_brew() {
 # Phase line on stderr; silent unless stderr is a terminal.
 phase() { if [ -t 2 ]; then printf '%s\n' "$*" >&2; fi; }
 
-# Redraw one stderr line from the size of file $2 while process $1 runs, then
-# end the line. $3 is the expected byte count, empty when unknown. Only called
-# with stderr on a terminal. An interrupt or exit kills $1.
+# File size for render_progress: sets PROGRESS_N to the bytes in file $1.
+file_progress() { PROGRESS_N="$({ wc -c <"$1"; } 2>/dev/null || echo 0)"; }
+
+# Redraw one stderr line while process $1 runs, then end the line. $2 is the
+# expected byte count, empty when unknown. The rest is a command that sets
+# PROGRESS_N to the bytes done (left empty: nothing to draw yet). Only called
+# with stderr on a terminal. An interrupt or exit kills $1. A drop in bytes
+# (a retry restarted the file) resets the rate baseline, so it is never negative.
 # ponytail: the rate uses whole seconds from $SECONDS, so it shows after 1 s.
 render_progress() {
-  local pid=$1 file=$2 total=${3:-} start=$SECONDS alive n
+  local pid=$1 total=${2:-} alive n drawn=0 prev=0 base_n=0 base_t=$SECONDS
+  shift 2
   trap "kill $pid >/dev/null 2>&1 || true" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   while :; do
     alive=1
     kill -0 "$pid" 2>/dev/null || alive=0
-    n="$({ wc -c <"$file"; } 2>/dev/null || echo 0)"
-    awk -v n="$n" -v t="${total:-0}" -v s="$((SECONDS - start))" 'BEGIN {
-      m = n / 1048576
-      if (t > 0) {
-        p = n * 100 / t; if (p > 100) p = 100
-        bar = ""; for (i = 0; i < 20; i++) bar = bar (i < int(p / 5) ? "#" : "-")
-        printf "\r[%s] %3d%%  %.1f / %.1f MB\033[K", bar, p, m, t / 1048576
-      } else {
-        printf "\r%.1f MB", m
-        if (s > 0) printf "  %.1f MB/s", m / s
-        printf "\033[K"
-      }
-    }' >&2
+    PROGRESS_N=""
+    "$@"
+    n=$PROGRESS_N
+    if [ -n "$n" ]; then
+      if [ "$n" -lt "$prev" ]; then base_n=$n; base_t=$SECONDS; fi
+      prev=$n drawn=1
+      awk -v n="$n" -v b="$base_n" -v t="${total:-0}" -v s="$((SECONDS - base_t))" 'BEGIN {
+        m = n / 1048576
+        if (t > 0) {
+          p = n * 100 / t; if (p > 100) p = 100
+          bar = ""; for (i = 0; i < 20; i++) bar = bar (i < int(p / 5) ? "#" : "-")
+          printf "\r[%s] %3d%%  %.1f / %.1f MB\033[K", bar, p, m, t / 1048576
+        } else {
+          printf "\r%.1f MB", m
+          if (s > 0) printf "  %.1f MB/s", (n - b) / 1048576 / s
+          printf "\033[K"
+        }
+      }' >&2
+    fi
     [ "$alive" -eq 1 ] || break
     sleep 0.2
   done
-  printf '\n' >&2
+  if [ "$drawn" -eq 1 ]; then printf '\n' >&2; fi
   trap - EXIT INT TERM
+}
+
+# Download paths one brew install/upgrade of $BREW_PACKAGE can write: the
+# formula and its dependencies, one per line. Those already cached are hits
+# (brew skips them), listed in BREW_HITS. brew's temp file for a path is
+# <path>.incomplete, renamed to <path> when done.
+BREW_OWNED="" BREW_HITS=""
+brew_owned_paths() {
+  local p
+  # Homebrew 4.6+ refuses --cache/deps on an untrusted tap. `brew install`
+  # trusts the formula it is asked for, so trusting it first changes nothing
+  # the install would not do; an older brew without `trust` just fails here.
+  brew trust --formula "$BREW_PACKAGE" >/dev/null 2>&1 || true
+  # shellcheck disable=SC2046 # dependency names never contain spaces
+  BREW_OWNED="$(brew --cache "$BREW_PACKAGE" $(brew deps "$BREW_PACKAGE" 2>/dev/null) 2>/dev/null || true)"
+  BREW_HITS=""
+  while IFS= read -r p; do
+    if [ -n "$p" ] && [ -e "$p" ]; then BREW_HITS="$BREW_HITS$p"$'\n'; fi
+  done <<<"$BREW_OWNED"
+}
+
+# render_progress size command: bytes brew has written for the owned paths
+# that are not hits. A hit whose .incomplete shows up is being re-downloaded
+# and counts from then on. Unrelated files in the cache are never counted.
+brew_progress() {
+  local p n counted=0 total=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    if n="$({ wc -c <"$p.incomplete"; } 2>/dev/null)"; then
+      BREW_HITS="$(printf '%s' "$BREW_HITS" | grep -vxF "$p" || true)"$'\n'
+    elif printf '%s' "$BREW_HITS" | grep -qxF "$p"; then
+      continue
+    else
+      n="$({ wc -c <"$p"; } 2>/dev/null || echo 0)"
+    fi
+    counted=1 total=$((total + n))
+  done <<<"$BREW_OWNED"
+  if [ "$counted" -eq 1 ]; then PROGRESS_N=$total; fi
+}
+
+# Run brew command "$3..." in the background with auto-update off and draw its
+# measured download progress. $1 gets its stdout, $2 its stderr ("-": merged
+# into stdout). Returns the command's status. Only called after `brew update`
+# and with stderr on a terminal.
+run_brew_measured() {
+  local out=$1 err=$2 pid
+  shift 2
+  brew_owned_paths
+  if [ "$err" = - ]; then
+    HOMEBREW_NO_AUTO_UPDATE=1 "$@" >"$out" 2>&1 &
+  else
+    HOMEBREW_NO_AUTO_UPDATE=1 "$@" >"$out" 2>"$err" &
+  fi
+  pid=$!
+  render_progress "$pid" "" brew_progress
+  wait "$pid"
 }
 
 install_cli_binary() {
@@ -202,7 +280,7 @@ install_cli_binary() {
     size=$(curl -sIL "$url" 2>/dev/null | tr -d '\r' | awk '/^HTTP/ {n=0} tolower($1)=="content-length:" {n=$2} END {if (n > 0) print n}' || true)
     curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz" 2>"$tmp_dir/curl.err" &
     local dl_pid=$!
-    render_progress "$dl_pid" "$tmp_dir/multica.tar.gz" "$size"
+    render_progress "$dl_pid" "$size" file_progress "$tmp_dir/multica.tar.gz"
     if ! wait "$dl_pid"; then
       cat "$tmp_dir/curl.err" >&2
       rm -rf "$tmp_dir"
@@ -307,8 +385,22 @@ pull_official_selfhost_images() {
 
 upgrade_cli_brew() {
   info "Upgrading Multica CLI via Homebrew..."
-  brew update 2>/dev/null || true
-  if brew upgrade "$BREW_PACKAGE" 2>/dev/null; then
+  local upgraded=0
+  if [ -t 2 ]; then
+    local out
+    out=$(mktemp)
+    phase "Updating Homebrew"
+    brew update 2>/dev/null || true
+    phase "Downloading and installing via Homebrew"
+    run_brew_measured "$out" /dev/null brew upgrade "$BREW_PACKAGE" && upgraded=1
+    cat "$out"
+    rm -f "$out"
+  else
+    brew update 2>/dev/null || true
+    brew upgrade "$BREW_PACKAGE" 2>/dev/null && upgraded=1
+  fi
+  if [ "$upgraded" -eq 1 ]; then
+    phase "Installed"
     ok "Multica CLI upgraded via Homebrew"
   else
     # brew upgrade exits non-zero if already up to date
