@@ -1,0 +1,61 @@
+name: Copy check (advisory)
+
+# CHE-5420 S3: a new or changed English label that matches an existing pattern's label gets one PR comment.
+# Advisory only: the job never fails the PR. The blocking locale key rule runs in the frontend-quality action.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packages/views/locales/en/**"
+      - "design/patterns.yml"
+      - "scripts/design/check-copy.mjs"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: copy-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  copy-check:
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - run: bash scripts/setup-pnpm.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run copy check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base="$(git merge-base "origin/$BASE_REF" HEAD)"
+          node scripts/design/check-copy.mjs --base "$base" --advisory-out "$RUNNER_TEMP/copy-check.md" --json-out "$RUNNER_TEMP/copy-check-hits.json" || true
+          [ -f "$RUNNER_TEMP/copy-check.md" ] && cat "$RUNNER_TEMP/copy-check.md" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - name: Keep the hit log for reviewer labelling
+        uses: actions/upload-artifact@v7
+        with:
+          name: copy-check-hits-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/copy-check-hits.json
+          if-no-files-found: ignore
+      - name: Post or update the PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          [ -f "$RUNNER_TEMP/copy-check.md" ] || exit 0
+          id="$(gh api "repos/$REPO/issues/$PR/comments" --paginate -q '[.[] | select(.body | startswith("<!-- copy-check -->"))][0].id // empty')"
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$RUNNER_TEMP/copy-check.md"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$RUNNER_TEMP/copy-check.md"
+          fi
