@@ -65,6 +65,10 @@ type TaskService struct {
 	// re-runs the PR-merge completion decision and fences the row by its
 	// (id, revision). Nil leaves the rows untouched.
 	PRMergeOwed func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwe writes the pr_merge_owed intent for an issue inside the
+	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
+	// completion decision, and the intent commits with the claim. Nil skips it.
+	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -5381,6 +5385,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			EnableChatSupplement: offered.ChatSupplement,
 			EnableProcessCleanup: offered.ProcessCleanup,
 		})
+		if errors.Is(err, pgx.ErrNoRows) && strings.HasPrefix(candidate.Purpose.String, "bg:") {
+			// The start fence refused it: past its start bound (CHE-4103). A 409
+			// to the daemon; the deadline sweep fails the attempt.
+			return fmt.Errorf("%w: %w", ErrBackgroundAttemptExpired, err)
+		}
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
 		}

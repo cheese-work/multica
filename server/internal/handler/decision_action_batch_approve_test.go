@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -21,6 +22,12 @@ type batchRun struct {
 // source returns the agent a copy item copies; nil means the fixture's agent.
 func newBatchRun(test *testing.T, names []string, source func(fixture dmProposalFixture, index int) string) batchRun {
 	test.Helper()
+	return newShapedBatchRun(test, names, source, nil)
+}
+
+// newShapedBatchRun lets shape rewrite an item before it is proposed.
+func newShapedBatchRun(test *testing.T, names []string, source func(fixture dmProposalFixture, index int) string, shape func(item map[string]any)) batchRun {
+	test.Helper()
 	fixture := newDMProposalFixture(test)
 	dbfx.Exec(test, `UPDATE agent SET instructions = 'be careful' WHERE id = $1`, fixture.agentID)
 	var runtimeID, was string
@@ -39,6 +46,9 @@ func newBatchRun(test *testing.T, names []string, source func(fixture dmProposal
 			}
 		}
 		dbfx.Cleanup(test, `DELETE FROM agent WHERE name = $1`, name)
+		if shape != nil {
+			shape(items[index])
+		}
 	}
 	view := fixture.batchPropose(test, fixture.batchBody(items...), http.StatusCreated)
 	run := batchRun{dmProposalFixture: fixture, batchID: view.Batches[0].BatchID, names: names}
@@ -197,19 +207,103 @@ func TestBatchApproveTwiceIsRefusedAsNotPending(test *testing.T) {
 	}
 }
 
-func TestBatchWithARunBudgetTopUpIsRefusedAndAppliesNothing(test *testing.T) {
-	run := newBatchRun(test, []string{"che5413 topup a", "che5413 topup b"}, nil)
-	dbfx.Exec(test, `UPDATE decision_action SET action_type = $2 WHERE decision_request_id IN (SELECT id FROM decision_request WHERE batch_id = $1) AND params->>'name' = $3`, run.batchID, runBudgetTopUpType, run.names[1])
-	body := run.approve(test, withVerifier(acceptingVerifier), run.claim(test), http.StatusConflict)
-	if !strings.Contains(body, "not_batchable") {
-		test.Fatalf("body %q lacks not_batchable", body)
+// newTopUpBatchRun is a batch card of run-budget top-ups, one budgeted issue
+// each. The item's window is the one the human saw.
+func newTopUpBatchRun(test *testing.T, count int) batchRun {
+	test.Helper()
+	names := make([]string, count)
+	for index := range names {
+		names[index] = "che5522 topup " + string(rune('a'+index))
 	}
-	for _, name := range run.names {
-		if state := run.state(test, name); state != "pending" {
-			test.Fatalf("%s is %s, want pending", name, state)
+	run := newShapedBatchRun(test, names, nil, func(item map[string]any) {
+		issueID := item["issue_id"].(string)
+		budgetFixtureIssue(test, issueID)
+		item["action_type"] = runBudgetTopUpType
+		item["params"] = map[string]any{"issue_id": issueID, "window_id": windowID(test, issueID)}
+	})
+	// A top-up is spend class: only the workspace owner approves it.
+	dbfx.Exec(test, `UPDATE member SET role = 'owner' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, run.humanID)
+	return run
+}
+
+func (run batchRun) topUpState(test *testing.T, index int) (state, code string) {
+	test.Helper()
+	dbfx.QueryRow(test, `SELECT a.state, COALESCE(a.error_code, '') FROM decision_action a JOIN decision_request r ON r.id = a.decision_request_id WHERE r.batch_id = $1 ORDER BY a.id OFFSET $2 LIMIT 1`, run.batchID, index).Scan(&state, &code)
+	return state, code
+}
+
+func TestEnteringTheBoundaryForSeveralIssuesTakesOneSlot(test *testing.T) {
+	slots := boundarySlotsOf(testHandler.TxStarter)
+	before := len(slots)
+	leave, err := testHandler.enterRunBudgetBoundaries(context.Background(), parseUUID(dbfx.Issue(test, "che5522 slot a", nil)), parseUUID(dbfx.Issue(test, "che5522 slot b", nil)), parseUUID(dbfx.Issue(test, "che5522 slot c", nil)))
+	if err != nil {
+		test.Fatal(err)
+	}
+	if held := len(slots) - before; held != 1 {
+		test.Fatalf("slots held = %d, want 1", held)
+	}
+	leave()
+	if len(slots) != before {
+		test.Fatalf("slots after leave = %d, want %d", len(slots), before)
+	}
+	if turns := len(boundaryQueue.turns); turns != 0 {
+		test.Fatalf("turns left queued = %d, want 0", turns)
+	}
+}
+
+func TestBatchOfRunBudgetTopUpsAppliesEachAndEntersTheBoundaryOnce(test *testing.T) {
+	run := newTopUpBatchRun(test, 3)
+	handler := withVerifier(acceptingVerifier)
+	var out batchOutcome
+	decodeJSON(test, run.approve(test, handler, run.claim(test), http.StatusOK), &out)
+	if len(out.Items) != 3 {
+		test.Fatalf("outcome = %+v, want 3 items", out)
+	}
+	for index := range out.Items {
+		if state, code := run.topUpState(test, index); state != "executed" {
+			test.Fatalf("item %d is %s (%s), want executed", index, state, code)
 		}
 	}
-	if copies := run.copies(test); copies != 0 {
-		test.Fatalf("copies = %d, want 0", copies)
+	if rows := dbfx.Count(test, `SELECT count(*) FROM activity_log WHERE action = 'run_budget_top_up' AND details->>'action_id' IN (SELECT a.id::text FROM decision_action a JOIN decision_request r ON r.id = a.decision_request_id WHERE r.batch_id = $1)`, run.batchID); rows != 3 {
+		test.Fatalf("run_budget_top_up rows = %d, want 3", rows)
+	}
+}
+
+func TestBatchOfRunBudgetTopUpsFailsOnlyTheItemWhoseWindowChanged(test *testing.T) {
+	run := newTopUpBatchRun(test, 3)
+	var issueID string
+	dbfx.QueryRow(test, `SELECT r.issue_id::text FROM decision_action a JOIN decision_request r ON r.id = a.decision_request_id WHERE r.batch_id = $1 ORDER BY a.id OFFSET 1 LIMIT 1`, run.batchID).Scan(&issueID)
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`,
+		testWorkspaceID, issueID, run.humanID)
+	run.approve(test, withVerifier(acceptingVerifier), run.claim(test), http.StatusOK)
+	for index, want := range []string{"executed", "failed", "executed"} {
+		state, code := run.topUpState(test, index)
+		if state != want || (want == "failed" && code != "stale_window") {
+			test.Fatalf("item %d is %s / %q, want %s", index, state, code, want)
+		}
+	}
+}
+
+func TestBatchOfRunBudgetTopUpsWithAWrongHashAppliesNothing(test *testing.T) {
+	run := newTopUpBatchRun(test, 2)
+	run.approve(test, withVerifier(acceptingVerifier), map[string]any{"payload_sha256": "00", "assertion": map[string]any{"id": "fake"}}, http.StatusConflict)
+	for index := 0; index < 2; index++ {
+		if state, _ := run.topUpState(test, index); state != "pending" {
+			test.Fatalf("item %d is %s, want pending", index, state)
+		}
+	}
+}
+
+func TestBatchWithASecretValueItemIsStillRefused(test *testing.T) {
+	run := newTopUpBatchRun(test, 2)
+	dbfx.Exec(test, `UPDATE decision_action SET secret_slots = '[{"slot":"token","target":{"kind":"env","key":"TOKEN"}}]' WHERE id = (SELECT a.id FROM decision_action a JOIN decision_request r ON r.id = a.decision_request_id WHERE r.batch_id = $1 ORDER BY a.id LIMIT 1)`, run.batchID)
+	body := run.approve(test, withVerifier(acceptingVerifier), run.claim(test), http.StatusBadRequest)
+	if !strings.Contains(body, "secrets_mismatch") {
+		test.Fatalf("body %q lacks secrets_mismatch", body)
+	}
+	for index := 0; index < 2; index++ {
+		if state, _ := run.topUpState(test, index); state != "pending" {
+			test.Fatalf("item %d is %s, want pending", index, state)
+		}
 	}
 }

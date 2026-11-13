@@ -588,6 +588,14 @@ func (h *Handler) findPullRequestByID(ctx context.Context, workspaceID, id pgtyp
 	return linkedPR{}, false, nil
 }
 
+// attemptOwedAfterLink runs the fenced inline attempt for a manual link or
+// unlink; a failure leaves the row for the scheduler.
+func (h *Handler) attemptOwedAfterLink(ctx context.Context, workspaceID pgtype.UUID, owed []pgtype.UUID) {
+	for _, err := range h.attemptPRMergeOwed(ctx, workspaceID, owed, nil) {
+		slog.Warn("pr auto-complete failed", "err", err)
+	}
+}
+
 // LinkIssuePullRequest (POST /api/issues/{id}/pull-requests) links a PR the
 // workspace already mirrors. Linking is a PR event for the issue, so it can
 // complete the issue when every linked PR is merged and one of them closes it.
@@ -646,6 +654,11 @@ func (h *Handler) LinkIssuePullRequest(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = qtx.DeletePullRequestExclusion(r.Context(), db.DeletePullRequestExclusionParams{IssueID: issue.ID, PullRequestID: pr.ID})
 	}
+	// The decision the link owes commits with it (CHE-5244).
+	var owed []pgtype.UUID
+	if err == nil && rows > 0 {
+		owed, err = h.owePRMerge(r.Context(), qtx, issue.WorkspaceID, []pgtype.UUID{issue.ID})
+	}
 	if err == nil {
 		err = tx.Commit(r.Context())
 	}
@@ -654,10 +667,7 @@ func (h *Handler) LinkIssuePullRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to link pull request")
 		return
 	}
-	if rows > 0 {
-		h.maybeAutoCompleteIssue(r.Context(), issue.WorkspaceID, issue.ID, nil)
-		h.rerunIncludeChildParent(r.Context(), issue)
-	}
+	h.attemptOwedAfterLink(r.Context(), issue.WorkspaceID, owed)
 	h.publishIssuePullRequestsChanged(workspaceID, issue.ID)
 	h.ListPullRequestsForIssue(w, r)
 }
@@ -716,6 +726,12 @@ func (h *Handler) UnlinkIssuePullRequest(w http.ResponseWriter, r *http.Request)
 			ExcludedByID:   excludedBy,
 		})
 	}
+	// Removing the last unmerged PR can leave only merged ones behind; the
+	// decision that owes commits with the unlink (CHE-5244).
+	var owed []pgtype.UUID
+	if err == nil && rows > 0 {
+		owed, err = h.owePRMerge(r.Context(), qtx, issue.WorkspaceID, []pgtype.UUID{issue.ID})
+	}
 	if err == nil {
 		err = tx.Commit(r.Context())
 	}
@@ -724,11 +740,7 @@ func (h *Handler) UnlinkIssuePullRequest(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "failed to unlink pull request")
 		return
 	}
-	if rows > 0 {
-		// Removing the last unmerged PR can leave only merged ones behind.
-		h.maybeAutoCompleteIssue(r.Context(), issue.WorkspaceID, issue.ID, nil)
-		h.rerunIncludeChildParent(r.Context(), issue)
-	}
+	h.attemptOwedAfterLink(r.Context(), issue.WorkspaceID, owed)
 	h.publishIssuePullRequestsChanged(workspaceID, issue.ID)
 	h.ListPullRequestsForIssue(w, r)
 }
