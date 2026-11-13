@@ -451,7 +451,9 @@
   },
   "gantt2": {
     "clipped_start": "このウィンドウより前に開始",
-    "now": "現在"
+    "now": "現在",
+    "collapse": "折りたたむ",
+    "expand": "展開"
   },
   "actor_issues": {
     "scope": {

@@ -451,7 +451,9 @@
   },
   "gantt2": {
     "clipped_start": "在此时间窗口之前开始",
-    "now": "现在"
+    "now": "现在",
+    "collapse": "折叠",
+    "expand": "展开"
   },
   "actor_issues": {
     "scope": {
