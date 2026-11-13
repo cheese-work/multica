@@ -7161,3 +7161,45 @@ func TestNoStartHelpHasNoHandoffException(t *testing.T) {
 		}
 	}
 }
+
+// A workflow move that widens the run budget answers 202 with the approval card
+// it opened. The command prints the card and sends nothing else: no issue was
+// changed, so a status in the same call would be judged against the old workflow.
+func TestRunIssueUpdateWorkflowPrintsTheApprovalCardItOpened(t *testing.T) {
+	clearAmbientDaemonTaskEnv(t)
+	var puts, patches int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
+			puts++
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/issue-1?approve=act-1"})
+		default:
+			patches++
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("workflow", "wf-1")
+	_ = cmd.Flags().Set("status", "in_progress")
+	_ = cmd.Flags().Set("output", "table")
+	out, err := captureStdout(t, func() error { return runIssueUpdate(cmd, []string{"MUL-1"}) })
+	if err != nil {
+		t.Fatalf("runIssueUpdate: %v", err)
+	}
+	for _, want := range []string{"act-1", "/acme/issues/issue-1?approve=act-1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output %q lacks %q", out, want)
+		}
+	}
+	if puts != 1 || patches != 0 {
+		t.Errorf("workflow PUTs = %d, other writes = %d; want 1 and 0", puts, patches)
+	}
+}
