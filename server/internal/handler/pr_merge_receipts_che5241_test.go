@@ -137,6 +137,12 @@ func busyWithCurrentRun(t *testing.T, issueID, agentID string) string {
 
 func prMergeOpenChild(t *testing.T, parentID string) string {
 	t.Helper()
+	// An open child blocks the parent by status only when the workflow does not
+	// count the children's PRs (include_child_prs, default true).
+	if _, err := testPool.Exec(context.Background(), `UPDATE issue_workflow SET include_child_prs = false
+		WHERE id = (SELECT p.workflow_id FROM issue i JOIN project p ON p.id = i.project_id WHERE i.id = $1)`, parentID); err != nil {
+		t.Fatal(err)
+	}
 	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
 		"title": "open child", "status": "todo", "parent_issue_id": parentID,
 	})
