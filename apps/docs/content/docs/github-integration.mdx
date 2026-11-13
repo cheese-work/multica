@@ -212,10 +212,12 @@ The rule is satisfied by webhook events that Multica received after the App subs
 
 A successful `CD deploy to C00` run on `main` opens one issue per deploy. No new App permission or event is needed: the signed `workflow_job` delivery that the App already sends carries the proof.
 
-- **Trigger.** The `deploy` job finishes `success` and its step named `release-receipt old=<sha> new=<sha> digest=sha256:<hex>` also finishes `success`. The workflow runs that step only after a real deploy with a passing readback, so a run whose deploy was skipped opens no issue.
+- **Trigger.** The `release-receipt` job finishes `success` and its step named `release-receipt old=<sha> new=<sha> digest=sha256:<hex>` also finishes `success`. The workflow runs that job only after a real deploy, a passing readback and the passing 15-minute confirm, so a skipped, failed or superseded deploy opens no issue.
+- **Binding.** The repository must be listed in the workspace's repositories, and the run must be the `.github/workflows/cd-deploy.yml` run that the signed `workflow_run` delivery mirrored for that repository. A job with the same name in any other repository or workflow opens nothing; the refusal is logged and is not retried.
 - **Issue.** Title `release(<repo>): <old>..<new>`, status `todo`, label `release`, the deployed SHA and image digest, and the merged pull requests grouped as feat, fix, CLI, skill and other. The list covers pull requests merged since the previous release issue, or the last 7 days for the first one.
 - **Label.** The `release` label is added in a separate write after the issue is created, so the `issue.labels_changed` event fires for wakeup rules scoped to that label.
-- **No duplicates.** A redelivery or a rerun of the same SHA and digest changes nothing. A different SHA or digest opens a new issue.
+- **No duplicates.** The issue id is derived from the workspace, repository, SHA and digest, so a redelivery, a rerun or a concurrent delivery of the same deploy creates nothing new. A different SHA or digest opens a new issue.
+- **Recovery.** If a delivery fails after the issue is created, the next delivery of the same deploy reuses that issue and finishes the missing link or label write. No claim waits for a timeout.
 - **Limit.** The same signature and installation checks as other deliveries apply. The issue's creator is the workspace owner.
 
 ## Self-hosting setup

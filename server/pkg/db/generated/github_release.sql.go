@@ -11,86 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const claimGitHubReleaseDeploy = `-- name: ClaimGitHubReleaseDeploy :one
-
-INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO UPDATE
-    SET claimed_at = now(), run_id = EXCLUDED.run_id
-    WHERE github_release_deploy.issue_id IS NULL
-      AND github_release_deploy.claimed_at < now() - interval '2 minutes'
-RETURNING workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id, issue_id, labeled_at, claimed_at
-`
-
-type ClaimGitHubReleaseDeployParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	SourceSha   string      `json:"source_sha"`
-	ImageDigest string      `json:"image_digest"`
-	OldSha      string      `json:"old_sha"`
-	RunID       int64       `json:"run_id"`
-}
-
-// =====================
-// Release issues from a verified C00 deploy (CHE-4937)
-// Repo owner and name are stored lowercased; callers pass them lowercased.
-// =====================
-// Returns a row only for the caller that owns this deploy: a fresh insert, or a
-// takeover of a claim that never got an issue (a crash) after two minutes.
-// No row means another delivery already owns it.
-func (q *Queries) ClaimGitHubReleaseDeploy(ctx context.Context, arg ClaimGitHubReleaseDeployParams) (GithubReleaseDeploy, error) {
-	row := q.db.QueryRow(ctx, claimGitHubReleaseDeploy,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.SourceSha,
-		arg.ImageDigest,
-		arg.OldSha,
-		arg.RunID,
-	)
-	var i GithubReleaseDeploy
-	err := row.Scan(
-		&i.WorkspaceID,
-		&i.RepoOwner,
-		&i.RepoName,
-		&i.SourceSha,
-		&i.ImageDigest,
-		&i.OldSha,
-		&i.RunID,
-		&i.IssueID,
-		&i.LabeledAt,
-		&i.ClaimedAt,
-	)
-	return i, err
-}
-
-const deleteUnissuedGitHubReleaseDeploy = `-- name: DeleteUnissuedGitHubReleaseDeploy :exec
-DELETE FROM github_release_deploy
-WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND source_sha = $4 AND image_digest = $5
-  AND issue_id IS NULL
-`
-
-type DeleteUnissuedGitHubReleaseDeployParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	SourceSha   string      `json:"source_sha"`
-	ImageDigest string      `json:"image_digest"`
-}
-
-// Frees a claim whose issue create failed. Never touches a claim that has an issue.
-func (q *Queries) DeleteUnissuedGitHubReleaseDeploy(ctx context.Context, arg DeleteUnissuedGitHubReleaseDeployParams) error {
-	_, err := q.db.Exec(ctx, deleteUnissuedGitHubReleaseDeploy,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.SourceSha,
-		arg.ImageDigest,
-	)
-	return err
-}
-
 const ensureIssueLabelByName = `-- name: EnsureIssueLabelByName :one
 INSERT INTO issue_label (workspace_id, resource_type, name, description, color)
 VALUES ($1, 'issue', $2, $3, $4)
@@ -216,27 +136,34 @@ func (q *Queries) ListReleaseMergedPullRequests(ctx context.Context, arg ListRel
 	return items, nil
 }
 
-const setGitHubReleaseDeployIssue = `-- name: SetGitHubReleaseDeployIssue :exec
-UPDATE github_release_deploy SET issue_id = $6
-WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND source_sha = $4 AND image_digest = $5
+const linkGitHubReleaseDeploy = `-- name: LinkGitHubReleaseDeploy :exec
+INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id, issue_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO NOTHING
 `
 
-type SetGitHubReleaseDeployIssueParams struct {
+type LinkGitHubReleaseDeployParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	RepoOwner   string      `json:"repo_owner"`
 	RepoName    string      `json:"repo_name"`
 	SourceSha   string      `json:"source_sha"`
 	ImageDigest string      `json:"image_digest"`
+	OldSha      string      `json:"old_sha"`
+	RunID       int64       `json:"run_id"`
 	IssueID     pgtype.UUID `json:"issue_id"`
 }
 
-func (q *Queries) SetGitHubReleaseDeployIssue(ctx context.Context, arg SetGitHubReleaseDeployIssueParams) error {
-	_, err := q.db.Exec(ctx, setGitHubReleaseDeployIssue,
+// Records which issue a deploy opened. Idempotent: a redelivery, a recovery
+// after a crash and a concurrent caller all write the same row once.
+func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubReleaseDeployParams) error {
+	_, err := q.db.Exec(ctx, linkGitHubReleaseDeploy,
 		arg.WorkspaceID,
 		arg.RepoOwner,
 		arg.RepoName,
 		arg.SourceSha,
 		arg.ImageDigest,
+		arg.OldSha,
+		arg.RunID,
 		arg.IssueID,
 	)
 	return err

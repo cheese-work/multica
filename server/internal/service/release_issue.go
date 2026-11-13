@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -28,22 +30,22 @@ type ReleaseDeploy struct {
 	Digest              string
 }
 
-// CreateRelease opens the release issue for a deploy exactly once. The deploy
-// identity (repo, SHA, digest) is claimed first; a redelivery or rerun finds
-// the claim and creates nothing, only finishing a label write an earlier try
-// left undone. created is false for every duplicate.
+// releaseIssueID is the issue id of one deploy: a v5 UUID of its identity
+// (workspace, repo, SHA, digest). The issue primary key is the dedup and the
+// recovery key, so the create is atomic by itself: no claim row has to agree
+// with it across two transactions.
+func releaseIssueID(d ReleaseDeploy) pgtype.UUID {
+	name := fmt.Sprintf("release-deploy:%x:%s/%s:%s:%s", d.WorkspaceID.Bytes, d.RepoOwner, d.RepoName, d.NewSHA, d.Digest)
+	return pgtype.UUID{Bytes: uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)), Valid: true}
+}
+
+// CreateRelease opens the release issue for a deploy exactly once. The issue
+// is created under a deterministic id; a redelivery, a rerun or a concurrent
+// caller hits the primary key and creates nothing. Every call then finishes the
+// idempotent steps an earlier try may have left undone: the link row and the
+// label write. created is true only for the call that made the issue.
 func (s *IssueService) CreateRelease(ctx context.Context, d ReleaseDeploy) (issue db.Issue, created bool, err error) {
-	key := db.GetGitHubReleaseDeployParams{WorkspaceID: d.WorkspaceID, RepoOwner: d.RepoOwner, RepoName: d.RepoName, SourceSha: d.NewSHA, ImageDigest: d.Digest}
-	_, err = s.Queries.ClaimGitHubReleaseDeploy(ctx, db.ClaimGitHubReleaseDeployParams{
-		WorkspaceID: d.WorkspaceID, RepoOwner: d.RepoOwner, RepoName: d.RepoName,
-		SourceSha: d.NewSHA, ImageDigest: d.Digest, OldSha: d.OldSHA, RunID: d.RunID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return s.finishDuplicateRelease(ctx, d, key)
-	}
-	if err != nil {
-		return db.Issue{}, false, fmt.Errorf("claim release deploy: %w", err)
-	}
+	id := releaseIssueID(d)
 	owner, err := s.Queries.GetWorkspaceOwnerUserID(ctx, d.WorkspaceID)
 	if err != nil {
 		return db.Issue{}, false, fmt.Errorf("workspace owner: %w", err)
@@ -55,6 +57,7 @@ func (s *IssueService) CreateRelease(ctx context.Context, d ReleaseDeploy) (issu
 		return db.Issue{}, false, fmt.Errorf("list merged pull requests: %w", err)
 	}
 	res, err := s.Create(ctx, IssueCreateParams{
+		ID:          id,
 		WorkspaceID: d.WorkspaceID,
 		Title:       fmt.Sprintf("release(%s): %s..%s", d.RepoName, short(d.OldSHA), short(d.NewSHA)),
 		Description: pgtype.Text{String: releaseBody(d, prs), Valid: true},
@@ -62,42 +65,29 @@ func (s *IssueService) CreateRelease(ctx context.Context, d ReleaseDeploy) (issu
 		CreatorType: "member", CreatorID: owner,
 		AllowDuplicate: true,
 	}, IssueCreateOpts{})
-	if err != nil {
-		// Free the claim so the next delivery retries at once, not in two minutes.
-		_ = s.Queries.DeleteUnissuedGitHubReleaseDeploy(ctx, db.DeleteUnissuedGitHubReleaseDeployParams(key))
+	var pgErr *pgconn.PgError
+	switch {
+	case err == nil:
+		issue, created = res.Issue, true
+	case errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "issue_pkey":
+		// The issue already exists: an earlier try or a concurrent caller made it.
+		if issue, err = s.Queries.GetIssue(ctx, id); err != nil {
+			return db.Issue{}, false, fmt.Errorf("read release issue: %w", err)
+		}
+	default:
 		return db.Issue{}, false, fmt.Errorf("create release issue: %w", err)
 	}
-	if err := s.Queries.SetGitHubReleaseDeployIssue(ctx, db.SetGitHubReleaseDeployIssueParams{
-		WorkspaceID: key.WorkspaceID, RepoOwner: key.RepoOwner, RepoName: key.RepoName, SourceSha: key.SourceSha, ImageDigest: key.ImageDigest, IssueID: res.Issue.ID,
+	if err := s.Queries.LinkGitHubReleaseDeploy(ctx, db.LinkGitHubReleaseDeployParams{
+		WorkspaceID: d.WorkspaceID, RepoOwner: d.RepoOwner, RepoName: d.RepoName,
+		SourceSha: d.NewSHA, ImageDigest: d.Digest, OldSha: d.OldSHA, RunID: d.RunID, IssueID: id,
 	}); err != nil {
 		return db.Issue{}, false, fmt.Errorf("record release issue: %w", err)
 	}
-	if err := s.attachReleaseLabel(ctx, key, res.Issue.ID); err != nil {
+	key := db.GetGitHubReleaseDeployParams{WorkspaceID: d.WorkspaceID, RepoOwner: d.RepoOwner, RepoName: d.RepoName, SourceSha: d.NewSHA, ImageDigest: d.Digest}
+	if err := s.attachReleaseLabel(ctx, key, id); err != nil {
 		return db.Issue{}, false, err
 	}
-	return res.Issue, true, nil
-}
-
-// finishDuplicateRelease handles a deploy that is already claimed: it returns
-// the existing issue, and attaches the label if the first try died before it.
-func (s *IssueService) finishDuplicateRelease(ctx context.Context, d ReleaseDeploy, key db.GetGitHubReleaseDeployParams) (db.Issue, bool, error) {
-	row, err := s.Queries.GetGitHubReleaseDeploy(ctx, key)
-	if err != nil {
-		return db.Issue{}, false, fmt.Errorf("read release deploy: %w", err)
-	}
-	if !row.IssueID.Valid {
-		return db.Issue{}, false, nil // another delivery is mid-create
-	}
-	if !row.LabeledAt.Valid {
-		if err := s.attachReleaseLabel(ctx, key, row.IssueID); err != nil {
-			return db.Issue{}, false, err
-		}
-	}
-	issue, err := s.Queries.GetIssue(ctx, row.IssueID)
-	if err != nil {
-		return db.Issue{}, false, fmt.Errorf("read release issue: %w", err)
-	}
-	return issue, false, nil
+	return issue, created, nil
 }
 
 func (s *IssueService) attachReleaseLabel(ctx context.Context, key db.GetGitHubReleaseDeployParams, issueID pgtype.UUID) error {

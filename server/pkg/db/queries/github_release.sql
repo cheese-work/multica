@@ -3,24 +3,15 @@
 -- Repo owner and name are stored lowercased; callers pass them lowercased.
 -- =====================
 
--- name: ClaimGitHubReleaseDeploy :one
--- Returns a row only for the caller that owns this deploy: a fresh insert, or a
--- takeover of a claim that never got an issue (a crash) after two minutes.
--- No row means another delivery already owns it.
-INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO UPDATE
-    SET claimed_at = now(), run_id = EXCLUDED.run_id
-    WHERE github_release_deploy.issue_id IS NULL
-      AND github_release_deploy.claimed_at < now() - interval '2 minutes'
-RETURNING *;
+-- name: LinkGitHubReleaseDeploy :exec
+-- Records which issue a deploy opened. Idempotent: a redelivery, a recovery
+-- after a crash and a concurrent caller all write the same row once.
+INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id, issue_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO NOTHING;
 
 -- name: GetGitHubReleaseDeploy :one
 SELECT * FROM github_release_deploy
-WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND source_sha = $4 AND image_digest = $5;
-
--- name: SetGitHubReleaseDeployIssue :exec
-UPDATE github_release_deploy SET issue_id = $6
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND source_sha = $4 AND image_digest = $5;
 
 -- name: SetGitHubReleaseDeployLabeled :exec
@@ -46,9 +37,3 @@ WHERE pr.workspace_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
   ), now() - interval '7 days')
 ORDER BY pr.merged_at ASC
 LIMIT 100;
-
--- name: DeleteUnissuedGitHubReleaseDeploy :exec
--- Frees a claim whose issue create failed. Never touches a claim that has an issue.
-DELETE FROM github_release_deploy
-WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND source_sha = $4 AND image_digest = $5
-  AND issue_id IS NULL;

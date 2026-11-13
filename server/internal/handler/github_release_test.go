@@ -5,10 +5,36 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/integrations/ghrun"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// authorizeReleaseRun declares owner/name a workspace repository and mirrors the
+// workflow_run that the receipt job belongs to, as the signed workflow_run
+// delivery does long before the deploy finishes.
+func authorizeReleaseRun(t *testing.T, ws pgtype.UUID, repoURL string, runID int64, path string) {
+	t.Helper()
+	ctx := context.Background()
+	if repoURL != "" {
+		if _, err := testPool.Exec(ctx, `UPDATE workspace SET repos = $1 WHERE id = $2`, []byte(`[{"url":"`+repoURL+`"}]`), ws); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { testPool.Exec(context.Background(), `UPDATE workspace SET repos = '[]' WHERE id = $1`, ws) })
+	}
+	if path == "" {
+		return
+	}
+	if err := ghrun.ApplyRunEvent(ctx, testPool, ws, ghrun.RunEvent{
+		InstallationID: 1, RepoOwner: "cheese-work", RepoName: "multica", RunID: runID, RunAttempt: 1,
+		StatusRank: ghrun.RankStub + 1, Status: "in_progress", GhUpdatedAt: time.Now(),
+		WorkflowPath: path, WorkflowName: "CD deploy to C00", HeadSHA: relNew, HeadBranch: "main", Event: "push",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const (
 	relOld    = "1111111111111111111111111111111111111111"
@@ -20,7 +46,7 @@ const (
 // receipt step names the deployed tuple.
 func releaseDeliveryBody(installationID, jobID int64, attempt int, mutate func(job map[string]any)) map[string]any {
 	job := map[string]any{
-		"id": jobID, "run_id": 880001, "run_attempt": attempt, "name": "deploy", "head_sha": relNew,
+		"id": jobID, "run_id": 880001, "run_attempt": attempt, "name": "release-receipt", "head_sha": relNew,
 		"workflow_name": "CD deploy to C00", "head_branch": "main", "conclusion": "success",
 		"steps": []any{
 			map[string]any{"name": "Deploy to C00 on local runner", "conclusion": "success"},
@@ -56,10 +82,11 @@ func releaseIntakeFixture(t *testing.T, installationID int64) pgtype.UUID {
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2)`, ws, relNew)
 		testPool.Exec(ctx, `DELETE FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
 		for _, table := range []string{"github_workflow_run", "github_workflow_job"} {
-			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001)`, cdDeployRunID)
+			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001, 880002)`, cdDeployRunID)
 		}
 		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
 	})
+	authorizeReleaseRun(t, ws, "https://github.com/cheese-work/multica.git", 880001, deployWorkflowPath)
 	return ws
 }
 
@@ -121,10 +148,11 @@ func TestReleaseIntakeRefusesWhatIsNotAVerifiedDeploy(t *testing.T) {
 		job["steps"].([]any)[1].(map[string]any)["conclusion"] = "skipped"
 	}
 	for name, mutate := range map[string]func(map[string]any){
-		"deploy skipped (receipt step skipped)": skipped,
-		"job failed":                            func(j map[string]any) { j["conclusion"] = "failure" },
-		"not main":                              func(j map[string]any) { j["head_branch"] = "feature" },
-		"other workflow":                        func(j map[string]any) { j["workflow_name"] = "CI" },
+		"deploy skipped (receipt step skipped)":     skipped,
+		"job failed":                                func(j map[string]any) { j["conclusion"] = "failure" },
+		"the deploy job itself (readback not done)": func(j map[string]any) { j["name"] = "deploy" },
+		"not main":       func(j map[string]any) { j["head_branch"] = "feature" },
+		"other workflow": func(j map[string]any) { j["workflow_name"] = "CI" },
 	} {
 		if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 2, 1, mutate)); code != http.StatusAccepted {
 			t.Fatalf("%s: status = %d", name, code)
@@ -165,4 +193,34 @@ func TestReleaseIntakeDeduplicatesRedeliveryAndRerun(t *testing.T) {
 		}
 	}
 	wantReleaseIssues(t, ws, before, 1)
+}
+
+// A matching impostor: the same workflow, job and step names, but from a
+// repository the workspace never declared, or from a workflow file that is not
+// the C00 deploy. Both would let anyone with push access mint a release issue
+// with arbitrary SHA and digest values.
+func TestReleaseIntakeRefusesAnImpostorJob(t *testing.T) {
+	const inst = 880105
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+
+	// Same repo, but the run is a different workflow file.
+	authorizeReleaseRun(t, ws, "", 880002, ".github/workflows/impostor.yml")
+	otherRun := func(j map[string]any) { j["run_id"] = 880002 }
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 6, 1, otherRun)); code != http.StatusAccepted {
+		t.Fatalf("other workflow file: status = %d", code)
+	}
+	// No mirrored run at all for this run id.
+	noRun := func(j map[string]any) { j["run_id"] = 880003 }
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 7, 1, noRun)); code != http.StatusAccepted {
+		t.Fatalf("unmirrored run: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+
+	// The real run, but the repository is no longer a workspace repository.
+	authorizeReleaseRun(t, ws, "https://github.com/someone-else/multica.git", 880001, "")
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 8, 1, nil)); code != http.StatusAccepted {
+		t.Fatalf("undeclared repository: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
 }

@@ -167,19 +167,20 @@ type ReleaseReceipt struct {
 	Digest              string
 }
 
-// The cd-deploy `deploy` job names a step with the deployed tuple, but only
-// when the deploy ran and the readback passed. The workflow_run payload carries
-// neither the digest nor the skip decision, so this step name is the receipt.
+// The cd-deploy `release-receipt` job runs after the deploy, the readback and
+// the 15-minute confirm all passed, and names a step with the deployed tuple.
+// The workflow_run payload carries neither the digest nor the skip decision, so
+// this step name is the receipt.
 const (
 	deployWorkflowName = "CD deploy to C00"
-	deployJobName      = "deploy"
+	deployJobName      = "release-receipt"
 	deployBranch       = "main"
 )
 
 var receiptStep = regexp.MustCompile(`^release-receipt old=([0-9a-f]{40}) new=([0-9a-f]{40}) digest=(sha256:[0-9a-f]{64})$`)
 
 // ParseReleaseReceipt reads a completed workflow_job delivery. It reports true
-// only for a successful main-branch `deploy` job of the C00 deploy workflow
+// only for a successful main-branch `release-receipt` job of the C00 deploy workflow
 // whose receipt step succeeded and names a well-formed old SHA, new SHA and
 // digest. A skipped deploy never runs the receipt step. The job head_sha is not
 // the binding: the receipt is.

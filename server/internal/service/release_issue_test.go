@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -99,6 +100,71 @@ func TestCreateReleaseDeduplicatesADeploy(t *testing.T) {
 	}
 	if n := k.f.Count(t, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND title LIKE 'release(%'`, k.f.WorkspaceID); n != 1 {
 		t.Fatalf("%d release issues, want 1", n)
+	}
+}
+
+// A write that fails right after the issue exists (a crash between creating the
+// issue and recording its id) must not lose the release or open a second one.
+func TestCreateReleaseRecoversAfterAFailureBetweenCreateAndLink(t *testing.T) {
+	k := newReleaseKit(t)
+	ctx := context.Background()
+	k.f.Exec(t, `CREATE OR REPLACE FUNCTION release_link_fail() RETURNS trigger AS $$ BEGIN
+		IF NEW.issue_id IS NOT NULL THEN RAISE EXCEPTION 'simulated crash'; END IF;
+		RETURN NEW; END $$ LANGUAGE plpgsql`)
+	k.f.Exec(t, `CREATE TRIGGER release_link_fail BEFORE INSERT OR UPDATE ON github_release_deploy FOR EACH ROW EXECUTE FUNCTION release_link_fail()`)
+	armed := true
+	disarm := func() {
+		if armed {
+			armed = false
+			k.f.Exec(t, `DROP TRIGGER release_link_fail ON github_release_deploy`)
+		}
+	}
+	t.Cleanup(func() { disarm(); k.f.Exec(t, `DROP FUNCTION IF EXISTS release_link_fail()`) })
+
+	d := ReleaseDeploy{WorkspaceID: parseTestUUID(t, k.f.WorkspaceID), RepoOwner: "cheese-work", RepoName: "multica", RunID: 1, OldSHA: relOld, NewSHA: relNew, Digest: relDigest}
+	if _, _, err := k.ises.CreateRelease(ctx, d); err == nil {
+		t.Fatal("first try: want the simulated failure")
+	}
+	disarm()
+
+	issue, _, err := k.ises.CreateRelease(ctx, d)
+	if err != nil || !issue.ID.Valid {
+		t.Fatalf("retry = %v, %v; want the release issue", issue.ID.Valid, err)
+	}
+	if n := k.f.Count(t, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND title LIKE 'release(%'`, k.f.WorkspaceID); n != 1 {
+		t.Fatalf("%d release issues, want 1", n)
+	}
+	if n := k.f.Count(t, `SELECT count(*) FROM github_release_deploy WHERE workspace_id=$1 AND issue_id=$2 AND labeled_at IS NOT NULL`, k.f.WorkspaceID, uuidString(issue.ID)); n != 1 {
+		t.Fatalf("claim row linked and labeled = %d, want 1", n)
+	}
+	if n := k.f.Count(t, `SELECT count(*) FROM issue_to_label WHERE issue_id=$1 AND label_id=$2`, uuidString(issue.ID), k.label); n != 1 {
+		t.Fatalf("release label rows = %d, want 1", n)
+	}
+}
+
+// Concurrent redeliveries of one deploy: one issue, and every caller gets it.
+func TestCreateReleaseConcurrentRedeliveryOpensOneIssue(t *testing.T) {
+	k := newReleaseKit(t)
+	d := ReleaseDeploy{WorkspaceID: parseTestUUID(t, k.f.WorkspaceID), RepoOwner: "cheese-work", RepoName: "multica", RunID: 1, OldSHA: relOld, NewSHA: relNew, Digest: relDigest}
+	const n = 8
+	var wg sync.WaitGroup
+	ids, errs := make([]string, n), make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			issue, _, err := k.ises.CreateRelease(context.Background(), d)
+			ids[i], errs[i] = uuidString(issue.ID), err
+		}()
+	}
+	wg.Wait()
+	for i := range ids {
+		if errs[i] != nil || ids[i] != ids[0] || !strings.Contains(ids[i], "-") {
+			t.Fatalf("call %d = %q, %v; want the same issue id %q and no error", i, ids[i], errs[i], ids[0])
+		}
+	}
+	if c := k.f.Count(t, `SELECT count(*) FROM issue WHERE workspace_id=$1 AND title LIKE 'release(%'`, k.f.WorkspaceID); c != 1 {
+		t.Fatalf("%d release issues, want 1", c)
 	}
 }
 

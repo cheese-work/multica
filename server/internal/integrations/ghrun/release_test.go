@@ -15,7 +15,7 @@ const (
 // releaseJob is a completed, successful cd-deploy `deploy` job with a receipt.
 func releaseJob(mutate func(job map[string]any)) []byte {
 	job := map[string]any{
-		"id": 7, "run_id": 9, "run_attempt": 1, "name": "deploy", "head_sha": newSHA,
+		"id": 7, "run_id": 9, "run_attempt": 1, "name": "release-receipt", "head_sha": newSHA,
 		"workflow_name": "CD deploy to C00", "head_branch": "main", "conclusion": "success",
 		"steps": []any{
 			map[string]any{"name": "Deploy to C00 on local runner", "conclusion": "success"},
@@ -44,18 +44,19 @@ func TestParseReleaseReceiptAcceptsOnlyAVerifiedDeploy(t *testing.T) {
 		t.Fatalf("verified deploy = %+v ok=%v, want %+v", got, ok, want)
 	}
 	for name, mutate := range map[string]func(map[string]any){
-		"job failed":           func(j map[string]any) { j["conclusion"] = "failure" },
-		"job skipped":          func(j map[string]any) { j["conclusion"] = "skipped"; delete(j, "steps") },
-		"receipt step skipped": setStep(1, "conclusion", "skipped"),
-		"receipt step failed":  setStep(1, "conclusion", "failure"),
-		"other workflow":       func(j map[string]any) { j["workflow_name"] = "CI" },
-		"other job":            func(j map[string]any) { j["name"] = "build" },
-		"not main":             func(j map[string]any) { j["head_branch"] = "feature" },
-		"no steps":             func(j map[string]any) { delete(j, "steps") },
-		"short new sha":        setStep(1, "name", "release-receipt old="+oldSHA+" new=abc digest="+digest),
-		"bad digest":           setStep(1, "name", "release-receipt old="+oldSHA+" new="+newSHA+" digest=sha256:zz"),
-		"extra text":           setStep(1, "name", "release-receipt old="+oldSHA+" new="+newSHA+" digest="+digest+"; rm -rf"),
-		"unevaluated name":     setStep(1, "name", "release-receipt old=${{steps.receipt.outputs.old}} new=x digest=y"),
+		"job failed":                     func(j map[string]any) { j["conclusion"] = "failure" },
+		"job skipped":                    func(j map[string]any) { j["conclusion"] = "skipped"; delete(j, "steps") },
+		"receipt step skipped":           setStep(1, "conclusion", "skipped"),
+		"receipt step failed":            setStep(1, "conclusion", "failure"),
+		"other workflow":                 func(j map[string]any) { j["workflow_name"] = "CI" },
+		"other job":                      func(j map[string]any) { j["name"] = "build" },
+		"deploy job (readback not done)": func(j map[string]any) { j["name"] = "deploy" },
+		"not main":                       func(j map[string]any) { j["head_branch"] = "feature" },
+		"no steps":                       func(j map[string]any) { delete(j, "steps") },
+		"short new sha":                  setStep(1, "name", "release-receipt old="+oldSHA+" new=abc digest="+digest),
+		"bad digest":                     setStep(1, "name", "release-receipt old="+oldSHA+" new="+newSHA+" digest=sha256:zz"),
+		"extra text":                     setStep(1, "name", "release-receipt old="+oldSHA+" new="+newSHA+" digest="+digest+"; rm -rf"),
+		"unevaluated name":               setStep(1, "name", "release-receipt old=${{steps.receipt.outputs.old}} new=x digest=y"),
 	} {
 		if _, ok := ParseReleaseReceipt(releaseJob(mutate)); ok {
 			t.Errorf("%s: accepted", name)
