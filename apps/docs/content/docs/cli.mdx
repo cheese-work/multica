@@ -236,6 +236,19 @@ A rule a person can trigger is an event rule on a comment, issue, reaction or at
 
 In `block` mode the refusal is a 422 whose message gives the fix command. In `warn` mode the rule is created and an event is recorded.
 
+### Wakeup rules
+
+Workspace and project wakeup rules (see [Issue wakeups](/issue-wakeups)) have their own command, with `create` and `get` beside these:
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` is the revision `list` shows; `update` with `--revision 0` creates an override. `preview` saves nothing: it prints the resolved rule. For a condition rule, `already_satisfied` counts the issues that would match at once and `issues` names them (`--output table` prints them as a list). The preview looks at the first 200 issues of the scope and evaluates the open, non-backlog ones; when the scope has more, `truncated` is `true` and more issues may match. An event rule has no predicate, so its preview has no `already_satisfied` and matches no existing issue. Only an owner or admin can edit or delete a rule. Any human member can preview; an agent or other machine credential gets `403`, and a rule an agent creates stays disabled until a human enables it.
+
 ### Following progress in a DM
 
 A DM follows the issues its agent creates for you. Members manage follows only in a DM they created, with `--chat`. An agent runs `multica issue follow <issue>` without `--chat`: the DM comes from its own task, and a task with no DM is refused. Child issues inherit their parent's active follow.
@@ -386,6 +399,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - A workspace's `--context` is provided to every agent in the workspace. `--slug` cannot be changed after creation. `--issue-prefix` is uppercased; changing it renumbers every existing issue, and old identifiers in external references stop resolving.
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` names the agent that takes routing-only workflow steps (`todo`, `blocked`, `merged`, `need_decision` by default; change with `--routing-statuses`, send one status elsewhere with `--routing-overrides todo=<agent-id>`). The fallback takes over when that agent is archived, or when its run fails on a provider error. An override key `<workflow-id>:<status>` limits that override to one workflow. `none` turns a field off. Only a human owner or admin can change it, and each change is recorded in the activity log.
 - `--issue-title-template` interpolates only `{{date}}` (UTC, `YYYY-MM-DD`) and rejects any other `{{...}}` token. A schedule trigger's `--timezone` defaults to UTC.
+- `--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` need `--mode script`, and `--mode script` needs `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script. The server deletes the task token when the task ends, on a best-effort basis. If the deletion fails, the token stays valid until it expires; nothing revokes it sooner. The run result records the script name, a SHA-256 of the argument list, the exit code and the duration under `script`, and sets `token_revoke_failed` when a deletion failed.
 
 ## Command overview
 
@@ -453,6 +467,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible \
 
 `--for` accepts the person's user ID or their member ID in the issue's workspace, including workspace owners. The server stores the canonical user ID.
 
+A running DM chat task can also ask, but only its own DM member: it must pass `--for <that member>`. Another member is refused with 403. `--session`, `--new-dm` and `--parent` are refused with 400. The card renders in the calling DM, and the request carries the decision ID, the member, the issue, the class and the expiry.
+
 One call writes one issue comment (the ask plus the optional footer, top-level or under `--parent`), one DM message (the ask only) and one inbox ping. The footer reaches the issue comment only, so use it for handoff lines. Footer lines dispatch no agent, because an ask comment does not trigger tasks.
 
 The server picks the DM: the lane of your latest request to that person on this issue, else the newest lane that mentions this issue, else a new `Decisions: <agent name>` DM. `--session <lane-id>` and `--new-dm` override the choice. The same checks as a decision-intent comment apply to the task, issue and person. One call asks one person.
@@ -471,7 +487,11 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+`--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. For a run-budget action that link opens the approval on the issue; for any other action it links to the card in the chat, where the person approves it. A plain option card (`multica decision request` without `--action-file`) cannot apply a change: Approve only records the answer. The server cannot read intent, so it does not refuse such a card; when the decision or an option reads like a workflow, agent, squad, workspace or budget change (or names an allowlisted action type) it adds an advisory hint. Send that change with `multica decision propose`. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before.
+
+### Covered fields need a passkey action
+
+A task token or cloud-node token cannot write these fields through the older routes: `agent.instructions`, `squad.instructions`, `workspace.context`, workflow steps and step instructions, and the workspace settings keys on the decision-action allow table (`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` and the other plain operational keys). The server answers 403 with `code: passkey_action_required` and an `action_type` naming the action to propose instead (`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). The stored value does not change. A vote receipt, a decision binding, a PASS receipt and the Hermes exception no longer lift this refusal. Propose the action with `multica decision propose <action-type>`; a person approves it with a passkey. Writes by a person, and `project.description`, work as before.
 
 ### Config change proposals
 
@@ -556,6 +576,12 @@ CLI configuration files contain tokens that can access Multica as you. Don't com
 
 The tables below cover every current top-level command, grouped the way the CLI itself groups them. All commands accept the global flags `--server-url`, `--workspace-id`, `--profile`, and `--debug`. `--output` is registered per command, and the default format varies: `list` commands default to a table, while `get` and `create` commands mostly default to JSON. Full flags are defined by `multica <command> --help`.
 
+### Issue attachments
+
+For `issue create`, `issue update`, and `issue comment add`, each `--attachment` takes one literal file path, including any commas or double quotes in the filename. Repeat the flag for multiple files: `--attachment 'report,final.csv' --attachment notes.txt`. Omitting the flag attaches no files; an explicitly empty path is an error. All local paths are checked before any file is uploaded.
+
+Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --attachment b` to attach two files. The former now selects a single file named `a,b`. Remove extra CSV quotes from the old workaround `--attachment '"report,final.csv"'`; use `--attachment 'report,final.csv'` unless the filename itself contains those double quotes.
+
 ### Core
 
 | Command | Subcommand | Purpose | Key flags |
@@ -597,7 +623,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | | `env get/set <agent-id>` | Read and write custom environment variables (agent owner or workspace owner/admin; every read is recorded) | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`; replaces the whole set, and keys whose value is `****` keep their existing value |
 | | `skills list/set/add <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends) |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assign workspace MCP servers to this agent | Take the server id from `workspace mcp list`. A library entry does nothing until it is added here; `disable` stops sending it without dropping the assignment |
-| `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable) |
+| `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable), `--script`, `--arg` |
 | | `trigger <id>` | Trigger a run manually | |
 | | `runs <id>` | View run history | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | Manage schedule and webhook triggers | `trigger-add`: `--kind` (`schedule` or `webhook`), `--cron`, `--timezone` (default UTC), `--label` |
@@ -639,7 +665,7 @@ The tables below cover every current top-level command, grouped the way the CLI 
 | `user` | `profile get/update` | View or update the current user's profile | |
 | `login` | — | Sign in via the browser and configure all workspaces automatically | `--token` (prompts interactively in the terminal when passed without a value) |
 | `setup` | `cloud` (default), `self-host` | Save the server address, complete sign-in, and start the daemon | `self-host`: `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Download or upload attachments | `download`: `--output-dir`; `upload`: `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Download or upload attachments; list a file's revisions; diff two revisions | `download`: `--output-dir`; `upload`: `--task`, `--issue`, `--replaces <attachment-id>` (the new file becomes the next revision of that attachment); `diff`: `--from`, `--to` (revision numbers) |
 | `config` | `show`, `set <key> <value>` | View or edit the current profile's local configuration | Precedence: command-line flags > environment variables > `config.json` > built-in defaults; set an empty string to clear a value |
 | `update` | — | Update the CLI to the latest version | |
 | `version` | — | Print version information | `--output` (`text` or `json`) |

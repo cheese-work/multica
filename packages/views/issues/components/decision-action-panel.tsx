@@ -4,7 +4,9 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { api } from "@multica/core/api";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { useT } from "../../i18n";
+import { AppLink } from "../../navigation";
 import { DecisionActionApproval } from "../../common/decision-action-approval";
 
 const RAISE = "issue.run_budget.raise";
@@ -18,9 +20,11 @@ const SETTLED = ["executed", "failed", "rejected", "expired", "cancelled"];
  * and it names that target and the cap before the passkey prompt. It is a
  * dialog so the link never lands on a silent page: a settled, unreadable or
  * foreign action says so in one sentence and tells the person to ask again.
+ * Any other action links to its card in the chat, where it can be decided.
  */
 export function DecisionActionPanel({ actionId, issueId, issueLabel }: { actionId: string; issueId: string; issueLabel: string }) {
   const { t } = useT("common");
+  const paths = useWorkspacePaths();
   const { data, isError } = useQuery({
     queryKey: ["decision-action", actionId],
     queryFn: () => api.getDecisionAction(actionId),
@@ -58,7 +62,14 @@ export function DecisionActionPanel({ actionId, issueId, issueLabel }: { actionI
             <DecisionActionApproval actionId={data.id} payloadSha256={data.payload_sha256} />
           </>
         ) : (
-          <p role="alert" className="text-caption text-destructive">{message}</p>
+          <>
+            <p role="alert" className="text-caption text-destructive">{message}</p>
+            {data?.chat_session_id && !settled ? (
+              <AppLink href={paths.chatSession(data.chat_session_id)} className="text-caption underline">
+                {t(($) => $.decision_action.panel.open_card)}
+              </AppLink>
+            ) : null}
+          </>
         )}
       </DialogContent>
     </Dialog>

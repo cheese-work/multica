@@ -8,8 +8,8 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # cd-qualification.yml is read-only and deliberately carries none of them
 # (see the comment at the top of that file and deploy/cd/README.md).
 #
-# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:00, 04:00,
-# 08:00, 12:00, 16:00, 20:00 ICT), not after every qualified build. The first
+# CHE-5182: the automatic deploy runs on a schedule, every 4 hours (00:17, 04:17,
+# 08:17, 12:17, 16:17, 20:17 ICT), not after every qualified build. The first
 # job, schedule-resolve, picks the newest main commit whose cd-qualification run
 # succeeded and ends the run with "nothing new to deploy" when C00 already runs
 # it. It uses no C00 runner, lock or environment.
@@ -26,12 +26,26 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # gate is the merger/actor check plus the main-only deployment-branch policy of
 # c00-runtime (secrets exist only on `main`).
 #
-# CHE-2365: after a deploy, `readback` watches health, digest and SHA for 15
-# minutes. A failed deploy or readback suspends automatic deploys: the next
+# CHE-2365, CHE-5175: after a deploy, C00 is watched for 15 minutes without
+# holding a runner. `readback` waits at most 90 seconds for health, arms the
+# native C00 health observer (a systemd timer that samples the route every 10 s
+# into a durable journal, installed by deploy/cd/install-health-observer.sh) and
+# waits for its first timer sample, then checks the SHA and the image digests and
+# records T0. `readback-delay` is the c00-readback-delay environment's 15-minute
+# wait timer; a waiting job holds no runner. `readback-confirm` then spends about
+# 10 seconds on the C00 runner and verifies the journal (one healthy sample for
+# every slot, none failed or missing), `docker events` since T0 and the restart
+# count. A failed
+# deploy, readback, readback-delay or readback-confirm suspends automatic deploys: the next
 # authorize-c00 finds the latest finished run failed and builds without
 # deploying, until a later deploy succeeds (the owner's dispatch lifts it).
 # The cutover controller rolls back by digest on a failed cutover, and the
-# `rollback` job does the same after a failed readback.
+# `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
+#
+# CHE-5353: when GitHub drops a schedule slot, the freshness alarm dispatches this
+# workflow with `schedule_backup=true`. That run takes the scheduled path above
+# (resolve, preflight, merger and suspension checks), not the manual one, and
+# authorize-c00 accepts the marker only from github-actions[bot].
 #
 # A dispatch with `candidate_sha` needs one job a manual-evidence dispatch does
 # not: prepare-release-candidate. D1 publishes a `build-evidence` manifest, and
@@ -46,8 +60,8 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # build-evidence.
 on:
   schedule:
-    # 00:00, 04:00, 08:00, 12:00, 16:00, 20:00 ICT (UTC+7).
-    - cron: "0 1,5,9,13,17,21 * * *"
+    # 00:17, 04:17, 08:17, 12:17, 16:17, 20:17 ICT (UTC+7), off the hour: GitHub drops top-of-hour schedules under load.
+    - cron: "17 1,5,9,13,17,21 * * *"
   workflow_dispatch:
     inputs:
       candidate_sha:
@@ -67,6 +81,9 @@ on:
         required: false
       provenance_path:
         description: "Path to the recorded image provenance JSON (backend/web digest + architecture + repository + source_sha)"
+        required: false
+      schedule_backup:
+        description: "Set only by the C00 deploy freshness alarm (CHE-5353) when a schedule slot was dropped: runs the scheduled path (resolve, preflight, merger and suspension checks) instead of the manual one; authorize-c00 refuses any sender but the workflow robot"
         required: false
       ref:
         description: "Git ref to check out (must match the manifest's source_sha)"
@@ -95,11 +112,12 @@ jobs:
   # nothing new to deploy, so no later job starts. No environment, no secrets and
   # no concurrency group: it never queues behind a deploy.
   schedule-resolve:
-    if: github.event_name == 'schedule'
+    if: (github.event_name == 'schedule' || inputs.schedule_backup != '')
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 10
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
         uses: actions/checkout@v6
@@ -125,7 +143,7 @@ jobs:
   # ---------------------------------------------------------------------------
   authorize-c00:
     needs: schedule-resolve
-    if: always() && (github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''))
+    if: always() && ((github.event_name == 'workflow_dispatch' && inputs.schedule_backup == '') || ((github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != ''))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -148,16 +166,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ needs.schedule-resolve.outputs.sha }}
           INPUT_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          INPUT_SCHEDULE_BACKUP: ${{ inputs.schedule_backup }}
           EXTRA_AUTHORIZERS: ${{ vars.C00_DEPLOY_AUTHORIZERS }}
         run: python3 deploy/cd/authorize-c00.py
 
   # CHE-2418 B5: tells the owner a qualified candidate is ready and links the
-  # dispatch page. Nothing needs this job, so a dead route never holds a deploy,
-  # but with no route delivered it fails (CHE-4879). It runs on X99, which can
+  # dispatch page. Nothing needs this job, so a dead route never holds a deploy.
+  # A configured route that delivers nothing fails it (CHE-4879); no route
+  # configured only warns. It runs on X99, which can
   # reach the tailnet-only Multica server.
   notify-approval:
     needs: [schedule-resolve, candidate-preflight, authorize-c00]
-    if: always() && github.event_name == 'schedule' && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.candidate-preflight.outputs.eligible == 'true' && needs.authorize-c00.outputs.authorized != 'true'
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     # One notice at a time, so two candidates cannot both read "no open ask" and
@@ -176,18 +196,24 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/cd-deploy.yml
           RUN_LINK: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_TOKEN: ${{ github.token }}
+          # Only the token is a secret. The other values are public defaults; a secret of the same name overrides them.
           WEBHOOK_URL: ${{ secrets.C00_APPROVAL_WEBHOOK_URL }}
-          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
           MULTICA_TOKEN: ${{ secrets.C00_APPROVAL_MULTICA_TOKEN }}
-          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID }}
-          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE }}
-          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID || 'f2b734e0-b6de-4414-8a27-a2f69b0ef843' }}
+          MULTICA_NOTIFY_ISSUE: ${{ secrets.C00_APPROVAL_MULTICA_ISSUE || '01a1bff0-6ccc-7873-9ac8-580037bc5206' }}
+          MULTICA_NOTIFY_MEMBER_ID: ${{ secrets.C00_APPROVAL_MULTICA_MEMBER_ID || 'f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff' }}
+          MULTICA_NOTIFY_SOURCE_COMMENT: ${{ secrets.C00_APPROVAL_MULTICA_SOURCE_COMMENT || '01a1bff1-cdf8-7856-ad05-da57f3a396f2' }}
         run: |
           SOURCE_SHA="$HEAD_SHA" bash deploy/cd/notify-approval.sh
 
   candidate-preflight:
     needs: schedule-resolve
-    if: always() && github.event_name == 'schedule' && needs.schedule-resolve.outputs.sha != ''
+    # CHE-4500 (CHE-3625 item 2): while main is red the cron sets the repo variable MAIN_RED_PAUSED (an unset
+    # variable reads as ''). A skipped preflight leaves `eligible` empty, so notice, prepare, admission and
+    # deploy are skipped. Nothing needs a rerun: the next 4-hour schedule slot re-evaluates the variable.
+    # The manual workflow_dispatch path is a deliberate human act and is not paused. A schedule_backup dispatch takes the scheduled path and is paused.
+    if: always() && (github.event_name == 'schedule' || inputs.schedule_backup != '') && needs.schedule-resolve.outputs.sha != '' && vars.MAIN_RED_PAUSED == ''
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 65
     # CHE-4251: own API budget for the read path; main-only environment holding the c00-multicado CI key.
@@ -263,6 +289,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
         uses: actions/checkout@v6
@@ -282,6 +309,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash deploy/cd/resolve-candidate.sh
 
+  # CHE-5352: one line on CHE-4960 when an empty dispatch resolves to a candidate
+  # far behind main. Posts from X99, which can reach the tailnet-only Multica
+  # server; the token is a secret, and without it the job only warns. Nothing
+  # waits on this job.
+  notify-stale-candidate:
+    needs: resolve-candidate
+    if: always() && needs.resolve-candidate.outputs.notice != ''
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: deploy/cd/post-stale-notice.sh
+      - name: Post the notice
+        env:
+          NOTICE: ${{ needs.resolve-candidate.outputs.notice }}
+          MULTICA_SERVER_URL: ${{ secrets.C00_APPROVAL_MULTICA_SERVER_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
+          MULTICA_TOKEN: ${{ secrets.CD_NOTICE_MULTICA_TOKEN }}
+          MULTICA_WORKSPACE_ID: ${{ secrets.C00_APPROVAL_MULTICA_WORKSPACE_ID || 'f2b734e0-b6de-4414-8a27-a2f69b0ef843' }}
+          MULTICA_NOTICE_ISSUE_ID: 01a1c0cd-8ffe-7dfa-8609-19bc0c467daa
+        run: bash deploy/cd/post-stale-notice.sh
+
   # ---------------------------------------------------------------------------
   # Dispatch with candidate_sha only. Turns D1's build-evidence into a deployable
   # release-candidate by binding it to C00's CURRENT baseline tuple.
@@ -296,7 +346,7 @@ jobs:
   prepare-release-candidate:
     needs: [authorize-c00, candidate-preflight, resolve-candidate]
     # A dispatch names its candidate; an authorized merge needs the eligible preflight first.
-    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && (github.event_name == 'workflow_dispatch' || needs.candidate-preflight.outputs.eligible == 'true')
+    if: always() && needs.authorize-c00.outputs.authorized == 'true' && needs.resolve-candidate.result == 'success' && needs.resolve-candidate.outputs.sha != '' && ((github.event_name == 'workflow_dispatch' && inputs.schedule_backup == '') || needs.candidate-preflight.outputs.eligible == 'true')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     concurrency:
       group: cd-deploy-c00
@@ -752,17 +802,99 @@ jobs:
             echo "::error::Deploy of ${{ needs.admission.outputs.source_sha }} to C00 failed or required manual intervention — see deploy.sh output above for rollback status."
           fi
 
-  # CHE-2365: 15-minute health, digest and SHA readback after a deploy. It runs
-  # outside the C00 lock so the next deploy is not held for 15 minutes; a
-  # failure here suspends automatic deploys (authorize-c00 reads this job) and
-  # starts the rollback job below.
+  # CHE-2365, CHE-5175: immediate readback after a deploy. It waits at most 90
+  # seconds for C00 to turn healthy, arms the native health observer (T0 is its
+  # first sample), checks the SHA and the image digests against the admitted
+  # manifest, records the restart count, and releases the runner. The 15-minute watch is readback-delay plus
+  # readback-confirm below. It runs outside the C00 lock so the next deploy is
+  # not held; a failure here suspends automatic deploys (authorize-c00 reads
+  # this job) and starts the rollback job.
   # CHE-5144: the job runs deploy/cd/ from the workflow revision, not the
   # candidate ref. A candidate cut before a script existed does not have it.
   readback:
     needs: [admission, deploy]
     if: always() && needs.deploy.result == 'success'
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
-    timeout-minutes: 25
+    timeout-minutes: 10
+    environment: c00-runtime
+    outputs:
+      t0: ${{ steps.watch.outputs.t0 }}
+      observation: ${{ steps.watch.outputs.observation }}
+      superseded: ${{ steps.watch.outputs.superseded }}
+      restarts: ${{ steps.window.outputs.restarts }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      - name: Download the admitted manifest
+        uses: actions/download-artifact@v8
+        with:
+          name: cd-deploy-admitted-input
+          path: cutover-input
+
+      - name: Wait for C00 to be healthy, arm the observer, then check SHA and digests
+        id: watch
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          OBSERVATION_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+          C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
+        run: bash deploy/cd/post-deploy-readback.sh "$SOURCE_SHA" 90 cutover-input/manifest.json
+
+      - name: Record the restart count
+        id: window
+        shell: bash
+        env:
+          C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
+          C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
+        run: |
+          set -euo pipefail
+          restarts="$(bash deploy/cd/restart-count.sh)"
+          echo "restarts=${restarts}" >> "$GITHUB_OUTPUT"
+
+  # CHE-5175: the 15-minute watch window. The environment's wait timer is the
+  # wait, so the job holds no runner while it counts; it only needs a hosted
+  # runner for the instant it runs after the timer. The environment
+  # c00-readback-delay is main-only like c00-runtime, has a 15-minute wait timer
+  # and no secrets: a job can use one environment, and the C00 secrets stay in
+  # c00-runtime for readback-confirm. When C00 already runs a newer deploy, the
+  # readback outputs superseded=true and no journal: this job and the confirm are
+  # skipped, the newer deploy's own run judges its window, and nothing rolls back.
+  readback-delay:
+    needs: [admission, readback]
+    if: always() && needs.readback.result == 'success' && needs.readback.outputs.superseded != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: c00-readback-delay
+    permissions: {}
+    steps:
+      - name: Window elapsed
+        run: echo "The 15-minute window after ${{ needs.readback.outputs.t0 }} (epoch seconds) has elapsed."
+
+  # CHE-5175: judge the window from its evidence, on the C00 runner, in seconds.
+  # The observer's journal must hold a healthy timer sample for every 10 s slot
+  # (a failed sample stays failed after recovery), docker events since T0 must
+  # show no unhealthy, die, oom or restart on the active colour, the restart
+  # count must not have grown, and the SHA and
+  # digests must be unchanged or C00 must run a newer deploy that descends from
+  # this one. A failure here suspends automatic deploys and starts the rollback.
+  readback-confirm:
+    needs: [admission, readback, readback-delay]
+    if: always() && needs.readback-delay.result == 'success'
+    runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
+    timeout-minutes: 10
     environment: c00-runtime
     steps:
       - name: Checkout
@@ -783,27 +915,32 @@ jobs:
           name: cd-deploy-admitted-input
           path: cutover-input
 
-      - name: Watch C00 for 15 minutes
+      - name: Verify the 15-minute window from the observer journal
         shell: bash
         env:
           SOURCE_SHA: ${{ needs.admission.outputs.source_sha }}
+          T0: ${{ needs.readback.outputs.t0 }}
+          OBSERVATION_ID: ${{ needs.readback.outputs.observation }}
+          RESTARTS: ${{ needs.readback.outputs.restarts }}
           C00_COMPOSE_DIR: ${{ secrets.C00_COMPOSE_DIR }}
           C00_STATE_DIR: ${{ secrets.C00_STATE_DIR }}
           C00_CUTOVER_STATE_DIR: ${{ secrets.C00_CUTOVER_STATE_DIR }}
           C00_ROUTER_STATE_DIR: ${{ secrets.C00_ROUTER_STATE_DIR }}
-        run: bash deploy/cd/post-deploy-readback.sh "$SOURCE_SHA" 900 cutover-input/manifest.json
+        run: bash deploy/cd/post-deploy-confirm.sh check "$SOURCE_SHA" "$T0" "$RESTARTS" "$OBSERVATION_ID" cutover-input/manifest.json
 
-  # CHE-2365: a failed readback rolls C00 back by digest to the retained
-  # predecessor. The failed readback job is also what suspends automatic deploys
-  # (authorize-c00 reads it), so the run stays red whatever this job does. It
+  # CHE-2365, CHE-5175: a failed readback, readback-delay or readback-confirm
+  # rolls C00 back by digest to the retained predecessor (a failed delay skips
+  # the confirm, so nothing judged the window). The failed job is also what
+  # suspends automatic deploys (authorize-c00 reads it), so the run stays red
+  # whatever this job does. It
   # takes the C00 lock because it changes C00; the script skips when a newer
   # deploy already replaced the deployed commit. A cancelled readback is a
   # person's decision and is not rolled back.
   # CHE-5144: it runs the workflow revision's cutover.sh and scripts, not the
   # candidate's, for the same reason as readback.
   rollback:
-    needs: [admission, readback]
-    if: always() && needs.readback.result == 'failure'
+    needs: [admission, readback, readback-delay, readback-confirm]
+    if: always() && (needs.readback.result == 'failure' || needs.readback-delay.result == 'failure' || needs.readback-confirm.result == 'failure')
     runs-on: [self-hosted, linux, x64, cheese-c00-deploy]
     timeout-minutes: 30
     environment: c00-runtime

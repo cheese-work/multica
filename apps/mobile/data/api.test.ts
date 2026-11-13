@@ -41,6 +41,33 @@ describe("api.deleteComment", () => {
   });
 });
 
+describe("api.createComment", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // CHE-5286: the server folds an unmarked member comment into the agent's
+  // running turn. Mobile shows no receipt for that, so it opts out.
+  it("sends steer: false", async () => {
+    fetchMock.mockResolvedValue(Response.json({}));
+
+    await api.createComment("issue-1", "hello").catch(() => {});
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.example.test/api/issues/issue-1/comments");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ content: "hello", steer: false });
+  });
+});
+
 describe("api.getCommentPreview", () => {
   const body = {
     comment_id: "c1",

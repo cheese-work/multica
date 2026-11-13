@@ -296,8 +296,7 @@
     "advanced_group_match_trailing": "条件",
     "advanced_group_hint": "组内条件之间用「{{word}}」连接",
     "advanced_add_to_group": "添加到条件组",
-    "advanced_turn_into_group": "转为条件组",
-    "advanced_summary": "筛选：{{summary}}"
+    "advanced_turn_into_group": "转为条件组"
   },
   "display": {
     "tooltip": "显示设置",
@@ -1634,6 +1633,8 @@
       "description": "描述",
       "max_runs": "每个 Issue 的最大运行次数",
       "max_runs_invalid": "请输入 1 到 {{max}} 的整数，留空则使用默认值（{{default}}）。",
+      "budget_request_pending": "此工作流的运行上限变更正在等待所有者批准。",
+      "budget_request_pending_cap": "将每个工单的运行上限改为 {{cap}} 次的请求正在等待所有者批准。",
       "include_child_prs": "包含子 Issue 的 PR",
       "steps": "步骤",
       "add_step": "添加步骤",
@@ -2019,5 +2020,28 @@
       "system": "系统"
     },
     "open": "状态历史"
+  },
+  "run_budget": {
+    "runs": "运行 {{used}} / {{limit}}",
+    "left_other": "剩余 {{count}}",
+    "near": "已用 80 %",
+    "exhausted": "运行预算已用完",
+    "raise": "提高上限",
+    "top_up": "补充",
+    "asked": "已请求工作区所有者批准。",
+    "chip": "预算已用完",
+    "open_request": "见下方未决请求",
+    "request_failed": "请求未成功，请重试。"
+  },
+  "attachment_revision": {
+    "badge": "v{{revision}} · 此前 {{earlier}} 个",
+    "diff": "差异",
+    "title": "{{name}}：v{{from}} → v{{to}}",
+    "region": "v{{from}} 到 v{{to}} 的变更，仅显示改动部分",
+    "show_full": "显示全部",
+    "show_changes": "仅显示变更",
+    "loading": "正在加载变更",
+    "load_failed": "无法加载变更。",
+    "no_changes": "文本没有变化。"
   }
 }

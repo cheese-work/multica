@@ -30,6 +30,8 @@ export const DecisionActionViewSchema = z.object({
   params: z.record(z.string(), z.unknown()),
   payload_sha256: z.string(),
   state: z.string(),
+  /** The chat that holds the action's card; older servers omit it. */
+  chat_session_id: z.string().optional(),
 });
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),

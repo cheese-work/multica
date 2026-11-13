@@ -44,6 +44,14 @@ UPDATE skill SET
 WHERE id = $1
 RETURNING *;
 
+-- name: TouchSkill :one
+-- Supporting-file writes change the skill as a whole, so they bump the parent's
+-- updated_at in the same transaction. Updating the row also takes its lock,
+-- which serializes concurrent file writes on one skill with UpdateSkill.
+UPDATE skill SET updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING *;
+
 -- name: DeleteSkill :exec
 -- Defense-in-depth: workspace_id is a SQL-layer tenant guard. See DeleteIssue.
 DELETE FROM skill WHERE id = $1 AND workspace_id = $2;
@@ -99,6 +107,15 @@ ON CONFLICT (skill_id, path) DO UPDATE SET
     content = EXCLUDED.content,
     updated_at = now()
 RETURNING *;
+
+-- Every writer of an existing skill's files takes this lock first and holds it
+-- to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+-- agent.skills.set approval, which row locks on skill_file could not do for an
+-- insert. It waits under the transaction lock timeout.
+-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
 
 -- name: DeleteSkillFile :exec
 DELETE FROM skill_file WHERE id = $1;

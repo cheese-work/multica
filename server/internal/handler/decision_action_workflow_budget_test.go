@@ -2,10 +2,12 @@ package handler
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // These tests drive workflow.budget.set (CHE-5228) through request and
@@ -204,4 +206,36 @@ func TestWorkflowBudgetSetEditBetweenProposeAndApproveFailsStaleBase(test *testi
 	if maxRuns == nil || *maxRuns != 77 || include {
 		test.Fatalf("stored budget %v/%v, want the concurrent 77/false", maxRuns, include)
 	}
+}
+
+// The open-card list names each card's action (CHE-5285), so the workflow
+// editor can tell that a budget card for this workflow is waiting.
+func TestOpenDecisionsListNamesTheBudgetAction(test *testing.T) {
+	request := newBudgetRequest(test)
+	dbfx.Exec(test, `UPDATE decision_request SET human_user_id = $2 WHERE id = $1`, request.action.requestID, parseUUID(testUserID))
+	httpRequest := httptest.NewRequest(http.MethodGet, "/api/decisions/open", nil)
+	httpRequest.Header.Set("X-User-ID", testUserID)
+	httpRequest = withChatTestWorkspaceCtx(test, httpRequest)
+	var open []struct {
+		ID     string `json:"id"`
+		Action *struct {
+			ActionType   string `json:"action_type"`
+			ConfigChange *struct {
+				Field    string `json:"field"`
+				TargetID string `json:"target_id"`
+			} `json:"config_change"`
+		} `json:"action"`
+	}
+	testutil.Call(test, testHandler.ListOpenDecisions, httpRequest).Want(http.StatusOK).JSON(&open)
+	for _, card := range open {
+		if card.ID != request.action.requestID {
+			continue
+		}
+		if card.Action == nil || card.Action.ActionType != budgetAction || card.Action.ConfigChange == nil ||
+			card.Action.ConfigChange.Field != workflowBudgetField || card.Action.ConfigChange.TargetID != request.workflowID {
+			test.Fatalf("open card action = %+v, want %s on workflow %s", card.Action, budgetAction, request.workflowID)
+		}
+		return
+	}
+	test.Fatalf("open list lacks the budget card %s", request.action.requestID)
 }

@@ -138,4 +138,14 @@ describe("IssueDetailRoute approval deep link", () => {
     renderWithI18n(route("approve=act-1"));
     expect(await screen.findByText(/open the card/i)).toBeTruthy();
   });
+
+  it("links a non-budget action to the card in its chat session", async () => {
+    getDecisionAction.mockResolvedValue({
+      id: "act-1", action_type: "workflow.steps.set", action_version: 1, params: {}, chat_session_id: "sess-9",
+      payload_sha256: "abc", expires_at: "2026-11-07T00:00:00Z", state: "pending",
+    });
+    renderWithI18n(route("approve=act-1"));
+    const link = await screen.findByRole("link", { name: /open the card/i });
+    expect(link.getAttribute("href")).toBe("/acme/chat?session=sess-9");
+  });
 });

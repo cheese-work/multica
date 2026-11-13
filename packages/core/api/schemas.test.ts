@@ -290,6 +290,13 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
   });
+  it("reads run_budget_blocked, tolerating a server without it or a malformed one (CHE-5285)", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    expect(parse({ run_budget_blocked: true })?.run_budget_blocked).toBe(true);
+    expect(parse({})?.run_budget_blocked).toBeUndefined();
+    expect(parse({ run_budget_blocked: "yes" })?.id).toBe(baseIssue.id);
+    expect(parse({ run_budget_blocked: "yes" })?.run_budget_blocked).toBeUndefined();
+  });
   it("reads the workflow override and tolerates a server without it or a malformed one", () => {
     const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
     expect(parse({ workflow_id: "wf-1" })?.workflow_id).toBe("wf-1");
