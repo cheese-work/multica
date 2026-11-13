@@ -1,6 +1,8 @@
 {
   "decision_banner": {
     "title": "Decision needed",
+    "title_used": "Decisions",
+    "answered_count": "{{number}} answered",
     "waiting": "The agent has not sent the decision card yet.",
     "queued_since": "Queued since {{time}}",
     "running_since": "Running since {{time}}",
