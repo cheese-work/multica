@@ -250,25 +250,25 @@
   origin: upstream
   status: active
   components: ["packages/views/settings/components/settings-layout.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=czlNOKtS8k"}
 - id: settings-navigation
   intent: "Sidebar from md up. Below md: a native select#settings-navigation with optgroups, h-10, under the page title. A phone layout keeps it."
   origin: upstream
   status: active
   components: ["packages/views/settings/components/settings-page.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=2BZDSkIFYx"}
 - id: read-only-member-view
   intent: "Members see the page. A role=note block names who can change it (owners and admins, up to three names). SettingsReadOnlyNotice."
   origin: upstream
   status: active
   components: ["packages/views/settings/components/settings-layout.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=OKpTArvGqv"}
 - id: save-state
   intent: "role=status: saving, saved, error. SettingsSaveState."
   origin: upstream
   status: active
   components: ["packages/views/settings/components/settings-layout.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=sC85vZJ1NO"}
 - id: buttons
   intent: "One dominant action per dialog or form. Pending: disabled + aria-busy. Icon-only buttons need a name."
   origin: upstream
