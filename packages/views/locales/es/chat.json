@@ -274,6 +274,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "Filtrar chats",
+      "all": "Todos",
+      "main": "Principales",
+      "decisions": "Decisiones",
+      "waiting": "Esperan tu respuesta",
+      "unseen": "Sin ver",
+      "pinned": "Fijados",
+      "unpinned": "Sin fijar",
+      "archived": "Archivados",
+      "count_aria": "{{label}}, {{count}}"
+    },
+    "states": {
+      "loading": "Cargando chats…",
+      "empty_title": "Aún no hay chats",
+      "empty_body": "Escribe a un agente para empezar. Las preguntas y decisiones que te necesitan aparecen aquí.",
+      "empty_view": "No hay chats en esta vista",
+      "empty_waiting": "Nada espera tu respuesta",
+      "empty_waiting_body": "Todas las preguntas y decisiones tienen respuesta.",
+      "error_title": "No se han podido cargar los chats",
+      "error_body": "El servidor devolvió un error. Tus mensajes no se han perdido. Reintenta o vuelve en unos minutos.",
+      "retry": "Reintentar",
+      "offline_title": "Sin conexión",
+      "offline_body": "Se muestra la lista guardada. Se reconecta sola."
+    },
     "typing": "Escribiendo…",
     "failed": "No se ha podido enviar",
     "you_prefix": "Tú: ",

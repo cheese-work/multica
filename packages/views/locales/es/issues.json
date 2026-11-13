@@ -25,10 +25,14 @@
     "supplement_failure_provider_rejected": "el agente rechazó el mensaje",
     "supplement_failure_timeout": "la entrega agotó el tiempo de espera",
     "supplement_failure_unknown": "motivo desconocido",
+    "supplement_failure_replay_exhausted": "se agotaron los reintentos",
+    "supplement_failure_run_budget_exhausted": "se agotó el presupuesto de ejecuciones",
+    "supplement_failure_agent_paused": "el agente está en pausa",
     "supplement_retry": "Reintentar",
     "supplement_retry_failed": "No se ha podido reintentar la entrega.",
     "steer_badge": "Añadido a la ejecución de {{names}}",
     "steer_waiting": "Esperando a que {{name}} lo lea",
+    "steer_replay_queued": "{{name}} lo leerá en la próxima ejecución",
     "steer_read": "Leído por {{name}}",
     "steer_not_received": "{{name}} no lo recibió · {{reason}}",
     "steer_resend": "Enviar como una ejecución nueva",
@@ -410,7 +414,9 @@
   },
   "gantt2": {
     "clipped_start": "Comenzó antes de esta ventana",
-    "now": "Ahora"
+    "now": "Ahora",
+    "collapse": "Contraer",
+    "expand": "Expandir"
   },
   "actor_issues": {
     "scope": {

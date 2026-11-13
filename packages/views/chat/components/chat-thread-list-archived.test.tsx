@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { VirtuosoMockContext } from "react-virtuoso";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
@@ -18,12 +17,20 @@ vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/agents", () => ({ useWorkspacePresenceMap: () => ({ byAgent: new Map() }) }));
 vi.mock("@multica/core/api", () => ({ api: { cancelTaskById: vi.fn() } }));
-vi.mock("@multica/core/chat", () => ({
-  useChatStore: Object.assign(
-    (selector: (s: { setActiveSession: () => void }) => unknown) => selector({ setActiveSession: vi.fn() }),
-    { getState: () => guard },
-  ),
-}));
+vi.mock("@multica/core/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/chat")>();
+  const data = new Map<string, string>();
+  actual.registerChatStore(
+    actual.createChatStore({
+      storage: {
+        getItem: (k) => data.get(k) ?? null,
+        setItem: (k, v) => void data.set(k, v),
+        removeItem: (k) => void data.delete(k),
+      },
+    }),
+  );
+  return actual;
+});
 vi.mock("@multica/core/chat/mutations", () => ({
   useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useSetChatSessionPinned: () => ({ mutate: pinMutate, mutateAsync: vi.fn(), isPending: false }),
@@ -44,11 +51,13 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: () => ({ data: { tasks: [] } }),
+    useQuery: (options: { queryKey: readonly unknown[] }) =>
+      options.queryKey.includes("open-decisions") ? { data: [], isPending: false, isError: false } : { data: { tasks: [] } },
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });
 
+import { useChatStore } from "@multica/core/chat";
 import { ChatThreadList } from "./chat-thread-list";
 
 function makeSession(over: Partial<ChatSession> & Pick<ChatSession, "id">): ChatSession {
@@ -80,7 +89,6 @@ const sessions = [
 
 function openArchivedView() {
   render(
-    <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
     <I18nProvider locale="en" resources={{ en: { chat: enChat, issues: enIssues } }}>
       <ChatThreadList
         sessions={sessions}
@@ -89,15 +97,19 @@ function openArchivedView() {
         onSelectSession={vi.fn()}
         onArchive={vi.fn()}
       />
-    </I18nProvider>
-    </VirtuosoMockContext.Provider>,
+    </I18nProvider>,
   );
-  fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+  fireEvent.click(screen.getByRole("button", { name: /^Archived/ }));
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   guard.beginSessionAction.mockReturnValue(true);
+  useChatStore.setState({
+    listView: "main",
+    beginSessionAction: guard.beginSessionAction,
+    endSessionAction: guard.endSessionAction,
+  });
 });
 
 describe("ChatThreadList archived view", () => {
@@ -109,9 +121,10 @@ describe("ChatThreadList archived view", () => {
 
   it("shows no pin icon and offers no Pin item on an archived row", async () => {
     openArchivedView();
-    expect(screen.queryByLabelText(enChat.list.pinned)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: enChat.list.pin })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: enChat.list.unpin })).not.toBeInTheDocument();
+    const list = within(screen.getByTestId("chat-thread-group-archived"));
+    expect(list.queryByLabelText(enChat.list.pinned)).not.toBeInTheDocument();
+    expect(list.queryByRole("button", { name: enChat.list.pin })).not.toBeInTheDocument();
+    expect(list.queryByRole("button", { name: enChat.list.unpin })).not.toBeInTheDocument();
     const rows = screen.getAllByRole("button", { name: enChat.list.row_actions_aria });
     fireEvent.click(rows[0]!);
     const menu = await screen.findAllByRole("menuitem");
@@ -135,7 +148,6 @@ describe("ChatThreadList archived view", () => {
   it("keeps the pin icon and Pin item on an active row", () => {
     const pinned = [makeSession({ id: "live", pinned: true })];
     render(
-      <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
       <I18nProvider locale="en" resources={{ en: { chat: enChat, issues: enIssues } }}>
         <ChatThreadList
           sessions={pinned}
@@ -144,8 +156,7 @@ describe("ChatThreadList archived view", () => {
           onSelectSession={vi.fn()}
           onArchive={vi.fn()}
         />
-      </I18nProvider>
-      </VirtuosoMockContext.Provider>,
+      </I18nProvider>,
     );
     const row = screen.getByText("Chat live").closest("[tabindex]") as HTMLElement;
     expect(within(row).getByLabelText(enChat.list.pinned)).toBeInTheDocument();
