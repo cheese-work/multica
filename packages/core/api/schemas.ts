@@ -2410,6 +2410,7 @@ const TaskUsageSchema = z.lazy(() => z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   cost_usd_ticks: z.number().optional(),
+  credits_micros: z.number().optional().catch(undefined),
 }).loose());
 
 const NullableStringSchema = z.lazy(() => z.string().nullable().catch(null));
