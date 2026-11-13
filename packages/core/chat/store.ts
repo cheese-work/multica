@@ -10,6 +10,7 @@ import {
   type PendingDraftUpload,
 } from "../drafts/draft-upload";
 import { createLogger } from "../logger";
+import { DEFAULT_CHAT_LIST_VIEW, type ChatListView } from "./queries";
 
 const logger = createLogger("chat.store");
 
@@ -391,6 +392,10 @@ export interface ChatState {
   /** Persist raw size and auto-exit expanded mode. */
   setChatSize: (width: number, height: number) => void;
   setExpanded: (expanded: boolean) => void;
+  /** DM list filter chip. In-memory only; resets when the user leaves Chat. */
+  listView: ChatListView;
+  setListView: (view: ChatListView) => void;
+  resetListView: () => void;
 }
 
 export interface ChatStoreOptions {
@@ -440,6 +445,9 @@ export function createChatStore(options: ChatStoreOptions) {
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
+    listView: DEFAULT_CHAT_LIST_VIEW,
+    setListView: (listView) => set({ listView }),
+    resetListView: () => set({ listView: DEFAULT_CHAT_LIST_VIEW }),
     setOpen: (open) => {
       logger.debug("setOpen", { from: get().isOpen, to: open });
       storage.setItem(OPEN_KEY, String(open));

@@ -333,6 +333,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "채팅 필터",
+      "all": "전체",
+      "main": "받은 채팅",
+      "decisions": "결정",
+      "waiting": "내 응답 대기",
+      "unseen": "읽지 않음",
+      "pinned": "고정됨",
+      "unpinned": "고정 안 됨",
+      "archived": "보관됨",
+      "count_aria": "{{label}}, {{count}}개"
+    },
+    "states": {
+      "loading": "채팅을 불러오는 중…",
+      "empty_title": "아직 채팅이 없습니다",
+      "empty_body": "에이전트에게 메시지를 보내 시작하세요. 내 응답이 필요한 질문과 결정이 여기에 표시됩니다.",
+      "empty_view": "이 보기에는 채팅이 없습니다",
+      "empty_waiting": "기다리는 항목이 없습니다",
+      "empty_waiting_body": "모든 질문과 결정에 답변했습니다.",
+      "error_title": "채팅을 불러오지 못했습니다",
+      "error_body": "서버에서 오류가 발생했습니다. 메시지는 사라지지 않았습니다. 다시 시도하거나 잠시 후 다시 오세요.",
+      "retry": "다시 시도",
+      "offline_title": "오프라인입니다",
+      "offline_body": "저장된 목록을 표시 중입니다. 자동으로 다시 연결됩니다."
+    },
     "typing": "입력 중…",
     "failed": "전송 실패",
     "you_prefix": "나: ",
