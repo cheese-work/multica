@@ -1,7 +1,8 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { getCurrentSlug } from "../platform/workspace-storage";
-import { currentDraftOrigin } from "./cleanup-registry";
+import { localDraftGeneration } from "./cleanup-registry";
+import type { DraftOrigin } from "./cleanup-registry";
 import type { KeyedDraftStore } from "./create-keyed-draft-store";
 
 /**
@@ -16,7 +17,8 @@ import type { KeyedDraftStore } from "./create-keyed-draft-store";
  * write (an editor flushing on unmount, an upload settling) after the route
  * moved to another workspace lands in the originating workspace's drafts, never
  * the current one's. A write that outlives logout or a workspace delete is
- * dropped, so it cannot bring back a draft that cleanup removed.
+ * dropped, so it cannot bring back a draft that cleanup removed. That holds
+ * across tabs too: logout in another tab invalidates this tab's pending writes.
  */
 export function usePersistedDraft<TData extends object>(
   store: UseBoundStore<StoreApi<KeyedDraftStore<TData>>>,
@@ -25,15 +27,21 @@ export function usePersistedDraft<TData extends object>(
 ): [TData, (patch: Partial<TData>) => void, () => void] {
   const draft = store((s) => s.getDraft(key) ?? empty);
   const slug = getCurrentSlug();
-  const generation = currentDraftOrigin(slug).generation;
+  // The session a write belongs to is taken when the component first renders in a workspace, and
+  // refreshed only when this tab's own cleanup ran (a logout and re-login without an unmount). A
+  // cleanup in another tab never refreshes it, so a pending edit typed before that logout stays stale.
+  const origins = useRef(new Map<string | null, { local: number; origin: DraftOrigin }>());
+  const local = localDraftGeneration(slug);
+  if (origins.current.get(slug)?.local !== local) origins.current.set(slug, { local, origin: store.getState().originFor(slug) });
+  const origin = origins.current.get(slug)!.origin;
   const setDraft = useCallback(
     (patch: Partial<TData>) => {
-      store.getState().setDraftIn({ slug, generation }, key, patch);
+      store.getState().setDraftIn(origin, key, patch);
     },
-    [store, key, slug, generation],
+    [store, key, origin],
   );
   const clearDraft = useCallback(() => {
-    store.getState().clearDraftIn({ slug, generation }, key);
-  }, [store, key, slug, generation]);
+    store.getState().clearDraftIn(origin, key);
+  }, [store, key, origin]);
   return [draft, setDraft, clearDraft];
 }

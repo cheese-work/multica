@@ -110,8 +110,21 @@ func Register(def *Definition) {
 func init() {
 	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
 	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
+	Register(&Definition{Type: "agent.pause", Version: 1, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.pause")})
+	Register(&Definition{Type: "agent.resume", Version: 1, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.skills.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
+}
+
+// Types lists every allowlisted action type, sorted and without versions.
+func Types() []string {
+	seen := map[string]bool{}
+	for _, def := range registry {
+		seen[def.Type] = true
+	}
+	return sortedKeys(seen)
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {
@@ -301,6 +314,14 @@ type RunBudgetRaiseParams struct {
 	RefusalID string `json:"refusal_id,omitempty"`
 }
 
+// RunBudgetTopUpParams names the issue and the window the person saw. The window
+// id is opaque: the executor compares it with the window in force.
+type RunBudgetTopUpParams struct {
+	IssueID   string `json:"issue_id"`
+	WindowID  string `json:"window_id"`
+	RefusalID string `json:"refusal_id,omitempty"`
+}
+
 func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
 	if len(slots) > 0 {
 		return nil, nil, invalid("issue.run_budget.raise takes no secret slots")
@@ -321,10 +342,42 @@ func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawM
 	if params.NewCap < 1 || params.NewCap > issueworkflow.MaxRunsPerIssueLimit {
 		return nil, nil, invalid("new_cap must be 1-%d", issueworkflow.MaxRunsPerIssueLimit)
 	}
-	// The server compares the id as a string, so only its own spelling is valid.
-	if at, err := time.Parse(time.RFC3339Nano, params.WindowID); err != nil || at.UTC().Format(time.RFC3339Nano) != params.WindowID {
-		return nil, nil, invalid("window_id must be a window_id read from the run budget")
+	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
+		return nil, nil, err
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err
+}
+
+func normalizeRunBudgetTopUp(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.run_budget.top_up takes no secret slots")
+	}
+	var params RunBudgetTopUpParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.RefusalID != "" {
+		if params.RefusalID, err = canonicalUUID("refusal_id", params.RefusalID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
+		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
+}
+
+// checkRunBudgetWindowID: the server compares the id as a string, so only its
+// own spelling is valid.
+func checkRunBudgetWindowID(id string) error {
+	if at, err := time.Parse(time.RFC3339Nano, id); err != nil || at.UTC().Format(time.RFC3339Nano) != id {
+		return invalid("window_id must be a window_id read from the run budget")
+	}
+	return nil
 }

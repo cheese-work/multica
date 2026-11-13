@@ -109,11 +109,7 @@ func TestClaimTask_IssueProjectInForeignWorkspace_DegradesToWorkspaceRepos(t *te
 	})
 	_, foreignProjectID := foreignWorkspaceWithProject(t, "foreign-issue-project-ws", "FIP")
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	issueID := dbfx.Issue(t, "issue pointing at a foreign project", testutil.Cols{
 		"project_id": foreignProjectID,
@@ -240,11 +236,7 @@ func TestClaimTask_ProjectResourceFromForeignWorkspace_IsFilteredOut(t *testing.
 		"position":      2,
 	})
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	issueID := dbfx.Issue(t, "issue with a mismatched project resource", testutil.Cols{
 		"project_id": projectID,
@@ -291,11 +283,7 @@ func TestClaimTask_AutopilotRunOnlyForeignWorkspace_CancelsTask(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	var localAgentID, localRuntimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&localAgentID, &localRuntimeID)
+	localAgentID, localRuntimeID := sharedClaimAgent(t)
 
 	foreignWorkspaceID, foreignProjectID := foreignWorkspaceWithProject(t, "foreign-autopilot-ws", "FAW")
 
@@ -385,11 +373,7 @@ func TestBuildClaimedTaskResponse_SourceLoadFailure_PreservesTaskAndEmitsNoConte
 		t.Skip("database not available")
 	}
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	projectID := dbfx.Project(t, "Source load failure project")
 	dbfx.Insert(t, "project_resource", testutil.Cols{
@@ -494,11 +478,7 @@ func TestRejectClaimSourceLoad_MissingRow_CancelsTask(t *testing.T) {
 		t.Skip("database not available")
 	}
 
-	var agentID, runtimeID string
-	dbfx.QueryRow(t,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&agentID, &runtimeID)
+	agentID, runtimeID := sharedClaimAgent(t)
 
 	taskID := dbfx.Task(t, agentID, testutil.Cols{"runtime_id": runtimeID, "issue_id": nil})
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'dispatched' WHERE id = $1`, taskID)

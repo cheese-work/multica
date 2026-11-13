@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ChangelogPageClient } from "@/features/landing/components/changelog-page-client";
-import { forkBuildStamp, parseForkChangelog, unavailableFork } from "@/features/landing/components/fork-changelog";
+import { forkBuildStamp, liveVersion, parseForkChangelog, unavailableFork } from "@/features/landing/components/fork-changelog";
 
 const fork = (() => {
   try {
@@ -30,7 +30,7 @@ export default function ChangelogPage() {
   return (
     <ChangelogPageClient
       fork={fork}
-      buildStamp={forkBuildStamp(
+      buildStamp={liveVersion(fork) ?? forkBuildStamp(
         process.env.NEXT_PUBLIC_APP_COMMIT || process.env.NEXT_PUBLIC_APP_VERSION,
         process.env.NEXT_PUBLIC_BUILD_DATE,
       )}

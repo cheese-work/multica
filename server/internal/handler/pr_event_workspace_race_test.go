@@ -43,7 +43,7 @@ func TestPREventCaptureRaceDoesNotBlockWorkspaceDeletion(test *testing.T) {
 	pullRequest, err := testHandler.Queries.UpsertGitHubPullRequest(ctx, db.UpsertGitHubPullRequestParams{
 		WorkspaceID: parseUUID(fixture.victimID), InstallationID: 987655,
 		RepoOwner: "race", RepoName: "pr-event-ws", PrNumber: 7,
-		Title: "review", State: "open", HtmlUrl: "http://multica.test/pr/7", HeadSha: "A",
+		Title: "review", State: "open", HtmlUrl: "http://multica.test/pr/7", HeadSha: "A", HeadRepoSame: true,
 		PrCreatedAt: stamp, PrUpdatedAt: stamp,
 	})
 	if err != nil {

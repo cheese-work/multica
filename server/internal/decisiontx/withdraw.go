@@ -40,6 +40,8 @@ type Withdrawal struct {
 	Answer          db.DecisionAnswer
 	Comments        []db.Comment
 	ClearedComments []db.Comment
+	// Covered holds the withdrawals of the cards a batch answer decided, taken back with it.
+	Covered []Withdrawal
 }
 
 func Withdraw(ctx context.Context, queries *db.Queries, request db.DecisionRequest, answer db.DecisionAnswer, sessionStatus, reason string, userID pgtype.UUID) (Withdrawal, error) {

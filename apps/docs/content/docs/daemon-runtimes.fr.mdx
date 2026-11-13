@@ -298,6 +298,21 @@ Cette première version prend en charge l'exécution des tickets, le suivi de pr
 
 Pour le déploiement du pont autonome et ses limites opérationnelles, consultez le [README du runtime Qoder](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md).
 
+## Disjoncteur de fournisseur [#provider-breaker]
+
+Lorsqu'un fournisseur renvoie des erreurs 5xx de façon répétée, Multica ouvre un disjoncteur pour ce fournisseur dans l'espace de travail et met les nouvelles exécutions en attente au lieu de les faire échouer une à une. Un agent lié à ce fournisseur affiche une notification indiquant le fournisseur, l'heure d'ouverture du disjoncteur et l'heure de la prochaine sonde (toutes deux en ICT). Redéclenchez l'agent après cette heure, ou demandez à un administrateur de l'espace de travail de réinitialiser le disjoncteur.
+
+Après la période de refroidissement, une exécution de sonde décide si le disjoncteur se referme ou s'ouvre de nouveau. Chaque ouverture, semi-ouverture, fermeture et réouverture automatique, ainsi que chaque réinitialisation manuelle, est enregistrée dans un journal d'audit avec l'auteur, l'heure et l'état précédent.
+
+```bash
+multica runtime breaker list
+multica runtime breaker reset <provider>
+```
+
+`list` affiche l'état, le nombre d'échecs, l'heure d'ouverture et l'heure de la prochaine sonde de chaque fournisseur. `reset` ferme le disjoncteur de force et est réservé aux propriétaires et administrateurs de l'espace de travail. Les mêmes données sont disponibles via l'API : `GET /api/workspaces/{id}/provider-breakers` liste les disjoncteurs et `POST /api/workspaces/{id}/provider-breakers/{provider}/reset` en réinitialise un.
+
+Dans l'application web, **Paramètres → Disjoncteurs des fournisseurs** affiche le même état pour chaque fournisseur. Les propriétaires et les admins voient un bouton **Réinitialiser** derrière une boîte de confirmation ; les autres membres voient l'état en lecture seule.
+
 ## Dépanner un runtime hors ligne
 
 Vérifiez dans cet ordre :

@@ -10,6 +10,12 @@ describe("wakeup header", () => {
     expect(isWakeupHeaderContent("hello [Scheduled wakeup — x]")).toBe(false);
   });
 
+  it("also hides the issue-watch header", () => {
+    const watch = "[Issue watch — you set this earlier in this DM; no person wrote this message.]\nInstruction: relay";
+    expect(isWakeupHeaderContent(watch)).toBe(true);
+    expect(stripWakeupHeader(watch)).toBe("relay");
+  });
+
   it("strips the header and the Instruction label, keeping the instruction verbatim", () => {
     expect(stripWakeupHeader(`${HEADER}\nInstruction: report on CHE-1\nline 2`)).toBe("report on CHE-1\nline 2");
   });

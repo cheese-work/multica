@@ -509,10 +509,174 @@ STUB
   fi
 }
 
+# --- download progress (CHE-3541 step 3) ------------------------------------
+# Sandbox whose archive is ~2.6 MB and whose `curl` hands it over in 512 KiB
+# chunks, 0.4 s apart, so a pty run sees the bar move. FAKE_LENGTH becomes the
+# HEAD Content-Length (unset: none) and FAKE_REDIRECT_LENGTH the redirect's;
+# FAKE_FAIL=1 makes the download exit 22.
+_setup_slow_sandbox() {
+  local tmp="$1"
+  _setup_sandbox "$tmp"
+  head -c 2500000 /dev/urandom >"$tmp/payload/pad.bin"
+  tar -czf "$tmp/multica.tar.gz" -C "$tmp/payload" multica pad.bin
+  cat >"$tmp/stub-bin/curl" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"-sIL"* ]]; then
+  printf 'HTTP/2 302\r\ncontent-length: %s\r\n\r\nHTTP/2 200\r\n' "${FAKE_REDIRECT_LENGTH:-0}"
+  if [[ -n "${FAKE_LENGTH:-}" ]]; then printf 'content-length: %s\r\n' "$FAKE_LENGTH"; fi
+  printf '\r\n'
+  exit 0
+fi
+if [[ "$*" == *"-sI"* ]]; then
+  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
+  exit 0
+fi
+out=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == "-o" ]]; then out="$2"; fi
+  shift
+done
+trap "" HUP # closing the pty must not hide a leaked curl
+echo $$ >>"$MULTICA_TEST_CURL_PIDS"
+[[ "${FAKE_FAIL:-}" == 1 ]] && { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+n=0
+size=$(wc -c <"$MULTICA_TEST_ARCHIVE")
+while ((n * 524288 < size)); do
+  dd if="$MULTICA_TEST_ARCHIVE" bs=524288 skip=$n count=1 2>/dev/null >>"$out"
+  n=$((n + 1))
+  sleep 0.4
+done
+STUB
+  chmod +x "$tmp/stub-bin/curl"
+}
+
+# Run install.sh with stderr on a pty (script(1)); stdout+stderr land in
+# $tmp/tty.out. The shell's pid goes to $tmp/shell.pid. Extra args are env.
+_run_installer_tty() {
+  local tmp="$1"; shift
+  env "$@" PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+    MULTICA_BIN_DIR="$tmp/install-bin" \
+    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
+    MULTICA_TEST_CURL_PIDS="$tmp/curl.pids" \
+    script -qec "echo \$\$ >'$tmp/shell.pid'; exec bash '$ROOT_DIR/scripts/install.sh'" /dev/null \
+    >"$tmp/tty.out" 2>&1
+}
+
+test_tty_download_renders_known_size_bar() {
+  local tmp size
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+  size=$(wc -c <"$tmp/multica.tar.gz")
+
+  _run_installer_tty "$tmp" FAKE_LENGTH="$size" || { cat "$tmp/tty.out" >&2; return 1; }
+  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
+  grep -Eq '^\[[#-]{20}\] +[0-9]+%  [0-9.]+ / 2\.[0-9] MB' "$tmp/tty.lines" || {
+    echo "expected a known-size bar line" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+  grep -Eq '^\[#{20}\] 100%' "$tmp/tty.lines" || {
+    echo "expected the bar to reach 100%" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+  for phase in Extracting Installing Installed; do
+    grep -qx "$phase" "$tmp/tty.lines" || { echo "missing phase line: $phase" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+  done
+}
+
+test_tty_download_renders_unknown_size_line() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+
+  _run_installer_tty "$tmp" || { cat "$tmp/tty.out" >&2; return 1; }
+  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
+  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
+    echo "expected an unknown-size line with a rate" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+  if grep -q '^\[' "$tmp/tty.lines"; then
+    echo "unknown size must not draw a bar" >&2; return 1
+  fi
+}
+
+test_tty_redirect_length_does_not_leak_into_final_response() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+
+  _run_installer_tty "$tmp" FAKE_REDIRECT_LENGTH=123 || { cat "$tmp/tty.out" >&2; return 1; }
+  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
+  if grep -q '^\[' "$tmp/tty.lines"; then
+    echo "a redirect's Content-Length must not become the bar total" >&2
+    cat "$tmp/tty.lines" >&2; return 1
+  fi
+  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
+    echo "expected unknown-size mode" >&2; cat "$tmp/tty.lines" >&2; return 1; }
+}
+
+test_tty_download_failure_keeps_message_and_exit_code() {
+  local tmp rc=0
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+
+  _run_installer_tty "$tmp" FAKE_FAIL=1 || rc=$?
+  [ "$rc" -eq 1 ] || { echo "expected exit 1, got $rc" >&2; return 1; }
+  grep -q "Failed to download CLI binary." "$tmp/tty.out" || {
+    echo "expected the download failure message" >&2; cat "$tmp/tty.out" >&2; return 1; }
+  grep -q "returned error: 404" "$tmp/tty.out" || {
+    echo "expected curl's own error to be replayed" >&2; cat "$tmp/tty.out" >&2; return 1; }
+}
+
+test_tty_interrupt_leaves_no_download_process() {
+  local tmp pid i rc
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+
+  _run_installer_tty "$tmp" &
+  local runner=$!
+  for i in $(seq 50); do [ -s "$tmp/curl.pids" ] && break; sleep 0.1; done
+  [ -s "$tmp/curl.pids" ] || { echo "download never started" >&2; return 1; }
+  sleep 0.5
+  kill -TERM "$(cat "$tmp/shell.pid")"
+  rc=0
+  wait "$runner" || rc=$?
+  [ "$rc" -eq 143 ] || { echo "expected exit 143 after TERM, got $rc" >&2; return 1; }
+  sleep 0.3
+  while read -r pid; do
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null || true
+      echo "download process $pid survived the interrupt" >&2
+      return 1
+    fi
+  done <"$tmp/curl.pids"
+}
+
+test_non_tty_download_stays_quiet() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  _setup_slow_sandbox "$tmp"
+  local size
+  size=$(wc -c <"$tmp/multica.tar.gz")
+
+  FAKE_LENGTH="$size" MULTICA_TEST_CURL_PIDS="$tmp/curl.pids" _run_installer "$tmp" 2>/dev/null || true
+  [ -x "$tmp/install-bin/multica" ] || { echo "install failed" >&2; cat "$tmp/install.err" >&2; return 1; }
+  if grep -q $'\r\|Extracting\|Installing$\|Installed$' "$tmp/install.err" "$tmp/install.out"; then
+    echo "non-TTY output must carry no progress" >&2
+    cat "$tmp/install.err" "$tmp/install.out" >&2
+    return 1
+  fi
+}
+
 test_brew_install_failure_falls_back_to_release_binary
 test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_with_server_uses_compose_published_ports
 test_with_server_fails_when_compose_port_is_unavailable
+test_tty_download_renders_known_size_bar
+test_tty_download_renders_unknown_size_line
+test_tty_redirect_length_does_not_leak_into_final_response
+test_tty_download_failure_keeps_message_and_exit_code
+test_tty_interrupt_leaves_no_download_process
+test_non_tty_download_stays_quiet
 echo "install.sh tests passed"

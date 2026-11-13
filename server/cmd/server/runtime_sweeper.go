@@ -176,6 +176,11 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	sweepStaleRuntimes(ctx, queries, liveness, taskSvc, bus)
 	sweepOfflineRuntimeTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepExpiredRuntimeReconnectRetries(ctx, queries, taskSvc, reconnectGrace)
+	if failed, err := taskSvc.FailExpiredProviderHolds(ctx, time.Now(), reconnectRetryExpireBatchSize); err != nil {
+		slog.Warn("runtime sweeper: failed to expire provider holds", "error", err)
+	} else {
+		taskSvc.HandleFailedTasks(ctx, failed)
+	}
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)

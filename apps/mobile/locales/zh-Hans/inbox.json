@@ -16,7 +16,8 @@
   },
   "filters": {
     "all": "全部",
-    "unread": "未读"
+    "unread": "未读",
+    "mentions_me": "提到我的"
   },
   "archive": {
     "confirm_title": "全部归档？",

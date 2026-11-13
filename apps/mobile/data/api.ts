@@ -112,7 +112,6 @@ import {
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
-  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -148,7 +147,7 @@ import {
 } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
-import { parseWithFallback } from "@/lib/parse-response";
+import { parseOrThrow, parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
 import { buildCommentUpdateBody } from "./revision";
 
@@ -706,12 +705,9 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    return this.fetchValidated(
-      `/api/issues/${id}`,
-      IssueSchema,
-      EMPTY_ISSUE_FALLBACK,
-      { ...opts, endpoint: "getIssue" },
-    );
+    // No fallback: an empty issue made the screen say "not found" for data it could not read.
+    const raw = await this.fetch<unknown>(`/api/issues/${id}`, { signal: opts?.signal });
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "getIssue" });
   }
 
   /**
@@ -847,6 +843,9 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+          // Mobile has no steer receipt for issue comments, so it never takes
+          // the server's default of folding into a running turn (CHE-5286).
+          steer: false,
         }),
       },
       { endpoint: "createComment" },

@@ -20,10 +20,22 @@ type ChatWakeupResponse struct {
 	Title       string `json:"title"`
 	Instruction string `json:"instruction"`
 	Status      string `json:"status"`
+	// Issue watch fields; empty for a plain timed wakeup. FireAt is the watch's expiry.
+	IssueID     string `json:"issue_id,omitempty"`
+	Event       string `json:"event,omitempty"`
+	ActorType   string `json:"filter_actor_type,omitempty"`
+	ActorID     string `json:"filter_actor_id,omitempty"`
+	UntilStatus string `json:"until_status,omitempty"`
+	OnTimeout   string `json:"on_timeout,omitempty"`
 }
 
 func chatWakeupToResponse(w db.ChatWakeup) ChatWakeupResponse {
-	return ChatWakeupResponse{ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), FireAt: timestampToString(w.FireAt), Title: w.Title, Instruction: w.Instruction, Status: w.Status}
+	r := ChatWakeupResponse{ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), FireAt: timestampToString(w.FireAt), Title: w.Title, Instruction: w.Instruction, Status: w.Status}
+	if w.IssueID.Valid {
+		r.IssueID, r.Event, r.ActorType, r.ActorID = uuidToString(w.IssueID), w.EventType, w.FilterActorType, uuidToString(w.FilterActorID)
+		r.UntilStatus, r.OnTimeout = w.UntilStatus, w.OnTimeout
+	}
+	return r
 }
 
 // chatWakeupTaskID returns the chat task the request runs as. Wakeups are an
@@ -47,7 +59,7 @@ func (h *Handler) chatWakeupService() *service.ChatWakeupService {
 
 func writeChatWakeupError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, service.ErrChatWakeupNotOwner):
+	case errors.Is(err, service.ErrChatWakeupNotOwner), errors.Is(err, service.ErrChatWatchIssueAccess):
 		writeError(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, service.ErrChatWakeupNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
@@ -55,7 +67,7 @@ func writeChatWakeupError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, service.ErrChatWakeupTooFar), errors.Is(err, service.ErrChatWakeupPast),
 		errors.Is(err, service.ErrChatWakeupEmpty), errors.Is(err, service.ErrChatWakeupTooLong),
-		errors.Is(err, service.ErrChatWakeupTitleTooLong):
+		errors.Is(err, service.ErrChatWakeupTitleTooLong), errors.Is(err, service.ErrChatWatchInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "chat wakeup failed")
@@ -72,13 +84,48 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 		At           string `json:"at"`
 		Title        string `json:"title"`
 		Instruction  string `json:"instruction"`
+		// Issue watch: Issue is a UUID or identifier; the expiry is ExpiresInSeconds (default 24h).
+		Issue            string `json:"issue"`
+		Event            string `json:"event"`
+		ActorType        string `json:"filter_actor_type"`
+		ActorID          string `json:"filter_actor_id"`
+		UntilStatus      string `json:"until_status"`
+		ExpiresInSeconds int64  `json:"expires_in_seconds"`
+		OnTimeout        string `json:"on_timeout"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	var at time.Time
+	watch := service.ChatWakeupInput{}
 	switch {
+	case req.Issue != "":
+		if req.AfterSeconds != 0 || req.At != "" {
+			writeError(w, http.StatusBadRequest, "an issue watch takes expires_in_seconds, not after_seconds or at")
+			return
+		}
+		issue, ok := h.chatWatchIssue(w, r, req.Issue)
+		if !ok {
+			return
+		}
+		if req.ActorID != "" {
+			actorID, ok := parseUUIDOrBadRequest(w, req.ActorID, "filter_actor_id")
+			if !ok {
+				return
+			}
+			watch.ActorID = actorID
+		}
+		if req.ExpiresInSeconds < 0 || req.ExpiresInSeconds > int64(service.MaxChatWakeupDelay/time.Second) || req.OnTimeout != "" && req.OnTimeout != "wake" && req.OnTimeout != "drop" {
+			writeError(w, http.StatusBadRequest, "expires_in_seconds must be within 24h and on_timeout wake or drop")
+			return
+		}
+		expires := time.Duration(req.ExpiresInSeconds) * time.Second
+		if expires == 0 {
+			expires = service.MaxChatWakeupDelay - time.Minute
+		}
+		at = time.Now().Add(expires)
+		watch.IssueID, watch.Event, watch.ActorType, watch.UntilStatus, watch.WakeOnTimeout = issue.ID, req.Event, req.ActorType, req.UntilStatus, req.OnTimeout == "wake"
 	case (req.AfterSeconds > 0) == (req.At != ""):
 		writeError(w, http.StatusBadRequest, "exactly one of after_seconds or at is required")
 		return
@@ -95,7 +142,7 @@ func (h *Handler) CreateChatWakeup(w http.ResponseWriter, r *http.Request) {
 	default:
 		at = time.Now().Add(time.Duration(req.AfterSeconds) * time.Second)
 	}
-	wakeup, err := h.chatWakeupService().Create(r.Context(), service.ChatWakeupInput{TaskID: taskID, At: at, Title: req.Title, Instruction: req.Instruction})
+	wakeup, err := h.chatWakeupService().Create(r.Context(), withBase(watch, taskID, at, req.Title, req.Instruction))
 	if err != nil {
 		writeChatWakeupError(w, err)
 		return
@@ -181,4 +228,26 @@ func (h *Handler) CancelChatSessionWakeup(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func withBase(in service.ChatWakeupInput, taskID pgtype.UUID, at time.Time, title, instruction string) service.ChatWakeupInput {
+	in.TaskID, in.At, in.Title, in.Instruction = taskID, at, title, instruction
+	return in
+}
+
+// chatWatchIssue resolves an issue by UUID or identifier inside the caller's workspace.
+func (h *Handler) chatWatchIssue(w http.ResponseWriter, r *http.Request, ref string) (db.Issue, bool) {
+	wsID := h.resolveWorkspaceID(r)
+	if issue, ok := h.resolveIssueByIdentifier(r.Context(), ref, wsID); ok {
+		return issue, true
+	}
+	issueID, err1 := util.ParseUUID(ref)
+	wsUUID, err2 := util.ParseUUID(wsID)
+	if err1 == nil && err2 == nil {
+		if issue, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: wsUUID}); err == nil {
+			return issue, true
+		}
+	}
+	writeError(w, http.StatusNotFound, "issue not found")
+	return db.Issue{}, false
 }

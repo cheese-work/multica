@@ -41,6 +41,14 @@ const (
 	// in every environment until Cheese records that no agent or automation can
 	// read the account mailbox that receives the enrollment code.
 	PasskeyEnrollment = "passkey_enrollment"
+	// CIWatcher (CHE-4273) gates the CI failure watcher (CHE-4265): reading or
+	// writing its tables, and every code path built on them. Server-side only,
+	// read from MULTICA_FEATURE_FLAGS_FILE, and OFF unless a rule turns it on.
+	CIWatcher = "ci_watcher"
+	// CITokenBroker (CHE-4257) gates the CI token broker: the endpoint answers
+	// 404 unless a rule in MULTICA_FEATURE_FLAGS_FILE turns it on. OFF by default.
+	// Server-side only.
+	CITokenBroker = "ci_token_broker"
 	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
 	// provenance-export capability and its export-privacy config endpoints.
 	// Default TRUE: export already shipped in CHE-755 without a flag, so a
@@ -161,4 +169,22 @@ func PasskeyEnrollmentEnabled(ctx context.Context, flags *featureflag.Service) b
 		return false
 	}
 	return flags.IsEnabled(ctx, PasskeyEnrollment, false)
+}
+
+// CIWatcherEnabled reports whether the CI failure watcher may run. A nil
+// service or provider is closed, never "unset".
+func CIWatcherEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, CIWatcher, false)
+}
+
+// CITokenBrokerEnabled reports whether the CI token broker (CHE-4257) may
+// answer. A nil service or provider is closed, never "unset".
+func CITokenBrokerEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	if flags == nil || flags.Provider() == nil {
+		return false
+	}
+	return flags.IsEnabled(ctx, CITokenBroker, false)
 }

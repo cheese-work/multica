@@ -2,9 +2,12 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -15,8 +18,22 @@ import (
 // up to this many hops away (parent or done-prerequisite edges).
 const effectiveDueMaxDepth = 10
 
+// Graph work bounds, so one request cannot amplify into unbounded CPU, memory or
+// DB work: nodes visited per root, cycle members reported per diagnostic, and
+// nodes held in memory per call (a var so tests can lower it).
+const (
+	effectiveDueMaxVisited = 500
+	effectiveDueMaxMembers = 20
+)
+
+var effectiveDueMaxNodes = 10000
+
+// errEffectiveDueTooBroad means the related graph exceeds effectiveDueMaxNodes.
+var errEffectiveDueTooBroad = errors.New("effective_due graph too large")
+
 // DueDiagnostic explains why a projection may be incomplete. Type is "cycle"
-// (Members lists the cycle's issue keys) or "depth_limit".
+// (Members lists up to effectiveDueMaxMembers of the cycle's issue keys),
+// "depth_limit" or "graph_limit" (the walk stopped at effectiveDueMaxVisited and no date is published).
 type DueDiagnostic struct {
 	Type    string   `json:"type"`
 	Members []string `json:"members,omitempty"`
@@ -40,8 +57,9 @@ type dueNode struct {
 // from itself, its open parent, or any open issue waiting on it to be done.
 // Computed on read: the reachable graph is loaded level by level (one query
 // pair per level, at most effectiveDueMaxDepth+1 levels) and walked in memory.
-// Closed issues get no entry. Correct for one root; a batch of roots would need
-// each root's own depth budget when loading (L1b).
+// Closed issues get no entry. Batch-safe: a node's level in the shared frontier
+// is its distance to the nearest root, so every node within a root's own depth
+// budget is loaded and the walk applies each root's depth limit itself.
 func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix string, roots []db.Issue) (map[pgtype.UUID]dueProjection, error) {
 	nodes := map[pgtype.UUID]*dueNode{}
 	frontier := make([]pgtype.UUID, 0, len(roots))
@@ -70,6 +88,10 @@ func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix 
 			}
 			nodes[watched].prereqs = append(nodes[watched].prereqs, watcher)
 			next = append(next, watcher)
+			if len(nodes)+len(next) > effectiveDueMaxNodes {
+				rows.Close()
+				return nil, errEffectiveDueTooBroad
+			}
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -85,6 +107,9 @@ func (h *Handler) effectiveDueFor(ctx context.Context, wsID pgtype.UUID, prefix 
 			if !loaded[id] && !slices.Contains(frontier, id) {
 				frontier = append(frontier, id)
 			}
+		}
+		if len(nodes)+len(frontier) > effectiveDueMaxNodes {
+			return nil, errEffectiveDueTooBroad
 		}
 		if err := h.loadDueNodes(ctx, wsID, nodes, frontier); err != nil {
 			return nil, err
@@ -172,7 +197,7 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 		return edges
 	}
 	seen := map[pgtype.UUID]bool{root: true}
-	depthLimited := false
+	depthLimited, visitLimited := false, false
 	for queue := []dueStep{{id: root, path: []pgtype.UUID{root}}}; len(queue) > 0; queue = queue[1:] {
 		cur := queue[0]
 		n := nodes[cur.id]
@@ -195,6 +220,10 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 				depthLimited = true
 				continue
 			}
+			if len(seen) >= effectiveDueMaxVisited {
+				visitLimited = true
+				continue
+			}
 			seen[e.to] = true
 			queue = append(queue, dueStep{
 				id:   e.to,
@@ -210,12 +239,17 @@ func walkEffectiveDue(prefix string, nodes map[pgtype.UUID]*dueNode, open func(p
 		}
 		return to
 	}, key) {
-		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members})
+		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "cycle", Members: members[:min(len(members), effectiveDueMaxMembers)]})
 	}
 	if depthLimited {
 		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "depth_limit"})
 	}
-	if best != nil {
+	if visitLimited {
+		out.diagnostics = append(out.diagnostics, DueDiagnostic{Type: "graph_limit"})
+	}
+	// A walk cut at effectiveDueMaxVisited may have dropped the earliest date, so
+	// it publishes none rather than a wrong one; graph_limit tells the caller why.
+	if best != nil && !visitLimited {
 		out.date = bestDate
 		out.source = "own"
 		if len(best.kind) > 0 {
@@ -308,4 +342,48 @@ func (h *Handler) fillEffectiveDue(ctx context.Context, issue db.Issue, resp *Is
 		}
 		resp.Diagnostics = p.diagnostics
 	}
+}
+
+var ict = time.FixedZone("ICT", 7*3600)
+
+// dueInstant is the instant a YYYY-MM-DD due date expires: the last moment of
+// that day in ICT (UTC+7).
+func dueInstant(date string) (time.Time, bool) {
+	d, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 999999999, ict), true
+}
+
+// sortRowsByEffectiveDue orders rows: dated first by expiry instant, then source
+// (own, parent, prereq_of), then lowest issue number. Undated rows keep the
+// order they arrive in, which the caller sets to priority then oldest.
+func sortRowsByEffectiveDue(rows []db.ListIssuesRow, proj map[pgtype.UUID]dueProjection) {
+	rank := map[string]int{"own": 0, "parent": 1, "prereq_of": 2}
+	type sortKey struct {
+		at   time.Time
+		rank int
+		ok   bool
+	}
+	keys := make(map[pgtype.UUID]sortKey, len(rows))
+	for _, r := range rows {
+		p := proj[r.ID]
+		at, ok := dueInstant(p.date)
+		keys[r.ID] = sortKey{at, rank[strings.SplitN(p.source, ":", 2)[0]], ok}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := keys[rows[i].ID], keys[rows[j].ID]
+		switch {
+		case a.ok != b.ok:
+			return a.ok
+		case !a.ok:
+			return false
+		case !a.at.Equal(b.at):
+			return a.at.Before(b.at)
+		case a.rank != b.rank:
+			return a.rank < b.rank
+		}
+		return rows[i].Number < rows[j].Number
+	})
 }

@@ -41,6 +41,7 @@ func recordMemberMovesOf(t *testing.T, issueID string) {
 func moveStatusAsMember(t *testing.T, issueID, status string) {
 	t.Helper()
 	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{"status": status, "suppress_run": true}), "id", issueID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt") // only an interactive move opens a window (S1d)
 	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
 }
 

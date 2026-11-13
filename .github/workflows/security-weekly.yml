@@ -1,0 +1,255 @@
+# CHE-3701: weekly full-tree security scan of the fork. Informational: findings never fail a job; a scanner that
+# cannot run does, so a broken scan is never read as clean. Read-only token, GitHub-hosted runners, no secrets, no image build.
+# This repo is public, so artifacts and logs are world-readable: every report is sealed (scripts/security-weekly/seal.sh) to a
+# key only X99 holds, and nothing about findings is printed. The Monday brief unseals, summarizes and files on X99
+# (scripts/security-weekly/weekly.sh). Triggers: schedule, plus workflow_dispatch so a missed run can be started by hand. Every job
+# runs only when github.ref is main, so a dispatch from another branch (--ref) skips them all. The guard lives in the dispatched
+# ref's own copy of this file: it stops a mistaken dispatch, not an author who edits the file. The real control is CODEOWNERS on this
+# file, seal.sh and recipient.asc: seal.sh pins the key fingerprint below, and a change to any of them goes to the owner.
+# security-gate.yml still gates PR diffs; this covers the whole tree, dependencies and images.
+name: security-weekly
+
+on:
+  schedule:
+    - cron: "23 16 * * 0" # Sunday 23:23 ICT (off the busy top of the hour), so results land in the Monday brief
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-weekly-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Primary fingerprint of the X99 key (secret half in /mnt/ssd2/security-weekly/gnupg). seal.sh refuses any other recipient.
+  SECURITY_WEEKLY_FPR: 1A9377889F3E812D256D3612A32DB5293024988D
+  GOVULNCHECK_VERSION: "v1.8.0"
+  PNPM_VERSION: "10.28.2"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TRIVY_VERSION: "0.76.1"
+  TRIVY_SHA256: c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0
+
+jobs:
+  semgrep:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Scan the whole tree with the security-gate rule packs
+        run: |
+          mkdir "$RUNNER_TEMP/reports"
+          rm -f .semgrepignore
+          python3 -I -m venv "$RUNNER_TEMP/semgrep"
+          "$RUNNER_TEMP/semgrep/bin/pip" install --quiet semgrep==1.183.0
+          "$RUNNER_TEMP/semgrep/bin/semgrep" scan --metrics=off --disable-version-check --disable-nosem --quiet --json --timeout 30 \
+            --config p/default --config p/golang --config p/gosec --config p/typescript --config p/python --config p/kotlin . > "$RUNNER_TEMP/reports/semgrep.json"
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/semgrep.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-semgrep
+          path: ${{ runner.temp }}/reports/semgrep.json.gpg
+          if-no-files-found: error
+          retention-days: 14
+
+  govulncheck:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Install govulncheck (pinned, from outside the checkout)
+        # A module-defined tool would resolve the scanner through server/go.mod, which CODEOWNERS does not cover: a merged `replace` there
+        # would run substituted code before the report is sealed. Outside any module, the version below is the only input.
+        working-directory: ${{ runner.temp }}
+        env:
+          GOFLAGS: ""
+          GOWORK: "off"
+        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+      - name: Scan Go dependencies
+        working-directory: server
+        # exit 3 = vulnerabilities found, which is a result; any other non-zero is a scanner failure
+        run: |
+          mkdir "$RUNNER_TEMP/reports"
+          "$(go env GOPATH)/bin/govulncheck" ./... > "$RUNNER_TEMP/reports/govulncheck.txt" || [ $? -eq 3 ]
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/govulncheck.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-govulncheck
+          path: ${{ runner.temp }}/reports/govulncheck.txt.gpg
+          if-no-files-found: error
+          retention-days: 14
+
+  pnpm-audit:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Install pnpm from npm (no checkout script runs before the report is sealed)
+        # The version is pinned here, in the owner-protected workflow: package.json is unowned, so its manifest must not pick it.
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pnpm" "pnpm@${PNPM_VERSION}"
+          echo "$RUNNER_TEMP/pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Audit pnpm-lock.yaml (in a scratch directory)
+        # `pnpm audit` loads .pnpmfile.cjs and the workspace config from its working directory, and CODEOWNERS covers neither. Only the
+        # lockfile (data, not code) crosses into a scratch directory with a stub manifest, so no checkout hook can run before sealing.
+        # exit 1 = advisories found; the report must still parse and carry `advisories`
+        run: |
+          audit_dir="$RUNNER_TEMP/pnpm-audit"
+          mkdir "$audit_dir"
+          mkdir "$RUNNER_TEMP/reports"
+          cp pnpm-lock.yaml "$audit_dir/"
+          echo '{"name":"audit","private":true}' > "$audit_dir/package.json"
+          (cd "$audit_dir" && pnpm audit --json > "$RUNNER_TEMP/reports/pnpm-audit.json" || true)
+          node -e 'if (!JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).advisories) process.exit(1)' "$RUNNER_TEMP/reports/pnpm-audit.json"
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/pnpm-audit.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-pnpm-audit
+          path: ${{ runner.temp }}/reports/pnpm-audit.json.gpg
+          if-no-files-found: error
+          retention-days: 14
+
+  gitleaks:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan the full history
+        # Config and ignore list come from owner-protected scripts/security-weekly. Gitleaks also reads a root .gitleaksignore (CODEOWNERS
+        # does not cover it), so the job deletes it first; --config bypasses a root .gitleaks.toml.
+        run: |
+          mkdir "$RUNNER_TEMP/reports"
+          rm -f .gitleaksignore
+          curl -fsSL -o "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --no-banner --ignore-gitleaks-allow --gitleaks-ignore-path scripts/security-weekly --config scripts/security-weekly/gitleaks.toml --redact --exit-code 0 --report-format json --report-path "$RUNNER_TEMP/reports/gitleaks.json" .
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/gitleaks.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-gitleaks
+          path: ${{ runner.temp }}/reports/gitleaks.json.gpg
+          if-no-files-found: error
+          retention-days: 14
+
+  codeql:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Go: CodeQL rejects build-mode none, and the automatic build runs the root Makefile (unowned by CODEOWNERS) before the SARIF is
+          # sealed. So manual, with the one owned `go build` step below. JavaScript/TypeScript supports none.
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+      - name: Build Go for CodeQL (explicit, no Makefile)
+        if: matrix.language == 'go'
+        working-directory: server
+        run: go build ./...
+      # upload: never keeps the token read-only and avoids a clash with a repo-level default setup.
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          upload: never
+          output: ${{ runner.temp }}/codeql-out
+      - run: |
+          mkdir "$RUNNER_TEMP/reports"
+          cp "$RUNNER_TEMP"/codeql-out/*.sarif "$RUNNER_TEMP/reports/codeql-${{ matrix.language }}.sarif"
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/codeql-${{ matrix.language }}.sarif
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-codeql-${{ matrix.language }}
+          path: ${{ runner.temp }}/reports/codeql-${{ matrix.language }}.sarif.gpg
+          if-no-files-found: error
+          retention-days: 14
+
+  image-scan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Find the latest qualified image digests
+        # cd-qualification.yml publishes backend/web to GHCR and records their digests in cd-build-evidence-<sha> (30 days).
+        # This job only pulls manifests to scan them: nothing is built here.
+        run: |
+          run_id="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json databaseId,headSha --jq '.[0].databaseId')"
+          sha="$(gh run list --workflow cd-qualification.yml --branch main --status success --limit 1 --json headSha --jq '.[0].headSha')"
+          [ -n "$run_id" ] || { echo "no successful cd-qualification run"; exit 1; }
+          gh run download "$run_id" --name "cd-build-evidence-$sha" --dir "$RUNNER_TEMP/evidence"
+          for image in backend web; do
+            digest="$(node -p "require(process.argv[1]).images['$image'].digest" "$RUNNER_TEMP/evidence/cd-image-provenance.json")"
+            echo "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
+            echo "${image^^}_REF=ghcr.io/${GITHUB_REPOSITORY_OWNER}/multica-${image}@${digest}" >> "$GITHUB_ENV"
+          done
+      - name: Scan both images
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ github.token }}
+        run: |
+          # Trivy reads <cwd>/.trivyignore by default and CODEOWNERS does not cover it: delete it, read the owned file instead.
+          rm -f .trivyignore
+          mkdir "$RUNNER_TEMP/reports"
+          curl -fsSL -o "$RUNNER_TEMP/trivy.tgz" "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" image --ignorefile scripts/security-weekly/.trivyignore --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-backend.json" "$BACKEND_REF"
+          "$RUNNER_TEMP/trivy" image --ignorefile scripts/security-weekly/.trivyignore --image-src remote --scanners vuln --quiet --format json --output "$RUNNER_TEMP/reports/trivy-web.json" "$WEB_REF"
+      - name: Seal the report
+        run: bash scripts/security-weekly/seal.sh "$RUNNER_TEMP"/reports/trivy-*.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: weekly-report-trivy
+          path: ${{ runner.temp }}/reports/trivy-*.json.gpg
+          if-no-files-found: error
+          retention-days: 14

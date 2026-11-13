@@ -192,3 +192,14 @@ func TestApplyForkUpdateErrorEndsProgressLineAndKeepsMessage(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestProgressOnPhaseReceivesEachPhaseName(t *testing.T) {
+	p := NewProgress(io.Discard)
+	var got []string
+	p.OnPhase = func(name string) { got = append(got, name) }
+	p.Phase("Verifying sha256")
+	p.Phase("Installing")
+	if strings.Join(got, ",") != "Verifying sha256,Installing" {
+		t.Fatalf("phases = %v", got)
+	}
+}

@@ -138,6 +138,8 @@
   },
   "decision_action": {
     "approve": "Approuver avec une clé d'accès",
+    "reject": "Refuser",
+    "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
       "executed": "Exécutée",
@@ -150,12 +152,39 @@
       "stale_cap": "Un plafond plus élevé est déjà en vigueur.",
       "stale_window": "La fenêtre budgétaire a changé. Lancez une nouvelle demande.",
       "not_budgeted": "Cette tâche n'a plus de budget.",
-      "other": "Échec : {{code}}"
+      "other": "Échec : {{code}}",
+      "stale_base": "La cible a changé après la demande. Redemandez."
     },
+    "refusal": {
+      "class_needs_owner": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
+      "payload_mismatch": "Le changement approuvé n’est pas celui qui a été demandé. Demandez à nouveau.",
+      "preview_required": "Approuvez l’aperçu qui vous a été montré. Rechargez la carte.",
+      "precondition_drift": "La cible a changé depuis la demande. Demandez à nouveau.",
+      "busy_retry": "Un autre changement est en cours. Réessayez.",
+      "not_permitted": "Vous n’avez pas le droit de faire ce changement.",
+      "action_not_executable": "Ce type de changement ne peut pas encore être approuvé.",
+      "approval_proof_unavailable": "Ce serveur ne peut pas encore vérifier une approbation par clé d’accès.",
+      "other": "Refusé : {{code}}"
+    },
+    "owner_only": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
     "no_passkey": "Ajoutez une clé d'accès avant d'approuver.",
     "add_passkey": "Ajouter une clé d'accès",
     "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",
     "lost": "La réponse a été perdue. L'action n'est pas approuvée une seconde fois. Vérifiez le résultat.",
-    "check": "Vérifier le résultat"
+    "check": "Vérifier le résultat",
+    "outcome": {
+      "cap_applied": "Plafond appliqué",
+      "run_queued": "Exécution en file d’attente",
+      "still_blocked": "Toujours bloqué : {{reason}}"
+    },
+    "panel": {
+      "title": "Demande de budget d'exécutions",
+      "raise_cap": "Porter le plafond d'exécutions de {{issue}} à {{cap}} pour cette fenêtre.",
+      "top_up": "Recharger le budget d'exécutions de {{issue}} pour cette fenêtre.",
+      "settled": "Cette approbation est déjà : {{state}}. Si vous en avez encore besoin, demandez à l'agent de la proposer à nouveau.",
+      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche. Ouvrez la carte dans votre DM ou votre boîte de réception pour en décider.",
+      "open_card": "Ouvrir la carte",
+      "unreadable": "Cette approbation n'est pas disponible pour vous ou n'existe plus. Demandez à l'agent de la proposer à nouveau."
+    }
   }
 }

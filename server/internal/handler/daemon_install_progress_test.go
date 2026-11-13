@@ -21,14 +21,17 @@ const progressBinarySize = 5 * 512 * 1024 // 2.5 MiB, five fake-curl chunks
 // bigBinary is a runnable fake CLI padded with comment lines to size bytes.
 func bigBinary(size int) string {
 	b := fakeBinary(installTestCommit[:7])
+	var sb strings.Builder // one allocation; repeated string += was quadratic at 2.5 MiB
+	sb.Grow(size)
+	sb.WriteString(b)
 	pad := strings.Repeat("#", 99) + "\n"
-	for len(b)+len(pad) <= size {
-		b += pad
+	for sb.Len()+len(pad) <= size {
+		sb.WriteString(pad)
 	}
-	if r := size - len(b); r > 0 {
-		b += strings.Repeat("#", r-1) + "\n"
+	if r := size - sb.Len(); r > 0 {
+		sb.WriteString(strings.Repeat("#", r-1) + "\n")
 	}
-	return b
+	return sb.String()
 }
 
 type ttyRun struct {
