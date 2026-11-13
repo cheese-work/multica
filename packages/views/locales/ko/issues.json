@@ -447,7 +447,11 @@
   },
   "gantt2": {
     "clipped_start": "이 기간 이전에 시작됨",
-    "now": "지금"
+    "now": "지금",
+    "start_marker": "시작일",
+    "due_marker": "마감일",
+    "no_history": "기록된 이력 없음",
+    "before_records": "기록 이전"
   },
   "actor_issues": {
     "scope": {

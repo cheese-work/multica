@@ -119,3 +119,77 @@ describe("Gantt2Bars actual bar (T1–T3)", () => {
     expect(screen.getByText("T4")).toBeTruthy();
   });
 });
+
+const leftOf = (el: HTMLElement) => parseFloat(el.style.left);
+
+describe("Gantt2Bars markers and incomplete history (T4, T6, T7)", () => {
+  it("T4: markers only, no started row: start_date and due_date draw as markers, no bar", () => {
+    const { container } = renderBars([row("t4", { history: "none", start_known: false, start_date: ago(10), due_date: ago(5) })]);
+    expect(container.querySelector("[data-gantt-bar]")).toBeNull();
+    const start = screen.getByTestId("gantt-marker-start");
+    const due = screen.getByTestId("gantt-marker-due");
+    expect(leftOf(start)).toBeCloseTo((20 / 30) * 100, 1);
+    expect(leftOf(due)).toBeCloseTo((25 / 30) * 100, 1);
+    // each marker is named for assistive tech, so shape is never the only signal
+    expect(start.getAttribute("aria-label")).toBe("Start date");
+    expect(due.getAttribute("aria-label")).toBe("Due date");
+    expect(screen.getByTestId("gantt-marker-span")).toBeTruthy();
+  });
+
+  it("T4: a marker outside the window is not drawn", () => {
+    renderBars([row("t4", { history: "none", start_known: false, due_date: ago(45) })]);
+    expect(screen.queryByTestId("gantt-marker-due")).toBeNull();
+  });
+
+  it("T4: markers also draw on a row that has a bar", () => {
+    const { container } = renderBars([row("t4", { actual_start: ago(20), segments: [seg("in_progress", "started", ago(20), null)], due_date: ago(5) })]);
+    expect(barOf(container)).toBeTruthy();
+    expect(screen.getByTestId("gantt-marker-due")).toBeTruthy();
+    expect(screen.queryByTestId("gantt-marker-span")).toBeNull();
+  });
+
+  it("T6: a standalone issue with no history rows shows no bar and says there is no recorded history", () => {
+    const { container } = renderBars([row("t6", { history: "none", start_known: false, presence_from: ago(90), presence_to: new Date(AS_OF).toISOString(), segments: [] })]);
+    expect(container.querySelector("[data-gantt-bar]")).toBeNull();
+    // presence is a selection bound, never drawn
+    expect(container.querySelector("[data-gantt-presence]")).toBeNull();
+    expect(screen.getByText("No recorded history")).toBeTruthy();
+    expect(screen.queryByTestId("gantt-marker-start")).toBeNull();
+  });
+
+  it("T7: an old partial-history issue draws a hatched 'before records' segment and no actual start", () => {
+    const { container } = renderBars([
+      row("t7", {
+        status: "in_review",
+        history: "partial",
+        start_known: false,
+        actual_start: null,
+        presence_from: ago(70),
+        presence_to: new Date(AS_OF).toISOString(),
+        segments: [seg("in_progress", "started", null, ago(50)), seg("in_review", "started", ago(50), null)],
+      }),
+    ]);
+    const bar = barOf(container);
+    expect(bar.dataset.startKnown).toBe("false");
+    // hatched from max(presence_from, window from): presence_from is 70 days ago, so the window edge
+    expect(bar.style.left).toBe("0%");
+    expect(bar.style.width).toBe("100%");
+    const [before, after] = within(bar).getAllByTestId("gantt-segment");
+    expect(before!.dataset.beforeRecords).toBe("true");
+    expect(after!.dataset.beforeRecords).toBeUndefined();
+    expect(within(before!).getByText("Before records")).toBeTruthy();
+    expect(screen.queryByText("No recorded history")).toBeNull();
+  });
+
+  it("T7: the hatched segment starts at presence_from when that is inside the window", () => {
+    const { container } = renderBars([
+      row("t7b", {
+        history: "partial",
+        start_known: false,
+        presence_from: ago(20),
+        segments: [seg("in_progress", "started", null, ago(10)), seg("in_review", "started", ago(10), null)],
+      }),
+    ]);
+    expect(parseFloat(barOf(container).style.left)).toBeCloseTo((10 / 30) * 100, 1);
+  });
+});

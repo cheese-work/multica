@@ -447,7 +447,11 @@
   },
   "gantt2": {
     "clipped_start": "在此时间窗口之前开始",
-    "now": "现在"
+    "now": "现在",
+    "start_marker": "开始日期",
+    "due_marker": "截止日期",
+    "no_history": "无历史记录",
+    "before_records": "记录之前"
   },
   "actor_issues": {
     "scope": {

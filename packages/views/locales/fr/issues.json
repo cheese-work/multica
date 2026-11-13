@@ -457,7 +457,11 @@
   },
   "gantt2": {
     "clipped_start": "Commencé avant cette fenêtre",
-    "now": "Maintenant"
+    "now": "Maintenant",
+    "start_marker": "Date de début",
+    "due_marker": "Échéance",
+    "no_history": "Aucun historique enregistré",
+    "before_records": "Avant les enregistrements"
   },
   "actor_issues": {
     "scope": {
