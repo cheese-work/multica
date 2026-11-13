@@ -19,9 +19,11 @@ import (
 
 func enqueueBG(t *testing.T, wsID, agentID string, job bgagents.Job, src bgagents.Source) (db.AgentTaskQueue, error) {
 	t.Helper()
+	dm := dbfx.ChatSession(t, agentID, testutil.Cols{"workspace_id": wsID})
 	task, err := testHandler.TaskService.EnqueueBackgroundTask(context.Background(), service.BackgroundTaskInput{
 		Job: job, WorkspaceID: util.MustParseUUID(wsID), AgentID: util.MustParseUUID(agentID),
-		MemberID: util.MustParseUUID(testUserID), Source: src, Slot: bgagents.Primary, Input: "hello",
+		MemberID: util.MustParseUUID(testUserID), SourceChatSessionID: util.MustParseUUID(dm),
+		Source: src, Slot: bgagents.Primary, Input: "hello",
 	})
 	if err == nil {
 		dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(task.ID))

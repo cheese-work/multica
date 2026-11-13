@@ -246,6 +246,7 @@ type AgentTaskQueue struct {
 	AppliedReportedAt         pgtype.Timestamptz `json:"applied_reported_at"`
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
+	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 }
 
@@ -826,6 +827,17 @@ type CiFailureEvent struct {
 	PartialReason  string             `json:"partial_reason"`
 	FailedJobCount int32              `json:"failed_job_count"`
 	Excerpts       []byte             `json:"excerpts"`
+}
+
+type CiFlakeIncrement struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Reason        string             `json:"reason"`
+	Ref           string             `json:"ref"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 }
 
 type CiSignatureOwner struct {
@@ -3351,6 +3363,9 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+	OutcomeLabel        pgtype.Text        `json:"outcome_label"`
+	TimeToGreenMs       pgtype.Int8        `json:"time_to_green_ms"`
+	LabeledAt           pgtype.Timestamptz `json:"labeled_at"`
 }
 
 type System1Prediction struct {
