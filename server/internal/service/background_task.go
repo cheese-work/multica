@@ -76,7 +76,9 @@ type BackgroundTarget struct {
 // BackgroundResolver resolves the chain for one enqueue, under the member lock.
 type BackgroundResolver func(ctx context.Context) (BackgroundTarget, error)
 
-type backgroundTaskContext struct {
+// BackgroundTaskContext is the JSON stored in the task context; the claim
+// handler reads it back.
+type BackgroundTaskContext struct {
 	Type         string `json:"type"`
 	Job          string `json:"job"`
 	WorkspaceID  string `json:"workspace_id"`
@@ -143,7 +145,7 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if r := []rune(input); len(r) > BackgroundInputMaxRunes {
 		input = string(r[:BackgroundInputMaxRunes])
 	}
-	payload := backgroundTaskContext{
+	payload := BackgroundTaskContext{
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
 		ChainSource: string(target.Source), Slot: string(target.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
