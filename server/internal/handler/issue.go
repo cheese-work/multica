@@ -67,12 +67,16 @@ type IssueResponse struct {
 	// field at all: with omitempty a built-in fixture hides it from BOTH
 	// renderings, and the drift guard goes green on a payload that has drifted.
 	// (MUL-6749)
-	StatusName   string  `json:"status_name"`
-	Priority     string  `json:"priority"`
-	AssigneeType *string `json:"assignee_type"`
-	AssigneeID   *string `json:"assignee_id"`
-	CreatorType  string  `json:"creator_type"`
-	CreatorID    string  `json:"creator_id"`
+	StatusName string `json:"status_name"`
+	// RunBudgetBlocked is true while the run budget, not a person, holds the
+	// issue in blocked (CHE-5285). Omitted when false, so a client treats
+	// absence as "not budget-stopped".
+	RunBudgetBlocked bool    `json:"run_budget_blocked,omitempty"`
+	Priority         string  `json:"priority"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	CreatorType      string  `json:"creator_type"`
+	CreatorID        string  `json:"creator_id"`
 	// RequestedByID is the member the issue was made on behalf of: set when an
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
@@ -403,6 +407,21 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
 		}
+		// A run created after this commit (a budget recovery run whose refusal
+		// callback has not run yet) has no pending run to inherit from; the
+		// issue's own taint stops it authorizing an elevated operation.
+		if err := q.NoteIssueTaint(ctx, db.NoteIssueTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
+		}
+		// A member's clear keeps the ID off the issue, not off the writer's
+		// task: a recovery run created later reads it from issue_run_taint, and
+		// one already running takes it now.
+		if err := q.NoteIssueRunTaint(ctx, db.NoteIssueRunTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue run taint: %w", err)
+		}
+		if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint recovery runs: %w", err)
+		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
 		if err := q.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
@@ -499,9 +518,18 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 	resolver := issuestatus.NewResolver(wsID)
 	refs := duplicateOriginals{}
 	h.loadDuplicateOriginals(ctx, wsID, refs, originals)
+	// The budget-blocked set is read once, on the first blocked row, so a page
+	// without blocked issues pays nothing. (CHE-5285)
+	var budgetBlocked map[string]bool
 	return func(resp *IssueResponse) {
 		if resp == nil {
 			return
+		}
+		if resp.Status == issuestatus.Blocked {
+			if budgetBlocked == nil {
+				budgetBlocked = h.runBudgetBlockedIssueIDs(ctx, wsID)
+			}
+			resp.RunBudgetBlocked = budgetBlocked[resp.ID]
 		}
 		// Every response that resolves its status also resolves its duplicate
 		// mark, so the two never disagree about which endpoints carry them.
@@ -514,6 +542,22 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 		// free. Built-ins return "" and stay omitted. (MUL-6749)
 		resp.StatusName = resolver.Name(ctx, h.Queries, resp.Status)
 	}
+}
+
+// runBudgetBlockedIssueIDs returns the workspace issues the run budget holds
+// in blocked. A failed read yields an empty set: the chip is a hint, and a
+// list must not fail over it.
+func (h *Handler) runBudgetBlockedIssueIDs(ctx context.Context, wsID pgtype.UUID) map[string]bool {
+	set := map[string]bool{}
+	ids, err := h.Queries.ListRunBudgetBlockedIssueIDs(ctx, wsID)
+	if err != nil {
+		slog.Warn("list run-budget blocked issues failed", "error", err)
+		return set
+	}
+	for _, id := range ids {
+		set[uuidToString(id)] = true
+	}
+	return set
 }
 
 // fillStatusCategory is the single-response form. Only for endpoints that build
@@ -5061,6 +5105,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	})
 }
 
+// errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
+// after the invoke gate, so a caller who may not use the agent never learns its
+// pause state.
+const errAgentPaused = "agent_paused: this agent is paused; pick another agent by role"
+
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
 // sub-workflow child) judges the human it acts for. Every other check, and the
@@ -5109,6 +5158,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// mode (MUL-6380 / GH #7180).
 			return http.StatusForbidden, "you do not have permission to assign work to this agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
+		}
 		return 0, ""
 	case "squad":
 		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -5129,6 +5181,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
 		}
 		return 0, ""
 	default:
@@ -5317,6 +5372,16 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+
+	// The comment cascade of the delete nulls trigger_comment_id on runs that
+	// can belong to other issues. Lock all of those issues first.
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := service.LockIssuesBeforeIssueDelete(ctx, qtx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
+	}
 
 	result := issueDeleteResult{}
 	for _, issue := range issues {

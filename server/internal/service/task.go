@@ -1627,7 +1627,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agent.ID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "agent has no runtime")
@@ -1826,8 +1826,11 @@ func (s *TaskService) enqueuePreparedInTx(ctx context.Context, queries *db.Queri
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
 	}
-	if agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived or has no runtime")
+	if agent.ArchivedAt.Valid {
+		return db.AgentTaskQueue{}, ErrAgentArchived
+	}
+	if !agent.RuntimeID.Valid {
+		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 	params.RuntimeID = agent.RuntimeID
 	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
@@ -1908,7 +1911,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) && !errors.Is(err, ErrAgentPaused) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -1965,7 +1968,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	}
 	if agent.ArchivedAt.Valid {
 		slog.Debug("mention task enqueue skipped: agent is archived", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("agent is archived")
+		return db.CreateAgentTaskParams{}, attribution.Result{}, ErrAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
 		slog.Error("mention task enqueue failed: agent has no runtime", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
@@ -6323,14 +6326,18 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		if parent, perr := s.Queries.GetAgentTask(ctx, taskID); perr != nil {
 			slog.Warn("fail task auto-retry: load parent failed",
 				"task_id", util.UUIDToString(taskID), "error", perr)
-		} else if !retryShape(failureReason, parent) {
+		} else if !retryRoutable(parent) {
 			// Not retryable: nothing to mint.
 		} else if fence, ferr := s.fenceRecoveryLineage(ctx, s.Queries, taskID); ferr != nil {
 			// Fail closed: an unreadable lineage must not mint a generic retry.
 			slog.Warn("fail task auto-retry: recovery lineage check failed; no retry",
 				"task_id", util.UUIDToString(taskID), "error", ferr)
 		} else if fence.Capped() {
+			// Before the attempt budget: a failed held retry has spent its budget
+			// and still owes the owner its one cap notice (CHE-1736 plan r7).
 			retryFence = fence
+		} else if parent.Attempt >= retryAttemptCeiling(failureReason, parent.MaxAttempts) {
+			// Budget exhausted: nothing to mint.
 		} else if plan, ok := s.planHeldProviderRetry(ctx, failureReason, parent); ok {
 			heldRetry = plan
 		} else if !retryableReasons[failureReason] {
@@ -6524,7 +6531,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		// 'running' — so both a Triage issue and an unreadable status skip the
 		// retry instead of returning, exactly as the ErrNoRows case below does.
 		if createRetry {
-			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry"}); gerr != nil {
+			if gerr := guardIssueRunAllowed(ctx, qtx, t.IssueID, OriginDerived, RunTarget{AgentID: t.AgentID, Trigger: "retry", SourceTaskID: t.ID}); gerr != nil {
 				slog.Info("fail task auto-retry skipped: issue does not run",
 					"task_id", util.UUIDToString(taskID),
 					"issue_id", util.UUIDToString(t.IssueID),
@@ -6988,8 +6995,14 @@ func retryEligible(failureReason string, t db.AgentTaskQueue) bool {
 // retried outside retryableReasons (the held provider retry, CHE-1736 M1.2)
 // shares the same budget, autopilot, triage and link rules.
 func retryShape(failureReason string, t db.AgentTaskQueue) bool {
-	return t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) &&
-		!t.AutopilotRunID.Valid &&
+	return t.Attempt < retryAttemptCeiling(failureReason, t.MaxAttempts) && retryRoutable(t)
+}
+
+// retryRoutable is retryShape without the attempt budget: the task kind and
+// link rules only. The recovery-lineage fence runs between the two, so a task
+// that spent its budget inside a recovery lineage is still announced once.
+func retryRoutable(t db.AgentTaskQueue) bool {
+	return !t.AutopilotRunID.Valid &&
 		!IsTriageTask(t) &&
 		(t.IssueID.Valid || t.ChatSessionID.Valid || isSourceContextQuickCreateTask(t))
 }
@@ -7150,24 +7163,10 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if !retryableReasons[reason] {
 		return nil, nil
 	}
-	// Use the reason-aware ceiling, not the raw max_attempts column, so an
-	// orphaned provider_network task recovered on its 2nd attempt is still
-	// allowed its deferred 3rd attempt (retryAttemptCeiling raises the ceiling
-	// to 3). Kept in sync with retryEligible below, which applies the same
-	// ceiling to the primary FailTask path.
-	if parent.Attempt >= retryAttemptCeiling(reason, parent.MaxAttempts) {
-		slog.Info("task auto-retry skipped: budget exhausted",
-			"task_id", util.UUIDToString(parent.ID),
-			"attempt", parent.Attempt,
-			"max_attempts", parent.MaxAttempts,
-			"ceiling", retryAttemptCeiling(reason, parent.MaxAttempts),
-		)
-		return nil, nil
-	}
 	// Autopilot has its own retry semantics (don't double-trigger) and a task
-	// with no issue/chat link has nowhere to report its retry — retryEligible
+	// with no issue/chat link has nowhere to report its retry — retryRoutable
 	// covers both, keeping this sweeper path in sync with FailTask's in-tx retry.
-	if !retryEligible(reason, parent) {
+	if !retryRoutable(parent) {
 		return nil, nil
 	}
 	// CHE-1773: a recovery-lineage task gets no generic retry from this entry
@@ -7178,6 +7177,21 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	if fence.Capped() {
 		s.notifyProviderFailureCap(ctx, s.Queries, parent.ID, fence)
+		return nil, nil
+	}
+
+	// Use the reason-aware ceiling, not the raw max_attempts column, so an
+	// orphaned provider_network task recovered on its 2nd attempt is still
+	// allowed its deferred 3rd attempt (retryAttemptCeiling raises the ceiling
+	// to 3). Runs after the lineage fence so a spent budget still notifies once;
+	// FailTask applies the same ceiling in the same order.
+	if parent.Attempt >= retryAttemptCeiling(reason, parent.MaxAttempts) {
+		slog.Info("task auto-retry skipped: budget exhausted",
+			"task_id", util.UUIDToString(parent.ID),
+			"attempt", parent.Attempt,
+			"max_attempts", parent.MaxAttempts,
+			"ceiling", retryAttemptCeiling(reason, parent.MaxAttempts),
+		)
 		return nil, nil
 	}
 
@@ -7244,8 +7258,8 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		}
 		return nil, err
 	}
-	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry"}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
+	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry", SourceTaskID: parent.ID}); err != nil {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrAgentPaused) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
@@ -7322,6 +7336,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	}
 	if child.Status == "queued" {
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
+			return nil, err
+		}
+	}
+	if parent.IssueID.Valid {
+		if err := bindRefusedRun(ctx, qtx, parent.IssueID, pgtype.UUID{}, parent.ID, child.ID); err != nil {
 			return nil, err
 		}
 	}
@@ -8706,12 +8725,17 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 			return delegatedFailureRecoveryCovered, nil
 		}
 
-		if merged, err := s.Queries.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
-			CommentID:      target.comment.ID,
-			TriggerSummary: s.buildCommentTriggerSummary(ctx, s.Queries, target.issue.WorkspaceID, target.comment.ID),
-			IssueID:        target.issue.ID,
-			AgentID:        target.agent.ID,
-		}); err == nil {
+		var merged db.AgentTaskQueue
+		err = s.underIssueLock(ctx, target.issue.ID, func(q *db.Queries) (e error) {
+			merged, e = q.MergeDelegatedFailureCommentIntoPendingTask(ctx, db.MergeDelegatedFailureCommentIntoPendingTaskParams{
+				CommentID:      target.comment.ID,
+				TriggerSummary: s.buildCommentTriggerSummary(ctx, q, target.issue.WorkspaceID, target.comment.ID),
+				IssueID:        target.issue.ID,
+				AgentID:        target.agent.ID,
+			})
+			return e
+		})
+		if err == nil {
 			slog.Info("delegated failure recovery merged into pending coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(merged.ID),
@@ -8772,11 +8796,16 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		// its claim payload is immutable. Register the comment as undelivered so
 		// its completion reconciliation creates the successor. Running tasks do
 		// not own that slot, so they took the durable queued-successor path above.
-		if active, err := s.Queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
-			CommentID: target.comment.ID,
-			IssueID:   target.issue.ID,
-			AgentID:   target.agent.ID,
-		}); err == nil {
+		var active db.RegisterPlannedCommentForActiveTaskRow
+		err = s.underIssueLock(ctx, target.issue.ID, func(q *db.Queries) (e error) {
+			active, e = q.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
+				CommentID: target.comment.ID,
+				IssueID:   target.issue.ID,
+				AgentID:   target.agent.ID,
+			})
+			return e
+		})
+		if err == nil {
 			slog.Info("delegated failure recovery registered behind dispatched coordinator task",
 				"failed_task_id", util.UUIDToString(target.failed.ID),
 				"coordinator_task_id", util.UUIDToString(active.ID),
@@ -8911,6 +8940,31 @@ func (s *TaskService) runInPgxTx(ctx context.Context, fn func(*db.Queries, pgx.T
 		// transaction and the pool write below would wait on it.
 		_ = tx.Rollback(ctx)
 		return s.recordStageRefusal(ctx, err)
+	}
+	return tx.Commit(ctx)
+}
+
+// underIssueLock runs fn in one transaction that holds the issue row lock
+// first. A write to a run's taint-bearing columns fires the run's taint
+// trigger, which locks the issue; every other path that touches the runs of an
+// issue takes the issue first, so such a write takes it first too. A missing
+// issue is tolerated (the trigger does not lock then). Like runInTx, a service
+// built without a TxStarter (some tests) runs fn on the plain handle.
+func (s *TaskService) underIssueLock(ctx context.Context, issueID pgtype.UUID, fn func(*db.Queries) error) error {
+	if s.TxStarter == nil {
+		return fn(s.Queries)
+	}
+	tx, err := s.TxStarter.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	q := s.Queries.WithTx(tx)
+	if _, err := q.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err := fn(q); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }

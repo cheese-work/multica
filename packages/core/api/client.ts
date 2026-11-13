@@ -1,5 +1,5 @@
 import type { ZodType } from "zod";
-import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -7,7 +7,7 @@ import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, Wak
 import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
-import { parseRunBudget } from "../run-budget/schema";
+import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -38,6 +38,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentSchedulingImpact,
   AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
@@ -105,6 +106,7 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
+  AttachmentRevisionDiff,
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
@@ -292,12 +294,14 @@ import {
   DelegatedWritesSchema,
   type DelegatedWrites,
   OpenDecisionRequestListSchema,
+  DecisionRequestCardListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -1779,6 +1783,18 @@ export class ApiClient {
     return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
   }
 
+  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
+  async requestRunBudgetAction(
+    issueId: string,
+    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
+  ): Promise<RunBudgetActionResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseRunBudgetActionResponse(raw);
+  }
+
   async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
     const raw = await this.fetch<unknown>("/api/issues/limit-usage");
     if (raw == null) return null;
@@ -2194,6 +2210,29 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
+  async pauseAgent(id: string, reason?: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/pause`, {
+      method: "POST",
+      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+    });
+  }
+
+  async resumeAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
+  }
+
+  async pauseWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
+  }
+
+  async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
+    return this.fetch(`/api/agents/${id}/scheduling-impact`);
+  }
+
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
@@ -4327,6 +4366,14 @@ export class ApiClient {
     });
   }
 
+  /** The viewer's own used (answered or withdrawn) decision cards on one issue. */
+  async listIssueDecisionCards(issueId: string): Promise<DecisionRequestCard[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/issue-cards?issue=${encodeURIComponent(issueId)}`);
+    return parseWithFallback(raw, DecisionRequestCardListSchema, [], {
+      endpoint: "GET /api/decisions/issue-cards",
+    });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
     params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
@@ -4582,6 +4629,22 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
+  // unchanged line instead of folding them.
+  async getAttachmentRevisionDiff(
+    id: string,
+    from: number,
+    to: number,
+    full = false,
+  ): Promise<AttachmentRevisionDiff> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (full) q.set("full", "1");
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
+    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
+      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 

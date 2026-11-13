@@ -17,8 +17,8 @@ vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: sign }));
 const outcome = (state: string, error_code?: string) => ({ id: "a1", state, ...(error_code && { error_code }) });
 const envelope = { challenge_id: "ch", credential: { id: "k" } };
 
-function renderApproval(onEnroll = vi.fn()) {
-  renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" onEnroll={onEnroll} />);
+function renderApproval(onEnroll = vi.fn(), onOutcome?: (state: string) => void) {
+  renderWithI18n(<DecisionActionApproval actionId="a1" payloadSha256="abc" onEnroll={onEnroll} onOutcome={onOutcome} />);
   return {
     onEnroll,
     approve: async () => fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" })),
@@ -42,6 +42,22 @@ describe("DecisionActionApproval", () => {
     expect(await screen.findByText("Executed")).toBeTruthy();
     expect(api.challengeDecisionAction).toHaveBeenCalledWith("a1");
     expect(api.approveDecisionAction).toHaveBeenCalledWith("a1", { payload_sha256: "abc", assertion: envelope });
+  });
+
+  it("reports a terminal outcome once, so the caller can refresh what the action changed", async () => {
+    api.approveDecisionAction.mockResolvedValue(outcome("executed"));
+    const onOutcome = vi.fn();
+    await renderApproval(vi.fn(), onOutcome).approve();
+    await screen.findByText("Executed");
+    expect(onOutcome).toHaveBeenCalledTimes(1);
+    expect(onOutcome).toHaveBeenCalledWith("executed");
+  });
+
+  it("does not report an outcome while the action is still pending", async () => {
+    const onOutcome = vi.fn();
+    renderApproval(vi.fn(), onOutcome);
+    await screen.findByRole("button", { name: "Approve with passkey" });
+    expect(onOutcome).not.toHaveBeenCalled();
   });
 
   it.each([

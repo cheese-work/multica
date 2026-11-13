@@ -30,6 +30,12 @@ describe("run-budget query (CHE-2851)", () => {
     expect(api.getIssueRunBudget).toHaveBeenCalledWith("i-1");
   });
 
+  it("goes stale and polls, so a page left open follows runs that use the budget", () => {
+    const { staleTime, refetchInterval } = runBudgetOptions("ws-1", "i-1");
+    expect(staleTime).toBeLessThanOrEqual(60_000);
+    expect(refetchInterval).toBeLessThanOrEqual(60_000);
+  });
+
   it("does not fetch without a workspace or issue id", () => {
     renderHook(() => useRunBudget("", "i-1"), { wrapper: wrapperFor(newClient()) });
     renderHook(() => useRunBudget("ws-1", ""), { wrapper: wrapperFor(newClient()) });

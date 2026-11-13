@@ -2380,6 +2380,10 @@ func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue,
 		slog.Warn("collapse queued duplicate: lock failed", "task_id", uuidToString(task.ID), "error", err)
 		return false
 	}
+	if _, err := qtx.LockIssueRunBudget(ctx, issue.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("collapse queued duplicate: issue lock failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
 	siblingID, err := qtx.LockQueuedSiblingTask(ctx, task.ID)
 	if err != nil {
 		if !isNotFound(err) {
@@ -2643,6 +2647,9 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrReviewHeadAnswered) {
 		return ReasonReviewHeadAnswered
 	}
+	if errors.Is(err, service.ErrAgentPaused) {
+		return ReasonAgentPaused
+	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		return ReasonIssueInTriage
 	}
@@ -2791,7 +2798,11 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		}
 		return commentMergeError
 	}
-	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, params)
+	var row db.AgentTaskQueue
+	err = h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.MergeCommentIntoPendingTask(ctx, params)
+		return e
+	})
 	if err != nil {
 		if isNotFound(err) {
 			// No pre-claim (queued/deferred) task to merge into. The caller
@@ -2871,22 +2882,26 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 	if trigger.Squad != nil {
 		squadID = trigger.Squad.ID
 	}
-	row, err := h.Queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{
-		NewTriggerCommentID:     params.NewTriggerCommentID,
-		NewTriggerSummary:       params.NewTriggerSummary,
-		NewOriginatorUserID:     params.NewOriginatorUserID,
-		NewAccountableUserID:    params.NewAccountableUserID,
-		NewOriginatorSource:     params.NewOriginatorSource,
-		NewDelegatedFromTaskID:  params.NewDelegatedFromTaskID,
-		NewRuleVersionID:        params.NewRuleVersionID,
-		NewTriggerEvidenceKind:  params.NewTriggerEvidenceKind,
-		NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID,
-		NewRuntimeMcpOverlay:    params.NewRuntimeMcpOverlay,
-		NewRuntimeConnectedApps: params.NewRuntimeConnectedApps,
-		IssueID:                 issue.ID,
-		AgentID:                 trigger.Agent.ID,
-		SquadID:                 squadID,
-		HeadSha:                 headSha,
+	var row db.MergeCommentIntoQueuedIssueTaskRow
+	err = h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{
+			NewTriggerCommentID:     params.NewTriggerCommentID,
+			NewTriggerSummary:       params.NewTriggerSummary,
+			NewOriginatorUserID:     params.NewOriginatorUserID,
+			NewAccountableUserID:    params.NewAccountableUserID,
+			NewOriginatorSource:     params.NewOriginatorSource,
+			NewDelegatedFromTaskID:  params.NewDelegatedFromTaskID,
+			NewRuleVersionID:        params.NewRuleVersionID,
+			NewTriggerEvidenceKind:  params.NewTriggerEvidenceKind,
+			NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID,
+			NewRuntimeMcpOverlay:    params.NewRuntimeMcpOverlay,
+			NewRuntimeConnectedApps: params.NewRuntimeConnectedApps,
+			IssueID:                 issue.ID,
+			AgentID:                 trigger.Agent.ID,
+			SquadID:                 squadID,
+			HeadSha:                 headSha,
+		})
+		return e
 	})
 	if err != nil {
 		if !isNotFound(err) {
@@ -2916,11 +2931,15 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 // decision. Delivered ids are untouched, so completion reconcile replays the
 // comment as a single bounded follow-up (#5914). See the query doc.
 func (h *Handler) registerPlannedCommentForActiveTask(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, headSha pgtype.Text) (bool, error) {
-	row, err := h.Queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
-		CommentID: commentID,
-		IssueID:   issue.ID,
-		AgentID:   agentID,
-		HeadSha:   headSha,
+	var row db.RegisterPlannedCommentForActiveTaskRow
+	err := h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
+			CommentID: commentID,
+			IssueID:   issue.ID,
+			AgentID:   agentID,
+			HeadSha:   headSha,
+		})
+		return e
 	})
 	if err != nil {
 		if isNotFound(err) {
@@ -4508,6 +4527,11 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
+	// The delete nulls the trigger of every run that names this comment, which
+	// locks that run's issue; take those issues before the run rows.
+	if err := service.LockIssuesBeforeCommentDelete(ctx, qtx, commentID, workspaceID); err != nil {
+		return out, err
+	}
 	target, err := qtx.LockCommentForDelete(ctx, db.LockCommentForDeleteParams{
 		ID:          commentID,
 		WorkspaceID: workspaceID,

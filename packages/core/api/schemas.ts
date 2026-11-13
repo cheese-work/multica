@@ -1105,7 +1105,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
-const DecisionRequestCardSchema = z.lazy(() => z.object({
+export const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
@@ -1148,6 +1148,8 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
+
+export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
   artifacts: z.array(z.object({
@@ -1298,6 +1300,16 @@ export const AttachmentResponseSchema = z.lazy(() => z.object({
   filename: z.string(),
   chat_session_id: z.string().nullable().optional(),
   chat_message_id: z.string().nullable().optional(),
+}).loose());
+
+// Parsed with parseOrThrow, not a fallback: an empty fallback diff would read as
+// "no changes" and hide a broken response.
+export const AttachmentRevisionDiffSchema = z.lazy(() => z.object({
+  from: z.number(),
+  to: z.number(),
+  binary: z.boolean(),
+  diff: z.string().optional().default(""),
+  message: z.string().optional().default(""),
 }).loose());
 
 export const EMPTY_ATTACHMENT: Attachment = {
@@ -1804,6 +1816,7 @@ export const IssueSchema = z.lazy(() => z.object({
   // this field to make a decision — useStatusLabel resolves the label from the
   // catalog — so dropping it costs a fallback to the key. (MUL-6749)
   status_name: z.string().optional().catch(undefined),
+  run_budget_blocked: z.boolean().optional().catch(undefined),
   priority: z.string(),
   assignee_type: z.string().nullable(),
   assignee_id: z.string().nullable(),

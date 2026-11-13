@@ -148,9 +148,10 @@
   ],
   "deploy_cd": [
     "deploy/cd/**",
-    ".github/workflows/cd-deploy.yml",
-    ".github/workflows/cd-qualification.yml",
-    ".github/workflows/ci.yml",
+    ".github/workflows/**",
+    ".github/ci-policy.yml",
+    ".github/scripts/ci-wait-policy.py",
+    ".github/scripts/test_ci_wait_policy.py",
     ".github/ci-paths.json",
     "scripts/ci-scope.mjs",
     "scripts/ci-scope.test.mjs"

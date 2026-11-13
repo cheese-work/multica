@@ -48,15 +48,16 @@ type Agent struct {
 	// Composio toolkit slugs this agent is allowed to mount as MCP. NULL or empty array = no MCP overlay. Mounted for any run that passes the agent invocation-permission gate (MUL-3963); the overlay uses the agent OWNER's active Composio connection, so sharing the agent (public_to) shares these apps with whoever may invoke it. No longer gated on originator == owner. Stored as TEXT[] so the dispatch path can intersect against the owner's active connections with a single SQL ANY() filter.
 	ComposioToolkitAllowlist []string `json:"composio_toolkit_allowlist"`
 	// Agent invocation permission mode (MUL-3963). private = owner only; public_to = allow-list in agent_invocation_target. Replaces visibility as the authorization source for triggering runs; visibility is now a derived legacy field. Default private = deny-by-default.
-	PermissionMode        string             `json:"permission_mode"`
-	Kind                  string             `json:"kind"`
-	SystemKey             pgtype.Text        `json:"system_key"`
-	DisabledRuntimeSkills []byte             `json:"disabled_runtime_skills"`
-	ServiceTier           pgtype.Text        `json:"service_tier"`
-	ConversationStarters  []byte             `json:"conversation_starters"`
-	CustomEnvVersion      int64              `json:"custom_env_version"`
-	SchedulingPausedAt    pgtype.Timestamptz `json:"scheduling_paused_at"`
-	SchedulingPausedBy    pgtype.UUID        `json:"scheduling_paused_by"`
+	PermissionMode         string             `json:"permission_mode"`
+	Kind                   string             `json:"kind"`
+	SystemKey              pgtype.Text        `json:"system_key"`
+	DisabledRuntimeSkills  []byte             `json:"disabled_runtime_skills"`
+	ServiceTier            pgtype.Text        `json:"service_tier"`
+	ConversationStarters   []byte             `json:"conversation_starters"`
+	CustomEnvVersion       int64              `json:"custom_env_version"`
+	SchedulingPausedAt     pgtype.Timestamptz `json:"scheduling_paused_at"`
+	SchedulingPausedBy     pgtype.UUID        `json:"scheduling_paused_by"`
+	SchedulingPausedReason pgtype.Text        `json:"scheduling_paused_reason"`
 }
 
 type AgentBuilderDraft struct {
@@ -282,6 +283,10 @@ type Attachment struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
 	ExternalRead    bool               `json:"external_read"`
+	Revision        int32              `json:"revision"`
+	RevisionOf      pgtype.UUID        `json:"revision_of"`
+	RevisionRoot    pgtype.UUID        `json:"revision_root"`
+	Sha256          string             `json:"sha256"`
 }
 
 type Autopilot struct {
@@ -784,6 +789,23 @@ type ChatWakeup struct {
 	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
 	UntilStatus     string             `json:"until_status"`
 	OnTimeout       string             `json:"on_timeout"`
+}
+
+type CiBrokerAudit struct {
+	ID                int64              `json:"id"`
+	At                pgtype.Timestamptz `json:"at"`
+	RepositoryID      int64              `json:"repository_id"`
+	Repository        string             `json:"repository"`
+	RunID             string             `json:"run_id"`
+	RunAttempt        string             `json:"run_attempt"`
+	WorkflowRef       string             `json:"workflow_ref"`
+	Event             string             `json:"event"`
+	Ref               string             `json:"ref"`
+	RunnerEnvironment string             `json:"runner_environment"`
+	Environment       string             `json:"environment"`
+	Permissions       []byte             `json:"permissions"`
+	Result            string             `json:"result"`
+	Reason            string             `json:"reason"`
 }
 
 type CiFailureEvent struct {
@@ -2228,6 +2250,12 @@ type IssueRunBudgetEntry struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueRunTaint struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	TaintIds    []string    `json:"taint_ids"`
+}
+
 type IssueSearchText struct {
 	IssueID            pgtype.UUID `json:"issue_id"`
 	WorkspaceID        pgtype.UUID `json:"workspace_id"`
@@ -3003,13 +3031,16 @@ type RecoveryClaim struct {
 }
 
 type ReviewAdmissionDeferral struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	AgentID   pgtype.UUID        `json:"agent_id"`
-	Trigger   string             `json:"trigger"`
-	HeadSha   string             `json:"head_sha"`
-	Reasons   []string           `json:"reasons"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	Trigger          string             `json:"trigger"`
+	HeadSha          string             `json:"head_sha"`
+	Reasons          []string           `json:"reasons"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ExpiresAt        pgtype.Timestamptz `json:"expires_at"`
+	ActorUserID      pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID pgtype.UUID        `json:"trigger_comment_id"`
+	TaintIds         []string           `json:"taint_ids"`
 }
 
 type RunBudgetNotice struct {
@@ -3040,6 +3071,13 @@ type RunBudgetRefusal struct {
 	ResumeWindowID       pgtype.Text        `json:"resume_window_id"`
 	CreatedAt            pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	HookGeneration       int32              `json:"hook_generation"`
+	TaintIds             []string           `json:"taint_ids"`
+	TaskID               pgtype.UUID        `json:"task_id"`
+	ActorUserID          pgtype.UUID        `json:"actor_user_id"`
+	TriggerCommentID     pgtype.UUID        `json:"trigger_comment_id"`
+	SourceWakeupID       pgtype.UUID        `json:"source_wakeup_id"`
+	SourceTaskID         pgtype.UUID        `json:"source_task_id"`
 }
 
 type RunBudgetWindowCutover struct {
@@ -3263,6 +3301,9 @@ type System1Label struct {
 	Label         string             `json:"label"`
 	SupersededAt  pgtype.Timestamptz `json:"superseded_at"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	TaskID        pgtype.UUID        `json:"task_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
 type System1Observation struct {
@@ -3288,6 +3329,19 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+}
+
+type System1Prediction struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	ObservationID       pgtype.UUID        `json:"observation_id"`
+	Scope               string             `json:"scope"`
+	PredictorID         string             `json:"predictor_id"`
+	PredictorVersion    string             `json:"predictor_version"`
+	PredictedKey        pgtype.Text        `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4      `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4        `json:"predicted_precedents"`
+	PredictedAt         pgtype.Timestamptz `json:"predicted_at"`
 }
 
 type TaskElevation struct {

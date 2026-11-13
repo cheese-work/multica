@@ -70,6 +70,8 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch":        executeEnvPatchAction,
 	"agent.copy":             executeAgentCopyAction,
+	agentPauseAction:         executeAgentPauseAction,
+	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 }
@@ -80,6 +82,10 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
 	if actionType == "agent.env.patch" {
 		return canManageAgentEnv(target, approver)
+	}
+	if isAgentSchedulingAction(actionType) {
+		// The rule of requireSchedulingAdmin: workspace owner or admin only.
+		return roleAllowed(approver.Role, "owner", "admin")
 	}
 	return true
 }
@@ -436,6 +442,7 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
 		}
+		handler.notifyRunBudgetResume(ctx, action.ID)
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
@@ -469,7 +476,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch", agentInstructionsAction, agentSkillsAction:
+	case "agent.env.patch", agentInstructionsAction, agentSkillsAction, agentPauseAction, agentResumeAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -554,6 +561,10 @@ func checkPreviewDigest(action db.DecisionAction, claimed string) error {
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
 	if _, ok := configChanges[action.ActionType]; ok {
 		// The config-change core checks its own digests under the row lock.
+		return nil
+	}
+	if isAgentSchedulingAction(action.ActionType) {
+		// Pause and resume are idempotent; there is no state to drift from.
 		return nil
 	}
 	var drifted bool
@@ -685,6 +696,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
+	}
+	if isAgentSchedulingAction(action.ActionType) {
+		return handler.publishAgentSchedulingChanged(ctx, action)
 	}
 	agentID, ok := decisionActionTarget(action)
 	if !ok {
