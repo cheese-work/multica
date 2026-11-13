@@ -844,7 +844,7 @@ const getThreadLatestAgentComment = `-- name: GetThreadLatestAgentComment :one
 WITH RECURSIVE root_of AS (
     SELECT c.id, c.parent_id
     FROM comment c
-    WHERE c.id = $1 AND c.issue_id = $2 AND c.workspace_id = $3
+    WHERE c.id = $2 AND c.issue_id = $3 AND c.workspace_id = $4
     UNION ALL
     SELECT p.id, p.parent_id
     FROM comment p
@@ -858,27 +858,38 @@ descendants AS (
     SELECT c.id
     FROM comment c
     JOIN descendants d ON c.parent_id = d.id
-    WHERE c.issue_id = $2 AND c.workspace_id = $3
+    WHERE c.issue_id = $3 AND c.workspace_id = $4
 )
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read FROM comment
 WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.deleted_at IS NULL
   AND comment.author_type = 'agent'
+  AND ($1::uuid IS NULL
+       OR (comment.created_at, comment.id) < (
+           SELECT b.created_at, b.id FROM comment b WHERE b.id = $1::uuid))
 ORDER BY comment.created_at DESC, comment.id DESC
 LIMIT 1
 `
 
 type GetThreadLatestAgentCommentParams struct {
-	TargetID    pgtype.UUID `json:"target_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BeforeCommentID pgtype.UUID `json:"before_comment_id"`
+	TargetID        pgtype.UUID `json:"target_id"`
+	IssueID         pgtype.UUID `json:"issue_id"`
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
 }
 
 // The newest live agent-authored comment in @target_id's thread (root plus every
 // descendant). An unmentioned member reply wakes that comment's author, not the
 // thread-root author (CHE-5421). No row when no agent has spoken in the thread.
+// When @before_comment_id is set, only agent comments created before it count, so
+// a recompute of an earlier reply routes the same as the original did.
 func (q *Queries) GetThreadLatestAgentComment(ctx context.Context, arg GetThreadLatestAgentCommentParams) (Comment, error) {
-	row := q.db.QueryRow(ctx, getThreadLatestAgentComment, arg.TargetID, arg.IssueID, arg.WorkspaceID)
+	row := q.db.QueryRow(ctx, getThreadLatestAgentComment,
+		arg.BeforeCommentID,
+		arg.TargetID,
+		arg.IssueID,
+		arg.WorkspaceID,
+	)
 	var i Comment
 	err := row.Scan(
 		&i.ID,

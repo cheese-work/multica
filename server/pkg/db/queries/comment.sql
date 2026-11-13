@@ -1117,6 +1117,8 @@ LIMIT 1;
 -- The newest live agent-authored comment in @target_id's thread (root plus every
 -- descendant). An unmentioned member reply wakes that comment's author, not the
 -- thread-root author (CHE-5421). No row when no agent has spoken in the thread.
+-- When @before_comment_id is set, only agent comments created before it count, so
+-- a recompute of an earlier reply routes the same as the original did.
 WITH RECURSIVE root_of AS (
     SELECT c.id, c.parent_id
     FROM comment c
@@ -1140,6 +1142,9 @@ SELECT * FROM comment
 WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.deleted_at IS NULL
   AND comment.author_type = 'agent'
+  AND (sqlc.narg('before_comment_id')::uuid IS NULL
+       OR (comment.created_at, comment.id) < (
+           SELECT b.created_at, b.id FROM comment b WHERE b.id = sqlc.narg('before_comment_id')::uuid))
 ORDER BY comment.created_at DESC, comment.id DESC
 LIMIT 1;
 

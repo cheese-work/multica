@@ -54,3 +54,30 @@ func TestUnmentionedMemberReplyRootAgentOnly_CHE5421(t *testing.T) {
 		t.Fatalf("triggers = %+v, want root author", triggers)
 	}
 }
+
+// A recompute of an earlier member reply must not see agent comments posted
+// after it, or the routed agent changes and a completed run gets a follow-up.
+func TestRecomputeMemberReplyIgnoresLaterAgentComments_CHE5421(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	setAgentCommentWakePolicyForTest(t, false)
+	ctx := context.Background()
+	fx := newSquadCommentTriggerFixture(t)
+	issueID := uuidToString(fx.Issue.ID)
+
+	rootID := dbfx.Comment(t, issueID, "root by agent A", testutil.Cols{"author_type": "agent", "author_id": fx.LeaderID})
+	replyID := dbfx.Comment(t, issueID, "member reply M", testutil.Cols{"author_type": "member", "author_id": testUserID, "parent_id": rootID})
+	dbfx.Comment(t, issueID, "later by agent B", testutil.Cols{"author_type": "agent", "author_id": fx.OtherID, "parent_id": rootID})
+	root, err := testHandler.Queries.GetComment(ctx, parseUUID(rootID))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	triggers, _ := testHandler.computeCommentAgentTriggers(ctx, fx.Issue, "M", &root, "member", testUserID, commentTriggerComputeOptions{
+		ExcludeTriggerCommentID: parseUUID(replyID), OriginatorUserID: testUserID,
+	})
+	if len(triggers) != 1 || uuidToString(triggers[0].Agent.ID) != fx.LeaderID {
+		t.Fatalf("triggers = %+v, want agent A (%s), who spoke before M", triggers, fx.LeaderID)
+	}
+}
