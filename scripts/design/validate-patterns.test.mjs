@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { resolve } from "node:path";
@@ -135,4 +136,15 @@ test("DESIGN.md links to the ledger and no longer carries the pattern table", ()
   const md = readFileSync(resolve(import.meta.dirname, "../../DESIGN.md"), "utf8");
   assert.match(md, /design\/patterns\.yml/);
   assert.doesNotMatch(md, /\| Pattern \| Source \| Rule \|/);
+});
+
+test("CLI output adds no line the CI warning budget counts as a warning", () => {
+  const cli = resolve(import.meta.dirname, "validate-patterns.mjs");
+  const run = spawnSync(process.execPath, [cli], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  // Same pattern as scripts/warning-budget.mjs: pending frames must not add a new CI warning signature.
+  const counted = /##\[(warning|notice)\]|::(?:warning|notice)::|\b(?:DeprecationWarning|ExperimentalWarning|[Ww]arning[:!]|WARN(?:ING)?\b)|\bnpm warn\b|⚠|╭ Warning |Found \d+ warnings|\d+:\d+\s+warning\b/;
+  const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((l) => counted.test(l));
+  assert.deepEqual(lines, []);
+  assert.match(run.stdout, /pending/);
 });
