@@ -45,6 +45,11 @@ func newBGFailoverFixture(t *testing.T) *bgFailoverFixture {
 		primary: f.coordinator, fallback: f.worker, primaryRuntime: runtime("bg-primary"), fbRuntime: runtime("bg-fallback")}
 	rows.Exec(t, `UPDATE agent SET runtime_id = $2, visibility = 'workspace' WHERE id = $1`, b.primary, b.primaryRuntime)
 	rows.Exec(t, `UPDATE agent SET runtime_id = $2, visibility = 'workspace' WHERE id = $1`, b.fallback, b.fbRuntime)
+	// The enqueue re-checks the stored chain (CHE-4114): the member's chain names
+	// the primary and the fallback.
+	rows.Exec(t, `INSERT INTO member_setting (workspace_id, user_id, key, value) VALUES ($1, $2, 'background_agents',
+		jsonb_build_object('dm_title', jsonb_build_object('agent_id', $3::text, 'fallback_agent_id', $4::text)))`,
+		f.workspaceID, f.userID, b.primary, b.fallback)
 	svc.BackgroundNoAgent = map[string]BackgroundNoAgentPath{
 		bgagents.Purpose(bgagents.DMTitle): func(_ context.Context, task db.AgentTaskQueue) {
 			var c BackgroundTaskContext

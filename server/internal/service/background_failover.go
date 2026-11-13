@@ -36,13 +36,21 @@ func (s *TaskService) EnqueueBackgroundChain(ctx context.Context, in BackgroundT
 			logBackgroundFailover(in.Job, c.Slot, "unreachable")
 			continue
 		}
-		in.AgentID, in.Slot, in.FallbackAgentID = util.MustParseUUID(c.AgentID), c.Slot, pgtype.UUID{}
+		target := BackgroundTarget{AgentID: util.MustParseUUID(c.AgentID), Source: in.Source, Slot: c.Slot}
 		if c.Slot == bgagents.Primary && i+1 < len(chain) {
-			in.FallbackAgentID = util.MustParseUUID(chain[i+1].AgentID)
+			target.FallbackAgentID = util.MustParseUUID(chain[i+1].AgentID)
 		}
+		in.Resolve = fixedBackgroundTarget(target)
 		return s.EnqueueBackgroundTask(ctx, in)
 	}
 	return db.AgentTaskQueue{}, ErrNoReachableBackgroundAgent
+}
+
+// fixedBackgroundTarget is a resolver that returns a target chosen outside the
+// insert transaction; EnqueueBackgroundTask still re-checks the chain under its
+// locks (checkChainStillNames).
+func fixedBackgroundTarget(t BackgroundTarget) BackgroundResolver {
+	return func(context.Context) (BackgroundTarget, error) { return t, nil }
 }
 
 // backgroundAgentReachable mirrors what the claim needs: an eligible agent on a
@@ -93,8 +101,10 @@ func (s *TaskService) failOverBackgroundTask(ctx context.Context, failed db.Agen
 		workspaceID, _ := util.ParseUUID(c.WorkspaceID)
 		if s.backgroundAgentReachable(ctx, job, workspaceID, c.FallbackAgentID) {
 			next := BackgroundTaskInput{
-				Job: job, WorkspaceID: workspaceID, AgentID: util.MustParseUUID(c.FallbackAgentID),
-				Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback, Input: c.Input,
+				Job: job, WorkspaceID: workspaceID, Source: bgagents.Source(c.ChainSource), Input: c.Input,
+				Resolve: fixedBackgroundTarget(BackgroundTarget{
+					AgentID: util.MustParseUUID(c.FallbackAgentID), Source: bgagents.Source(c.ChainSource), Slot: bgagents.Fallback,
+				}),
 			}
 			next.MemberID, _ = util.ParseUUID(c.MemberID)
 			if _, err := s.EnqueueBackgroundTask(ctx, next); err == nil {

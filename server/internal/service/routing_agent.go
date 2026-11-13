@@ -18,8 +18,16 @@ import (
 // routing-only workflow steps, a fallback, and per-status overrides. The handler
 // package owns the route that changes it; this file owns reading it.
 
-// RoutingAgentSettingsKey is the key inside workspace.settings.
+// RoutingAgentSettingsKey is the retired key inside workspace.settings. The
+// setting now lives at background_agents.routing (CHE-4116); the key is kept
+// only so the startup copy and a generic save can recognise the old value.
 const RoutingAgentSettingsKey = "routing_agent"
+
+// BackgroundAgentsSettingsKey and RoutingJobKey locate the setting.
+const (
+	BackgroundAgentsSettingsKey = "background_agents"
+	RoutingJobKey               = "routing"
+)
 
 // DefaultRoutingStatuses are the steps that only route work to the next owner.
 var DefaultRoutingStatuses = []string{"todo", "blocked", "merged", "need_decision"}
@@ -38,8 +46,8 @@ type RoutingAgentConfig struct {
 
 func RoutingAgentFromSettings(settings map[string]any) RoutingAgentConfig {
 	var cfg RoutingAgentConfig
-	if raw, ok := settings[RoutingAgentSettingsKey]; ok {
-		if b, err := json.Marshal(raw); err == nil {
+	if jobs, ok := settings[BackgroundAgentsSettingsKey].(map[string]any); ok {
+		if b, err := json.Marshal(jobs[RoutingJobKey]); err == nil {
 			_ = json.Unmarshal(b, &cfg) // a malformed value routes nothing
 		}
 	}
