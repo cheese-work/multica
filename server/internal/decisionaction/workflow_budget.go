@@ -22,7 +22,7 @@ type WorkflowBudgetSetParams struct {
 
 func init() {
 	// Spend class: the target is a workflow, so only the owner approves it.
-	Register(&Definition{Type: WorkflowBudgetSet, Version: 1, Template: Template{Title: "Change a workflow's run budget", Summary: "Changes the workflow's per-issue run cap or whether child-PR runs count against it."}, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowBudgetSet})
+	Register(&Definition{Type: WorkflowBudgetSet, Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Change a workflow's run budget", Summary: "Changes the workflow's per-issue run cap or whether child-PR runs count against it."}, MinClass: "spend", Target: TargetWorkflow, RequiresPreview: true, Normalize: normalizeWorkflowBudgetSet})
 }
 
 // WorkflowBudgetDigest is the digest of a workflow's budget: sha256 of the
