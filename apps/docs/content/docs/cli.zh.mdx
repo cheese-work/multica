@@ -550,6 +550,8 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
 | `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request 会被拒绝 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | 对照策略和仓库的 `.github/agent-rules.yml` 检查一个拉取请求，不做任何修改。文件作为数据从 PR 受保护基础分支的当前末端读取，绝不从 PR 分支读取；文件缺失不增加规则，格式错误的文件或无法读取的基础分支会使检查失败。可用作 CI 检查 | 退出码：0 通过，1 违反规则，2 被拒绝。`-R owner/name` 指定仓库 |
+| `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
 
 ### 决策提案
 
@@ -562,6 +564,8 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。两条命令都接受一个或多个 issue ID：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目标>"`。单个 ID 保持原来的单条提案。任务令牌下传入多个 ID 时，只调用一次批量路由并打印一个卡片链接；`--goal` 为批量命名（默认：操作和 issue 数量），`--output json` 返回批次 id 和每个 issue 的提案 id。个人访问令牌下，每个 ID 各发起自己的请求。批量路由需要聊天任务，最多 25 个 issue；服务器可用一个通行密钥批准一批 raise，但在批准时拒绝一批 top-up，因此 top-up 需逐个批准。
+
+运行预算的下一步：issue 上 80 % 的提醒会带上数字和一条可直接运行的命令，例如 `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。被预算拒绝的运行会返回错误码 `run_budget_exhausted`，并带有 `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card` 和 `next_command`。`multica issue budget get <issue> --output json` 同样返回 `open_card` 和 `next_command`。当 issue 的当前窗口已有提额或新窗口卡片处于打开状态时，`next_command` 会提示等待该卡片，再次执行 `multica issue budget raise` 会返回同一张卡片，而不是再开一张。使用任务令牌时，issue 任务的 `--for` 默认是工作区所有者，帮助中只列出 `raise`；`top-up` 仍供成员使用。服务器、成员或智能体每打开一张卡片，就会新增一条 `run_budget_ask` 活动记录，记录操作者类型、操作者和动作类型。
 
 已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。
 

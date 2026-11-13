@@ -84,7 +84,7 @@ export function ChatPeek() {
   const wsId = useWorkspaceId();
   const p = useWorkspacePaths();
   const { push } = useNavigation();
-  const { data: sessions = EMPTY_SESSIONS } = useQuery(chatSessionsOptions(wsId));
+  const { data: sessions = EMPTY_SESSIONS, isPending, isError, refetch } = useQuery(chatSessionsOptions(wsId));
   const { data: agents = EMPTY_AGENTS } = useQuery(agentListOptions(wsId));
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const setArchived = useSetChatSessionArchived();
@@ -99,6 +99,8 @@ export function ChatPeek() {
           activeSessionId={activeSessionId}
           onSelectSession={(session) => push(`${p.chat()}?session=${session.id}`)}
           onArchive={(session) => setArchived.mutate({ sessionId: session.id, archived: true })}
+          loadState={isError ? "error" : isPending ? "loading" : undefined}
+          onRetry={() => void refetch()}
         />
       </div>
     </>

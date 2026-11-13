@@ -39,7 +39,12 @@ func (h *Handler) GetIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	next, err := h.loadRunBudgetNextStep(r.Context(), h.Queries, issue, snap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
+		return
+	}
+	writeJSON(w, http.StatusOK, runBudgetView{RunBudgetSnapshot: snap, OpenCard: next.OpenCard, NextCommand: next.NextCommand})
 }
 
 // GetIssueStageQueue returns where the issue's stage run stands in its owner's

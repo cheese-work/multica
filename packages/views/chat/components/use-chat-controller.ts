@@ -203,7 +203,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const { data: members = [], isSuccess: membersLoaded } = useQuery(
     memberListOptions(wsId),
   );
-  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError } = useQuery(
+  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError, refetch: refetchSessions } = useQuery(
     chatSessionsOptions(wsId),
   );
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
@@ -851,6 +851,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     agentsSettled,
     sessions,
     sessionsLoaded,
+    sessionsFailed: !!sessionsError,
+    refetchSessions,
     projects,
     activeSessionId,
     selectedAgentId,

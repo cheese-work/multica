@@ -67,10 +67,14 @@
     "supplement_failure_provider_rejected": "智能体拒绝了该消息",
     "supplement_failure_timeout": "送达超时",
     "supplement_failure_unknown": "原因未知",
+    "supplement_failure_replay_exhausted": "重试次数已用完",
+    "supplement_failure_run_budget_exhausted": "运行预算已用完",
+    "supplement_failure_agent_paused": "代理已暂停",
     "supplement_retry": "重试",
     "supplement_retry_failed": "无法重试送达。",
     "steer_badge": "插话给 {{names}}",
     "steer_waiting": "等待 {{name}} 读取",
+    "steer_replay_queued": "{{name}} 将在下一次运行中读取",
     "steer_read": "{{name}} 已读取",
     "steer_not_received": "{{name}} 未收到 · {{reason}}",
     "steer_resend": "作为新一轮发送",
@@ -454,6 +458,12 @@
     "retry": "重试",
     "load_more": "加载更多",
     "no_lane": "无值"
+  },
+  "gantt2": {
+    "clipped_start": "在此时间窗口之前开始",
+    "now": "现在",
+    "collapse": "折叠",
+    "expand": "展开"
   },
   "actor_issues": {
     "scope": {

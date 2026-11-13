@@ -3361,6 +3361,17 @@ func (d *Daemon) repoBarePathIsLive(barePath string) bool {
 	return false
 }
 
+// workspaceSettings returns the cached workspace settings JSON (nil when the
+// workspace is unknown), kept fresh by refreshWorkspaceRepos.
+func (d *Daemon) workspaceSettings(workspaceID string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		return ws.settings
+	}
+	return nil
+}
+
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
 // be installed for the given workspace. Defaults to true when either setting
 // is absent (new workspaces, older servers that don't send settings).
@@ -8922,6 +8933,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// failure only costs the guard, never the run.
 	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
+	// Hand the guard the workspace's stored policy (CHE-5204); without one it
+	// keeps the compiled default.
+	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
+		taskLog.Warn("guard policy not delivered; guard refuses every git and gh call for this run", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
