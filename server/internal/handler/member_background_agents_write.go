@@ -14,6 +14,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -22,17 +23,9 @@ import (
 // Personal background-agents writes (CHE-4113). A human member changes only
 // their own member_setting row. A machine actor (task token, cloud PAT) gets
 // 403 when the write would change the value; an unchanged machine write is
-// accepted, as on the workspace route.
-//
-// Shipped disabled: until step 17b (CHE-4114) adds the transactional cancel of
-// the member's queued tasks, every effective human write is refused with 409
-// and stores nothing. Step 17b deletes personalBackgroundAgentsEnabled.
-const codeBackgroundAgentsPersonalNotEnabled = "personal_background_agents_not_enabled"
-
-var (
-	personalBackgroundAgentsEnabled = false
-	errPersonalNotEnabled           = errors.New("personal background agents are not enabled yet")
-)
+// accepted, as on the workspace route. Every effective write cancels, in the
+// same transaction, the member's non-terminal tasks of each changed job, from
+// either chain source (CHE-4114).
 
 // UpdateMyBackgroundAgents merges the body into the caller's value, per job and
 // per field: {"dm_title": {"agent_id": "<id>", "fallback_agent_id": null}} sets
@@ -151,38 +144,38 @@ func (h *Handler) canonicalMemberAgent(ctx context.Context, member db.Member, fi
 func (h *Handler) saveMemberBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, apply func(map[string]any) map[string]any) {
 	id := uuidToString(member.WorkspaceID)
 	actorType, _ := h.resolveActor(r, requestUserID(r), id)
-	next, err := h.writeMemberBackgroundAgents(r.Context(), member, isGovernedFieldMachineActor(r, actorType), apply)
+	next, cancelled, err := h.writeMemberBackgroundAgents(r.Context(), member, isGovernedFieldMachineActor(r, actorType), apply)
 	switch {
 	case errors.Is(err, errBackgroundAgentsHumanOnly):
 		writeBackgroundAgentsRefused(w)
-	case errors.Is(err, errPersonalNotEnabled):
-		writeErrorCode(w, http.StatusConflict, codeBackgroundAgentsPersonalNotEnabled, errPersonalNotEnabled.Error())
 	case err != nil:
 		slog.Warn("update personal background agents failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update background agents")
 	default:
+		h.TaskService.BroadcastCancelledTasks(r.Context(), id, cancelled)
 		writeJSON(w, http.StatusOK, next)
 	}
 }
 
 // writeMemberBackgroundAgents applies the change and writes one activity row
-// per changed job in one transaction, under a lock on the member's row. The
-// machine and disabled checks run on the locked stored value, so a refused
-// write stores nothing and an unchanged write passes.
-func (h *Handler) writeMemberBackgroundAgents(ctx context.Context, member db.Member, machine bool, apply func(map[string]any) map[string]any) (map[string]any, error) {
+// per changed job in one transaction, under the lock that enqueue also takes.
+// The same transaction cancels the member's tasks of each changed job; the
+// caller broadcasts the returned rows after commit. The machine check runs on
+// the locked stored value, so a refused write stores nothing and an unchanged
+// write passes.
+func (h *Handler) writeMemberBackgroundAgents(ctx context.Context, member db.Member, machine bool, apply func(map[string]any) map[string]any) (map[string]any, []db.AgentTaskQueue, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer tx.Rollback(ctx)
-	lock := "member_setting:" + uuidToString(member.WorkspaceID) + ":" + uuidToString(member.UserID) + ":" + memberBackgroundAgentsKey
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lock); err != nil {
-		return nil, err
+	if err := service.LockMemberBackgroundAgents(ctx, tx, member.WorkspaceID, member.UserID); err != nil {
+		return nil, nil, err
 	}
 	q := h.Queries.WithTx(tx)
 	storedJSON, err := h.memberBackgroundAgentsWith(ctx, q, member.WorkspaceID, member.UserID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var prev map[string]any
 	_ = json.Unmarshal(storedJSON, &prev) // an unset or non-object value starts over as empty
@@ -197,13 +190,10 @@ func (h *Handler) writeMemberBackgroundAgents(ctx context.Context, member db.Mem
 		}
 	}
 	if len(changes) == 0 {
-		return prev, nil
+		return prev, nil, nil
 	}
 	if machine {
-		return nil, errBackgroundAgentsHumanOnly
-	}
-	if !personalBackgroundAgentsEnabled {
-		return nil, errPersonalNotEnabled
+		return nil, nil, errBackgroundAgentsHumanOnly
 	}
 	if len(next) == 0 {
 		err = q.DeleteMemberSetting(ctx, db.DeleteMemberSettingParams{WorkspaceID: member.WorkspaceID, UserID: member.UserID, Key: memberBackgroundAgentsKey})
@@ -214,19 +204,25 @@ func (h *Handler) writeMemberBackgroundAgents(ctx context.Context, member db.Mem
 		}
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var cancelled []db.AgentTaskQueue
 	for _, c := range changes {
 		details, err := json.Marshal(map[string]any{"job": c.Job, "scope": bgagents.UserScope, "from": c.From, "to": c.To})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
 			ID: dbid.NewV7(), WorkspaceID: member.WorkspaceID, ActorType: strToText("member"), ActorID: member.UserID,
 			Action: backgroundAgentsActivity, Details: details,
 		}); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		rows, err := service.CancelBackgroundTasksForMember(ctx, q, member.WorkspaceID, member.UserID, c.Job)
+		if err != nil {
+			return nil, nil, err
+		}
+		cancelled = append(cancelled, rows...)
 	}
-	return next, tx.Commit(ctx)
+	return next, cancelled, tx.Commit(ctx)
 }

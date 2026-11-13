@@ -150,6 +150,7 @@ func init() {
 	Register(&Definition{Type: "agent.pause", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Pause an agent", Summary: "Stops the agent from starting new runs until it is resumed."}, MinClass: "reversible", Inverse: "agent.resume", Normalize: normalizeAgentSchedulingChange("agent.pause")})
 	Register(&Definition{Type: "agent.resume", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
 	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.project.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Move an issue to another project", Summary: "Moves the issue to the proposed project, which sets the workflow and run budget the issue follows."}, MinClass: "reversible", Target: TargetIssue, Normalize: normalizeIssueProjectSet})
 	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
 	Register(&Definition{Type: "agent.instructions.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
 	Register(&Definition{Type: "agent.skills.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's skills", Summary: "Replaces the agent's skill list with the proposed list."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
@@ -372,6 +373,32 @@ type RunBudgetTopUpParams struct {
 	IssueID   string `json:"issue_id"`
 	WindowID  string `json:"window_id"`
 	RefusalID string `json:"refusal_id,omitempty"`
+}
+
+// IssueProjectSetParams is the issue.project.set payload. The server fills
+// IssueID from the request when the proposer sends only ProjectID.
+type IssueProjectSetParams struct {
+	IssueID   string `json:"issue_id"`
+	ProjectID string `json:"project_id"`
+}
+
+func normalizeIssueProjectSet(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.project.set takes no secret slots")
+	}
+	var params IssueProjectSetParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.ProjectID, err = canonicalUUID("project_id", params.ProjectID); err != nil {
+		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
 }
 
 func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
