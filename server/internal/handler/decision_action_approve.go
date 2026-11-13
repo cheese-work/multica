@@ -75,6 +75,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	issueProjectSetType:      executeIssueProjectSetAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -776,6 +777,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 			return nil
 		}
 		return change.Publish(ctx, handler, action)
+	}
+	if action.ActionType == issueProjectSetType {
+		return handler.publishIssueProjectSet(ctx, action)
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)

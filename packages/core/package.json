@@ -53,6 +53,8 @@
     "./issue-workflows/draft-stores": "./issue-workflows/draft-stores.ts",
     "./issues": "./issues/index.ts",
     "./issues/batch": "./issues/batch.ts",
+    "./issues/graph-core": "./issues/graph-core.ts",
+    "./issues/swimlane-layout": "./issues/swimlane-layout.ts",
     "./issues/canonical-id": "./issues/canonical-id.ts",
     "./issues/decision-action-preview": "./issues/decision-action-preview.ts",
     "./issues/queries": "./issues/queries.ts",
