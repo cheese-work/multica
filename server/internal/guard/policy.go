@@ -89,8 +89,13 @@ type Policy struct {
 	// Locked freezes every key this workspace layer sets against deeper layers.
 	Locked bool    `json:"locked,omitempty"`
 	Layers []Layer `json:"layers,omitempty"`
+	// Rules are PR rules (title, trailer) that every repository inherits.
+	Rules *Rules `json:"rules,omitempty"`
 
 	lockdown bool // set by lockdownPolicy; never read from JSON
+	// fileReviewers are the reviewers a repository file asks for; set on a
+	// resolved copy only.
+	fileReviewers []string
 }
 
 // Lockdown reports whether the guard refuses every call because the stored
@@ -163,7 +168,7 @@ func (p *Policy) validate() error {
 			return fmt.Errorf("review rule %s: github must be required or skip, not %q", r.Repo, r.GitHub)
 		}
 	}
-	return nil
+	return p.Rules.validate()
 }
 
 // ParsePolicy decodes and validates a policy document. Unknown fields (for
@@ -252,10 +257,19 @@ func (p *Policy) reviewFor(repo string) *ReviewRule {
 // githubReviewers lists the logins to request on GitHub for repo.
 func (p *Policy) githubReviewers(repo string) []string {
 	r := p.reviewFor(repo)
-	if r == nil || r.GitHub == "skip" {
+	if r != nil && r.GitHub == "skip" {
 		return nil
 	}
-	return r.Reviewers
+	var out []string
+	if r != nil {
+		out = append(out, r.Reviewers...)
+	}
+	for _, f := range p.fileReviewers {
+		if !hasFold(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func contains(list []string, s string) bool {

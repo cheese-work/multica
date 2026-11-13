@@ -4,35 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// ProjectWorkflowSplit is the CHE-5238 A/B setting: between StartsAt and EndsAt
-// issues created in the project may follow arm B's workflow instead of the
-// project's own (arm A). Selection happens at issue create (S1b), not here.
-type ProjectWorkflowSplit struct {
-	ArmBWorkflowID      string    `json:"arm_b_workflow_id"`
-	StartsAt            time.Time `json:"starts_at"`
-	EndsAt              time.Time `json:"ends_at"`
-	ExcludedAssigneeIDs []string  `json:"excluded_assignee_ids"`
-	ExcludedSquadIDs    []string  `json:"excluded_squad_ids"`
-}
+// ProjectWorkflowSplit is the CHE-5238 A/B setting; issue create (service)
+// selects the arm.
+type ProjectWorkflowSplit = service.WorkflowSplit
 
-func decodeWorkflowSplit(raw []byte) *ProjectWorkflowSplit {
-	if len(raw) == 0 {
-		return nil
-	}
-	var s ProjectWorkflowSplit
-	if json.Unmarshal(raw, &s) != nil {
-		return nil
-	}
-	return &s
-}
+func decodeWorkflowSplit(raw []byte) *ProjectWorkflowSplit { return service.DecodeWorkflowSplit(raw) }
 
 // SetProjectWorkflowSplit stores the project's split. Same access rule as the
 // project's workflow (canManageProjectWorkflow). Arm B must exist in the

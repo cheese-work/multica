@@ -24,6 +24,9 @@ type Engine struct {
 
 	eff  *Policy // Policy resolved for the current call
 	path string  // the call's directory inside its repository
+
+	rulesNote string // what the last repo-rules read saw, for the decision log
+	noRepair  bool   // CheckPR: read only, never edit a PR
 }
 
 func (e *Engine) pol() *Policy {
@@ -156,6 +159,9 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 		if code, err = e.Runner.Stream(ctx, tool, d.args...); err != nil {
 			return 0, err
 		}
+	}
+	if d.note == "" {
+		d.note = e.rulesNote
 	}
 	e.log(pl, tool, args, d)
 	return code, nil
