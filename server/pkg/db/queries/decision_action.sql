@@ -119,6 +119,17 @@ WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND state 
   AND sqlc.arg('state') IN ('executed', 'failed')
 RETURNING *;
 
+-- name: RevokeDecisionActionRow :one
+-- The revoke record commits with the inverse; state stays 'executed'. Only an
+-- executed, not yet revoked row matches.
+UPDATE decision_action SET
+    revoked_at = clock_timestamp(), revoked_by_user_id = sqlc.arg('revoked_by_user_id'),
+    revoke_reason = sqlc.arg('revoke_reason'),
+    revoke_webauthn_credential_id = sqlc.narg('revoke_webauthn_credential_id'), updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+  AND state = 'executed' AND revoked_at IS NULL
+RETURNING *;
+
 -- name: MarkDecisionActionPostCommitDone :exec
 UPDATE decision_action SET post_commit_done_at = clock_timestamp()
 WHERE id = $1 AND workspace_id = $2 AND state IN ('executed', 'failed') AND post_commit_done_at IS NULL;
@@ -169,3 +180,13 @@ WHERE a.workspace_id = sqlc.arg('workspace_id')
   AND a.action_type = sqlc.arg('action_type')
   AND a.action_version = sqlc.arg('action_version')
   AND a.updated_at > now() - sqlc.arg('cooldown')::interval;
+
+-- name: SetIssueProjectFromDecision :one
+-- Moves an issue to the project an approved issue.project.set action names,
+-- only while the issue is still in the project the card was asked from. The
+-- status is the one the target workflow lists (the issue's own when it does).
+UPDATE issue SET project_id = sqlc.arg('project_id')::uuid, status = sqlc.arg('status')::text,
+  revision = revision + 1, updated_at = now()
+WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id IS NOT DISTINCT FROM sqlc.narg('from_project_id')::uuid
+RETURNING *;

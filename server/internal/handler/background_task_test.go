@@ -19,14 +19,29 @@ import (
 
 func enqueueBG(t *testing.T, wsID, agentID string, job bgagents.Job, src bgagents.Source) (db.AgentTaskQueue, error) {
 	t.Helper()
+	dm := dbfx.ChatSession(t, agentID, testutil.Cols{"workspace_id": wsID})
+	seedChain(t, wsID, agentID, job, src)
 	task, err := testHandler.TaskService.EnqueueBackgroundTask(context.Background(), service.BackgroundTaskInput{
-		Job: job, WorkspaceID: util.MustParseUUID(wsID), AgentID: util.MustParseUUID(agentID),
-		MemberID: util.MustParseUUID(testUserID), Source: src, Slot: bgagents.Primary, Input: "hello",
+		Job: job, WorkspaceID: util.MustParseUUID(wsID), MemberID: util.MustParseUUID(testUserID), Input: "hello",
+		SourceChatSessionID: util.MustParseUUID(dm), Resolve: fixedTarget(agentID, src),
 	})
 	if err == nil {
 		dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE id=$1", util.UUIDToString(task.ID))
 	}
 	return task, err
+}
+
+// seedChain stores the chain an enqueue is checked against (CHE-4114): the
+// agent as primary of the job, in the member's or the workspace's setting.
+func seedChain(t *testing.T, wsID, agentID string, job bgagents.Job, src bgagents.Source) {
+	t.Helper()
+	chain := mustJSON(t, map[string]any{string(job): map[string]any{"agent_id": agentID}})
+	if src == bgagents.UserSource {
+		dbfx.Exec(t, `INSERT INTO member_setting (workspace_id, user_id, key, value) VALUES ($1,$2,'background_agents',$3)
+			ON CONFLICT (workspace_id, user_id, key) DO UPDATE SET value = member_setting.value || EXCLUDED.value`, wsID, testUserID, chain)
+		return
+	}
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, '{background_agents}', COALESCE(settings->'background_agents','{}'::jsonb) || $2::jsonb) WHERE id=$1`, wsID, chain)
 }
 
 func bgTaskStatus(t *testing.T, id db.AgentTaskQueue) string {

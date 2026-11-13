@@ -9,7 +9,7 @@ import { issueDetailOptions, childIssuesOptions } from "@multica/core/issues/que
 import { issueRelationsOptions } from "@multica/core/issues/relations";
 import { issueStatusListOptions } from "@multica/core/issue-statuses/queries";
 import { openDecisionRequestsOptions, issueDecisionCardsOptions } from "@multica/core/chat/queries";
-import { agentListOptions, memberListOptions, workspaceListOptions } from "@multica/core/workspace/queries";
+import { agentListOptions, memberListOptions, workspaceListOptions } from "../../../packages/core/workspace/queries"; // relative: bypasses the harness alias so seeded keys match core/hooks
 import { decisionArtifactKeys } from "@multica/core/issues/decision-artifacts";
 import { labelListOptions } from "@multica/core/labels/queries";
 import { propertyListOptions } from "@multica/core/properties/queries";

@@ -310,6 +310,21 @@ var issueAssignCmd = &cobra.Command{
 	RunE:  runIssueAssign,
 }
 
+var issueRouteCmd = &cobra.Command{
+	Use:   "route <id>",
+	Short: "Move an issue's status and record why (System 1 route label)",
+	Long: "Move an issue to --status, optionally hand it to --owner, and record the reason\n" +
+		"and confidence behind the decision, in one call. Use it from a routing step.\n\n" +
+		"Without --owner the project workflow picks the handler, as with `issue status`.\n" +
+		"An explicit --owner (member, agent, or squad) replaces the workflow's handler.\n" +
+		"Keeping the current status and changing only the owner is allowed; the same\n" +
+		"status and owner is refused with 409.\n\n" +
+		"--no-start behaves as it does for `issue update`: no agent run starts, not even\n" +
+		"the run of a workflow step's handler or of an explicit --owner.",
+	Args: exactArgs(1),
+	RunE: runIssueRoute,
+}
+
 var issueStatusCmd = &cobra.Command{
 	Use:   "status <id> <status>",
 	Short: "Change issue status",
@@ -639,6 +654,7 @@ func init() {
 	issueCmd.AddCommand(issueUpdateCmd)
 	issueCmd.AddCommand(issueAssignCmd)
 	issueCmd.AddCommand(issueStatusCmd)
+	issueCmd.AddCommand(issueRouteCmd)
 	issueCmd.AddCommand(issueReorderCmd)
 	issueCmd.AddCommand(issueCommentCmd)
 	issueCmd.AddCommand(issueSubscriberCmd)
@@ -756,6 +772,14 @@ func init() {
 	registerIssueReorderFlags(issueReorderCmd)
 
 	// issue assign
+	issueRouteCmd.Flags().String("status", "", "Target status key (required)")
+	issueRouteCmd.Flags().String("owner", "", "New owner name (member, agent, or squad; fuzzy match)")
+	issueRouteCmd.Flags().String("owner-id", "", "New owner UUID — member, agent, or squad (mutually exclusive with --owner)")
+	issueRouteCmd.Flags().String("reason", "", "Why this route (1-500 characters, required)")
+	issueRouteCmd.Flags().Float64("confidence", 0, "Confidence in the route, 0 to 1 (required)")
+	issueRouteCmd.Flags().Bool("no-start", false, "Route without starting an agent run")
+	issueRouteCmd.Flags().Int64("expected-revision", 0, "Refuse the route if the issue's revision differs")
+	issueRouteCmd.Flags().String("output", "json", "Output format: table or json")
 	issueAssignCmd.Flags().String("to", "", "Assignee name (member, agent, or squad; fuzzy match)")
 	issueAssignCmd.Flags().String("to-id", "", "Assignee UUID — member, agent, or squad (mutually exclusive with --to)")
 	issueAssignCmd.Flags().Bool("unassign", false, "Remove current assignee")
@@ -4447,4 +4471,65 @@ func compactComments(comments []map[string]any) {
 			}
 		}
 	}
+}
+
+func runIssueRoute(cmd *cobra.Command, args []string) error {
+	status, _ := cmd.Flags().GetString("status")
+	reason, _ := cmd.Flags().GetString("reason")
+	switch {
+	case strings.TrimSpace(status) == "":
+		return fmt.Errorf("--status is required")
+	case strings.TrimSpace(reason) == "":
+		return fmt.Errorf("--reason is required")
+	case !cmd.Flags().Changed("confidence"):
+		return fmt.Errorf("--confidence is required")
+	}
+	if err := validateIssueStatus(status); err != nil {
+		return err
+	}
+	confidence, _ := cmd.Flags().GetFloat64("confidence")
+	if !(confidence >= 0 && confidence <= 1) {
+		return fmt.Errorf("--confidence must be between 0 and 1")
+	}
+
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	body := map[string]any{"status": status, "reason": reason, "confidence": confidence}
+	oType, oID, hasOwner, err := pickAssigneeFromFlags(ctx, client, cmd, "owner", "owner-id", issueAssigneeKinds)
+	if err != nil {
+		return fmt.Errorf("resolve owner: %w", err)
+	}
+	if hasOwner {
+		body["owner_type"], body["owner_id"] = oType, oID
+	}
+	if noStart, _ := cmd.Flags().GetBool("no-start"); noStart {
+		body["suppress_run"] = true
+	}
+	if cmd.Flags().Changed("expected-revision") {
+		rev, _ := cmd.Flags().GetInt64("expected-revision")
+		body["expected_revision"] = rev
+	}
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/route", body, &result); err != nil {
+		return fmt.Errorf("route issue: %w", err)
+	}
+	issue, _ := result["issue"].(map[string]any)
+	fmt.Fprintf(os.Stderr, "Issue %s routed to %s.\n", issueDisplayKey(issue), status)
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
 }
