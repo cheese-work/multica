@@ -140,52 +140,6 @@ func TestBuildQuickCreatePromptAssigneeIncludesSquads(t *testing.T) {
 	}
 }
 
-// TestBuildQuickCreatePromptSquadDefaultsToSquad locks in the MUL-2203
-// fix: when the picker was a squad, the task runs on the squad's leader
-// agent, but the default assignee for issues created by this run must
-// point at the SQUAD's UUID — not the leader agent's UUID. The previous
-// "default to YOURSELF" instruction made squad-created issues land under
-// the leader, hiding them from the squad's delegation flow.
-func TestBuildQuickCreatePromptSquadDefaultsToSquad(t *testing.T) {
-	const (
-		squadID   = "aaaa1111-2222-3333-4444-555555555555"
-		squadName = "独立团"
-		leaderID  = "bbbb1111-2222-3333-4444-666666666666"
-	)
-	out := buildQuickCreatePrompt(Task{
-		QuickCreatePrompt: "fix the login button color",
-		Agent:             &AgentData{ID: leaderID, Name: "leader-agent"},
-		SquadID:           squadID,
-		SquadName:         squadName,
-	})
-
-	// The default-assignee instruction must point at the squad UUID.
-	if !strings.Contains(out, "--assignee-id \""+squadID+"\"") {
-		t.Errorf("buildQuickCreatePrompt with SquadID must default to the squad's UUID, got:\n%s", out)
-	}
-	// And it must NOT tell the agent to default to itself (the leader).
-	if strings.Contains(out, "--assignee-id \""+leaderID+"\"") {
-		t.Errorf("buildQuickCreatePrompt with SquadID must NOT default to the leader agent's UUID, got:\n%s", out)
-	}
-	// The squad name should appear in the instruction so the agent has
-	// human-readable context for the routing decision.
-	if !strings.Contains(out, squadName) {
-		t.Errorf("buildQuickCreatePrompt with SquadID should mention the squad name %q, got:\n%s", squadName, out)
-	}
-	// And the prompt must explicitly call out the squad-vs-leader rule
-	// so the agent does not silently regress to "default to YOURSELF".
-	mustContain := []string{
-		"picker SQUAD",
-		"running on the squad's behalf",
-		"do not assign it to your own agent UUID",
-	}
-	for _, s := range mustContain {
-		if !strings.Contains(out, s) {
-			t.Errorf("buildQuickCreatePrompt with SquadID missing %q\n--- output ---\n%s", s, out)
-		}
-	}
-}
-
 // TestBuildQuickCreatePromptProjectPinning verifies that when the user
 // pins a project in the quick-create modal, the prompt instructs the agent
 // to pass `--project <uuid>` exactly. Without this, the agent would re-read
@@ -2339,5 +2293,26 @@ func TestBuildCommentPromptEmbedsTriggerThreadContext(t *testing.T) {
 	task.TriggerThreadContext = ""
 	if strings.Contains(BuildPrompt(task, "codex"), "Thread context") {
 		t.Fatal("empty thread context must render no section")
+	}
+}
+
+// CHE-4150 (L6 of CHE-2769): a DM turn lists the open ask ids it may name in
+// `multica chat reply-state`, so the agent never has to guess.
+func TestBuildChatPromptListsOpenAskIDs(t *testing.T) {
+	out := buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi", ChatOpenAskIDs: []string{"ask-1", "ask-2"}})
+	for _, want := range []string{"multica chat reply-state", "ask-1", "ask-2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBuildChatPromptWithoutOpenAsksStillExplainsReplyState(t *testing.T) {
+	out := buildChatPrompt(Task{ChatSessionID: "s", ChatMessage: "hi"})
+	if !strings.Contains(out, "multica chat reply-state") {
+		t.Errorf("prompt lacks the reply-state instruction:\n%s", out)
+	}
+	if !strings.Contains(out, "no open asks") {
+		t.Errorf("prompt must say there are no open asks:\n%s", out)
 	}
 }

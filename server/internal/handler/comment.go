@@ -32,11 +32,13 @@ import (
 )
 
 type CommentResponse struct {
-	ID                  string  `json:"id"`
-	IssueID             string  `json:"issue_id"`
-	AuthorType          string  `json:"author_type"`
-	AuthorID            string  `json:"author_id"`
-	Content             string  `json:"content"`
+	ID         string `json:"id"`
+	IssueID    string `json:"issue_id"`
+	AuthorType string `json:"author_type"`
+	AuthorID   string `json:"author_id"`
+	Content    string `json:"content"`
+	// Withheld marks Content as a stub: an elevated run may not read the body.
+	Withheld            bool    `json:"withheld,omitempty"`
 	Type                string  `json:"type"`
 	ParentID            *string `json:"parent_id"`
 	WebURL              string  `json:"web_url,omitempty"`
@@ -610,6 +612,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 	grouped := h.groupReactions(r, commentIDs)
 	groupedAtt := h.groupAttachments(r, commentIDs)
 
+	readFilter := h.newReadFilter(r)
 	resp := make([]CommentResponse, len(result.Comments))
 	for i, c := range result.Comments {
 		cid := uuidToString(c.ID)
@@ -637,6 +640,11 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 			clipped, truncated := summarizeContent(resp[i].Content)
 			resp[i].Content = clipped
 			resp[i].ContentTruncated = &truncated
+		}
+		// Last, so no read mode or summary clip can put the original text back.
+		if readFilter.withholdsComment(c) {
+			resp[i].Content = h.commentStub(r.Context(), c)
+			resp[i].Withheld = true
 		}
 	}
 
@@ -1449,11 +1457,14 @@ type SupersedeResult struct {
 }
 
 type CreateCommentRequest struct {
-	Content          string   `json:"content"`
-	Supersedes       []string `json:"supersedes"`
-	DecisionIntent   bool     `json:"decision_intent"`
-	DecisionRecord   bool     `json:"decision_record"`
-	DecisionVeto     bool     `json:"decision_veto"`
+	Content        string   `json:"content"`
+	Supersedes     []string `json:"supersedes"`
+	DecisionIntent bool     `json:"decision_intent"`
+	DecisionRecord bool     `json:"decision_record"`
+	DecisionVeto   bool     `json:"decision_veto"`
+	// NotifyOnly declares an FYI: an agent-task comment may mention a member
+	// without a decision request. It never binds a wait.
+	NotifyOnly       bool     `json:"notify_only"`
 	MessageIDs       []string `json:"message_ids"`
 	ContextMessageID string   `json:"context_message_id"`
 	Excerpts         []string `json:"excerpts"`
@@ -1469,8 +1480,10 @@ type CreateCommentRequest struct {
 	// one: its agent keeps the normal trigger.
 	SteerTaskIDs []string `json:"steer_task_ids"`
 	// Steer adds the comment to the current running turn of every recipient
-	// that has no turn in SteerTaskIDs, with the same fallback.
-	Steer bool `json:"steer"`
+	// that has no turn in SteerTaskIDs, with the same fallback. Left unset, a
+	// member's comment steers anyway (CHE-5286); an explicit false keeps the
+	// normal trigger, so a client that offers "start after this run" can say so.
+	Steer *bool `json:"steer"`
 }
 
 type CommentTriggerPreviewRequest struct {
@@ -1713,6 +1726,11 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.NotifyOnly && (req.DecisionIntent || req.DecisionRecord || req.DecisionVeto) {
+		writeError(w, http.StatusBadRequest, "notify_only cannot combine with decision_intent, decision_record or decision_veto")
+		return
+	}
+
 	// Strip bytes PostgreSQL's TEXT column rejects before the empty check. The
 	// case reachable over the JSON API is an embedded NUL (0x00, SQLSTATE
 	// 22021) that survives a JSON round trip; sanitizeNullBytes also drops
@@ -1789,13 +1807,20 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// A running turn receives text only, so a comment that carries files is
 	// always a normal trigger.
-	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer}
+	steer := commentSteerRequest{TaskIDs: steerTaskIDs, All: req.Steer != nil && *req.Steer}
+	// Determine author identity: agent (via X-Agent-ID header) or member.
+	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
+	// A recipient that already runs a turn on this issue takes a member's comment
+	// into that turn whether or not the author asked to steer: a second run would
+	// answer the same issue twice (CHE-5286). A turn that cannot take input keeps
+	// the normal queued / deferred handling. An agent author steers only on
+	// request: its steers are capped and replayed per turn.
+	if steer.empty() && req.Steer == nil && authorType == "member" {
+		steer.All, steer.Implicit = true, true
+	}
 	if len(attachmentIDs) > 0 {
 		steer = commentSteerRequest{}
 	}
-
-	// Determine author identity: agent (via X-Agent-ID header) or member.
-	authorType, authorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 
 	// CHE-408: refuse agent-authored content that does not cite this issue's
 	// declared required source. Must stay ahead of the insert transaction below
@@ -1845,8 +1870,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// no_action guards below, and autopilotDelegationAuthority's lineage
 	// verification (MUL-4857).
 	var sourceTaskID pgtype.UUID
+	var actorTask *db.AgentTaskQueue
 	if authorType == "agent" {
 		if task, ok := h.taskFromRequestHeader(r); ok {
+			actorTask = &task
 			// Defense against resumed-session drift: when an agent posts from
 			// inside a comment-triggered task AND the comment is being posted on
 			// that same issue, the parent_id must exactly match the task's
@@ -1891,6 +1918,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceTaskID = task.ID
 		}
+	}
+
+	if !req.DecisionIntent && !req.NotifyOnly && !h.askGuardAllowsComment(w, r, issue, authorType, actorTask, req.Content) {
+		return
 	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
@@ -2349,6 +2380,10 @@ func (h *Handler) collapseIntoQueuedSibling(ctx context.Context, issue db.Issue,
 		slog.Warn("collapse queued duplicate: lock failed", "task_id", uuidToString(task.ID), "error", err)
 		return false
 	}
+	if _, err := qtx.LockIssueRunBudget(ctx, issue.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("collapse queued duplicate: issue lock failed", "task_id", uuidToString(task.ID), "error", err)
+		return false
+	}
 	siblingID, err := qtx.LockQueuedSiblingTask(ctx, task.ID)
 	if err != nil {
 		if !isNotFound(err) {
@@ -2598,7 +2633,40 @@ func commentEnqueueFailureReason(err error) DispatchReasonCode {
 	if errors.Is(err, service.ErrAttributionFailClosed) {
 		return ReasonAttributionBlocked
 	}
+	// The same refusals the rerun path types (task_lifecycle.go); each is a
+	// property of the issue or stage, so the code stays enumeration-safe.
+	if errors.Is(err, service.ErrStageQueueFull) {
+		return ReasonStageQueueFull
+	}
+	if errors.Is(err, service.ErrAdmissionDeferred) {
+		return ReasonAdmissionDeferred
+	}
+	if errors.Is(err, service.ErrRunBudgetExhausted) {
+		return ReasonRunBudgetExhausted
+	}
+	if errors.Is(err, service.ErrReviewHeadAnswered) {
+		return ReasonReviewHeadAnswered
+	}
+	if errors.Is(err, service.ErrAgentPaused) {
+		return ReasonAgentPaused
+	}
+	if errors.Is(err, service.ErrIssueInTriage) {
+		return ReasonIssueInTriage
+	}
 	return ReasonInternalError
+}
+
+// logCommentAdmissionInternalError records why a comment admission branch
+// reported internal_error. trigger_outcomes carries only the reason code, so
+// this warning is the only place the cause is readable.
+func logCommentAdmissionInternalError(branch string, issueID pgtype.UUID, opts commentTriggerComputeOptions, targetType, targetID string, err error) {
+	slog.Warn("comment admission reported internal_error",
+		"branch", branch,
+		"issue_id", uuidToString(issueID),
+		"comment_id", uuidToString(opts.ExcludeTriggerCommentID),
+		"target_type", targetType,
+		"target_id", targetID,
+		"error", err)
 }
 
 // hasActiveTaskForIssueAndAgent reports whether the (issue, agent) pair has any
@@ -2730,7 +2798,11 @@ func (h *Handler) mergeCommentIntoPendingTask(ctx context.Context, issue db.Issu
 		}
 		return commentMergeError
 	}
-	row, err := h.Queries.MergeCommentIntoPendingTask(ctx, params)
+	var row db.AgentTaskQueue
+	err = h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.MergeCommentIntoPendingTask(ctx, params)
+		return e
+	})
 	if err != nil {
 		if isNotFound(err) {
 			// No pre-claim (queued/deferred) task to merge into. The caller
@@ -2810,22 +2882,26 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 	if trigger.Squad != nil {
 		squadID = trigger.Squad.ID
 	}
-	row, err := h.Queries.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{
-		NewTriggerCommentID:     params.NewTriggerCommentID,
-		NewTriggerSummary:       params.NewTriggerSummary,
-		NewOriginatorUserID:     params.NewOriginatorUserID,
-		NewAccountableUserID:    params.NewAccountableUserID,
-		NewOriginatorSource:     params.NewOriginatorSource,
-		NewDelegatedFromTaskID:  params.NewDelegatedFromTaskID,
-		NewRuleVersionID:        params.NewRuleVersionID,
-		NewTriggerEvidenceKind:  params.NewTriggerEvidenceKind,
-		NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID,
-		NewRuntimeMcpOverlay:    params.NewRuntimeMcpOverlay,
-		NewRuntimeConnectedApps: params.NewRuntimeConnectedApps,
-		IssueID:                 issue.ID,
-		AgentID:                 trigger.Agent.ID,
-		SquadID:                 squadID,
-		HeadSha:                 headSha,
+	var row db.MergeCommentIntoQueuedIssueTaskRow
+	err = h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.MergeCommentIntoQueuedIssueTask(ctx, db.MergeCommentIntoQueuedIssueTaskParams{
+			NewTriggerCommentID:     params.NewTriggerCommentID,
+			NewTriggerSummary:       params.NewTriggerSummary,
+			NewOriginatorUserID:     params.NewOriginatorUserID,
+			NewAccountableUserID:    params.NewAccountableUserID,
+			NewOriginatorSource:     params.NewOriginatorSource,
+			NewDelegatedFromTaskID:  params.NewDelegatedFromTaskID,
+			NewRuleVersionID:        params.NewRuleVersionID,
+			NewTriggerEvidenceKind:  params.NewTriggerEvidenceKind,
+			NewTriggerEvidenceRefID: params.NewTriggerEvidenceRefID,
+			NewRuntimeMcpOverlay:    params.NewRuntimeMcpOverlay,
+			NewRuntimeConnectedApps: params.NewRuntimeConnectedApps,
+			IssueID:                 issue.ID,
+			AgentID:                 trigger.Agent.ID,
+			SquadID:                 squadID,
+			HeadSha:                 headSha,
+		})
+		return e
 	})
 	if err != nil {
 		if !isNotFound(err) {
@@ -2855,11 +2931,15 @@ func (h *Handler) foldCommentIntoQueuedIssueTask(ctx context.Context, issue db.I
 // decision. Delivered ids are untouched, so completion reconcile replays the
 // comment as a single bounded follow-up (#5914). See the query doc.
 func (h *Handler) registerPlannedCommentForActiveTask(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, headSha pgtype.Text) (bool, error) {
-	row, err := h.Queries.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
-		CommentID: commentID,
-		IssueID:   issue.ID,
-		AgentID:   agentID,
-		HeadSha:   headSha,
+	var row db.RegisterPlannedCommentForActiveTaskRow
+	err := h.underIssueLock(ctx, issue.ID, func(q *db.Queries) (e error) {
+		row, e = q.RegisterPlannedCommentForActiveTask(ctx, db.RegisterPlannedCommentForActiveTaskParams{
+			CommentID: commentID,
+			IssueID:   issue.ID,
+			AgentID:   agentID,
+			HeadSha:   headSha,
+		})
+		return e
 	})
 	if err != nil {
 		if isNotFound(err) {
@@ -3101,6 +3181,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 			triggers = nil
 			for index := range targets {
 				if targets[index].ReasonCode != ReasonInvocationNotAllowed {
+					if reason == ReasonInternalError {
+						logCommentAdmissionInternalError("project_active_check", issue.ID, opts, targets[index].TargetType, targets[index].TargetID, err)
+					}
 					targets[index].ExecAgentID = ""
 					targets[index].Status = DispatchBlocked
 					targets[index].ReasonCode = reason
@@ -3141,11 +3224,7 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		if actorType == "agent" && wakePolicyEnabled {
 			return h.resolveAgentCommentMentions(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 		}
-		triggers, targets := h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
-		if actorType == "member" {
-			triggers = h.withBlockedAssignee(ctx, issue, triggers, actorType, actorID, opts)
-		}
-		return triggers, targets
+		return h.resolveMentionedAgentCommentTriggers(ctx, issue, mentions, parentComment, actorType, actorID, opts)
 	}
 	if util.HasMentionAll(mentions) {
 		return nil, nil
@@ -3180,8 +3259,9 @@ func (h *Handler) computeCommentAgentTriggers(ctx context.Context, issue db.Issu
 		return nil, nil
 	}
 
-	// Member input on a blocked issue reaches its assignee as well as the
-	// thread's existing recipients, wherever the comment sits in the tree.
+	// Untagged member input on a blocked issue reaches its assignee as well as
+	// the thread's existing recipients, wherever the comment sits in the tree.
+	// A tagged comment wakes only the tagged targets (handled above).
 	return h.withBlockedAssignee(ctx, issue, h.routeMemberCommentTriggers(ctx, issue, parentComment, actorType, actorID, opts), actorType, actorID, opts), nil
 }
 
@@ -3258,10 +3338,39 @@ func (h *Handler) suppressImplicitAgentCommentRoutes(ctx context.Context, issue 
 	return targets
 }
 
+func (h *Handler) latestAgentCommentInAgentRootedThread(ctx context.Context, issue db.Issue, parent *db.Comment, opts commentTriggerComputeOptions) (db.Comment, bool) {
+	root, err := h.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{CommentID: parent.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || root.AuthorType != "agent" {
+		return db.Comment{}, false
+	}
+	last, err := h.Queries.GetThreadLatestAgentComment(ctx, db.GetThreadLatestAgentCommentParams{
+		TargetID: parent.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		BeforeCommentID: opts.ExcludeTriggerCommentID,
+	})
+	if err != nil {
+		return db.Comment{}, false
+	}
+	return last, true
+}
+
 // routeMemberCommentTriggers is the implicit routing of a member comment with no
 // mentions: the replied-to agent, the thread's owners, or the issue assignee.
 func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
-	// A deleted parent no longer speaks for its agent author (#8296).
+	// In an agent-rooted thread an unmentioned reply wakes the agent that spoke
+	// last, not the agent that owns the root (CHE-5421). A deleted comment no
+	// longer speaks for its agent author (#8296); the query skips it.
+	if parentComment != nil {
+		if last, ok := h.latestAgentCommentInAgentRootedThread(ctx, issue, parentComment, opts); ok {
+			trigger, ok := h.routeReplyToParentAuthor(ctx, issue, &last, actorType, actorID, opts)
+			if !ok {
+				return nil
+			}
+			return []commentAgentTrigger{trigger}
+		}
+	}
+
+	// Replying directly to an agent comment in a member-rooted thread wakes
+	// that comment's author (#8296: not when it is deleted).
 	if parentComment != nil && parentComment.AuthorType == "agent" && !parentComment.DeletedAt.Valid {
 		trigger, ok := h.routeReplyToParentAuthor(ctx, issue, parentComment, actorType, actorID, opts)
 		if !ok {
@@ -3818,6 +3927,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 			}
 			hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, leaderID, opts)
 			if err != nil {
+				logCommentAdmissionInternalError("squad_mention_pending_check", issue.ID, opts, "squad", m.ID, err)
 				blockTarget("squad", m.ID, ReasonInternalError)
 				continue
 			}
@@ -3877,6 +3987,7 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 		}
 		hasPending, err := h.hasPendingTaskForIssueAndAgent(ctx, issue.ID, agentUUID, opts)
 		if err != nil {
+			logCommentAdmissionInternalError("agent_mention_pending_check", issue.ID, opts, "agent", m.ID, err)
 			blockTarget("agent", m.ID, ReasonInternalError)
 			continue
 		}
@@ -4013,6 +4124,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	if existing.Content != req.Content {
 		triggerType, triggerID := commentTriggerActor(existing, actorType, actorID)
 		if h.rejectInvalidAgentMentions(r.Context(), w, issueForSource, req.Content, triggerType, triggerID, h.invokeOriginatorFromRequest(r, triggerType, triggerID), agentMentionIDs(existing.Content)) {
+			return
+		}
+		if !h.askGuardAllowsCommentEdit(w, r, issueForSource, actorType, existing.Content, req.Content) {
 			return
 		}
 	}
@@ -4442,6 +4556,11 @@ func (h *Handler) deleteComment(ctx context.Context, commentID, workspaceID pgty
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
+	// The delete nulls the trigger of every run that names this comment, which
+	// locks that run's issue; take those issues before the run rows.
+	if err := service.LockIssuesBeforeCommentDelete(ctx, qtx, commentID, workspaceID); err != nil {
+		return out, err
+	}
 	target, err := qtx.LockCommentForDelete(ctx, db.LockCommentForDeleteParams{
 		ID:          commentID,
 		WorkspaceID: workspaceID,

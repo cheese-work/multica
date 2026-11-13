@@ -1,0 +1,103 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+:root{--shell:oklch(0.964 0.001 286);--canvas:oklch(0.988 0 0);--surface:#fff;--hover:oklch(0.967 0.001 286);--selected:oklch(0.95 0.002 286);--border:oklch(0.92 0.004 286);--ctl:oklch(0.78 0.006 286);--fg:oklch(0.141 0.005 286);--muted:oklch(0.505 0.016 286);--primary:oklch(0.21 0.006 286);--primary-fg:oklch(0.985 0 0);--brand:oklch(0.56 0.194 256);--brandbg:oklch(0.96 0.03 256);--ok:oklch(0.42 0.12 145);--warnbg:oklch(0.97 0.05 85);--warnbd:oklch(0.82 0.11 85);--warnfg:oklch(0.38 0.08 70);--errbg:oklch(0.97 0.025 27);--errbd:oklch(0.8 0.1 27);--errfg:oklch(0.45 0.18 27)}
+*{box-sizing:border-box;margin:0}
+body{background:var(--shell);font:14px/20px Inter,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg);padding:28px 32px 40px}
+h1{font-size:20px;line-height:28px;font-weight:650}.lede{color:var(--muted);font-size:13px;margin:4px 0 24px;max-width:96ch}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:32px 28px;align-items:start}
+.cap{font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px}.cap b{color:var(--fg)}
+.win{border:1px solid var(--border);background:var(--canvas);border-radius:8px;padding:16px}
+.crumb{font-size:12px;color:var(--muted);margin-bottom:12px}.crumb b{color:var(--fg);font-weight:600}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
+.card-h{padding:16px 20px;display:flex;gap:12px;align-items:flex-start}.card-h .t{flex:1}h2{font-size:16px;line-height:24px;font-weight:600}.sub{color:var(--muted);font-size:13px}
+.sum{padding:0 20px 16px;font-size:15px;line-height:22px}.sum b{font-weight:600}
+.btn{height:32px;padding:0 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface);font:inherit;font-size:13px;font-weight:550;color:var(--fg)}
+.btn.pri{background:var(--primary);color:var(--primary-fg);border-color:var(--primary)}.btn[disabled]{opacity:.45}.btn.add{border-style:dashed;height:28px;padding:0 10px;color:var(--muted)}
+.focus{outline:2px solid var(--brand);outline-offset:2px}
+code{font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--selected);padding:1px 5px;border-radius:4px}
+table{width:100%;border-collapse:collapse;font-size:13px;border-top:1px solid var(--border)}th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:8px 12px;border-bottom:1px solid var(--border)}th:first-child,td:first-child{padding-left:20px}td{padding:10px 12px;border-bottom:1px solid var(--border)}tr:last-child td{border-bottom:0}th.c,td.c{text-align:center;width:118px}
+th small{display:block;font:11px/14px ui-monospace,Menlo,monospace;color:var(--muted);font-weight:400}
+.yes{display:inline-flex;align-items:center;gap:4px;color:var(--ok);font-weight:600;font-size:12px}.no{color:var(--muted)}
+.newc{background:var(--brandbg);box-shadow:inset 0 0 0 1.5px var(--brand);border-radius:4px;padding:3px 8px;display:inline-flex;gap:4px;align-items:center;color:var(--ok);font-weight:600;font-size:12px}
+.how{padding:12px 20px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center}.how .l{flex:1}.how b{color:var(--fg);font-weight:600}
+.ed{border-top:1px solid var(--border);padding:16px 20px;background:var(--canvas);border-radius:0 0 8px 8px}.ed h3{font-size:13px;font-weight:600;margin-bottom:12px}
+.f{margin-bottom:14px}.f .lbl{font-weight:600;font-size:13px;margin-bottom:6px}
+.chip{display:inline-flex;align-items:center;gap:4px;height:28px;padding:0 4px 0 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:13px;margin:0 6px 6px 0}.chip button{width:24px;height:24px;border:0;background:none;border-radius:4px;color:var(--muted);display:grid;place-items:center}.chip.bad{border-color:var(--errbd);background:var(--errbg);color:var(--errfg)}.chip.bad button{color:var(--errfg)}
+.pick{display:flex;gap:8px;flex-wrap:wrap}.pick label{display:inline-flex;gap:8px;align-items:center;height:32px;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface)}.pick input{width:16px;height:16px;accent-color:var(--primary)}
+.sw{width:44px;height:24px;border-radius:12px;border:0;background:var(--ctl);position:relative;flex:none}.sw i{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 2px oklch(0 0 0/.25)}.sw.on{background:var(--primary)}.sw.on i{left:22px}.swrow{display:flex;gap:12px;align-items:flex-start}.hint{color:var(--muted);font-size:12px}
+.edfoot{display:flex;gap:8px;align-items:center;justify-content:flex-end;font-size:12px;color:var(--muted);padding-top:12px;border-top:1px solid var(--border)}.edfoot .l{margin-right:auto}
+.ban{display:flex;gap:10px;padding:10px 12px;border-radius:6px;font-size:13px;margin:0 20px 14px}.ban svg{flex:none;margin-top:3px}.ban.in{margin:10px 0}
+.warn{background:var(--warnbg);border:1px solid var(--warnbd);color:var(--warnfg)}.err{background:var(--errbg);border:1px solid var(--errbd);color:var(--errfg)}.lock{background:var(--selected);border:1px solid var(--border)}
+.empty{margin:0 20px 20px;border:1px dashed var(--ctl);border-radius:6px;padding:18px;color:var(--muted);font-size:13px}.empty b{color:var(--fg)}
+.opt{display:flex;gap:8px;align-items:flex-start;margin-top:8px}.opt input{width:16px;height:16px;margin-top:2px;accent-color:var(--primary)}
+</style></head><body>
+<h1>B · Read first, edit opens a live preview</h1>
+<p class="lede">Same section, different order. The page opens on the answer: one sentence and a who-by-field grid. “Edit rule” opens the three inputs under the grid, and the grid redraws as you change them, so Cheese sees who may write which field before saving. Field list is a sample catalog (assumption).</p>
+<div class="grid">
+
+<div><div class="cap"><b>1 · Owner or admin, saved value after reload</b></div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Which agents may write which governed fields, and whether a person must decide first.</p></div><button class="btn">Edit rule</button></div>
+<p class="sum"><b>2 agents</b> may write <b>1 field</b>. Each change waits in a <b>decision card</b>.</p>
+<table><tr><th>Agent</th><th class="c">Instructions<small>agent.instructions</small></th><th class="c">Skills<small>agent.skills</small></th><th class="c">Model<small>agent.model</small></th></tr>
+<tr><td>x99-claude-sonnet-200k</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr>
+<tr><td>x99-codex-terra</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr></table>
+<div class="how"><span class="l">All other agents: read-only for every governed field.</span>Saved by <b>Cheese</b> · 8 Nov 2026 14:20 ICT</div></div>
+</div></div>
+
+<div><div class="cap"><b>2 · Editing</b> — skills ticked and a third agent added; the grid shows the result before Save</div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Preview of the unsaved rule</p></div><button class="btn" disabled>Edit rule</button></div>
+<p class="sum"><b>3 agents</b> may write <b>2 fields</b>. Each change waits in a <b>decision card</b>.</p>
+<table><tr><th>Agent</th><th class="c">Instructions<small>agent.instructions</small></th><th class="c">Skills<small>agent.skills</small></th><th class="c">Model<small>agent.model</small></th></tr>
+<tr><td>x99-claude-sonnet-200k</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c"><span class="newc"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>New</span></td><td class="c no">Read-only</td></tr>
+<tr><td>x99-codex-terra</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c"><span class="newc"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>New</span></td><td class="c no">Read-only</td></tr>
+<tr><td>x99-agy-gemini-ux <span class="hint">· new</span></td><td class="c"><span class="newc"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>New</span></td><td class="c"><span class="newc"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>New</span></td><td class="c no">Read-only</td></tr></table>
+<div class="ed"><h3>Edit rule</h3>
+<div class="f"><div class="lbl">Allowed agents</div><span class="chip">x99-claude-sonnet-200k<button aria-label="Remove"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3L3 9"/></svg></button></span><span class="chip">x99-codex-terra<button aria-label="Remove"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3L3 9"/></svg></button></span><span class="chip">x99-agy-gemini-ux<button aria-label="Remove"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3L3 9"/></svg></button></span><button class="btn add">Add agent</button></div>
+<div class="f"><div class="lbl">Allowed fields</div><div class="pick"><label><input type="checkbox" checked><code>agent.instructions</code></label><label><input type="checkbox" checked class="focus"><code>agent.skills</code></label><label><input type="checkbox"><code>agent.model</code></label></div></div>
+<div class="f"><div class="lbl">Requires human decision</div><div class="swrow"><button class="sw on" role="switch" aria-checked="true" aria-label="Requires human decision"><i></i></button><div>On<p class="hint">A written change waits in a decision card. You apply it with one click.</p></div></div></div>
+<div class="edfoot"><span class="l">Unsaved changes</span><button class="btn">Cancel</button><button class="btn pri">Save changes</button></div></div></div>
+</div></div>
+
+<div><div class="cap"><b>3 · Empty state</b> — nothing delegated yet</div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Which agents may write which governed fields, and whether a person must decide first.</p></div></div>
+<div class="empty"><b>No agent may write a governed field.</b><br>Agents can still propose changes. Only people apply them. Once you allow an agent, every change waits in a decision card unless you turn that off.<div style="margin-top:12px"><button class="btn pri">Set up delegation</button></div></div>
+<div class="how"><span class="l">Never saved. Default: decision required.</span></div></div>
+</div></div>
+
+<div><div class="cap"><b>4 · Member (not owner or admin)</b> — grid visible, no Edit button</div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Which agents may write which governed fields, and whether a person must decide first.</p></div></div>
+<div class="ban lock" role="note"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 015 0v2"/></svg><span>Only workspace owners and admins can change this. You are a member. Ask an owner to change it.</span></div>
+<p class="sum"><b>2 agents</b> may write <b>1 field</b>. Each change waits in a <b>decision card</b>.</p>
+<table><tr><th>Agent</th><th class="c">Instructions<small>agent.instructions</small></th><th class="c">Skills<small>agent.skills</small></th><th class="c">Model<small>agent.model</small></th></tr>
+<tr><td>x99-claude-sonnet-200k</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr>
+<tr><td>x99-codex-terra</td><td class="c"><span class="yes"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>May write</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr></table>
+<div class="how"><span class="l">Saved by Cheese · 8 Nov 2026 14:20 ICT</span></div></div>
+</div></div>
+
+<div><div class="cap"><b>5 · Turning “Requires human decision” off</b> — the summary and the grid change with the switch; Save locked until confirmed</div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Preview of the unsaved rule</p></div></div>
+<p class="sum"><b>2 agents</b> may write <b>1 field</b>, <b style="color:var(--warnfg)">directly, with no decision card</b>.</p>
+<table><tr><th>Agent</th><th class="c">Instructions<small>agent.instructions</small></th><th class="c">Skills<small>agent.skills</small></th><th class="c">Model<small>agent.model</small></th></tr>
+<tr><td>x99-claude-sonnet-200k</td><td class="c"><span class="yes" style="color:var(--warnfg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>Writes directly</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr>
+<tr><td>x99-codex-terra</td><td class="c"><span class="yes" style="color:var(--warnfg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>Writes directly</span></td><td class="c no">Read-only</td><td class="c no">Read-only</td></tr></table>
+<div class="ed"><div class="f"><div class="lbl">Requires human decision</div><div class="swrow"><button class="sw focus" role="switch" aria-checked="false" aria-label="Requires human decision"><i></i></button><div>Off</div></div>
+<div class="ban warn in" role="alert"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2l6.5 11.5h-13zM8 6.5v3.2M8 11.6v.1"/></svg><span><b>No one reviews first.</b> These agents change <code>agent.instructions</code> with no decision card.</span></div>
+<label class="opt"><input type="checkbox"><span>I understand agents will write this field without a decision.</span></label></div>
+<div class="edfoot"><span class="l">Unsaved changes</span><button class="btn">Cancel</button><button class="btn pri" disabled>Save changes</button></div></div></div>
+</div></div>
+
+<div><div class="cap"><b>6 · Save refused</b> — your input stays; the error names the cause and the fix</div><div class="win">
+<div class="crumb">Workspace settings › <b>Governance</b></div>
+<div class="card"><div class="card-h"><div class="t"><h2>Delegated governed writes</h2><p class="sub">Showing the last saved rule</p></div></div>
+<p class="sum"><b>2 agents</b> may write <b>1 field</b>. Each change waits in a <b>decision card</b>.</p>
+<div class="ed" style="border-top:1px solid var(--border)">
+<div class="ban err in" style="margin-top:0" role="alert"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 10.8v.1"/></svg><span><b>Not saved. Nothing changed.</b> x99-old-runner was archived and cannot be allowed. Remove it, then save again.</span></div>
+<div class="f"><div class="lbl">Allowed agents</div><span class="chip">x99-claude-sonnet-200k<button aria-label="Remove"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3L3 9"/></svg></button></span><span class="chip bad">x99-old-runner · archived<button aria-label="Remove x99-old-runner"><svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3L3 9"/></svg></button></span></div>
+<div class="edfoot"><span class="l">Unsaved changes</span><button class="btn">Cancel</button><button class="btn pri">Save changes</button></div></div></div>
+</div></div>
+
+</div></body></html>

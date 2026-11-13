@@ -58,6 +58,8 @@ import { isNameConflictError } from "../lib/utils";
 
 type Method = "chooser" | "manual" | "local" | "url" | "runtime";
 
+export type CreateSkillMethod = Exclude<Method, "chooser">;
+
 function seedAfterCreate(
   qc: ReturnType<typeof useQueryClient>,
   wsId: string,
@@ -73,7 +75,7 @@ function seedAfterCreate(
 function MethodChooser({ onChoose }: { onChoose: (m: Method) => void }) {
   const { t } = useT("skills");
   const methods: {
-    key: Exclude<Method, "chooser">;
+    key: CreateSkillMethod;
     icon: typeof Plus;
   }[] = [
     { key: "manual", icon: Plus },
@@ -610,14 +612,17 @@ function LocalForm({
 // Root dialog
 
 export function CreateSkillDialog({
+  initialMethod,
   onClose,
   onCreated,
 }: {
+  /** Opens straight on one method; without it the dialog starts on the chooser. */
+  initialMethod?: CreateSkillMethod;
   onClose: () => void;
   onCreated?: (skill: Skill) => void;
 }) {
   const { t } = useT("skills");
-  const [method, setMethod] = useState<Method>("chooser");
+  const [method, setMethod] = useState<Method>(initialMethod ?? "chooser");
   const [localPrepared, setLocalPrepared] = useState<PreparedSkillArchive | null>(
     null,
   );
@@ -704,6 +709,13 @@ export function CreateSkillDialog({
     setMethod("local");
     setLocalPreparing(false);
     setLocalPrepared(wrapExistingSkillArchive(file));
+  };
+
+  // Opened on a method, Cancel leaves the dialog: the chooser it would fall
+  // back to is a step the user never took.
+  const cancelForm = () => {
+    if (initialMethod) onClose();
+    else setMethod("chooser");
   };
 
   const wide = method === "runtime";
@@ -793,10 +805,7 @@ export function CreateSkillDialog({
         {/* Method body — each form owns its scroll middle + footer */}
         {method === "chooser" && <MethodChooser onChoose={handleChoose} />}
         {method === "manual" && (
-          <ManualForm
-            onCreated={handleCreated}
-            onCancel={() => setMethod("chooser")}
-          />
+          <ManualForm onCreated={handleCreated} onCancel={cancelForm} />
         )}
         {method === "local" && (
           <LocalForm
@@ -806,17 +815,14 @@ export function CreateSkillDialog({
             onCreated={handleCreated}
             onCancel={() => {
               resetLocal();
-              setMethod("chooser");
+              cancelForm();
             }}
             onChooseFolder={openFolderPicker}
             onChooseArchive={openArchivePicker}
           />
         )}
         {method === "url" && (
-          <UrlForm
-            onCreated={handleCreated}
-            onCancel={() => setMethod("chooser")}
-          />
+          <UrlForm onCreated={handleCreated} onCancel={cancelForm} />
         )}
         {method === "runtime" && (
           <RuntimeLocalSkillImportPanel

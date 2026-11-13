@@ -725,3 +725,122 @@ func TestProjectWorkflowSetMappingRequiredKeepsLargePlan(t *testing.T) {
 		t.Fatalf("plan.required has %d rows, want 45", len(rows))
 	}
 }
+
+func TestWorkflowUpdateSendsStartStatus(t *testing.T) {
+	var patched map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		patched = nil
+		_ = json.NewDecoder(r.Body).Decode(&patched)
+		_ = json.NewEncoder(w).Encode(workflowFixture())
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+
+	newCmd := func() *cobra.Command {
+		cmd := newWorkflowRulesCmd()
+		cmd.Flags().String("start-status", "", "")
+		return cmd
+	}
+	cmd := newCmd()
+	_ = cmd.Flags().Set("start-status", "in_progress")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("start status alone: %v", err)
+	}
+	if !reflect.DeepEqual(patched, map[string]any{"start_status_key": "in_progress"}) {
+		t.Fatalf("sent %v, want only start_status_key=in_progress", patched)
+	}
+
+	cmd = newCmd()
+	_ = cmd.Flags().Set("start-status", "")
+	if _, err := captureStdout(t, func() error { return runWorkflowUpdate(cmd, []string{testWorkflowID}) }); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if !reflect.DeepEqual(patched, map[string]any{"start_status_key": ""}) {
+		t.Fatalf("sent %v, want start_status_key cleared", patched)
+	}
+}
+
+func lintFixture() map[string]any {
+	finding := func(rule, level, step string, waived bool) map[string]any {
+		return map[string]any{"rule": rule, "level": level, "step": step, "message": rule + " message", "waived": waived}
+	}
+	return map[string]any{"workflows": []any{
+		map[string]any{"workflow_id": testWorkflowID, "workflow": "Delivery pilot", "errors": 1, "warnings": 1, "infos": 0,
+			"findings": []any{finding("WF003", "error", "agent_accepted", false), finding("WF009", "warning", "in_progress", false)}},
+		map[string]any{"workflow_id": "33333333-3333-3333-3333-333333333333", "workflow": "Clean", "errors": 0, "warnings": 0, "infos": 0,
+			"findings": []any{finding("WF005", "error", "todo", true)}},
+	}, "total": 2}
+}
+
+func newLintTestCmd(all bool) *cobra.Command {
+	cmd := &cobra.Command{Use: "lint"}
+	cmd.Flags().String("output", "table", "")
+	cmd.Flags().Bool("all", all, "")
+	return cmd
+}
+
+func lintServer(t *testing.T, wantPath string, body any) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != wantPath {
+			t.Fatalf("unexpected %s %s, want %s", r.Method, r.URL.Path, wantPath)
+		}
+		_ = json.NewEncoder(w).Encode(body)
+	}))
+	t.Cleanup(srv.Close)
+	setCLITestServerEnv(t, srv.URL)
+}
+
+func TestWorkflowLintAllFailsOnUnwaivedError(t *testing.T) {
+	lintServer(t, "/api/issue-workflows/lint", lintFixture())
+	cmd := newLintTestCmd(true)
+	out, err := captureStdout(t, func() error { return runWorkflowLint(cmd, nil) })
+	if err == nil || !strings.Contains(err.Error(), "1 unwaived error") {
+		t.Fatalf("want an error naming the 1 unwaived error, got %v", err)
+	}
+	for _, want := range []string{"Delivery pilot", "WF003", "agent_accepted", "WF009", "waived"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("table lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestWorkflowLintJSONAndWaivedErrorPasses(t *testing.T) {
+	fix := lintFixture()
+	one := fix["workflows"].([]any)[1]
+	lintServer(t, "/api/issue-workflows/33333333-3333-3333-3333-333333333333/lint", one)
+	cmd := newLintTestCmd(false)
+	_ = cmd.Flags().Set("output", "json")
+	out, err := captureStdout(t, func() error { return runWorkflowLint(cmd, []string{"33333333-3333-3333-3333-333333333333"}) })
+	if err != nil {
+		t.Fatalf("a waived error must not fail the run: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil || got["workflow"] != "Clean" {
+		t.Fatalf("json output = %v (%v)\n%s", got, err, out)
+	}
+}
+
+func TestWorkflowLintNeedsOneTarget(t *testing.T) {
+	if err := runWorkflowLint(newLintTestCmd(false), nil); err == nil {
+		t.Fatal("no id and no --all must fail")
+	}
+	if err := runWorkflowLint(newLintTestCmd(true), []string{testWorkflowID}); err == nil {
+		t.Fatal("an id together with --all must fail")
+	}
+}
+
+// A member-chosen workflow name or message must not reach another member's
+// terminal as control characters.
+func TestWorkflowLintTableStripsControlCharacters(t *testing.T) {
+	results := []lintResult{{
+		Workflow: "evil\x1b]0;pwned\x07name",
+		Findings: []lintFinding{{Rule: "WF009", Level: "warning", Step: "todo\x1b[2J", Message: "bad\rmsg\x00"}},
+	}}
+	out, _ := captureStdout(t, func() error { printLintTable(results); return nil })
+	for _, r := range out {
+		if r < 0x20 && r != '\n' && r != '\t' || r == 0x7f {
+			t.Fatalf("control character %q reached the table:\n%q", r, out)
+		}
+	}
+}

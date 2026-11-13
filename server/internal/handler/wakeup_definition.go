@@ -98,6 +98,15 @@ type wakeupSatisfiedResponse struct {
 	Satisfied int  `json:"satisfied"`
 	Examined  int  `json:"examined"`
 	Truncated bool `json:"truncated"`
+	// Issues names the satisfied issues, one per Satisfied. Older servers
+	// omit it; clients treat a missing list as unknown.
+	Issues []wakeupMatchedIssueResponse `json:"issues"`
+}
+
+type wakeupMatchedIssueResponse struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
 }
 
 type wakeupEffectiveResponse struct {
@@ -438,7 +447,12 @@ func (a wakeupDefinitionAPI) effective(w http.ResponseWriter, r *http.Request, c
 		Capabilities: a.h.wakeupCapabilities(r),
 	}
 	if eff.AlreadySatisfied != nil {
-		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated}
+		prefix := a.h.getIssuePrefix(r.Context(), c.ref.WorkspaceID)
+		issues := make([]wakeupMatchedIssueResponse, 0, len(eff.AlreadySatisfied.Issues))
+		for _, m := range eff.AlreadySatisfied.Issues {
+			issues = append(issues, wakeupMatchedIssueResponse{ID: m.ID, Identifier: service.IssueIdentifier(prefix, m.Number), Title: m.Title})
+		}
+		out.AlreadySatisfied = &wakeupSatisfiedResponse{Satisfied: eff.AlreadySatisfied.Satisfied, Examined: eff.AlreadySatisfied.Examined, Truncated: eff.AlreadySatisfied.Truncated, Issues: issues}
 	}
 	for field, scope := range eff.Sources {
 		out.Sources[field] = string(scope)

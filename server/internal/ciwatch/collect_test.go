@@ -3,11 +3,13 @@ package ciwatch
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -18,26 +20,27 @@ type fakeGH struct {
 	hasMore    bool // report more pages after the last one given
 	logs       map[int64]func(ctx context.Context) io.Reader
 	jobsErr    error
+	hdr        http.Header // returned with every successful response
 	listCalls  int
 	logCalls   []int64
 	pagesAsked []int
 }
 
-func (g *fakeGH) ListJobs(_ context.Context, _ Run, page int) ([]Job, bool, error) {
+func (g *fakeGH) ListJobs(_ context.Context, _ Run, page int) ([]Job, bool, http.Header, error) {
 	g.listCalls++
 	g.pagesAsked = append(g.pagesAsked, page)
 	if g.jobsErr != nil {
-		return nil, false, g.jobsErr
+		return nil, false, nil, g.jobsErr
 	}
 	if page > len(g.jobsByPage) {
-		return nil, false, nil
+		return nil, false, g.hdr, nil
 	}
-	return g.jobsByPage[page-1], page < len(g.jobsByPage) || g.hasMore, nil
+	return g.jobsByPage[page-1], page < len(g.jobsByPage) || g.hasMore, g.hdr, nil
 }
 
-func (g *fakeGH) JobLog(ctx context.Context, _ Run, id int64) (io.ReadCloser, error) {
+func (g *fakeGH) JobLog(ctx context.Context, _ Run, id int64) (io.ReadCloser, http.Header, error) {
 	g.logCalls = append(g.logCalls, id)
-	return io.NopCloser(g.logs[id](ctx)), nil
+	return io.NopCloser(g.logs[id](ctx)), g.hdr, nil
 }
 
 func text(s string) func(context.Context) io.Reader {
@@ -49,17 +52,31 @@ type fakeBudget struct {
 	reserved    int
 	outstanding int
 	limited     *RateLimitError
+	limitErr    error         // returned by Limited: the backoff was not stored
+	settled     []http.Header // headers passed to release, in order
+	settleErr   error         // returned by release: the ledger could not store the headers
+	settleAt    int           // 0: every release fails; n: only the nth
 }
 
-func (b *fakeBudget) Reserve(_ context.Context, _ int64, cost int) (func(), error) {
+func (b *fakeBudget) Reserve(_ context.Context, _ int64, cost int) (Release, error) {
 	if b.err != nil {
 		return nil, b.err
 	}
 	b.reserved += cost
 	b.outstanding++
-	return func() { b.outstanding-- }, nil
+	return func(h http.Header) error {
+		b.outstanding--
+		b.settled = append(b.settled, h)
+		if b.settleAt == 0 || b.settleAt == len(b.settled) {
+			return b.settleErr
+		}
+		return nil
+	}, nil
 }
-func (b *fakeBudget) Limited(_ context.Context, _ int64, e *RateLimitError) { b.limited = e }
+func (b *fakeBudget) Limited(_ context.Context, _ int64, e *RateLimitError) error {
+	b.limited = e
+	return b.limitErr
+}
 
 type fakeRuns struct{ exists, succeeded bool }
 
@@ -185,10 +202,12 @@ func TestSupersededByGreenRunSkipsEvidence(t *testing.T) {
 	}
 }
 
-const rateLimitLog = `2026-11-06T04:50:01.1000000Z ##[group]Run gh run list --limit 100
-2026-11-06T04:50:02.2000000Z gh: API rate limit exceeded for installation. If you reach out to GitHub Support for help, please include the request ID ABCD:1234. (HTTP 403)
-2026-11-06T04:50:02.3000000Z ##[error]Process completed with exit code 1.
-`
+// Trimmed from the real job log of run 42164833838 (job 127718756968), the
+// rate-limit failure that motivated the watcher. The log was fetched with
+// "gh api repos/cheese-work/multica/actions/jobs/127718756968/logs".
+//
+//go:embed testdata/run-42164833838-job-127718756968.txt
+var rateLimitLog string
 
 const goFailLog = `=== RUN   TestRouteGate
     route_test.go:88: got "dropped" want "p0"
@@ -203,7 +222,7 @@ ELIFECYCLE  Command failed with exit code 2.
 
 func TestEvidenceFixtures(t *testing.T) {
 	cases := []struct{ name, log, want string }{
-		{"rate limit trace of run 42164833838", rateLimitLog, "API rate limit exceeded"},
+		{"rate limit trace of run 42164833838", rateLimitLog, "gh: API rate limit exceeded for installation"},
 		{"go test failure", goFailLog, "--- FAIL: TestRouteGate"},
 		{"ts type error", tsErrLog, "error TS2322"},
 	}
@@ -258,6 +277,18 @@ func TestJobSelectionAndPaging(t *testing.T) {
 	if len(gh.logCalls) != 2 {
 		t.Errorf("log downloads = %v, want 2", gh.logCalls)
 	}
+	if ev.Evidence != EvidencePartial || ev.PartialReason != PartialJobsTruncated {
+		t.Errorf("more pages after page 3 must be partial/jobs_truncated, got %s/%s", ev.Evidence, ev.PartialReason)
+	}
+}
+
+func TestEndThenBeginInLogReachesNoSink(t *testing.T) {
+	raw := "-----BEGIN " + "PRIVATE KEY-----\n" + pemBody + "\n-----END PRIVATE KEY----- -----BEGIN " + "PRIVATE KEY-----\nSECONDplantedBODY0123\n"
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
+	c, logs := newCollector(gh, &fakeBudget{}, fakeRuns{})
+	got, _ := c.Handle(context.Background(), baseInput())
+	blob, _ := json.Marshal(got)
+	noLeak(t, string(blob)+logs.String()+UntrustedBlock(got.Event.Jobs[0].Excerpt), pemBody, "SECONDplantedBODY0123")
 }
 
 func TestNoFailedJobsIsPartial(t *testing.T) {
@@ -378,7 +409,7 @@ func TestRedactorErrorFailsClosed(t *testing.T) {
 }
 
 func TestPlantedSecretsReachNoSink(t *testing.T) {
-	raw := fmt.Sprintf("start\n-----BEGIN RSA PRIVATE KEY-----\n%s\n-----END RSA PRIVATE KEY-----\n"+
+	raw := fmt.Sprintf("start\n-----BEGIN "+"RSA PRIVATE KEY-----\n%s\n-----END RSA PRIVATE KEY-----\n"+
 		"clone https://user:s3cretPass@github.com/x.git\ntoken %s\n##[error]Process completed with exit code 1.\n", pemBody, ghToken)
 	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, logs: map[int64]func(context.Context) io.Reader{1: text(raw)}}
 	c, logs := newCollector(gh, &fakeBudget{}, fakeRuns{})
@@ -402,5 +433,95 @@ func TestFenceAndMentionInRawLogCannotEscape(t *testing.T) {
 	block := UntrustedBlock(got.Event.Jobs[0].Excerpt)
 	if strings.Contains(block, "mention://") || strings.Contains(block, "[@") {
 		t.Errorf("mention survives: %q", block)
+	}
+}
+
+// Real response headers reach the budget when a call is settled, so the shared
+// ledger sees what other consumers spent.
+func TestReleaseReceivesResponseHeaders(t *testing.T) {
+	hdr := http.Header{"X-Ratelimit-Remaining": {"1400"}}
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}}, hdr: hdr,
+		logs: map[int64]func(context.Context) io.Reader{1: text("boom\n")}}
+	b := &fakeBudget{}
+	c, _ := newCollector(gh, b, fakeRuns{})
+	if _, err := c.Handle(context.Background(), baseInput()); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.settled) != 2 {
+		t.Fatalf("settled %d calls, want 2 (jobs list + log)", len(b.settled))
+	}
+	for i, h := range b.settled {
+		if h.Get("X-Ratelimit-Remaining") != "1400" {
+			t.Errorf("call %d settled with headers %v, want the response headers", i, h)
+		}
+	}
+}
+
+// When the backoff cannot be stored the run fails: no event is built, so the
+// delivery is retried after the ledger is back instead of hammering GitHub.
+func TestHandleFailsClosedWhenBackoffNotStored(t *testing.T) {
+	gh := &fakeGH{jobsErr: &RateLimitError{RetryAfter: time.Minute}}
+	b := &fakeBudget{limitErr: errors.New("ledger down")}
+	c, _ := newCollector(gh, b, fakeRuns{})
+	res, err := c.Handle(context.Background(), baseInput())
+	if err == nil || !errors.Is(err, b.limitErr) {
+		t.Fatalf("err=%v, want the ledger error", err)
+	}
+	if res.Event != nil {
+		t.Fatalf("event %+v built although the backoff was not stored", res.Event)
+	}
+	if gh.listCalls != 1 || len(gh.logCalls) != 0 {
+		t.Fatalf("calls after the failure: list=%d logs=%v, want 1 and none", gh.listCalls, gh.logCalls)
+	}
+}
+
+// A stored backoff still yields a partial event, as before.
+func TestHandleRateLimitStoredGivesPartialBackoff(t *testing.T) {
+	gh := &fakeGH{jobsErr: &RateLimitError{RetryAfter: time.Minute}}
+	b := &fakeBudget{}
+	c, _ := newCollector(gh, b, fakeRuns{})
+	res, err := c.Handle(context.Background(), baseInput())
+	if err != nil || res.Event.PartialReason != PartialBackoff || b.limited == nil {
+		t.Fatalf("res=%+v err=%v limited=%v", res, err, b.limited)
+	}
+}
+
+// A settlement the ledger could not store leaves a stale balance. The collector
+// must stop spending and fail the run, not carry on with the old count.
+func TestHandleFailsClosedWhenSettlementNotStored(t *testing.T) {
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("API rate limit exceeded\n")}}
+	b := &fakeBudget{settleErr: errors.New("ledger down")}
+	c, _ := newCollector(gh, b, fakeRuns{})
+	res, err := c.Handle(context.Background(), baseInput())
+	if err == nil || !errors.Is(err, b.settleErr) {
+		t.Fatalf("err=%v res=%+v, want the settlement error", err, res)
+	}
+	if len(gh.logCalls) != 0 {
+		t.Fatalf("logCalls=%v, want no call after a failed settlement", gh.logCalls)
+	}
+	// The ledger is back: the retry collects in full.
+	b.settleErr = nil
+	gh2 := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0)}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("API rate limit exceeded\n")}}
+	c2, _ := newCollector(gh2, b, fakeRuns{})
+	res, err = c2.Handle(context.Background(), baseInput())
+	if err != nil || res.Event == nil || res.Event.Evidence != EvidenceFull {
+		t.Fatalf("retry: err=%v res=%+v, want full evidence", err, res)
+	}
+}
+
+// The same on the log download call.
+func TestHandleFailsClosedWhenLogSettlementNotStored(t *testing.T) {
+	gh := &fakeGH{jobsByPage: [][]Job{{failedJob(1, "build", t0), failedJob(2, "test", t0.Add(time.Second))}},
+		logs: map[int64]func(context.Context) io.Reader{1: text("a\n"), 2: text("b\n")}}
+	b := &fakeBudget{settleErr: errors.New("ledger down"), settleAt: 2} // the first log call
+	c, _ := newCollector(gh, b, fakeRuns{})
+	_, err := c.Handle(context.Background(), baseInput())
+	if err == nil || !errors.Is(err, b.settleErr) {
+		t.Fatalf("err=%v, want the settlement error", err)
+	}
+	if len(gh.logCalls) != 1 {
+		t.Fatalf("logCalls=%v, want the first log only", gh.logCalls)
 	}
 }

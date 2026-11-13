@@ -27,7 +27,7 @@ type Recovery struct {
 // RecoverUser is the C00 recovery command (CHE-2798 P6). One transaction puts
 // the person in recovery_required, bumps session_generation so every issued
 // JWT and its renewal die, revokes every passkey (suspect ones too), ends the
-// open challenge and enrollment code, and writes the audit row. The person
+// open challenge and enrollment code, ends every Web Push subscription, and writes the audit row. The person
 // leaves recovery when FinishEnrollment brings usable keys to two.
 func RecoverUser(ctx context.Context, txs Beginner, email string) (Recovery, error) {
 	tx, err := txs.Begin(ctx)
@@ -59,6 +59,9 @@ func RecoverUser(ctx context.Context, txs Beginner, email string) (Recovery, err
 		return Recovery{}, err
 	}
 	if err := queries.ConsumeOpenPasskeyEnrollCeremony(ctx, userID); err != nil {
+		return Recovery{}, err
+	}
+	if err := queries.DeletePushSubscriptionsByUser(ctx, userID); err != nil {
 		return Recovery{}, err
 	}
 	if err := writeEvent(ctx, queries, userID, eventRecovery, map[string]any{"generation": generation, "revoked": revoked}); err != nil {

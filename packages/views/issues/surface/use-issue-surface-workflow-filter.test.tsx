@@ -35,6 +35,10 @@ const { projectWorkflowA } = vi.hoisted(() => ({
   } satisfies IssueWorkflow,
 }));
 
+vi.mock("@multica/core/auth", () => ({
+  useAuthStore: (selector: (s: { user: { id: string } }) => unknown) =>
+    selector({ user: { id: "user-1" } }),
+}));
 vi.mock("@multica/core/config", () => ({ useFeatureEnabled: () => true }));
 vi.mock("@multica/core/issue-workflows", () => ({
   defaultWorkflow: () => projectWorkflowA,

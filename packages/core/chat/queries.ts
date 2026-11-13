@@ -37,6 +37,8 @@ export const chatKeys = {
   /** Mutation key shared by the pin and archive mutations; search refreshes when they settle. */
   sessionAction: (wsId: string) => [...chatKeys.all(wsId), "session-action"] as const,
   openDecisions: (wsId: string) => [...chatKeys.all(wsId), "open-decisions"] as const,
+  issueDecisionCards: (wsId: string, issueId: string) => [...chatKeys.all(wsId), "issue-decision-cards", issueId] as const,
+  issueDecisionCardsAll: (wsId: string) => [...chatKeys.all(wsId), "issue-decision-cards"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
   /** Statistics for one session (`GET /api/chat/sessions/{id}/usage`). */
   usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
@@ -110,6 +112,15 @@ export function openDecisionRequestsOptions(wsId: string) {
     queryFn: () => api.listOpenDecisionRequests(),
     staleTime: Infinity,
     enabled: !!wsId,
+  });
+}
+
+export function issueDecisionCardsOptions(wsId: string, issueId: string) {
+  return queryOptions({
+    queryKey: chatKeys.issueDecisionCards(wsId, issueId),
+    queryFn: () => api.listIssueDecisionCards(issueId),
+    staleTime: Infinity,
+    enabled: !!wsId && !!issueId,
   });
 }
 

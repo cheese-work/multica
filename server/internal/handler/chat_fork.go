@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
@@ -26,9 +27,6 @@ import (
 // forkRequestMaxBytes bounds the fork body. A normal chat send has no message
 // size limit of its own, so this body cap is the bound on the fork message.
 const forkRequestMaxBytes = 1 << 20
-
-// forkTitleMessageRunes is how much of the fork message the child title shows.
-const forkTitleMessageRunes = 40
 
 type ChatForkResponse struct {
 	Session           ChatSessionResponse  `json:"session"`
@@ -285,7 +283,7 @@ func (h *Handler) resolveForkSource(w http.ResponseWriter, r *http.Request, user
 		return db.ChatSession{}, "", true, false
 	}
 	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
-	if err != nil || !task.ChatSessionID.Valid || (task.Status != "running" && task.Status != "dispatched") {
+	if err != nil || !task.ChatSessionID.Valid {
 		writeError(w, http.StatusForbidden, "a running session chat task is required")
 		return db.ChatSession{}, "", true, false
 	}
@@ -294,8 +292,11 @@ func (h *Handler) resolveForkSource(w http.ResponseWriter, r *http.Request, user
 		return db.ChatSession{}, "", true, false
 	}
 	session, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID)
-	if err != nil || uuidToString(session.WorkspaceID) != workspaceID || session.AgentID != task.AgentID {
+	if err != nil {
 		writeError(w, http.StatusForbidden, "task does not belong to this chat session")
+		return db.ChatSession{}, "", true, false
+	}
+	if !h.authorizeChatTask(r.Context(), w, h.Queries, chatOpContinue, task, session, workspaceID) {
 		return db.ChatSession{}, "", true, false
 	}
 	key := task.ID
@@ -369,15 +370,13 @@ func plainText(markdown string) string {
 }
 
 // forkTitle is "<source> (fork: <message>)", the message as plain text,
-// whitespace-collapsed and cut at forkTitleMessageRunes with "…", or "<source> (fork)" without one.
+// whitespace-collapsed and cut by chattitle.Cut, or "<source> (fork)" without one.
 func forkTitle(source, message string) string {
 	if message == "" {
 		return strings.TrimSpace(source + " (fork)")
 	}
 	label := strings.Join(strings.Fields(plainText(message)), " ")
-	if runes := []rune(label); len(runes) > forkTitleMessageRunes {
-		label = string(runes[:forkTitleMessageRunes]) + "…"
-	}
+	label = chattitle.Cut(label)
 	return strings.TrimSpace(source + " (fork: " + label + ")")
 }
 

@@ -295,9 +295,24 @@ Qoder Cloud Agents 通过远端会话执行分配的任务。Multica 服务端�
 
 超出并发上限的任务会排队等待。同一任务的后续运行会在上一会话空闲时继续使用该 Qoder 会话。智能体可以设置默认仓库，在任务所属项目未绑定仓库时使用。智能体会被要求以任务标识命名分支，并在 PR 标题前加上任务标识，以便 PR 自动关联到任务。
 
-首版支持任务运行、聊天、进度同步、取消和基于持久化记录的恢复。模型、工具和 skill 在 Qoder 中配置；暂不支持本地目录、附件，也不支持从 Multica 创建远端 Qoder Cloud Agents 智能体。运行时页面分别展示远端运行时和电脑。
+首版支持任务运行、聊天、通过智能体创建任务、进度同步、取消和基于持久化记录的恢复。模型、工具和 skill 在 Qoder 中配置；暂不支持本地目录、附件，也不支持从 Multica 创建远端 Qoder Cloud Agents 智能体。运行时页面分别展示远端运行时和电脑。
 
 独立桥接进程的配置与限制见 [Qoder runtime README](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md)。
+
+## 服务商熔断器 [#provider-breaker]
+
+当某个服务商持续返回 5xx 错误时，Multica 会为工作区内的该服务商打开熔断器，并暂缓新的运行，而不是逐个让它们失败。使用该服务商的智能体会显示一条提示，包含服务商、熔断器打开时间和下次探测时间（均为 ICT）。请在该时间之后再次触发智能体，或请工作区管理员重置熔断器。
+
+冷却结束后，由一次探测运行决定熔断器关闭还是再次打开。每次自动 open、half-open、close、reopen 以及每次手动重置，都会写入审计日志，记录操作者、时间和之前的状态。
+
+```bash
+multica runtime breaker list
+multica runtime breaker reset <provider>
+```
+
+`list` 显示各服务商的状态、失败次数、打开时间和下次探测时间。`reset` 强制关闭熔断器，仅工作区所有者和管理员可用。同样的数据也可通过 API 获取：`GET /api/workspaces/{id}/provider-breakers` 列出熔断器，`POST /api/workspaces/{id}/provider-breakers/{provider}/reset` 重置其中一个。
+
+在网页应用的 **设置 → 服务商熔断器** 中可以查看每个服务商的同样状态。所有者和管理员会看到带确认对话框的 **重置** 按钮；其他成员只能只读查看。
 
 ## 运行时离线的排查
 

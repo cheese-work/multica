@@ -1,0 +1,54 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "OXAkiRKOeX",
+  "page_id": "OXAkiRKOeX:page1",
+  "page_note": "The frames sit on page1 of the test canvas. No proposal page was created.",
+  "screens": [
+    {
+      "screen": "D Checks sheet, light, 1280",
+      "frame_id": "6mYQFWIMvR",
+      "updatedAt": "2026-11-06T07:54:26.758Z",
+      "content_sha256": "a6463bba750e23f38f7d060efdda850e045b7f45f9c79a0d886cbec4404da4fa"
+    },
+    {
+      "screen": "D Checks sheet, dark, 1280",
+      "frame_id": "u9lNVhB-2k",
+      "updatedAt": "2026-11-06T07:55:08.558Z",
+      "content_sha256": "f1036c9bb75615cb493b7bfecb1109991992b1d2576ea045c62bf49c69bd3999"
+    },
+    {
+      "screen": "Save-refused dialog with required override reason, light, 960",
+      "frame_id": "-IGdS_B1PB",
+      "updatedAt": "2026-11-06T07:56:19.372Z",
+      "content_sha256": "7b003fb62dd09eb6798ddecee2145a0044709292c9273f25557da16cdc846a01"
+    },
+    {
+      "screen": "Save-refused dialog, dark, 960",
+      "frame_id": "Tz8ZFkiTdl",
+      "updatedAt": "2026-11-06T07:56:38.931Z",
+      "content_sha256": "5764c3057efb27c15cf2463d819c252fe470147fce3c7419e945afd224cd74e5"
+    },
+    {
+      "screen": "Checks panel states (clean, running, read-only, failed to run), light, 1280",
+      "frame_id": "-op18JpCVJ",
+      "updatedAt": "2026-11-06T07:56:54.349Z",
+      "content_sha256": "8862120cd46f85e1951a3a78fbde35c884bc37bbf3c92ae10768405ad18853d0"
+    }
+  ],
+  "export_sha256": "584781f5177abb78f6b41ede9b330d550342f3b9a294dfc34857bee23a945dd9",
+  "export_sha256_method": "sha256 of the lines '<sha256>  <file>' (one per line, newline-terminated) for export_files, sorted by file name",
+  "export_files": {
+    "d-checks-sheet-dark.html": "f1036c9bb75615cb493b7bfecb1109991992b1d2576ea045c62bf49c69bd3999",
+    "d-checks-sheet-light.html": "a6463bba750e23f38f7d060efdda850e045b7f45f9c79a0d886cbec4404da4fa",
+    "dialog-save-refused-dark.html": "5764c3057efb27c15cf2463d819c252fe470147fce3c7419e945afd224cd74e5",
+    "dialog-save-refused-light.html": "7b003fb62dd09eb6798ddecee2145a0044709292c9273f25557da16cdc846a01",
+    "states-checks-panel-light.html": "8862120cd46f85e1951a3a78fbde35c884bc37bbf3c92ae10768405ad18853d0"
+  },
+  "export_transform": "none: each frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop, without the trailing newline; character length equals htmlBytes from get_frame (12102, 12106, 4147, 4136, 5080)",
+  "exported_at": "2026-11-08 01:37 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-3660",
+  "selection_id": "01a1b5d0-57af-7636-a7cc-eab5a9259538",
+  "ux_verdict_id": "01a1b692-77fa-7ca1-8cff-6af646b7a3e2"
+}

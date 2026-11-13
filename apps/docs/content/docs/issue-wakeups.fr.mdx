@@ -60,7 +60,7 @@ Dans la tâche ci-dessous, Assistant ops a demandé des devis et attend les rép
 | Liés | Le statut d’une autre tâche | Une autre tâche est terminée, terminée ou annulée, ou passe en revue. |
 | | Événements personnalisés | Choisissez parmi 25 événements bruts : réactions, pièces jointes, commentaires modifiés, fils résolus… |
 
-Multica vérifie lui-même les conditions sur un champ, les sous-tâches, les PR et les autres tâches. Si la condition est déjà remplie à la création, la vérification suivante (dans les 30 secondes environ) réveille l'agent. La CI fait exception : seules les vérifications terminées après la création de la règle comptent.
+Multica vérifie lui-même les conditions sur un champ, les sous-tâches, les PR et les autres tâches. Si la condition est déjà remplie à la création, la vérification suivante (dans les 30 secondes environ) réveille l'agent. La CI fait exception : elle ignore les vérifications terminées sur un push plus ancien, mais celles déjà terminées sur le head actuel de la PR réveillent l'agent dans les 30 secondes environ. Un agent ne peut pas créer une seconde règle « CI terminée » sur un head de PR dont la règle précédente du même agent s'est déjà déclenchée : la requête renvoie `409` (`wakeup_head_unchanged`) avec `head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`. Poussez un nouveau head, ou attendez le statut à la place.
 
 Toutes les conditions autres que le temps attendent un événement et ont trois réglages de plus :
 
@@ -141,7 +141,9 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "Véri
 - **Temps** : `--kind at` avec `--after 10m` ou `--at <heure RFC3339>` ; `--kind every --every 1h` pour un intervalle fixe d'au moins 1 minute ; `--kind cron --cron "<expression à 5 champs>"` avec `--timezone` (UTC par défaut).
 - **Événements** : indiquez les noms d'événements après `--event`, séparés par des virgules. `multica issue wakeup events` liste tous les événements et filtres. `--mode continuous` rend la règle répétée.
 - **Conditions** : `--until-status`, `--until-assignee`, `--until-label`, `--until-property`, `--until-children-done [--stage N]`, `--until-pr checks|merged|conflicts` et `--until-issue <tâche> --until-issue-state done|ended|in_review|blocked`. Un seul `--until-*` par réveil, et jamais avec `--event`.
+- **Minuteurs sur une PR ouverte** : un agent ne peut pas ajouter de réveil `at`, `every` ou `cron` à une tâche liée à une PR ouverte tant que le serveur actualise les checks GitHub ; il reçoit une erreur 422 qui indique `--until-pr checks|conflicts` ou `--until-gh-run`. Une personne, une PR en brouillon ou fusionnée, et une tâche sans PR ne sont pas concernées.
 - **Fin** : le CLI n'ajoute pas d'échéance à votre place. Utilisez `--expires-in 72h` ou `--expires-at <heure RFC3339>` ; `--on-timeout wake` fait qu'une règle d'événement réveille l'agent une dernière fois à l'échéance. `--max-fires N` (1–1000) limite le nombre d'exécutions d'une règle répétée.
+- **Entrées surveillées** : sur un réveil temporel (`at`, `every`, `cron`), répétez `--watch <entrée>` pour déclarer ce qu'il surveille : `issue`, `pr`, `children` ou `thread:<comment-uuid>`. Quand toutes les entrées déclarées sont inchangées depuis la dernière exécution terminée, le serveur peut sauter le déclenchement. Sans déclaration, le réveil s'exécute toujours. Pour l'instant, le serveur ne fait qu'enregistrer la déclaration et ne saute rien. Les règles d'événement et de condition refusent `--watch`.
 - **Où va la réponse** : `--parent <id-de-commentaire>` garde la réponse de l'exécution réveillée dans le fil d'origine.
 
 Pour gérer les règles existantes :
@@ -158,6 +160,75 @@ Pour gérer les règles existantes :
 | `multica issue wakeup checkin <tâche> <id-réveil> --note "..."` | Terminer en silence une vérification régulière qui n'a rien trouvé ; seule une exécution lancée par cette règle peut l'appeler |
 
 `list`, `get` et `runs` affichent un tableau avec `--output table`. Pour les autres commandes, voir [Utiliser le CLI](/cli).
+
+## Réveils par défaut pour un espace de travail ou un projet [#defaults]
+
+Les propriétaires et les administrateurs peuvent définir des réveils par défaut pour tout un espace de travail ou pour un projet. Chaque ticket concerné reçoit alors la règle sans que personne ne la crée à la main. Un membre peut ensuite la remplacer ou la désactiver sur un seul ticket.
+
+**Ordre de priorité.** Valeur intégrée, puis espace de travail, puis projet, puis ticket. Chaque niveau ne stocke que les champs qu'il modifie ; les autres viennent du niveau au-dessus. `"enabled": false` désactive la règle à ce niveau. Les réglages imbriqués (`trigger`, `target`, `schedule`, `filters`, `rate_limit`, `active_run`) remplacent la valeur héritée en bloc.
+
+| Portée | Où | Qui peut la modifier |
+|---|---|---|
+| Espace de travail | **Paramètres → Réveils → Règles de l'espace de travail** | Propriétaires et administrateurs |
+| Projet | La page du projet, **Règles du projet** | Propriétaires et administrateurs |
+| Ticket | La liste **Réveils par défaut** du ticket : **Remplacer**, **Modifier le remplacement**, **Réinitialiser** | Membres |
+
+Chaque réglage par défaut indique d'où vient sa valeur (**hérité de l'espace de travail**, du projet, ou **remplacé sur ce ticket**) et son état : **Activé**, **Désactivé**, ou **En pause** avec la raison. **Réinitialiser** supprime le remplacement ; le ticket suit de nouveau le niveau au-dessus.
+
+**API.** Les trois portées sont disponibles via l'API. Envoyez `revision` sous forme de chaîne : `"0"` pour créer, la révision de votre dernière lecture pour modifier. Une révision périmée renvoie `409` ; relisez puis réessayez.
+
+```bash
+# Workspace default: turn "PR merged" on with an instruction (owner or admin)
+curl -X PUT "$MULTICA_URL/api/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": true, "instruction": "Summarise the merge."}}'
+
+# Project override: change only the instruction for one project
+curl -X PUT "$MULTICA_URL/api/projects/$PROJECT_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "instruction": "Check the release notes."}}'
+
+# Issue override: turn the rule off for this issue only
+curl -X PUT "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": false}}'
+
+# What the issue ends up with, where each field came from, and the runtime state
+curl "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged/effective" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+
+# The same read from the CLI (workspace scope; add --project or --issue)
+multica wakeup-definition get pr_merged --issue "$ISSUE_ID"
+
+# Reset the issue override (revision comes from the last read)
+curl -X DELETE "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged?revision=1" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+```
+
+La réponse `effective` correspond à ce que montrent les applications. `sources` nomme la portée qui fournit chaque champ, `overrides` liste les champs que cette portée redéfinit par rapport à une valeur héritée, et `execution` n'apparaît que pour un ticket, une fois qu'il a une instance active de la règle :
+
+```json
+{
+  "scope": "issue",
+  "rule_key": "pr_merged",
+  "applicable": true,
+  "enabled": false,
+  "sources": { "enabled": "issue", "instruction": "project" },
+  "overrides": ["enabled"],
+  "execution": { "instance_id": "…", "enabled": true, "paused_reason": "loop" }
+}
+```
+
+**Limites.**
+
+- Les écritures restent fermées (`403`, code `wakeup_definition_writes_closed`) tant que les réglages de réveil existants de l'espace de travail n'ont pas été convertis. Les applications masquent la modification jusque-là. La lecture et l'aperçu fonctionnent.
+- Un agent ne peut que proposer une règle d'espace de travail ou de projet : depuis une exécution, `multica wakeup-definition create --config-file rule.json` (ajoutez `--project <projet>` pour une règle de projet), ou `POST /api/wakeup-definitions` et `POST /api/projects/{id}/wakeup-definitions` avec son jeton d'exécution. Le serveur enregistre la règle avec `enabled: false`, quelle que soit la demande, et la règle ne se déclenche à aucun niveau inférieur, pas même via la dérogation d'un membre sur une tâche, tant qu'un propriétaire ou un administrateur de l'espace de travail ne l'a pas activée. Un agent ne peut ni modifier, ni supprimer, ni prévisualiser une définition, ni écrire au niveau de la tâche (`403`). Les autres identifiants machine ne peuvent pas écrire du tout (`403`, rien n'est enregistré).
+- Depuis la CLI, `multica wakeup-definition get pr_merged` lit la valeur résolue d'une règle d'espace de travail. Ajoutez `--project <projet>` pour une règle de projet ou `--issue <ticket>` pour un ticket. Elle affiche le même JSON `effective` que l'API, et `--output table` affiche une ligne. `list`, `update`, `delete` et `preview` couvrent les règles d'espace de travail et de projet depuis la CLI ; voir [la page CLI](/cli). Les écritures au niveau d'un ticket restent dans l'API et les applications (un agent peut aussi proposer une règle avec `create`). `multica issue wakeup list` et `get` montrent les instances actives d'une règle, avec leur éventuelle pause.
+- La cible d'une règle doit être un agent ou une équipe que la personne qui écrit la règle peut invoquer. Un lecteur qui ne voit pas l'agent cible voit la règle sans cible ni instruction.
+- Une nouvelle règle personnalisée démarre avec une limite de 12 réveils par heure. L'**aperçu** de l'éditeur indique combien de tickets ouverts correspondent déjà avant l'enregistrement.
 
 ## Réveils et automatisations [#vs-autopilots]
 

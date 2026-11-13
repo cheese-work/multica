@@ -318,6 +318,11 @@ export interface ChatState {
   /** Settings preference: is the floating chat window available at all. */
   floatingChatEnabled: boolean;
   activeSessionId: string | null;
+  /**
+   * Session the viewer just marked unseen. Auto mark-read skips it, otherwise
+   * it would clear the cursor at once. Cleared by the next real open. Never persisted.
+   */
+  autoReadSuppressedId: string | null;
   /** One-shot URL-write intent for the next session change. Never persisted. */
   navIntent: ChatNavIntent | null;
   /**
@@ -347,6 +352,7 @@ export interface ChatState {
   toggle: () => void;
   setFloatingChatEnabled: (enabled: boolean) => void;
   setActiveSession: (id: string | null) => void;
+  suppressAutoRead: (sessionId: string | null) => void;
   /** Record how the next session change reaches the URL; the latest request wins. */
   requestNav: (intent: ChatNavIntent) => void;
   /** Claim the session's archive guard. False when an action is already in flight. */
@@ -372,6 +378,8 @@ export interface ChatState {
   /** Drop a placeholder (dismiss a failure / interrupted). */
   removeInputDraftUpload: (sessionId: string, clientUploadId: string) => void;
   clearInputDraft: (sessionId: string) => void;
+  /** Move text + attachments from one slot to another and clear the source. */
+  moveInputDraft: (from: string, to: string) => void;
   /** Record that a durable restore reached the composer; survives a reload. */
   markDraftRestoreApplied: (restoreId: string) => void;
   /** Drop the ledger entry once the server row is confirmed gone. */
@@ -420,6 +428,7 @@ export function createChatStore(options: ChatStoreOptions) {
     isOpen: initialIsOpen,
     floatingChatEnabled: initialFloatingEnabled,
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
+    autoReadSuppressedId: null,
     navIntent: null,
     sessionActionPending: {},
     selectedAgentId: initialAgentId,
@@ -457,8 +466,9 @@ export function createChatStore(options: ChatStoreOptions) {
       } else {
         storage.removeItem(wsKey(SESSION_STORAGE_KEY));
       }
-      set({ activeSessionId: id });
+      set(id ? { activeSessionId: id, autoReadSuppressedId: null } : { activeSessionId: id });
     },
+    suppressAutoRead: (sessionId) => set({ autoReadSuppressedId: sessionId }),
     requestNav: (intent) => set({ navIntent: intent }),
     beginSessionAction: (sessionId, action) => {
       if (get().sessionActionPending[sessionId]) return false;
@@ -630,6 +640,18 @@ export function createChatStore(options: ChatStoreOptions) {
       writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), next);
       set({ inputDraftAttachments: next });
     },
+    moveInputDraft: (from, to) => {
+      if (from === to) return;
+      const drafts = { ...get().inputDrafts };
+      const attachments = { ...get().inputDraftAttachments };
+      if (from in drafts) drafts[to] = drafts[from]!;
+      if (from in attachments) attachments[to] = attachments[from]!;
+      delete drafts[from];
+      delete attachments[from];
+      writeDrafts(storage, wsKey(DRAFTS_KEY), drafts);
+      writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), attachments);
+      set({ inputDrafts: drafts, inputDraftAttachments: attachments });
+    },
     clearInputDraft: (sessionId) => {
       const currentDrafts = get().inputDrafts;
       const currentAttachments = get().inputDraftAttachments;
@@ -718,6 +740,7 @@ export function createChatStore(options: ChatStoreOptions) {
     });
     store.setState({
       activeSessionId: nextSession,
+      autoReadSuppressedId: null,
       selectedAgentId: nextAgent,
       selectedProjectId: nextProject,
       inputDrafts: nextDrafts,

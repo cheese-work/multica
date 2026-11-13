@@ -1,0 +1,92 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}body{margin:0;background:#0b0b0c;color:#e7e7ea;font-family:Helvetica,Arial,sans-serif;font-size:13px}
+.hd{padding:28px 32px 18px;border-bottom:1px solid #2e2e33}h1{margin:0 0 6px;font-size:18px;color:#fff}h2{margin:0 0 4px;font-size:14px;color:#fff}
+.why{margin:0;color:#a1a1aa;font-size:12px;line-height:1.5;max-width:1200px}.sec{padding:24px 32px 0}
+svg text{font-family:Helvetica,Arial,sans-serif;fill:#e7e7ea}.m{font-family:"DejaVu Sans Mono",monospace;font-size:10.5px;fill:#a1a1aa}.s{font-size:10.5px;fill:#a1a1aa}.l{font-size:11.5px}.t{font-size:12px;font-weight:700;fill:#fff}
+</style></head><body>
+<div class="hd"><h1>Sidebar top card and dialog mode switch (D5), plus shared states</h1>
+<p class="why">The sidebar top card opens the same dialog in the mode you used last. Modes live in a registry (id, label, icon, view), so Gantt can join as a third mode without a redesign (premise 5, D8). The chosen mode persists in the view store, <b style="color:#e7e7ea">per device (localStorage)</b>. Open question Q1: sync per account instead? Default drawn: per device.</p></div>
+
+<div class="sec"><h2>Sidebar top card · A mini preview, B plain row</h2>
+<p class="why">A shows a live thumbnail of the current mode; best recognition, costs one small render. B is a text row; cheapest, nothing to load. Both show the mode name so the next open is predictable.</p>
+<svg width="1376" height="330" viewBox="0 0 1376 330" style="margin-top:8px">
+<defs>
+<symbol id="ip" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 1.5a4.5 4.5 0 0 1 0 9z" fill="currentColor"/></symbol>
+<symbol id="id" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.8 6.2l1.6 1.6 3-3.4" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+<symbol id="ib" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M2.8 9.2l6.4-6.4" stroke="currentColor" stroke-width="1.4"/></symbol>
+<symbol id="it" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2 2"/></symbol>
+<symbol id="wifi" viewBox="0 0 12 12"><path d="M1 4.5a7 7 0 0 1 10 0M3 6.8a4 4 0 0 1 6 0" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="9.2" r="1" fill="currentColor"/></symbol>
+</defs>
+<!-- A hierarchy -->
+<text class="t" x="0" y="16">A · hierarchy mode</text>
+<rect x="0" y="26" width="300" height="260" rx="10" fill="#111113" stroke="#2e2e33"/>
+<text class="s" x="14" y="48" style="font-weight:700;fill:#a1a1aa;letter-spacing:.06em">CHE-2797</text>
+<rect x="12" y="58" width="276" height="112" rx="10" fill="#18181b" stroke="#3a3a42"/>
+<g><rect x="24" y="72" width="64" height="16" rx="4" fill="#232327" stroke="#52525b"/><rect x="24" y="72" width="2.5" height="16" fill="#f5a524"/><rect x="108" y="66" width="48" height="14" rx="4" fill="#232327" stroke="#52525b"/><rect x="108" y="88" width="48" height="14" rx="4" fill="#232327" stroke="#52525b"/><rect x="176" y="62" width="40" height="14" rx="4" fill="#232327" stroke="#52525b" stroke-dasharray="2 2"/><rect x="176" y="82" width="40" height="14" rx="4" fill="#232327" stroke="#52525b" stroke-dasharray="2 2"/><rect x="176" y="102" width="40" height="14" rx="4" fill="#232327" stroke="#52525b" stroke-dasharray="2 2"/><path d="M88 80H98V73H108M98 80V95H108M156 73H166V69H176M166 73V89H176M166 89V109H176" fill="none" stroke="#71717a"/></g>
+<text class="t" x="24" y="140">Hierarchy</text><text class="s" x="24" y="156">62 issues · 4 levels · opens at depth 1</text>
+<rect x="206" y="128" width="72" height="28" rx="14" fill="#232327" stroke="#52525b"/><text class="l" x="242" y="146" text-anchor="middle">Open</text>
+<text class="s" x="14" y="196">Click anywhere on the card opens the dialog.</text><text class="s" x="14" y="212">Mode chip below the thumbnail switches</text><text class="s" x="14" y="228">mode in place, no dialog needed.</text>
+<rect x="14" y="244" width="130" height="26" rx="13" fill="#3a3a42" stroke="#52525b"/><text class="l" x="79" y="261" text-anchor="middle" style="font-weight:700;fill:#fff">Hierarchy</text><rect x="148" y="244" width="130" height="26" rx="13" fill="#18181b" stroke="#3a3a42"/><text class="l" x="213" y="261" text-anchor="middle" style="fill:#a1a1aa">Swimlane 2.0</text>
+<!-- A swimlane -->
+<text class="t" x="332" y="16">A · Swimlane 2.0 mode</text>
+<rect x="332" y="26" width="300" height="260" rx="10" fill="#111113" stroke="#2e2e33"/>
+<text class="s" x="346" y="48" style="font-weight:700;fill:#a1a1aa;letter-spacing:.06em">CHE-2797</text>
+<rect x="344" y="58" width="276" height="112" rx="10" fill="#18181b" stroke="#3a3a42"/>
+<g><path d="M356 88H608M356 118H608M356 148H608" stroke="#2e2e33"/><rect x="368" y="76" width="40" height="12" rx="4" fill="#232327" stroke="#52525b"/><rect x="368" y="76" width="2.5" height="12" fill="#6b8cff"/><rect x="440" y="106" width="40" height="12" rx="4" fill="#232327" stroke="#52525b"/><rect x="440" y="106" width="2.5" height="12" fill="#f5a524"/><rect x="512" y="136" width="40" height="12" rx="4" fill="#232327" stroke="#52525b"/><rect x="512" y="136" width="2.5" height="12" fill="#ef4444"/><path d="M408 82H424V112H440M480 112H496V142H512" fill="none" stroke="#e7e7ea"/><path d="M408 82H416" stroke="#e7e7ea"/></g>
+<text class="t" x="356" y="140" style="display:none"></text>
+<text class="t" x="356" y="196" style="font-size:12px">Swimlane 2.0</text><text class="s" x="356" y="212">4 lanes by assignee · 9 flow steps</text>
+<rect x="538" y="184" width="72" height="28" rx="14" fill="#232327" stroke="#52525b"/><text class="l" x="574" y="202" text-anchor="middle">Open</text>
+<rect x="346" y="244" width="130" height="26" rx="13" fill="#18181b" stroke="#3a3a42"/><text class="l" x="411" y="261" text-anchor="middle" style="fill:#a1a1aa">Hierarchy</text><rect x="480" y="244" width="130" height="26" rx="13" fill="#3a3a42" stroke="#52525b"/><text class="l" x="545" y="261" text-anchor="middle" style="font-weight:700;fill:#fff">Swimlane 2.0</text>
+<!-- B -->
+<text class="t" x="664" y="16">B · plain row (both modes)</text>
+<rect x="664" y="26" width="300" height="260" rx="10" fill="#111113" stroke="#2e2e33"/>
+<text class="s" x="678" y="48" style="font-weight:700;fill:#a1a1aa;letter-spacing:.06em">CHE-2797</text>
+<rect x="676" y="58" width="276" height="52" rx="10" fill="#18181b" stroke="#3a3a42"/><use href="#ip" x="688" y="76" width="14" height="14" style="color:#a1a1aa"/><text class="t" x="712" y="80">Hierarchy</text><text class="s" x="712" y="96">62 issues · 4 levels</text><text x="936" y="89" text-anchor="end" font-size="14" style="fill:#a1a1aa">›</text>
+<rect x="676" y="122" width="276" height="52" rx="10" fill="#18181b" stroke="#3a3a42"/><use href="#it" x="688" y="140" width="14" height="14" style="color:#a1a1aa"/><text class="t" x="712" y="144">Swimlane 2.0</text><text class="s" x="712" y="160">4 lanes · by assignee</text><text x="936" y="153" text-anchor="end" font-size="14" style="fill:#a1a1aa">›</text>
+<text class="s" x="678" y="204">The row of the last used mode is brighter and</text><text class="s" x="678" y="220">sits first. Each row opens the dialog directly</text><text class="s" x="678" y="236">in that mode. Uses 52 px, no thumbnail render.</text>
+<!-- Gantt as 3rd -->
+<text class="t" x="996" y="16">Later: Gantt joins as a third mode</text>
+<rect x="996" y="26" width="380" height="260" rx="10" fill="#111113" stroke="#2e2e33"/>
+<rect x="1012" y="42" width="348" height="30" rx="9" fill="#232327" stroke="#2e2e33"/><rect x="1014" y="44" width="110" height="26" rx="7" fill="#3a3a42"/><text class="l" x="1069" y="62" text-anchor="middle" style="font-weight:700;fill:#fff">Hierarchy</text><text class="l" x="1183" y="62" text-anchor="middle" style="fill:#a1a1aa">Swimlane 2.0</text><text class="l" x="1300" y="62" text-anchor="middle" style="fill:#a1a1aa">Gantt</text>
+<text class="s" x="1012" y="102" style="fill:#e7e7ea;font-weight:700">Registry entry</text>
+<text class="m" x="1012" y="120" style="fill:#e7e7ea">{ id: "gantt",</text><text class="m" x="1012" y="134" style="fill:#e7e7ea">  label: "Gantt", icon: GanttIcon,</text><text class="m" x="1012" y="148" style="fill:#e7e7ea">  view: GanttView }</text>
+<text class="s" x="1012" y="178">No change to the switch, the card or the store.</text><text class="s" x="1012" y="194">The segmented control grows to N segments;</text><text class="s" x="1012" y="210">past 4 it becomes a dropdown (name + icon).</text>
+<text class="s" x="1012" y="238">Persisted value is the mode id string. An unknown</text><text class="s" x="1012" y="254">id (mode removed) falls back to the first mode.</text>
+</svg></div>
+
+<div class="sec" style="border-top:1px solid #2e2e33;margin-top:18px;padding-top:26px"><h2>Shared states · same pattern for Gantt, Swimlane 2.0 and hierarchy</h2>
+<p class="why">Every state keeps the mode switch and the close button usable. Nothing blanks the canvas without a reason and a way out. A tile shows one view; the pattern is the same in the other two.</p>
+<svg width="1376" height="610" viewBox="0 0 1376 610" style="margin-top:8px">
+<g id="tiles">
+<!-- tile 1 loading -->
+<rect x="0" y="0" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="14" y="22">Loading · Swimlane 2.0</text>
+<g fill="#18181b" stroke="#2e2e33"><rect x="14" y="40" width="70" height="30" rx="6"/><rect x="14" y="80" width="70" height="30" rx="6"/><rect x="14" y="120" width="70" height="30" rx="6"/><rect x="104" y="40" width="90" height="30" rx="6"/><rect x="214" y="80" width="90" height="30" rx="6"/><rect x="324" y="120" width="90" height="30" rx="6"/></g>
+<text class="s" x="14" y="180">Skeleton lanes and nodes at the real positions of the last</text><text class="s" x="14" y="196">known layout, or 3 lanes if none. Pulse 1.2 s, steady under</text><text class="s" x="14" y="212">reduced motion. Deeper hierarchy level: skeleton cards for</text><text class="s" x="14" y="228">the known child count. Never a bare spinner.</text>
+<text class="s" x="14" y="260" style="fill:#f5a524">Announce: "Loading timeline" (polite live region)</text>
+<!-- tile 2 empty -->
+<rect x="464" y="0" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="478" y="22">Empty · Gantt, My Issues</text>
+<rect x="478" y="40" width="420" height="120" rx="8" fill="#0b0b0c" stroke="#2e2e33" stroke-dasharray="4 3"/><text x="688" y="96" text-anchor="middle" style="font-size:13px;font-weight:700;fill:#fff">Nothing with a timeline yet</text><text class="s" x="688" y="116" text-anchor="middle">No issue assigned to you has started in the last 30 days.</text><rect x="598" y="128" width="180" height="24" rx="12" fill="#232327" stroke="#52525b"/><text class="l" x="688" y="144" text-anchor="middle">Widen to 90 days</text>
+<text class="s" x="478" y="190">Say why it is empty (filter, window, no data) and give</text><text class="s" x="478" y="206">one action that changes it. Hierarchy of a leaf issue:</text><text class="s" x="478" y="222">"No sub-issues" with a "Create sub-issue" button.</text>
+<!-- tile 3 error -->
+<rect x="928" y="0" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="942" y="22">Error · hierarchy level load</text>
+<g><rect x="942" y="40" width="124" height="28" rx="6" fill="#18181b" stroke="#2e2e33"/><use href="#ip" x="951" y="48" width="12" height="12" style="color:#f5a524"/><text class="m" x="969" y="58">CHE-2798</text><path d="M1066 54H1084" stroke="#a1a1aa" stroke-width="1.4"/><rect x="1084" y="40" width="270" height="40" rx="6" fill="#18181b" stroke="#ef4444"/><use href="#ib" x="1094" y="52" width="12" height="12" style="color:#ef4444"/><text class="l" x="1112" y="56" style="fill:#fff;font-weight:700">Could not load children</text><text class="s" x="1094" y="72">Server returned 503 · 2 of 3 levels shown</text></g>
+<rect x="1094" y="96" width="70" height="24" rx="12" fill="#3a3a42" stroke="#52525b"/><text class="l" x="1129" y="112" text-anchor="middle" style="fill:#fff;font-weight:700">Retry</text>
+<text class="s" x="942" y="160">The error sits where the data should be, not as a full screen.</text><text class="s" x="942" y="176">Levels already loaded stay interactive. Retry loads only the</text><text class="s" x="942" y="192">failed level. Role alert; focus moves to Retry.</text>
+<!-- tile 4 offline -->
+<rect x="0" y="296" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="14" y="318">Offline · any view</text>
+<rect x="14" y="332" width="420" height="30" rx="8" fill="#232327" stroke="#f5a524"/><use href="#wifi" x="26" y="340" width="14" height="14" style="color:#f5a524"/><text class="l" x="48" y="351" style="fill:#fff">Offline · showing data from 14:32 ICT</text><rect x="360" y="338" width="62" height="18" rx="9" fill="#3a3a42"/><text class="s" x="391" y="351" text-anchor="middle" style="fill:#fff">Retry</text>
+<g fill="#18181b" stroke="#2e2e33" opacity=".7"><rect x="14" y="380" width="90" height="28" rx="6"/><rect x="124" y="380" width="90" height="28" rx="6"/><rect x="234" y="380" width="90" height="28" rx="6"/></g>
+<text class="s" x="14" y="438">Last good data stays visible, slightly dimmed, with the time it</text><text class="s" x="14" y="454">was fetched in ICT. Edits and expanding unloaded levels are</text><text class="s" x="14" y="470">disabled with a tooltip. Back online: refetch, banner clears.</text>
+<!-- tile 5 read-only -->
+<rect x="464" y="296" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="478" y="318">Read-only · guest or archived project</text>
+<rect x="478" y="332" width="420" height="30" rx="8" fill="#18181b" stroke="#52525b"/><text class="l" x="490" y="351">Read-only: you can view and filter, not change issues.</text>
+<g fill="#18181b" stroke="#2e2e33"><rect x="478" y="380" width="90" height="28" rx="6"/><rect x="588" y="380" width="90" height="28" rx="6"/></g><rect x="588" y="380" width="3" height="28" fill="#f5a524"/>
+<text class="s" x="478" y="438">Viewing, zoom, filters and the mode switch work as usual.</text><text class="s" x="478" y="454">No drag, no create, no status menu. The reason is stated once</text><text class="s" x="478" y="470">at the top; controls that would change data are hidden.</text>
+<!-- tile 6 409 -->
+<rect x="928" y="296" width="448" height="280" rx="10" fill="#111113" stroke="#2e2e33"/><text class="t" x="942" y="318">Conflict 409 · changed elsewhere</text>
+<rect x="942" y="332" width="420" height="52" rx="8" fill="#18181b" stroke="#f5a524"/><text class="l" x="956" y="352" style="fill:#fff;font-weight:700">CHE-2841 changed while you were viewing</text><text class="s" x="956" y="370">Status is now "in review" (was "in progress") · 14:41 ICT</text>
+<rect x="942" y="396" width="110" height="24" rx="12" fill="#3a3a42" stroke="#52525b"/><text class="l" x="997" y="412" text-anchor="middle" style="fill:#fff;font-weight:700">Load latest</text><rect x="1060" y="396" width="110" height="24" rx="12" fill="#232327" stroke="#52525b"/><text class="l" x="1115" y="412" text-anchor="middle">Keep mine</text>
+<text class="s" x="942" y="454">Shown when a write returns 409 (for example a drag that changes</text><text class="s" x="942" y="470">a due date). Two choices, no data loss: nothing is overwritten</text><text class="s" x="942" y="486">until you pick. Views themselves are read-only apart from</text><text class="s" x="942" y="502">such edits, so this is rare.</text>
+</g>
+</svg></div>
+</body></html>

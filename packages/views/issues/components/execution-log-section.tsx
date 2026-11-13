@@ -40,7 +40,7 @@ import {
   type TimelineRun,
   type RunTimeline,
 } from "./issue-run-timeline";
-import { canRetryRun, RetryRunButton } from "./retry-run-button";
+import { canRetryRun, isSkippedRun, RetryRunButton } from "./retry-run-button";
 import { TaskStatusIcon } from "./task-status-icon";
 import { useStatusLabel, useTriggerText } from "./task-run-labels";
 import { WakeupRunLabel } from "./wakeup-source-chip";
@@ -686,7 +686,9 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
             )}
           </RowStatus>
           <RowActions>
-            <TranscriptButton task={task} agentName="" title={t(($) => $.execution_log.transcript_tooltip)} />
+            {!isSkippedRun(task) && (
+              <TranscriptButton task={task} agentName="" title={t(($) => $.execution_log.transcript_tooltip)} />
+            )}
             {canRetryRun(task) && <RetryRunButton task={task} issueId={issueId} />}
           </RowActions>
         </div>

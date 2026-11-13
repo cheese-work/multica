@@ -2,7 +2,7 @@
 
 -- name: LockGitHubPRForEvent :one
 -- Serializes event capture per PR row and returns the current head and state.
-SELECT id, workspace_id, head_sha, state
+SELECT id, workspace_id, head_sha, state, head_repo_same
 FROM github_pull_request
 WHERE id = $1
 FOR UPDATE;
@@ -68,6 +68,8 @@ FOR UPDATE;
 -- take now must not hold every later batch back.
 -- Action-required kinds of a merged or closed PR are never selected: the
 -- lifecycle stop already ran, and a reopen raises its own events.
+-- Lifecycle kinds draft, ready and merged are never selected: they report
+-- state only, and the pr_merged rule already wakes the issue (CHE-4972). closed has no rule, so it stays.
 SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.observed_at,
        pr.pr_number, pr.repo_owner, pr.repo_name,
        COALESCE(NULLIF(e.previous_head_sha, ''), (
@@ -92,7 +94,7 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        ), '')::text AS check_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE e.kind NOT IN ('draft', 'ready')
+WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
        OR (e.status = 'accepted'

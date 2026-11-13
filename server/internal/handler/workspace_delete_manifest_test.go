@@ -62,6 +62,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"cloud_agent_connection":             workspaceDelete,
 	"daemon_pause":                       workspaceDelete,
 	"activity_log":                       workspaceDelete,
+	"workspace_audit_event":              workspaceDelete,
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
 	"agent_invocation_target":            workspaceDelete,
@@ -95,11 +96,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"channel_task_delivery":              workspaceDelete,
 	"channel_typing_reaction":            workspaceDeleteSettle, // Source deletion makes retained anchors eligible for the cleanup worker.
 	"channel_user_binding":               workspaceDelete,
+	"chat_attention_item":                workspaceDelete, // no FK; removed by workspace_id in DeleteWorkspaceCommunicationRoots.
+	"chat_attention_mark":                workspaceDelete, // no workspace_id; keyed by chain root session, removed with the sessions.
 	"chat_draft_restore":                 workspaceDelete,
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
 	"chat_task_supplement":               workspaceDelete,
+	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
@@ -151,6 +155,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_webhook_dispatch":            workspaceDelete,
 	"github_webhook_revision":            workspaceDelete,
 	"governed_vote_record":               workspaceDelete, // CHE-1862 vote-gate ledger; workspace-owned leaf.
+	"governed_pass_receipt":              workspaceDelete, // CHE-3490 single-use PASS receipts; workspace-owned leaf.
 	"run_gate_event":                     workspaceDelete, // CHE-1918 run-gate shadow ledger; workspace-owned leaf.
 	"governance_receipt":                 workspaceDelete, // CHE-685 Jev governance routing receipts; workspace-owned, same shape as issue_checkpoint.
 	"governance_budget_window":           workspaceDelete,
@@ -178,6 +183,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_data_incident":          workspaceDelete, // CHE-3546 L0 data incident; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_lane":                   workspaceDelete, // CHE-3369 C1 lane row; no FK, swept by DeleteWorkspaceIssueRoots.
 	"dm_progress_lane_event":             workspaceDelete, // CHE-3548 moved-under lane event; no FK, swept by DeleteWorkspaceIssueRoots.
+	"dm_progress_pending":                workspaceDelete, // CHE-3404 unsent progress events; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
@@ -204,6 +210,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_workflow":                     workspaceDelete,
 	"issue_subscriber":                   workspaceDelete,
 	"issue_to_label":                     workspaceDelete,
+	"issue_unread":                       workspaceDelete,
 	"issue_vcs_pull_request":             workspaceDelete,
 	"lark_binding_token":                 workspaceDelete,
 	"lark_chat_session_binding":          workspaceDelete,
@@ -216,6 +223,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"member":                             workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
 	"host_sample":                        workspaceDeleteKeep, // host telemetry keyed by daemon_id, no workspace_id; outlives workspaces by design
+	"host_sample_hourly":                 workspaceDeleteKeep, // hourly rollup of host_sample; same reason
 	"agent_mcp_server":                   workspaceDelete,
 	"wakeup_aggregate_budget":            workspaceDelete,
 	"wakeup_aggregate_reservation":       workspaceDelete,
@@ -242,6 +250,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
 	"provider_breaker":                   workspaceDelete,     // CHE-1735 provider state is removed with its workspace.
+	"provider_breaker_audit":             workspaceDelete,     // CHE-4381 breaker transition audit; removed with DeleteProviderBreakersForWorkspace.
 	"provider_failure_recovery":          workspaceDeleteKeep,
 	"recovery_claim":                     workspaceDelete,     // CHE-1126 gateway-recovery claim ledger; workspace_id FK ON DELETE CASCADE plus explicit teardown.
 	"push_delivery":                      workspaceDeleteKeep, // Outbox rows of inbox items; the push worker drops the ones whose item is gone (CHE-1795).
@@ -249,12 +258,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"push_subscription":                  workspaceDeleteKeep, // A user's device across all workspaces, not workspace-owned (CHE-1795).
 	"quick_action":                       workspaceDelete,
 	"run_budget_notice":                  workspaceDelete,
+	"run_budget_refusal":                 workspaceDelete,
 	"run_capability_grant":               workspaceDelete,
 	"protected_path_policy":              workspaceDelete,
 	"task_elevation":                     workspaceDelete,
 	"elevated_op":                        workspaceDelete,
 	"issue_taint":                        workspaceDelete,
 	"issue_taint_clear":                  workspaceDelete,
+	"issue_run_taint":                    workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -290,10 +301,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_endpoint":          workspaceDelete, // CHE-2031 inbound webhook guard; no FK.
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
+	"wecom_install_session":              workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,
 	"system1_observation":                workspaceDelete,     // CHE-3628 no FK.
+	"system1_label":                      workspaceDelete,     // CHE-4470 no FK.
+	"system1_prediction":                 workspaceDelete,     // CHE-4471 no FK.
 	"ci_watch_config":                    workspaceDelete,     // CHE-4273 CI watcher settings; no FK.
 	"ci_watch_config_audit":              workspaceDelete,     // CHE-4273
 	"ci_failure_event":                   workspaceDelete,     // CHE-4273

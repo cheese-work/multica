@@ -1,11 +1,13 @@
 import type { ZodType } from "zod";
-import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
+import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
-import { WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
+import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
+import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -36,6 +38,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentSchedulingImpact,
   AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
@@ -61,6 +64,7 @@ import type {
   InboxItem,
   InboxWorkspaceUnread,
   IssueSubscriber,
+  IssueUnread,
   Comment,
   CommentTriggerPreview,
   IssueTriggerPreview,
@@ -102,7 +106,10 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
+  AttachmentRevisionDiff,
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -224,6 +231,8 @@ import type {
   WecomInstallation,
   ListWecomInstallationsResponse,
   RegisterWecomBYORequest,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
   RedeemWecomBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
@@ -274,9 +283,9 @@ import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import {
-  PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
+  DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -284,13 +293,17 @@ import {
   type AgentDecisionSetting,
   RoutingAgentSettingSchema,
   type RoutingAgentSetting,
+  DelegatedWritesSchema,
+  type DelegatedWrites,
   OpenDecisionRequestListSchema,
+  DecisionRequestCardListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -312,6 +325,10 @@ import {
   EMPTY_CHAT_SUPPLEMENT,
   ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
+  ChatAttentionEnvelopeSchema,
+  ChatAttentionBatchSchema,
+  EMPTY_CHAT_ATTENTION_VIEW,
+  EMPTY_CHAT_ATTENTION_BATCH,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
   IssueDuplicatesResponseSchema,
@@ -425,6 +442,10 @@ import {
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
+  BeginWecomInstallResponseSchema,
+  MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE,
+  WecomInstallStatusResponseSchema,
+  MALFORMED_WECOM_INSTALL_STATUS_RESPONSE,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   ListLarkInstallationsResponseSchema,
@@ -450,6 +471,8 @@ import {
   EMPTY_CREATE_FEEDBACK_RESPONSE,
   InboxUnreadSummarySchema,
   EMPTY_INBOX_UNREAD_SUMMARY,
+  IssueUnreadPageSchema,
+  EMPTY_ISSUE_UNREAD_PAGE,
   InboxItemListSchema,
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
@@ -498,6 +521,8 @@ import {
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
+  RuntimeUpdateSchema,
+  MALFORMED_RUNTIME_UPDATE,
   SkillSchema,
   EMPTY_SKILL,
   AgentPresetListSchema,
@@ -1452,6 +1477,17 @@ export class ApiClient {
     await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
   }
 
+  async listProviderBreakers(workspaceId: string): Promise<ProviderBreaker[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider-breakers`);
+    const parsed = parseWithFallback<{ breakers: ProviderBreaker[] } | null>(raw, ProviderBreakerListSchema, null, { endpoint: "GET /api/workspaces/:id/provider-breakers" });
+    if (!parsed) throw new Error("Could not load provider breakers");
+    return parsed.breakers;
+  }
+
+  async resetProviderBreaker(workspaceId: string, provider: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/provider-breakers/${encodeURIComponent(provider)}/reset`, { method: "POST" });
+  }
+
   private wakeupDefinitionsPath(scope: WakeupDefinitionScope): string {
     switch (scope.kind) {
       case "workspace":
@@ -1749,6 +1785,22 @@ export class ApiClient {
     );
   }
 
+  async getIssueRunBudget(issueId: string) {
+    return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
+  }
+
+  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
+  async requestRunBudgetAction(
+    issueId: string,
+    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
+  ): Promise<RunBudgetActionResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseRunBudgetActionResponse(raw);
+  }
+
   async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
     const raw = await this.fetch<unknown>("/api/issues/limit-usage");
     if (raw == null) return null;
@@ -1803,7 +1855,7 @@ export class ApiClient {
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
-        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
+        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : { steer: false }),
       }),
     });
   }
@@ -1849,6 +1901,28 @@ export class ApiClient {
     return parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
       endpoint: "GET /api/issues/:id/timeline",
     });
+  }
+
+  /**
+   * The timeline plus the server's truncation signal. The server keeps the
+   * newest 2000 entries and names the affected kinds in `X-Timeline-Truncated`
+   * ("activity", "comment" or "activity,comment"); `listTimeline` drops that
+   * header. `truncated` is true only when ACTIVITY rows were cut, because
+   * status changes are activity rows (a comment-only cut hides none).
+   */
+  async listTimelineWithMeta(
+    issueId: string,
+  ): Promise<{ entries: TimelineEntry[]; truncated: boolean }> {
+    const res = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      extraHeaders: { "Content-Type": "application/json" },
+    });
+    const raw: unknown = await res.json();
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncated: (res.headers.get("X-Timeline-Truncated") ?? "").split(",").includes("activity"),
+    };
   }
 
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {
@@ -2142,6 +2216,29 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
+  async pauseAgent(id: string, reason?: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/pause`, {
+      method: "POST",
+      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+    });
+  }
+
+  async resumeAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
+  }
+
+  async pauseWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
+  }
+
+  async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
+    return this.fetch(`/api/agents/${id}/scheduling-impact`);
+  }
+
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
@@ -2543,6 +2640,8 @@ export class ApiClient {
       custom_name?: string;
       /** Apply custom_name to every runtime on the same machine. */
       apply_to_machine?: boolean;
+      /** Runtime-wide concurrency cap; `null` removes it, omit to leave unchanged. */
+      max_concurrent_tasks?: number | null;
     },
   ): Promise<AgentRuntime> {
     const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
@@ -2859,7 +2958,15 @@ export class ApiClient {
     runtimeId: string,
     updateId: string,
   ): Promise<RuntimeUpdate> {
-    return this.fetch(`/api/runtimes/${runtimeId}/update/${updateId}`);
+    const raw = await this.fetch<unknown>(
+      `/api/runtimes/${runtimeId}/update/${updateId}`,
+    );
+    return parseWithFallback<RuntimeUpdate>(
+      raw,
+      RuntimeUpdateSchema,
+      { ...MALFORMED_RUNTIME_UPDATE, id: updateId, runtime_id: runtimeId },
+      { endpoint: "GET /api/runtimes/{id}/update/{updateId}" },
+    );
   }
 
   // Both discovery endpoints feed a UI state machine (poll while
@@ -2870,12 +2977,14 @@ export class ApiClient {
   async initiateListModels(
     runtimeId: string,
     options: { force?: boolean } = {},
+    workspaceSlug?: string,
   ): Promise<RuntimeModelListRequest> {
     const query = options.force === true ? "?force=true" : "";
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models${query}`,
       {
         method: "POST",
+        headers: workspaceHeader(workspaceSlug),
       },
     );
     return parseWithFallback<RuntimeModelListRequest>(
@@ -2889,9 +2998,11 @@ export class ApiClient {
   async getListModelsResult(
     runtimeId: string,
     requestId: string,
+    workspaceSlug?: string,
   ): Promise<RuntimeModelListRequest> {
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models/${requestId}`,
+      { headers: workspaceHeader(workspaceSlug) },
     );
     return parseWithFallback<RuntimeModelListRequest>(
       raw,
@@ -3060,6 +3171,30 @@ export class ApiClient {
     });
     if (!task) throw new Error("Invalid source-context retry response");
     return task;
+  }
+
+  /** Every unread mark, across all pages: a row missing here reads as "read". */
+  async listIssueUnread(): Promise<IssueUnread[]> {
+    const items: IssueUnread[] = [];
+    let cursor: string | null = null;
+    do {
+      const query: string = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const raw = await this.fetch<unknown>(`/api/issues/unread${query}`);
+      const page = parseWithFallback(raw, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, {
+        endpoint: "GET /api/issues/unread",
+      });
+      items.push(...page.items);
+      cursor = page.next_cursor === cursor ? null : page.next_cursor;
+    } while (cursor);
+    return items;
+  }
+
+  async markIssueRead(issueId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/read`, { method: "POST" });
+  }
+
+  async markIssueUnread(issueId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/unread`, { method: "POST" });
   }
 
   // Inbox
@@ -3255,7 +3390,7 @@ export class ApiClient {
     });
   }
 
-  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number } | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
+  async updateWorkspace(id: string, data: { name?: string; description?: string; context?: string; settings?: Record<string, unknown>; repos?: WorkspaceRepo[]; issue_prefix?: string; avatar_url?: string; compact_prompt?: string | null; wakeups_paused?: boolean; auto_compact?: { enabled?: boolean; threshold_pct?: number; threshold_tokens_200k?: number; threshold_tokens_1m?: number } | null; harness_profile?: "personal" | "managed" | null; idle_started_guard?: { mode?: "off" | "shadow" | "act"; after_hours?: number }; github_review_members?: Record<string, string>; github_review_authors?: Record<string, string> }): Promise<Workspace> {
     return this.fetch(`/api/workspaces/${id}`, {
       method: "PATCH",
       body: JSON.stringify(data),
@@ -3284,6 +3419,27 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
       method: "PUT",
       body: JSON.stringify(config),
+    });
+  }
+
+  // CHE-4617: null when the response is malformed, so a guessed rule is never
+  // shown or saved back over the real one.
+  async getDelegatedWrites(workspaceId: string): Promise<DelegatedWrites | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`);
+    return parseWithFallback<DelegatedWrites | null>(raw, DelegatedWritesSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/delegated-writes",
+    });
+  }
+
+  // Human owner/admin only; replaces the whole rule.
+  async updateDelegatedWrites(workspaceId: string, rule: DelegatedWrites): Promise<DelegatedWrites> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    });
+    // The save succeeded; a malformed echo falls back to the rule that was sent.
+    return parseWithFallback<DelegatedWrites>(raw, DelegatedWritesSchema, rule, {
+      endpoint: "PUT /api/workspaces/{id}/delegated-writes",
     });
   }
 
@@ -4123,7 +4279,11 @@ export class ApiClient {
     await this.fetch(`/api/decision-answers/${answerId}/disclaim`, { method: "POST" });
   }
 
-  async answerDecisionRequest(requestId: string, input: { option?: string; text?: string }): Promise<void> {
+  /** A gated class also sends the revisions from `challengeDecisionAnswer` and the signed assertion. */
+  async answerDecisionRequest(
+    requestId: string,
+    input: { option?: string; text?: string; covers_ack?: string; answer_revision?: number; policy_revision?: number; assertion?: PasskeyAssertionEnvelope },
+  ): Promise<void> {
     await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/answer`, { method: "POST", body: JSON.stringify(input) });
   }
 
@@ -4162,7 +4322,7 @@ export class ApiClient {
   }
 
   // Sole-key path: the target is the only active key, so no other key can sign. A mailed code stands in.
-  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; expires_at: string }> {
+  startPasskeyRevocationByCode(passkeyId: string): Promise<{ ceremony_id: string; tag?: string; expires_at: string }> {
     return this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke/code`, PasskeyRevokeCodeStartSchema);
   }
 
@@ -4174,15 +4334,30 @@ export class ApiClient {
     await this.passkeyPost(`/api/passkeys/${encodeURIComponent(passkeyId)}/revoke`, PasskeyRevokedSchema, { assertion });
   }
 
+  /** Binds a challenge to exactly this option and trimmed text; the answer must repeat them. */
+  challengeDecisionAnswer(requestId: string, input: { option?: string; text?: string }): Promise<PasskeyAnswerChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/answer/challenge`, PasskeyAnswerChallengeSchema, input);
+  }
+
   challengeDecisionAction(actionId: string): Promise<PasskeyChallenge> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/challenge`, PasskeyChallengeSchema);
   }
 
   approveDecisionAction(
     actionId: string,
-    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; secrets?: Record<string, string> },
+    input: { payload_sha256: string; assertion: PasskeyAssertionEnvelope; preview_sha256?: string; secrets?: Record<string, string> },
   ): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
+  }
+
+  /** Ends a pending action as rejected. No passkey: declining changes nothing. */
+  rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
+    return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);
+  }
+
+  async getDecisionAction(actionId: string): Promise<DecisionActionView> {
+    const raw: unknown = await this.fetch(`/api/decision-actions/${encodeURIComponent(actionId)}`);
+    return parsePasskeyResponse(raw, DecisionActionViewSchema, "GET /api/decision-actions/:id");
   }
 
   async getDecisionActionOutcome(actionId: string): Promise<PasskeyDecisionOutcome> {
@@ -4194,6 +4369,14 @@ export class ApiClient {
     const raw: unknown = await this.fetch("/api/decisions/open");
     return parseWithFallback(raw, OpenDecisionRequestListSchema, [], {
       endpoint: "GET /api/decisions/open",
+    });
+  }
+
+  /** The viewer's own used (answered or withdrawn) decision cards on one issue. */
+  async listIssueDecisionCards(issueId: string): Promise<DecisionRequestCard[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/issue-cards?issue=${encodeURIComponent(issueId)}`);
+    return parseWithFallback(raw, DecisionRequestCardListSchema, [], {
+      endpoint: "GET /api/decisions/issue-cards",
     });
   }
 
@@ -4257,13 +4440,18 @@ export class ApiClient {
     content: string,
     attachmentIds?: string[],
     decisionRequestId?: string,
+    options?: { clientMessageId?: string; askIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
       decision_request_id?: string;
+      client_message_id?: string;
+      ask_ids?: string[];
     } = { content };
     if (decisionRequestId) body.decision_request_id = decisionRequestId;
+    if (options?.clientMessageId) body.client_message_id = options.clientMessageId;
+    if (options?.askIds && options.askIds.length > 0) body.ask_ids = options.askIds;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
@@ -4411,6 +4599,57 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
   }
 
+  // DM attention actions (plan r4 T3-T5). Every call carries the exact subject keys the UI
+  // displayed; the server acts on those keys only.
+  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/xong",
+    }).attention;
+  }
+
+  async chatAttentionLater(
+    sessionId: string,
+    subjectKeys: string[],
+    options: { durationSeconds?: number; requestId: string },
+  ): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_keys: subjectKeys,
+        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
+        request_id: options.requestId,
+      }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/later",
+    }).attention;
+  }
+
+  async chatAttentionXongAll(subjectKeys: string[]): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>("/api/chat/attention/xong-all", {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all",
+    });
+  }
+
+  async chatAttentionUndoXongAll(batchId: string): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>(`/api/chat/attention/xong-all/${batchId}/undo`, { method: "POST" });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all/:id/undo",
+    });
+  }
+
+  async markChatSessionUnread(sessionId: string): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/unread`, { method: "POST" });
+  }
+
   // Advertises the durable draft-restore capability (#5219). The server only
   // defers the empty-transcript judgment — and therefore only withholds the
   // synchronous restore from the response — for clients that send this; without
@@ -4448,6 +4687,22 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
+  // unchanged line instead of folding them.
+  async getAttachmentRevisionDiff(
+    id: string,
+    from: number,
+    to: number,
+    full = false,
+  ): Promise<AttachmentRevisionDiff> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (full) q.set("full", "1");
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
+    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
+      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 
@@ -5100,14 +5355,18 @@ export class ApiClient {
     });
   }
 
-  async putIssueViewPreference(data: {
-    scope_type: string;
-    scope_id?: string | null;
-    prefs: { hidden: string[]; order: string[] };
-  }): Promise<IssueViewPreference> {
+  async putIssueViewPreference(
+    data: {
+      scope_type: string;
+      scope_id?: string | null;
+      prefs: Record<string, unknown>;
+    },
+    workspaceSlug?: string,
+  ): Promise<IssueViewPreference> {
     const raw = await this.fetch<unknown>("/api/issue-view-preferences", {
       method: "PUT",
       body: JSON.stringify(data),
+      headers: workspaceHeader(workspaceSlug),
     });
     return parseWithFallback(raw, IssueViewPreferenceSchema, EMPTY_ISSUE_VIEW_PREFERENCE, {
       endpoint: "PUT /api/issue-view-preferences",
@@ -5807,6 +6066,51 @@ export class ApiClient {
     return parseWithFallback(raw, WecomInstallationSchema, EMPTY_WECOM_INSTALLATION, {
       endpoint: "POST /api/workspaces/:id/wecom/install/byo",
     });
+  }
+
+  // beginWecomInstall starts (or resumes) a scan-code install: the backend
+  // hands back a session id, and the install worker fetches the QR from WeCom
+  // out of band. Callers poll getWecomInstallStatus for the QR itself.
+  //
+  // idempotencyKey must be stable for one user gesture — a retried or
+  // double-submitted request with the same key reuses the existing session
+  // rather than burning a WeCom generate quota slot on a second QR.
+  async beginWecomInstall(
+    workspaceId: string,
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<BeginWecomInstallResponse> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/wecom/install/begin?${search.toString()}`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      },
+    );
+    return parseWithFallback(
+      raw,
+      BeginWecomInstallResponseSchema,
+      MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE,
+      { endpoint: "POST /api/workspaces/:id/wecom/install/begin" },
+    );
+  }
+
+  // getWecomInstallStatus is one poll of a scan-install session. The response
+  // carries the QR while pending, and the installation id once bound.
+  async getWecomInstallStatus(
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<WecomInstallStatusResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/wecom/install/${sessionId}`,
+    );
+    return parseWithFallback(
+      raw,
+      WecomInstallStatusResponseSchema,
+      MALFORMED_WECOM_INSTALL_STATUS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/wecom/install/:sessionId" },
+    );
   }
 
   async deleteWecomInstallation(workspaceId: string, installationId: string): Promise<void> {
