@@ -7,8 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -237,20 +235,6 @@ func (handler *Handler) admitProposal(ctx context.Context, queries *db.Queries, 
 
 var errProposalsUnavailable = decisionIntentRefusal{http.StatusServiceUnavailable, "proposals_unavailable: agent action proposals are not enabled on this server"}
 
-// composeProposalAsk is the ask text of a proposal. The server writes it from
-// the validated action; the agent's reason appears only as a labelled quote.
-func composeProposalAsk(issueID string, draft *decisionActionDraft, reason string) (string, error) {
-	params, err := json.MarshalIndent(draft.Params, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	ask := "**Proposed action**\n`" + draft.Type + "` version " + strconv.Itoa(draft.Version) + " on [Issue](mention://issue/" + issueID + ")\n\n**Parameters**\n```json\n" + string(params) + "\n```"
-	if reason = strings.TrimSpace(reason); reason != "" {
-		ask += "\n\n**Agent's note (not verified)**\n> " + strings.ReplaceAll(strings.ReplaceAll(reason, "\r", ""), "\n", "\n> ")
-	}
-	return ask, nil
-}
-
 // ProposeDecisionAction opens a decision request that asks a person to approve
 // one allowlisted action. The agent names the action and its parameters; the
 // server writes the ask. Nothing runs until the recipient approves.
@@ -311,7 +295,8 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	body.Reason = cleanProposalReason(body.Reason)
-	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, body.Reason)
+	change := handler.proposalChange(request.Context(), issue, agentID, recipient, draft)
+	ask, err := composeProposalAsk(uuidToString(issue.ID), draft, change, body.Reason)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to compose proposal")
 		return
