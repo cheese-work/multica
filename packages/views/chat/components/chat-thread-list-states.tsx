@@ -1,5 +1,6 @@
 "use client";
 
+import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { WifiOff } from "@multica/ui/icons";
 import { useT } from "../../i18n";
@@ -49,13 +50,9 @@ export function ListError({ onRetry }: { onRetry?: () => void }) {
       <p className="text-body font-medium">{t(($) => $.list.states.error_title)}</p>
       <p className="text-caption text-muted-foreground">{t(($) => $.list.states.error_body)}</p>
       {onRetry && (
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-1 inline-flex h-9 items-center rounded-md border border-border px-3 text-caption font-medium outline-none hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring md:h-7"
-        >
+        <Button type="button" variant="outline" size="sm" className="mt-1" onClick={onRetry}>
           {t(($) => $.list.states.retry)}
-        </button>
+        </Button>
       )}
     </div>
   );

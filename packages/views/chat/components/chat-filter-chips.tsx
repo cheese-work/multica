@@ -126,6 +126,7 @@ export function ChatFilterChips({
           const count = countOf(slot);
           const label = labelOf(slot);
           return (
+            // ui-pattern-ref: allow roving-tabindex chip in a tablist; Button has no tab semantics
             <button
               key={slot}
               type="button"
