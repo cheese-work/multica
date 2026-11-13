@@ -254,6 +254,7 @@ type IssueStatusForEnv struct {
 
 type SkillContextForEnv struct {
 	Name        string
+	BuiltinName string // original built-in identity; empty for workspace and plugin skills
 	Description string
 	Content     string
 	Files       []SkillFileContextForEnv

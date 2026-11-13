@@ -18,7 +18,7 @@ const issueBriefTotalCap = 18000
 func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 	t.Parallel()
 	brief := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "issue-1", AgentID: "a-1", AgentName: "Eve",
-		AgentSkills: []SkillContextForEnv{{Name: platformSkillName}}})
+		AgentSkills: []SkillContextForEnv{{Name: platformSkillName, BuiltinName: platformSkillName}}})
 	r := NewBriefReceipt(brief, issueBriefTotalCap)
 	if r.Truncated {
 		t.Errorf("issue brief is %d bytes, over the %d-byte budget", r.TotalBytes, issueBriefTotalCap)
@@ -35,7 +35,7 @@ func TestIssueBriefStaysInsideByteBudget(t *testing.T) {
 func TestWorkflowPointsAtMovedProcedure(t *testing.T) {
 	t.Parallel()
 	ctx := TaskContextForEnv{IssueID: "issue-1", AgentID: "a-1", AgentName: "Eve",
-		AgentSkills: []SkillContextForEnv{{Name: platformSkillName}}}
+		AgentSkills: []SkillContextForEnv{{Name: platformSkillName, BuiltinName: platformSkillName}}}
 	brief := buildMetaSkillContent("claude", ctx)
 	if !strings.Contains(brief, "references/issue-turn.md") {
 		t.Errorf("workflow lost the pointer to the moved procedure\n---\n%s", brief)
