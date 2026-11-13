@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "@multica/core/api";
 import { ApiError } from "@multica/core/api/client";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
@@ -65,6 +65,10 @@ function executedEffect(result: unknown): { token: string; change?: string } | n
   return { token: outcome, change: typeof from === "number" && typeof to === "number" ? `${from} → ${to}` : undefined };
 }
 
+/** What a card with its own button reads and presses: Approve or Reject, once `ready`. */
+export type ApprovalHandle = { approve: () => void; reject: () => void };
+export type ApprovalControls = { ready: boolean; mayApprove: boolean; approveDisabled: boolean };
+
 /**
  * Passkey approval of one executable decision action: challenge → WebAuthn
  * assertion → approve → outcome. After the approve request leaves, a lost or
@@ -82,6 +86,9 @@ export function DecisionActionApproval({
   state,
   onEnroll,
   onOutcome,
+  handle,
+  hideControls = false,
+  onControls,
 }: {
   actionId: string;
   payloadSha256: string;
@@ -96,6 +103,11 @@ export function DecisionActionApproval({
   onEnroll?: () => void;
   /** Called once when the action reaches a terminal state, so the caller can refresh what the action changed. */
   onOutcome?: (state: string) => void;
+  /** Lets the card press Approve or Reject from its own button. Only acts while `onControls` reports `ready`. */
+  handle?: Ref<ApprovalHandle>;
+  /** The card renders the Approve and Reject buttons itself; notes, errors and the outcome stay here. */
+  hideControls?: boolean;
+  onControls?: (controls: ApprovalControls) => void;
 }) {
   const { t } = useT("common");
   const [view, setView] = useState<View>({ step: "loading" });
@@ -158,6 +170,20 @@ export function DecisionActionApproval({
     }
   };
 
+  const refusal = view.step === "refused" ? view.code : undefined;
+  const mayApprove = canApprove && !(refusal && FINAL_REFUSALS.includes(refusal));
+  const ready = view.step === "idle" || view.step === "retry" || view.step === "reject_retry" || view.step === "refused";
+  // Closed synchronously on the first press: a second press before the next render cannot send a second approval (N15).
+  const open = useRef(false);
+  useEffect(() => { open.current = ready; }, [ready]);
+  const onControlsRef = useRef(onControls);
+  onControlsRef.current = onControls;
+  useEffect(() => { onControlsRef.current?.({ ready, mayApprove, approveDisabled }); }, [ready, mayApprove, approveDisabled]);
+  useImperativeHandle(handle, () => ({
+    approve: () => { if (open.current && mayApprove && !approveDisabled) { open.current = false; void approve(); } },
+    reject: () => { if (open.current) { open.current = false; void reject(); } },
+  }));
+
   if (view.step === "done") {
     const { state, error_code: code } = view.outcome;
     const detail =
@@ -201,8 +227,6 @@ export function DecisionActionApproval({
     );
   }
   if (view.step === "loading") return null;
-  const refusal = view.step === "refused" ? view.code : undefined;
-  const mayApprove = canApprove && !(refusal && FINAL_REFUSALS.includes(refusal));
   return (
     <div className="space-y-1 text-label">
       {refusal && (
@@ -217,14 +241,14 @@ export function DecisionActionApproval({
       {!canApprove && <p data-testid="decision-action-owner-note" className="text-caption text-muted-foreground">{t(($) => $.decision_action.owner_only)}</p>}
       {view.step === "retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.error)}</p>}
       {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
-      <div className="flex flex-wrap gap-2">
+      {!hideControls && <div className="flex flex-wrap gap-2">
         {mayApprove && (
           <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={approveDisabled || view.step === "busy" || view.step === "rejecting"}>
             {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={reject} disabled={view.step === "busy" || view.step === "rejecting"}>{t(($) => $.decision_action.reject)}</Button>
-      </div>
+      </div>}
     </div>
   );
 }
