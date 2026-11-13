@@ -213,6 +213,22 @@ func TestAdmissionAdmitsGreenHead(t *testing.T) {
 	f.wantAdmitted(t)
 }
 
+// CHE-5432: a draft PR is judged like an open one. A draft head with green
+// checks admits the review; a draft head with a red check still defers.
+func TestAdmissionAdmitsGreenDraftHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.Exec(t, `UPDATE github_pull_request SET state = 'draft' WHERE id = $1`, f.pr)
+	f.check(t, "ci", "completed", "success")
+	f.wantAdmitted(t)
+}
+
+func TestAdmissionDefersRedDraftHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.Exec(t, `UPDATE github_pull_request SET state = 'draft' WHERE id = $1`, f.pr)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+}
+
 // A check stored for an older head is not evidence for this head.
 func TestAdmissionStaleHeadCheckIsMissing(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
