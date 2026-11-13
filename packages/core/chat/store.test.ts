@@ -489,3 +489,16 @@ describe("suppressAutoRead", () => {
     expect(store.getState().autoReadSuppressedId).toBeNull();
   });
 });
+
+describe("chat store: DM list chip", () => {
+  it("defaults to Hộp chính, keeps the selected chip, and resets on leaving Chat", () => {
+    const store = createChatStore({ storage: memStorage() });
+    expect(store.getState().listView).toBe("main");
+    store.getState().setListView("unseen");
+    store.getState().setActiveSession("s1");
+    store.getState().setActiveSession(null);
+    expect(store.getState().listView).toBe("unseen");
+    store.getState().resetListView();
+    expect(store.getState().listView).toBe("main");
+  });
+});

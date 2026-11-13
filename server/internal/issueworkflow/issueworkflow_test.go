@@ -361,6 +361,32 @@ func TestBriefNamesStepCommandsAndHandlers(t *testing.T) {
 	}
 }
 
+func TestBriefForARoutingStepUsesRouteCommands(t *testing.T) {
+	in := BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", Routing: true}
+	brief := Brief(in)
+	for _, want := range []string{
+		"Step done      → multica issue route MUL-7 --status done --reason ",
+		"Needs changes  → multica issue route MUL-7 --status implement --reason ",
+		"Can't proceed  → multica issue route MUL-7 --status blocked --reason ",
+		"--confidence ",
+	} {
+		if !strings.Contains(brief, want) {
+			t.Fatalf("routing brief is missing %q:\n%s", want, brief)
+		}
+	}
+	if strings.Contains(brief, "multica issue status") {
+		t.Fatalf("routing brief must not name `multica issue status`:\n%s", brief)
+	}
+	in.Routing = false
+	if plain := Brief(in); strings.Contains(plain, "multica issue route") {
+		t.Fatalf("a step without a routing agent keeps the status commands:\n%s", plain)
+	}
+	in.Routing, in.Observer = true, true
+	if observer := Brief(in); strings.Contains(observer, "multica issue route") {
+		t.Fatalf("an observer gets no commands:\n%s", observer)
+	}
+}
+
 func TestBriefForObserverLeavesTheStepToItsAssignee(t *testing.T) {
 	brief := Brief(BriefInput{
 		Workflow:        devDefinition(),

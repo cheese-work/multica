@@ -165,6 +165,11 @@ type IssueWakeupService struct {
 	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
 	// leaves the condition pending with a diagnostic.
 	MergeFacts MergeFactsSource
+	// PauseVars reads the AGENT_MERGE_PAUSED and MAIN_RED_PAUSED repository
+	// variables for RefreshMergePauses; nil leaves pause state unknown.
+	PauseVars PauseVariableReader
+	// PauseRefreshInterval bounds repo-variable reads per repository; zero means one minute.
+	PauseRefreshInterval time.Duration
 	// Now is the clock for fact freshness; nil means time.Now.
 	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.

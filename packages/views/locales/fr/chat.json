@@ -62,6 +62,9 @@
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "interactive_login_action": "Se connecter",
     "title": "Discussion",
+    "no_agent_title": "Aucun agent avec qui discuter pour l'instant",
+    "no_agent_description": "Créez un agent, puis décrivez-lui une demande ici pour qu'il la transforme en tâches.",
+    "no_agent_action": "Nouvel agent",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."
   },
@@ -345,6 +348,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "Filtrer les discussions",
+      "all": "Toutes",
+      "main": "Boîte principale",
+      "decisions": "Décisions",
+      "waiting": "En attente de vous",
+      "unseen": "Non vues",
+      "pinned": "Épinglées",
+      "unpinned": "Non épinglées",
+      "archived": "Archivées",
+      "count_aria": "{{label}}, {{count}}"
+    },
+    "states": {
+      "loading": "Chargement des discussions…",
+      "empty_title": "Aucune discussion",
+      "empty_body": "Écrivez à un agent pour commencer. Les questions et décisions qui vous attendent apparaissent ici.",
+      "empty_view": "Aucune discussion dans cette vue",
+      "empty_waiting": "Rien n'attend votre réponse",
+      "empty_waiting_body": "Chaque question et décision a une réponse.",
+      "error_title": "Impossible de charger les discussions",
+      "error_body": "Le serveur a renvoyé une erreur. Vos messages ne sont pas perdus. Réessayez, ou revenez dans quelques minutes.",
+      "retry": "Réessayer",
+      "offline_title": "Vous êtes hors ligne",
+      "offline_body": "Affichage de la liste enregistrée. La reconnexion est automatique."
+    },
     "typing": "Rédaction…",
     "failed": "Échec de l'envoi",
     "you_prefix": "Vous : ",
@@ -377,6 +405,7 @@
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
+    "agent_settings": "Paramètres de l'agent",
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",

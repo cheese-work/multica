@@ -62,6 +62,9 @@
     "interactive_login_required": "Sign in again to use Chat",
     "interactive_login_action": "Sign in",
     "title": "Chat",
+    "no_agent_title": "No agent to chat with yet",
+    "no_agent_description": "Create an agent, then talk through a request here and let it turn the request into issues.",
+    "no_agent_action": "New agent",
     "select_prompt": "Pick a conversation, or start a new one with +",
     "agent_link_no_access": "You don't have access to chat with this agent."
   },
@@ -345,6 +348,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "Filter chats",
+      "all": "All",
+      "main": "Main",
+      "decisions": "Decisions",
+      "waiting": "Waiting on you",
+      "unseen": "Unseen",
+      "pinned": "Pinned",
+      "unpinned": "Not pinned",
+      "archived": "Archived",
+      "count_aria": "{{label}}, {{count}}"
+    },
+    "states": {
+      "loading": "Loading chats…",
+      "empty_title": "No chats yet",
+      "empty_body": "Message an agent to start. Questions and decisions that need you show up here.",
+      "empty_view": "No chats in this view",
+      "empty_waiting": "Nothing is waiting on you",
+      "empty_waiting_body": "Every question and decision has an answer.",
+      "error_title": "Couldn't load chats",
+      "error_body": "The server returned an error. Your messages are not lost. Retry, or come back in a few minutes.",
+      "retry": "Retry",
+      "offline_title": "You're offline",
+      "offline_body": "Showing the saved list. It reconnects on its own."
+    },
     "typing": "Typing…",
     "failed": "Failed to send",
     "you_prefix": "You: ",
@@ -377,6 +405,7 @@
     "compact_now": "Compact now",
     "more_actions": "More actions",
     "view_profile": "View agent profile",
+    "agent_settings": "Agent settings",
     "rename": "Rename chat",
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",

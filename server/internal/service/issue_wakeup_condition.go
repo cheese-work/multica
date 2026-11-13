@@ -81,7 +81,7 @@ var (
 func conditionDiagnostic(err error) bool {
 	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported) ||
 		errors.Is(err, errGHRunNoEvents) || errors.Is(err, errGHRunNoMatch) || errors.Is(err, errGHRunAgedOut) || errors.Is(err, errGHRunStale) ||
-		errors.Is(err, errMergeFactsUnavailable) || errors.Is(err, errMergePolicyMissing)
+		errors.Is(err, errMergeFactsUnavailable) || errors.Is(err, errMergePolicyMissing) || errors.Is(err, errMergePauseUnknown)
 }
 
 func badCondition(msg string) error {
