@@ -81,6 +81,14 @@ func newMergeFix(t *testing.T, mutateFacts func(*MergeFacts), prClause string) *
 	}
 	fix.w = wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "event", Mode: "continuous", Instruction: "Merge when eligible",
 		Condition: condition(t, map[string]any{"type": "merge_eligibility"})})
+	// Pause variables come from the refresher; start with both read as unset.
+	s.PauseVars = &fakePauseVars{}
+	f.Exec(t, "DELETE FROM merge_pause_state WHERE repo_owner='fixture'")
+	f.Cleanup(t, "DELETE FROM merge_pause_state WHERE repo_owner='fixture'")
+	f.Cleanup(t, "DELETE FROM merge_veto_deadline WHERE workspace_id=$1", f.WorkspaceID)
+	if err := s.RefreshMergePauses(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	return fix
 }
 
