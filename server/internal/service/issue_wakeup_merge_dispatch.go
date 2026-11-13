@@ -159,7 +159,7 @@ func dedupeMergeCandidates(ctx context.Context, tx pgx.Tx, w db.IssueWakeup, obs
 		err := tx.QueryRow(ctx, `SELECT EXISTS(
 			SELECT 1 FROM agent_task_queue t JOIN issue_wakeup o ON o.id::text = t.context->>'wakeup_id'
 			WHERE o.workspace_id=$1 AND o.condition->>'type'='merge_eligibility'
-			  AND t.status IN ('queued','dispatched','running')
+			  AND t.status IN ('queued','deferred','dispatched','running','waiting_local_directory')
 			  AND jsonb_path_exists(t.context, '$.wakeup_evidence.facts[*].payload.observed.pull_requests[*] ? (@.candidate == $key)', jsonb_build_object('key',$2::text)))`,
 			w.WorkspaceID, key).Scan(&live)
 		if err != nil {

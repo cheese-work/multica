@@ -53,25 +53,31 @@ func (m *mergeFix) start(t *testing.T) {
 }
 
 func TestMergeDispatchOneLiveRunPerCandidateAcrossRules(t *testing.T) {
-	m := newMergeFix(t, nil, "")
-	// A second issue links the same PR and carries its own rule for the same agent.
-	other := m.f.Issue(t, "Second issue for the same PR")
-	otherID := parseTestUUID(t, other)
-	m.f.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", other)
-	m.f.Cleanup(t, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=$1)", other)
-	m.f.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id=$1", other)
-	m.f.Cleanup(t, "DELETE FROM issue_pull_request WHERE issue_id=$1", other)
-	m.f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", other, m.pr)
-	second := wakeCreate(t, m.f, m.s, otherID, WakeupInput{AgentID: m.agent, Kind: "event", Mode: "continuous", Instruction: "Merge when eligible",
-		Condition: condition(t, map[string]any{"type": "merge_eligibility"})})
+	// A parked run (provider hold, waiting for a local directory) still owns the candidate.
+	for _, parked := range []string{"queued", "deferred", "waiting_local_directory"} {
+		t.Run(parked, func(t *testing.T) {
+			m := newMergeFix(t, nil, "")
+			// A second issue links the same PR and carries its own rule for the same agent.
+			other := m.f.Issue(t, "Second issue for the same PR")
+			otherID := parseTestUUID(t, other)
+			m.f.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", other)
+			m.f.Cleanup(t, "DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id=$1)", other)
+			m.f.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id=$1", other)
+			m.f.Cleanup(t, "DELETE FROM issue_pull_request WHERE issue_id=$1", other)
+			m.f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", other, m.pr)
+			second := wakeCreate(t, m.f, m.s, otherID, WakeupInput{AgentID: m.agent, Kind: "event", Mode: "continuous", Instruction: "Merge when eligible",
+				Condition: condition(t, map[string]any{"type": "merge_eligibility"})})
 
-	m.tick(t)
-	wakeTick(t, m.f, m.s, second.ID)
-	wakeTick(t, m.f, m.s, second.ID)
-	m.tick(t)
-	total := m.f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id' IN ($1,$2)", util.UUIDToString(m.w.ID), util.UUIDToString(second.ID))
-	if total != 1 {
-		t.Fatalf("%d runs for one candidate across two rules, want exactly 1", total)
+			m.tick(t)
+			m.f.Exec(t, "UPDATE agent_task_queue SET status=$2 WHERE context->>'wakeup_id'=$1", util.UUIDToString(m.w.ID), parked)
+			wakeTick(t, m.f, m.s, second.ID)
+			wakeTick(t, m.f, m.s, second.ID)
+			m.tick(t)
+			total := m.f.Count(t, "SELECT count(*) FROM agent_task_queue WHERE context->>'wakeup_id' IN ($1,$2)", util.UUIDToString(m.w.ID), util.UUIDToString(second.ID))
+			if total != 1 {
+				t.Fatalf("%d runs for one candidate across two rules while the first is %s, want exactly 1", total, parked)
+			}
+		})
 	}
 }
 
