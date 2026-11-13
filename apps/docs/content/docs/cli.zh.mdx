@@ -341,7 +341,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `workflow.budget <workflow-id>` 用 `--max-runs <n>`（1 到 1000；0 表示清除上限）和 `--include-child-prs=<true|false>` 代替 `--file`；至少指定一个，省略的字段保持已存储的值。智能体不能直接写入工作流的这两个字段（`budget_requires_decision`）：先提出修改并请求决定，批准后若工作流仍与 CLI 读到的摘要一致，服务端即应用。
 
-智能体也可以自己写入已批准的修改。运行 `multica workflow update <workflow-id> --max-runs 40 --print-hash`（不写入任何内容）读取 `before_sha256` 和 `after_sha256`，为 `workflow.budget` 请求决定，再带 `--decision-id <id>` 重新运行该命令。预算写入不能带 `--steps-file`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
+持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
 
 其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
 
@@ -534,7 +534,7 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。
+`--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。两条命令都接受一个或多个 issue ID：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目标>"`。单个 ID 保持原来的单条提案。任务令牌下传入多个 ID 时，只调用一次批量路由并打印一个卡片链接；`--goal` 为批量命名（默认：操作和 issue 数量），`--output json` 返回批次 id 和每个 issue 的提案 id。个人访问令牌下，每个 ID 各发起自己的请求。批量路由需要聊天任务，最多 25 个 issue；服务器可用一个通行密钥批准一批 raise，但在批准时拒绝一批 top-up，因此 top-up 需逐个批准。
 
 已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。
 

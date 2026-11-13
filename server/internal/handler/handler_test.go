@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1399,6 +1401,50 @@ func TestUpdateAutopilotCanSetAndClearProject(t *testing.T) {
 	if cleared.ProjectID != nil {
 		t.Fatalf("cleared project_id = %v, want nil", cleared.ProjectID)
 	}
+}
+
+func TestUpdateAutopilotDescriptionGuard(t *testing.T) {
+	ctx := context.Background()
+	var agentID string
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+
+	req := newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
+		"title":          "Description guard autopilot",
+		"description":    "v1",
+		"assignee_id":    agentID,
+		"execution_mode": "create_issue",
+	})
+	var created AutopilotResponse
+	testutil.Call(t, testHandler.CreateAutopilot, req).Want(http.StatusCreated).JSON(&created)
+	defer testPool.Exec(ctx, `DELETE FROM autopilot WHERE id = $1`, created.ID)
+
+	patch := func(body map[string]any) *testutil.Response {
+		req := newRequest("PATCH", "/api/autopilots/"+created.ID+"?workspace_id="+testWorkspaceID, body)
+		req = withURLParam(req, "id", created.ID)
+		return testutil.Call(t, testHandler.UpdateAutopilot, req)
+	}
+	sum := func(s string) string {
+		h := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(h[:])
+	}
+
+	// Stale digest: rejected, description untouched.
+	patch(map[string]any{"description": "v2", "expected_description_sha256": sum("other")}).Want(http.StatusConflict)
+	var live string
+	dbfx.QueryRow(t, `SELECT COALESCE(description, '') FROM autopilot WHERE id = $1`, created.ID).Scan(&live)
+	if live != "v1" {
+		t.Fatalf("description after stale write = %q, want v1", live)
+	}
+
+	// Matching digest: applied.
+	patch(map[string]any{"description": "v2", "expected_description_sha256": sum("v1")}).Want(http.StatusOK)
+	dbfx.QueryRow(t, `SELECT COALESCE(description, '') FROM autopilot WHERE id = $1`, created.ID).Scan(&live)
+	if live != "v2" {
+		t.Fatalf("description after matching write = %q, want v2", live)
+	}
+
+	// Digest without a description write is a client bug.
+	patch(map[string]any{"title": "x", "expected_description_sha256": sum("v2")}).Want(http.StatusBadRequest)
 }
 
 // TestCreateIssueRejectsNonexistentMemberAssignee covers the bug where any
