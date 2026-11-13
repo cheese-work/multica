@@ -174,7 +174,9 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 		}
 		defer leave()
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
+	action, err := retryActionTx(ctx, "approve", caller, located.IssueID, func() (db.DecisionAction, error) {
+		return handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
+	})
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -215,37 +217,37 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		}
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
-		return empty, err
+		return empty, atStep("workspace", err)
 	}
 	var runtime db.AgentRuntime
 	if runtimeID.Valid {
 		runtime, err = queries.LockAgentRuntimeNowait(ctx, db.LockAgentRuntimeNowaitParams{ID: runtimeID, WorkspaceID: caller.workspaceID})
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return empty, err
+			return empty, atStep("runtime", err)
 		}
 	}
 	if _, err := queries.LockDecisionSessionNowait(ctx, db.LockDecisionSessionNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ChatSessionID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return empty, atStep("chat_session", err)
 	}
 	agents, err := queries.LockDecisionAgentsNowait(ctx, db.LockDecisionAgentsNowaitParams{WorkspaceID: caller.workspaceID, Ids: distinctUUIDs(located.AskingAgentID, target)})
 	if err != nil {
-		return empty, err
+		return empty, atStep("agents", err)
 	}
 	if err := lockDecisionThreadAndIssue(ctx, queries, caller.workspaceID, located); err != nil {
 		return empty, err
 	}
 	current, err := queries.LockDecisionRequestNowait(ctx, db.LockDecisionRequestNowaitParams{WorkspaceID: caller.workspaceID, ID: located.ID})
 	if err != nil {
-		return empty, err
+		return empty, atStep("request", err)
 	}
 	if _, err := queries.LockDecisionLiveAnswerNowait(ctx, db.LockDecisionLiveAnswerNowaitParams{WorkspaceID: caller.workspaceID, ID: current.ID}); err == nil {
 		return empty, errNotPending
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return empty, err
+		return empty, atStep("answer", err)
 	}
 	action, err := queries.LockDecisionActionNowait(ctx, db.LockDecisionActionNowaitParams{ID: caller.actionID, WorkspaceID: caller.workspaceID})
 	if err != nil {
-		return empty, err
+		return empty, atStep("action", err)
 	}
 	if current.HumanUserID != caller.userID {
 		return empty, errNotTheHuman
@@ -361,7 +363,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	if errors.Is(err, pgx.ErrNoRows) {
 		return empty, errNotTheHuman
 	} else if err != nil {
-		return empty, err
+		return empty, atStep("member", err)
 	}
 	// The passkey check above can outlast a role change that committed after the
 	// pre-lock reads, so the owner rule is applied again to the role read under
@@ -675,12 +677,12 @@ func lockDecisionThreadAndIssue(ctx context.Context, queries *db.Queries, worksp
 			if locked, err := queries.TryLockDecisionCommentThread(ctx, root.ID); err != nil {
 				return err
 			} else if !locked {
-				return errBusyRetry
+				return atStep("comment_thread", errBusyRetry)
 			}
 		}
 	}
 	if _, err := queries.LockDecisionIssueNowait(ctx, db.LockDecisionIssueNowaitParams{WorkspaceID: workspaceID, ID: request.IssueID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+		return atStep("issue", err)
 	}
 	return nil
 }
