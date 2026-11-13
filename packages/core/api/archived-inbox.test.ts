@@ -15,10 +15,10 @@ describe("archived inbox API", () => {
   it("sends cursor, lookup and every archive filter dimension and maps the page", async () => {
     const fetch = respond({ items: [], next_cursor: null, has_more: false });
     const api = new ApiClient("https://api.example.test");
-    // The archive has no idle dimension; a selection carried in from the
+    // The archive has no idle or mention dimension; a selection carried in from the
     // active inbox must not reach the server.
     const filters: InboxFilters = {
-      statuses: ["in_review"], priorities: ["high"], actors: ["system"], unreadOnly: true, idleOnly: true,
+      statuses: ["in_review"], priorities: ["high"], actors: ["system"], unreadOnly: true, idleOnly: true, mentionsOnly: true,
     };
     await expect(api.listArchivedInboxPage(filters, { cursor: "cursor-value", groupId: "group" })).resolves.toEqual({ items: [], nextCursor: null, hasMore: false });
     const url = new URL(fetch.mock.calls[0]![0]);

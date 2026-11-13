@@ -220,6 +220,19 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 `block` 모드에서는 수정 명령이 담긴 메시지와 함께 422로 거부됩니다. `warn` 모드에서는 규칙이 만들어지고 이벤트만 기록됩니다.
 
+### 웨이크업 규칙
+
+워크스페이스 및 프로젝트 웨이크업 규칙([이슈 웨이크업](/issue-wakeups) 참고)에는 전용 명령이 있으며, `create`와 `get` 외에 다음을 쓸 수 있습니다.
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision`은 `list`가 보여 주는 리비전입니다. `update`에 `--revision 0`을 주면 오버라이드를 만듭니다. `preview`는 아무것도 저장하지 않고 최종 적용된 규칙을 출력합니다. 조건 규칙에서는 `already_satisfied`가 즉시 일치할 이슈 수를 알려 주고 `issues`가 그 이슈를 나열합니다(`--output table`은 목록으로 출력). 미리보기는 범위의 처음 200개 이슈를 살펴 그중 열려 있고 백로그가 아닌 이슈를 평가합니다. 범위에 그보다 많으면 `truncated`가 `true`이며 더 많은 이슈가 일치할 수 있습니다. 이벤트 규칙은 조건이 없으므로 미리보기에 `already_satisfied`가 없고 기존 이슈와 일치하지 않습니다. 규칙 편집과 삭제는 소유자나 관리자만 할 수 있습니다. 미리보기는 사람 멤버라면 누구나 할 수 있고, 에이전트 등 머신 자격 증명은 `403`을 받으며, 에이전트가 만든 규칙은 사람이 활성화할 때까지 비활성 상태로 남습니다.
+
 ### DM에서 진행 상황 팔로우
 
 DM은 에이전트가 사용자를 위해 만든 이슈를 팔로우합니다. 멤버는 자신이 만든 DM에서만 `--chat`으로 팔로우를 관리할 수 있습니다. 에이전트는 `--chat` 없이 `multica issue follow <issue>`를 실행합니다. DM은 자신의 작업에서 정해지며, DM이 없는 작업은 거부됩니다. 하위 이슈는 부모의 활성 팔로우를 상속합니다.

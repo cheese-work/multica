@@ -923,7 +923,18 @@
     "prefix_new_label": "New prefix",
     "prefix_rule": "Letters and numbers only, up to 10 characters.",
     "prefix_confirm_action": "Change to {{prefix}}",
-    "prefix_external_warning": "Old keys such as {{oldExample}} in PR titles, branch names, docs, and chat are not updated, so those links stop working."
+    "prefix_external_warning": "Old keys such as {{oldExample}} in PR titles, branch names, docs, and chat are not updated, so those links stop working.",
+    "scheduling_label": "Scheduling",
+    "scheduling_hint": "Pausing stops every agent from claiming new runs. Running tasks finish; queued work waits.",
+    "scheduling_pause_action": "Pause workspace",
+    "scheduling_resume_action": "Resume workspace",
+    "scheduling_pause_title": "Pause this workspace?",
+    "scheduling_pause_description": "No agent claims new runs until you resume. Queued work is kept.",
+    "scheduling_keep": "Keep running",
+    "scheduling_confirm": "Pause",
+    "scheduling_paused_toast": "Workspace paused",
+    "scheduling_resumed_toast": "Workspace resumed",
+    "scheduling_failed_toast": "Could not change workspace scheduling"
   },
   "export_privacy": {
     "title": "Export Privacy",

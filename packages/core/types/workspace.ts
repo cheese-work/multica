@@ -15,6 +15,9 @@ export interface Workspace {
   repos: WorkspaceRepo[];
   issue_prefix: string;
   avatar_url: string | null;
+  /** Set while an owner/admin holds claims for every agent in the workspace. */
+  scheduling_paused_at?: string | null;
+  scheduling_paused_by?: string | null;
   created_at: string;
   updated_at: string;
   pinned_at?: string | null;
