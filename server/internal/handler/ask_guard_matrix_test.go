@@ -151,8 +151,8 @@ func TestAskGuardMatrixIntentTargets(t *testing.T) {
 		a, b, intentID, _ := twoTargetIntentText(t, fixture, askGuardCommentTexts[lang])
 		dbfx.Exec(t, `UPDATE decision_intent_target SET consumed_at = clock_timestamp() WHERE decision_intent_id = $1 AND human_user_id = $2`, intentID, a)
 		endTaskAndSeal(t, fixture, intentID)
-		reconcile(t)
-		reconcile(t)
+		reconcileAskGuard(t)
+		reconcileAskGuard(t)
 		if got := targetEventMembers(t, intentID); strings.Join(got, ",") != b {
 			t.Fatalf("events for %v, want only %s", got, b)
 		}
@@ -192,7 +192,7 @@ func TestAskGuardMatrixWarnModeStoresEventsOnly(t *testing.T) {
 		f.post(t, map[string]any{"content": f.content(askGuardCommentTexts[lang], "%s")}).Want(http.StatusCreated)
 		_, _, intentID, _ := twoTargetIntentText(t, f.intentFixture, askGuardCommentTexts[lang])
 		endTaskAndSeal(t, f.intentFixture, intentID)
-		reconcile(t)
+		reconcileAskGuard(t)
 		deliverRecoveries(t)
 
 		if n := f.events(t, "warn"); n < 2 {
@@ -304,7 +304,8 @@ func TestAskGuardMatrixDecisionAnswerWakeUnchanged(t *testing.T) {
 		resetDecisionLease(t)
 		fixture := newAskedRecordFixture(t)
 		options := `[{"label":"Option A","what_happens":"A happens"},{"label":"` + labels[lang] + `","what_happens":"B happens"}]`
-		dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb WHERE id = $1`, fixture.decision.ID, options)
+		askJSON := `{"decision":"Pick one","options":` + options + `,"recommendation":"Option A"}`
+		dbfx.Exec(t, `UPDATE decision_request SET options = $2::jsonb, ask_json = $3::jsonb WHERE id = $1`, fixture.decision.ID, options, askJSON)
 		dbfx.Exec(t, `UPDATE decision_intent SET sealed_at = clock_timestamp() WHERE id = $1`, fixture.intentID)
 		result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: labels[lang]})
 		if err != nil {
@@ -332,7 +333,7 @@ func TestAskGuardMatrixTranslatedRequestCreation(t *testing.T) {
 			a.ContextELI10 = "Một thay đổi đã sẵn sàng. Bạn quyết định khi nào phát hành."
 			a.AgentDid = "Đã chạy các kiểm tra trong phạm vi và không thấy lỗi."
 			a.StakesIfWrong = "Một thay đổi lỗi có thể đến tay người dùng."
-			a.Recommendation, a.DefaultIfNoReply = "Giữ lại", "Không phát hành."
+			a.Recommendation, a.RecommendedOption, a.DefaultIfNoReply = "Giữ lại", "Giữ lại", "Không phát hành."
 			a.Options = []decisiontx.AskOption{testAskOption("Phát hành"), testAskOption("Giữ lại")}
 			return a
 		},
@@ -340,7 +341,7 @@ func TestAskGuardMatrixTranslatedRequestCreation(t *testing.T) {
 			a.ContextELI10 = "有一项更改已准备好，由你决定何时发布。"
 			a.AgentDid = "已运行范围内的全部检查，没有发现错误。"
 			a.StakesIfWrong = "有缺陷的更改可能会到达用户手中。"
-			a.Recommendation, a.DefaultIfNoReply = "暂缓", "不发布。"
+			a.Recommendation, a.RecommendedOption, a.DefaultIfNoReply = "暂缓", "暂缓", "不发布。"
 			a.Options = []decisiontx.AskOption{testAskOption("发布"), testAskOption("暂缓")}
 			return a
 		},
