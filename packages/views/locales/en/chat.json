@@ -1,12 +1,16 @@
 {
   "decision_banner": {
     "title": "Decision needed",
+    "title_used": "Decisions",
+    "answered_count": "{{number}} answered",
     "waiting": "The agent has not sent the decision card yet.",
     "queued_since": "Queued since {{time}}",
     "running_since": "Running since {{time}}",
     "no_run": "No active run."
   },
   "needs_you": {
+    "chip_one": "{{count}} decision needs you",
+    "chip_other": "{{count}} decisions need you",
     "title": "Needs you",
     "loading": "Loading open asks…",
     "error": "Could not load open asks.",
@@ -41,6 +45,17 @@
       "title": "Unclassified",
       "replies_one": "{{count}} reply",
       "replies_other": "{{count}} replies"
+    },
+    "actions": {
+      "done": "Done",
+      "later": "Later",
+      "done_all": "Done all",
+      "undo": "Undo",
+      "toast_one": "Marked {{count}} DM done",
+      "toast_other": "Marked {{count}} DMs done",
+      "failed": "Could not update. Try again.",
+      "done_aria": "Mark done: {{title}}",
+      "later_aria": "Remind me later: {{title}}"
     }
   },
   "page": {
@@ -69,6 +84,7 @@
     "queue_send_tooltip": "Queue message",
     "stop_tooltip": "Stop",
     "send_failed_toast": "Failed to send message",
+    "send_unconfirmed_toast": "Couldn't confirm the send. Your draft is kept; send again to retry safely.",
     "compacting_toast": "This DM is compacting. Send again when it finishes.",
     "rename_failed_toast": "Failed to rename chat",
     "fork_unconfirmed": "Fork could not be confirmed. Check the Forked into links before trying again.",
@@ -87,7 +103,10 @@
     "project_context_unsupported": "Project description won't apply — this agent's daemon needs an upgrade",
     "placeholder_archived_send": "This DM is archived. Send to unarchive it first…",
     "command_no_arguments": "/{{command}} takes no arguments. Send it on its own or remove the leading /.",
-    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}."
+    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}.",
+    "later_set_toast": "Snoozed until {{time}} ICT",
+    "later_bad_duration": "Use a duration from 1s to 7d, for example /later 2h",
+    "later_failed_toast": "Could not snooze. Try again."
   },
   "queue": {
     "title_one": "{{count}} queued message",
@@ -470,12 +489,15 @@
     "answer_helper_issue": "Send posts your answer to {{issue}}.",
     "answer_hint": "{{shortcut}} sends",
     "answer_too_long": "This answer is over 8 KB. Shorten it to send.",
+    "answer_upload_cancelled": "Upload cancelled because you left this card. Attach the file again.",
     "answer_offline": "You are offline. Your answer is kept. Send turns on when you reconnect.",
     "answer_conflict": "This card can no longer take your answer, for example because it was answered first. Nothing from your draft was posted. Your draft:",
     "answer_discard": "Discard draft",
     "action_unavailable": "Details unavailable",
     "action_approve": "Approve with passkey",
     "action_preview": "What approving changes",
+    "recent_runs": "Recent runs",
+    "recent_runs_status": { "completed": "Completed", "failed": "Failed", "cancelled": "Cancelled", "running": "Running", "other": "Queued" },
     "config_change": {
       "viewer_label": "Change to approve",
       "tab_changes": "Changes",
@@ -493,7 +515,13 @@
       "field_workspace_context": "Workspace context",
       "field_workflow_steps": "Workflow steps",
       "field_workflow_instructions": "Workflow step instructions",
-      "field_workspace_settings": "Workspace settings"
+      "field_workspace_settings": "Workspace settings",
+      "field_workflow_budget": "Workflow run budget",
+      "field_workspace_routing_agent": "Routing agent",
+      "field_workspace_delegated_writes": "Delegated governed writes",
+      "field_agent_skills": "Agent skills",
+      "counts": "Characters: {{before}} → {{after}}",
+      "counts_cap": "Characters: {{before}} → {{after}} of {{cap}} allowed"
     },
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",

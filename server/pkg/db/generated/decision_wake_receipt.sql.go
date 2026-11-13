@@ -49,7 +49,7 @@ func (q *Queries) GetDecisionAnswerWakeState(ctx context.Context, id pgtype.UUID
 }
 
 const getDecisionRequestForWake = `-- name: GetDecisionRequestForWake :one
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, covers_request_ids, answered_by_batch_request_id FROM decision_request WHERE authority = 'human' AND id = $1
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request WHERE authority = 'human' AND id = $1
 `
 
 func (q *Queries) GetDecisionRequestForWake(ctx context.Context, id pgtype.UUID) (DecisionRequest, error) {
@@ -92,6 +92,7 @@ func (q *Queries) GetDecisionRequestForWake(ctx context.Context, id pgtype.UUID)
 		&i.ProposalFingerprint,
 		&i.AnswerRevision,
 		&i.WakeSeq,
+		&i.BatchID,
 		&i.CoversRequestIds,
 		&i.AnsweredByBatchRequestID,
 	)
@@ -292,6 +293,41 @@ func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSi
 	return items, nil
 }
 
+const listDeliveredAnswerWakeRecipients = `-- name: ListDeliveredAnswerWakeRecipients :many
+SELECT receipt.recipient_agent_id, receipt.role, receipt.squad_id
+FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+WHERE event.answer_id = $1 AND event.type = 'answered' AND receipt.status = 'delivered'
+ORDER BY receipt.role DESC, receipt.id
+`
+
+type ListDeliveredAnswerWakeRecipientsRow struct {
+	RecipientAgentID pgtype.UUID `json:"recipient_agent_id"`
+	Role             string      `json:"role"`
+	SquadID          pgtype.UUID `json:"squad_id"`
+}
+
+// The recipients that already got the answer: only they get a retraction.
+func (q *Queries) ListDeliveredAnswerWakeRecipients(ctx context.Context, answerID pgtype.UUID) ([]ListDeliveredAnswerWakeRecipientsRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveredAnswerWakeRecipients, answerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeliveredAnswerWakeRecipientsRow{}
+	for rows.Next() {
+		var i ListDeliveredAnswerWakeRecipientsRow
+		if err := rows.Scan(&i.RecipientAgentID, &i.Role, &i.SquadID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockDecisionAnswerForWake = `-- name: LockDecisionAnswerForWake :one
 SELECT id FROM decision_answer WHERE id = $1 FOR UPDATE
 `
@@ -406,6 +442,24 @@ func (q *Queries) SettleDecisionWakeReceipt(ctx context.Context, arg SettleDecis
 	return result.RowsAffected(), nil
 }
 
+const summarizeDecisionAnswerWake = `-- name: SummarizeDecisionAnswerWake :one
+SELECT coalesce((array_agg(receipt.outcome ORDER BY CASE receipt.role WHEN 'requester' THEN 0 ELSE 1 END)
+                 FILTER (WHERE receipt.status = 'delivered' AND receipt.outcome IS NOT NULL))[1], 'skipped_ineligible')::text AS outcome
+FROM decision_wake_event event
+JOIN decision_wake_receipt receipt ON receipt.event_id = event.id
+WHERE event.answer_id = $1 AND event.type = 'answered'
+`
+
+// The answer's wake outcome once its answered event is settled: the first
+// delivered receipt's outcome (requester before assignee), else skipped. An
+// answer with no receipts (kind=decision) is skipped.
+func (q *Queries) SummarizeDecisionAnswerWake(ctx context.Context, answerID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, summarizeDecisionAnswerWake, answerID)
+	var outcome string
+	err := row.Scan(&outcome)
+	return outcome, err
+}
+
 const summarizeDecisionWakeEvent = `-- name: SummarizeDecisionWakeEvent :one
 SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
        coalesce((array_agg(outcome ORDER BY CASE role WHEN 'requester' THEN 0 ELSE 1 END)
@@ -425,4 +479,54 @@ func (q *Queries) SummarizeDecisionWakeEvent(ctx context.Context, eventID pgtype
 	var i SummarizeDecisionWakeEventRow
 	err := row.Scan(&i.Pending, &i.Outcome)
 	return i, err
+}
+
+const supersedeDecisionAnswerWakeEvents = `-- name: SupersedeDecisionAnswerWakeEvents :execrows
+UPDATE decision_wake_event
+SET superseded_at = clock_timestamp(), superseded_reason = 'answer_disclaimed'
+WHERE answer_id = $1 AND type = 'answered' AND superseded_at IS NULL
+`
+
+// Disclaiming an action answer takes its answered event back. Callers hold the
+// request and answer locks.
+func (q *Queries) SupersedeDecisionAnswerWakeEvents(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeDecisionAnswerWakeEvents, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedePendingAnswerWakeReceipts = `-- name: SupersedePendingAnswerWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'superseded'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.answer_id = $1 AND event.type = 'answered'
+  AND receipt.status = 'pending'
+`
+
+// A pending receipt of the taken-back answer never presents it.
+func (q *Queries) SupersedePendingAnswerWakeReceipts(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedePendingAnswerWakeReceipts, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const suppressPendingRequestWakeReceipts = `-- name: SuppressPendingRequestWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'suppressed_issue_closed'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.request_id = $1 AND receipt.status = 'pending'
+`
+
+// The issue-closed lifecycle cancel settles the request's pending receipts in
+// its own transaction. Callers hold the issue and request locks.
+func (q *Queries) SuppressPendingRequestWakeReceipts(ctx context.Context, requestID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, suppressPendingRequestWakeReceipts, requestID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

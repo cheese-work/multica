@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthStore } from "../auth";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
@@ -1674,6 +1675,7 @@ describe("ApiClient", () => {
           parent_id: "parent-1",
           attachment_ids: ["attachment-1"],
           suppress_agent_ids: ["agent-1"],
+          steer: false,
         }),
       },
       {
@@ -2312,6 +2314,30 @@ describe("ApiClient", () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
     });
 
+    it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+    });
+
+    it("CHE-4153 attention actions post the exact displayed keys", async () => {
+      const ok = () => Promise.resolve(new Response(JSON.stringify({ attention: [], batch_id: "b1" }), { status: 200 }));
+      const fetchMock = vi.fn().mockImplementation(ok);
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new ApiClient("https://api.example.test");
+      await client.chatAttentionXong("s1", ["item:1"]);
+      await client.chatAttentionLater("s1", ["item:1"], { durationSeconds: 7200, requestId: "r1" });
+      await client.chatAttentionXongAll(["item:1", "turn:2"]);
+      await client.chatAttentionUndoXongAll("b1");
+      const calls = fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method, init?.body ? JSON.parse(init.body as string) : undefined]);
+      expect(calls[0]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/xong", "POST", { subject_keys: ["item:1"] }]);
+      expect(calls[1]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/later", "POST", { subject_keys: ["item:1"], duration_seconds: 7200, request_id: "r1" }]);
+      expect(calls[2]).toEqual(["https://api.example.test/api/chat/attention/xong-all", "POST", { subject_keys: ["item:1", "turn:2"] }]);
+      expect(calls[3]![0]).toBe("https://api.example.test/api/chat/attention/xong-all/b1/undo");
+      expect(calls[3]![1]).toBe("POST");
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
@@ -2451,7 +2477,7 @@ describe("ApiClient model discovery response schema", () => {
   function stubJSON(body: unknown) {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
+      vi.fn().mockImplementation(() =>
         new Response(JSON.stringify(body), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -2459,6 +2485,39 @@ describe("ApiClient model discovery response schema", () => {
       ),
     );
   }
+
+  it.each([null, "other-workspace"])(
+    "targets onboarding workspace for discovery and polling with active route %s",
+    async (activeSlug) => {
+      setCurrentWorkspace(activeSlug, null);
+      try {
+        stubJSON(completed);
+        const client = new ApiClient("https://api.example.test");
+        await client.initiateListModels("rt-1", { force: true }, "new-workspace");
+        await client.getListModelsResult("rt-1", "req-1", "new-workspace");
+        for (const [, init] of vi.mocked(fetch).mock.calls) {
+          expect(new Headers(init?.headers).get("X-Workspace-Slug")).toBe("new-workspace");
+        }
+      } finally {
+        setCurrentWorkspace(null, null);
+      }
+    },
+  );
+
+  it("keeps the active workspace header when no override is supplied", async () => {
+    setCurrentWorkspace("existing-workspace", null);
+    try {
+      stubJSON(completed);
+      const client = new ApiClient("https://api.example.test");
+      await client.initiateListModels("rt-1");
+      await client.getListModelsResult("rt-1", "req-1");
+      for (const [, init] of vi.mocked(fetch).mock.calls) {
+        expect(new Headers(init?.headers).get("X-Workspace-Slug")).toBe("existing-workspace");
+      }
+    } finally {
+      setCurrentWorkspace(null, null);
+    }
+  });
 
   it("parses a live completed discovery", async () => {
     stubJSON(completed);
@@ -3473,5 +3532,22 @@ describe("ApiClient getIssue schema failure", () => {
     expect((err as SchemaValidationError).paths).toContain("number");
     expect(String(warn.mock.calls[0]?.[0])).toContain("number");
     setSchemaLogger(noopLogger);
+  });
+});
+
+describe("workspace scheduling pause", () => {
+  it.each([
+    ["pauseWorkspace", "pause"],
+    ["resumeWorkspace", "resume"],
+  ] as const)("%s POSTs /api/workspaces/:id/%s", async (method, verb) => {
+    const body = { id: "ws-1", scheduling_paused_at: verb === "pause" ? "2026-11-13T00:00:00Z" : null };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test")[method]("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/${verb}`);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
   });
 });

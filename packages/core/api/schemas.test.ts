@@ -72,13 +72,47 @@ import {
   EMPTY_PLUGIN_PREVIEW,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema, AgentDecisionSettingSchema, SidebarProjectPrefsDocSchema } from "./schemas";
+import type { SidebarIssueAssignee } from "../issues/stores/sidebar-tree-store";
 import {
   ListIssueStatusesResponseSchema,
   IssueStatusEntrySchema,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
+import { IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("IssueUnreadPageSchema", () => {
+  const endpoint = "GET /api/issues/unread";
+
+  it("defaults a missing agent_id and next_cursor to null", () => {
+    const parsed = parseWithFallback(
+      {
+        items: [
+          { issue_id: "i-1", outcome: "completed", agent_id: "a-1", created_at: "2026-01-01T00:00:00Z" },
+          { issue_id: "i-2", outcome: "manual", created_at: "2026-01-01T00:00:00Z", extra: true },
+        ],
+      },
+      IssueUnreadPageSchema,
+      EMPTY_ISSUE_UNREAD_PAGE,
+      { endpoint },
+    );
+    expect(parsed.items.map((u) => [u.issue_id, u.agent_id])).toEqual([
+      ["i-1", "a-1"],
+      ["i-2", null],
+    ]);
+    expect(parsed.next_cursor).toBeNull();
+  });
+
+  it("falls back to an empty last page for a malformed body", () => {
+    expect(parseWithFallback({ items: "nope" }, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+    expect(parseWithFallback(null, IssueUnreadPageSchema, EMPTY_ISSUE_UNREAD_PAGE, { endpoint })).toEqual(
+      EMPTY_ISSUE_UNREAD_PAGE,
+    );
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",
@@ -152,6 +186,15 @@ describe("ChatSessionSchema", () => {
     expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: keys }).attention_unclassified_keys).toEqual(keys);
     expect(old.attention_unclassified_keys).toBeUndefined();
     expect(ChatSessionSchema.parse({ ...baseSession, attention_unclassified_keys: "turn:t1" }).attention_unclassified_keys).toBeUndefined();
+  });
+
+  it("CHE-4153 carries the displayed keys and the reply-to-ask ids, dropping malformed values", () => {
+    const parsed = ChatSessionSchema.parse({ ...baseSession, attention_keys: ["item:a", "decision:d@1"], attention_ask_ids: ["a"] });
+    expect(parsed.attention_keys).toEqual(["item:a", "decision:d@1"]);
+    expect(parsed.attention_ask_ids).toEqual(["a"]);
+    const bad = ChatSessionSchema.parse({ ...baseSession, attention_keys: "item:a", attention_ask_ids: 3 });
+    expect(bad.attention_keys).toBeUndefined();
+    expect(bad.attention_ask_ids).toBeUndefined();
   });
 
   it("keeps sessions readable when older servers send lane-summary data", () => {
@@ -255,6 +298,13 @@ describe("IssueSchema (via ListIssuesResponseSchema)", () => {
     const parsed = ListIssuesResponseSchema.parse({ issues: [withoutName], total: 1 });
     expect(parsed.issues[0]?.id).toBe(baseIssue.id);
     expect(parsed.issues[0]?.status_name).toBeUndefined();
+  });
+  it("reads run_budget_blocked, tolerating a server without it or a malformed one (CHE-5285)", () => {
+    const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
+    expect(parse({ run_budget_blocked: true })?.run_budget_blocked).toBe(true);
+    expect(parse({})?.run_budget_blocked).toBeUndefined();
+    expect(parse({ run_budget_blocked: "yes" })?.id).toBe(baseIssue.id);
+    expect(parse({ run_budget_blocked: "yes" })?.run_budget_blocked).toBeUndefined();
   });
   it("reads the workflow override and tolerates a server without it or a malformed one", () => {
     const parse = (extra: object) => ListIssuesResponseSchema.parse({ issues: [{ ...baseIssue, ...extra }], total: 1 }).issues[0];
@@ -2142,6 +2192,13 @@ describe("SidebarProjectPrefsDocSchema", () => {
     };
     expect(SidebarProjectPrefsDocSchema.parse(doc)).toEqual(doc);
   });
+
+  it.each(["anyone", "me", "my_agents", "me_and_my_agents"] satisfies SidebarIssueAssignee[])(
+    "keeps the %s assignee setting",
+    (assignee) => {
+      expect(SidebarProjectPrefsDocSchema.parse({ issues: { assignee } }).issues.assignee).toBe(assignee);
+    },
+  );
 
   it("drops settings saved by another client version instead of failing the document", () => {
     const parsed = SidebarProjectPrefsDocSchema.parse({

@@ -27,6 +27,11 @@ type ownerFixture struct {
 func newOwnerFixture(t *testing.T) ownerFixture {
 	t.Helper()
 	f, _, issue, agentID := wakeFixture(t)
+	// The held provider retry (CHE-1736 M1.2) runs only on an issue still
+	// assigned to the failed task's agent, so the fixture issue is.
+	if _, err := f.Pool.Exec(context.Background(), `UPDATE issue SET assignee_type='agent', assignee_id=$2 WHERE id=$1`, issue, agentID); err != nil {
+		t.Fatal(err)
+	}
 	return ownerFixture{principalFixture: f, issueID: util.UUIDToString(issue), agentID: agentID}
 }
 

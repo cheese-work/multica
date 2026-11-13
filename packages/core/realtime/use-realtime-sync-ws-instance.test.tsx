@@ -26,7 +26,7 @@ import {
   chatSessionsOptions,
 } from "../chat/queries";
 import { runtimeKeys } from "../runtimes/queries";
-import { workspaceWorkingAgentsKeys } from "../agents/queries";
+import { agentTasksKeys, workspaceWorkingAgentsKeys } from "../agents/queries";
 import { workspaceKeys } from "../workspace/queries";
 import { issueStatusKeys } from "../issue-statuses/queries";
 import { issueWorkflowKeys } from "../issue-workflows/queries";
@@ -146,11 +146,12 @@ describe("useRealtimeSync — ws instance change", () => {
 
     // Should invalidate workspace-scoped and event-fed account-level keys,
     // plus the cross-workspace inbox summary.
+    // Plus the issue unread marks.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(47));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(48));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -627,6 +628,28 @@ describe("useRealtimeSync — comment folded into a queued run", () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(qc.getQueryState(issueKeys.tasks("issue-1"))?.isInvalidated).toBe(true);
+  });
+});
+
+describe("useRealtimeSync — live usage", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("refreshes open run and usage queries without a task lifecycle change", async () => {
+    vi.useFakeTimers();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, createStores()), { wrapper: createWrapper(qc) });
+    const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+    const keys = [issueKeys.tasks("issue-1"), issueKeys.usage("issue-1"), agentTasksKeys.detail("ws-1", "agent-1")];
+    for (const key of keys) qc.setQueryData(key, []);
+
+    onAny({ type: "task:usage", payload: { task_id: "task-1" } });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    for (const key of keys) expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
   });
 });
 

@@ -474,3 +474,35 @@ FROM github_pull_request
 WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
 GROUP BY installation_id, repo_owner, repo_name, pr_number
 ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number;
+
+-- name: ListIssueOpenPullRequestHeads :many
+-- Head SHAs of the issue's linked PRs that are still open or draft, GitHub and
+-- self-hosted alike. The review-head guard (CHE-4649) acts only on exactly one.
+SELECT head_sha FROM (
+    SELECT pr.head_sha AS head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+    UNION ALL
+    SELECT pr.head_sha AS head_sha
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+) open_prs;
+
+-- name: HasAgentVerdictForHead :one
+-- Whether the agent already commented its verdict on the issue for this PR
+-- head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
+-- (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
+-- "Head:" line that names the head by its first seven characters at least.
+-- Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
+-- verdict for another head from counting. The markers are upper case on
+-- purpose, so prose such as "this may fail" is not a verdict. A comment in
+-- another shape does not match, and the run starts as before.
+SELECT EXISTS (
+    SELECT 1 FROM comment
+    WHERE issue_id = sqlc.arg('issue_id') AND author_type = 'agent' AND author_id = sqlc.arg('agent_id')
+      AND deleted_at IS NULL
+      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
+      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left(sqlc.arg('head_sha')::text, 7))
+);

@@ -78,7 +78,7 @@ If the local session no longer exists, the context can't be continued, or the pr
 
 ## Watch and stop a run
 
-While the agent runs, the UI shows the current phase and tool activity. Expand **View details** to inspect the run in full.
+While the agent runs, the UI shows the current phase and tool activity. Expand **View details** to inspect the run in full. Messages the agent writes between tool calls appear in the conversation as they are written, so you don't need to expand the details to read them.
 
 To interrupt, click the stop button next to the input (shown while the input is empty). Content already returned to the conversation is kept.
 
@@ -132,8 +132,24 @@ Type `/` at the start of the chat composer to run built-in Multica commands alon
 | `/compact [focus]` | Active DM | Summarize the current DM and continue in a new one (runs the agent). |
 | `/rename <title>` | Active DM | Rename the current DM without starting an agent turn. |
 | `/fork [message]` | Active DM | Copy the current DM into a new one and optionally send a message there. |
+| `/later [duration]` | Active DM | Snooze everything the current DM shows in "Needs you" (also matches `snooze`). The duration is a number plus `s`, `m`, `h` or `d`, from 1 second to 7 days; the default is 2 hours. Nothing is sent to the agent. |
 
-Client commands (`/statistic`, `/archive`, `/pin`, `/unseen`, `/unarchive`, and `/rename`) take effect immediately without starting an agent turn and cannot be sent with attachments; `/statistic`, `/archive`, `/pin`, `/unseen`, and `/unarchive` take no arguments.
+Client commands (`/statistic`, `/archive`, `/pin`, `/unseen`, `/unarchive`, `/rename`, and `/later`) take effect immediately without starting an agent turn and cannot be sent with attachments; `/statistic`, `/archive`, `/pin`, `/unseen`, and `/unarchive` take no arguments.
+
+## Open decisions
+
+While an agent waits for your decision, a chip on every page reads "N decisions need you". On the chat page the same count sits in the chat header as a button: click it to list every open decision and open one without moving the message list. Elsewhere, click the chip to open the oldest one: the issue at the decision card, or the issue when the card has no comment. The same decision also shows in your Inbox and in the "Needs you" list. An answer with free text and no option still closes the card, and the agent reads your words.
+
+### Clear your "Needs you" list
+
+Each row in the "Needs you" list has two actions:
+
+- **Done** marks the row handled. A decision card cannot be marked done; answer it instead.
+- **Later** hides the row until a time you choose (default 2 hours, shown in ICT). A decision stays open; only its place in the list is snoozed.
+
+**Done all** marks every row done in one step, except decisions. A message at the bottom of the screen offers **Undo** for 10 seconds.
+
+A message you send in a DM with open questions counts as your reply to them. The agent closes each question, or it returns to you with its original age.
 
 ## Next steps
 

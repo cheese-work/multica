@@ -148,6 +148,11 @@ func (ask Ask) validateAction() error {
 	if !slices.ContainsFunc(ask.Steps, func(step string) bool { return strings.TrimSpace(step) != "" }) {
 		return &AskError{"ask.steps", "requires at least one nonblank item"}
 	}
+	for index, step := range ask.Steps {
+		if agentOwned(step) {
+			return &AskError{fmt.Sprintf("ask.steps[%d]", index), agentOwnedMessage}
+		}
+	}
 	for _, field := range []struct{ name, value string }{
 		{"source_issue_id", ask.SourceIssueID}, {"source_comment_id", ask.SourceCommentID},
 	} {

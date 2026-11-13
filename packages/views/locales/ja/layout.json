@@ -100,6 +100,7 @@
       "assignee_anyone": "全員",
       "assignee_me": "自分",
       "assignee_my_agents": "自分のエージェント",
+      "assignee_me_and_my_agents": "自分と自分のエージェント",
       "reset": "リセット",
       "load_more": "さらに表示",
       "show_less": "表示を減らす",
@@ -173,5 +174,12 @@
   "object_page": {
     "toggle_panel": "右サイドバーを切り替え",
     "properties": "プロパティ"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} がスケジューリングを一時停止しました · {{time}}。",
+    "paused_at": "スケジューリングは一時停止中 · {{time}}。",
+    "detail": "どのエージェントも新しい実行を取得しません。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "resume": "再開",
+    "resume_failed": "ワークスペースを再開できませんでした"
   }
 }

@@ -52,11 +52,17 @@ func decisionFeedState(row db.ListDecisionAnswerFeedRow) string {
 }
 
 // requireDecisionFeedCaller admits one credential: a PAT carrying DecisionFeedScope
-// whose user owns the workspace. The scope is read from the token row on every call,
-// not from the auth cache, so a revoked or re-scoped token stops at once.
+// whose user owns the workspace.
 func (h *Handler) requireDecisionFeedCaller(w http.ResponseWriter, r *http.Request) (string, bool) {
+	return h.requireScopedPATOwner(w, r, DecisionFeedScope)
+}
+
+// requireScopedPATOwner admits a PAT carrying scope whose user owns the workspace.
+// The scope is read from the token row on every call, not from the auth cache, so a
+// revoked or re-scoped token stops at once.
+func (h *Handler) requireScopedPATOwner(w http.ResponseWriter, r *http.Request, scope string) (string, bool) {
 	deny := func() (string, bool) {
-		writeError(w, http.StatusForbidden, "the decision feed needs a decisions:feed PAT")
+		writeError(w, http.StatusForbidden, "this route needs a "+scope+" PAT")
 		return "", false
 	}
 	if r.Header.Get("X-Actor-Source") != "pat" {
@@ -67,7 +73,7 @@ func (h *Handler) requireDecisionFeedCaller(w http.ResponseWriter, r *http.Reque
 		return deny()
 	}
 	pat, err := h.Queries.GetPersonalAccessTokenByHash(r.Context(), auth.HashToken(bearer))
-	if err != nil || !slices.Contains(pat.Scopes, DecisionFeedScope) || uuidToString(pat.UserID) != r.Header.Get("X-User-ID") {
+	if err != nil || !slices.Contains(pat.Scopes, scope) || uuidToString(pat.UserID) != r.Header.Get("X-User-ID") {
 		return deny()
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
