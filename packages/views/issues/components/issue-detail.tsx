@@ -1497,6 +1497,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const consumedHighlightId = useRestoredViewState(issueHighlightMementoKey(id));
   const consumedHighlightRef = useRef(consumedHighlightId);
   consumedHighlightRef.current = consumedHighlightId;
+  // The comment id the list was OPENED at (initialTopMostItemIndex), set once when
+  // the list first renders for this issue. While it matches the landing target,
+  // Virtuoso owns the scroll and the landing effect must not write to it: a
+  // scrollTop write mid-placement makes Virtuoso scroll to NaN, which snaps the
+  // page to the top (CHE-5376).
+  const listOpenedAtRef = useRef<{ listKey: string; commentId: string | null } | null>(null);
   const writeViewState = useViewStateWriter();
   const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const attachScrollContainer = useCallback(
@@ -3005,6 +3011,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (lastHighlightRequestTokenRef.current !== highlightRequestToken) {
       lastHighlightRequestTokenRef.current = highlightRequestToken;
       didHighlightRef.current = null;
+      // A replay asks a mounted, measured list to scroll: the page drives it.
+      listOpenedAtRef.current = { listKey: `${wsId}:${id}`, commentId: null };
     }
     if (didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
@@ -3074,7 +3082,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
     const container = scrollContainerEl;
     if (!container || targetIdx < 0) return;
-    if (!document.getElementById(`comment-${landingId}`)) {
+    const listOwnsScroll = listOpenedAtRef.current?.commentId === highlightCommentId;
+    if (!listOwnsScroll && !document.getElementById(`comment-${landingId}`)) {
       virtuosoRef.current?.scrollToIndex({ index: targetIdx, align: "start", offset: -16 });
     }
 
@@ -3107,6 +3116,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
       }
+      if (listOwnsScroll) return;
       const c = container.getBoundingClientRect();
       const e = el.getBoundingClientRect();
       const target = Math.max(
@@ -3126,7 +3136,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -3519,6 +3529,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // list to scroll there instead lands it on a guess and then on NaN, which
   // snaps the page to the top (CHE-5376).
   const openAtLandingIndex = highlightCommentId && consumedHighlightId !== highlightCommentId ? targetIdx : -1;
+  const listKey = `${wsId}:${id}`;
+  if (!loading && !!scrollContainerEl && !(timelineLoading && timelineView.groups.length === 0) && listOpenedAtRef.current?.listKey !== listKey) {
+    listOpenedAtRef.current = { listKey, commentId: openAtLandingIndex >= 0 ? highlightCommentId ?? null : null };
+  }
 
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,

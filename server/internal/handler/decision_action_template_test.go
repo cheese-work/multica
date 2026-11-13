@@ -102,3 +102,53 @@ func TestProposalAskDiffIsTheStoredPreviewDiff(test *testing.T) {
 		}
 	}
 }
+
+// Every product action fixes its passkey flag in the registry and has a fixture
+// the registry accepts (B v9 S5, CHE-5415). A new action type fails here until
+// its author adds both. Config actions require a passkey.
+const fixtureID = "00000000-0000-0000-0000-000000000001"
+
+func textSetFixture(idKey, textKey string) string {
+	return `{"` + idKey + `":"` + fixtureID + `","` + textKey + `":"x","base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("x") + `"}`
+}
+
+var actionFixtures = map[string]string{
+	"agent.copy":                     `{"source_agent_id":"` + fixtureID + `","name":"Copy","runtime_id":"` + fixtureID + `"}`,
+	"agent.env.patch":                `{"agent_id":"` + fixtureID + `","unset":["KEY"]}`,
+	"agent.pause":                    `{"agent_id":"` + fixtureID + `"}`,
+	"agent.resume":                   `{"agent_id":"` + fixtureID + `"}`,
+	"issue.run_budget.raise":         `{"issue_id":"` + fixtureID + `","new_cap":10,"window_id":"2026-01-01T00:00:00Z"}`,
+	"issue.run_budget.top_up":        `{"issue_id":"` + fixtureID + `","window_id":"2026-01-01T00:00:00Z"}`,
+	"agent.instructions.set":         textSetFixture("agent_id", "instructions"),
+	"squad.instructions.set":         textSetFixture("squad_id", "instructions"),
+	"workspace.context.set":          textSetFixture("workspace_id", "context"),
+	"agent.skills.set":               `{"agent_id":"` + fixtureID + `","skill_ids":[],"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
+	"workflow.budget.set":            `{"workflow_id":"` + fixtureID + `","base_sha256":"` + decisionaction.TextDigest("") + `","max_runs_per_issue":5}`,
+	"workflow.steps.set":             `{"workflow_id":"` + fixtureID + `","steps":[{"status_key":"in_progress"}],"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
+	"workflow.step.instructions.set": `{"workflow_id":"` + fixtureID + `","status_key":"in_progress","base_sha256":"` + decisionaction.TextDigest("") + `","instructions":"x"}`,
+	"workspace.routing_agent.set":    `{"workspace_id":"` + fixtureID + `","routing_agent":{},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
+	"workspace.delegated_writes.set": `{}`,
+	"workspace.settings.patch":       `{"workspace_id":"` + fixtureID + `","settings":{"idle_started_guard":{"mode":"act"}},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
+}
+
+func TestEveryActionTypeHasAPasskeyFlagAndAFixture(test *testing.T) {
+	for _, definition := range decisionaction.Definitions() {
+		if strings.HasPrefix(definition.Type, "test.") {
+			continue
+		}
+		if definition.Passkey == decisionaction.PasskeyUnset {
+			test.Errorf("%s has no passkey flag", definition.Type)
+		}
+		if definition.MinClass != "reversible" && !definition.RequiresPasskey() {
+			test.Errorf("%s is a config action and must require a passkey", definition.Type)
+		}
+		fixture, ok := actionFixtures[definition.Type]
+		if !ok {
+			test.Errorf("%s has no fixture", definition.Type)
+			continue
+		}
+		if _, err := decisionaction.Normalize(decisionaction.Request{Type: definition.Type, Version: definition.Version, Params: json.RawMessage(fixture)}); err != nil {
+			test.Errorf("%s fixture is refused by its own registry entry: %v", definition.Type, err)
+		}
+	}
+}

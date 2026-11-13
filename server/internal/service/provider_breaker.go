@@ -247,8 +247,12 @@ func recordProviderSuccess(ctx context.Context, queries *db.Queries, task db.Age
 			return fmt.Errorf("close provider breaker: %w", err)
 		}
 		if changed == 1 {
-			slog.Info("provider breaker closed after canary success", "provider", provider, "canary_task_id", util.UUIDToString(task.ID))
-			return recordProviderBreakerTransition(ctx, queries, agent.WorkspaceID, provider, "close", "half_open", "closed", pgtype.UUID{}, task.ID)
+			after, _, err := providerBreakerRow(ctx, queries, agent.WorkspaceID, provider)
+			if err != nil {
+				return err
+			}
+			slog.Info("provider breaker left half_open after canary success", "provider", provider, "to", after.State, "canary_task_id", util.UUIDToString(task.ID))
+			return recordProviderBreakerTransition(ctx, queries, agent.WorkspaceID, provider, "close", "half_open", after.State, pgtype.UUID{}, task.ID)
 		}
 		return nil
 	}

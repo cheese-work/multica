@@ -191,45 +191,7 @@ func (f memberBG) activity(t *testing.T) []map[string]any {
 	return out
 }
 
-func personalWritesOn(t *testing.T) {
-	t.Helper()
-	personalBackgroundAgentsEnabled = true
-	t.Cleanup(func() { personalBackgroundAgentsEnabled = false })
-}
-
-func TestPersonalWriteRefusedUntilEnabled(t *testing.T) {
-	f := memberBGFixture(t, "pbg-off")
-	f.setUser(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": f.a1}})
-	before := f.stored(t, testUserID)
-	var rt string
-	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id=$1`, f.a1).Scan(&rt)
-	task := dbfx.Task(t, f.a1, testutil.Cols{"runtime_id": rt})
-	var statusBefore string
-	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, task).Scan(&statusBefore)
-
-	wantCode(t, f.put(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": f.a2}}, nil), http.StatusConflict, codeBackgroundAgentsPersonalNotEnabled)
-	wantCode(t, f.put(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": nil}}, nil), http.StatusConflict, codeBackgroundAgentsPersonalNotEnabled)
-	wantCode(t, f.reset(t, testUserID, "dm_title", nil), http.StatusConflict, codeBackgroundAgentsPersonalNotEnabled)
-	// First write for a member with no row is refused too, and stores nothing.
-	wantCode(t, f.put(t, f.memberB, map[string]any{"dm_title": map[string]any{"agent_id": f.b1}}, nil), http.StatusConflict, codeBackgroundAgentsPersonalNotEnabled)
-
-	if !reflect.DeepEqual(f.stored(t, testUserID), before) || f.stored(t, f.memberB) != nil {
-		t.Fatal("a refused write changed a row")
-	}
-	if got := f.activity(t); len(got) != 0 {
-		t.Fatalf("activity = %v, want none", got)
-	}
-	var statusAfter string
-	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id=$1`, task).Scan(&statusAfter)
-	if statusAfter != statusBefore {
-		t.Fatalf("queued task status %s -> %s", statusBefore, statusAfter)
-	}
-	// An unchanged write is not effective: accepted even while disabled.
-	f.put(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": f.a1}}, nil).Want(http.StatusOK)
-}
-
 func TestPersonalWriteSetClearResetAndActivity(t *testing.T) {
-	personalWritesOn(t)
 	f := memberBGFixture(t, "pbg-on")
 	var out map[string]any
 	f.put(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": f.a1, "fallback_agent_id": f.priv}}, nil).Want(http.StatusOK).JSON(&out)
@@ -278,7 +240,6 @@ func TestPersonalWriteSetClearResetAndActivity(t *testing.T) {
 }
 
 func TestPersonalWriteMachineActorRefusedUnchangedAccepted(t *testing.T) {
-	personalWritesOn(t)
 	f := memberBGFixture(t, "pbg-machine")
 	for _, source := range []string{"task_token", "cloud_pat"} {
 		wantCode(t, f.put(t, testUserID, map[string]any{"dm_title": map[string]any{"agent_id": f.a1}}, machine(source)), http.StatusForbidden, codeBackgroundAgentsHumanOnly)
@@ -302,7 +263,6 @@ func TestPersonalWriteMachineActorRefusedUnchangedAccepted(t *testing.T) {
 }
 
 func TestPersonalWriteValidation(t *testing.T) {
-	personalWritesOn(t)
 	f := memberBGFixture(t, "pbg-bad")
 	ok := map[string]any{"agent_id": f.a1}
 	wantCode(t, f.put(t, testUserID, map[string]any{"routing": ok}, nil), http.StatusBadRequest, bgagents.CodeRoutingUserScope)

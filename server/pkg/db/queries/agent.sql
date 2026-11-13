@@ -602,6 +602,24 @@ WHERE id IN (
 )
 RETURNING *;
 
+-- name: CancelBackgroundTasksByPurposeAndMember :many
+-- A member's personal-chain change to one job cancels that member's
+-- non-terminal tasks of the job, from either chain source, in the same
+-- transaction as the settings write (CHE-4114). Other members' tasks and other
+-- jobs are left alone. A cancelled attempt never leaves cancelled.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id IN (
+    SELECT atq.id FROM agent_task_queue atq
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = @workspace_id
+      AND atq.purpose = @purpose
+      AND atq.context->>'member_id' = @member_id::text
+      AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+RETURNING *;
+
 -- name: LinkTaskToIssue :exec
 -- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
 -- locks the owners' workspace rows in the writer's own transaction and returns
@@ -1001,6 +1019,14 @@ WHERE id = (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: an output_only background task (context.type =
+            -- 'background') goes only to a daemon that advertises the runner.
+            -- Keep the literal equal to protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            -- chat_compaction tasks are not background-typed and keep this claim.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
       AND NOT EXISTS (
           SELECT 1 FROM agent_task_queue active
@@ -1165,6 +1191,14 @@ WHERE id = (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
@@ -1219,6 +1253,14 @@ WITH candidates AS MATERIALIZED (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int

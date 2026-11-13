@@ -356,3 +356,7 @@ UPDATE workspace
 SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
 WHERE id = @id
 RETURNING *;
+
+-- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
+-- CHE-4116: workspaces still holding the routing setting under its old key.
+SELECT id FROM workspace WHERE settings ? 'routing_agent';
