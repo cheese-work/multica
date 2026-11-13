@@ -129,7 +129,7 @@ export function issueDecisionCardsOptions(wsId: string, issueId: string) {
  * the session's creation time like the server (chat.sql): a new fork carries
  * old copied messages and must still list as new.
  */
-function sessionActivityTime(s: ChatSession): number {
+export function sessionActivityTime(s: ChatSession): number {
   const activity = new Date(s.last_message?.created_at ?? s.created_at).getTime();
   const created = new Date(s.created_at).getTime();
   return Number.isNaN(created) ? activity : Math.max(activity, created);

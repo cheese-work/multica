@@ -22,6 +22,7 @@ import {
   chatKeys,
   filterChatSessions,
   openDecisionRequestsOptions,
+  sessionActivityTime,
   sortArchivedChatSessions,
   sortChatSessions,
 } from "@multica/core/chat/queries";
@@ -44,7 +45,8 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
-import { formatChatTime } from "./format-chat-time";
+import { formatChatClock } from "./format-chat-time";
+import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
 import { NeedsYouList } from "./needs-you-list";
 import { useAttentionRefresh } from "./use-attention-refresh";
 import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
@@ -274,9 +276,12 @@ function ChatThreadListBody({
     const isConfirmingAction = isConfirmingDelete || isConfirmingStop;
     const titleText = session.title?.trim() || t(($) => $.window.untitled);
     const last = session.last_message ?? null;
-    const timeText = last
-      ? formatChatTime(last.created_at, locale)
-      : formatChatTime(session.updated_at, locale);
+    const timeText = formatChatClock(sessionActivityTime(session), locale);
+    const unseen = !isCurrent && (session.has_unread || (session.unread_count ?? 0) > 0);
+    // The active chip already says "Decisions" / "Unseen"; only day-grouped
+    // views need the tag.
+    const showDecisionTag =
+      decisionSessionIds.has(session.id) && listView !== "decisions" && listView !== "unseen";
 
     // The second line: typing/waiting → failed → preview.
     let previewNode: React.ReactNode;
@@ -309,7 +314,7 @@ function ChatThreadListBody({
       );
     } else if (last) {
       previewNode = (
-        <span className={cn("block truncate", unread > 0 ? "text-foreground" : "text-muted-foreground")}>
+        <span className={cn("block truncate", unseen ? "font-semibold text-foreground" : "text-muted-foreground")}>
           {last.role === "user" ? t(($) => $.list.you_prefix) : ""}
           {toPreview(last.content)}
         </span>
@@ -436,10 +441,10 @@ function ChatThreadListBody({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
-            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+            <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unseen ? "font-bold text-foreground" : "font-medium")}>
               {titleText}
             </span>
-            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
+            <span className={cn("ml-auto shrink-0 text-micro", unseen ? "font-semibold text-brand" : "text-muted-foreground")}>{timeText}</span>
           </div>
 
           {/* Line 2: preview + unread badge, or an inline confirm prompt */}
@@ -473,6 +478,22 @@ function ChatThreadListBody({
               ) : (
                 <>
                   <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-caption">
+                    {unseen && (
+                      <span
+                        data-testid="chat-unseen-dot"
+                        role="img"
+                        aria-label={t(($) => $.list.unseen_dot)}
+                        className="size-[7px] shrink-0 rounded-full bg-brand"
+                      />
+                    )}
+                    {showDecisionTag && (
+                      <span
+                        data-testid="chat-decision-tag"
+                        className="shrink-0 rounded-xs bg-brand/15 px-1.5 text-caption font-semibold text-brand"
+                      >
+                        {t(($) => $.list.tag_decision)}
+                      </span>
+                    )}
                     {agentName && (
                       <>
                         <span className="max-w-[40%] shrink-0 truncate font-medium text-muted-foreground">
@@ -532,6 +553,27 @@ function ChatThreadListBody({
     );
   };
 
+  // Pinned rows get their own header in Main / All; everything else sits under
+  // its day. The Pinned chip is all pinned rows, so a header there says nothing.
+  const sections = useMemo(() => {
+    const label: Record<DayGroupKey | "pinned", string> = {
+      pinned: t(($) => $.list.group.pinned),
+      today: `${t(($) => $.list.group.today)} · ${new Date().toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "numeric" })}`,
+      yesterday: t(($) => $.list.group.yesterday),
+      thisWeek: t(($) => $.list.group.this_week),
+      older: t(($) => $.list.group.older),
+    };
+    const splitPinned = listView === "main" || listView === "all";
+    const pinned = splitPinned ? visibleSessions.filter((s) => s.pinned && s.status !== "archived") : [];
+    const rest = pinned.length > 0 ? visibleSessions.filter((s) => !pinned.includes(s)) : visibleSessions;
+    return [
+      { key: "pinned" as const, sessions: pinned },
+      ...groupByDay(rest, new Date(), Intl.DateTimeFormat().resolvedOptions().timeZone),
+    ]
+      .filter((g) => g.sessions.length > 0)
+      .map((g) => ({ ...g, label: label[g.key] }));
+  }, [visibleSessions, listView, locale, t]);
+
   let body: React.ReactNode;
   if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
   else if (rows.length === 0 && loadState === "error") body = <ListError onRetry={onRetry} />;
@@ -542,7 +584,22 @@ function ChatThreadListBody({
   else
     body = (
       <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        {visibleSessions.map(renderRow)}
+        {sections.map((g) => (
+          <section key={g.key}>
+            <div
+              data-testid="chat-day-header"
+              data-group={g.key}
+              style={{ position: "sticky", top: 0 }}
+              className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
+            >
+              {/* Slot for the group checkbox (select mode). */}
+              <span data-slot="group-select" className="empty:hidden" />
+              <span className="min-w-0 flex-1 truncate">{g.label}</span>
+              <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
+            </div>
+            {g.sessions.map(renderRow)}
+          </section>
+        ))}
       </div>
     );
 

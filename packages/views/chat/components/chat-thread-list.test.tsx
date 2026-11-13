@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
@@ -482,5 +482,74 @@ describe("ChatThreadList filter chips", () => {
     expect(screen.getByRole("status", { name: "You're offline" })).toBeInTheDocument();
     expect(titles()).toHaveLength(5);
     online.mockRestore();
+  });
+});
+
+// CHE-5511 slice 2: sticky day headers replace the per-row date; unseen style.
+describe("ChatThreadList day headers and unseen style", () => {
+  const local = (m: number, d: number, h = 12, min = 0) => new Date(2026, m - 1, d, h, min).toISOString();
+  const lastMsg = (iso: string) => ({ content: "hello", role: "assistant" as const, created_at: iso });
+  const dated = (id: string, iso: string, extra: Partial<ChatSession> = {}) =>
+    makeSession({ id, title: id, created_at: iso, updated_at: iso, last_message: lastMsg(iso), ...extra });
+  const set: ChatSession[] = [
+    dated("t1", local(11, 13, 9, 5)),
+    dated("y1", local(11, 12, 21, 40)),
+    dated("w1", local(11, 10, 8, 0)),
+    dated("o1", local(10, 2, 8, 0)),
+  ];
+  const headers = () => screen.queryAllByTestId("chat-day-header");
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 13, 15, 30)); // Fri 13 Nov 2026, local
+    needsYou.rows = [];
+    useChatStore.setState({ listView: "main", activeSessionId: null });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("groups rows under sticky headers Today / Yesterday / This week / Older", () => {
+    renderList(null, { renderedSessions: set });
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["today", "yesterday", "thisWeek", "older"]);
+    expect(headers()[0]).toHaveTextContent("Today");
+    expect(headers()[1]).toHaveTextContent("Yesterday");
+    expect(headers()[2]).toHaveTextContent("This week");
+    expect(headers()[3]).toHaveTextContent("Older");
+    for (const h of headers()) expect(h.style.position).toBe("sticky");
+  });
+
+  it("skips empty groups and pins rows under their own header in Main/All only", () => {
+    renderList(null, { renderedSessions: [dated("p1", local(10, 2), { pinned: true }), set[0]!] });
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["pinned", "today"]);
+    fireEvent.click(screen.getByRole("button", { name: /^Pinned/ }));
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["older"]);
+  });
+
+  it("shows no date on a row, only a clock time", () => {
+    renderList(null, { renderedSessions: set });
+    for (const row of screen.getAllByTestId("chat-thread-row")) {
+      expect(row.textContent).not.toMatch(/2026|Nov|\d{1,2}\/\d{1,2}/);
+    }
+    expect(screen.getAllByTestId("chat-thread-row")[1]).toHaveTextContent(/9:40/);
+  });
+
+  it("styles an unseen row bold with a labelled dot", () => {
+    renderList(null, { renderedSessions: [dated("u1", local(11, 13, 9, 5), { has_unread: true, unread_count: 2 }), dated("r1", local(11, 13, 8, 5))] });
+    const [unseen, seen] = screen.getAllByTestId("chat-thread-row");
+    expect(unseen!.querySelector("[title]")!.className).toContain("font-bold");
+    expect(unseen!.querySelector("[data-testid='chat-unseen-dot']")).toHaveAttribute("aria-label", "Unseen");
+    expect(seen!.querySelector("[data-testid='chat-unseen-dot']")).toBeNull();
+    expect(seen!.querySelector("[title]")!.className).not.toContain("font-bold");
+  });
+
+  it("tags a decision row in day-grouped views and drops the tag under the Decisions / Unseen chips", () => {
+    needsYou.rows = [{ id: "d1", chat_session_id: "u1", issue_identifier: "CHE-1", ask: "x", created_at: local(11, 13), escalation_class: "spend" }];
+    renderList(null, { renderedSessions: [dated("u1", local(11, 13, 9, 5), { has_unread: true, unread_count: 1 }), dated("r1", local(11, 13, 8, 5))] });
+    expect(screen.getAllByTestId("chat-decision-tag")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Decisions/ }));
+    expect(screen.queryByTestId("chat-decision-tag")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Unseen/ }));
+    expect(screen.queryByTestId("chat-decision-tag")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^All/ }));
+    expect(screen.getAllByTestId("chat-decision-tag")).toHaveLength(1);
   });
 });
