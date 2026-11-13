@@ -282,6 +282,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
+import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -1751,6 +1752,28 @@ export class ApiClient {
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
     return graph;
+  }
+
+  /** One keyset page of POST /api/issues/timeline. A malformed body throws. */
+  async getIssueActualTimeline(workspaceId: string, body: IssueTimelineRequest, signal?: AbortSignal): Promise<IssueTimelineResponse> {
+    const { IssueTimelineResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/timeline?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, IssueTimelineResponseSchema, { endpoint: "POST /api/issues/timeline" });
+  }
+
+  /** One keyset page of POST /api/issues/relations/batch. A malformed body throws. */
+  async getIssueRelationsBatch(workspaceId: string, body: RelationsBatchRequest, signal?: AbortSignal): Promise<RelationsBatchResponse> {
+    const { RelationsBatchResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/relations/batch?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, RelationsBatchResponseSchema, { endpoint: "POST /api/issues/relations/batch" });
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
