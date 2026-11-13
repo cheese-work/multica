@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,6 +388,10 @@ type UpdateAutopilotRequest struct {
 	ScriptConfig json.RawMessage `json:"script_config"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
+	// Optional stale-write guard: hex SHA-256 of the description the caller
+	// last read. Requires "description"; a mismatch with the row locked for
+	// update fails the whole request with 409 and writes nothing.
+	ExpectedDescriptionSHA256 *string `json:"expected_description_sha256"`
 }
 
 type SubscriberInput struct {
@@ -1120,8 +1126,13 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.ScriptConfig = scriptCfg
-	if _, ok := rawFields["description"]; ok {
+	_, descriptionSent := rawFields["description"]
+	if descriptionSent {
 		params.Description = ptrToText(req.Description)
+	}
+	if req.ExpectedDescriptionSHA256 != nil && !descriptionSent {
+		writeError(w, http.StatusBadRequest, "expected_description_sha256 requires description")
+		return
 	}
 	if _, ok := rawFields["issue_title_template"]; ok {
 		if req.IssueTitleTemplate != nil {
@@ -1248,6 +1259,17 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 			"code":  "autopilot_update_conflict",
 		})
 		return
+	}
+
+	if req.ExpectedDescriptionSHA256 != nil {
+		live := sha256.Sum256([]byte(lockedPrev.Description.String))
+		if !strings.EqualFold(*req.ExpectedDescriptionSHA256, hex.EncodeToString(live[:])) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "the autopilot description changed since it was read; re-read it and try again.",
+				"code":  "autopilot_description_conflict",
+			})
+			return
+		}
 	}
 
 	// The subscriber set only enters the audit diff when this request replaces it.

@@ -30,6 +30,19 @@ runs:
           node scripts/design/validate-patterns.mjs
         fi
 
+    - name: Check locale key rule (CHE-5420 S3)
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        node --test scripts/design/check-copy.test.mjs
+        # A key removed or renamed in en must change in every locale. The advisory copy check runs in copy-check.yml.
+        if [ "$EVENT" = pull_request ]; then
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          node scripts/design/check-copy.mjs --base FETCH_HEAD
+        fi
+
     - name: Check UI pattern reference (ui-pattern-ref)
       shell: bash
       env:
