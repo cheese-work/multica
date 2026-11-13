@@ -922,7 +922,18 @@
     "prefix_new_label": "Nouveau préfixe",
     "prefix_rule": "Lettres et chiffres uniquement, 10 caractères au maximum.",
     "prefix_confirm_action": "Remplacer par {{prefix}}",
-    "prefix_external_warning": "Les anciens identifiants comme {{oldExample}} dans les titres de PR, noms de branche, documents et discussions ne sont pas mis à jour : ces liens cesseront de fonctionner."
+    "prefix_external_warning": "Les anciens identifiants comme {{oldExample}} dans les titres de PR, noms de branche, documents et discussions ne sont pas mis à jour : ces liens cesseront de fonctionner.",
+    "scheduling_label": "Planification",
+    "scheduling_hint": "La suspension empêche tout agent de prendre de nouvelles exécutions. Les tâches en cours se terminent ; le travail en file attend.",
+    "scheduling_pause_action": "Suspendre l'espace de travail",
+    "scheduling_resume_action": "Reprendre l'espace de travail",
+    "scheduling_pause_title": "Suspendre cet espace de travail ?",
+    "scheduling_pause_description": "Aucun agent ne prend de nouvelle exécution avant la reprise. Le travail en file est conservé.",
+    "scheduling_keep": "Laisser actif",
+    "scheduling_confirm": "Suspendre",
+    "scheduling_paused_toast": "Espace de travail suspendu",
+    "scheduling_resumed_toast": "Espace de travail repris",
+    "scheduling_failed_toast": "Impossible de modifier la planification de l'espace de travail"
   },
   "export_privacy": {
     "title": "Confidentialité des exports",

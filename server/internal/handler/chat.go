@@ -1448,6 +1448,8 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
 		return
 	}
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
+	messages = afterSegmentFloor(messages, floorAt, floorID)
 	writeJSON(w, http.StatusOK, h.chatMessageResponses(r.Context(), workspaceID, visibleChatMessages(messages)))
 }
 
@@ -1549,11 +1551,14 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 	// A session can contain one server-authored onboarding kickoff. Fetch one
 	// extra row beyond the normal lookahead so hiding it cannot make a visible
 	// page appear shorter or lose its next cursor.
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
 	messages, err := h.Queries.ListChatMessagesPage(r.Context(), db.ListChatMessagesPageParams{
 		ChatSessionID:   session.ID,
 		Limit:           int32(limit + 2),
 		BeforeCreatedAt: beforeCreatedAt,
 		BeforeID:        beforeID,
+		FloorCreatedAt:  floorAt,
+		FloorID:         floorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")

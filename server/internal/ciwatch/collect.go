@@ -3,8 +3,10 @@ package ciwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path"
 	"slices"
 	"strings"
@@ -36,6 +38,12 @@ type Collector struct {
 }
 
 var errLogTooBig = errors.New("ciwatch: log over byte limit")
+
+// settleError marks a Release that could not store its settlement.
+type settleError struct{ err error }
+
+func (e *settleError) Error() string { return "ciwatch: settle github budget: " + e.err.Error() }
+func (e *settleError) Unwrap() error { return e.err }
 
 // capReader fails once more than max bytes were read, so a 50 MB log is never drained.
 type capReader struct {
@@ -130,25 +138,43 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 			ev.PartialReason = reason
 		}
 	}
+	// persistErr is a backoff that could not be stored. Collection ends and the
+	// run fails: it is retried once the ledger is back, never spent blindly.
+	var persistErr error
 	// stop reports whether err ends all further API calls, recording why.
 	stop := func(err error) bool {
 		var rl *RateLimitError
+		var se *settleError
+		// A settlement the ledger did not store leaves its balance stale: end
+		// collection and fail the run, even when err also carries a limit.
+		stopped := errors.As(err, &se)
+		if stopped {
+			if persistErr == nil {
+				persistErr = se
+			}
+			partial(PartialBudget)
+		}
 		switch {
 		case errors.Is(err, ErrNoBudget):
 			partial(PartialBudget)
 		case errors.Is(err, ErrBackoff):
 			partial(PartialBackoff)
 		case errors.As(err, &rl):
-			c.Budget.Limited(ctx, run.InstallationID, rl)
+			if perr := c.Budget.Limited(ctx, run.InstallationID, rl); perr != nil && persistErr == nil {
+				persistErr = fmt.Errorf("ciwatch: store github backoff: %w", perr)
+			}
 			partial(PartialBackoff)
 		default:
-			return false
+			return stopped
 		}
 		return true
 	}
 
 	jobs, ok, truncated := c.failedJobs(ctx, run, partial, stop)
 	ev.FailedJobCount = len(jobs)
+	for _, j := range jobs {
+		ev.RunnerLost = ev.RunnerLost || j.RunnerLost
+	}
 	if ok && len(jobs) == 0 {
 		partial(PartialNoJobs)
 	}
@@ -173,6 +199,9 @@ func (c *Collector) Handle(ctx context.Context, in Input) (Result, error) {
 		}
 	}
 
+	if persistErr != nil {
+		return Result{}, persistErr
+	}
 	if truncated {
 		// Set after the log loop: it must not end log collection.
 		partial(PartialJobsTruncated)
@@ -203,8 +232,11 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 		more := false
 		if err == nil {
 			var js []Job
-			js, more, err = c.GH.ListJobs(ctx, run, page)
-			release()
+			var h http.Header
+			js, more, h, err = c.GH.ListJobs(ctx, run, page)
+			if serr := release(h); serr != nil {
+				err = errors.Join(err, &settleError{serr})
+			}
 			for _, j := range js {
 				if j.Conclusion == "failure" || j.Conclusion == "timed_out" {
 					failed = append(failed, j)
@@ -235,7 +267,7 @@ func (c *Collector) failedJobs(ctx context.Context, run Run, partial func(string
 var errRedact = errors.New("ciwatch: redaction failed")
 
 // tail downloads one job log under the byte and time limits and returns its redacted tail.
-func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, error) {
+func (c *Collector) tail(ctx context.Context, run Run, jobID int64) (lines []string, err error) {
 	timeout, limit, redact := c.LogTimeout, c.MaxLogBytes, c.Redact
 	if timeout == 0 {
 		timeout = defLogTimeout
@@ -250,15 +282,20 @@ func (c *Collector) tail(ctx context.Context, run Run, jobID int64) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	defer release()
+	var h http.Header
+	defer func() {
+		if serr := release(h); serr != nil {
+			lines, err = nil, errors.Join(err, &settleError{serr})
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	body, err := c.GH.JobLog(ctx, run, jobID)
+	body, h, err := c.GH.JobLog(ctx, run, jobID)
 	if err != nil {
 		return nil, err
 	}
 	defer body.Close()
-	lines, err := redact(&capReader{r: body, left: limit}, maxExcerptLine)
+	lines, err = redact(&capReader{r: body, left: limit}, maxExcerptLine)
 	switch {
 	case err == nil:
 		return lines, nil
