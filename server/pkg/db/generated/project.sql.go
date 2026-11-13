@@ -169,7 +169,7 @@ INSERT INTO project (
     lead_type, lead_id, priority, start_date, due_date, workflow_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split
 `
 
 type CreateProjectParams struct {
@@ -217,6 +217,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.DueDate,
 		&i.WorkflowID,
 		&i.DecisionDelegates,
+		&i.WorkflowSplit,
 	)
 	return i, err
 }
@@ -249,7 +250,7 @@ func (q *Queries) GetIssueProjectStatus(ctx context.Context, id pgtype.UUID) (st
 }
 
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -277,6 +278,7 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 		&i.DueDate,
 		&i.WorkflowID,
 		&i.DecisionDelegates,
+		&i.WorkflowSplit,
 	)
 	return i, err
 }
@@ -327,6 +329,7 @@ const listProjectWakeups = `-- name: ListProjectWakeups :many
 SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.content_revision, w.workflow_step, w.purpose, w.decision_request_id, w.followup_instance_id, w.watch_inputs FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
 WHERE i.project_id=$1 AND i.workspace_id=$2
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
 ORDER BY w.id FOR UPDATE OF w
 `
 
@@ -410,7 +413,7 @@ func (q *Queries) ListProjectWakeups(ctx context.Context, arg ListProjectWakeups
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -448,6 +451,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.DueDate,
 			&i.WorkflowID,
 			&i.DecisionDelegates,
+			&i.WorkflowSplit,
 		); err != nil {
 			return nil, err
 		}
@@ -531,6 +535,43 @@ func (q *Queries) RequireActiveProject(ctx context.Context, arg RequireActivePro
 	return status, err
 }
 
+const setProjectWorkflowSplit = `-- name: SetProjectWorkflowSplit :one
+UPDATE project SET workflow_split = $3::jsonb, updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split
+`
+
+type SetProjectWorkflowSplitParams struct {
+	ID            pgtype.UUID `json:"id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	WorkflowSplit []byte      `json:"workflow_split"`
+}
+
+// NULL clears the split (CHE-5262).
+func (q *Queries) SetProjectWorkflowSplit(ctx context.Context, arg SetProjectWorkflowSplitParams) (Project, error) {
+	row := q.db.QueryRow(ctx, setProjectWorkflowSplit, arg.ID, arg.WorkspaceID, arg.WorkflowSplit)
+	var i Project
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Icon,
+		&i.Status,
+		&i.LeadType,
+		&i.LeadID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Priority,
+		&i.StartDate,
+		&i.DueDate,
+		&i.WorkflowID,
+		&i.DecisionDelegates,
+		&i.WorkflowSplit,
+	)
+	return i, err
+}
+
 const updateProject = `-- name: UpdateProject :one
 UPDATE project SET
     title = COALESCE($2, title),
@@ -545,7 +586,7 @@ UPDATE project SET
     decision_delegates = CASE WHEN $17::boolean THEN $18::uuid[] ELSE decision_delegates END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split
 `
 
 type UpdateProjectParams struct {
@@ -607,6 +648,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.DueDate,
 		&i.WorkflowID,
 		&i.DecisionDelegates,
+		&i.WorkflowSplit,
 	)
 	return i, err
 }

@@ -2256,6 +2256,14 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 				touched[issueID] = struct{}{}
 			}
 		}
+		// A child's PR event re-runs the parent that counts child PRs (CHE-5242).
+		if err := h.addIncludeChildParents(ctx, wsID, touched, issueIDs...); err != nil {
+			if isOwedClosedReplay(ctx) {
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: %w", err))
+			} else {
+				slog.Warn("pr auto-complete failed", "err", err)
+			}
+		}
 		resolver := issuestatus.NewResolver(wsID)
 		for issueID := range touched {
 			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)

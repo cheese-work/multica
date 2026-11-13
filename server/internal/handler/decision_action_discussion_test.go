@@ -48,7 +48,7 @@ func readDecision(test *testing.T, requestID string) decisionReadback {
 }
 
 // `multica decision get` returns the effect, who decided, for whom, and that
-// nothing is revocable yet (S6 adds revocation).
+// whether it is revocable (S6, CHE-5416).
 func TestGetDecisionReadsEffectAndWho(test *testing.T) {
 	for outcome, want := range map[string]struct{ effect, reason string }{
 		"applied": {"applied", ""}, "not_applied": {"not_applied", "refused by the runtime"}, "rejected": {"not_applied", "rejected"},

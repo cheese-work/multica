@@ -149,6 +149,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
 
+### 路由任务
+
+`issue route` 在一次调用中修改任务状态并记录原因。路由步骤用它决定任务下一步去哪里。`--status`、`--reason`（1 到 500 个字符）和 `--confidence`（0 到 1）为必填：
+
+```bash
+multica issue route MUL-123 --status in_review --reason "测试通过，需要评审" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "需要后端修复" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "评审人稍后接手" --confidence 0.9
+```
+
+不带 `--owner` 时，由项目工作流选择处理人，与 `issue status` 相同。显式的 `--owner`（成员、智能体或小队；`--owner-id` 接受 UUID 而不是名称）会替换工作流的处理人。保持当前状态、只修改负责人的路由是允许的。状态和负责人都相同的路由会被拒绝并返回 HTTP 409，不写入任何内容。`--no-start` 与 `issue update` 一样，不会启动智能体运行。`--expected-revision` 会在任务期间发生变化时拒绝该路由。
+
 ### 时间线
 
 `issue get` 给出任务现在的状态；`issue timeline` 按时间顺序列出状态、优先级、负责人、标题、日期的改动和运行结果，并混排评论，用来回答"什么时候进入 in_review""卡在当前状态多久了"：
@@ -462,7 +474,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `usage <issue-id>` | 查看聚合 token 用量 | |
 | | `rerun-task <run-id>` | 沿用原智能体和触发上下文，重跑指定运行 | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | 取消进行中或排队中的运行 | `--issue` |
-| `project` | `list/get/create/update/delete` | 管理项目 | `create`：`--title`（必填）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（可重复） |
+| `project` | `list/get/create/update/delete` | 管理项目 | `create`：`--title`（必填）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（可重复）；`update` 的 A/B 分流（所有者、管理员或项目负责人）：`--split-arm-b`（工作流 ID）、`--split-start`、`--split-end`（RFC 3339）、`--split-exclude-assignee` / `--split-exclude-squad`（可重复）、`--clear-split` |
 | | `status <id> <status>` | 修改项目状态 | |
 | | `resource list/add/update/remove` | 管理项目附加资源 | `--type`、`--url`、`--default-branch-hint`、`--ref`、`--local-path`、`--daemon-id`、`--execution-mode`（本地目录的 `in_place` / `worktree`） |
 | | `workflow get/set <project-id>` | 查看项目当前生效的工作流，或切换工作流 | `set <project-id> <workflow\|default>`：`--map old=new`（可重复），`--dry-run` 打印状态迁移计划；切换不会重新分配任务，也不会启动运行。仅管理员和项目负责人可操作 |
@@ -537,6 +549,8 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 `--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。两条命令都接受一个或多个 issue ID：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目标>"`。单个 ID 保持原来的单条提案。任务令牌下传入多个 ID 时，只调用一次批量路由并打印一个卡片链接；`--goal` 为批量命名（默认：操作和 issue 数量），`--output json` 返回批次 id 和每个 issue 的提案 id。个人访问令牌下，每个 ID 各发起自己的请求。批量路由需要聊天任务，最多 25 个 issue；服务器可用一个通行密钥批准一批 raise，但在批准时拒绝一批 top-up，因此 top-up 需逐个批准。
 
 运行预算的下一步：issue 上 80 % 的提醒会带上数字和一条可直接运行的命令，例如 `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。被预算拒绝的运行会返回错误码 `run_budget_exhausted`，并带有 `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card` 和 `next_command`。`multica issue budget get <issue> --output json` 同样返回 `open_card` 和 `next_command`。当 issue 的当前窗口已有提额或新窗口卡片处于打开状态时，`next_command` 会提示等待该卡片，再次执行 `multica issue budget raise` 会返回同一张卡片，而不是再开一张。使用任务令牌时，issue 任务的 `--for` 默认是工作区所有者，帮助中只列出 `raise`；`top-up` 仍供成员使用。服务器、成员或智能体每打开一张卡片，就会新增一条 `run_budget_ask` 活动记录，记录操作者类型、操作者和动作类型。
+
+已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。
 
 `issue.project.set` 把 issue 移到另一个项目：`multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。卡片显示移动前后的项目、工作流、运行上限和已用运行次数，并说明这次移动是否扩大运行预算。扩大预算的移动是 `spend` 卡片，其他移动是 `reversible`。只有工作区所有者可以批准。若请求之后 issue 已离开原项目，或目标工作流的预算变大，卡片会被拒绝。
 
