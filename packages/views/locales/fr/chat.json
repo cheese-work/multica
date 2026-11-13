@@ -396,7 +396,16 @@
     "pin_failed": "Impossible de mettre à jour l’épingle",
     "unseen": "Marquer comme non vu",
     "unseen_failed": "Impossible de marquer cette discussion comme non vue",
-    "undo": "Annuler"
+    "undo": "Annuler",
+    "group": {
+      "pinned": "Épinglés",
+      "today": "Aujourd’hui",
+      "yesterday": "Hier",
+      "this_week": "Cette semaine",
+      "older": "Plus ancien"
+    },
+    "unseen_dot": "Non vu",
+    "tag_decision": "Décision"
   },
   "header": {
     "context_meter": "{{pct}} % de {{window}}",

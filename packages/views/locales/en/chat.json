@@ -396,7 +396,16 @@
     "pin_failed": "Couldn't update the pin",
     "unseen": "Mark as unseen",
     "unseen_failed": "Couldn't mark this chat as unseen",
-    "undo": "Undo"
+    "undo": "Undo",
+    "group": {
+      "pinned": "Pinned",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "this_week": "This week",
+      "older": "Older"
+    },
+    "unseen_dot": "Unseen",
+    "tag_decision": "Decision"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
