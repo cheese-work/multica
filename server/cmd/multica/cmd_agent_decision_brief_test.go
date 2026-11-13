@@ -139,7 +139,7 @@ func TestAgentDecisionBriefMarkdownListsAskFailures(t *testing.T) {
 		map[string]any{"identifier": "CHE-9", "agent": "x99-codex", "reason": "no_matching_request", "failed_at": "2026-11-03T10:00:00Z", "excerpt": "please pick the plan"},
 	}}
 	var b strings.Builder
-	if err := writeAgentDecisionMarkdown(&b, feed); err != nil {
+	if err := writeAgentDecisionMarkdown(&b, feed, nil); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
