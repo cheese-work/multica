@@ -43,7 +43,7 @@ func (f *fakeRerunGH) RerunFailedJobs(context.Context, int64, string, string, in
 func (f *fakeRerunGH) setAttempt(n int) { f.mu.Lock(); f.attempt = n; f.mu.Unlock() }
 
 type rerunEnv struct {
-	*ledgerEnv
+	*actEnv
 	gh        *fakeRerunGH
 	rr        *Rerunner
 	remaining atomic.Int32
@@ -53,7 +53,7 @@ type rerunEnv struct {
 
 func newRerunEnv(t *testing.T) *rerunEnv {
 	t.Helper()
-	e := &rerunEnv{ledgerEnv: newLedgerEnv(t), gh: &fakeRerunGH{attempt: 1}, inst: rand.Int64N(1 << 40)}
+	e := &rerunEnv{actEnv: newLedgerEnv(t), gh: &fakeRerunGH{attempt: 1}, inst: rand.Int64N(1 << 40)}
 	e.remaining.Store(4000)
 	e.reset.Store(e.clock.Now().Add(time.Hour).Unix())
 	budget := ghbudget.New(e.pool, ghbudget.FetcherFunc(func(context.Context, int64) (int, time.Time, error) {
