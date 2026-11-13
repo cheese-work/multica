@@ -48,6 +48,9 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
@@ -116,6 +119,15 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentSchedulingParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		if _, err := loadAgent(params.AgentID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`
@@ -284,9 +296,9 @@ func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID
 // actionPreconditions records what the approver must still find true: the
 // issue, workflow, squad or workspace the action names, otherwise the agent's
 // snapshot.
-func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, proposer pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
 	if change, ok := configChanges[draft.Type]; ok {
-		return configChangePreconditions(ctx, queries, issue.WorkspaceID, draft, change)
+		return configChangePreconditions(ctx, queries, issue.WorkspaceID, proposer, draft, change)
 	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
@@ -316,7 +328,7 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preconditions, err := actionPreconditions(ctx, queries, issue, draft)
+	preconditions, err := actionPreconditions(ctx, queries, issue, request.AskingAgentID, draft)
 	if err != nil {
 		return empty, err
 	}

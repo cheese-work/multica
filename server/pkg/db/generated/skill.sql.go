@@ -200,6 +200,38 @@ func (q *Queries) GetSkillInWorkspace(ctx context.Context, arg GetSkillInWorkspa
 	return i, err
 }
 
+const listAgentSkillAssignments = `-- name: ListAgentSkillAssignments :many
+SELECT skill_id, enabled FROM agent_skill
+WHERE agent_id = $1
+ORDER BY skill_id
+`
+
+type ListAgentSkillAssignmentsRow struct {
+	SkillID pgtype.UUID `json:"skill_id"`
+	Enabled bool        `json:"enabled"`
+}
+
+// The agent's skill assignments with their enabled flag, for the skill-set digest.
+func (q *Queries) ListAgentSkillAssignments(ctx context.Context, agentID pgtype.UUID) ([]ListAgentSkillAssignmentsRow, error) {
+	rows, err := q.db.Query(ctx, listAgentSkillAssignments, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentSkillAssignmentsRow{}
+	for rows.Next() {
+		var i ListAgentSkillAssignmentsRow
+		if err := rows.Scan(&i.SkillID, &i.Enabled); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAgentSkillNamesByAgentIDs = `-- name: ListAgentSkillNamesByAgentIDs :many
 SELECT ask.agent_id, s.name
 FROM agent_skill ask
@@ -644,6 +676,76 @@ func (q *Queries) ListSkillsByWorkspace(ctx context.Context, workspaceID pgtype.
 	return items, nil
 }
 
+const lockSkillForFileWrite = `-- name: LockSkillForFileWrite :one
+SELECT id FROM skill
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE
+`
+
+type LockSkillForFileWriteParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Every writer of an existing skill's files takes this lock first and holds it
+// to commit. It conflicts with the FOR SHARE NOWAIT snapshot lock of an
+// agent.skills.set approval, which row locks on skill_file could not do for an
+// insert. It waits under the transaction lock timeout.
+func (q *Queries) LockSkillForFileWrite(ctx context.Context, arg LockSkillForFileWriteParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockSkillForFileWrite, arg.ID, arg.WorkspaceID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const lockSkillsShare = `-- name: LockSkillsShare :many
+SELECT id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id FROM skill
+WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+ORDER BY id
+FOR SHARE NOWAIT
+`
+
+type LockSkillsShareParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+// The skill rows an approval snapshots, in the workspace, locked FOR SHARE
+// NOWAIT in id order. Every writer of a skill's files takes a conflicting
+// parent lock first, so the file set cannot change until the lock holder
+// commits. Rows are never locked per file: a new file row would escape a row
+// lock. A busy row answers 55P03. Missing and foreign ids return no row.
+func (q *Queries) LockSkillsShare(ctx context.Context, arg LockSkillsShareParams) ([]Skill, error) {
+	rows, err := q.db.Query(ctx, lockSkillsShare, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Skill{}
+	for rows.Next() {
+		var i Skill
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Description,
+			&i.Content,
+			&i.Config,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PluginInstallationID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const removeAgentSkill = `-- name: RemoveAgentSkill :exec
 DELETE FROM agent_skill
 WHERE agent_id = $1 AND skill_id = $2
@@ -686,6 +788,38 @@ func (q *Queries) SetAgentSkillEnabled(ctx context.Context, arg SetAgentSkillEna
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const touchSkill = `-- name: TouchSkill :one
+UPDATE skill SET updated_at = now()
+WHERE id = $1 AND workspace_id = $2
+RETURNING id, workspace_id, name, description, content, config, created_by, created_at, updated_at, plugin_installation_id
+`
+
+type TouchSkillParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Supporting-file writes change the skill as a whole, so they bump the parent's
+// updated_at in the same transaction. Updating the row also takes its lock,
+// which serializes concurrent file writes on one skill with UpdateSkill.
+func (q *Queries) TouchSkill(ctx context.Context, arg TouchSkillParams) (Skill, error) {
+	row := q.db.QueryRow(ctx, touchSkill, arg.ID, arg.WorkspaceID)
+	var i Skill
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.Content,
+		&i.Config,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.PluginInstallationID,
+	)
+	return i, err
 }
 
 const updateSkill = `-- name: UpdateSkill :one

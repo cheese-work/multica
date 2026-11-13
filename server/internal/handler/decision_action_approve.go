@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -58,6 +59,9 @@ type decisionActionExecution struct {
 	// CredentialID is the passkey credential that signed this approval and
 	// IssueID the issue the request sits on; both go into a config-change audit.
 	CredentialID, IssueID pgtype.UUID
+	// Tx is the approval transaction Queries runs in, for a write that needs
+	// the transaction itself.
+	Tx pgx.Tx
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -66,7 +70,10 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 var decisionActionExecutors = map[string]decisionActionExecutor{
 	"agent.env.patch":        executeEnvPatchAction,
 	"agent.copy":             executeAgentCopyAction,
+	agentPauseAction:         executeAgentPauseAction,
+	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
+	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -75,6 +82,10 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 func decisionActionPermitted(actionType string, target db.Agent, approver db.Member) bool {
 	if actionType == "agent.env.patch" {
 		return canManageAgentEnv(target, approver)
+	}
+	if isAgentSchedulingAction(actionType) {
+		// The rule of requireSchedulingAdmin: workspace owner or admin only.
+		return roleAllowed(approver.Role, "owner", "admin")
 	}
 	return true
 }
@@ -87,6 +98,7 @@ var (
 	errActionExpired       = decisionIntentRefusal{http.StatusConflict, "expired: this action's approval window has closed"}
 	errNeedsOwner          = decisionIntentRefusal{http.StatusForbidden, decisionClassNeedsOwner + ": this action needs the workspace owner"}
 	errPreviewRequired     = decisionIntentRefusal{http.StatusConflict, "preview_required: approve with the digest of the preview you were shown"}
+	errRefusalMismatch     = decisionIntentRefusal{http.StatusConflict, "refusal_mismatch: params.refusal_id must name a refusal of params.issue_id and params.window_id"}
 	errNotPermitted        = decisionIntentRefusal{http.StatusForbidden, "not_permitted: you may not make this change to this agent"}
 	errSecretsMismatch     = decisionIntentRefusal{http.StatusBadRequest, "secrets_mismatch: supply a value for exactly the secret slots, none masked or empty"}
 )
@@ -147,10 +159,22 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 		return empty, err
 	}
 	var queueKey string
-	if change, queued := configChanges[preview.ActionType]; queued && change.QueueField != "" && target.Valid {
+	change, configured := configChanges[preview.ActionType]
+	if configured && change.QueueField != "" && target.Valid {
 		queueKey = configChangeLockKey(uuidToString(caller.workspaceID), change.QueueField, uuidToString(target))
 	}
-	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey)
+	// A top-up opens a run-budget window, so it takes its turn behind any move
+	// that holds the issue's boundary, waiting before it holds a connection.
+	var boundaryIssue pgtype.UUID
+	if preview.ActionType == runBudgetTopUpType {
+		boundaryIssue = located.IssueID
+		leave, err := handler.enterRunBudgetBoundary(ctx, boundaryIssue)
+		if err != nil {
+			return empty, errBusyRetry
+		}
+		defer leave()
+	}
+	action, err := handler.approveDecisionActionTx(ctx, caller, body, executor, located, target, decisionActionRuntime(preview), queueKey, configured && change.CatalogLock, boundaryIssue)
 	var uncertain uncertainCommit
 	if errors.As(err, &uncertain) {
 		return handler.readbackAfterUncertainCommit(ctx, caller)
@@ -161,7 +185,7 @@ func (handler *Handler) approveDecisionAction(ctx context.Context, caller decisi
 
 // approveDecisionActionTx runs the approve lock sequence (plan 3.2, rows 1 to
 // 12) and executes the action inside a savepoint.
-func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string) (db.DecisionAction, error) {
+func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller decisionActionCaller, body approveBody, executor decisionActionExecutor, located db.DecisionRequest, target, runtimeID pgtype.UUID, queueKey string, catalogLock bool, boundaryIssue pgtype.UUID) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
 	transaction, err := handler.beginActionTx(ctx, 2*time.Second)
 	if err != nil {
@@ -170,12 +194,26 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	defer transaction.Rollback(context.WithoutCancel(ctx))
 	// Before any other lock, so the wait cannot sit in a lock cycle; the
 	// config change's own try-lock later in this transaction is re-entrant.
+	// The catalog lock is first of all, the order a workflow save takes.
+	if catalogLock {
+		if err := handler.Queries.WithTx(transaction).LockIssueStatusCatalog(ctx, caller.workspaceID); err != nil {
+			return empty, err
+		}
+	}
 	if queueKey != "" {
 		if _, err := transaction.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, queueKey); err != nil {
 			return empty, err
 		}
 	}
 	queries := handler.Queries.WithTx(transaction)
+	// The boundary lock comes before every row lock, the order a status move
+	// uses: it holds the boundary across its status write and its activity, so a
+	// top-up that took the issue row first could read the window between them.
+	if boundaryIssue.Valid {
+		if err := queries.LockIssueRunBudgetBoundary(ctx, boundaryIssue); err != nil {
+			return empty, err
+		}
+	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return empty, err
 	}
@@ -281,6 +319,9 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 		if err := checkIssueTarget(action.Params, current.IssueID, http.StatusConflict); err != nil {
 			return empty, err
 		}
+		if err := checkRefusalBinding(ctx, queries, action.Params); err != nil {
+			return empty, err
+		}
 	case decisionaction.TargetWorkflow:
 		if workflow, err = loadWorkflowTarget(ctx, queries, caller.workspaceID, action.Params, http.StatusConflict, true); err != nil {
 			return empty, err
@@ -335,7 +376,7 @@ func (handler *Handler) approveDecisionActionTx(ctx context.Context, caller deci
 	finish, summary, err := executeInSavepoint(ctx, transaction, queries, executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targetAgent, Runtime: runtime, Secrets: body.Secrets, Workflow: workflow, Squad: squad, Workspace: workspace,
-		CredentialID: credential, IssueID: current.IssueID,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
 	})
 	if err != nil {
 		return empty, err
@@ -394,13 +435,34 @@ func (handler *Handler) finishApprovalAfterCommit(ctx context.Context, action db
 // completeDecisionActionPostCommit broadcasts the change, wakes the delivery
 // worker and stamps the row. It is idempotent: a repeat only re-sends events.
 func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, action db.DecisionAction) error {
+	if err := handler.publishDecisionActionCardUpdated(ctx, action); err != nil {
+		return err
+	}
 	if action.State == "executed" {
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
 		}
+		handler.notifyRunBudgetResume(ctx, action.ID)
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
+}
+
+// publishDecisionActionCardUpdated tells open clients the action left pending:
+// the DM card re-reads its action state on this event, so every client drops
+// the approve and reject buttons and shows the outcome. The click recorded a
+// card answer in the same transaction as the state change.
+func (handler *Handler) publishDecisionActionCardUpdated(ctx context.Context, action db.DecisionAction) error {
+	request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+	if err != nil {
+		return err
+	}
+	answer, err := handler.Queries.GetDecisionCardAnswer(ctx, action.DecisionRequestID)
+	if err != nil {
+		return err
+	}
+	handler.publishDecisionAnswerUpdated(uuidToString(action.WorkspaceID), "member", uuidToString(answer.AnsweredByUserID), answer.ID, request.IssueID, decisionAnswerState(answer.WokenAt, answer.DisclaimedAt))
+	return nil
 }
 
 // decisionActionTarget is the one existing agent an action reads or changes.
@@ -414,7 +476,7 @@ func decisionActionTarget(action db.DecisionAction) (pgtype.UUID, bool) {
 	}
 	var raw string
 	switch action.ActionType {
-	case "agent.env.patch", agentInstructionsAction:
+	case "agent.env.patch", agentInstructionsAction, agentSkillsAction, agentPauseAction, agentResumeAction:
 		raw = params.AgentID
 	case "agent.copy":
 		raw = params.SourceAgentID
@@ -499,6 +561,10 @@ func checkPreviewDigest(action db.DecisionAction, claimed string) error {
 func checkPreconditions(action db.DecisionAction, agent db.Agent) error {
 	if _, ok := configChanges[action.ActionType]; ok {
 		// The config-change core checks its own digests under the row lock.
+		return nil
+	}
+	if isAgentSchedulingAction(action.ActionType) {
+		// Pause and resume are idempotent; there is no state to drift from.
 		return nil
 	}
 	var drifted bool
@@ -631,6 +697,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
 	}
+	if isAgentSchedulingAction(action.ActionType) {
+		return handler.publishAgentSchedulingChanged(ctx, action)
+	}
 	agentID, ok := decisionActionTarget(action)
 	if !ok {
 		return nil
@@ -640,4 +709,28 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 		return err
 	}
 	return handler.publishAgentEnvUpdated(ctx, agent, action.ApprovedByUserID)
+}
+
+// checkRefusalBinding applies the run-budget rule to an issue action that names
+// a refusal: it must be a refusal of the action's own issue and window. An
+// action without params.refusal_id passes.
+func checkRefusalBinding(ctx context.Context, queries *db.Queries, params json.RawMessage) error {
+	var named struct {
+		IssueID   string `json:"issue_id"`
+		WindowID  string `json:"window_id"`
+		RefusalID string `json:"refusal_id"`
+	}
+	if json.Unmarshal(params, &named) != nil || named.RefusalID == "" {
+		return nil
+	}
+	refusalID, refusalErr := parseUUIDString(named.RefusalID)
+	issueID, issueErr := parseUUIDString(named.IssueID)
+	if refusalErr != nil || issueErr != nil {
+		return errRefusalMismatch
+	}
+	err := service.RunBudgetRefusalBinds(ctx, queries, refusalID, issueID, named.WindowID)
+	if errors.Is(err, service.ErrRunBudgetRefusalMismatch) {
+		return errRefusalMismatch
+	}
+	return err
 }

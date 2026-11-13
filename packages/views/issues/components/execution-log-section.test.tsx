@@ -567,6 +567,21 @@ describe("execution log past runs", () => {
     expect(chart.querySelector('[data-run="active"]')).toHaveClass("bg-info");
   });
 
+  it("keeps a skipped review run visible without task-only actions", () => {
+    // A skipped entry is an activity, not a task row: its id is no task id, so
+    // Retry would 400 and the transcript has nothing to fetch.
+    renderSection([
+      past(1, { id: "skip-1", status: "cancelled", failure_reason: "review_head_answered", usage: [] }),
+      past(2, { id: "real-cancel", status: "cancelled", usage: [] }),
+    ]);
+    const skipped = screen.getByText("Past run 1").closest("[title]") as HTMLElement;
+    const cancelled = screen.getByText("Past run 2").closest("[title]") as HTMLElement;
+    expect(within(skipped).queryByRole("button", { name: "Retry run" })).not.toBeInTheDocument();
+    expect(within(skipped).queryByRole("button", { name: "View transcript" })).not.toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "View transcript" })).toBeInTheDocument();
+  });
+
   it("makes full details reachable from the first priced run", () => {
     renderSection([past(1)]);
     fireEvent.click(screen.getByRole("button", { name: /Open timeline/ }));

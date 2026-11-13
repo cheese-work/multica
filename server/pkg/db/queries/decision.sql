@@ -48,9 +48,18 @@ LEFT JOIN agent_task_queue task ON task.id = intent.task_id
 WHERE intent.workspace_id = sqlc.arg('workspace_id') AND intent.id = sqlc.arg('id');
 
 -- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at)
-VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8))
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint)
+VALUES (sqlc.arg('workspace_id'), sqlc.arg('issue_id'), sqlc.arg('asking_agent_id'), sqlc.arg('human_user_id'), sqlc.arg('chat_session_id'), sqlc.narg('ping_message_id'), sqlc.narg('issue_comment_id'), sqlc.arg('ask'), sqlc.arg('escalation_class'), sqlc.arg('origin'), sqlc.narg('decision_intent_id'), sqlc.narg('source_comment_id'), sqlc.arg('source_content_snapshot'), sqlc.arg('request_fingerprint'), COALESCE(sqlc.narg('options')::jsonb, '[]'::jsonb), sqlc.arg('ask_identity'), sqlc.narg('ask_json')::jsonb, sqlc.narg('project_id'), COALESCE(sqlc.narg('kind')::text, 'decision'), now() + make_interval(secs => sqlc.narg('expires_in_seconds')::float8), sqlc.narg('proposal_fingerprint'))
+ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING *;
+
+-- name: FindOpenProposal :one
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND proposal_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
+
+-- name: ListOpenProposals :many
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND asking_agent_id = sqlc.arg('agent_id') AND proposal_fingerprint IS NOT NULL AND status = 'open';
 
 -- name: CreateDecisionAnswer :one
 INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
@@ -92,7 +101,7 @@ WHERE request.authority = 'human' AND request.id = answer.decision_request_id AN
 RETURNING answer.*;
 
 -- name: ReopenDecisionRequest :one
-UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1
+UPDATE decision_request SET status = 'open', answer_revision = answer_revision + 1, answered_by_batch_request_id = NULL
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'answered'
 RETURNING *;
 
@@ -143,6 +152,9 @@ LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.
 LEFT JOIN workspace ON workspace.id = request.workspace_id
 WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND (
     (request.status = 'open' AND request.chat_session_id = sqlc.arg('session_id'))
+    -- A card a batch answer closed keeps its DM while that answer stands: withdrawing
+    -- the batch answer reopens the card there.
+    OR (request.status = 'answered' AND request.answered_by_batch_request_id IS NOT NULL AND request.chat_session_id = sqlc.arg('session_id'))
     OR EXISTS (
         SELECT 1 FROM decision_answer answer
         WHERE answer.decision_request_id = request.id AND answer.source_chat_session_id = sqlc.arg('session_id')
@@ -150,10 +162,44 @@ WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace
 )
 ORDER BY issue_key;
 
+-- name: ListChatSessionDecisionRecords :many
+-- The standing answers of a DM, newest first: the answers
+-- whose source message lives in this DM. An agent record quotes a DM message;
+-- a card answer is written into its card's DM; either way source_chat_session_id
+-- is that DM, so a request asked in one DM and answered in another belongs to
+-- the answering DM. A disclaimed answer is gone. A card answer's words are the
+-- whole snapshot (chosen option and note); other records quote the human's own
+-- words without pasted context. Feeds the "Decisions in this DM" block that
+-- compaction adds (CHE-4447). Retrieval is bounded: at most row_limit rows, each
+-- with its words cut to words_max_chars characters; words_bytes is the full
+-- size and total_count the number of standing answers, so the block can state
+-- every omission.
+SELECT answer.id AS answer_id, answer.created_at AS answered_at,
+       LEFT(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                 ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END, sqlc.arg('words_max_chars')::int)::text AS words,
+       octet_length(CASE WHEN answer.answer_source = 'card' THEN answer.content_snapshot
+                         ELSE COALESCE(NULLIF(answer.reply_text, ''), answer.content_snapshot) END)::int AS words_bytes,
+       (count(*) OVER ())::int AS total_count,
+       COALESCE(workspace.issue_prefix || '-' || issue.number::text, request.issue_id::text)::text AS issue_key
+FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+LEFT JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+LEFT JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND answer.disclaimed_at IS NULL
+  AND answer.source_chat_session_id = sqlc.arg('session_id')
+ORDER BY answer.created_at DESC, answer.id DESC
+LIMIT sqlc.arg('row_limit')::int;
+
 -- name: ListDecisionRequestsByIssue :many
 SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
 ORDER BY created_at, id;
+
+-- name: HasOpenDecisionRequestForIssue :one
+SELECT EXISTS (
+    SELECT 1 FROM decision_request
+    WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND status = 'open'
+)::boolean;
 
 -- name: ListDecisionPingRetries :many
 SELECT * FROM decision_request
@@ -205,7 +251,12 @@ ORDER BY target.human_user_id;
 -- request on it) rank first, newest reference first, before the limit applies.
 -- session_id narrows the result to one lane for an eligibility check. A lane
 -- of topic_id is listed whichever agent stewards it.
-SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at
+SELECT session.id, session.title, session.updated_at, session.decision_topic_id, ref.referenced_at::timestamptz AS referenced_at,
+       EXISTS (SELECT 1 FROM chat_message unread
+               WHERE unread.chat_session_id = session.id
+                 AND unread.role = 'assistant'
+                 AND unread.message_kind NOT IN ('decision_cancel_notice', 'decision_reference')
+                 AND unread.created_at > session.last_read_at) AS unseen
 FROM chat_session session
 LEFT JOIN LATERAL (
     SELECT max(refs.referenced_at) AS referenced_at FROM (
@@ -239,6 +290,16 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
 ORDER BY session.created_at, session.id
+LIMIT 1;
+
+-- name: GetLatestPlainDM :one
+-- The plain DM a person used most recently with one agent (CHE-5253).
+SELECT session.id FROM chat_session session
+WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = sqlc.arg('creator_id')
+  AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
+  AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1;
 
 -- name: LockDecisionTopicLane :exec
@@ -492,6 +553,11 @@ INSERT INTO decision_answer (decision_request_id, answered_by_user_id, answer_so
 VALUES (sqlc.arg('decision_request_id'), sqlc.arg('answered_by_user_id'), 'card', '{}', sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), GREATEST(sqlc.arg('effective_at')::timestamptz, clock_timestamp()))
 RETURNING *;
 
+-- name: GetDecisionCardAnswer :one
+-- The answer a human's card click recorded for a request; one per request.
+SELECT * FROM decision_answer WHERE decision_request_id = sqlc.arg('decision_request_id') AND answer_source = 'card'
+ORDER BY created_at DESC LIMIT 1;
+
 -- name: DecisionHumanAuthority :one
 -- is_owner: the person holds the workspace owner role. is_delegate: the person is
 -- listed in decision_delegates of the project the issue belongs to.
@@ -503,3 +569,68 @@ SELECT (member.role = 'owner')::boolean AS is_owner,
     ), false)::boolean AS is_delegate
 FROM member
 WHERE member.workspace_id = sqlc.arg('workspace_id') AND member.user_id = sqlc.arg('user_id');
+
+-- name: FindOpenServerDecisionRequest :one
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND human_user_id = sqlc.arg('human_user_id')
+  AND request_fingerprint = sqlc.arg('fingerprint') AND status = 'open';
+
+-- name: LockBatchCoveredRequests :many
+-- The open per-issue cards a batch card covers, locked in id order. This is
+-- the ONE allowlist of what a batch may cover, used at creation and again at
+-- answer time (CHE-4453): a PLAIN CHOICE card only. That is an open, asked
+-- decision card of the batch's own human whose class is reversible or
+-- product_direction (a gated class needs its own passkey answer), that has no
+-- subject or artifact (the human must see and bind each artifact on its own
+-- card), no attached action (the human must see the action preview on its own
+-- card), and no governed write (an "Approve write" option, the "Apply this
+-- change to <field>?" heading or a decision_bound_write row: the human must
+-- see that exact change). A new kind of card is closed to batches until it is
+-- added here.
+SELECT * FROM decision_request request
+WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = ANY(sqlc.arg('ids')::uuid[])
+  AND request.human_user_id = sqlc.arg('human_user_id') AND request.status = 'open' AND request.origin = 'asked' AND request.kind = 'decision'
+  AND request.escalation_class IN ('reversible', 'product_direction')
+  AND COALESCE(request.ask_json->>'subject', '') = ''
+  AND COALESCE(request.ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
+  AND NOT request.options @> '[{"label": "Approve write"}]'::jsonb
+  AND COALESCE(request.ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND NOT EXISTS (SELECT 1 FROM decision_action action WHERE action.decision_request_id = request.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_bound_write bound WHERE bound.decision_id = request.id)
+ORDER BY request.id
+FOR UPDATE OF request;
+
+-- name: MarkDecisionRequestAnsweredByBatch :one
+UPDATE decision_request SET status = 'answered', answered_by_batch_request_id = sqlc.arg('batch_request_id')
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+RETURNING *;
+
+-- name: LockBatchAnsweredRequests :many
+-- The per-issue cards a batch answer closed, locked in id order, so
+-- withdrawing the batch answer can reopen them.
+SELECT * FROM decision_request
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND answered_by_batch_request_id = sqlc.arg('batch_request_id')
+  AND status = 'answered'
+ORDER BY id
+FOR UPDATE;
+
+-- name: SetDecisionRequestCovers :one
+UPDATE decision_request SET covers_request_ids = sqlc.arg('covers_request_ids')::uuid[]
+WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id') AND status = 'open'
+RETURNING *;
+
+-- name: ListCIDecisionRequests :many
+-- Every card a CI job opened on the issue, any status. The fingerprint carries
+-- the candidate SHA and its commit time; the caller holds the workspace lock.
+SELECT * FROM decision_request
+WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
+  AND request_fingerprint LIKE 'server:ci:%'
+ORDER BY created_at, id;
+
+-- name: GetLatestDecisionAnswer :one
+-- The newest answer of a request, disclaimed or not: what a reader of the request
+-- needs to see that the person answered, and whether the answer still stands.
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;

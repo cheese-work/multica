@@ -106,6 +106,7 @@ vi.mock("@multica/core/auth", async () => {
 import { PreferencesTab } from "./preferences-tab";
 import { useCommentComposerStore } from "@multica/core/issues/stores";
 import { useIssueOpeningStore } from "@multica/core/issues/stores/issue-opening-store";
+import { useRecentAgentsSettingsStore } from "@multica/core/chat/recent-agents-settings-store";
 import {
   DEFAULT_MANUAL_CREATE_FIELDS,
   DEFAULT_QUICK_CREATE_FIELDS,
@@ -337,6 +338,7 @@ describe("PreferencesTab — Comments & chat", () => {
     userRef.current = null;
     useCommentComposerStore.setState({ runningAgentReply: "steer", sticky: true });
     chatState.floatingChatEnabled = true;
+    useRecentAgentsSettingsStore.setState({ showRecentAgents: true });
   });
 
   afterEach(() => {
@@ -370,6 +372,31 @@ describe("PreferencesTab — Comments & chat", () => {
     await user.click(screen.getByRole("switch", { name: enSettings.chat.floating_label }));
     expect(chatState.setFloatingChatEnabled).toHaveBeenCalledWith(false);
     expect(mockToastSuccess).not.toHaveBeenCalled();
+  });
+});
+
+describe("PreferencesTab — Recent agents", () => {
+  beforeEach(() => {
+    useRecentAgentsSettingsStore.setState({ showRecentAgents: true });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows a recent-agents switch that is on by default and flips the setting", async () => {
+    const user = userEvent.setup();
+    render(<PreferencesTab />, { wrapper: I18nWrapper });
+
+    const toggle = screen.getByRole("switch", { name: enSettings.chat.recent_agents_label });
+    expect(toggle).toBeChecked();
+
+    await user.click(toggle);
+    expect(useRecentAgentsSettingsStore.getState().showRecentAgents).toBe(false);
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    expect(useRecentAgentsSettingsStore.getState().showRecentAgents).toBe(true);
   });
 });
 

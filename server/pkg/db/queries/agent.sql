@@ -38,6 +38,18 @@ FOR UPDATE;
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 
+-- name: LockAgentForSkillWrite :one
+-- Serializes every writer of agent_skill rows on an existing agent with an
+-- approved decision action. The action transaction holds FOR UPDATE on this
+-- agent row (LockDecisionAgentsNowait), which conflicts with FOR NO KEY UPDATE:
+-- the ordinary writer waits under the transaction lock timeout and commits after
+-- the action; if the writer holds the lock first, the action's NOWAIT lock
+-- answers busy_retry. The agent row is the only lock taken. Returns the locked
+-- row so the caller checks manager state against it.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2
+FOR NO KEY UPDATE;
+
 -- name: LockAgentForAutopilotAssignment :one
 -- Serializes creating, retargeting, or resuming an active Autopilot with
 -- Runtime teardown. Teardown takes FOR UPDATE on this same Agent row before it
@@ -48,6 +60,15 @@ WHERE id = $1 AND workspace_id = $2 AND kind = 'user';
 --   * assignment commits first, then teardown sees and pauses it; or
 --   * teardown commits first, then assignment re-reads runtime_id=NULL and
 --     rejects the active Autopilot.
+SELECT * FROM agent
+WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
+FOR SHARE;
+
+-- name: LockAgentInWorkspaceShared :one
+-- Pins an agent's visibility, runtime and archived_at for the rest of the
+-- transaction: a concurrent archive or update waits for the commit. Used by the
+-- background-agents write so its eligibility check and its settings write
+-- commit together.
 SELECT * FROM agent
 WHERE id = $1 AND workspace_id = $2 AND kind = 'user'
 FOR SHARE;
@@ -343,7 +364,23 @@ LIMIT @page_limit;
 -- together. When the budget is spent (gate_required) only the statement that
 -- inserted the claim writes a task; a concurrent loser writes none and the
 -- caller sees no row.
-WITH review_claim AS (
+WITH provider_hold AS MATERIALIZED (
+    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
+    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
+    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
+        'provider', pb.provider, 'since', now(),
+        'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))
+    )) AS context
+    FROM provider_breaker pb
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
+    WHERE $3::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
+      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
+          pb.next_probe_at > now() OR EXISTS (
+              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
+                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
+      )))
+), review_claim AS (
     INSERT INTO issue_review_admission (workspace_id, issue_id, head_sha, agent_id)
     SELECT i.workspace_id, i.id, sqlc.narg('gate_head')::text, $1
     FROM issue i
@@ -361,7 +398,7 @@ INSERT INTO agent_task_queue (
     workflow_step, pull_request_id, taint_ids, id
 )
 SELECT
-    $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
+    $1, $2, $3, CASE WHEN EXISTS (SELECT 1 FROM provider_hold) THEN 'deferred' ELSE 'queued' END, $4, sqlc.narg(trigger_comment_id),
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
@@ -376,7 +413,7 @@ SELECT
         WHEN COALESCE(sqlc.narg('fresh_rerun')::boolean, FALSE)
         THEN '{"fresh_rerun":true}'::jsonb
         ELSE '{}'::jsonb
-    END, '{}'::jsonb),
+    END || COALESCE((SELECT context FROM provider_hold), '{}'::jsonb), '{}'::jsonb),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     sqlc.narg(runtime_mcp_overlay),
@@ -418,6 +455,23 @@ RETURNING *;
 -- Channel /issue media resolves after issue creation. Persist the assigned
 -- issue task up front for crash safety, but keep it inert until attachment
 -- binding settles or the fire_at fallback is promoted by the normal sweeper.
+WITH provider_hold AS MATERIALIZED (
+    -- Same disposition as ProviderBreakerAdmit, evaluated in the INSERT's
+    -- snapshot. A due probe remains eligible for M3a's atomic canary election.
+    SELECT jsonb_build_object('provider_hold', jsonb_build_object(
+        'provider', pb.provider, 'since', now(),
+        'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))
+    )) AS context
+    FROM provider_breaker pb
+    JOIN agent a ON a.workspace_id = pb.workspace_id AND a.id = $1
+    WHERE $3::uuid IS NOT NULL AND pb.provider = sqlc.narg('hold_provider')::text
+      AND (pb.state = 'draining' OR (pb.state IN ('open', 'half_open') AND (
+          pb.next_probe_at > now() OR EXISTS (
+              SELECT 1 FROM agent_task_queue canary WHERE canary.id = pb.canary_task_id
+                AND canary.status IN ('dispatched', 'running', 'waiting_local_directory')
+          )
+      )))
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
@@ -437,7 +491,7 @@ SELECT
     jsonb_strip_nulls(jsonb_build_object(
         'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
         'channel_issue_media_pending', TRUE
-    )),
+    )) || COALESCE((SELECT context FROM provider_hold), '{}'::jsonb),
     sqlc.narg(originator_user_id),
     sqlc.narg(accountable_user_id),
     sqlc.narg(runtime_mcp_overlay),
@@ -461,6 +515,7 @@ RETURNING *;
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL
 WHERE id = $1 AND issue_id IS NOT NULL AND status = 'deferred'
+  AND NOT (COALESCE(context, '{}'::jsonb) ? 'provider_hold')
 RETURNING *;
 
 -- name: SetDeferredChannelIssueTaskRuntimeOverlay :execrows
@@ -579,6 +634,7 @@ WHERE id = $1 AND issue_id IS NULL
 -- Chat retry priority keeps older input ahead of newer turns. A non-NULL fire_at
 -- defers dispatch until promotion. max_attempts optionally persists the effective
 -- ceiling; it does not re-enable tasks whose retry budget was disabled.
+-- A non-NULL hold_provider stamps the context.provider_hold marker (M3c).
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, coalesced_comment_ids, trigger_summary, context,
@@ -594,7 +650,15 @@ SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     CASE WHEN sqlc.narg(fire_at)::timestamptz IS NOT NULL THEN 'deferred' ELSE 'queued' END,
     CASE WHEN p.chat_session_id IS NOT NULL THEN GREATEST(p.priority, 3) ELSE p.priority END,
-    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary, p.context,
+    p.trigger_comment_id, p.coalesced_comment_ids, p.trigger_summary,
+    -- A held retry (CHE-1736 M1.2) is stamped with the M3c provider_hold marker in
+    -- the same INSERT, so the row is never promotable before it is marked.
+    CASE WHEN sqlc.narg('hold_provider')::text IS NOT NULL
+        THEN COALESCE(p.context, '{}'::jsonb) || jsonb_build_object('provider_hold', jsonb_build_object(
+            'provider', sqlc.narg('hold_provider')::text,
+            'since', now(),
+            'max_hold_until', now() + make_interval(secs => COALESCE(sqlc.narg('provider_hold_seconds')::int, 21600))))
+        ELSE p.context END,
     CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
     p.work_dir,
     p.attempt + 1, COALESCE(sqlc.narg(max_attempts)::int, p.max_attempts), p.id,
@@ -620,6 +684,11 @@ SELECT
     COALESCE(sqlc.narg('new_task_id')::uuid, gen_random_uuid())
 FROM agent_task_queue p
 WHERE p.id = $1
+  -- One successor per failed task (CHE-4581). A pending slot only dedupes
+  -- queued/dispatched children, so a replay after the child started, finished,
+  -- or was deferred would otherwise mint a second one. Callers other than
+  -- FailTask lock the parent row first so a concurrent replay sees the child.
+  AND NOT EXISTS (SELECT 1 FROM agent_task_queue prior WHERE prior.retry_of_task_id = p.id)
   AND lock_task_owner_rows(p.agent_id, p.issue_id, p.runtime_id)
   AND lock_active_project(CASE WHEN p.issue_id IS NULL THEN NULLIF(p.context->>'project_id','')::uuid END, (SELECT a.workspace_id FROM agent a WHERE a.id=p.agent_id))
 ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid))) WHERE status IN ('queued', 'dispatched')
@@ -627,10 +696,37 @@ ON CONFLICT (issue_id, agent_id, (COALESCE(comment_thread_id, '00000000-0000-000
 DO NOTHING
 RETURNING *;
 
+-- name: LockAgentTaskForRetry :one
+-- Serializes retry writers on one failed task (CHE-4581): the next statement of
+-- a waiting writer takes a fresh snapshot and sees the committed successor.
+SELECT id FROM agent_task_queue WHERE id = $1 FOR UPDATE;
+
 -- name: SetTaskWorkflowStep :exec
 -- Moves a run's workflow step along with a status change the run itself made
 -- (MUL-7420). See migration 557.
 UPDATE agent_task_queue SET workflow_step = @workflow_step WHERE id = @id;
+
+-- name: RestampActiveTasksWorkflowStep :exec
+-- A system move (decision unpark) puts the issue on a new step. Runs stamped
+-- with a step on either side of that move follow it, so their next status
+-- write is judged from where the system left the issue (CHE-5239).
+UPDATE agent_task_queue SET workflow_step = @to_step
+WHERE issue_id = @issue_id
+  AND status IN ('queued', 'dispatched', 'running')
+  AND workflow_step = ANY(@from_steps::text[])
+  AND workflow_step IS DISTINCT FROM @to_step;
+
+-- name: IssueHasOpenWait :one
+-- True when an explicit wait is still armed on the issue: a wakeup someone set
+-- for another blocker (a condition, an event such as task.completed, or a
+-- time). System-rule, decision-bound and observe wakeups are not blockers
+-- (CHE-5239).
+SELECT EXISTS (
+  SELECT 1 FROM issue_wakeup
+  WHERE issue_id = @issue_id AND enabled AND disabled_at IS NULL
+    AND system_rule IS NULL
+    AND decision_request_id IS NULL AND purpose IS NULL
+);
 
 -- name: CreateManualQuickCreateRetryTask :one
 -- A human retry of an issue-less quick-create is a new direct_human run, not
@@ -795,7 +891,7 @@ SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
     WHERE agent_id = sqlc.arg('agent_id')
       AND status = 'failed'
-      AND failure_reason = 'agent_error.provider_server_error'
+      AND failure_reason IN ('agent_error.provider_server_error', 'agent_error.provider_capacity_or_rate_limit')
       AND completed_at > sqlc.arg('failed_since')::timestamptz
 );
 
@@ -871,6 +967,10 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
+      -- 0 for a normal claim; 4 (urgent) when the agent is at its cap and only
+      -- the reserved urgent slot is left (CHE-5118).
+      AND atq.priority >= @min_priority::int
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
       -- Rule E (CHE-2819): share-lock the DM row without waiting. A compact
       -- holds it FOR NO KEY UPDATE, so a chat task of that DM is skipped for
@@ -1017,6 +1117,13 @@ ev AS (
     INSERT INTO agent_task_event (workspace_id, task_id, runtime_id, kind)
     SELECT r.workspace_id, upd.id, upd.runtime_id, 'requeue_claim_failure'
     FROM upd JOIN agent_runtime r ON r.id = upd.runtime_id
+),
+-- A provider breaker canary that goes back to queued can no longer start while
+-- the breaker holds claims: release it so the next claim re-elects a canary.
+rel AS (
+    UPDATE provider_breaker
+    SET state = 'open', canary_task_id = NULL, next_probe_at = now(), version = version + 1
+    WHERE state = 'half_open' AND canary_task_id IN (SELECT id FROM upd)
 )
 SELECT * FROM upd;
 
@@ -1066,6 +1173,14 @@ WHERE id = (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT 1
@@ -1120,6 +1235,14 @@ WITH candidates AS MATERIALIZED (
             AND r.status = 'online'
             AND COALESCE(r.last_seen_at, r.updated_at) >=
                 now() - make_interval(secs => @runtime_stale_secs::double precision)
+            -- CHE-4100: same capability gate as the queued claim. A background
+            -- task is never re-delivered to a runtime that no longer advertises
+            -- the runner. Keep the literal equal to
+            -- protocol.DaemonCapabilityBackgroundOutputOnlyV1.
+            AND (
+                atq.context->>'type' IS DISTINCT FROM 'background'
+                OR r.metadata->'capabilities' @> '["background_output_only_v1"]'::jsonb
+            )
       )
     ORDER BY atq.priority DESC, atq.dispatched_at ASC
     LIMIT @max_tasks::int
@@ -1331,6 +1454,91 @@ SET taint_ids = COALESCE((
 WHERE t.id = $1
 RETURNING t.taint_ids;
 
+-- name: InheritChatTaint :one
+-- The one place a DM task takes the taint of the chat content it holds
+-- (CHE-3702): a fresh session seeded from a compaction summary, a fork's copied
+-- transcript or a continuation summary; a resumed session (session_id set); and
+-- a read of the chat transcript (`multica chat history`, session_id NULL). A
+-- seed has lost the resume pointer that carried the taint, a resume holds the
+-- transcript of a fork or continuation whose task rows are clean, so all of
+-- them take the union of:
+--   * the taint stored on this chat and on every chat of its fork and
+--     continuation ancestry (chat_session.taint_ids), which survives a source
+--     being deleted;
+--   * the tasks of every ancestor still alive. This covers a row written by a
+--     binary that does not fill taint_ids (a schema-preserving rollback), and a
+--     fork made before any turn ran, which passes its ancestors on.
+--   * this chat's own tasks (for a resume, only those that ran in the resumed
+--     session; the other paths take them all).
+-- A chat in the ancestry that is not taint_verified and links to a chat that no
+-- longer exists has copied history nobody can account for (a predecessor fork
+-- whose source was deleted before the first claim). That adds the synthetic
+-- taint 'unrecoverable-ancestry:<id of that chat>', so the task is restricted
+-- and so is every delegate. The id names the orphan: descendants of one orphan
+-- share it (it is stored in chat_session.taint_ids and walks down), two
+-- different orphans never do, so a member clearing one on an issue
+-- (issue_taint_clear) does not hide the other. The format is stable; keep the
+-- 'unrecoverable-ancestry:' prefix. taint_verified defaults to false, so a row inserted by a binary that
+-- predates the column stays unverified. Writing the result back verifies the
+-- chat, which also stores the synthetic taint for any later fork of it.
+-- UNION drops repeated ids, so a cyclic chain ends. "inherited" (everything
+-- except the chat's own tasks) is written back to the chat, so a later delete
+-- of the source cannot lose what the walk found.
+WITH RECURSIVE ancestry(id) AS (
+    SELECT t0.chat_session_id FROM agent_task_queue t0 WHERE t0.id = $1
+    UNION
+    SELECT unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id])
+    FROM chat_session c JOIN ancestry a ON c.id = a.id
+),
+inherited AS (
+    SELECT COALESCE(array_agg(DISTINCT x ORDER BY x), '{}')::text[] AS ids FROM (
+        SELECT unnest(c.taint_ids) AS x FROM chat_session c
+        WHERE c.id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
+        UNION ALL
+        SELECT unnest(s.taint_ids) FROM agent_task_queue s
+        WHERE s.chat_session_id IN (SELECT id FROM ancestry WHERE id IS NOT NULL)
+          AND s.chat_session_id IS DISTINCT FROM (SELECT t1.chat_session_id FROM agent_task_queue t1 WHERE t1.id = $1)
+        UNION ALL
+        SELECT 'unrecoverable-ancestry:' || c.id::text FROM chat_session c
+        JOIN ancestry a ON a.id = c.id
+        JOIN LATERAL unnest(ARRAY[c.forked_from_session_id, c.continued_from_session_id]) AS p(id) ON p.id IS NOT NULL
+        WHERE NOT c.taint_verified
+          AND NOT EXISTS (SELECT 1 FROM chat_session m WHERE m.id = p.id)
+    ) u
+),
+repaired AS (
+    UPDATE chat_session c
+    SET taint_ids = (SELECT ids FROM inherited),
+        taint_verified = true
+    WHERE c.id = (SELECT t2.chat_session_id FROM agent_task_queue t2 WHERE t2.id = $1)
+      AND (c.taint_ids IS DISTINCT FROM (SELECT ids FROM inherited)
+           OR (NOT c.taint_verified AND (c.forked_from_session_id IS NOT NULL OR c.continued_from_session_id IS NOT NULL)))
+),
+computed AS (
+    SELECT COALESCE((
+        SELECT array_agg(DISTINCT x ORDER BY x) FROM (
+            SELECT unnest((SELECT ids FROM inherited)) AS x
+            UNION ALL
+            SELECT unnest(s.taint_ids) FROM agent_task_queue s
+            WHERE s.chat_session_id = (SELECT t3.chat_session_id FROM agent_task_queue t3 WHERE t3.id = $1)
+              AND (sqlc.narg(session_id)::text IS NULL OR s.session_id = sqlc.narg(session_id)::text)
+        ) u
+    ), '{}')::text[] AS ids
+),
+updated AS (
+    -- Only a task that lacks some of the taint is written. Every chat read and
+    -- supplement claim calls this, so a clean chat must not churn the row.
+    UPDATE agent_task_queue t
+    SET taint_ids = (SELECT ids FROM computed)
+    WHERE t.id = $1 AND NOT (t.taint_ids @> (SELECT ids FROM computed))
+    RETURNING t.taint_ids
+)
+SELECT COALESCE(
+    (SELECT u.taint_ids FROM updated u),
+    (SELECT t4.taint_ids FROM agent_task_queue t4 WHERE t4.id = $1)
+)::text[] AS taint_ids
+WHERE EXISTS (SELECT 1 FROM agent_task_queue t5 WHERE t5.id = $1);
+
 -- name: GetLatestTaskRolloutMissing :one
 -- Reports whether the most recent terminal task for (agent_id, issue_id)
 -- withheld its Codex session because the rollout was missing (MUL-5305). When
@@ -1356,13 +1564,16 @@ LIMIT 1;
 -- Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
 -- whether the most recent terminal task on this chat session withheld its Codex
 -- session because the rollout was missing. When true the next chat claim resumed
--- an older session (or none), so it must disclose the continuity gap.
+-- an older session (or none), so it must disclose the continuity gap. Scoped to
+-- the chat's current compaction_epoch: a gap before an in-place /compact is
+-- covered by the compaction summary.
 SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
 WHERE chat_session_id = sqlc.arg('chat_session_id')
   AND (
     sqlc.narg('channel_context_revision')::bigint IS NULL
     OR COALESCE(channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
   )
+  AND COALESCE(chat_compaction_epoch, 0) = sqlc.arg('compaction_epoch')::bigint
   AND status IN ('completed', 'failed')
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
@@ -1781,6 +1992,33 @@ SET cancel_acked_at = now()
 WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
   AND (status = 'cancelled' OR stop_unconfirmed_at IS NOT NULL);
 
+-- name: ReleaseStopsAttestedByDaemon :many
+-- CHE-3114 part 2: the claiming runtime's daemon reported its live task set. A
+-- gate-arming cancelled run of that runtime that is not in the set, and was
+-- dispatched before the grace cutoff (so a claim still in flight to the daemon
+-- is not mistaken for a stopped run) and since the daemon process booted (a
+-- restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
+-- with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
+-- rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
+-- reports a pending process cleanup is not released: only a cleanup-confirmed
+-- cancel-ack settles those. The first ack wins.
+UPDATE agent_task_queue t
+SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+FROM agent_runtime r
+WHERE r.id = t.runtime_id
+  AND r.status = 'online'
+  AND t.runtime_id = sqlc.arg('runtime_id')
+  AND t.status = 'cancelled'
+  AND t.failure_reason IN ('superseded_head', 'pr_merged', 'pr_closed')
+  AND t.cancel_acked_at IS NULL
+  AND t.stop_unconfirmed_at IS NULL
+  AND t.dispatched_at IS NOT NULL
+  AND t.dispatched_at < sqlc.arg('dispatched_before')
+  AND t.dispatched_at >= sqlc.arg('dispatched_after')
+  AND NOT (t.id = ANY(sqlc.arg('live_task_ids')::uuid[]))
+  AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
+RETURNING t.id, t.issue_id;
+
 -- name: ListLiveReviewRunsForPR :many
 -- Live review runs of the PR stamped with a head other than the PR's current
 -- one, at the step their issue is still in. Author runs carry a different
@@ -2078,7 +2316,7 @@ WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
 -- queue or is about to still reads the issue afterwards, so each takes the
 -- writer's taint (the task trigger unions it with what the run has).
 UPDATE agent_task_queue SET taint_ids = sqlc.arg('taint_ids')::text[]
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'waiting_local_directory');
 
 -- name: GetTaskTaintIDs :one
 SELECT taint_ids FROM agent_task_queue WHERE id = $1;
@@ -2293,7 +2531,7 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-RETURNING id, coalesced_comment_ids;
+RETURNING *;
 
 -- name: MergeCommentIntoQueuedIssueTask :one
 -- CHE-1418: one comment produces at most one run per agent. Same fold and
@@ -2731,6 +2969,35 @@ SELECT EXISTS (
     )
 );
 
+-- name: PendingAssignmentTaskForAgent :one
+-- The run that holds the slot HasPendingAssignmentTaskForAgent reports (CHE-2860):
+-- a caller that ends on a surviving run needs its id.
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2
+  AND comment_thread_id IS NULL
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: PendingTaskForIssueAndAgent :one
+-- HasPendingTaskForIssueAndAgent returning the pending run (CHE-2860), the
+-- newest one when several match.
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: HasActiveTaskForIssueAndAgentInThread :one
 -- Active execution and pending work in this comment thread only.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
@@ -2768,6 +3035,7 @@ ORDER BY priority DESC, created_at ASC;
 SELECT atq.* FROM agent_task_queue atq
 WHERE atq.runtime_id = $1
   AND atq.status = 'queued'
+  AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -2856,6 +3124,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = @runtime_id
       AND t.status = 'deferred'
+      AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -2895,6 +3164,7 @@ RETURNING *;
 SELECT atq.* FROM agent_task_queue atq
 WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
   AND atq.status = 'queued'
+  AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
   AND EXISTS (
       -- Keep this authorization fence in sync with ClaimAgentTask.
@@ -2929,6 +3199,7 @@ SELECT MIN(fire_at)::timestamptz
 FROM agent_task_queue t
 WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
   AND t.status = 'deferred'
+  AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
   AND EXISTS (
     SELECT 1 FROM agent_runtime r
     WHERE r.id = t.runtime_id
@@ -2965,6 +3236,7 @@ WITH due AS (
     FROM agent_task_queue t
     WHERE t.runtime_id = ANY(@runtime_ids::uuid[])
       AND t.status = 'deferred'
+      AND NOT (COALESCE(t.context, '{}'::jsonb) ? 'provider_hold')
       AND t.fire_at <= now()
       AND EXISTS (
         SELECT 1 FROM agent_runtime r
@@ -3376,12 +3648,13 @@ WHERE id = @id
 -- untouched; only ClaimAgentTask and its candidate lists skip the agent.
 UPDATE agent
 SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
+    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id),
+    scheduling_paused_reason = COALESCE(scheduling_paused_reason, sqlc.narg('reason')::text)
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;
 
 -- name: ResumeAgentScheduling :one
 UPDATE agent
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
+SET scheduling_paused_at = NULL, scheduling_paused_by = NULL, scheduling_paused_reason = NULL
 WHERE id = @id AND workspace_id = @workspace_id
 RETURNING *;

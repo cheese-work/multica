@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -38,7 +39,20 @@ var (
 	configBeforeApply atomic.Pointer[func()]
 	// configBeforeLock runs inside the approval before the action's own row lock.
 	configBeforeLock atomic.Pointer[func()]
+	// configAuthorize is the test action's Authorize hook body; it records each
+	// proposer it sees and may refuse.
+	configAuthorize atomic.Pointer[func(proposer pgtype.UUID) error]
+	configProposers struct {
+		sync.Mutex
+		seen []string
+	}
 )
+
+func seenProposers() []string {
+	configProposers.Lock()
+	defer configProposers.Unlock()
+	return append([]string(nil), configProposers.seen...)
+}
 
 func registerConfigAction(test *testing.T) {
 	test.Helper()
@@ -47,6 +61,10 @@ func registerConfigAction(test *testing.T) {
 	configPublished.Store(0)
 	configBeforeApply.Store(nil)
 	configBeforeLock.Store(nil)
+	configAuthorize.Store(nil)
+	configProposers.Lock()
+	configProposers.seen = nil
+	configProposers.Unlock()
 	decisionaction.Register(&decisionaction.Definition{
 		Type: configAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkflow, RequiresPreview: true,
 		Normalize: func(raw json.RawMessage, slots []decisionaction.SecretSlot) (json.RawMessage, []decisionaction.SecretSlot, error) {
@@ -54,6 +72,16 @@ func registerConfigAction(test *testing.T) {
 		},
 	})
 	registerConfigChange(configAction, configChange{
+		Fields: []string{"workflow.instructions"},
+		Authorize: func(_ context.Context, _ *db.Queries, _, proposer pgtype.UUID, _ json.RawMessage, _ configChangeRead) error {
+			configProposers.Lock()
+			configProposers.seen = append(configProposers.seen, uuidToString(proposer))
+			configProposers.Unlock()
+			if hook := configAuthorize.Load(); hook != nil {
+				return (*hook)(proposer)
+			}
+			return nil
+		},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
 			if hook := configBeforeLock.Load(); hook != nil {
 				(*hook)()
@@ -591,5 +619,88 @@ func TestConfigChangeHoldsTheRowFromTheStartOfTheApproval(test *testing.T) {
 	}
 	if liveStepsDigest(test, request.workflowID) == request.base {
 		test.Fatal("approval did not apply")
+	}
+}
+
+func TestConfigChangeFieldIsBoundToTheActionType(test *testing.T) {
+	// workspace.context is on the allow list but is not this action's field, so a
+	// read that relabels the change must be refused, not just unknown fields.
+	test.Run("relabelled at request", func(test *testing.T) {
+		registerConfigAction(test)
+		configField.Store("workspace.context")
+		workflowID, base := configWorkflow(test)
+		set := map[string]string{"todo": "x"}
+		fixture := newActionFixture(test)
+		params := map[string]any{"workflow_id": workflowID, "set_instructions": set, "base_sha256": base, "after_sha256": afterDigest(test, workflowID, set)}
+		body := fixture.respond(test, fixture.withAction(map[string]any{"type": configAction, "version": 1, "params": params}), http.StatusForbidden, nil)
+		mustContain(test, body, "denylisted")
+		if requests, actions := fixture.requestCounts(test); requests != 0 || actions != 0 {
+			test.Fatalf("relabelled request stored %d requests and %d actions", requests, actions)
+		}
+	})
+	test.Run("relabelled at approval", func(test *testing.T) {
+		request, _ := requestConfig(test, http.StatusCreated, nil)
+		configField.Store("workspace.context")
+		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusForbidden), "denylisted")
+		request.assertNotApplied(test, request.base)
+	})
+}
+
+func TestConfigChangeAuthorizeSeesTheStoredProposer(test *testing.T) {
+	test.Run("request and approval use the stored identities", func(test *testing.T) {
+		request, _ := requestConfig(test, http.StatusCreated, func(_ string, params map[string]any) {
+			params["asking_agent_id"] = "00000000-0000-0000-0000-00000000dead"
+			params["proposer"] = "00000000-0000-0000-0000-00000000beef"
+		})
+		if got := seenProposers(); len(got) != 1 || got[0] != request.action.agentID {
+			test.Fatalf("request-time proposers %v, want [%s]", got, request.action.agentID)
+		}
+		var stored string
+		dbfx.QueryRow(test, `SELECT requested_by_agent_id::text FROM decision_action WHERE id = $1`, request.action.actionID).Scan(&stored)
+		request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusOK)
+		if got := seenProposers(); len(got) != 2 || got[1] != stored || stored != request.action.agentID {
+			test.Fatalf("proposers %v, want [%s %s]", got, request.action.agentID, stored)
+		}
+	})
+	test.Run("refused at request", func(test *testing.T) {
+		registerConfigAction(test)
+		refuse := func(pgtype.UUID) error {
+			return decisionIntentRefusal{http.StatusForbidden, "proposer_unauthorized: proposer is not authorized"}
+		}
+		configAuthorize.Store(&refuse)
+		workflowID, base := configWorkflow(test)
+		set := map[string]string{"todo": "x"}
+		fixture := newActionFixture(test)
+		params := map[string]any{"workflow_id": workflowID, "set_instructions": set, "base_sha256": base, "after_sha256": afterDigest(test, workflowID, set)}
+		body := fixture.respond(test, fixture.withAction(map[string]any{"type": configAction, "version": 1, "params": params}), http.StatusForbidden, nil)
+		mustContain(test, body, "proposer_unauthorized")
+		if requests, actions := fixture.requestCounts(test); requests != 0 || actions != 0 {
+			test.Fatalf("refused request stored %d requests and %d actions", requests, actions)
+		}
+	})
+	test.Run("refused at approval", func(test *testing.T) {
+		request, _ := requestConfig(test, http.StatusCreated, nil)
+		revoke := func(pgtype.UUID) error {
+			return decisionIntentRefusal{http.StatusConflict, "proposer_revoked: proposer lost the grant"}
+		}
+		configAuthorize.Store(&revoke)
+		mustContain(test, request.approveOwner(test, withVerifier(acceptingVerifier), http.StatusConflict), "proposer_revoked")
+		request.assertNotApplied(test, request.base)
+	})
+}
+
+func TestAuthorizeConfigChangeFailsClosedOnAnInvalidProposer(test *testing.T) {
+	called := false
+	change := configChange{Authorize: func(context.Context, *db.Queries, pgtype.UUID, pgtype.UUID, json.RawMessage, configChangeRead) error {
+		called = true
+		return nil
+	}}
+	err := authorizeConfigChange(context.Background(), change, nil, pgtype.UUID{}, pgtype.UUID{}, nil, configChangeRead{})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || !strings.HasPrefix(refusal.message, "proposer_required") || called {
+		test.Fatalf("err = %v called = %v; want proposer_required and no hook call", err, called)
+	}
+	if err := authorizeConfigChange(context.Background(), configChange{}, nil, pgtype.UUID{}, pgtype.UUID{}, nil, configChangeRead{}); err != nil {
+		test.Fatalf("no hook: %v", err)
 	}
 }

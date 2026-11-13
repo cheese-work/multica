@@ -78,6 +78,13 @@ func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType,
 // decide" (GitHub routing, can_route) must treat any error as undecided, even
 // when the bool is true.
 func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) (bool, error) {
+	return h.invokeAgentDecisionVia(ctx, h.Queries, agent, actorType, actorID, originatorUserID, workspaceID)
+}
+
+// invokeAgentDecisionVia reads through `queries`, so a caller inside a
+// transaction keeps every lookup on its own connection instead of waiting for a
+// second pool connection while holding locks.
+func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Queries, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) (bool, error) {
 	effectiveUser := actorID
 	if actorType != "member" {
 		// agent / system: never trust the immediate principal, only the
@@ -96,7 +103,7 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 		return false, nil
 	}
 
-	targets, err := h.Queries.ListAgentInvocationTargets(ctx, agent.ID)
+	targets, err := queries.ListAgentInvocationTargets(ctx, agent.ID)
 	if err != nil {
 		return false, err
 	}
@@ -115,7 +122,7 @@ func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actor
 	isWorkspaceMember := false
 	var lookupErr error
 	if effectiveUser != "" {
-		_, err := h.getWorkspaceMember(ctx, effectiveUser, workspaceID)
+		_, err := workspaceMemberVia(ctx, queries, effectiveUser, workspaceID)
 		switch {
 		case err == nil:
 			isWorkspaceMember = true

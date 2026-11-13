@@ -145,3 +145,19 @@ UPDATE decision_action SET state = sqlc.arg('state'), updated_at = now()
 WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id') AND state = 'pending'
   AND sqlc.arg('state') IN ('expired', 'cancelled')
 RETURNING *;
+
+-- name: ListRecentRejectedProposalParams :many
+-- Params of the actions this person rejected within the cooldown, for one
+-- agent, issue and action. The caller matches the params hash, which is
+-- lane-independent: a rejection in any lane counts.
+SELECT a.params, a.updated_at
+FROM decision_action a
+JOIN decision_request r ON r.id = a.decision_request_id AND r.workspace_id = a.workspace_id
+WHERE a.workspace_id = sqlc.arg('workspace_id')
+  AND a.state = 'rejected'
+  AND a.requested_by_agent_id = sqlc.arg('agent_id')
+  AND r.human_user_id = sqlc.arg('recipient_user_id')
+  AND r.issue_id = sqlc.arg('issue_id')
+  AND a.action_type = sqlc.arg('action_type')
+  AND a.action_version = sqlc.arg('action_version')
+  AND a.updated_at > now() - sqlc.arg('cooldown')::interval;

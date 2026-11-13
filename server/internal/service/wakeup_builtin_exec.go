@@ -349,6 +349,7 @@ const (
 	wakeupOutcomeTargetUnavailable  = "target_unavailable"
 	wakeupOutcomeTargetUnauthorized = "target_unauthorized"
 	wakeupOutcomeFiltered           = "filtered_out"
+	wakeupOutcomeOwnChange          = "own_change"
 )
 
 // rebaseBuiltinConfig moves the instance to the configuration it now resolves

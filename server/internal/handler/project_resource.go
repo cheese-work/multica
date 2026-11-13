@@ -619,7 +619,14 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 	}
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
-	resource, err := h.Queries.CreateProjectResource(r.Context(), db.CreateProjectResourceParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create project resource")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	resource, err := qtx.CreateProjectResource(r.Context(), db.CreateProjectResourceParams{
 		ProjectID:    project.ID,
 		WorkspaceID:  project.WorkspaceID,
 		ResourceType: req.ResourceType,
@@ -633,6 +640,19 @@ func (h *Handler) CreateProjectResource(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusConflict, "this resource is already attached to the project")
 			return
 		}
+		writeError(w, http.StatusInternalServerError, "failed to create project resource")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.resource.create",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    resource.ID,
+		After:       projectResourceAuditFields(resource),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.resource.create")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create project resource")
 		return
 	}
@@ -840,6 +860,16 @@ func (h *Handler) UpdateProjectResource(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "failed to update project resource")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.resource.update",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    updated.ID,
+		Before:      projectResourceAuditFields(existing),
+		After:       projectResourceAuditFields(updated),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.resource.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update project resource")
 		return
@@ -933,7 +963,27 @@ func (h *Handler) DeleteProjectResource(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "project resource not found")
 		return
 	}
-	if err := h.Queries.DeleteProjectResource(r.Context(), resource.ID); err != nil {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete project resource")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.DeleteProjectResource(r.Context(), resource.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete project resource")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "project.resource.delete",
+		WorkspaceID: project.WorkspaceID,
+		TargetID:    resource.ID,
+		Before:      projectResourceAuditFields(resource),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "project.resource.delete")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete project resource")
 		return
 	}

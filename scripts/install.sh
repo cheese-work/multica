@@ -144,6 +144,41 @@ install_cli_brew() {
   fi
 }
 
+# Phase line on stderr; silent unless stderr is a terminal.
+phase() { if [ -t 2 ]; then printf '%s\n' "$*" >&2; fi; }
+
+# Redraw one stderr line from the size of file $2 while process $1 runs, then
+# end the line. $3 is the expected byte count, empty when unknown. Only called
+# with stderr on a terminal. An interrupt or exit kills $1.
+# ponytail: the rate uses whole seconds from $SECONDS, so it shows after 1 s.
+render_progress() {
+  local pid=$1 file=$2 total=${3:-} start=$SECONDS alive n
+  trap "kill $pid >/dev/null 2>&1 || true" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  while :; do
+    alive=1
+    kill -0 "$pid" 2>/dev/null || alive=0
+    n="$({ wc -c <"$file"; } 2>/dev/null || echo 0)"
+    awk -v n="$n" -v t="${total:-0}" -v s="$((SECONDS - start))" 'BEGIN {
+      m = n / 1048576
+      if (t > 0) {
+        p = n * 100 / t; if (p > 100) p = 100
+        bar = ""; for (i = 0; i < 20; i++) bar = bar (i < int(p / 5) ? "#" : "-")
+        printf "\r[%s] %3d%%  %.1f / %.1f MB\033[K", bar, p, m, t / 1048576
+      } else {
+        printf "\r%.1f MB", m
+        if (s > 0) printf "  %.1f MB/s", m / s
+        printf "\033[K"
+      }
+    }' >&2
+    [ "$alive" -eq 1 ] || break
+    sleep 0.2
+  done
+  printf '\n' >&2
+  trap - EXIT INT TERM
+}
+
 install_cli_binary() {
   info "Installing Multica CLI from GitHub Releases..."
 
@@ -160,12 +195,27 @@ install_cli_binary() {
   tmp_dir=$(mktemp -d)
 
   info "Downloading $url ..."
-  if ! curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz"; then
+  if [ -t 2 ]; then
+    # Terminal: draw a progress line. Size comes from the final HEAD response
+    # (empty when the server sends none); curl's own errors are replayed on failure.
+    local size
+    size=$(curl -sIL "$url" 2>/dev/null | tr -d '\r' | awk '/^HTTP/ {n=0} tolower($1)=="content-length:" {n=$2} END {if (n > 0) print n}' || true)
+    curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz" 2>"$tmp_dir/curl.err" &
+    local dl_pid=$!
+    render_progress "$dl_pid" "$tmp_dir/multica.tar.gz" "$size"
+    if ! wait "$dl_pid"; then
+      cat "$tmp_dir/curl.err" >&2
+      rm -rf "$tmp_dir"
+      fail "Failed to download CLI binary."
+    fi
+  elif ! curl -fsSL "$url" -o "$tmp_dir/multica.tar.gz"; then
     rm -rf "$tmp_dir"
     fail "Failed to download CLI binary."
   fi
 
+  phase "Extracting"
   tar -xzf "$tmp_dir/multica.tar.gz" -C "$tmp_dir" multica
+  phase "Installing"
 
   # Try /usr/local/bin first, fall back to ~/.local/bin. Tests and scripted
   # installs can override the first choice with MULTICA_BIN_DIR.
@@ -187,6 +237,7 @@ install_cli_binary() {
   fi
 
   rm -rf "$tmp_dir"
+  phase "Installed"
   ok "Multica CLI installed to $bin_dir/multica"
 }
 
