@@ -195,20 +195,25 @@ WHERE i.id = $1
   AND i.workspace_id = $2
   AND i.status = $4::text
   AND i.status <> $3::text
-  AND EXISTS (
-      SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
-      UNION ALL
-      SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM issue_pull_request ipr
-      JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
-  )
-  AND NOT EXISTS (
-      SELECT 1 FROM issue_vcs_pull_request ipr
-      JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
-      WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+  AND (
+      $5::bool
+      OR (
+      EXISTS (
+          SELECT 1 FROM issue_pull_request ipr WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing'
+          UNION ALL
+          SELECT 1 FROM issue_vcs_pull_request ipr WHERE ipr.issue_id = i.id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_pull_request ipr
+          JOIN github_pull_request pr ON pr.id = ipr.pull_request_id
+          WHERE ipr.issue_id = i.id AND ipr.link_kind = 'closing' AND pr.state <> 'merged'
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM issue_vcs_pull_request ipr
+          JOIN vcs_pull_request pr ON pr.id = ipr.pull_request_id
+          WHERE ipr.issue_id = i.id AND pr.state <> 'merged'
+      )
+      )
   )
 RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read
 `
@@ -218,13 +223,16 @@ type MoveIssueFromPullRequestsParams struct {
 	WorkspaceID    pgtype.UUID `json:"workspace_id"`
 	TargetStatus   string      `json:"target_status"`
 	ExpectedStatus string      `json:"expected_status"`
+	TreeChecked    bool        `json:"tree_checked"`
 }
 
 // Conditional status write for the PR merge automation. It lands only if the
 // issue is still in the status the decision saw (two merges racing move it
 // once), is not already in the target, and the linked PRs are still all merged
 // when the write runs (a PR linked between the decision and this statement
-// keeps the issue where it is). Repositions and clears a duplicate mark like
+// keeps the issue where it is). tree_checked skips that own-links guard: the
+// caller already applied the include_child_prs rule over the issue and its
+// children (CHE-5242). Repositions and clears a duplicate mark like
 // UpdateIssueStatus does; the target is never cancelled.
 func (q *Queries) MoveIssueFromPullRequests(ctx context.Context, arg MoveIssueFromPullRequestsParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, moveIssueFromPullRequests,
@@ -232,6 +240,7 @@ func (q *Queries) MoveIssueFromPullRequests(ctx context.Context, arg MoveIssueFr
 		arg.WorkspaceID,
 		arg.TargetStatus,
 		arg.ExpectedStatus,
+		arg.TreeChecked,
 	)
 	var i Issue
 	err := row.Scan(

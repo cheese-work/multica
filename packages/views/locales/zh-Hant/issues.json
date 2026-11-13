@@ -387,6 +387,18 @@
     "empty": "暫無已排期的任務 — 給任意任務設定開始或截止日期，即可顯示在時間軸上。",
     "inverted_dates_warning": "開始日期晚於截止日期——已按區間最小/最大端繪製。"
   },
+  "swimlane2": {
+    "edge_wakeup": "喚醒",
+    "edge_dependency": "相依",
+    "edge_parent": "父 / 子",
+    "edge_mention": "提及",
+    "edge_types": "連線類型",
+    "relations_incomplete": "關係不完整：部分連線未能載入。",
+    "more_issues": "還有未載入的議題。",
+    "retry": "重試",
+    "load_more": "載入更多",
+    "no_lane": "無值"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
