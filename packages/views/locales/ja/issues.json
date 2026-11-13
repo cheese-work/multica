@@ -356,7 +356,8 @@
     "list": "リスト",
     "table": "テーブル",
     "gantt": "ガント",
-    "swimlane": "スイムレーン"
+    "swimlane": "スイムレーン",
+    "swimlane2": "スイムレーン 2.0"
   },
   "table": {
     "select_all": "表示中のタスクをすべて選択",
@@ -443,7 +444,9 @@
     "more_issues": "未読み込みの課題があります。",
     "retry": "再試行",
     "load_more": "さらに読み込む",
-    "no_lane": "値なし"
+    "no_lane": "値なし",
+    "timeline_failed": "タイムラインを読み込めませんでした。",
+    "loading": "タイムラインを読み込み中…"
   },
   "gantt2": {
     "clipped_start": "このウィンドウより前に開始",

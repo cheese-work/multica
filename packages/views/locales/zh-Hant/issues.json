@@ -313,7 +313,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特圖",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "選擇所有可見任務",
@@ -400,7 +401,9 @@
     "more_issues": "還有未載入的議題。",
     "retry": "重試",
     "load_more": "載入更多",
-    "no_lane": "無值"
+    "no_lane": "無值",
+    "timeline_failed": "無法載入時間軸。",
+    "loading": "正在載入時間軸…"
   },
   "gantt2": {
     "clipped_start": "在此時間視窗之前開始",
