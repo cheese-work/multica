@@ -165,7 +165,7 @@ func (handler *Handler) proposeBatchGroup(request *http.Request, group *batchGro
 	card := &batchCard{ID: dbid.NewV7(), MessageID: dbid.NewV7(), Ask: composeBatchAsk(goal, group.actionType, group.items), Lead: true}
 	inputs := make([]decisionRequestInput, len(group.items))
 	for index, item := range group.items {
-		ask, err := composeProposalAsk(uuidToString(item.issue.ID), item.draft, goal)
+		ask, err := composeProposalAsk(uuidToString(item.issue.ID), item.draft, handler.proposalChange(request.Context(), item.issue, agentID, recipient, item.draft), goal)
 		if err != nil {
 			return batchProposalResponse{}, false, err
 		}
