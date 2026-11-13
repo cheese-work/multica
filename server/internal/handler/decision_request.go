@@ -55,7 +55,28 @@ type decisionRequestInput struct {
 	// DMSession is the calling chat task's session: the card renders there, for
 	// the session's creator only. Invalid for an issue task.
 	DMSession pgtype.UUID `json:"-"`
+	// Batch is set only by the batch proposal route (CHE-5412).
+	Batch *batchCard `json:"-"`
 }
+
+// batchCard ties the requests of one batch to one shared card: they share the
+// batch id and the card's chat message. The lead request writes the message
+// and records the one ping; the others point at it.
+type batchCard struct {
+	ID, MessageID pgtype.UUID
+	Ask           string
+	Lead          bool
+}
+
+func (card *batchCard) batchID() pgtype.UUID {
+	if card == nil {
+		return pgtype.UUID{}
+	}
+	return card.ID
+}
+
+// writesCard is true for a request that is not part of a batch, or leads one.
+func (card *batchCard) writesCard() bool { return card == nil || card.Lead }
 
 // dmSession is the chat session a request from a DM renders in: set by a
 // plain request or a proposal made from a chat task, invalid otherwise.
@@ -515,7 +536,10 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText()})
+	if input.Batch != nil {
+		messageID = input.Batch.MessageID
+	}
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText(), BatchID: input.Batch.batchID()})
 	if errors.Is(err, pgx.ErrNoRows) && input.Proposal != nil {
 		return empty, errProposalRaced
 	}
@@ -558,17 +582,24 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err != nil {
 		return empty, err
 	}
-	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: messageID, ChatSessionID: session.ID, Role: "assistant", Content: input.Ask, MessageKind: pgtype.Text{String: "decision_request", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
-	if err != nil {
-		return empty, err
-	}
-	if newSession {
-		if err := queries.MarkChatSessionReadBefore(ctx, db.MarkChatSessionReadBeforeParams{ID: session.ID, MessageCreatedAt: message.CreatedAt}); err != nil {
+	var message db.ChatMessage
+	if input.Batch.writesCard() {
+		cardAsk := input.Ask
+		if input.Batch != nil {
+			cardAsk = input.Batch.Ask
+		}
+		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: messageID, ChatSessionID: session.ID, Role: "assistant", Content: cardAsk, MessageKind: pgtype.Text{String: "decision_request", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+		if err != nil {
 			return empty, err
 		}
-	}
-	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
-		return empty, err
+		if newSession {
+			if err := queries.MarkChatSessionReadBefore(ctx, db.MarkChatSessionReadBeforeParams{ID: session.ID, MessageCreatedAt: message.CreatedAt}); err != nil {
+				return empty, err
+			}
+		}
+		if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+			return empty, err
+		}
 	}
 	consumed, err := queries.ConsumeDecisionIntentTarget(ctx, db.ConsumeDecisionIntentTargetParams{WorkspaceID: issue.WorkspaceID, DecisionIntentID: intent.ID, HumanUserID: session.CreatorID, RequestID: created.ID})
 	if err != nil {
@@ -588,14 +619,29 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 // fresh intent on the ask comment itself, and consumes and seals it.
 func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (decisionRequestResult, error) {
 	ctx := request.Context()
-	empty := decisionRequestResult{}
-	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
-		return empty, err
+		return decisionRequestResult{}, err
 	}
 	defer transaction.Rollback(ctx)
-	queries := handler.Queries.WithTx(transaction)
+	result, err := handler.singleCallDecisionIn(request, handler.Queries.WithTx(transaction), issue, input, agentID)
+	if err != nil {
+		return decisionRequestResult{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return decisionRequestResult{}, err
+	}
+	handler.DecisionWorker.Notify()
+	return result, nil
+}
+
+// singleCallDecisionIn is the body of the single-call path inside the
+// caller's transaction; the caller commits. The batch route runs it once per
+// item in one transaction.
+func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.Queries, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (decisionRequestResult, error) {
+	ctx := request.Context()
+	empty := decisionRequestResult{}
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
@@ -730,7 +776,13 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		return empty, err
 	}
 	// The ping commits with the request: a ping failure refuses the whole call.
-	if result.PingItem, err = decisiontx.NotifyPingTx(ctx, queries, issue.WorkspaceID, result.Request.ID); err != nil {
+	// A batch pings once, for its lead; the others are recorded as handled.
+	if input.Batch.writesCard() {
+		result.PingItem, err = decisiontx.NotifyPingTx(ctx, queries, issue.WorkspaceID, result.Request.ID)
+	} else {
+		_, err = queries.MarkDecisionPingNotified(ctx, db.MarkDecisionPingNotifiedParams{WorkspaceID: issue.WorkspaceID, ID: result.Request.ID})
+	}
+	if err != nil {
 		return empty, err
 	}
 	result.PingRecorded = true
@@ -739,10 +791,6 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 			return empty, err
 		}
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, err
-	}
-	handler.DecisionWorker.Notify()
 	result.CreatedSession = createdSession
 	return result, nil
 }
