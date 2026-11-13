@@ -14,188 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
-
-// ProviderAlertSink delivers one alert. key identifies the incident; the
-// monitor never sends the same key twice after a successful delivery.
-type ProviderAlertSink interface {
-	Alert(ctx context.Context, key, message string) error
-}
-
-// ProviderProbeMonitor probes a provider gateway on a schedule (CHE-2804).
-// A transport error or 5xx opens an incident; any other status is healthy
-// (401 counts: the gateway answered). Silence is itself an incident: no probe
-// result within staleAfter raises a separate heartbeat alert. The probe loop
-// and the heartbeat watchdog run on separate goroutines, so a stalled probe or
-// alert sink cannot hide silence. Process death is covered by the optional
-// external heartbeat (WithExternalHeartbeat): an outside observer alerts when
-// the pings stop.
-type ProviderProbeMonitor struct {
-	provider     string
-	probe        ProviderFailureProbe
-	sink         ProviderAlertSink
-	now          func() time.Time
-	window       time.Duration
-	staleAfter   time.Duration
-	alertTimeout time.Duration
-	beat         *http.Request // external dead-man's-switch GET, nil when unset
-
-	mu         sync.Mutex
-	lastResult time.Time
-	failStart  time.Time // zero when the last result was healthy
-	episode    int       // failure episodes opened so far; part of the incident key
-	sent       map[string]struct{}
-}
-
-// NewProviderProbeMonitor: window buckets the failure start into the incident
-// key; staleAfter is the heartbeat interval.
-func NewProviderProbeMonitor(provider string, probe ProviderFailureProbe, sink ProviderAlertSink, now func() time.Time, window, staleAfter time.Duration) *ProviderProbeMonitor {
-	return &ProviderProbeMonitor{
-		provider: provider, probe: probe, sink: sink, now: now,
-		window: window, staleAfter: staleAfter, alertTimeout: providerAlertTimeout,
-		lastResult: now(), sent: map[string]struct{}{},
-	}
-}
-
-const providerAlertTimeout = 5 * time.Second
-
-// WithExternalHeartbeat pings rawURL (GET) after every recorded probe result.
-// Point it at a dead-man's-switch service: it alerts when pings stop, which
-// the in-process watchdog cannot do if the process dies.
-func (m *ProviderProbeMonitor) WithExternalHeartbeat(rawURL string) error {
-	u, err := safeAlertURL(rawURL)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
-	if err != nil {
-		return errors.New("build heartbeat request") // never wrap err: it can embed the secret URL
-	}
-	m.beat = req
-	return nil
-}
-
-// Run starts the watchdog on its own goroutine and probes every staleAfter/2
-// until ctx ends.
-func (m *ProviderProbeMonitor) Run(ctx context.Context) {
-	go m.watchdog(ctx)
-	ticker := time.NewTicker(m.staleAfter / 2)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.Tick(ctx)
-		}
-	}
-}
-
-func (m *ProviderProbeMonitor) watchdog(ctx context.Context) {
-	ticker := time.NewTicker(m.staleAfter / 2)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.CheckHeartbeat(ctx)
-		}
-	}
-}
-
-// Tick probes once, records the outcome, pings the external heartbeat and
-// alerts on a new incident.
-func (m *ProviderProbeMonitor) Tick(ctx context.Context) {
-	evidence, err := m.probe.Probe(ctx)
-	now := m.now()
-	m.mu.Lock()
-	if err == nil {
-		m.lastResult = now
-	}
-	failed := err != nil || evidence.StatusCode >= http.StatusInternalServerError
-	if !failed {
-		m.failStart = time.Time{}
-	} else if m.failStart.IsZero() {
-		m.failStart = now
-		m.episode++
-	}
-	failStart, episode := m.failStart, m.episode
-	m.mu.Unlock()
-	if err == nil {
-		m.pingExternalHeartbeat(ctx)
-	}
-	if failed {
-		// The episode number keeps a failure that follows a recovery inside the
-		// same window from reusing the earlier incident's key.
-		key := fmt.Sprintf("%s:failure:%d:%d", m.provider, failStart.Truncate(m.window).Unix(), episode)
-		m.alertOnce(ctx, key, fmt.Sprintf("provider %s probe failing since %s (status=%d err=%v)", m.provider, failStart.Format(time.RFC3339), evidence.StatusCode, err))
-	}
-}
-
-func (m *ProviderProbeMonitor) pingExternalHeartbeat(ctx context.Context) {
-	if m.beat == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, m.alertTimeout)
-	defer cancel()
-	resp, err := http.DefaultClient.Do(m.beat.Clone(ctx))
-	if err != nil {
-		// The heartbeat URL is a secret. *url.Error embeds it and the cause can
-		// embed a redirect Location, so log a fixed category, never the error text.
-		slog.Warn("provider probe external heartbeat failed", "category", heartbeatFailureCategory(err))
-		return
-	}
-	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
-	resp.Body.Close()
-}
-
-// heartbeatFailureCategory maps a heartbeat transport error to a fixed label
-// that carries nothing from the secret URL or a server-controlled Location.
-func heartbeatFailureCategory(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	default:
-		return "transport"
-	}
-}
-
-// CheckHeartbeat alerts when no probe result was recorded within staleAfter.
-// The key is the time of the last result, so each silence after a new result
-// is its own incident.
-func (m *ProviderProbeMonitor) CheckHeartbeat(ctx context.Context) {
-	m.mu.Lock()
-	last := m.lastResult
-	m.mu.Unlock()
-	if m.now().Sub(last) <= m.staleAfter {
-		return
-	}
-	key := fmt.Sprintf("%s:heartbeat:%d", m.provider, last.Unix())
-	m.alertOnce(ctx, key, fmt.Sprintf("provider %s probe silent since %s", m.provider, last.Format(time.RFC3339)))
-}
-
-func (m *ProviderProbeMonitor) alertOnce(ctx context.Context, key, message string) {
-	m.mu.Lock()
-	_, done := m.sent[key]
-	m.mu.Unlock()
-	if done {
-		return
-	}
-	ctx, cancel := context.WithTimeout(ctx, m.alertTimeout)
-	defer cancel()
-	if err := m.sink.Alert(ctx, key, message); err != nil {
-		slog.Warn("provider probe alert failed", "key", key, "error", err)
-		return // not marked sent: retried on the next tick
-	}
-	m.mu.Lock()
-	m.sent[key] = struct{}{}
-	m.mu.Unlock()
-}
 
 // WebhookAlertSink POSTs {"key","message"} as JSON to one URL. The URL may
 // embed a secret: it is never logged or returned in errors.
@@ -302,64 +122,97 @@ func tokenSafeURL(u *url.URL) bool {
 	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }
 
-// NewProviderProbeMonitorFromEnv builds the production monitor. It returns
-// (nil, nil) unless both the gateway (MULTICA_PROVIDER_RECOVERY_BASE_URL) and
-// the alert webhook (MULTICA_PROVIDER_ALERT_WEBHOOK_URL) are set. Credential:
-// MULTICA_PROVIDER_PROBE_CREDENTIAL or MULTICA_PROVIDER_PROBE_CREDENTIAL_FILE
-// (read-only scope). Required once enabled: MULTICA_PROVIDER_HEARTBEAT_URL
-// (external dead-man's-switch). Optional: MULTICA_PROVIDER_PROBE_NAME, MULTICA_PROVIDER_PROBE_INTERVAL.
-func NewProviderProbeMonitorFromEnv(getenv func(string) string) (*ProviderProbeMonitor, error) {
-	baseURL, hook := strings.TrimSpace(getenv("MULTICA_PROVIDER_RECOVERY_BASE_URL")), strings.TrimSpace(getenv("MULTICA_PROVIDER_ALERT_WEBHOOK_URL"))
-	if baseURL == "" || hook == "" {
-		return nil, nil
+const (
+	providerAlertTimeout = 5 * time.Second
+	defaultProbeInterval = 10 * time.Minute
+)
+
+// webhookProbeAlertSink logs each alert like SlogProbeAlertSink and also POSTs
+// it to the webhook, with the provider name as key prefix so one receiver can
+// tell gateways apart. A failed delivery is logged and not retried: Raise runs
+// once per incident. Clear sends nothing.
+type webhookProbeAlertSink struct {
+	SlogProbeAlertSink
+	name    string
+	webhook *WebhookAlertSink
+	timeout time.Duration
+}
+
+func NewWebhookProbeAlertSink(name string, w *WebhookAlertSink) ProbeAlertSink {
+	return &webhookProbeAlertSink{name: name, webhook: w, timeout: providerAlertTimeout}
+}
+
+func (s *webhookProbeAlertSink) Raise(key, class, message string) {
+	s.SlogProbeAlertSink.Raise(key, class, message)
+	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
+	defer cancel()
+	if err := s.webhook.Alert(ctx, s.name+":"+key, message); err != nil {
+		slog.Warn("provider probe alert webhook failed", "key", key, "error", err)
 	}
-	probe, err := NewHTTPProviderFailureProbe(baseURL)
-	if err != nil {
-		return nil, err
-	}
+}
+
+// NewProbeHeartbeatMonitorFromEnv builds the CHE-4576 monitor with the CHE-4580
+// opt-ins, all read from env and all off when unset:
+//   - MULTICA_PROVIDER_ALERT_WEBHOOK_URL: also POST each alert (key prefix:
+//     MULTICA_PROVIDER_PROBE_NAME, default "provider"). Needs the heartbeat URL.
+//   - MULTICA_PROVIDER_HEARTBEAT_URL: external dead-man's-switch, pinged after
+//     every probe result.
+//   - MULTICA_PROVIDER_PROBE_CREDENTIAL or _FILE: read-only bearer token for the
+//     probe (GET /v1/models only).
+//   - MULTICA_PROVIDER_PROBE_INTERVAL: silence interval, default 10m.
+func NewProbeHeartbeatMonitorFromEnv(getenv func(string) string, probe ProviderFailureProbe, now func() time.Time) (*ProbeHeartbeatMonitor, error) {
 	token, err := LoadProviderProbeCredential(getenv("MULTICA_PROVIDER_PROBE_CREDENTIAL"), getenv("MULTICA_PROVIDER_PROBE_CREDENTIAL_FILE"))
 	if err != nil {
 		return nil, err
 	}
-	sink, err := NewWebhookAlertSink(hook)
-	if err != nil {
-		return nil, err
+	if h, ok := probe.(*HTTPProviderFailureProbe); ok && token != "" {
+		probe = h.WithBearerToken(token)
 	}
-	name := strings.TrimSpace(getenv("MULTICA_PROVIDER_PROBE_NAME"))
-	if name == "" {
-		name = "provider"
-	}
-	interval := 5 * time.Minute
+	interval := defaultProbeInterval
 	if raw := strings.TrimSpace(getenv("MULTICA_PROVIDER_PROBE_INTERVAL")); raw != "" {
 		if interval, err = time.ParseDuration(raw); err != nil || interval <= 0 {
 			return nil, errors.New("MULTICA_PROVIDER_PROBE_INTERVAL must be a positive duration")
 		}
 	}
-	m := NewProviderProbeMonitor(name, probe.WithBearerToken(token), sink, time.Now, time.Hour, interval)
-	// The in-process watchdog dies with the process, so an enabled monitor needs
-	// an independently observed heartbeat (a dead-man's-switch service).
-	beat := strings.TrimSpace(getenv("MULTICA_PROVIDER_HEARTBEAT_URL"))
-	if beat == "" {
-		return nil, errors.New("MULTICA_PROVIDER_HEARTBEAT_URL is required when the provider probe monitor is enabled")
+	var sink ProbeAlertSink = SlogProbeAlertSink{}
+	hook, beat := strings.TrimSpace(getenv("MULTICA_PROVIDER_ALERT_WEBHOOK_URL")), strings.TrimSpace(getenv("MULTICA_PROVIDER_HEARTBEAT_URL"))
+	if hook != "" {
+		// The in-process silence check dies with the process, so webhook alerting
+		// needs an independently observed heartbeat.
+		if beat == "" {
+			return nil, errors.New("MULTICA_PROVIDER_HEARTBEAT_URL is required when MULTICA_PROVIDER_ALERT_WEBHOOK_URL is set")
+		}
+		webhook, err := NewWebhookAlertSink(hook)
+		if err != nil {
+			return nil, err
+		}
+		name := strings.TrimSpace(getenv("MULTICA_PROVIDER_PROBE_NAME"))
+		if name == "" {
+			name = "provider"
+		}
+		sink = NewWebhookProbeAlertSink(name, webhook)
 	}
-	if err := m.WithExternalHeartbeat(beat); err != nil {
-		return nil, err
+	m := NewProbeHeartbeatMonitor(probe, sink, now, interval)
+	if beat != "" {
+		if err := m.WithExternalHeartbeat(beat); err != nil {
+			return nil, err
+		}
 	}
 	return m, nil
 }
 
-// StartProviderProbeMonitorFromEnv builds the monitor from env and runs it on
-// its own goroutine until ctx ends. It reports whether a monitor started. A bad
-// configuration, including a missing external heartbeat, logs an error and
-// starts nothing.
-func StartProviderProbeMonitorFromEnv(ctx context.Context, getenv func(string) string) bool {
-	m, err := NewProviderProbeMonitorFromEnv(getenv)
-	if err != nil {
-		slog.Error("provider probe monitor configuration is invalid", "error", err)
+// StartProviderProbeMonitor runs the monitor on its own goroutine until ctx
+// ends and reports whether one started. A bad configuration is logged and the
+// plain CHE-4576 monitor (slog alerts, no credential, no heartbeat) runs instead,
+// so a typo cannot switch silence alerting off.
+func StartProviderProbeMonitor(ctx context.Context, getenv func(string) string, probe ProviderFailureProbe) bool {
+	if probe == nil {
 		return false
 	}
-	if m == nil {
-		return false
+	m, err := NewProbeHeartbeatMonitorFromEnv(getenv, probe, time.Now)
+	if err != nil {
+		slog.Error("provider probe monitor configuration is invalid; running with defaults", "error", err)
+		m = NewProbeHeartbeatMonitor(probe, SlogProbeAlertSink{}, time.Now, defaultProbeInterval)
 	}
 	go m.Run(ctx)
 	return true

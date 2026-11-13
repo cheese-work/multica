@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -40,6 +42,7 @@ type ProbeHeartbeatMonitor struct {
 	sink     ProbeAlertSink
 	now      func() time.Time
 	interval time.Duration
+	beat     *http.Request // external dead-man's-switch GET, nil when unset
 
 	mu        sync.Mutex
 	started   time.Time
@@ -62,6 +65,52 @@ func (m *ProbeHeartbeatMonitor) LastHeartbeat() (time.Time, bool) {
 	return m.last, m.hasLast
 }
 
+// WithExternalHeartbeat pings rawURL (GET) after every recorded probe result.
+// Point it at a dead-man's-switch service: it alerts when pings stop, which
+// the in-process silence check cannot do if the process dies. The URL may carry
+// a secret, so it must be https or loopback and is never logged.
+func (m *ProbeHeartbeatMonitor) WithExternalHeartbeat(rawURL string) error {
+	u, err := safeAlertURL(rawURL)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return errors.New("build heartbeat request") // never wrap err: it can embed the secret URL
+	}
+	m.beat = req
+	return nil
+}
+
+func (m *ProbeHeartbeatMonitor) pingExternalHeartbeat(ctx context.Context) {
+	if m.beat == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, providerAlertTimeout)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(m.beat.Clone(ctx))
+	if err != nil {
+		// *url.Error embeds the secret URL and the cause can embed a redirect
+		// Location, so log a fixed category, never the error text.
+		slog.Warn("provider probe external heartbeat failed", "category", heartbeatFailureCategory(err))
+		return
+	}
+	_, _ = io.CopyN(io.Discard, resp.Body, 1024)
+	resp.Body.Close()
+}
+
+// heartbeatFailureCategory maps a heartbeat transport error to a fixed label.
+func heartbeatFailureCategory(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "transport"
+	}
+}
+
 // RunOnce probes the gateway. The run itself is the heartbeat, healthy or not;
 // a failing probe raises its own class of alert.
 func (m *ProbeHeartbeatMonitor) RunOnce(ctx context.Context) {
@@ -70,7 +119,12 @@ func (m *ProbeHeartbeatMonitor) RunOnce(ctx context.Context) {
 		return // shutdown, not a probe result
 	}
 	class, message := classifyProbeResult(evidence, err)
+	m.record(class, message)
+	// The ping proves this process is alive, so a gateway outage still pings.
+	m.pingExternalHeartbeat(ctx)
+}
 
+func (m *ProbeHeartbeatMonitor) record(class, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.last, m.hasLast = m.now(), true

@@ -16,116 +16,6 @@ import (
 	"time"
 )
 
-type recordingAlertSink struct {
-	mu   sync.Mutex
-	keys []string
-	err  error
-}
-
-func (s *recordingAlertSink) snapshot() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.keys...)
-}
-
-func (s *recordingAlertSink) Alert(_ context.Context, key, _ string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.err != nil {
-		return s.err
-	}
-	s.keys = append(s.keys, key)
-	return nil
-}
-
-type monitorScriptedProbe struct {
-	status int
-	err    error
-}
-
-func (p *monitorScriptedProbe) Probe(context.Context) (ProviderFailureProbeEvidence, error) {
-	return ProviderFailureProbeEvidence{CheckedAt: time.Unix(0, 0), StatusCode: p.status}, p.err
-}
-
-type fakeClock struct{ now time.Time }
-
-func (c *fakeClock) Now() time.Time { return c.now }
-
-var monitorT0 = time.Date(2026, 11, 8, 10, 0, 0, 0, time.UTC)
-
-func newTestMonitor(probe ProviderFailureProbe) (*ProviderProbeMonitor, *recordingAlertSink, *fakeClock) {
-	clock := &fakeClock{now: monitorT0}
-	sink := &recordingAlertSink{}
-	m := NewProviderProbeMonitor("openai", probe, sink, clock.Now, time.Hour, 5*time.Minute)
-	return m, sink, clock
-}
-
-func TestProviderProbeMonitorAlertsOncePerIncident(t *testing.T) {
-	probe := &monitorScriptedProbe{status: http.StatusBadGateway}
-	m, sink, clock := newTestMonitor(probe)
-
-	m.Tick(context.Background())
-	clock.now = monitorT0.Add(10 * time.Minute)
-	m.Tick(context.Background())
-	clock.now = monitorT0.Add(50 * time.Minute)
-	m.Tick(context.Background())
-
-	if len(sink.keys) != 1 || sink.keys[0] != "openai:failure:1794132000:1" {
-		t.Fatalf("alert keys = %v, want exactly [openai:failure:1794132000:1]", sink.keys)
-	}
-}
-
-func TestProviderProbeMonitorRetriesAlertWhenSinkFails(t *testing.T) {
-	m, sink, _ := newTestMonitor(&monitorScriptedProbe{err: errors.New("boom")})
-	sink.err = errors.New("sink down")
-	m.Tick(context.Background())
-	sink.err = nil
-	m.Tick(context.Background())
-	if len(sink.keys) != 1 {
-		t.Fatalf("alert keys = %v, want one after sink recovers", sink.keys)
-	}
-}
-
-func TestProviderProbeMonitorHealthyProbeDoesNotAlert(t *testing.T) {
-	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
-		m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: status})
-		clock.now = monitorT0.Add(4 * time.Minute)
-		m.Tick(context.Background())
-		if len(sink.keys) != 0 {
-			t.Fatalf("status %d alert keys = %v, want none", status, sink.keys)
-		}
-	}
-}
-
-func TestProviderProbeMonitorHeartbeatAlertsOnSilenceOnce(t *testing.T) {
-	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
-
-	clock.now = monitorT0.Add(4 * time.Minute)
-	m.CheckHeartbeat(context.Background())
-	if len(sink.keys) != 0 {
-		t.Fatalf("alert before interval elapsed: %v", sink.keys)
-	}
-	clock.now = monitorT0.Add(6 * time.Minute)
-	m.CheckHeartbeat(context.Background())
-	clock.now = monitorT0.Add(9 * time.Minute)
-	m.CheckHeartbeat(context.Background())
-
-	if len(sink.keys) != 1 || sink.keys[0] != "openai:heartbeat:1794132000" {
-		t.Fatalf("alert keys = %v, want exactly [openai:heartbeat:1794132000]", sink.keys)
-	}
-}
-
-func TestProviderProbeMonitorResultResetsHeartbeat(t *testing.T) {
-	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
-	clock.now = monitorT0.Add(4 * time.Minute)
-	m.Tick(context.Background())
-	clock.now = monitorT0.Add(8 * time.Minute)
-	m.CheckHeartbeat(context.Background())
-	if len(sink.keys) != 0 {
-		t.Fatalf("alert keys = %v, want none: last result was 4 minutes ago", sink.keys)
-	}
-}
-
 func TestHTTPProviderFailureProbeIssuesOnlyGET(t *testing.T) {
 	var mu sync.Mutex
 	var methods []string
@@ -140,9 +30,9 @@ func TestHTTPProviderFailureProbeIssuesOnlyGET(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, _, _ := newTestMonitor(probe.WithBearerToken("read-only-token"))
-	m.Tick(context.Background())
-	m.Tick(context.Background())
+	m, _, _ := newTestHeartbeat(probe.WithBearerToken("read-only-token"))
+	m.RunOnce(context.Background())
+	m.RunOnce(context.Background())
 	if len(methods) != 2 {
 		t.Fatalf("requests = %v, want 2", methods)
 	}
@@ -246,89 +136,6 @@ func TestHTTPProviderFailureProbeRefusesBearerTokenOverPlainHTTP(t *testing.T) {
 	}
 }
 
-func TestProviderProbeMonitorAlertsAgainForNewEpisodeInSameWindow(t *testing.T) {
-	probe := &monitorScriptedProbe{status: http.StatusBadGateway}
-	m, sink, clock := newTestMonitor(probe)
-
-	m.Tick(context.Background()) // episode 1 at 10:00
-	probe.status = http.StatusOK
-	clock.now = monitorT0.Add(10 * time.Minute)
-	m.Tick(context.Background()) // recovery
-	probe.status = http.StatusBadGateway
-	clock.now = monitorT0.Add(20 * time.Minute)
-	m.Tick(context.Background()) // episode 2, same one-hour window
-
-	want := []string{"openai:failure:1794132000:1", "openai:failure:1794132000:2"}
-	if got := sink.snapshot(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("alert keys = %v, want %v", got, want)
-	}
-}
-
-func TestProviderProbeMonitorHeartbeatAlertsAgainAfterInterveningResult(t *testing.T) {
-	m, sink, clock := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
-
-	clock.now = monitorT0.Add(6 * time.Minute)
-	m.CheckHeartbeat(context.Background()) // silence 1
-	m.Tick(context.Background())           // result at 10:06 ends it
-	clock.now = monitorT0.Add(13 * time.Minute)
-	m.CheckHeartbeat(context.Background()) // silence 2, same one-hour window
-
-	want := []string{"openai:heartbeat:1794132000", "openai:heartbeat:1794132360"}
-	if got := sink.snapshot(); len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("alert keys = %v, want %v", got, want)
-	}
-}
-
-type monitorBlockingProbe struct{ release chan struct{} }
-
-func (p *monitorBlockingProbe) Probe(ctx context.Context) (ProviderFailureProbeEvidence, error) {
-	select {
-	case <-p.release:
-	case <-ctx.Done():
-	}
-	return ProviderFailureProbeEvidence{}, errors.New("stalled")
-}
-
-func TestProviderProbeMonitorHeartbeatFiresWhileProbeIsStalled(t *testing.T) {
-	probe := &monitorBlockingProbe{release: make(chan struct{})}
-	defer close(probe.release)
-	sink := &recordingAlertSink{}
-	m := NewProviderProbeMonitor("openai", probe, sink, time.Now, time.Hour, 80*time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go m.Run(ctx)
-
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		for _, k := range sink.snapshot() {
-			if strings.Contains(k, ":heartbeat:") {
-				return
-			}
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("no heartbeat alert while probe stalled; keys = %v", sink.snapshot())
-}
-
-type blockingSink struct{}
-
-func (blockingSink) Alert(ctx context.Context, _, _ string) error {
-	<-ctx.Done()
-	return ctx.Err()
-}
-
-func TestProviderProbeMonitorBoundsStalledAlertSink(t *testing.T) {
-	m := NewProviderProbeMonitor("openai", &monitorScriptedProbe{status: http.StatusBadGateway}, blockingSink{}, time.Now, time.Hour, time.Minute)
-	m.alertTimeout = 50 * time.Millisecond
-	done := make(chan struct{})
-	go func() { m.Tick(context.Background()); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("Tick blocked on a stalled alert sink")
-	}
-}
-
 func TestWebhookAlertSinkPostsKeyAndMessage(t *testing.T) {
 	var method, body string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -365,7 +172,95 @@ func TestWebhookAlertSinkErrorsAndPlainHTTPRefusal(t *testing.T) {
 	}
 }
 
-func TestProviderProbeMonitorPingsExternalHeartbeatOnEachResult(t *testing.T) {
+// postRecorder is a webhook endpoint that records each POST body.
+type postRecorder struct {
+	mu    sync.Mutex
+	posts []string
+}
+
+func (r *postRecorder) handler(w http.ResponseWriter, req *http.Request) {
+	raw, _ := io.ReadAll(req.Body)
+	r.mu.Lock()
+	r.posts = append(r.posts, string(raw))
+	r.mu.Unlock()
+}
+
+func (r *postRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.posts...)
+}
+
+func TestWebhookProbeAlertSinkSendsOneWebhookPerIncident(t *testing.T) {
+	rec := &postRecorder{}
+	hook := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer hook.Close()
+	webhook, err := NewWebhookAlertSink(hook.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := &scriptedProbe{err: errors.New("boom")}
+	clock := &fakeProbeClock{now: probeT0}
+	m := NewProbeHeartbeatMonitor(probe, NewWebhookProbeAlertSink("c00", webhook), clock.Now, probeInterval)
+
+	m.RunOnce(context.Background())
+	m.RunOnce(context.Background()) // same incident: no second webhook
+	got := rec.snapshot()
+	if len(got) != 1 || !strings.HasPrefix(got[0], `{"key":"c00:probe-gateway_unreachable:1","message":`) {
+		t.Fatalf("webhook posts = %v, want one alert keyed c00:probe-gateway_unreachable:1", got)
+	}
+
+	probe.err, probe.evidence = nil, ProviderFailureProbeEvidence{StatusCode: http.StatusOK}
+	m.RunOnce(context.Background()) // recovery: Clear sends nothing
+	probe.err = errors.New("boom again")
+	m.RunOnce(context.Background())
+	got = rec.snapshot()
+	if len(got) != 2 || !strings.HasPrefix(got[1], `{"key":"c00:probe-gateway_unreachable:2","message":`) {
+		t.Fatalf("webhook posts = %v, want a second alert keyed c00:probe-gateway_unreachable:2", got)
+	}
+}
+
+func TestWebhookProbeAlertSinkSendsSilenceAlertOnce(t *testing.T) {
+	rec := &postRecorder{}
+	hook := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer hook.Close()
+	webhook, err := NewWebhookAlertSink(hook.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := &fakeProbeClock{now: probeT0}
+	m := NewProbeHeartbeatMonitor(&scriptedProbe{}, NewWebhookProbeAlertSink("c00", webhook), clock.Now, probeInterval)
+
+	clock.now = probeT0.Add(probeInterval + time.Second)
+	m.CheckSilence()
+	m.CheckSilence()
+	got := rec.snapshot()
+	if len(got) != 1 || !strings.HasPrefix(got[0], `{"key":"c00:probe-silence:1","message":`) {
+		t.Fatalf("webhook posts = %v, want one silence alert keyed c00:probe-silence:1", got)
+	}
+}
+
+func TestWebhookProbeAlertSinkBoundsStalledWebhook(t *testing.T) {
+	release := make(chan struct{})
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-release }))
+	defer hook.Close()
+	defer close(release)
+	webhook, err := NewWebhookAlertSink(hook.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := NewWebhookProbeAlertSink("c00", webhook)
+	sink.(*webhookProbeAlertSink).timeout = 50 * time.Millisecond
+	done := make(chan struct{})
+	go func() { sink.Raise("k", "gateway_unreachable", "down"); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Raise blocked on a stalled webhook")
+	}
+}
+
+func TestProbeHeartbeatPingsExternalHeartbeatAfterEveryResult(t *testing.T) {
 	var mu sync.Mutex
 	var pings []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -374,96 +269,36 @@ func TestProviderProbeMonitorPingsExternalHeartbeatOnEachResult(t *testing.T) {
 		mu.Unlock()
 	}))
 	defer server.Close()
-	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
+	probe := &scriptedProbe{evidence: ProviderFailureProbeEvidence{StatusCode: http.StatusOK}}
+	m, _, _ := newTestHeartbeat(probe)
 	if err := m.WithExternalHeartbeat(server.URL); err != nil {
 		t.Fatal(err)
 	}
-	m.Tick(context.Background())
-	m.Tick(context.Background())
-	probeFails, _, _ := newTestMonitor(&monitorScriptedProbe{err: errors.New("boom")})
-	if err := probeFails.WithExternalHeartbeat(server.URL); err != nil {
-		t.Fatal(err)
-	}
-	probeFails.Tick(context.Background()) // no result recorded: no ping
-	if len(pings) != 2 || pings[0] != http.MethodGet {
-		t.Fatalf("pings = %v, want 2 GETs", pings)
-	}
-}
-
-func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
-
-func TestProviderProbeMonitorFromEnvDisabledUnlessGatewayAndWebhookSet(t *testing.T) {
-	for _, env := range []map[string]string{
-		{},
-		{"MULTICA_PROVIDER_RECOVERY_BASE_URL": "http://127.0.0.1:1"},
-		{"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook"},
-	} {
-		m, err := NewProviderProbeMonitorFromEnv(envMap(env))
-		if m != nil || err != nil {
-			t.Fatalf("env %v: got monitor=%v err=%v, want disabled", env, m, err)
-		}
+	m.RunOnce(context.Background())
+	// A gateway outage is a probe result, not process death: the dead-man's
+	// switch keeps getting pings so it alerts only when this process dies.
+	probe.err = errors.New("gateway down")
+	m.RunOnce(context.Background())
+	probe.err, probe.evidence.StatusCode = nil, http.StatusBadGateway
+	m.RunOnce(context.Background())
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	m.RunOnce(cancelled) // shutdown is not a probe result: no ping
+	mu.Lock()
+	defer mu.Unlock()
+	if len(pings) != 3 || pings[0] != http.MethodGet {
+		t.Fatalf("pings = %v, want 3 GETs", pings)
 	}
 }
 
-func TestProviderProbeMonitorFromEnvAlertsOnGatewayFailureThroughWebhook(t *testing.T) {
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer env-token" {
-			t.Errorf("unexpected probe request %s auth=%q", r.URL.Path, r.Header.Get("Authorization"))
-		}
-		w.WriteHeader(http.StatusBadGateway)
-	}))
-	defer gateway.Close()
-	var mu sync.Mutex
-	var posts []string
-	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := io.ReadAll(r.Body)
-		mu.Lock()
-		posts = append(posts, string(raw))
-		mu.Unlock()
-	}))
-	defer hook.Close()
-
-	m, err := NewProviderProbeMonitorFromEnv(envMap(map[string]string{
-		"MULTICA_PROVIDER_RECOVERY_BASE_URL": gateway.URL,
-		"MULTICA_PROVIDER_PROBE_CREDENTIAL":  "env-token",
-		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": hook.URL,
-		"MULTICA_PROVIDER_PROBE_NAME":        "c00",
-		"MULTICA_PROVIDER_HEARTBEAT_URL":     "http://127.0.0.1:1/ping/synthetic",
-	}))
-	if err != nil || m == nil {
-		t.Fatalf("monitor=%v err=%v", m, err)
-	}
-	m.Tick(context.Background())
-	m.Tick(context.Background())
-	if len(posts) != 1 || !strings.Contains(posts[0], `"key":"c00:failure:`) {
-		t.Fatalf("webhook posts = %v, want one failure alert for c00", posts)
+func TestProbeHeartbeatRejectsUnsafeExternalHeartbeatURL(t *testing.T) {
+	m, _, _ := newTestHeartbeat(&scriptedProbe{})
+	if err := m.WithExternalHeartbeat("http://beat.example.invalid/ping"); err == nil {
+		t.Fatal("want refusal of plain http to a non-loopback host")
 	}
 }
 
-func TestProviderProbeMonitorFromEnvRejectsBadConfig(t *testing.T) {
-	base := map[string]string{
-		"MULTICA_PROVIDER_RECOVERY_BASE_URL": "http://127.0.0.1:1",
-		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook",
-	}
-	for name, extra := range map[string]map[string]string{
-		"plain http webhook":   {"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://alerts.example.invalid/hook"},
-		"relative credential":  {"MULTICA_PROVIDER_PROBE_CREDENTIAL_FILE": "go.mod"},
-		"plain http heartbeat": {"MULTICA_PROVIDER_HEARTBEAT_URL": "http://beat.example.invalid/ping"},
-	} {
-		env := map[string]string{}
-		for k, v := range base {
-			env[k] = v
-		}
-		for k, v := range extra {
-			env[k] = v
-		}
-		if m, err := NewProviderProbeMonitorFromEnv(envMap(env)); err == nil || m != nil {
-			t.Fatalf("%s: got monitor=%v err=%v, want error", name, m, err)
-		}
-	}
-}
-
-func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.T) {
+func TestProbeHeartbeatExternalHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.T) {
 	var logs strings.Builder
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
@@ -472,11 +307,11 @@ func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.
 	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	secretURL := dead.URL + "/ping/s3cr3t-token?key=q-secret"
 	dead.Close() // transport error that embeds the full URL
-	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
+	m, _, _ := newTestHeartbeat(&scriptedProbe{evidence: ProviderFailureProbeEvidence{StatusCode: http.StatusOK}})
 	if err := m.WithExternalHeartbeat(secretURL); err != nil {
 		t.Fatal(err)
 	}
-	m.Tick(context.Background())
+	m.RunOnce(context.Background())
 
 	if !strings.Contains(logs.String(), "heartbeat") {
 		t.Fatalf("expected a heartbeat failure log, got %q", logs.String())
@@ -488,7 +323,7 @@ func TestProviderProbeMonitorHeartbeatFailureLogDoesNotLeakURLSecret(t *testing.
 	}
 }
 
-func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t *testing.T) {
+func TestProbeHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t *testing.T) {
 	var logs strings.Builder
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
@@ -500,11 +335,11 @@ func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t
 		w.WriteHeader(http.StatusFound)
 	}))
 	defer redirecting.Close()
-	m, _, _ := newTestMonitor(&monitorScriptedProbe{status: http.StatusOK})
+	m, _, _ := newTestHeartbeat(&scriptedProbe{evidence: ProviderFailureProbeEvidence{StatusCode: http.StatusOK}})
 	if err := m.WithExternalHeartbeat(redirecting.URL + "/ping/s3cr3t-token?key=q-secret"); err != nil {
 		t.Fatal(err)
 	}
-	m.Tick(context.Background())
+	m.RunOnce(context.Background())
 
 	if !strings.Contains(logs.String(), "heartbeat") {
 		t.Fatalf("expected a heartbeat failure log, got %q", logs.String())
@@ -516,44 +351,119 @@ func TestProviderProbeMonitorHeartbeatMalformedRedirectLogDoesNotLeakURLSecret(t
 	}
 }
 
-func TestProviderProbeMonitorFromEnvRequiresExternalHeartbeat(t *testing.T) {
-	// The in-process watchdog dies with the process, so an enabled monitor must
-	// have an independently observed heartbeat.
-	m, err := NewProviderProbeMonitorFromEnv(envMap(map[string]string{
-		"MULTICA_PROVIDER_RECOVERY_BASE_URL": "http://127.0.0.1:1",
-		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook",
+func envMap(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+func TestProbeHeartbeatFromEnvAlertsThroughWebhookWithCredential(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer env-token" {
+			t.Errorf("unexpected probe request %s %s auth=%q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		w.WriteHeader(http.StatusBadGateway)
 	}))
-	if err == nil || m != nil {
-		t.Fatalf("monitor=%v err=%v, want an error naming MULTICA_PROVIDER_HEARTBEAT_URL", m, err)
+	defer gateway.Close()
+	rec := &postRecorder{}
+	hook := httptest.NewServer(http.HandlerFunc(rec.handler))
+	defer hook.Close()
+	probe, err := NewHTTPProviderFailureProbe(gateway.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "MULTICA_PROVIDER_HEARTBEAT_URL") {
-		t.Fatalf("err = %v, want it to name MULTICA_PROVIDER_HEARTBEAT_URL", err)
+
+	m, err := NewProbeHeartbeatMonitorFromEnv(envMap(map[string]string{
+		"MULTICA_PROVIDER_PROBE_CREDENTIAL":  "env-token",
+		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": hook.URL,
+		"MULTICA_PROVIDER_PROBE_NAME":        "c00",
+		"MULTICA_PROVIDER_HEARTBEAT_URL":     "http://127.0.0.1:1/ping/synthetic",
+	}), probe, time.Now)
+	if err != nil || m == nil {
+		t.Fatalf("monitor=%v err=%v", m, err)
+	}
+	m.RunOnce(context.Background())
+	m.RunOnce(context.Background())
+	if got := rec.snapshot(); len(got) != 1 || !strings.Contains(got[0], `"key":"c00:probe-gateway_unreachable:1"`) {
+		t.Fatalf("webhook posts = %v, want one gateway alert for c00", got)
 	}
 }
 
-func startMonitorEnv(gateway, hook, beat string) map[string]string {
-	env := map[string]string{
-		"MULTICA_PROVIDER_RECOVERY_BASE_URL": gateway,
-		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": hook,
-		"MULTICA_PROVIDER_PROBE_INTERVAL":    "40ms",
+func TestProbeHeartbeatFromEnvWithoutOptionalEnvStaysSlogOnly(t *testing.T) {
+	var auth atomic.Value
+	auth.Store("unset")
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth.Store(r.Header.Get("Authorization"))
+	}))
+	defer gateway.Close()
+	probe, err := NewHTTPProviderFailureProbe(gateway.URL)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if beat != "" {
-		env["MULTICA_PROVIDER_HEARTBEAT_URL"] = beat
+	m, err := NewProbeHeartbeatMonitorFromEnv(envMap(nil), probe, time.Now)
+	if err != nil || m == nil {
+		t.Fatalf("monitor=%v err=%v, want the plain CHE-4576 monitor", m, err)
 	}
-	return env
+	m.RunOnce(context.Background())
+	if got := auth.Load(); got != "" {
+		t.Fatalf("Authorization = %q, want none without a credential", got)
+	}
+	if _, ok := m.LastHeartbeat(); !ok {
+		t.Fatal("probe did not run")
+	}
 }
 
-func TestStartProviderProbeMonitorFromEnvProbesAndPingsHeartbeat(t *testing.T) {
+func TestProbeHeartbeatFromEnvRejectsBadConfig(t *testing.T) {
+	base := map[string]string{
+		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook",
+		"MULTICA_PROVIDER_HEARTBEAT_URL":     "http://127.0.0.1:1/ping",
+	}
+	for name, extra := range map[string]map[string]string{
+		"plain http webhook":       {"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://alerts.example.invalid/hook"},
+		"relative credential":      {"MULTICA_PROVIDER_PROBE_CREDENTIAL_FILE": "go.mod"},
+		"plain http heartbeat":     {"MULTICA_PROVIDER_HEARTBEAT_URL": "http://beat.example.invalid/ping"},
+		"bad interval":             {"MULTICA_PROVIDER_PROBE_INTERVAL": "soon"},
+		"zero interval":            {"MULTICA_PROVIDER_PROBE_INTERVAL": "0s"},
+		"webhook without watchdog": {"MULTICA_PROVIDER_HEARTBEAT_URL": ""},
+	} {
+		env := map[string]string{}
+		for k, v := range base {
+			env[k] = v
+		}
+		for k, v := range extra {
+			env[k] = v
+		}
+		if m, err := NewProbeHeartbeatMonitorFromEnv(envMap(env), &scriptedProbe{}, time.Now); err == nil || m != nil {
+			t.Fatalf("%s: got monitor=%v err=%v, want error", name, m, err)
+		}
+	}
+}
+
+func TestProbeHeartbeatFromEnvRequiresExternalHeartbeatWithWebhook(t *testing.T) {
+	// The in-process watchdog dies with the process, so a webhook-enabled monitor
+	// needs an independently observed heartbeat.
+	_, err := NewProbeHeartbeatMonitorFromEnv(envMap(map[string]string{
+		"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook",
+	}), &scriptedProbe{}, time.Now)
+	if err == nil || !strings.Contains(err.Error(), "MULTICA_PROVIDER_HEARTBEAT_URL") {
+		t.Fatalf("err = %v, want one naming MULTICA_PROVIDER_HEARTBEAT_URL", err)
+	}
+}
+
+func TestStartProviderProbeMonitorProbesAndPingsHeartbeat(t *testing.T) {
 	var probes, beats atomic.Int32
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { probes.Add(1) }))
 	defer gateway.Close()
 	beat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { beats.Add(1) }))
 	defer beat.Close()
+	probe, err := NewHTTPProviderFailureProbe(gateway.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if !StartProviderProbeMonitorFromEnv(ctx, envMap(startMonitorEnv(gateway.URL, "http://127.0.0.1:1/hook", beat.URL+"/ping/synthetic"))) {
-		t.Fatal("monitor did not start for a complete configuration")
+	if !StartProviderProbeMonitor(ctx, envMap(map[string]string{
+		"MULTICA_PROVIDER_PROBE_INTERVAL": "40ms",
+		"MULTICA_PROVIDER_HEARTBEAT_URL":  beat.URL + "/ping/synthetic",
+	}), probe) {
+		t.Fatal("monitor did not start")
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for (probes.Load() == 0 || beats.Load() == 0) && time.Now().Before(deadline) {
@@ -564,24 +474,32 @@ func TestStartProviderProbeMonitorFromEnvProbesAndPingsHeartbeat(t *testing.T) {
 	}
 }
 
-func TestStartProviderProbeMonitorFromEnvStaysOffWithoutHeartbeat(t *testing.T) {
+func TestStartProviderProbeMonitorFallsBackToSlogOnlyOnBadConfig(t *testing.T) {
 	var probes atomic.Int32
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { probes.Add(1) }))
 	defer gateway.Close()
+	probe, err := NewHTTPProviderFailureProbe(gateway.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if StartProviderProbeMonitorFromEnv(ctx, envMap(startMonitorEnv(gateway.URL, "http://127.0.0.1:1/hook", ""))) {
-		t.Fatal("monitor started without an external heartbeat")
+	// A webhook without a heartbeat URL is a bad config; the CHE-4576 monitor still runs.
+	if !StartProviderProbeMonitor(ctx, envMap(map[string]string{"MULTICA_PROVIDER_ALERT_WEBHOOK_URL": "http://127.0.0.1:1/hook"}), probe) {
+		t.Fatal("monitor did not start")
 	}
-	time.Sleep(200 * time.Millisecond)
-	if probes.Load() != 0 {
-		t.Fatalf("probes = %d, want 0 when the monitor is off", probes.Load())
+	deadline := time.Now().Add(3 * time.Second)
+	for probes.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if probes.Load() == 0 {
+		t.Fatal("fallback monitor never probed")
 	}
 }
 
-func TestStartProviderProbeMonitorFromEnvStaysOffWhenUnconfigured(t *testing.T) {
-	if StartProviderProbeMonitorFromEnv(context.Background(), envMap(nil)) {
-		t.Fatal("monitor started with no configuration")
+func TestStartProviderProbeMonitorStaysOffWithoutProbe(t *testing.T) {
+	if StartProviderProbeMonitor(context.Background(), envMap(nil), nil) {
+		t.Fatal("monitor started without a probe")
 	}
 }
