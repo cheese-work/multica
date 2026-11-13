@@ -17,16 +17,7 @@ Mockups copy these values into a local `shared.css`. A mockup never invents a to
 
 ## Components and patterns
 
-| Pattern | Source | Rule |
-| --- | --- | --- |
-| Settings page | `packages/views/settings/components/settings-layout.tsx`: `SettingsTab`, `SettingsSection`, `SettingsCard`, `SettingsRow` | One page title with scope badge, sections of `text-body font-semibold`, rows of label, optional help, control. |
-| Settings navigation | `packages/views/settings/components/settings-page.tsx` | Sidebar from `md` up. Below `md`: a native `<select id="settings-navigation">` with optgroups, `h-10`, under the page title. A phone layout keeps it. |
-| Read-only member view | `SettingsReadOnlyNotice` in `settings-layout.tsx` | Members see the page. A `role="note"` block names who can change it (owners and admins, up to three names). |
-| Save state | `SettingsSaveState` in `settings-layout.tsx` | `role="status"`: saving, saved, error. |
-| Buttons | `packages/ui/docs/button.md`, `packages/ui/components/ui/button.tsx` | One dominant action per dialog or form. Pending: `disabled` + `aria-busy`. Icon-only buttons need a name. |
-| Dialogs | `packages/ui/docs/dialog.md`, `packages/ui/components/ui/dialog.tsx`, `alert-dialog.tsx` | Dialog for a focused task. AlertDialog for a consequential confirmation. Keep the footer reachable at narrow widths. |
-| Tabs | `packages/ui/components/ui/tabs.tsx` (Base UI) | Roving focus, Left/Right moves, Home/End jump, one `tabpanel` per tab. Prefer it to `SettingsViewTabs`, which has no panel semantics and is 28 px high. |
-| Copy | `AGENTS.md`, "UI Copy" | Help only for a non-obvious choice, constraint, consequence or next step. State each fact once. |
+The pattern ledger is [`design/patterns.yml`](design/patterns.yml): one entry per pattern with its intent, components, docs, copy keys, surfaces and frame state. The former pattern table (settings page, settings navigation, read-only member view, save state, buttons, dialogs, tabs, copy) moved there as entries `settings-page`, `settings-navigation`, `read-only-member-view`, `save-state`, `buttons`, `dialogs`, `tabs` and `ui-copy`. `scripts/design/validate-patterns.mjs` checks the ledger in CI. A `locked` frame needs a matching row under Approved revisions below.
 
 ## Required states
 
