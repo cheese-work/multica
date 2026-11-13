@@ -144,6 +144,8 @@ multica project wip-limit <project> 3
 multica project wip-limit <project> none
 ```
 
+Each input belongs to one run (its owner) and one thread. A run takes only its own inputs, never those of another run of the same issue and agent. `resume` re-holds each thread's parked inputs on a run of that thread and prints `count` plus the counts it skipped: `skipped_unknown_thread` (no thread is known), `skipped_unresumable_thread`, `skipped_slot_busy` and `skipped_changed`. Skipped inputs stay parked. Park reasons: `legacy_unowned` (written by a server before the owner migration), `legacy_claim_unproven` (a claim that could not be tied to its run) and `ambiguous_owner` (no single run could be named as owner). These three are never re-held automatically; a member resumes or discards them.
+
 A write that carries `--event-id <id>` (issue comment, issue update, wakeup create or update) happens once per id: a redelivery with the same id gets the first response back. A failed write is not remembered, so retry with the same id. An unfinished write with that id answers 409 for 2 minutes. Ids are remembered for 7 days.
 
 Add a comment to a run that is still working, instead of queueing a follow-up run (only runs that accept additional messages; you can steer an agent exactly when your comment could start it):

@@ -144,6 +144,8 @@ multica project wip-limit <project> 3
 multica project wip-limit <project> none
 ```
 
+각 입력은 하나의 실행(소유자)과 하나의 스레드에 속합니다. 실행은 자기 입력만 가져가며, 같은 이슈와 같은 에이전트의 다른 실행의 입력은 가져가지 않습니다. `resume`은 각 스레드의 보류된 입력을 그 스레드의 실행에 다시 붙이고 `count`와 건너뛴 수를 출력합니다. 건너뛴 수는 `skipped_unknown_thread`(스레드를 알 수 없음), `skipped_unresumable_thread`, `skipped_slot_busy`, `skipped_changed`입니다. 건너뛴 입력은 보류 상태로 남습니다. 보류 사유는 `legacy_unowned`(소유자 마이그레이션 이전 서버가 기록), `legacy_claim_unproven`(실행과 연결할 수 없는 클레임), `ambiguous_owner`(소유자 실행을 하나로 특정할 수 없음)입니다. 이 세 가지는 자동으로 다시 붙지 않으며, 멤버가 재개하거나 폐기합니다.
+
 `--event-id <id>`가 붙은 쓰기(댓글, 이슈 업데이트, 웨이크업 생성·수정)는 id당 한 번만 실행됩니다. 같은 id로 재전달하면 첫 응답이 반환됩니다. 실패한 쓰기는 기억되지 않으므로 같은 id로 다시 시도하세요. 같은 id의 미완료 쓰기는 2분 동안 409를 반환합니다. id는 7일간 보관됩니다.
 
 후속 실행을 대기열에 넣는 대신 아직 진행 중인 실행에 댓글을 추가합니다(추가 메시지를 받을 수 있는 실행만 해당하며, 댓글로 시작할 수 있는 에이전트에만 가능합니다).
