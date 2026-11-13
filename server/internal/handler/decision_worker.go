@@ -276,7 +276,7 @@ func (worker *DecisionWorker) processConsequences(ctx context.Context) error {
 			return handler.deliverDecisionExpiryDigest(ctx, recipient.WorkspaceID, recipient.HumanUserID)
 		}))
 	}
-	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx))
+	failures = errors.Join(failures, handler.deliverAgentDecisionNotices(ctx), handler.reconcileAskGuard(ctx))
 	return errors.Join(failures, handler.checkDecisionWaits(ctx))
 }
 

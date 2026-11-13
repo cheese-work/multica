@@ -502,3 +502,166 @@ func TestRouteEndpointRefusesAHandlerChangedUnderTheLock(t *testing.T) {
 	}
 	c.wantNothingWritten(t, "in_progress")
 }
+
+// CHE-4552 (S4 of CHE-4439): an explicit owner on the route call.
+
+func ownerBody(status, ownerType, ownerID string, over map[string]any) map[string]any {
+	body := routeBody(status, map[string]any{"owner_type": ownerType, "owner_id": ownerID})
+	for k, v := range over {
+		body[k] = v
+	}
+	return body
+}
+
+func (c routeCase) wantOwnerExplicit(t *testing.T, want bool) {
+	t.Helper()
+	var got bool
+	dbfx.QueryRow(t, `SELECT (inputs->>'owner_explicit')::boolean FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID).Scan(&got)
+	if got != want {
+		t.Fatalf("label owner_explicit = %v, want %v", got, want)
+	}
+}
+
+func TestRouteEndpointExplicitAgentOwnerReplacesTheWorkflowHandler(t *testing.T) {
+	c := newRouteCase(t)
+	owner := c.otherAgent(t)
+	var out routeResponse
+	c.route(t, ownerBody("in_review", "agent", owner, nil), nil).Want(http.StatusOK).JSON(&out)
+
+	if status, at, aid := issueStatusAndAssignee(t, c.issueID); status != "in_review" || at != "agent" || aid != owner {
+		t.Fatalf("issue = %q / %s %s, want in_review owned by agent %s", status, at, aid, owner)
+	}
+	if runs := pendingStepRuns(t, c.issueID, owner); len(runs) != 1 || !out.Run.Started {
+		t.Fatalf("owner runs = %v, run = %+v, want one started run", runs, out.Run)
+	}
+	if runs := pendingStepRuns(t, c.issueID, c.handlerID); len(runs) != 0 {
+		t.Fatalf("workflow handler runs = %v, want none: the explicit owner suppresses the handoff", runs)
+	}
+	var statusChangedID string
+	dbfx.QueryRow(t, `SELECT id::text FROM activity_log WHERE issue_id = $1 AND action = 'status_changed'`, c.issueID).Scan(&statusChangedID)
+	if out.EventID != statusChangedID {
+		t.Fatalf("event_id = %s, want status_changed %s", out.EventID, statusChangedID)
+	}
+	c.wantOwnerExplicit(t, true)
+}
+
+func TestRouteEndpointExplicitSquadOwnerStartsTheLeader(t *testing.T) {
+	c := newRouteCase(t)
+	leader := c.otherAgent(t)
+	squadID := createSquadInWorkspace(t, testUserID, testWorkspaceID, "route owner squad "+workflowTestSuffix(), leader)
+	var out routeResponse
+	c.route(t, ownerBody("in_review", "squad", squadID, nil), nil).Want(http.StatusOK).JSON(&out)
+
+	if status, at, aid := issueStatusAndAssignee(t, c.issueID); status != "in_review" || at != "squad" || aid != squadID {
+		t.Fatalf("issue = %q / %s %s, want in_review owned by squad %s", status, at, aid, squadID)
+	}
+	if runs := pendingStepRuns(t, c.issueID, leader); len(runs) != 1 || !out.Run.Started {
+		t.Fatalf("leader runs = %v, run = %+v, want one started run", runs, out.Run)
+	}
+	c.wantOwnerExplicit(t, true)
+}
+
+func TestRouteEndpointExplicitMemberOwnerStartsNoRun(t *testing.T) {
+	c := newRouteCase(t)
+	var out routeResponse
+	c.route(t, ownerBody("in_review", "member", testUserID, nil), nil).Want(http.StatusOK).JSON(&out)
+
+	if status, at, aid := issueStatusAndAssignee(t, c.issueID); status != "in_review" || at != "member" || aid != testUserID {
+		t.Fatalf("issue = %q / %s %s, want in_review owned by member %s", status, at, aid, testUserID)
+	}
+	if runs := pendingStepRuns(t, c.issueID, c.handlerID); len(runs) != 0 || out.Run.Started {
+		t.Fatalf("handler runs = %v, run = %+v, want none", runs, out.Run)
+	}
+	c.wantOwnerExplicit(t, true)
+}
+
+func TestRouteEndpointRefusesAnExplicitOwnerTheCallerCannotInvoke(t *testing.T) {
+	c := newRouteCase(t)
+	private, ownerID, memberID := privateAgentTestFixture(t)
+	dbfx.Exec(t, `UPDATE agent SET visibility = 'private', owner_id = $2 WHERE id = $1`, private, ownerID)
+
+	req := withURLParam(workflowRequest("POST", "/api/issues/"+c.issueID+"/route", ownerBody("in_review", "agent", private, nil)), "id", c.issueID)
+	req.Header.Set("X-User-ID", memberID)
+	resp := testutil.Call(t, testHandler.RouteIssue, req).Want(http.StatusForbidden)
+	assertDenialReason(t, resp, "you do not have permission to assign work to this agent")
+
+	c.wantNothingWritten(t, "in_progress")
+	if _, at, _ := issueStatusAndAssignee(t, c.issueID); at != "" {
+		t.Fatalf("assignee type = %q, want none", at)
+	}
+}
+
+func TestRouteEndpointRejectsAHalfOwner(t *testing.T) {
+	c := newRouteCase(t)
+	c.route(t, routeBody("in_review", map[string]any{"owner_type": "agent"}), nil).Want(http.StatusBadRequest)
+	c.route(t, routeBody("in_review", map[string]any{"owner_id": c.handlerID}), nil).Want(http.StatusBadRequest)
+	c.route(t, ownerBody("in_review", "robot", c.handlerID, nil), nil).Want(http.StatusBadRequest)
+	c.wantNothingWritten(t, "in_progress")
+}
+
+// A route that keeps the status and changes only the owner is allowed; its
+// label has no event id, because no status change happens.
+func TestRouteEndpointOwnerOnlyWritesALabelWithoutAnEvent(t *testing.T) {
+	c := newRouteCase(t)
+	owner := c.otherAgent(t)
+	var out routeResponse
+	c.route(t, ownerBody("in_progress", "agent", owner, nil), nil).Want(http.StatusOK).JSON(&out)
+
+	if status, at, aid := issueStatusAndAssignee(t, c.issueID); status != "in_progress" || at != "agent" || aid != owner {
+		t.Fatalf("issue = %q / %s %s, want in_progress owned by agent %s", status, at, aid, owner)
+	}
+	if n := c.activityRows(t, "status_changed"); n != 0 {
+		t.Fatalf("status_changed rows = %d, want 0", n)
+	}
+	if n := c.activityRows(t, "routed"); n != 1 {
+		t.Fatalf("routed rows = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM system1_observation WHERE kind = 'route' AND subject_id = $1 AND event_id IS NULL`, c.issueID); n != 1 {
+		t.Fatalf("route rows without an event id = %d, want 1", n)
+	}
+	if out.EventID != "" || out.ObservationID == "" {
+		t.Fatalf("event_id = %q, observation_id = %q, want no event and a label", out.EventID, out.ObservationID)
+	}
+	c.wantOwnerExplicit(t, true)
+}
+
+func TestRouteEndpointRefusesANoOpWithTheSameOwner(t *testing.T) {
+	c := newRouteCase(t)
+	owner := c.otherAgent(t)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, c.issueID, owner)
+	c.route(t, ownerBody("in_progress", "agent", owner, nil), nil).Want(http.StatusConflict)
+	c.wantNothingWritten(t, "in_progress")
+}
+
+func TestRouteEndpointNoStartHonoursAnExplicitOwner(t *testing.T) {
+	c := newRouteCase(t)
+	owner := c.otherAgent(t)
+	var out routeResponse
+	c.route(t, ownerBody("in_review", "agent", owner, map[string]any{"suppress_run": true}), nil).Want(http.StatusOK).JSON(&out)
+
+	if status, at, aid := issueStatusAndAssignee(t, c.issueID); status != "in_review" || at != "agent" || aid != owner {
+		t.Fatalf("issue = %q / %s %s, want in_review owned by agent %s", status, at, aid, owner)
+	}
+	if out.Run.Started {
+		t.Fatalf("run = %+v, want none", out.Run)
+	}
+	for _, id := range []string{owner, c.handlerID} {
+		if runs := pendingStepRuns(t, c.issueID, id); len(runs) != 0 {
+			t.Fatalf("runs of %s = %v, want none", id, runs)
+		}
+	}
+}
+
+func TestRouteEndpointAgentCallerWithAnExplicitOwnerIsAnAgentDecision(t *testing.T) {
+	c := newRouteCase(t)
+	// The seeded handler is the agent other agents may invoke.
+	headers := c.agentRun(t, c.otherAgent(t), "in_progress")
+	c.route(t, ownerBody("in_review", "agent", c.handlerID, nil), headers).Want(http.StatusOK)
+
+	var source string
+	dbfx.QueryRow(t, `SELECT decision_source FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID).Scan(&source)
+	if source != "agent" {
+		t.Fatalf("decision_source = %q, want agent", source)
+	}
+	c.wantOwnerExplicit(t, true)
+}
