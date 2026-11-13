@@ -2171,18 +2171,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // (`targetRootId`, latch its length-expanded choice). "Find open / close"
   // is the one reason here that does NOT latch — row 58 is explicit that
   // find writes no fold preference.
+  // CHE-5437: roots the user collapsed by pressing the button. A press outranks
+  // the soft pins (target, highlight, focus/selection); find, an active run and
+  // unsaved local work still hold the thread open.
+  const [manualCollapsedRoots, setManualCollapsedRoots] = useState<ReadonlySet<string>>(EMPTY_ID_SET);
+  const handleManualCollapseChange = useCallback((rootId: string, collapsed: boolean) => {
+    setManualCollapsedRoots((prev) => {
+      if (prev.has(rootId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(rootId); else next.delete(rootId);
+      return next;
+    });
+  }, []);
+  // A new deep-link request re-targets a thread: the earlier press no longer applies.
+  useEffect(() => {
+    setManualCollapsedRoots(EMPTY_ID_SET);
+  }, [highlightCommentId, highlightRequestToken]);
+
   const forceThreadOpen = useCallback((rootId: string): boolean => {
     if (findRootId === rootId) return true;
-    if (targetRootId === rootId) return true;
     if (rootIdsPinnedByLocalWork.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
+    if (manualCollapsedRoots.has(rootId)) return false;
+    if (targetRootId === rootId) return true;
     if (rootIdsWithActiveFocusOrSelection.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
     if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
+  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, manualCollapsedRoots, timelineView.threadReplies, highlightedId]);
 
   // CHE-554: same reasons as `forceThreadOpen` above, MINUS a bare
   // focus/selection-only pin. `forceThreadOpen` correctly forces `open` (the
@@ -3976,6 +3994,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange: toggleThreadLengthExpand,
             forceThreadExpanded: forceThreadOpen(reply.id),
             forceThreadLengthExpanded: forceThreadLengthExpand(reply.id),
+            onManualCollapseChange: handleManualCollapseChange,
             findManualCollapseDisabled: findRootId === reply?.id,
             findManualCollapseDisabledReason: findCollapseDisabledReason,
           } : undefined} />}
@@ -4027,6 +4046,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange={toggleThreadLengthExpand}
             forceThreadExpanded={forceThreadOpen(rootId)}
             forceThreadLengthExpanded={forceThreadLengthExpand(rootId)}
+            onManualCollapseChange={handleManualCollapseChange}
             findManualCollapseDisabled={findRootId === rootId}
             findManualCollapseDisabledReason={findCollapseDisabledReason}
           />
