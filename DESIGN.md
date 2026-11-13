@@ -108,7 +108,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | workflow-lint-ui | doop `6mYQFWIMvR` @ 2026-11-06T07:54:26.758Z (D light) with dark `u9lNVhB-2k` @ 2026-11-06T07:55:08.558Z, dialog `-IGdS_B1PB` @ 2026-11-06T07:56:19.372Z, `Tz8ZFkiTdl` @ 2026-11-06T07:56:38.931Z, states `-op18JpCVJ` @ 2026-11-06T07:56:54.349Z | D | 1211 | n/a (`design/workflow-lint-ui/approved/`) |
 | delegated-governed-writes | doop `Ocyo3e9IQD` @ 2026-11-08T09:29:28.407Z | B | 1256 | n/a (`design/delegated-governed-writes/approved/`) |
 | decision-card | doop `Z3bizs5RyO` @ 2026-11-12T04:18:27.430Z (B v9) | B | 1379 | n/a (`design/decision-card/approved/`) |
-| background-agents | doop `9L657IkfjZ` @ 2026-11-13T06:10:19.495Z (A2), `XyqcwrCaU8` @ 2026-11-13T06:10:21.146Z (B2), `IZ5zGPF9ZM` @ 2026-11-13T06:10:30.086Z (C2), `fLyQE0xYpu` @ 2026-11-13T06:10:50.374Z (D2), `ijhJ5xbn0u` @ 2026-11-13T06:25:14.888Z (E) | v2 | PRNUM | n/a (`design/background-agents/approved/`) |
+| background-agents | doop `9L657IkfjZ` @ 2026-11-13T06:10:19.495Z (A2), `XyqcwrCaU8` @ 2026-11-13T06:10:21.146Z (B2), `IZ5zGPF9ZM` @ 2026-11-13T06:10:30.086Z (C2), `fLyQE0xYpu` @ 2026-11-13T06:10:50.374Z (D2), `ijhJ5xbn0u` @ 2026-11-13T06:25:14.888Z (E) | v2 | 1465 | n/a (`design/background-agents/approved/`) |
 
 Each row is written before its merge, as the standard requires. A design is approved when Cheese merges its PR: PR 255 for `wakeups-pause`, PR 268 for `jev-governance-tab`, PR 277 for `dm-notifications-mobile`, PR 284 for `dm-stats-archive-menu`, PR 307 for `dm-notifications-web`. The merge commit is read from GitHub and is not written here.
 
