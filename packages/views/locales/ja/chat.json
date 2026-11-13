@@ -56,6 +56,9 @@
     "interactive_login_required": "チャットを使うには再度ログインしてください",
     "interactive_login_action": "ログイン",
     "title": "チャット",
+    "no_agent_title": "チャットできるエージェントはまだいません",
+    "no_agent_description": "エージェントを作成すると、ここで要望を話し合い、タスクに分解してもらえます。",
+    "no_agent_action": "新規エージェント",
     "select_prompt": "会話を選ぶか、＋ で新規作成してください",
     "agent_link_no_access": "このエージェントとチャットする権限がありません。"
   },
@@ -365,6 +368,7 @@
     "compact_now": "今すぐコンパクト",
     "more_actions": "その他の操作",
     "view_profile": "Agent のプロフィール",
+    "agent_settings": "エージェント設定",
     "rename": "名前を変更",
     "delete": "チャットを削除",
     "archive": "チャットをアーカイブ",
