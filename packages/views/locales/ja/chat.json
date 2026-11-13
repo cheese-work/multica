@@ -384,6 +384,8 @@
     "pin_failed": "ピン留めを更新できませんでした",
     "unseen": "未読にする",
     "unseen_failed": "このチャットを未読にできませんでした",
+    "mark_seen": "既読にする",
+    "more": "その他",
     "undo": "元に戻す"
   },
   "header": {

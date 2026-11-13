@@ -2,6 +2,7 @@
 
 import { Fragment, type KeyboardEvent, type ReactNode } from "react";
 import { MoreHorizontal } from "@multica/ui/icons";
+import { cn } from "@multica/ui/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -51,16 +52,24 @@ export function handleRowActivationKey(
 export function RowActionsMenu({
   label,
   groups,
+  large,
+  open,
+  onOpenChange,
 }: {
   /** Accessible name of the trigger, e.g. "Chat actions". */
   label: string;
   groups: RowActionItem[][];
+  /** 44×44 hit area on touch (coarse-pointer) surfaces. */
+  large?: boolean;
+  /** Controlled open state, e.g. for a swipe tray's "More". */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const filled = groups.filter((group) => group.length > 0);
   if (filled.length === 0) return null;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger
         render={
           <button
@@ -69,7 +78,10 @@ export function RowActionsMenu({
             // The row owns click-to-select; opening the menu must not select it.
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex size-8 shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground [@media(hover:hover)]:hidden"
+            className={cn(
+              "inline-flex shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground [@media(hover:hover)]:hidden",
+              large ? "size-11" : "size-8",
+            )}
           >
             <MoreHorizontal className="size-4" />
           </button>

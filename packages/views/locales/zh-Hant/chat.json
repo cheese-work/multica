@@ -384,6 +384,8 @@
     "pin_failed": "無法更新置頂狀態",
     "unseen": "標記為未讀",
     "unseen_failed": "無法將此對話標記為未讀",
+    "mark_seen": "標記為已讀",
+    "more": "更多",
     "undo": "復原"
   },
   "header": {

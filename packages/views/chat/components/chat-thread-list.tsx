@@ -6,7 +6,10 @@ import {
   Archive,
   ArchiveRestore,
   Clock,
+  Eye,
+  EyeOff,
   Loader2,
+  MoreHorizontal,
   Pin,
   PinOff,
   Square,
@@ -27,6 +30,7 @@ import {
 } from "@multica/core/chat/queries";
 import {
   useDeleteChatSession,
+  useMarkChatSessionRead,
   useSetChatSessionPinned,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
@@ -44,6 +48,7 @@ import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
+import { SwipeRow, type SwipeAction } from "./swipe-row";
 import { formatChatTime } from "./format-chat-time";
 import { NeedsYouList } from "./needs-you-list";
 import { useAttentionRefresh } from "./use-attention-refresh";
@@ -114,6 +119,11 @@ interface ChatThreadListProps {
   onArchive: (session: ChatSession) => void;
   /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
   onOpenSearchHit?: (hit: ChatSearchHit) => void;
+  /**
+   * Touch long-press on a row. The select UI is a later slice; this is the
+   * seam it plugs into.
+   */
+  onEnterSelectMode?: (session: ChatSession) => void;
   /** First load of the list. Only shown while there are no rows to show. */
   loadState?: "loading" | "error";
   onRetry?: () => void;
@@ -125,6 +135,7 @@ function ChatThreadListBody({
   activeSessionId,
   onSelectSession,
   onArchive,
+  onEnterSelectMode,
   loadState,
   onRetry,
 }: ChatThreadListProps) {
@@ -189,6 +200,8 @@ function ChatThreadListBody({
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const deleteSession = useDeleteChatSession();
   const setPinned = useSetChatSessionPinned();
+  const markRead = useMarkChatSessionRead();
+  const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
   const sessionActions = useChatSessionActions();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
@@ -370,9 +383,60 @@ function ChatThreadListBody({
                 },
           ];
 
+    // Swipe left: the row's own pin / archive (or stop, or unarchive) + More.
+    // A full swipe archives, never on a running or already-archived DM.
+    const swipeKeys = session.status === "archived" ? ["unarchive"] : ["pin", "archive", "stop"];
+    const toneByKey: Record<string, SwipeAction["tone"]> = {
+      pin: "info",
+      archive: "warning",
+      stop: "warning",
+      unarchive: "success",
+    };
+    const leftActions: SwipeAction[] = [
+      ...rowActions
+        .filter((a) => swipeKeys.includes(a.key))
+        .map((a) => ({ key: a.key, label: a.label, icon: a.icon, onSelect: a.onSelect, tone: toneByKey[a.key] })),
+      {
+        key: "more",
+        label: t(($) => $.list.more),
+        icon: <MoreHorizontal className="size-4" />,
+        // Let the tray close first so the menu anchors to the visible ⋯.
+        onSelect: () => setMoreMenuId(session.id),
+      },
+    ];
+    const isUnseen = session.has_unread || (session.unread_count ?? 0) > 0;
+    const rightAction: SwipeAction | undefined =
+      session.status === "archived"
+        ? undefined
+        : isUnseen
+          ? {
+              key: "seen",
+              label: t(($) => $.list.mark_seen),
+              icon: <Eye className="size-4" />,
+              tone: "info",
+              onSelect: () => markRead.mutate(session.id),
+            }
+          : {
+              key: "unseen",
+              label: t(($) => $.list.unseen),
+              icon: <EyeOff className="size-4" />,
+              tone: "info",
+              onSelect: () => void sessionActions.markUnseen(session),
+            };
+
     return (
-      <div
+      <SwipeRow
         key={session.id}
+        leftActions={leftActions}
+        rightAction={rightAction}
+        onFullSwipeLeft={
+          session.status !== "archived" && !isRunning && !isConfirmingAction
+            ? () => onArchive(session)
+            : undefined
+        }
+        onLongPress={onEnterSelectMode ? () => onEnterSelectMode(session) : undefined}
+      >
+      <div
         data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
@@ -508,6 +572,9 @@ function ChatThreadListBody({
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
             groups={[rowActions]}
+            large
+            open={moreMenuId === session.id}
+            onOpenChange={(next) => setMoreMenuId(next ? session.id : null)}
           />
         )}
 
@@ -529,6 +596,7 @@ function ChatThreadListBody({
           </div>
         )}
       </div>
+      </SwipeRow>
     );
   };
 
