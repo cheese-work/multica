@@ -1628,7 +1628,7 @@ func (q *Queries) ListAutopilots(ctx context.Context, arg ListAutopilotsParams) 
 
 const listSchedulableAutopilotTriggers = `-- name: ListSchedulableAutopilotTriggers :many
 
-SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at
+SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at, t.next_run_at
 FROM autopilot_trigger t
 JOIN autopilot a ON a.id = t.autopilot_id
 WHERE t.kind = 'schedule'
@@ -1646,6 +1646,7 @@ type ListSchedulableAutopilotTriggersRow struct {
 	Timezone       pgtype.Text        `json:"timezone"`
 	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 	LastFiredAt    pgtype.Timestamptz `json:"last_fired_at"`
+	NextRunAt      pgtype.Timestamptz `json:"next_run_at"`
 }
 
 // =====================
@@ -1668,6 +1669,9 @@ type ListSchedulableAutopilotTriggersRow struct {
 // recent already-fired occurrence — exactly the post-deploy
 // spurious-fire reported on MUL-3551 dev.
 //
+// next_run_at is read so the scope provider can repair a display value left
+// in the past (CHE-5500).
+//
 // Filters out webhook / api triggers, disabled triggers, paused/archived
 // autopilots, and any trigger missing its cron expression. ORDER BY id
 // keeps the per-tick scope list stable across replicas.
@@ -1687,6 +1691,7 @@ func (q *Queries) ListSchedulableAutopilotTriggers(ctx context.Context) ([]ListS
 			&i.Timezone,
 			&i.CreatedAt,
 			&i.LastFiredAt,
+			&i.NextRunAt,
 		); err != nil {
 			return nil, err
 		}

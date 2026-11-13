@@ -875,6 +875,8 @@ type CiWatchAction struct {
 	DestinationID     pgtype.Text        `json:"destination_id"`
 	Reason            string             `json:"reason"`
 	Diagnostic        string             `json:"diagnostic"`
+	PostOutcome       string             `json:"post_outcome"`
+	FollowupAt        pgtype.Timestamptz `json:"followup_at"`
 }
 
 type CiWatchConfig struct {
