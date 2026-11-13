@@ -12,7 +12,7 @@ CREATE TABLE merge_pause_state (
     PRIMARY KEY (repo_owner, repo_name, variable_name)
 );
 CREATE TABLE merge_veto_deadline (
-    workspace_id uuid NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+    workspace_id uuid NOT NULL,
     repo_owner text NOT NULL,
     repo_name text NOT NULL,
     pr_number integer NOT NULL,
