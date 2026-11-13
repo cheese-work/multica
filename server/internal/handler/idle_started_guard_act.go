@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -163,8 +162,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 			return err
 		}
 		if receipt.To == issuestatus.Blocked {
-			reason, _ := json.Marshal("idle-no-continuation")
-			if _, err := q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "blocked_reason", Value: reason}); err != nil {
+			if _, err := setIssueMetadataValue(ctx, q, issue.WorkspaceID, issue.ID, "blocked_reason", "idle-no-continuation"); err != nil {
 				return err
 			}
 		}
