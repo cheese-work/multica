@@ -163,7 +163,7 @@ func (h *Handler) dmTitleChain(ctx context.Context, ws pgtype.UUID) ([]bgagents.
 func (h *Handler) writeDMTitle(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, result []byte) error {
 	var res TaskCompleteRequest
 	if err := json.Unmarshal(result, &res); err != nil {
-		return fmt.Errorf("%w: %v", service.ErrInvalidBackgroundOutput, err)
+		return fmt.Errorf("%w: %w", service.ErrInvalidBackgroundOutput, err)
 	}
 	title := sanitizeChatTitle(res.Output)
 	if title == "" || !task.SourceChatSessionID.Valid {
@@ -171,7 +171,7 @@ func (h *Handler) writeDMTitle(ctx context.Context, q *db.Queries, task db.Agent
 	}
 	var tc service.BackgroundTaskContext
 	if err := json.Unmarshal(task.Context, &tc); err != nil {
-		return fmt.Errorf("%w: %v", service.ErrInvalidBackgroundOutput, err)
+		return fmt.Errorf("%w: %w", service.ErrInvalidBackgroundOutput, err)
 	}
 	updated, err := q.UpdateChatSessionTitleIfCurrent(ctx, db.UpdateChatSessionTitleIfCurrentParams{
 		ID: task.SourceChatSessionID, ExpectedTitle: tc.Guard, NewTitle: title,
