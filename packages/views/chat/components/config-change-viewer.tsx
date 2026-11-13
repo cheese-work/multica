@@ -36,6 +36,7 @@ export function ConfigChangeViewer({ change }: { change: DecisionConfigChange })
       case "workspace.context": return t(($) => $.decision.config_change.field_workspace_context);
       case "workflow.steps": return t(($) => $.decision.config_change.field_workflow_steps);
       case "workflow.instructions": return t(($) => $.decision.config_change.field_workflow_instructions);
+      case "workflow.budget": return t(($) => $.decision.config_change.field_workflow_budget);
       case "workspace.settings": return t(($) => $.decision.config_change.field_workspace_settings);
       default: return change.field;
     }

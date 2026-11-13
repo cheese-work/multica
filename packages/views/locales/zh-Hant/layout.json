@@ -177,5 +177,12 @@
   "object_page": {
     "toggle_panel": "切換右側邊欄",
     "properties": "屬性"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} 已暫停排程 · {{time}}。",
+    "paused_at": "排程已暫停 · {{time}}。",
+    "detail": "沒有代理會領取新的執行。執行中的任務會完成，排隊的工作會等待。",
+    "resume": "恢復",
+    "resume_failed": "無法恢復工作區"
   }
 }

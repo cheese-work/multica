@@ -177,5 +177,12 @@
   "object_page": {
     "toggle_panel": "右サイドバーを切り替え",
     "properties": "プロパティ"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} がスケジューリングを一時停止しました · {{time}}。",
+    "paused_at": "スケジューリングは一時停止中 · {{time}}。",
+    "detail": "どのエージェントも新しい実行を取得しません。実行中のタスクは完了し、待機中の作業は待ちます。",
+    "resume": "再開",
+    "resume_failed": "ワークスペースを再開できませんでした"
   }
 }

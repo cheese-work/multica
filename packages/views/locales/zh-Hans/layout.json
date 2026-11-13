@@ -177,5 +177,12 @@
   "object_page": {
     "toggle_panel": "切换右侧边栏",
     "properties": "属性"
+  },
+  "workspace_pause": {
+    "paused_by": "{{name}} 已暂停调度 · {{time}}。",
+    "paused_at": "调度已暂停 · {{time}}。",
+    "detail": "没有智能体会领取新的运行。运行中的任务会完成，排队的工作会等待。",
+    "resume": "恢复",
+    "resume_failed": "无法恢复工作区"
   }
 }

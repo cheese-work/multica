@@ -1245,6 +1245,25 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 		},
 	}
 
+	// Every issue any task page will touch is locked here, once and in ascending
+	// order, before the first task row of the first page. A page that met a new
+	// issue later would lock it while the delete holds the rows of earlier pages,
+	// against a writer that holds that issue and waits on one of those rows.
+	held := make(map[pgtype.UUID]struct{})
+	for _, kind := range ownerKinds {
+		if err := discoverTaskIssues(ctx, qtx, kind.ownerFirstPage, kind.ownerPage, kind.taskFirstPage, kind.taskPage, held); err != nil {
+			return err
+		}
+	}
+	heldIDs := make([]pgtype.UUID, 0, len(held))
+	for id := range held {
+		heldIDs = append(heldIDs, id)
+	}
+	heldIDs = service.MergeSortedUUIDs(heldIDs, nil)
+	if err := qtx.LockIssuesByID(ctx, heldIDs); err != nil {
+		return fmt.Errorf("lock issues of every task page: %w", err)
+	}
+
 	for _, kind := range ownerKinds {
 		owners, err := kind.ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
 		if err != nil {
@@ -1255,7 +1274,7 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
 					func(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
-						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids)
+						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids, held)
 					},
 					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
 					return err
@@ -1286,30 +1305,79 @@ func (e *issuesWidenedError) Error() string {
 	return fmt.Sprintf("task page names %d issue(s) it did not lock first", len(e.IDs))
 }
 
-// lockTaskPageIssuesFirst locks one task page in the order every other writer
+// discoverTaskIssues reads every task page of every owner of one kind, locks
+// nothing, and adds the issues the deletion of each page touches to held.
+func discoverTaskIssues(
+	ctx context.Context,
+	qtx *db.Queries,
+	ownerFirstPage func(context.Context, int32) ([]pgtype.UUID, error),
+	ownerPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	held map[pgtype.UUID]struct{},
+) error {
+	owners, err := ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
+	if err != nil {
+		return fmt.Errorf("discover task issues: list owners: %w", err)
+	}
+	for len(owners) > 0 {
+		for _, ownerID := range owners {
+			ids, err := taskFirstPage(ctx, ownerID, workspaceDeleteTaskPageSize)
+			for err == nil && len(ids) > 0 {
+				var issueIDs []pgtype.UUID
+				if issueIDs, err = qtx.ListIssueIDsOfTaskBatch(ctx, ids); err != nil {
+					break
+				}
+				for _, id := range issueIDs {
+					held[id] = struct{}{}
+				}
+				ids, err = taskPage(ctx, ownerID, ids[len(ids)-1], workspaceDeleteTaskPageSize)
+			}
+			if err != nil {
+				return fmt.Errorf("discover task issues: %w", err)
+			}
+		}
+		if owners, err = ownerPage(ctx, owners[len(owners)-1], workspaceDeleteOwnerPageSize); err != nil {
+			return fmt.Errorf("discover task issues: list owners: %w", err)
+		}
+	}
+	return nil
+}
+
+// lockTaskPageIssuesFirst prepares one task page in the order every other writer
 // uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
-// issue and then waits on the run row, so a page that held the run rows and then
-// asked for the issue of a child would be aborted with 40P01 against it.
+// issue and then waits on the run row, so a page that held run rows (its own or
+// an earlier page's) and then asked for another issue would be aborted with 40P01.
 //
-//  1. The page ids come from a plain SELECT; no row is locked yet.
-//  2. The issues of the page's tasks and of their children are locked, ascending.
-//  3. The task rows are locked; a row that moved to another owner or is gone drops
+// held is every issue the teardown has locked, found by discoverTaskIssues before
+// the first page. A page never locks an issue itself:
+//
+//  1. The issues of the page's tasks and of their children are read. One that is
+//     not in held was created after the discovery.
+//  2. The task rows are locked; a row that moved to another owner or is gone drops
 //     out of the returned ids.
-//  4. The children of the locked rows are read again. A child created after step 2
-//     can name an issue that is not locked. The page never locks it while it holds
-//     task rows: it returns an issuesWidenedError, and the teardown rolls back,
-//     which releases every lock, and starts again with those issues locked first.
-func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+//  3. The children of the locked rows are read again, for a child created after
+//     step 1.
+//
+// At step 1 or 3 an issue outside held makes the page return an issuesWidenedError
+// without locking it, and the teardown rolls back, which releases every lock, and
+// starts again with those issues locked first.
+func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID, held map[pgtype.UUID]struct{}) ([]pgtype.UUID, error) {
+	unheldOf := func(ids []pgtype.UUID) []pgtype.UUID {
+		var unheld []pgtype.UUID
+		for _, id := range ids {
+			if _, ok := held[id]; !ok {
+				unheld = append(unheld, id)
+			}
+		}
+		return unheld
+	}
 	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
 	if err != nil {
 		return nil, fmt.Errorf("list issues of task page: %w", err)
 	}
-	held := make(map[pgtype.UUID]struct{}, len(need))
-	for _, id := range need {
-		held[id] = struct{}{}
-	}
-	if err := qtx.LockIssuesByID(ctx, need); err != nil {
-		return nil, fmt.Errorf("lock issues of task page: %w", err)
+	if unheld := unheldOf(need); len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
 	}
 	locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
 	if err != nil {
@@ -1319,13 +1387,7 @@ func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtyp
 	if err != nil {
 		return nil, fmt.Errorf("list issues of locked task page: %w", err)
 	}
-	var unheld []pgtype.UUID
-	for _, id := range current {
-		if _, ok := held[id]; !ok {
-			unheld = append(unheld, id)
-		}
-	}
-	if len(unheld) > 0 {
+	if unheld := unheldOf(current); len(unheld) > 0 {
 		return nil, &issuesWidenedError{IDs: unheld}
 	}
 	return locked, nil

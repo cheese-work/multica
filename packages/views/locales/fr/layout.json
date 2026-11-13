@@ -184,5 +184,12 @@
   "object_page": {
     "toggle_panel": "Afficher ou masquer le panneau de droite",
     "properties": "Propriétés"
+  },
+  "workspace_pause": {
+    "paused_by": "Planification suspendue par {{name}} · {{time}}.",
+    "paused_at": "Planification suspendue · {{time}}.",
+    "detail": "Aucun agent ne prend de nouvelle exécution. Les tâches en cours se terminent ; le travail en file attend.",
+    "resume": "Reprendre",
+    "resume_failed": "Impossible de reprendre l'espace de travail"
   }
 }

@@ -3489,6 +3489,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     keyAt: (index) => (items[index] ? timelineItemKey(items[index]) : undefined),
   });
   const scrollAnchorIndex = scrollAnchor ? items.findIndex((item) => timelineItemKey(item) === scrollAnchor.key) : -1;
+  // A deep link not yet landed opens the list AT its comment. Asking a mounted
+  // list to scroll there instead lands it on a guess and then on NaN, which
+  // snaps the page to the top (CHE-5376).
+  const openAtLandingIndex = highlightCommentId && consumedHighlightId !== highlightCommentId ? targetIdx : -1;
 
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
@@ -4835,8 +4839,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       data={items}
                       {...(scrollAnchor && scrollAnchorIndex >= 0
                         ? { initialTopMostItemIndex: { index: scrollAnchorIndex, align: "start" as const, offset: scrollAnchor.offset } }
-                        : {})}
-                      initialScrollTop={scrollAnchorIndex >= 0 ? undefined : restoredScrollTop}
+                        : openAtLandingIndex >= 0
+                          ? { initialTopMostItemIndex: { index: openAtLandingIndex, align: "start" as const, offset: -16 } }
+                          : {})}
+                      initialScrollTop={scrollAnchorIndex >= 0 || openAtLandingIndex >= 0 ? undefined : restoredScrollTop}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
                       computeItemKey={(_i, item) => timelineItemKey(item)}
                       skipAnimationFrameInResizeObserver
