@@ -23,9 +23,11 @@ export default defineConfig({
       ...[
         "@multica/core/hooks",
         "@multica/core/workspace/queries",
+        "@multica/core/agents",
         "../../common/actor-avatar",
         "../../workspace/workspace-avatar",
       ].map((id) => ({ find: new RegExp(`^${id.replace(/[/.]/g, "\\$&")}$`), replacement: resolve(here, "workspace-stub.ts") })),
+      { find: /^\.\.\/\.\.\/layout\/page-header$/, replacement: resolve(here, "page-header-stub.tsx") },
     ],
   },
   build: {

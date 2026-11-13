@@ -10,12 +10,22 @@ import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
+import { Button } from "@multica/ui/components/ui/button";
+import { Spinner } from "@multica/ui/components/ui/spinner";
+import { Input } from "@multica/ui/components/ui/input";
+import { Label } from "@multica/ui/components/ui/label";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { cn } from "@multica/ui/lib/utils";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
-  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, RotateCcw, Trash2,
+  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
 } from "@multica/ui/icons";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { NavigationProvider } from "../../../packages/views/navigation";
@@ -26,6 +36,10 @@ import {
 const SettingsPage = lazy(() =>
   import("../../../packages/views/settings/components/settings-page").then((m) => ({ default: m.SettingsPage })),
 );
+import { Badge } from "@multica/ui/components/ui/badge";
+import { Card, CardContent } from "@multica/ui/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
+import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
 import "./globals.css";
 
 const WS = "ws-harness";
@@ -156,6 +170,33 @@ function SettingsPageDemo() {
   );
 }
 
+const VARIANTS = ["default", "outline", "secondary", "ghost", "brand", "brandSubtle", "destructive", "link"] as const;
+function Buttons() {
+  return (
+    <div className="p-6">
+      <Row label="variants, default size">
+        {VARIANTS.map((v) => <Button key={v} variant={v} type="button">{v}</Button>)}
+      </Row>
+      <Row label="sizes, default variant">
+        {(["xs", "sm", "default", "lg"] as const).map((z) => <Button key={z} size={z} type="button">{z}</Button>)}
+      </Row>
+      <Row label="icon-only (named)">
+        {(["icon-xs", "icon-sm", "icon", "icon-lg"] as const).map((z) => (
+          <Button key={z} size={z} variant="ghost" type="button" aria-label={`Add item (${z})`}><Plus /></Button>
+        ))}
+      </Row>
+      <Row label="one dominant action">
+        <Button type="button" variant="outline">Cancel</Button>
+        <Button type="submit">Save</Button>
+      </Row>
+      <Row label="pending: disabled + aria-busy">
+        <Button type="submit" disabled aria-busy="true"><Spinner />Saving</Button>
+      </Row>
+      <Row label="disabled"><Button type="button" disabled>Save</Button></Row>
+    </div>
+  );
+}
+
 const navAdapter = {
   push() {}, replace() {}, back() {},
   pathname: "/acme/settings", searchParams: new URLSearchParams(""), hash: "",
@@ -180,6 +221,102 @@ function ReadOnlyMemberView() {
   );
 }
 
+function Dialogs() {
+  return (
+    <Dialog open>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit title</DialogTitle>
+          <DialogDescription>Update the task title.</DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-1.5">
+          <Label htmlFor="t">Title</Label>
+          <Input id="t" defaultValue="Review interface" />
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline">Cancel</Button>
+          <Button type="button">Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function AlertDialogs() {
+  return (
+    <AlertDialog open>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete this wakeup rule?</AlertDialogTitle>
+          <AlertDialogDescription>Runs already queued still start. You cannot undo this.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive">Delete rule</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function TabsDemo() {
+  return (
+    <div className="grid gap-8 p-6 max-w-[560px]">
+      <Tabs defaultValue="overview">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="runs">Runs</TabsTrigger>
+          <TabsTrigger value="settings">Settings</TabsTrigger>
+          <TabsTrigger value="audit" disabled>Audit</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview">One tabpanel per tab. Left and Right move, Home and End jump.</TabsContent>
+        <TabsContent value="runs">Runs</TabsContent>
+        <TabsContent value="settings">Settings</TabsContent>
+      </Tabs>
+      <Tabs defaultValue="history">
+        <TabsList variant="line">
+          <TabsTrigger value="history">History</TabsTrigger>
+          <TabsTrigger value="planned">Planned</TabsTrigger>
+        </TabsList>
+        <TabsContent value="history">line variant</TabsContent>
+        <TabsContent value="planned">Planned</TabsContent>
+      </Tabs>
+      <Tabs defaultValue="a" orientation="vertical" className="flex-row">
+        <TabsList>
+          <TabsTrigger value="a">General</TabsTrigger>
+          <TabsTrigger value="b">Members</TabsTrigger>
+        </TabsList>
+        <TabsContent value="a" className="p-2">vertical</TabsContent>
+        <TabsContent value="b" className="p-2">Members</TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+const Field = ({ label, help, value }: { label: string; help?: string; value: string }) => (
+  <div className="grid gap-1.5">
+    <Label>{label}</Label>
+    <Input defaultValue={value} />
+    {help ? <p className="text-caption text-muted-foreground">{help}</p> : null}
+  </div>
+);
+function UiCopy() {
+  return (
+    <div className="grid gap-6 p-6 max-w-[520px]">
+      <section className="grid gap-3 rounded-md border p-4">
+        <h3 className="text-label font-medium">Omit: the label already says it</h3>
+        <Field label="Workspace name" value="Cheese Work" />
+        <Field label="Wakeup interval (minutes)" help="Minimum 5. Shorter values are rounded up." value="15" />
+      </section>
+      <section className="grid gap-3 rounded-md border p-4">
+        <h3 className="text-label font-medium">Avoid: restates the label, the value and the button</h3>
+        <Field label="Workspace name" help="Enter the name of your workspace here. You can change this later." value="Cheese Work" />
+        <Button type="button" className="w-fit">Save</Button>
+        <p className="text-caption text-muted-foreground">Click Save to save your changes.</p>
+      </section>
+    </div>
+  );
+}
 
 // lazy-detail: the ledger entry has no shared component yet (3 near-copies). This stand-in is the recipe:
 // React.lazy + Suspense with a null fallback, so the surface shows nothing until the chunk lands.
@@ -319,6 +456,110 @@ function PillMenuDemo() {
   );
 }
 
+const APPS: [string, string, "default" | "secondary" | "outline", string][] = [
+  ["GitHub", "Pull requests, issues and checks for cheese-work repos.", "default", "Connected"],
+  ["Linear", "Read and write issues from agent runs.", "secondary", "Needs reauth"],
+  ["Notion", "Search and update workspace pages.", "outline", "Not connected"],
+  ["Slack", "Post run summaries to a channel.", "default", "Connected"],
+];
+function IntegrationCardGrid() {
+  return (
+    <div className="grid max-w-[900px] grid-cols-1 gap-3 p-6 md:grid-cols-2">
+      {APPS.map(([name, desc, variant, status]) => (
+        <Card key={name}>
+          <CardContent className="flex items-center gap-3 p-3">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-body font-medium">{name}</div>
+              <div className="truncate text-caption text-muted-foreground">{desc}</div>
+            </div>
+            <Badge variant={variant}>{status}</Badge>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+const BREAKERS: [string, string, string, string][] = [
+  ["anthropic", "Open", "5 failures in 60 s", "14:02"],
+  ["openai", "Closed", "none", "13:47"],
+  ["google", "Half-open", "1 probe pending", "13:55"],
+];
+function SettingsTableSection() {
+  return (
+    <div className="max-w-[760px] p-6">
+      <div className="rounded-md border">
+        <Table>
+          <TableHeader>
+            <TableRow><TableHead>Provider</TableHead><TableHead>State</TableHead><TableHead>Reason</TableHead><TableHead className="text-right">Updated</TableHead></TableRow>
+          </TableHeader>
+          <TableBody>
+            {BREAKERS.map(([p, s, r, u]) => (
+              <TableRow key={p}><TableCell className="font-medium">{p}</TableCell><TableCell>{s}</TableCell><TableCell className="text-muted-foreground">{r}</TableCell><TableCell className="text-right tabular-nums">{u}</TableCell></TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+// Same markup as settings-layout's SettingsRow. Importing it pulls the core auth store, which hangs headless Chrome at module init.
+const ActionRowLayout = ({ label, description, children }: { label: string; description: string; children: React.ReactNode }) => (
+  <div className="flex min-h-16 flex-row items-center justify-between gap-4 px-4 py-3.5 sm:gap-8">
+    <div className="min-w-0 flex-1">
+      <div className="text-body font-medium">{label}</div>
+      <div className="mt-0.5 text-caption leading-5 text-muted-foreground">{description}</div>
+    </div>
+    <div className="w-auto max-w-[56%] shrink-0">{children}</div>
+  </div>
+);
+function SettingsActionRow() {
+  return (
+    <div className="max-w-[760px] divide-y rounded-md border m-6">
+      <ActionRowLayout label="Scheduling" description="Pausing stops every agent from claiming new runs. Running tasks finish; queued work waits.">
+        <Button variant="outline" size="sm">Pause workspace</Button>
+      </ActionRowLayout>
+      <ActionRowLayout label="Scheduling (paused)" description="Resume lets agents claim queued work again. Resume needs no confirm.">
+        <Button variant="outline" size="sm">Resume workspace</Button>
+      </ActionRowLayout>
+      <ActionRowLayout label="Scheduling (saving)" description="The button disables while the change is in flight.">
+        <Button variant="outline" size="sm" disabled>Pause workspace</Button>
+      </ActionRowLayout>
+    </div>
+  );
+}
+
+function CreateShell() {
+  return (
+    <div className="flex h-[860px] flex-col">
+      <AgentCreateShell title="Create an agent" step="" stepIndex={2} onClose={() => {}}
+        chips={<><AgentCreateChip>Build with AI</AgentCreateChip><AgentCreateChip>x99 · Claude Code</AgentCreateChip></>}>
+        <div className="p-6 text-body text-muted-foreground">Step content renders here.</div>
+      </AgentCreateShell>
+    </div>
+  );
+}
+
+function ConfirmDialog() {
+  return (
+    <div className="min-h-[520px] p-6">
+      <AlertDialog open>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Pause this workspace?</AlertDialogTitle>
+            <AlertDialogDescription>No agent claims new runs until you resume. Queued work is kept.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep running</AlertDialogCancel>
+            <AlertDialogAction variant="destructive">Pause</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
@@ -327,11 +568,21 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "settings-navigation": SettingsNavigation,
   "read-only-member-view": ReadOnlyMemberView,
   "save-state": SaveState,
+  buttons: Buttons,
+  dialogs: Dialogs,
+  "dialogs-alert": AlertDialogs,
+  tabs: TabsDemo,
+  "ui-copy": UiCopy,
   "lazy-detail": LazyDetail,
   "decision-receipt-card": DecisionReceiptCard,
   "collapsible-section": CollapsibleSection,
   "settings-select-row": SettingsSelectRow,
   "pill-menu": PillMenuDemo,
+  "integration-card-grid": IntegrationCardGrid,
+  "settings-table-section": SettingsTableSection,
+  "settings-action-row": SettingsActionRow,
+  "create-shell": CreateShell,
+  "confirm-dialog": ConfirmDialog,
 };
 const id = new URLSearchParams(location.search).get("pattern") ?? "";
 const View = PATTERNS[id];

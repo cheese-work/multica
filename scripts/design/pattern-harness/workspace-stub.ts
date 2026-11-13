@@ -16,3 +16,7 @@ export const squadListOptions = (_wsId?: string) => empty("squads");
 export const isAgentRuntimeBound = () => true;
 export const ActorAvatar = () => null;
 export const WorkspaceAvatar = () => null;
+// @multica/core/agents is aliased here too (create-shell); settings-page pulls profile cards that import these two.
+export const useAgentPresenceDetail = () => null;
+export const agentTaskSnapshotOptions = (_wsId?: string, _id?: string) => empty("agent-task-snapshot");
+export const agentRunCounts30dOptions = (_wsId?: string) => empty("agent-run-counts");
