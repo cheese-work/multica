@@ -49,6 +49,10 @@ const nextConfig: NextConfig = {
     },
   },
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
+  // Image builds set this: `pnpm typecheck` already gates every PR (CHE-3983).
+  ...(process.env.NEXT_SKIP_TYPECHECK === "true"
+    ? { typescript: { ignoreBuildErrors: true } }
+    : {}),
   transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
   outputFileTracingIncludes: {
     "/changelog": ["./.fork-changelog/entries.json"],

@@ -161,6 +161,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` はコメントを除き、すべてのアクティビティ記録を残します。`--action` は指定したアクションだけを返し、繰り返し指定でき、`--activity-only` を含意します。サーバーが読み込む履歴には上限があり、切り詰められた場合は stderr に警告が出ます。その結果から滞在時間を推定しないでください。
 
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` は、課題の説明の記録済みリビジョンを古い順に、リビジョン番号・時刻（ICT）・実行者とともに一覧します。`issue description diff` は、そのうち 2 つの間の unified diff を出力します。リビジョン番号は課題自身のリビジョンカウンターです。存在するのは履歴機能の導入後に記録されたリビジョンだけで、各課題の最初のエントリは、その時点の説明を基準として保存したものです。説明を変更しなかったリビジョンは、それ以前の最新のテキストとして解決されます。存在しないリビジョンは 404 を返します。どちらも `--output json` が使えます。
+
 ### 長いコメントスレッドを読む
 
 コメントの多いタスクを 1 件ずつ読むと、エージェントは多くのトークンを使います。まずスレッドをざっと見て、必要なものだけを開きます。
@@ -195,6 +202,27 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 ```
 
 ターミナルからメンバーとして作成するときは `--agent-id` が必要です。エージェントが自分の実行の中で作成した場合は、既定でそのエージェント自身を起こします。
+
+人が起動できるルールとは、コメント・課題・リアクション・添付の変更に対するイベントルールで、アクターのフィルターがメンバーを除外しないものです。ワークスペース設定 `ask_guard_mode` が `warn` または `block` のとき、エージェントは次のいずれかがない限り、そのようなルールを自分で登録できません。
+
+- `--decision <request-id>` はルールをこの課題の決定リクエストに結び付けます。リクエストは質問済みまたは回答済みで、`--filter-actor-id` を指定した場合はそのメンバーのものである必要があります。1 つのリクエストに結び付けられる有効なウェイクアップは 1 つです。
+- `--purpose observe` は人を待たないルールを示します。メンバーが原因の実行ごとに監査イベントが記録されます。
+- `--filter-actor-id` なしの `--filter-actor-type agent` は、すべてのエージェントに一致し、メンバーには一致しません。
+
+`block` モードでは、修正コマンドを含むメッセージ付きの 422 で拒否されます。`warn` モードではルールは作成され、イベントだけが記録されます。
+
+### ウェイクアップルール
+
+ワークスペースとプロジェクトのウェイクアップルール（[Issue ウェイクアップ](/issue-wakeups)を参照）には専用のコマンドがあり、`create` と `get` に加えて次を使えます。
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` は `list` が表示するリビジョンです。`update` に `--revision 0` を指定するとオーバーライドを作成します。`preview` は何も保存せず、解決後のルールを出力します。条件ルールでは `already_satisfied` が、すぐに一致する Issue の数を示し、`issues` がその Issue を列挙します（`--output table` で一覧表示）。プレビューはスコープの先頭 200 件の Issue を調べ、そのうち未完了でバックログでないものを評価します。スコープにそれ以上ある場合は `truncated` が `true` になり、ほかにも一致する Issue がある可能性があります。イベントルールには条件がないため、プレビューに `already_satisfied` はなく、既存の Issue には一致しません。ルールの編集と削除ができるのはオーナーまたは管理者だけです。プレビューは人のメンバーなら誰でも実行できます。エージェントなどのマシン認証情報は `403` を受け取り、エージェントが作成したルールは人が有効にするまで無効のままです。
 
 ### DM で進捗をフォローする
 
@@ -303,6 +331,28 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - ワークスペースの `--context` は、ワークスペース内のすべてのエージェントに渡されます。`--slug` は作成後に変更できません。`--issue-prefix` は大文字に変換され、変更すると既存のすべてのタスクが振り直され、外部から参照している古い番号は使えなくなります。
 - `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` は、ルーティングだけを行うワークフローのステップ（既定は `todo`、`blocked`、`merged`、`need_decision`。`--routing-statuses` で変更し、`--routing-overrides todo=<agent-id>` で特定のステータスを別のエージェントに振り分け）を担当するエージェントを指定します。このエージェントがアーカイブされた場合、またはその実行がプロバイダーのエラーで失敗した場合、フォールバックのエージェントが引き継ぎます。上書きのキーを `<workflow-id>:<status>` にすると、その上書きは 1 つのワークフローに限定されます。`none` でその項目をオフにします。変更できるのは人間のオーナーまたは管理者のみで、変更はすべてアクティビティログに記録されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
+- `--mode script --script <name> [--arg <value>]...` は、モデルセッションなしでエージェントのタスクトークンの下、許可リストにあるスクリプトを 1 つ実行します。`--script` と `--arg` には `--mode script` が必要で、`--mode script` には `--script` が必要です。`--description` は実行されません。デーモンに許可リストがない場合、すべてのスクリプトタスクは安全側で失敗します。`--output json` はスクリプト名と引数を `script_config` として表示します。`autopilot update --mode <他のモード>` はスクリプトを消去します。 タスク終了時、サーバーはタスクトークンの削除をベストエフォートで行います。削除に失敗した場合、トークンは有効期限まで有効なままで、それより早く失効させる仕組みはありません。実行結果の `script` にスクリプト名、引数リストの SHA-256、終了コード、所要時間が記録され、削除に失敗した場合は `token_revoke_failed` が設定されます。
+
+### 設定変更の提案
+
+`multica config propose` は、ワークスペース設定の変更用アクションファイルを作ります。現在の値を読み、サーバーが再計算するのと同じ方式で `before_sha256` と `after_sha256` を計算し、`multica decision request --action-file` が受け取るファイルを書き出します。何も送信せず、シークレットも書きません。承認は引き続き人がパスキーで行います。
+
+対象フィールド: `agent.instructions <agent-id>`、`squad.instructions <squad-id>`、`workspace.context`、`workflow.steps <workflow-id>`、`workflow.step.instructions <workflow-id> --status-key <key>`, `workflow.budget <workflow-id>`、`workspace.settings --set key=value|key:=<json>`。テキストは `--file`（UTF-8、NUL バイトなし）で渡します。`workflow.steps` にはワークフロー GET が返す steps 配列を渡します。この出力を編集してください。サーバーが steps を別の形に正規化すると、リクエストは拒否されます（`after_digest_mismatch`）。`workflow.step.instructions` ではサーバーが after ダイジェストを計算するため、ファイルに `after_sha256` は入らず、表示されるダイジェストは比較用です。`--out <path>` でファイルを書き、`--dry-run` で何も書かずに 2 つのダイジェストとアクションを表示します。`--expires-in <秒>` で有効期限を指定します。
+
+`workflow.budget <workflow-id>` は `--file` の代わりに `--max-runs <n>`（1〜1000。0 で上限を解除）と `--include-child-prs=<true|false>` を取ります。少なくとも 1 つを指定してください。省略した欄は保存済みの値のままです。エージェントはこの 2 つの欄をワークフローに直接書き込めません（`budget_requires_decision`）。変更を提案して決定を依頼すると、CLI が読んだダイジェストとワークフローが一致する場合に限り、承認時にサーバーが適用します。
+
+エージェントは承認済みの変更を自分で書き込むこともできます。`multica workflow update <workflow-id> --max-runs 40 --print-hash`（何も書き込まれません）で `before_sha256` と `after_sha256` を読み取り、`workflow.budget` の決定を依頼してから、同じコマンドに `--decision-id <id>` を付けて再実行します。予算の書き込みに `--steps-file` は付けられません。ワークフローの予算が広がる場合、`multica issue update <issue> --workflow <workflow-id>` と `multica issue create --workflow <workflow-id>` も同じ `--print-hash` と `--decision-id`（欄 `issue.workflow`）を取ります。両コマンドは同じ規則に従い、オーナーの対話セッションでは決定は不要です。
+
+それ以外のフィールドは、何も読む前に `denylisted` で拒否されます: `project.description`、パスキーと決定ゲート、メンバーとロール、オーナー移譲、認証・連携のシークレット、ワークスペース削除、アクションレジストリ、`delegated_governed_writes`。サーバーの許可テーブルにない設定キーも同様に拒否され、許可キーと拒否キーが混在するパッチは全体が拒否されます。サーバーはリクエスト時と承認時にもう一度確認します。
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
 
 ## コマンド概要
 
@@ -321,8 +371,21 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `auth`、`login`、`setup` | サインイン、認証状態の確認、接続の初期化 |
 | `config` | 現在の CLI プロファイルのローカル設定を表示・編集 |
 | `update`、`version` | CLI の更新とバージョンの表示 |
+| `guard` | エージェントのツール呼び出しをワークスペースのポリシーで検査 |
 
 `multica chat` が読み取るのは、**エージェントが現在処理している外部チャットセッション**です。主にチャット統合の中のエージェントが使うもので、任意のワークスペースの会話を閲覧するための汎用コマンドではありません。
+
+### シャドウレポート
+
+ワークスペースのメンバーは誰でも System 1 のシャドウレポートを読めます:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` ブロックと `routing` ブロックは全期間を対象にします。`route` ブロックは `[since, until)` の期間を対象にします。`--since` と `--until` は RFC 3339 の時刻を取り、`--until` の既定値は現在、`--since` の既定値は `--until` の 24 時間前です。不正な時刻や `--until` より後の `--since` は、サーバーが 400 で拒否します。
+
+`route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
 
 ## ID と出力形式
 
@@ -404,7 +467,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `env get/set <agent-id>` | カスタム環境変数の読み書き（エージェントの所有者、またはワークスペースの owner/admin。読み取りはすべて記録される） | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
 | | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
-| `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可） |
+| `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
 | | `trigger <id>` | 手動で 1 回トリガー | |
 | | `runs <id>` | 実行履歴を表示 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | スケジュールと webhook のトリガーを管理 | `trigger-add`: `--kind`（`schedule` または `webhook`）、`--cron`、`--timezone`（既定は UTC）、`--label` |
@@ -445,10 +508,11 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `user` | `profile get/update` | 現在のユーザーのプロフィールを表示・更新 | |
 | `login` | — | ブラウザでサインインし、すべてのワークスペースを自動設定 | `--token`（値なしで渡すとターミナルで対話的に入力） |
 | `setup` | `cloud`（デフォルト）、`self-host` | サーバーアドレスを保存し、サインインを完了してデーモンを起動 | `self-host`: `--server-url`、`--app-url`、`--port`、`--frontend-port` |
-| `attachment` | `download <attachment-id>`、`upload <path>` | 添付ファイルのダウンロードとアップロード | `download`: `--output-dir`；`upload`: `--task` |
+| `attachment` | `download <attachment-id>`、`upload <path>`、`history <attachment-id>`、`diff <attachment-id>` | 添付ファイルのダウンロード、アップロード、リビジョン一覧、2 つのリビジョンの差分 | `download`: `--output-dir`；`upload`: `--task`、`--issue`、`--replaces <attachment-id>`（新しいファイルがその添付ファイルの次のリビジョンになります）；`diff`: `--from`、`--to`（リビジョン番号） |
 | `config` | `show`、`set <key> <value>` | 現在のプロファイルのローカル設定を表示・編集 | 優先順位: コマンドラインフラグ > 環境変数 > `config.json` > 組み込みデフォルト。空文字列を設定すると値をクリア |
 | `update` | — | CLI を最新バージョンに更新 | |
 | `version` | — | バージョン情報を表示 | `--output`（`text` または `json`） |
+| `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込みは拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
 
 ### 判断の提案
 
@@ -460,7 +524,11 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
+`--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
+
+### 対象フィールドにはパスキー操作が必要
+
+タスクトークンとクラウドノードトークンは、旧来のルートから次のフィールドに書き込めません: `agent.instructions`、`squad.instructions`、`workspace.context`、ワークフローのステップとステップ指示、決定アクションの許可テーブルにあるワークスペース設定キー(`compact_prompt`、`auto_compact`、`idle_started_guard`、`wakeups_paused`、`mermaid_orientation` など単純な運用キー)。サーバーは 403 と `code: passkey_action_required` を返し、代わりに提案するアクションを `action_type` で示します(`agent.instructions.set`、`squad.instructions.set`、`workspace.context.set`、`workflow.steps.set`、`workspace.settings.patch`)。保存済みの値は変わりません。投票レシート、決定バインディング、PASS レシート、Hermes の例外では、この拒否は解除されません。`multica decision propose <action-type>` でアクションを提案すると、人がパスキーで承認します。人による書き込みと `project.description` は従来どおりです。
 
 ## 別のコーディングエージェントから Multica を操作する
 

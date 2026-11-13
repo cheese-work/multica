@@ -185,7 +185,11 @@ func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *h
 		return
 	}
 	action, err := handler.Queries.GetDecisionAction(request.Context(), db.GetDecisionActionParams{WorkspaceID: caller.workspaceID, ID: caller.actionID})
-	if err == nil && !handler.isActionsHuman(request.Context(), caller, action) {
+	var decisionRequest db.DecisionRequest
+	if err == nil {
+		decisionRequest, err = handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: action.DecisionRequestID})
+	}
+	if err == nil && decisionRequest.HumanUserID != caller.userID {
 		err = errNotTheHuman
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -195,7 +199,11 @@ func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *h
 		writeDecisionActionError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))
+	view := newDecisionActionResponse(action)
+	if decisionRequest.ChatSessionID.Valid {
+		view.ChatSessionID = uuidToString(decisionRequest.ChatSessionID)
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) bool {

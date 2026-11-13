@@ -37,7 +37,6 @@ type routeIssueRequest struct {
 type routeRunOutcome struct {
 	Started bool   `json:"started"`
 	Refused string `json:"refused,omitempty"`
-	Reason  string `json:"reason,omitempty"`
 }
 
 // routeRefusal names the enqueue errors that leave the move and its label
@@ -56,6 +55,8 @@ func routeRefusal(err error) (string, bool) {
 		return "stage_queue_full", true
 	case errors.Is(err, service.ErrIssueInTriage):
 		return "issue_in_triage", true
+	case errors.Is(err, service.ErrAgentPaused):
+		return "agent_paused", true
 	case errors.Is(err, service.ErrRecoveryCaused):
 		return "recovery_caused", true
 	case errors.Is(err, errSquadLeaderNotAdmitted):
@@ -150,7 +151,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	suppress, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prev, params, handoff, req.SuppressRun)
+	suppress := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(h.actingTaskContext(r), h.handedToAgentIfRun(r, actorType, actorID, prev, params, false, handoff != nil, suppress))
 	writeCtx = withBudgetActor(writeCtx, r)
 	if handoff != nil {
@@ -233,9 +234,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			if runTrigger.AssigneeType == "agent" && !th.canInvokeAssignedAgent(writeCtx, r, updated, actorType, actorID) {
 				err = errAgentNotInvocable
 			} else if runTrigger.AssigneeType == "agent" {
-				runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, memberActorUserID(actorType, actorID), overlay)
+				_, runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, pgtype.UUID{}, memberActorUserID(actorType, actorID), overlay)
 			} else {
-				runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, actorType, actorID)
+				_, runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, pgtype.UUID{}, actorType, actorID)
 			}
 			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 			if refused, isRefusal := routeRefusal(err); isRefusal {
@@ -280,7 +281,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	h.broadcastCancelledWakeups(r.Context(), prev.WorkspaceID, cancelledWakeups)
 	var handoffDetails map[string]string
 	if handoff != nil {
-		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil, runReason)
+		handoffDetails = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(r.Context(), updated, handoff), runAfter != nil, "")
 		h.finishRecordedHandoff(r.Context(), rec, handoffDetails)
 	}
 	payload := map[string]any{
@@ -310,7 +311,6 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		outcome.Started = h.queuedRunCarriesWrite(r.Context(), updated, runTrigger.AgentID)
 	}
 	if outcome.Started {
-		outcome.Reason = runReason
 		h.consumeHandedWakeups(r.Context(), updated.ID, handed)
 	}
 	if actorType == "member" {

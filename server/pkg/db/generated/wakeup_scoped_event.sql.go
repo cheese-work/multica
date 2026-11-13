@@ -224,7 +224,7 @@ INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,instructio
  condition,condition_state,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,created_at)
 VALUES($1,$2,$3,$4,$5,$6,$7::text,$8,$9,$10,false,$11,$12,$13,$14,
  $15::jsonb,$16::text,$17::bigint,$18::text,$19::text,$20::timestamptz,$21::timestamptz,$22::timestamptz)
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, followup_instance_id
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id
 `
 
 type CreateDefaultWakeupInstanceParams struct {
@@ -330,6 +330,8 @@ func (q *Queries) CreateDefaultWakeupInstance(ctx context.Context, arg CreateDef
 		&i.AggregateRetryAt,
 		&i.ContentRevision,
 		&i.WorkflowStep,
+		&i.Purpose,
+		&i.DecisionRequestID,
 		&i.FollowupInstanceID,
 	)
 	return i, err
@@ -423,7 +425,7 @@ func (q *Queries) ExpireWakeupScopedEvents(ctx context.Context, arg ExpireWakeup
 }
 
 const getDefaultWakeupInstance = `-- name: GetDefaultWakeupInstance :one
-SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, followup_instance_id FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
+SELECT id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id FROM issue_wakeup WHERE issue_id= $1 AND default_rule_key= $2::text AND system_rule IS NULL ORDER BY id LIMIT 1
 `
 
 type GetDefaultWakeupInstanceParams struct {
@@ -484,6 +486,8 @@ func (q *Queries) GetDefaultWakeupInstance(ctx context.Context, arg GetDefaultWa
 		&i.AggregateRetryAt,
 		&i.ContentRevision,
 		&i.WorkflowStep,
+		&i.Purpose,
+		&i.DecisionRequestID,
 		&i.FollowupInstanceID,
 	)
 	return i, err
@@ -529,7 +533,7 @@ UPDATE issue_wakeup SET agent_id= $1,created_by= $2,instruction= $3,mode= $4,eve
  config_fingerprint= $16,content_revision=CASE WHEN $17::bool THEN GREATEST(content_revision,1) ELSE revision+1 END,revision=revision+1,updated_at=clock_timestamp(),
  aggregate_blocked_scope_kind=NULL,aggregate_blocked_scope_id=NULL,aggregate_retry_at=NULL
 WHERE id= $18 AND default_rule_key IS NOT NULL AND system_rule IS NULL
-RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, followup_instance_id
+RETURNING id, workspace_id, issue_id, agent_id, created_by, source_task_id, parent_comment_id, instruction, kind, mode, event_types, filter_agent_id, filter_task_id, interval_seconds, cron_expression, timezone, next_fire_at, enabled, disabled_at, revision, last_task_id, last_error, created_at, updated_at, filter_actor_type, filter_actor_id, expires_at, expiry_seconds, on_timeout, timed_out_at, system_rule, customized_at, condition, condition_state, max_fires, fire_count, paused_reason, default_rule_key, default_scope_kind, default_scope_id, config_fingerprint, capacity_reason, aggregate_blocked_scope_kind, aggregate_blocked_scope_id, aggregate_retry_at, content_revision, workflow_step, purpose, decision_request_id, followup_instance_id
 `
 
 type RebaseDefaultWakeupInstanceParams struct {
@@ -630,6 +634,8 @@ func (q *Queries) RebaseDefaultWakeupInstance(ctx context.Context, arg RebaseDef
 		&i.AggregateRetryAt,
 		&i.ContentRevision,
 		&i.WorkflowStep,
+		&i.Purpose,
+		&i.DecisionRequestID,
 		&i.FollowupInstanceID,
 	)
 	return i, err

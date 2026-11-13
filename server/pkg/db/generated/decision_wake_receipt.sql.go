@@ -26,7 +26,7 @@ func (q *Queries) AllocateDecisionWakeSeq(ctx context.Context, id pgtype.UUID) (
 
 const getDecisionAnswerWakeState = `-- name: GetDecisionAnswerWakeState :one
 SELECT (answer.disclaimed_at IS NOT NULL)::boolean AS disclaimed,
-       coalesce(answer.wake_at > clock_timestamp(), false)::boolean AS held,
+       (answer.wake_at IS NULL OR answer.wake_at > clock_timestamp())::boolean AS held,
        coalesce(answer.id = (
            SELECT live.id FROM decision_answer live
            WHERE live.decision_request_id = answer.decision_request_id AND live.disclaimed_at IS NULL
@@ -255,7 +255,7 @@ SELECT receipt.id FROM decision_wake_receipt receipt
 JOIN decision_wake_event event ON event.id = receipt.event_id
 LEFT JOIN decision_answer answer ON answer.id = event.answer_id
 WHERE receipt.status = 'pending' AND receipt.next_attempt_at <= clock_timestamp()
-  AND (answer.wake_at IS NULL OR answer.wake_at <= clock_timestamp())
+  AND (event.answer_id IS NULL OR answer.disclaimed_at IS NOT NULL OR answer.wake_at <= clock_timestamp())
   AND NOT EXISTS (
       SELECT 1 FROM decision_wake_receipt older
       JOIN decision_wake_event older_event ON older_event.id = older.event_id
@@ -267,9 +267,11 @@ LIMIT $1
 
 // Due pending receipts, oldest due first: a failed receipt moves its own
 // next_attempt_at, so it never holds back the others. A receipt is not due
-// while its answer's wake_at is in the future or an older receipt of the same
-// request and recipient is still pending; delivery repeats both checks under
-// the locks.
+// while its answer's wake_at is NULL (the answering task has not finished) or
+// in the future, or while an older receipt of the same request and recipient
+// is still pending. A withdrawn answer is always selectable: withdrawal clears
+// its wake_at, and delivery must settle its receipts so they stop blocking
+// later ones. Delivery repeats these checks under the locks.
 func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSize int32) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listDecisionWakeReceiptCandidates, batchSize)
 	if err != nil {
@@ -283,6 +285,41 @@ func (q *Queries) ListDecisionWakeReceiptCandidates(ctx context.Context, batchSi
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveredAnswerWakeRecipients = `-- name: ListDeliveredAnswerWakeRecipients :many
+SELECT receipt.recipient_agent_id, receipt.role, receipt.squad_id
+FROM decision_wake_receipt receipt
+JOIN decision_wake_event event ON event.id = receipt.event_id
+WHERE event.answer_id = $1 AND event.type = 'answered' AND receipt.status = 'delivered'
+ORDER BY receipt.role DESC, receipt.id
+`
+
+type ListDeliveredAnswerWakeRecipientsRow struct {
+	RecipientAgentID pgtype.UUID `json:"recipient_agent_id"`
+	Role             string      `json:"role"`
+	SquadID          pgtype.UUID `json:"squad_id"`
+}
+
+// The recipients that already got the answer: only they get a retraction.
+func (q *Queries) ListDeliveredAnswerWakeRecipients(ctx context.Context, answerID pgtype.UUID) ([]ListDeliveredAnswerWakeRecipientsRow, error) {
+	rows, err := q.db.Query(ctx, listDeliveredAnswerWakeRecipients, answerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDeliveredAnswerWakeRecipientsRow{}
+	for rows.Next() {
+		var i ListDeliveredAnswerWakeRecipientsRow
+		if err := rows.Scan(&i.RecipientAgentID, &i.Role, &i.SquadID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -423,4 +460,37 @@ func (q *Queries) SummarizeDecisionWakeEvent(ctx context.Context, eventID pgtype
 	var i SummarizeDecisionWakeEventRow
 	err := row.Scan(&i.Pending, &i.Outcome)
 	return i, err
+}
+
+const supersedeDecisionAnswerWakeEvents = `-- name: SupersedeDecisionAnswerWakeEvents :execrows
+UPDATE decision_wake_event
+SET superseded_at = clock_timestamp(), superseded_reason = 'answer_disclaimed'
+WHERE answer_id = $1 AND type = 'answered' AND superseded_at IS NULL
+`
+
+// Disclaiming an action answer takes its answered event back. Callers hold the
+// request and answer locks.
+func (q *Queries) SupersedeDecisionAnswerWakeEvents(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeDecisionAnswerWakeEvents, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const supersedePendingAnswerWakeReceipts = `-- name: SupersedePendingAnswerWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'superseded'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.answer_id = $1 AND event.type = 'answered'
+  AND receipt.status = 'pending'
+`
+
+// A pending receipt of the taken-back answer never presents it.
+func (q *Queries) SupersedePendingAnswerWakeReceipts(ctx context.Context, answerID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedePendingAnswerWakeReceipts, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

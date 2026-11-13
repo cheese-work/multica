@@ -486,7 +486,7 @@ const listDecisionRetractionCandidates = `-- name: ListDecisionRetractionCandida
 SELECT answer.id, answer.decision_request_id, answer.answered_by_task_id, answer.source_chat_session_id, answer.chat_message_ids, answer.content_snapshot, answer.effective_at, answer.wake_at, answer.woken_at, answer.wake_outcome, answer.issue_comment_id, answer.disclaimed_at, answer.disclaim_comment_posted_at, answer.disclaimed_by_user_id, answer.disclaim_reason, answer.disclaimed_by_agent_id, answer.disclaimed_by_task_id, answer.veto_reason, answer.veto_note_posted_at, answer.retraction_delivered_at, answer.retraction_outcome, answer.withdrawal_comment_id, answer.created_at, answer.source_comment_id, answer.answered_by_user_id, answer.answer_source, answer.chosen_option_index, answer.reply_text, answer.context_message_id, answer.excerpted, answer.answered_label, answer.state_version, answer.hindsight_acked_version, request.workspace_id FROM decision_answer answer
 JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
-WHERE answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
+WHERE request.kind <> 'action' AND answer.woken_at IS NOT NULL AND answer.wake_outcome <> 'skipped_ineligible'
   AND answer.disclaimed_at IS NOT NULL AND answer.withdrawal_comment_id IS NOT NULL
   AND answer.retraction_delivered_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM decision_wait episode WHERE episode.closed_at IS NULL AND request.id = ANY(episode.request_ids))

@@ -91,6 +91,106 @@ WHERE chat_session_id = $1 AND task_id = $2 AND message_kind = 'compaction_summa
 ORDER BY created_at DESC
 LIMIT 1;
 
+-- name: ListChatCarryOverMessages :many
+-- Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+-- assistant messages above the DM's segment floor, newest first. A queued
+-- follow-up is not delivered yet and stays out; the claiming task's own input
+-- batch is excluded because the claim delivers it separately.
+SELECT m.* FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatSegmentTail :many
+-- Carry-over fallback when the current segment holds no assistant message yet:
+-- the last assistant message of the previous segment and the messages after it,
+-- newest first. Nothing at or before the previous divider is returned. Same
+-- exclusions as ListChatCarryOverMessages.
+WITH prev_divider AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'compaction_summary'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+)
+SELECT m.* FROM chat_message m
+JOIN prev_segment ps ON ps.id = m.id
+LEFT JOIN last_answer la ON true
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
+-- name: ListChatSegments :many
+-- Closed segments of a DM, oldest first (CHE-2819 L2a). A segment is the
+-- messages after the previous divider up to and including its own divider; the
+-- divider id names it. The current segment has no divider and is not listed.
+-- Counts use the member-visible rows (no channel commands, no onboarding kickoff).
+SELECT d.id AS divider_id, d.created_at,
+       (SELECT count(*) FROM chat_message m
+        WHERE m.chat_session_id = d.chat_session_id
+          AND m.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+          AND (m.created_at, m.id) <= (d.created_at, d.id)
+          AND (prev.id IS NULL OR (m.created_at, m.id) > (prev.created_at, prev.id)))::int AS message_count
+FROM chat_message d
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = d.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (d.created_at, d.id)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE d.chat_session_id = $1 AND d.message_kind = 'compaction_summary'
+ORDER BY d.created_at, d.id;
+
+-- name: ListChatSegmentMessagesPage :many
+-- One closed segment, newest first, paged by the same before cursor as
+-- ListChatMessagesPage. The segment ends at the divider (end_created_at,
+-- end_id), inclusive, and starts after the previous divider.
+SELECT message.* FROM chat_message AS message
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = message.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (sqlc.arg('end_created_at')::timestamptz, sqlc.arg('end_id')::uuid)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE message.chat_session_id = sqlc.arg('chat_session_id')
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (message.created_at, message.id) <= (sqlc.arg('end_created_at')::timestamptz, sqlc.arg('end_id')::uuid)
+  AND (prev.id IS NULL OR (message.created_at, message.id) > (prev.created_at, prev.id))
+  AND (
+    sqlc.narg('before_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
+  )
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT sqlc.arg('row_limit');
+
 -- name: MoveUnstartedChatTasksToSession :many
 -- A continuation answers the turns still waiting in the archived DM. A task no
 -- daemon has claimed (queued, or deferred behind a retry) moves with its input
@@ -1332,6 +1432,10 @@ WHERE message.chat_session_id = @chat_session_id
     sqlc.narg('before_created_at')::timestamptz IS NULL
     OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
   )
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT @page_limit;
 
@@ -1521,6 +1625,8 @@ WHERE queued_input.chat_session_id = $1
   );
 
 -- name: ListChatMessagesPage :many
+-- floor_created_at/floor_id (both or neither) hide the rows at or before a
+-- segment floor: agent-token reads pass the session's floor (CHE-2819 Rule P).
 SELECT message.* FROM chat_message AS message
 WHERE message.chat_session_id = $1
   AND message.message_kind != 'channel_command'
@@ -1554,6 +1660,10 @@ WHERE message.chat_session_id = $1
   AND (
     sqlc.narg('before_created_at')::timestamptz IS NULL
     OR (message.created_at, message.id) < (sqlc.narg('before_created_at')::timestamptz, sqlc.narg('before_id')::uuid)
+  )
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
   )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2;
@@ -1595,6 +1705,10 @@ WHERE message.chat_session_id = $1
     )
   )
   AND (message.created_at, message.id) >= (sqlc.arg('after_created_at')::timestamptz, sqlc.arg('after_id')::uuid)
+  AND (
+    sqlc.narg('floor_created_at')::timestamptz IS NULL
+    OR (message.created_at, message.id) > (sqlc.narg('floor_created_at')::timestamptz, sqlc.narg('floor_id')::uuid)
+  )
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2;
 
