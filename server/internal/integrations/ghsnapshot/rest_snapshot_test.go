@@ -118,6 +118,12 @@ func TestFetchPRSnapshotRESTLatestCheckRuns(t *testing.T) {
 		}
 		return run
 	}
+	// actionsRun is a GitHub Actions job whose details_url names its workflow run.
+	actionsRun := func(id int64, name, startedAt, status, conclusion string, workflowRun int64) map[string]any {
+		run := checkRun(id, name, startedAt, status, conclusion, 15368)
+		run["details_url"] = fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/%d", workflowRun, id)
+		return run
+	}
 	const earlier = "2026-10-23T05:00:00Z"
 	const later = "2026-10-23T05:01:00Z"
 	const latest = "2026-10-23T05:02:00Z"
@@ -186,6 +192,23 @@ func TestFetchPRSnapshotRESTLatestCheckRuns(t *testing.T) {
 				checkRun(2, "ci", later, "completed", "success", 2),
 			},
 			wantIDs: []int64{1, 2}, wantRollup: "FAILURE",
+		},
+		{
+			name: "same name and App from different workflow runs stays separate",
+			runs: []map[string]any{
+				actionsRun(1, "go-test", earlier, "completed", "success", 100),
+				actionsRun(2, "go-test", later, "in_progress", "", 200),
+			},
+			wantIDs: []int64{1, 2}, wantRollup: "PENDING",
+		},
+		{
+			name: "a rerun of one workflow run still keeps the newest",
+			runs: []map[string]any{
+				actionsRun(1, "go-test", earlier, "completed", "cancelled", 100),
+				actionsRun(2, "go-test", later, "completed", "success", 100),
+				actionsRun(3, "go-test", latest, "completed", "success", 200),
+			},
+			wantIDs: []int64{2, 3}, wantRollup: "SUCCESS",
 		},
 		{
 			name: "newest running check replaces failure",

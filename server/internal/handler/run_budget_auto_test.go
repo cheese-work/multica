@@ -26,6 +26,8 @@ type autoRun struct {
 	statusCtx bool     // the other expected check name is reported only by a commit status, a different producer than a check run
 	otherApp  bool     // the other expected check name is completed, but by a different GitHub App than the expected producer
 	twin      bool     // a second App also reports the other expected name; the expected producer's run is still there
+	wrongFlow bool     // the other expected name is completed by the expected App, but from a different workflow than the expected one
+	flowTwin  bool     // the expected workflow's run of the other name is finished, and the same App's other workflow reports the same name still running
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -50,7 +52,7 @@ func newAutoCaseSteps(t *testing.T, installationID int64, steps []map[string]any
 	t.Helper()
 	// The shared test workspace keeps the auto-approver off, so the per-issue
 	// card tests exercise the path the kill switch leaves.
-	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":["go-test@15368","web-e2e@15368"]}}`)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":["go-test@15368@`+autoCIPath+`","web-e2e@15368@`+autoE2EPath+`"]}}`)
 	c := newEdgeCase(t, installationID, steps)
 	agentID := seededReadyAgentID(t)
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID)
@@ -91,19 +93,25 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				}
 				if len(r.checks) == 0 && r.ci == "" && !r.noChecks {
 					// A head whose results are retained and all passed.
-					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, app_id) VALUES ($1, $2, 0, 'go-test', 'completed', 'success', 15368)`, prID, head)
+					actionsCheck(t, prID, head, 0, "go-test", autoCIPath, "completed", "success")
 					if !r.partial && !r.pending && !r.statusCtx {
-						app := 15368
-						if r.otherApp {
-							app = 999
+						switch {
+						case r.otherApp:
+							dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, app_id) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success', 999)`, prID, head)
+						case r.wrongFlow:
+							actionsCheck(t, prID, head, 1, "web-e2e", autoOtherPath, "completed", "success")
+						default:
+							actionsCheck(t, prID, head, 1, "web-e2e", autoE2EPath, "completed", "success")
 						}
-						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, app_id) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success', $3)`, prID, head, app)
 					}
 					if r.statusCtx {
 						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, is_status_context) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success', TRUE)`, prID, head)
 					}
 					if r.twin {
 						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, app_id) VALUES ($1, $2, 2, 'web-e2e', 'completed', 'success', 999)`, prID, head)
+					}
+					if r.flowTwin {
+						actionsCheck(t, prID, head, 2, "web-e2e", autoOtherPath, "in_progress", "")
 					}
 				}
 				if r.pending {
@@ -112,6 +120,7 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				t.Cleanup(func() {
 					_, _ = testPool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id = $1`, prID)
 					_, _ = testPool.Exec(context.Background(), `DELETE FROM ci_failure_event WHERE head_sha = $1`, head)
+					_, _ = testPool.Exec(context.Background(), `DELETE FROM github_workflow_run WHERE head_sha = $1`, head)
 				})
 				if r.ci != "" {
 					dbfx.Insert(t, "ci_failure_event", testutil.Cols{
@@ -132,6 +141,31 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 			dbfx.Insert(t, "task_usage", testutil.Cols{"task_id": taskID, "model": "m", "input_tokens": r.tokens})
 		}
 	}
+}
+
+// The workflows the seeded expected checks come from. autoOtherPath is a second
+// workflow of the same App that reports a check of the same name.
+const (
+	autoCIPath    = ".github/workflows/ci.yml"
+	autoE2EPath   = ".github/workflows/e2e.yml"
+	autoOtherPath = ".github/workflows/other.yml"
+)
+
+// actionsCheck seeds one GitHub Actions check run (App 15368) of a pushed head,
+// and the workflow run the webhook mirror holds for it, so the run's details_url
+// leads to the workflow file that produced it.
+func actionsCheck(t *testing.T, prID, head string, ordinal int, name, workflowPath, status, conclusion string) {
+	t.Helper()
+	runID := rand.Int63n(1 << 40)
+	dbfx.Exec(t, `INSERT INTO github_workflow_run (workspace_id, installation_id, repo_owner, repo_name, run_id, run_attempt, status_rank, workflow_path, head_sha)
+		VALUES ($1, 1, 'test', 'auto', $2, 1, 2, $3, $4)`, testWorkspaceID, runID, workflowPath, head)
+	var concl any
+	if conclusion != "" {
+		concl = conclusion
+	}
+	dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, details_url, app_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 15368)`, prID, head, ordinal, name, status, concl,
+		fmt.Sprintf("https://github.com/test/auto/actions/runs/%d/job/1", runID))
 }
 
 func (a autoCase) verdict(t *testing.T) service.RunBudgetAutoVerdict {
@@ -429,6 +463,12 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 		{"pushed heads where a second App also reports an expected name, and the expected producer finished", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, twin: true}, {status: "completed", prUpdate: true},
 		}, true},
+		{"three pushed heads where the same App's other workflow reported the expected name and the expected workflow's run has not", []autoRun{
+			{status: "completed", prUpdate: true, wrongFlow: true}, {status: "completed", prUpdate: true, wrongFlow: true}, {status: "completed", prUpdate: true, wrongFlow: true},
+		}, false},
+		{"one pushed head where the expected workflow finished and the same App's other workflow still runs the same name", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, flowTwin: true}, {status: "completed", prUpdate: true},
+		}, false},
 		{"three pushed heads where the other expected check completed under a different App", []autoRun{
 			{status: "completed", prUpdate: true, otherApp: true}, {status: "completed", prUpdate: true, otherApp: true}, {status: "completed", prUpdate: true, otherApp: true},
 		}, false},
@@ -472,6 +512,30 @@ func TestRunBudgetAutoHoldsAnExpectedCheckNamedWithoutAProducer(t *testing.T) {
 	a := newAutoCase(t, 2226900)
 	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":["go-test","web-e2e"]}}`)
 	a.seed(t, a.c.issueID, autoRun{status: "completed", prUpdate: true, otherApp: true}, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true})
+	if v := a.verdict(t); v.Approve || v.Reason != "ci_unknown" {
+		t.Fatalf("verdict = %+v, want hold with ci_unknown", v)
+	}
+}
+
+// A GitHub Actions check (App 15368) is named with its workflow file: two
+// workflows of the one App can both report the same check name, so name and App
+// do not say which workflow produced a run. An entry for that App without a
+// workflow never matches, so the head reads as unknown.
+func TestRunBudgetAutoHoldsAnActionsCheckNamedWithoutItsWorkflow(t *testing.T) {
+	a := newAutoCase(t, 2226900)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":["go-test@15368","web-e2e@15368"]}}`)
+	a.seed(t, a.c.issueID, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true})
+	if v := a.verdict(t); v.Approve || v.Reason != "ci_unknown" {
+		t.Fatalf("verdict = %+v, want hold with ci_unknown", v)
+	}
+}
+
+// A check of the right name and App whose workflow the webhook mirror does not
+// show as the expected file is not the expected check.
+func TestRunBudgetAutoHoldsWhenTheExpectedWorkflowIsNotMirrored(t *testing.T) {
+	a := newAutoCase(t, 2226900)
+	a.seed(t, a.c.issueID, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true})
+	dbfx.Exec(t, `UPDATE github_workflow_run SET workflow_path = '.github/workflows/renamed.yml' WHERE workspace_id = $1 AND repo_owner = 'test' AND repo_name = 'auto'`, testWorkspaceID)
 	if v := a.verdict(t); v.Approve || v.Reason != "ci_unknown" {
 		t.Fatalf("verdict = %+v, want hold with ci_unknown", v)
 	}

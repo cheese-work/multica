@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -118,6 +120,19 @@ type restStatusContext struct {
 	TargetURL string `json:"target_url"`
 }
 
+var actionsRunURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/actions/runs/([0-9]{1,18})/`)
+
+// actionsRunID returns the workflow run id in a GitHub Actions check run's
+// details URL, or 0 when the URL names none.
+func actionsRunID(detailsURL string) int64 {
+	m := actionsRunURL.FindStringSubmatch(detailsURL)
+	if m == nil {
+		return 0
+	}
+	id, _ := strconv.ParseInt(m[1], 10, 64)
+	return id
+}
+
 // FetchPRSnapshot uses only Pull requests, Checks and Commit statuses read
 // permissions. Every page is pinned to one head; a final PR read detects pushes
 // before the guarded atomic write in refresh.go.
@@ -143,9 +158,12 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 
 	snap := &PRSnapshot{HeadSHA: pr.Head.SHA, Closed: pr.State == "closed"}
 	seenRuns := make(map[int64]struct{}, len(runs))
+	// RunID is the GitHub Actions workflow run, so two workflows that report the
+	// same name under the same App stay separate. 0 for a check outside Actions.
 	type checkKey struct {
 		Name  string
 		AppID int64
+		RunID int64
 	}
 	latestIndexes := make(map[checkKey]int, len(runs))
 	latestRuns := make([]restCheckRun, 0, len(runs))
@@ -157,7 +175,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			return nil, errors.New("ghsnapshot: duplicate check run during pagination")
 		}
 		seenRuns[run.ID] = struct{}{}
-		key := checkKey{Name: run.Name, AppID: run.App.ID}
+		key := checkKey{Name: run.Name, AppID: run.App.ID, RunID: actionsRunID(run.DetailsURL)}
 		if index, exists := latestIndexes[key]; exists {
 			previous := latestRuns[index]
 			newer := run.ID > previous.ID
