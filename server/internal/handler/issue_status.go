@@ -490,6 +490,12 @@ func validIssueStatusIcon(icon string) bool {
 
 // ArchiveIssueStatus retires an empty custom status from future assignment.
 func (h *Handler) ArchiveIssueStatus(w http.ResponseWriter, r *http.Request) {
+	// Archiving drops the status's step, handoff and instructions from the
+	// Default workflow: a covered write (CHE-3482). The owner's user id would
+	// pass the owner/admin check for a machine credential, so refuse first.
+	if refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	entry, wsUUID, member, ok := h.loadIssueStatusForAdmin(w, r)
 	if !ok {
 		return

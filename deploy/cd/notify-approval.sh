@@ -8,10 +8,12 @@ set -euo pipefail
 #     MULTICA_NOTIFY_ISSUE, holding the ready-to-run dispatch one-liner
 #     (POST /api/decisions/ci, scope decisions:ci_request). The server keeps one
 #     open card per SHA, withdraws an older one and refuses a stale SHA.
-#     Needs MULTICA_SERVER_URL, MULTICA_TOKEN and MULTICA_WORKSPACE_ID too.
-# No route configured, or no route delivered, fails the job: a silent notice
-# left eligible candidates unseen for a day. The deploy gate itself does not
-# depend on this job.
+#     Needs MULTICA_SERVER_URL, MULTICA_TOKEN, MULTICA_WORKSPACE_ID and
+#     MULTICA_NOTIFY_SOURCE_COMMENT (the anchor comment) too.
+# No route configured only warns: the deploy gate does not depend on this job,
+# and a missing secret turned every scheduled run red. A configured route that
+# delivers nothing fails the job: a silent notice left eligible candidates
+# unseen for a day (CHE-4879).
 #
 # SOURCE_SHA comes from the schedule-resolve job. A manual dispatch has none, so
 # INPUT_REF (a branch, tag or commit SHA) is fetched and peeled to its commit:
@@ -44,19 +46,16 @@ print(json.dumps({"title": "C00 candidate ready to deploy",
 }
 
 notify_multica() {
-  local headers list resp src at payload code api
-  headers="$(mktemp)" list="$(mktemp)" resp="$(mktemp)"
-  trap 'rm -f "$headers" "$list" "$resp"' RETURN
+  local headers resp src at payload code api
+  headers="$(mktemp)" resp="$(mktemp)"
+  trap 'rm -f "$headers" "$resp"' RETURN
   # The token goes through a header file, not argv.
   printf 'Authorization: Bearer %s\nX-Workspace-ID: %s\n' "$MULTICA_TOKEN" "$MULTICA_WORKSPACE_ID" >"$headers"
   api="${MULTICA_SERVER_URL%/}/api"
-  # The card anchors on a root comment of the notice issue (ask.source_comment_id).
-  curl_json -H "@$headers" "$api/issues/$MULTICA_NOTIFY_ISSUE/comments?roots_only=true" >"$list" || return 1
-  src="$(python3 -c '
-import json, sys
-roots = json.load(open(sys.argv[1]))
-print(roots[0]["id"] if roots else "")' "$list")" || return 1
-  [ -n "$src" ] || { echo "::warning title=C00 approval notice::issue $MULTICA_NOTIFY_ISSUE has no comment to anchor the card"; return 1; }
+  # The card anchors on MULTICA_NOTIFY_SOURCE_COMMENT (ask.source_comment_id), a root
+  # comment of the notice issue. A scoped PAT may call only POST /api/decisions/ci,
+  # so the script never lists comments.
+  src="$MULTICA_NOTIFY_SOURCE_COMMENT"
   # The server orders cards by the candidate's commit time.
   at="$(gh api "repos/${GITHUB_REPOSITORY:-cheese-work/multica}/commits/$SOURCE_SHA" -q .commit.committer.date)" || return 1
   payload="$(python3 -c '
@@ -97,14 +96,15 @@ if [ -n "${WEBHOOK_URL:-}" ]; then
   if notify_webhook; then delivered=$((delivered + 1)); else echo "::warning title=C00 approval notice::webhook POST failed"; fi
 fi
 if [ -n "${MULTICA_TOKEN:-}" ] && [ -n "${MULTICA_SERVER_URL:-}" ] && [ -n "${MULTICA_WORKSPACE_ID:-}" ] \
-   && [ -n "${MULTICA_NOTIFY_ISSUE:-}" ] && [ -n "${MULTICA_NOTIFY_MEMBER_ID:-}" ]; then
+   && [ -n "${MULTICA_NOTIFY_ISSUE:-}" ] && [ -n "${MULTICA_NOTIFY_MEMBER_ID:-}" ] \
+   && [ -n "${MULTICA_NOTIFY_SOURCE_COMMENT:-}" ]; then
   routes=$((routes + 1))
   if notify_multica; then delivered=$((delivered + 1)); else echo "::warning title=C00 approval notice::Multica decision card failed"; fi
 fi
 
 if [ "$routes" -eq 0 ]; then
-  echo "::error title=C00 approval notice::no notice route configured (set C00_APPROVAL_WEBHOOK_URL or the MULTICA_* secrets); candidate $version is waiting. Dispatch at $RUN_URL"
-  exit 1
+  echo "::warning title=C00 approval notice::no notice route configured (set C00_APPROVAL_WEBHOOK_URL or the MULTICA_* secrets); candidate $version is waiting. Dispatch at $RUN_URL"
+  exit 0
 fi
 if [ "$delivered" -eq 0 ]; then
   echo "::error title=C00 approval notice::every notice route failed; candidate $version is waiting. Dispatch at $RUN_URL"

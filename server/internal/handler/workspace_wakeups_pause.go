@@ -6,8 +6,10 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -120,16 +122,23 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 			reconcileDelegatedWrites(stored, incoming)
 			reconcileAgentDecisionJev(stored, incoming)
 			reconcileRoutingAgent(stored, incoming)
+			reconcileSystem1Labellers(stored, incoming)
 			if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
 				return db.Workspace{}, "", activity, err
 			}
 			if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 			}
+			if machine && settingsAllowKeyMoved(stored, incoming) {
+				return db.Workspace{}, "", activity, errSettingsPasskeyRequired
+			}
+		} else if machine && settingsAllowKeyMoved(stored, nil) {
+			// A non-object body drops every key, allow-table keys included.
+			return db.Workspace{}, "", activity, errSettingsPasskeyRequired
 		} else if machine && stored[backgroundAgentsKey] != nil {
 			// A non-object body would clear the key: a key-omitting replacement.
 			return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
-		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
+		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil || stored[system1LabellersKey] != nil {
 			// A non-object body would replace the whole blob and clear the pause, the
 			// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
 			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}
@@ -165,6 +174,19 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 		return ws, "", activity, auditWriteError{err}
 	}
 	return ws, action, activity, tx.Commit(ctx)
+}
+
+// settingsAllowKeyMoved reports whether the incoming blob adds, drops or
+// changes any key on the settings allow table (CHE-3482).
+func settingsAllowKeyMoved(stored, incoming map[string]any) bool {
+	for _, key := range decisionaction.SettingsKeys() {
+		sv, sok := stored[key]
+		iv, iok := incoming[key]
+		if sok != iok || !reflect.DeepEqual(sv, iv) {
+			return true
+		}
+	}
+	return false
 }
 
 // publishWakeupsPauseActivity announces a flip's committed audit record.

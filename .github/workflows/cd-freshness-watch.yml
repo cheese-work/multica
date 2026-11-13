@@ -10,7 +10,8 @@ on:
       - deploy/cd/check-deploy-freshness.py
       - deploy/cd/test-check-deploy-freshness.py
 
-# actions: write is only for `gh run rerun --failed` on the main qualification run. A separate file from
+# actions: write is only for `gh run rerun --failed` on the main qualification run and the one backup
+# `gh workflow run cd-deploy.yml --ref main` for a dropped schedule slot (CHE-5353). A separate file from
 # cd-queue-watch.yml, whose tests pin it to read-only permissions. Like that alarm: GitHub-hosted runner,
 # no concurrency group, so a dead deploy or X99 runner cannot suppress it. The live C00 revision check runs on X99
 # in its own schedule-only file, cd-live-revision.yml.

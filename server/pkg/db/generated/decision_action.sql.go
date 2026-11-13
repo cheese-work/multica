@@ -398,7 +398,7 @@ func (q *Queries) ListRecentRejectedProposalParams(ctx context.Context, arg List
 }
 
 const lockAgentRuntimeNowait = `-- name: LockAgentRuntimeNowait :one
-SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, shared_with FROM agent_runtime WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE NOWAIT
+SELECT id, workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at, created_at, updated_at, owner_id, legacy_daemon_id, visibility, profile_id, custom_name, shared_with, max_concurrent_tasks FROM agent_runtime WHERE id = $1 AND workspace_id = $2 FOR NO KEY UPDATE NOWAIT
 `
 
 type LockAgentRuntimeNowaitParams struct {
@@ -430,6 +430,7 @@ func (q *Queries) LockAgentRuntimeNowait(ctx context.Context, arg LockAgentRunti
 		&i.ProfileID,
 		&i.CustomName,
 		&i.SharedWith,
+		&i.MaxConcurrentTasks,
 	)
 	return i, err
 }
@@ -499,7 +500,7 @@ func (q *Queries) LockDecisionActionNowait(ctx context.Context, arg LockDecision
 }
 
 const lockDecisionAgentsNowait = `-- name: LockDecisionAgentsNowait :many
-SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, custom_env_version, scheduling_paused_at, scheduling_paused_by FROM agent
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, custom_env_version, scheduling_paused_at, scheduling_paused_by, scheduling_paused_reason FROM agent
 WHERE workspace_id = $1 AND id = ANY($2::uuid[])
 ORDER BY id
 FOR UPDATE NOWAIT
@@ -553,6 +554,7 @@ func (q *Queries) LockDecisionAgentsNowait(ctx context.Context, arg LockDecision
 			&i.CustomEnvVersion,
 			&i.SchedulingPausedAt,
 			&i.SchedulingPausedBy,
+			&i.SchedulingPausedReason,
 		); err != nil {
 			return nil, err
 		}

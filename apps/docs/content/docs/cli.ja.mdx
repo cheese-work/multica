@@ -211,6 +211,19 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 `block` モードでは、修正コマンドを含むメッセージ付きの 422 で拒否されます。`warn` モードではルールは作成され、イベントだけが記録されます。
 
+### ウェイクアップルール
+
+ワークスペースとプロジェクトのウェイクアップルール（[Issue ウェイクアップ](/issue-wakeups)を参照）には専用のコマンドがあり、`create` と `get` に加えて次を使えます。
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` は `list` が表示するリビジョンです。`update` に `--revision 0` を指定するとオーバーライドを作成します。`preview` は何も保存せず、解決後のルールを出力します。条件ルールでは `already_satisfied` が、すぐに一致する Issue の数を示し、`issues` がその Issue を列挙します（`--output table` で一覧表示）。プレビューはスコープの先頭 200 件の Issue を調べ、そのうち未完了でバックログでないものを評価します。スコープにそれ以上ある場合は `truncated` が `true` になり、ほかにも一致する Issue がある可能性があります。イベントルールには条件がないため、プレビューに `already_satisfied` はなく、既存の Issue には一致しません。ルールの編集と削除ができるのはオーナーまたは管理者だけです。プレビューは人のメンバーなら誰でも実行できます。エージェントなどのマシン認証情報は `403` を受け取り、エージェントが作成したルールは人が有効にするまで無効のままです。
+
 ### DM で進捗をフォローする
 
 DM は、エージェントがあなたのために作成した issue をフォローします。メンバーは自分が作成した DM でのみ `--chat` を付けてフォローを管理できます。エージェントは `--chat` なしで `multica issue follow <issue>` を実行します。DM は自分のタスクから決まり、DM のないタスクは拒否されます。子 issue は親の有効なフォローを引き継ぎます。
@@ -495,7 +508,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `user` | `profile get/update` | 現在のユーザーのプロフィールを表示・更新 | |
 | `login` | — | ブラウザでサインインし、すべてのワークスペースを自動設定 | `--token`（値なしで渡すとターミナルで対話的に入力） |
 | `setup` | `cloud`（デフォルト）、`self-host` | サーバーアドレスを保存し、サインインを完了してデーモンを起動 | `self-host`: `--server-url`、`--app-url`、`--port`、`--frontend-port` |
-| `attachment` | `download <attachment-id>`、`upload <path>` | 添付ファイルのダウンロードとアップロード | `download`: `--output-dir`；`upload`: `--task` |
+| `attachment` | `download <attachment-id>`、`upload <path>`、`history <attachment-id>`、`diff <attachment-id>` | 添付ファイルのダウンロード、アップロード、リビジョン一覧、2 つのリビジョンの差分 | `download`: `--output-dir`；`upload`: `--task`、`--issue`、`--replaces <attachment-id>`（新しいファイルがその添付ファイルの次のリビジョンになります）；`diff`: `--from`、`--to`（リビジョン番号） |
 | `config` | `show`、`set <key> <value>` | 現在のプロファイルのローカル設定を表示・編集 | 優先順位: コマンドラインフラグ > 環境変数 > `config.json` > 組み込みデフォルト。空文字列を設定すると値をクリア |
 | `update` | — | CLI を最新バージョンに更新 | |
 | `version` | — | バージョン情報を表示 | `--output`（`text` または `json`） |
@@ -512,6 +525,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。
+
+### 対象フィールドにはパスキー操作が必要
+
+タスクトークンとクラウドノードトークンは、旧来のルートから次のフィールドに書き込めません: `agent.instructions`、`squad.instructions`、`workspace.context`、ワークフローのステップとステップ指示、決定アクションの許可テーブルにあるワークスペース設定キー(`compact_prompt`、`auto_compact`、`idle_started_guard`、`wakeups_paused`、`mermaid_orientation` など単純な運用キー)。サーバーは 403 と `code: passkey_action_required` を返し、代わりに提案するアクションを `action_type` で示します(`agent.instructions.set`、`squad.instructions.set`、`workspace.context.set`、`workflow.steps.set`、`workspace.settings.patch`)。保存済みの値は変わりません。投票レシート、決定バインディング、PASS レシート、Hermes の例外では、この拒否は解除されません。`multica decision propose <action-type>` でアクションを提案すると、人がパスキーで承認します。人による書き込みと `project.description` は従来どおりです。
 
 ## 別のコーディングエージェントから Multica を操作する
 

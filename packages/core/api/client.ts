@@ -1,5 +1,5 @@
 import type { ZodType } from "zod";
-import type { DecisionArtifact, OpenDecisionRequest } from "../types/decision";
+import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
@@ -7,6 +7,7 @@ import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, Wak
 import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
+import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
 import { configStore } from "../config";
 import type {
@@ -37,6 +38,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  AgentSchedulingImpact,
   AgentPreset,
   MikaBootstrapResponse,
   CreateAgentRequest,
@@ -104,6 +106,7 @@ import type {
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
+  AttachmentRevisionDiff,
   ChatSession,
   ChatContinueResponse,
   ChatSessionUsage,
@@ -226,6 +229,8 @@ import type {
   WecomInstallation,
   ListWecomInstallationsResponse,
   RegisterWecomBYORequest,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
   RedeemWecomBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
@@ -286,13 +291,17 @@ import {
   type AgentDecisionSetting,
   RoutingAgentSettingSchema,
   type RoutingAgentSetting,
+  DelegatedWritesSchema,
+  type DelegatedWrites,
   OpenDecisionRequestListSchema,
+  DecisionRequestCardListSchema,
   DecisionArtifactListSchema,
   RuntimeProfileListSchema,
   AgentTaskListSchema,
   AgentTaskPageSchema,
   AgentActivityBucketListSchema,
   AttachmentResponseSchema,
+  AttachmentRevisionDiffSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
   ChatMessageListSchema,
@@ -427,6 +436,10 @@ import {
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
+  BeginWecomInstallResponseSchema,
+  MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE,
+  WecomInstallStatusResponseSchema,
+  MALFORMED_WECOM_INSTALL_STATUS_RESPONSE,
   EMPTY_WECOM_INSTALLATION,
   EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE,
   ListLarkInstallationsResponseSchema,
@@ -1766,6 +1779,22 @@ export class ApiClient {
     );
   }
 
+  async getIssueRunBudget(issueId: string) {
+    return parseRunBudget(await this.fetch<unknown>(`/api/issues/${issueId}/run-budget`));
+  }
+
+  /** Opens a raise or top-up request (A1d). One link per owner asked; creating it moves no budget. */
+  async requestRunBudgetAction(
+    issueId: string,
+    body: { kind: "raise" | "top_up"; new_cap?: number; window_id: string },
+  ): Promise<RunBudgetActionResponse> {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/run-budget/requests`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseRunBudgetActionResponse(raw);
+  }
+
   async getIssueLimitUsage(): Promise<IssueLimitUsage | null> {
     const raw = await this.fetch<unknown>("/api/issues/limit-usage");
     if (raw == null) return null;
@@ -1820,7 +1849,7 @@ export class ApiClient {
         ...(parentId ? { parent_id: parentId } : {}),
         ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
-        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : {}),
+        ...(steerTaskIds?.length ? { steer_task_ids: steerTaskIds } : { steer: false }),
       }),
     });
   }
@@ -2181,6 +2210,29 @@ export class ApiClient {
   // Permission: agent owner or workspace admin/owner. Server returns the
   // count of cancelled rows; broadcasts task:cancelled for each so other
   // surfaces can clear their live cards.
+  async pauseAgent(id: string, reason?: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/pause`, {
+      method: "POST",
+      ...(reason ? { body: JSON.stringify({ reason }) } : {}),
+    });
+  }
+
+  async resumeAgent(id: string): Promise<Agent> {
+    return this.fetch(`/api/agents/${id}/resume`, { method: "POST" });
+  }
+
+  async pauseWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/pause`, { method: "POST" });
+  }
+
+  async resumeWorkspace(id: string): Promise<Workspace> {
+    return this.fetch(`/api/workspaces/${id}/resume`, { method: "POST" });
+  }
+
+  async getAgentSchedulingImpact(id: string): Promise<AgentSchedulingImpact> {
+    return this.fetch(`/api/agents/${id}/scheduling-impact`);
+  }
+
   async cancelAgentTasks(id: string): Promise<{ cancelled: number }> {
     return this.fetch(`/api/agents/${id}/cancel-tasks`, { method: "POST" });
   }
@@ -2582,6 +2634,8 @@ export class ApiClient {
       custom_name?: string;
       /** Apply custom_name to every runtime on the same machine. */
       apply_to_machine?: boolean;
+      /** Runtime-wide concurrency cap; `null` removes it, omit to leave unchanged. */
+      max_concurrent_tasks?: number | null;
     },
   ): Promise<AgentRuntime> {
     const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}`, {
@@ -2917,12 +2971,14 @@ export class ApiClient {
   async initiateListModels(
     runtimeId: string,
     options: { force?: boolean } = {},
+    workspaceSlug?: string,
   ): Promise<RuntimeModelListRequest> {
     const query = options.force === true ? "?force=true" : "";
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models${query}`,
       {
         method: "POST",
+        headers: workspaceHeader(workspaceSlug),
       },
     );
     return parseWithFallback<RuntimeModelListRequest>(
@@ -2936,9 +2992,11 @@ export class ApiClient {
   async getListModelsResult(
     runtimeId: string,
     requestId: string,
+    workspaceSlug?: string,
   ): Promise<RuntimeModelListRequest> {
     const raw = await this.fetch<unknown>(
       `/api/runtimes/${runtimeId}/models/${requestId}`,
+      { headers: workspaceHeader(workspaceSlug) },
     );
     return parseWithFallback<RuntimeModelListRequest>(
       raw,
@@ -3355,6 +3413,27 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/routing-agent`, {
       method: "PUT",
       body: JSON.stringify(config),
+    });
+  }
+
+  // CHE-4617: null when the response is malformed, so a guessed rule is never
+  // shown or saved back over the real one.
+  async getDelegatedWrites(workspaceId: string): Promise<DelegatedWrites | null> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`);
+    return parseWithFallback<DelegatedWrites | null>(raw, DelegatedWritesSchema, null, {
+      endpoint: "GET /api/workspaces/{id}/delegated-writes",
+    });
+  }
+
+  // Human owner/admin only; replaces the whole rule.
+  async updateDelegatedWrites(workspaceId: string, rule: DelegatedWrites): Promise<DelegatedWrites> {
+    const raw: unknown = await this.fetch(`/api/workspaces/${workspaceId}/delegated-writes`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    });
+    // The save succeeded; a malformed echo falls back to the rule that was sent.
+    return parseWithFallback<DelegatedWrites>(raw, DelegatedWritesSchema, rule, {
+      endpoint: "PUT /api/workspaces/{id}/delegated-writes",
     });
   }
 
@@ -4287,6 +4366,14 @@ export class ApiClient {
     });
   }
 
+  /** The viewer's own used (answered or withdrawn) decision cards on one issue. */
+  async listIssueDecisionCards(issueId: string): Promise<DecisionRequestCard[]> {
+    const raw: unknown = await this.fetch(`/api/decisions/issue-cards?issue=${encodeURIComponent(issueId)}`);
+    return parseWithFallback(raw, DecisionRequestCardListSchema, [], {
+      endpoint: "GET /api/decisions/issue-cards",
+    });
+  }
+
   async listChatMessagesPage(
     sessionId: string,
     params: { before?: { created_at: string; id: string } | null; limit?: number; around?: string } = {},
@@ -4542,6 +4629,22 @@ export class ApiClient {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
       endpoint: "GET /api/attachments/{id}",
+    });
+  }
+
+  // Diff between two revisions of an attachment (CHE-5295). `full` keeps every
+  // unchanged line instead of folding them.
+  async getAttachmentRevisionDiff(
+    id: string,
+    from: number,
+    to: number,
+    full = false,
+  ): Promise<AttachmentRevisionDiff> {
+    const q = new URLSearchParams({ from: String(from), to: String(to) });
+    if (full) q.set("full", "1");
+    const raw = await this.fetch<unknown>(`/api/attachments/${id}/diff?${q}`);
+    return parseOrThrow<AttachmentRevisionDiff>(raw, AttachmentRevisionDiffSchema, {
+      endpoint: "GET /api/attachments/{id}/diff",
     });
   }
 
@@ -5905,6 +6008,51 @@ export class ApiClient {
     return parseWithFallback(raw, WecomInstallationSchema, EMPTY_WECOM_INSTALLATION, {
       endpoint: "POST /api/workspaces/:id/wecom/install/byo",
     });
+  }
+
+  // beginWecomInstall starts (or resumes) a scan-code install: the backend
+  // hands back a session id, and the install worker fetches the QR from WeCom
+  // out of band. Callers poll getWecomInstallStatus for the QR itself.
+  //
+  // idempotencyKey must be stable for one user gesture — a retried or
+  // double-submitted request with the same key reuses the existing session
+  // rather than burning a WeCom generate quota slot on a second QR.
+  async beginWecomInstall(
+    workspaceId: string,
+    agentId: string,
+    idempotencyKey: string,
+  ): Promise<BeginWecomInstallResponse> {
+    const search = new URLSearchParams({ agent_id: agentId });
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/wecom/install/begin?${search.toString()}`,
+      {
+        method: "POST",
+        headers: { "Idempotency-Key": idempotencyKey },
+      },
+    );
+    return parseWithFallback(
+      raw,
+      BeginWecomInstallResponseSchema,
+      MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE,
+      { endpoint: "POST /api/workspaces/:id/wecom/install/begin" },
+    );
+  }
+
+  // getWecomInstallStatus is one poll of a scan-install session. The response
+  // carries the QR while pending, and the installation id once bound.
+  async getWecomInstallStatus(
+    workspaceId: string,
+    sessionId: string,
+  ): Promise<WecomInstallStatusResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/wecom/install/${sessionId}`,
+    );
+    return parseWithFallback(
+      raw,
+      WecomInstallStatusResponseSchema,
+      MALFORMED_WECOM_INSTALL_STATUS_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/wecom/install/:sessionId" },
+    );
   }
 
   async deleteWecomInstallation(workspaceId: string, installationId: string): Promise<void> {

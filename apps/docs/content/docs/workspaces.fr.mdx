@@ -52,6 +52,17 @@ Chaque événement garde le mode dans lequel il a été créé : passer de `warn
 
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
 
+### Écritures gouvernées déléguées
+
+Le paramètre d'espace de travail `delegated_governed_writes` décide quels agents peuvent écrire dans les champs gouvernés, et si chaque écriture exige encore la décision d'une personne. Il se trouve dans les paramètres de l'espace de travail, sous **Écritures gouvernées déléguées**.
+
+- **Qui peut modifier :** `owner` et `admin`. Un `member` voit le même tableau en lecture seule, avec une note de verrouillage et sans bouton Modifier.
+- **Agents autorisés :** les agents qui peuvent écrire. Un agent archivé ne peut pas être ajouté.
+- **Champs autorisés :** parmi `workflow.steps`, `workflow.instructions`, `workspace.context`, `squad.instructions`, `agent.instructions`, `project.description`, `workflow.budget`, `issue.workflow`. Les champs non cochés restent en lecture seule pour tous les agents.
+- **Décision humaine requise :** activée par défaut. Un agent autorisé ouvre alors une demande de décision au lieu d'écrire. Si vous la désactivez, les agents autorisés écrivent directement ; l'enregistrement demande donc d'abord une confirmation.
+
+Les modifications non enregistrées sont conservées si l'enregistrement échoue : rien de ce que vous avez saisi n'est perdu.
+
 ## Changer d'espace de travail et le quitter
 
 Un même compte peut rejoindre plusieurs espaces de travail. Changer d'espace de travail change seulement ce que vous consultez ; les données ne bougent pas.
