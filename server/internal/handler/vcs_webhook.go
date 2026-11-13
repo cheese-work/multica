@@ -271,7 +271,11 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	for issueID := range touched {
 		touchedIDs = append(touchedIDs, issueID)
 	}
-	owed, err := h.owePRMerge(ctx, qtx, conn.WorkspaceID, touchedIDs)
+	persisted, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+	if err != nil {
+		return fmt.Errorf("vcs: list persisted links: %w", err)
+	}
+	owed, err := h.owePRMergeWithLinked(ctx, qtx, conn.WorkspaceID, touchedIDs, persisted)
 	if err != nil {
 		return fmt.Errorf("vcs: record pr_merge_owed: %w", err)
 	}

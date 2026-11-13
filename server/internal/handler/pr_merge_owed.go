@@ -108,6 +108,13 @@ func (h *Handler) evaluatePRMergeOwed(ctx context.Context, w db.IssueWakeup) err
 // both back so the sender retries. It returns every issue it wrote, for the
 // post-commit attempt.
 func (h *Handler) owePRMerge(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, issueIDs []pgtype.UUID) ([]pgtype.UUID, error) {
+	return h.owePRMergeWithLinked(ctx, q, workspaceID, issueIDs, nil)
+}
+
+// owePRMergeWithLinked is owePRMerge plus the parent, not the issue itself, of
+// each linked issue. A PR event that changes no link (a close of an unmerged
+// PR) still changes what its linked children's parent counts (CHE-5242).
+func (h *Handler) owePRMergeWithLinked(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, issueIDs, linkedIDs []pgtype.UUID) ([]pgtype.UUID, error) {
 	var owed []pgtype.UUID
 	seen := map[pgtype.UUID]bool{}
 	add := func(id pgtype.UUID) error {
@@ -121,18 +128,24 @@ func (h *Handler) owePRMerge(ctx context.Context, q *db.Queries, workspaceID pgt
 		owed = append(owed, id)
 		return nil
 	}
+	addParent := func(id pgtype.UUID) error {
+		parentID, err := parentCountingChildPRs(ctx, q, workspaceID, id)
+		if err != nil || !parentID.Valid {
+			return err
+		}
+		return add(parentID)
+	}
 	for _, id := range issueIDs {
 		if err := add(id); err != nil {
 			return nil, err
 		}
-		parentID, err := parentCountingChildPRs(ctx, q, workspaceID, id)
-		if err != nil {
+		if err := addParent(id); err != nil {
 			return nil, err
 		}
-		if parentID.Valid {
-			if err := add(parentID); err != nil {
-				return nil, err
-			}
+	}
+	for _, id := range linkedIDs {
+		if err := addParent(id); err != nil {
+			return nil, err
 		}
 	}
 	return owed, nil

@@ -2250,7 +2250,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		for issueID := range touched {
 			ids = append(ids, issueID)
 		}
-		if owed, err = h.owePRMerge(ctx, qtx, wsID, ids); err != nil {
+		if owed, err = h.owePRMergeWithLinked(ctx, qtx, wsID, ids, issueIDs); err != nil {
 			return fmt.Errorf("github: record pr_merge_owed: %w", err)
 		}
 	}
