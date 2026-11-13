@@ -230,6 +230,13 @@ func TestAdmissionDefersRedDraftHead(t *testing.T) {
 	f.wantDeferred(t, "ci: failing")
 }
 
+func TestAdmissionDefersPendingDraftHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.Exec(t, `UPDATE github_pull_request SET state = 'draft' WHERE id = $1`, f.pr)
+	f.check(t, "ci", "in_progress", "")
+	f.wantDeferred(t, "ci: pending")
+}
+
 // A check stored for an older head is not evidence for this head.
 func TestAdmissionStaleHeadCheckIsMissing(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
