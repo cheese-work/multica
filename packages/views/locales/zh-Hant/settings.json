@@ -909,7 +909,18 @@
     "routing_fallback_label": "備用智慧體",
     "routing_fallback_hint": "路由智慧體因服務商錯誤失敗時，接手該路由步驟。",
     "routing_agent_none": "無",
-    "routing_agent_unknown": "未知智慧體"
+    "routing_agent_unknown": "未知智慧體",
+    "scheduling_label": "排程",
+    "scheduling_hint": "暫停後，所有代理都不會領取新的執行。執行中的任務會完成，排隊的工作會等待。",
+    "scheduling_pause_action": "暫停工作區",
+    "scheduling_resume_action": "恢復工作區",
+    "scheduling_pause_title": "暫停此工作區？",
+    "scheduling_pause_description": "恢復之前，沒有代理會領取新的執行。排隊的工作會保留。",
+    "scheduling_keep": "保持運行",
+    "scheduling_confirm": "暫停",
+    "scheduling_paused_toast": "工作區已暫停",
+    "scheduling_resumed_toast": "工作區已恢復",
+    "scheduling_failed_toast": "無法變更工作區排程"
   },
   "delete_workspace_dialog": {
     "title": "刪除工作區",

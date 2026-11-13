@@ -2971,6 +2971,35 @@ SELECT EXISTS (
     )
 );
 
+-- name: PendingAssignmentTaskForAgent :one
+-- The run that holds the slot HasPendingAssignmentTaskForAgent reports (CHE-2860):
+-- a caller that ends on a surviving run needs its id.
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2
+  AND comment_thread_id IS NULL
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
+-- name: PendingTaskForIssueAndAgent :one
+-- HasPendingTaskForIssueAndAgent returning the pending run (CHE-2860), the
+-- newest one when several match.
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+
 -- name: HasActiveTaskForIssueAndAgentInThread :one
 -- Active execution and pending work in this comment thread only.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue

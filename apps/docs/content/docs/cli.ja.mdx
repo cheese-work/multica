@@ -211,6 +211,19 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 `block` モードでは、修正コマンドを含むメッセージ付きの 422 で拒否されます。`warn` モードではルールは作成され、イベントだけが記録されます。
 
+### ウェイクアップルール
+
+ワークスペースとプロジェクトのウェイクアップルール（[Issue ウェイクアップ](/issue-wakeups)を参照）には専用のコマンドがあり、`create` と `get` に加えて次を使えます。
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` は `list` が表示するリビジョンです。`update` に `--revision 0` を指定するとオーバーライドを作成します。`preview` は何も保存せず、解決後のルールを出力します。条件ルールでは `already_satisfied` が、すぐに一致する Issue の数を示し、`issues` がその Issue を列挙します（`--output table` で一覧表示）。プレビューはスコープの先頭 200 件の Issue を調べ、そのうち未完了でバックログでないものを評価します。スコープにそれ以上ある場合は `truncated` が `true` になり、ほかにも一致する Issue がある可能性があります。イベントルールには条件がないため、プレビューに `already_satisfied` はなく、既存の Issue には一致しません。ルールの編集と削除ができるのはオーナーまたは管理者だけです。プレビューは人のメンバーなら誰でも実行できます。エージェントなどのマシン認証情報は `403` を受け取り、エージェントが作成したルールは人が有効にするまで無効のままです。
+
 ### DM で進捗をフォローする
 
 DM は、エージェントがあなたのために作成した issue をフォローします。メンバーは自分が作成した DM でのみ `--chat` を付けてフォローを管理できます。エージェントは `--chat` なしで `multica issue follow <issue>` を実行します。DM は自分のタスクから決まり、DM のないタスクは拒否されます。子 issue は親の有効なフォローを引き継ぎます。
