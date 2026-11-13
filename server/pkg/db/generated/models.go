@@ -247,6 +247,7 @@ type AgentTaskQueue struct {
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
+	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 }
 
 type AgentToLabel struct {
@@ -256,14 +257,18 @@ type AgentToLabel struct {
 }
 
 type AskGuardEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	OperationKind string             `json:"operation_kind"`
-	PayloadSha256 string             `json:"payload_sha256"`
-	Mode          string             `json:"mode"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	OperationKind      string             `json:"operation_kind"`
+	PayloadSha256      string             `json:"payload_sha256"`
+	Mode               string             `json:"mode"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	IntentID           pgtype.UUID        `json:"intent_id"`
+	MemberID           pgtype.UUID        `json:"member_id"`
+	ClearedAt          pgtype.Timestamptz `json:"cleared_at"`
+	ClearedByRequestID pgtype.UUID        `json:"cleared_by_request_id"`
 }
 
 type Attachment struct {
@@ -1061,29 +1066,33 @@ type DaemonToken struct {
 }
 
 type DecisionAction struct {
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	DecisionRequestID    pgtype.UUID        `json:"decision_request_id"`
-	ActionType           string             `json:"action_type"`
-	ActionVersion        int32              `json:"action_version"`
-	Params               []byte             `json:"params"`
-	Preconditions        []byte             `json:"preconditions"`
-	SecretSlots          []byte             `json:"secret_slots"`
-	PayloadSha256        string             `json:"payload_sha256"`
-	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
-	State                string             `json:"state"`
-	RequestedByAgentID   pgtype.UUID        `json:"requested_by_agent_id"`
-	RequestedByTaskID    pgtype.UUID        `json:"requested_by_task_id"`
-	ApprovedByUserID     pgtype.UUID        `json:"approved_by_user_id"`
-	ApprovedAt           pgtype.Timestamptz `json:"approved_at"`
-	ExecutedAt           pgtype.Timestamptz `json:"executed_at"`
-	WebauthnCredentialID pgtype.UUID        `json:"webauthn_credential_id"`
-	Result               []byte             `json:"result"`
-	ErrorCode            pgtype.Text        `json:"error_code"`
-	ErrorMessage         pgtype.Text        `json:"error_message"`
-	PostCommitDoneAt     pgtype.Timestamptz `json:"post_commit_done_at"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ID                         pgtype.UUID        `json:"id"`
+	WorkspaceID                pgtype.UUID        `json:"workspace_id"`
+	DecisionRequestID          pgtype.UUID        `json:"decision_request_id"`
+	ActionType                 string             `json:"action_type"`
+	ActionVersion              int32              `json:"action_version"`
+	Params                     []byte             `json:"params"`
+	Preconditions              []byte             `json:"preconditions"`
+	SecretSlots                []byte             `json:"secret_slots"`
+	PayloadSha256              string             `json:"payload_sha256"`
+	ExpiresAt                  pgtype.Timestamptz `json:"expires_at"`
+	State                      string             `json:"state"`
+	RequestedByAgentID         pgtype.UUID        `json:"requested_by_agent_id"`
+	RequestedByTaskID          pgtype.UUID        `json:"requested_by_task_id"`
+	ApprovedByUserID           pgtype.UUID        `json:"approved_by_user_id"`
+	ApprovedAt                 pgtype.Timestamptz `json:"approved_at"`
+	ExecutedAt                 pgtype.Timestamptz `json:"executed_at"`
+	WebauthnCredentialID       pgtype.UUID        `json:"webauthn_credential_id"`
+	Result                     []byte             `json:"result"`
+	ErrorCode                  pgtype.Text        `json:"error_code"`
+	ErrorMessage               pgtype.Text        `json:"error_message"`
+	PostCommitDoneAt           pgtype.Timestamptz `json:"post_commit_done_at"`
+	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
+	RevokedAt                  pgtype.Timestamptz `json:"revoked_at"`
+	RevokedByUserID            pgtype.UUID        `json:"revoked_by_user_id"`
+	RevokeReason               pgtype.Text        `json:"revoke_reason"`
+	RevokeWebauthnCredentialID pgtype.UUID        `json:"revoke_webauthn_credential_id"`
 }
 
 type DecisionAgentNotice struct {
@@ -2902,6 +2911,7 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	WorkflowSplit     []byte             `json:"workflow_split"`
 }
 
 type ProjectResource struct {
