@@ -202,27 +202,30 @@ func PrepareManagedClaudeHome(envRoot, sourceConfigDir, brief string, skills []S
 // prepareCodexHomeWithOpts(Managed): only assigned skills are installed,
 // $HOME/.agents/skills entries are disabled in config.toml, and a receipt is
 // written. The personal ~/.codex/skills link step is deliberately skipped.
-func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv, mcpConfig json.RawMessage, logger *slog.Logger) error {
+func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv, mcpConfig json.RawMessage, logger *slog.Logger) ([]string, error) {
 	skillsDir := filepath.Join(codexHome, "skills")
 	if err := os.RemoveAll(skillsDir); err != nil {
-		return fmt.Errorf("clear codex skills dir: %w", err)
+		return nil, fmt.Errorf("clear codex skills dir: %w", err)
 	}
+	preparedSkillNames := resolveSkillSlugs(skills)
 	if len(skills) > 0 {
-		if err := writeSkillFiles(skillsDir, skills, nil); err != nil {
-			return err
+		var err error
+		preparedSkillNames, err = writeSkillFilesWithNames(skillsDir, skills, nil)
+		if err != nil {
+			return nil, err
 		}
 	}
 	userHome, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("resolve user home: %w", err)
+		return nil, fmt.Errorf("resolve user home: %w", err)
 	}
 	universalDir := filepath.Join(userHome, ".agents", "skills")
 	universal, universalCanonical := listUniversalSkills(universalDir)
 	if err := ensureCodexDisabledSkillsConfig(filepath.Join(codexHome, "config.toml"), codexHome, universal, skills); err != nil {
-		return fmt.Errorf("disable personal codex skills: %w", err)
+		return nil, fmt.Errorf("disable personal codex skills: %w", err)
 	}
 	if err := appendDisabledCodexSkillPaths(filepath.Join(codexHome, "config.toml"), universalCanonical); err != nil {
-		return fmt.Errorf("disable canonical personal codex skills: %w", err)
+		return nil, fmt.Errorf("disable canonical personal codex skills: %w", err)
 	}
 	sharedHome := resolveSharedCodexHome()
 	if _, err := writeLaunchReceipt(envRoot, LaunchReceipt{
@@ -233,12 +236,12 @@ func prepareManagedCodex(envRoot, codexHome string, skills []SkillContextForEnv,
 		McpServers:    mcpServerNames(mcpConfig),
 		ExcludedPaths: append(existingPaths(sharedHome, "instructions.md", "skills", filepath.Join("plugins", "cache")), universalDir),
 	}); err != nil {
-		return fmt.Errorf("write launch receipt: %w", err)
+		return nil, fmt.Errorf("write launch receipt: %w", err)
 	}
 	if logger != nil {
 		logger.Info("execenv: managed codex home prepared", "codex_home", codexHome)
 	}
-	return nil
+	return preparedSkillNames, nil
 }
 
 // managedCodexConfigKeys is the top-level allowlist for a managed

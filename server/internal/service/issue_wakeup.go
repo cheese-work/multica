@@ -1521,7 +1521,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		// CHE-4984: a scheduled conflict heartbeat over a PR that is as it was
 		// when the last heartbeat run started adds nothing, so it starts no run.
 		if scheduled && custom == nil && isConflictHeartbeat(w) {
-			if heartbeatFP, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+			if heartbeatFP, _, _, err = prStateFingerprint(ctx, tx, issue.ID, w.AgentID, "wakeup_id", util.UUIDToString(w.ID)); err != nil {
 				return err
 			}
 			if heartbeatFP != "" {
@@ -1631,7 +1631,26 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			}
 			return commit()
 		}
-		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup"}); err != nil {
+		// A paused agent's wakeup is skipped and logged, not retried. A
+		// recurring wakeup fires again on its next schedule after a resume; a
+		// one-shot or condition wakeup is consumed here and does not fire after
+		// a resume (CHE-5066).
+		if pausedErr := guardAgentNotPaused(ctx, q, w.AgentID); errors.Is(pausedErr, ErrAgentPaused) {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+				return err
+			}
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{
+				ID: w.ID, Enabled: enabled, NextFireAt: next, LastError: pgtype.Text{String: ErrAgentPaused.Error(), Valid: true},
+			}); err != nil {
+				return err
+			}
+			if err := note(wakeupActivitySkipped, map[string]any{"reason_code": string(dispatch.ReasonAgentPaused), "reason": ErrAgentPaused.Error()}); err != nil {
+				return err
+			}
+			slog.Info("issue wakeup skipped: agent paused", "wakeup_id", util.UUIDToString(w.ID), "agent_id", util.UUIDToString(w.AgentID))
+			return commit()
+		}
+		if err := guardIssueRunAllowed(ctx, q, issue.ID, origin, RunTarget{AgentID: w.AgentID, Trigger: "wakeup", SourceWakeupID: w.ID}); err != nil {
 			return err
 		}
 		headSHA := ""
@@ -1735,6 +1754,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		return err
 	}
 	if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: enabled, NextFireAt: next, LastTaskID: lastTask}); err != nil {
+		return err
+	}
+	if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
 		return err
 	}
 	if timedOut {
@@ -2084,4 +2106,26 @@ func waiverFollowupRecorded(ctx context.Context, tx pgx.Tx, w db.IssueWakeup) (b
  AND t.agent_id=$3 AND t.issue_id=$1 AND t.context->>'wakeup_id'=$4)`,
 		w.IssueID, "Follow-up result ("+util.UUIDToString(w.FollowupInstanceID)+"):", w.AgentID, util.UUIDToString(w.ID)).Scan(&recorded)
 	return recorded, err
+}
+
+// DispatchRule dispatches one rule once, as a scheduler pass would, and returns
+// what the dispatch returned (a budget refusal included): the run budget
+// resume (CHE-2860) runs the dispatch a refusal stopped and reads the outcome
+// from it. The rule's failure note and scan-order touch are the pass's, not
+// this call's. A rule that is gone is nil: there is nothing to run.
+func (s *IssueWakeupService) DispatchRule(ctx context.Context, workspaceID, id pgtype.UUID) error {
+	w, err := s.Tasks.Queries.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: id, WorkspaceID: workspaceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	switch {
+	case w.SystemRule.String == SystemRuleWorkflowEdges:
+		return s.dispatchWorkflowEdges(ctx, w)
+	case w.SystemRule.Valid:
+		return s.dispatchSystem(ctx, w)
+	}
+	return s.dispatch(ctx, w)
 }

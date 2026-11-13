@@ -50,6 +50,8 @@ import type {
   WecomInstallation,
   ListLarkInstallationsResponse,
   ListWecomInstallationsResponse,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
   RedeemWecomBindingTokenResponse,
   TelegramInstallation,
   ListTelegramInstallationsResponse,
@@ -1103,7 +1105,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
-const DecisionRequestCardSchema = z.lazy(() => z.object({
+export const DecisionRequestCardSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
   issue_identifier: z.string().default(""),
@@ -1146,6 +1148,8 @@ const DecisionRequestCardSchema = z.lazy(() => z.object({
   }).loose()).optional().catch(undefined),
   answered_by_batch_request_id: z.string().nullish().catch(undefined),
 }).loose());
+
+export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
 
 export const DecisionArtifactListSchema = z.lazy(() => z.object({
   artifacts: z.array(z.object({
@@ -1296,6 +1300,16 @@ export const AttachmentResponseSchema = z.lazy(() => z.object({
   filename: z.string(),
   chat_session_id: z.string().nullable().optional(),
   chat_message_id: z.string().nullable().optional(),
+}).loose());
+
+// Parsed with parseOrThrow, not a fallback: an empty fallback diff would read as
+// "no changes" and hide a broken response.
+export const AttachmentRevisionDiffSchema = z.lazy(() => z.object({
+  from: z.number(),
+  to: z.number(),
+  binary: z.boolean(),
+  diff: z.string().optional().default(""),
+  message: z.string().optional().default(""),
 }).loose());
 
 export const EMPTY_ATTACHMENT: Attachment = {
@@ -1802,6 +1816,7 @@ export const IssueSchema = z.lazy(() => z.object({
   // this field to make a decision — useStatusLabel resolves the label from the
   // catalog — so dropping it costs a fallback to the key. (MUL-6749)
   status_name: z.string().optional().catch(undefined),
+  run_budget_blocked: z.boolean().optional().catch(undefined),
   priority: z.string(),
   assignee_type: z.string().nullable(),
   assignee_id: z.string().nullable(),
@@ -3302,20 +3317,20 @@ export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 
 export const IssueUnreadPageSchema = z.lazy(() =>
   z
-  .object({
-    items: z.array(
-      z
-        .object({
-          issue_id: z.string(),
-          outcome: z.string(),
-          agent_id: z.string().nullish().transform((v) => v ?? null),
-          created_at: z.string(),
-        })
-        .loose(),
-    ),
-    next_cursor: z.string().nullish().transform((v) => v ?? null),
-  })
-  .loose(),
+    .object({
+      items: z.array(
+        z
+          .object({
+            issue_id: z.string(),
+            outcome: z.string(),
+            agent_id: z.string().nullish().transform((v) => v ?? null),
+            created_at: z.string(),
+          })
+          .loose(),
+      ),
+      next_cursor: z.string().nullish().transform((v) => v ?? null),
+    })
+    .loose(),
 );
 
 export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
@@ -4068,11 +4083,46 @@ export const ListWecomInstallationsResponseSchema = z.lazy(() => z.object({
   installations: z.array(WecomInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
+  // The settings tab gates the QR install entry point on this, so it is
+  // declared and validated here rather than left to pass through the loose
+  // object unchecked.
+  scan_install_supported: z.boolean().optional(),
 }).loose());
 
 export const EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE: ListWecomInstallationsResponse = {
   installations: [],
   configured: false,
+};
+
+export const BeginWecomInstallResponseSchema = z.lazy(() => z.object({
+  session_id: z.string(),
+  status: z.string().default("error"),
+  poll_interval_seconds: z.number().optional().default(1),
+}).loose());
+
+// A malformed begin response degrades to a terminal error rather than a session
+// the client would poll forever with an empty id.
+export const MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE: BeginWecomInstallResponse = {
+  session_id: "",
+  status: "error",
+  poll_interval_seconds: 1,
+};
+
+export const WecomInstallStatusResponseSchema = z.lazy(() => z.object({
+  status: z.string().default("error"),
+  qr_code_url: z.string().optional(),
+  expires_in_seconds: z.number().optional(),
+  poll_interval_seconds: z.number().optional().default(2),
+  installation_id: z.string().optional(),
+  error_reason: z.string().optional(),
+}).loose());
+
+// Same reasoning: an unparseable status stops the poll loop instead of leaving
+// the dialog spinning on a response nobody can read.
+export const MALFORMED_WECOM_INSTALL_STATUS_RESPONSE: WecomInstallStatusResponse = {
+  status: "error",
+  poll_interval_seconds: 2,
+  error_reason: "internal_error",
 };
 
 export const RedeemWecomBindingTokenResponseSchema = z.lazy(() => z.object({
@@ -4580,6 +4630,16 @@ export const RoutingAgentSettingSchema = z.lazy(() => z.object({
   overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
 }).loose());
 export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+
+// CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
+// empty; a malformed requires_human_decision reads as true, the fail-closed
+// value the server also uses.
+export const DelegatedWritesSchema = z.lazy(() => z.object({
+  allowed_agents: z.array(z.string()).nullish().transform((v) => v ?? []),
+  allowed_fields: z.array(z.string()).nullish().transform((v) => v ?? []),
+  requires_human_decision: z.boolean().catch(true),
+}).loose());
+export type DelegatedWrites = z.infer<typeof DelegatedWritesSchema>;
 
 // Provider breaker state (CHE-4382). An unknown state reads as `open`: the
 // panel must not tell an admin a breaker is closed when it cannot tell.

@@ -265,6 +265,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"elevated_op":                        workspaceDelete,
 	"issue_taint":                        workspaceDelete,
 	"issue_taint_clear":                  workspaceDelete,
+	"issue_run_taint":                    workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
@@ -300,11 +301,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_endpoint":          workspaceDelete, // CHE-2031 inbound webhook guard; no FK.
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
+	"wecom_install_session":              workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,
 	"system1_observation":                workspaceDelete,     // CHE-3628 no FK.
 	"system1_label":                      workspaceDelete,     // CHE-4470 no FK.
+	"system1_prediction":                 workspaceDelete,     // CHE-4471 no FK.
 	"ci_watch_config":                    workspaceDelete,     // CHE-4273 CI watcher settings; no FK.
 	"ci_watch_config_audit":              workspaceDelete,     // CHE-4273
 	"ci_failure_event":                   workspaceDelete,     // CHE-4273

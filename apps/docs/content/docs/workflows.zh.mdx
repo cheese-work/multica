@@ -94,6 +94,8 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 在工作流编辑器中设置**每个 Issue 的最大运行次数**，可限制一个 Issue 在被工作流阻止前最多能启动多少次运行（1 到 1000；留空则使用默认值 15）。修改需要已登录的网页或桌面会话；不改动该字段的保存可从任何客户端进行。旁边的**包含子 Issue 的 PR** 开关决定 PR 守卫是否也读取子 Issue 的 PR（默认开启），遵循同一规则。智能体或令牌不能直接修改这两个字段：会收到 `budget_requires_decision`，需用 `multica config propose workflow.budget` 提出修改，再由所有者用通行密钥批准。智能体或令牌创建 Issue、或把 Issue 改绑到预算更宽的工作流时，同样受此限制（`budget_rebinding_requires_interactive`）。同一个决定即可放行：`multica issue create` 和 `multica issue update` 接受 `--workflow <id> --decision-id <id>`。
 
+设有运行预算的 Issue，侧边栏会显示一个计量条：已用运行数、剩余运行数、80 % 时的警告，以及**运行预算已用完**状态。**提高上限**和**补充**会请求工作区所有者批准更多运行。如果你是所有者，可直接用通行密钥在原处批准；否则请求会发给所有者。在列表和看板中，被预算停住的 Issue 会在状态旁显示**预算已用完**标签。
+
 删除工作流前，需要先把使用它的项目切换到其他工作流。任务会保留当前状态。
 
 如果**设置**中没有**工作流**，说明当前工作区还不能使用这个功能，状态仍在**设置 → 任务状态**中管理。

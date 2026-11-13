@@ -559,7 +559,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("content-stdin", false, "")
 	cmd.Flags().String("content-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().StringSlice("steer", nil, "")
@@ -921,6 +921,7 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
+	cmd.Flags().Bool("assignee-picker", false, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
@@ -930,7 +931,7 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().StringSlice("attachment-id", nil, "")
 	cmd.Flags().StringArray("property", nil, "")
 	return cmd
@@ -4231,9 +4232,7 @@ func TestRunIssueCreateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("status", "not a status")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4245,9 +4244,7 @@ func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("priority", "P1")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4265,7 +4262,7 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().Bool("description-stdin", false, "")
 	cmd.Flags().String("description-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("status", "", "")
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")

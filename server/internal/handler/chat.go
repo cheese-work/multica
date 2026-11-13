@@ -33,10 +33,6 @@ import (
 // meaningful summary, short enough to keep the dropdown row scannable.
 const chatSessionTitleMaxLen = 200
 
-// chatTitleFallbackMaxLen is the runes cut of the deterministic fallback DM
-// title (no agent, or the agent chain failed). Matches the client CHAT_TITLE_MAX.
-const chatTitleFallbackMaxLen = 60
-
 // Chat Sessions
 
 type CreateChatSessionRequest struct {
@@ -801,6 +797,13 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to lock chat agent")
 		return
 	}
+	// Cancelling the session's runs locks run rows, and the issues the agent
+	// delete reaches must be locked before any run row.
+	if err := service.LockIssuesBeforeSystemAgentDelete(r.Context(), qtx, session.AgentID); err != nil {
+		slog.Warn("lock issues of chat agent delete failed", "session_id", sessionID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to lock chat agent issues")
+		return
+	}
 
 	cancelled, err := qtx.CancelAgentTasksByChatSession(r.Context(), session.ID)
 	if err != nil {
@@ -883,7 +886,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to remove chat session agent label assignments")
 		return
 	}
-	if err := qtx.DeleteSystemAgentByID(r.Context(), session.AgentID); err != nil {
+	if err := deleteSystemAgent(r.Context(), qtx, session.AgentID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to clean up chat session agent")
 		return
 	}
@@ -1445,6 +1448,8 @@ func (h *Handler) ListChatMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
 		return
 	}
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
+	messages = afterSegmentFloor(messages, floorAt, floorID)
 	writeJSON(w, http.StatusOK, h.chatMessageResponses(r.Context(), workspaceID, visibleChatMessages(messages)))
 }
 
@@ -1546,11 +1551,14 @@ func (h *Handler) ListChatMessagesPage(w http.ResponseWriter, r *http.Request) {
 	// A session can contain one server-authored onboarding kickoff. Fetch one
 	// extra row beyond the normal lookahead so hiding it cannot make a visible
 	// page appear shorter or lose its next cursor.
+	floorAt, floorID := agentSegmentFloor(session, r.Header.Get("X-Actor-Source"))
 	messages, err := h.Queries.ListChatMessagesPage(r.Context(), db.ListChatMessagesPageParams{
 		ChatSessionID:   session.ID,
 		Limit:           int32(limit + 2),
 		BeforeCreatedAt: beforeCreatedAt,
 		BeforeID:        beforeID,
+		FloorCreatedAt:  floorAt,
+		FloorID:         floorID,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list chat messages")
@@ -2603,4 +2611,12 @@ func normalizeMessageKind(kind string) string {
 	default:
 		return protocol.ChatMessageKindMessage
 	}
+}
+
+// deleteSystemAgent removes a session-owned system agent and, through the FKs,
+// its runs. Nulling parent_task_id on the children of those runs runs the
+// children's taint trigger, so the caller has locked their issues first with
+// service.LockIssuesBeforeSystemAgentDelete, before it held any run row.
+func deleteSystemAgent(ctx context.Context, qtx *db.Queries, agentID pgtype.UUID) error {
+	return qtx.DeleteSystemAgentByID(ctx, agentID)
 }

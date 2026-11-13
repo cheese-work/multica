@@ -1,5 +1,6 @@
 "use client";
 
+import { RunBudgetMeter } from "./run-budget-meter";
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -111,6 +112,8 @@ import { IssuePropertyPills } from "./issue-property-pills";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
+import { AttachmentList } from "./attachment-list";
+import { chainedIssueAttachments } from "@multica/core/attachments/revision-diff";
 import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
 import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
@@ -3185,6 +3188,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     [issueAttachments, descPendingAttachments],
   );
 
+  const chainedAttachments = useMemo(() => chainedIssueAttachments(issueAttachments), [issueAttachments]);
+
   // Every previewable file in this issue, in the order the page renders them:
   // the description first, then each timeline comment with its thread replies
   // nested under it (MUL-5752). Built from `items` rather than the flat
@@ -3474,6 +3479,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     keyAt: (index) => (items[index] ? timelineItemKey(items[index]) : undefined),
   });
   const scrollAnchorIndex = scrollAnchor ? items.findIndex((item) => timelineItemKey(item) === scrollAnchor.key) : -1;
+  // A deep link not yet landed opens the list AT its comment. Asking a mounted
+  // list to scroll there instead lands it on a guess and then on NaN, which
+  // snaps the page to the top (CHE-5376).
+  const openAtLandingIndex = highlightCommentId && consumedHighlightId !== highlightCommentId ? targetIdx : -1;
 
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
@@ -3588,6 +3597,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
           the Parent issue section and the Relations graph button. */}
       <IssueHierarchy key={issue.id} issue={issue} />
+
+      <RunBudgetMeter key={issue.id} issueId={issue.id} />
 
       {/* Properties */}
       <div>
@@ -4506,6 +4517,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </DescriptionDisclosure>
 
+            <AttachmentList
+              attachments={chainedAttachments}
+              content={issue?.description ?? ""}
+              className="mt-3"
+            />
+
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar
                 reactions={issueReactions}
@@ -4812,8 +4829,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       data={items}
                       {...(scrollAnchor && scrollAnchorIndex >= 0
                         ? { initialTopMostItemIndex: { index: scrollAnchorIndex, align: "start" as const, offset: scrollAnchor.offset } }
-                        : {})}
-                      initialScrollTop={scrollAnchorIndex >= 0 ? undefined : restoredScrollTop}
+                        : openAtLandingIndex >= 0
+                          ? { initialTopMostItemIndex: { index: openAtLandingIndex, align: "start" as const, offset: -16 } }
+                          : {})}
+                      initialScrollTop={scrollAnchorIndex >= 0 || openAtLandingIndex >= 0 ? undefined : restoredScrollTop}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
                       computeItemKey={(_i, item) => timelineItemKey(item)}
                       skipAnimationFrameInResizeObserver
