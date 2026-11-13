@@ -401,6 +401,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
 
+ワークスペースのメンバーは誰でも、スコープと予測器バージョンごとの System 1 資格状態を読めます:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` は `test_first_waiver` または `ci:<repo>:<protocol>` です。各行は 1 つの予測器バージョンの最新のエポックを対象にします。エポック開始以降に作成された観測だけが数えられ、新しい予測器バージョンは独自のエポックを開きます。1 ケースは、正式ラベル (置き換えられていない最新のラベル) を持つ 1 件の予測です。`denominator` は棄権でない予測と対応済みラベルを持つケース、`agreed` は両者が一致したもの、`abstained` は予測器が棄権したラベル付きケース、`unmapped` は自由記述の回答の数です。`status` は、7 日以上、`denominator` が 20 以上、一致率 90% 以上で `qualified` になります。4 週間経っても数えたケースが 20 未満なら `insufficient_data`、降格されたエポックは `demoted`、それ以外は `collecting` です。
+
 ## ID と出力形式
 
 タスクには `MUL-123` のようなキーまたは完全な UUID を使います。UUID の短いプレフィックスは受け付けません。
