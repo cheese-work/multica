@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -153,5 +157,108 @@ func TestWorkflowSetRefusesCrossWorkspaceTargetAtPropose(t *testing.T) {
 	taskTokenSetWorkflow(t, f, map[string]any{"workflow_id": f.wide}).Want(http.StatusBadRequest)
 	if got := pendingWorkflowSetActions(t, f.c.issueID); got != 0 {
 		t.Fatalf("a refused ask opened %d cards", got)
+	}
+}
+
+// An older build has no issue.workflow.set@1 in its registry. A card opened by
+// this build and approved there fails closed: nothing runs and nothing is
+// written. The registry miss is the same for an unknown version, and approve
+// answers it with action_not_executable (501).
+func TestOrphanWorkflowSetCardFailsClosedOnAnUnknownType(t *testing.T) {
+	f := newRebindFixture(t, 5505500)
+	card := openWorkflowSetCard(t, f)
+	dbfx.Exec(t, `UPDATE decision_action SET action_version = 99 WHERE id = $1`, card.ActionID)
+	raw, err := json.Marshal(map[string]any{"payload_sha256": card.hash, "assertion": map[string]any{"id": "fake"}, "secrets": map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := withURLParam(newRequest(http.MethodPost, "/api/decision-actions/"+card.ActionID+"/approve", nil), "id", card.ActionID)
+	req.Header.Set("X-User-ID", card.humanID)
+	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	req.Body = readerCloser{bytes.NewReader(raw)}
+	res := testutil.Call(t, withVerifier(acceptingVerifier).ApproveDecisionAction, req)
+	if res.Code != http.StatusNotImplemented || !strings.Contains(res.Text(), "action_not_executable") {
+		t.Fatalf("approve = %d %s, want 501 action_not_executable", res.Code, res.Text())
+	}
+	if got := issueOverride(t, f.c.issueID); got != "" {
+		t.Fatalf("an orphan card wrote override %s", got)
+	}
+	var state string
+	dbfx.QueryRow(t, `SELECT state FROM decision_action WHERE id = $1`, card.ActionID).Scan(&state)
+	if state != "pending" {
+		t.Fatalf("orphan card state = %s, want pending", state)
+	}
+}
+
+// approveRetrying approves the card, retrying while the approval queue is busy,
+// and reports a failure with Errorf so it is safe inside a goroutine.
+func (c openedWorkflowSetCard) approveRetrying(t *testing.T) decisionActionOutcome {
+	raw, _ := json.Marshal(map[string]any{"payload_sha256": c.hash, "assertion": map[string]any{"id": "fake"}, "secrets": map[string]string{}})
+	handler := withVerifier(acceptingVerifier)
+	for range 50 {
+		req := withURLParam(newRequest(http.MethodPost, "/api/decision-actions/"+c.ActionID+"/approve", nil), "id", c.ActionID)
+		req.Header.Set("X-User-ID", c.humanID)
+		req.Header.Set("X-Actor-Source", "interactive_jwt")
+		req.Body = readerCloser{bytes.NewReader(raw)}
+		rec := httptest.NewRecorder()
+		handler.ApproveDecisionAction(rec, req)
+		if rec.Code == http.StatusConflict && strings.Contains(rec.Body.String(), "busy_retry") {
+			continue
+		}
+		var out decisionActionOutcome
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Errorf("approve = %d %s", rec.Code, rec.Body.String())
+		}
+		return out
+	}
+	t.Error("approval stayed busy")
+	return decisionActionOutcome{}
+}
+
+// The approval and a workflow switch on the issue's project run together, many
+// times. They must not deadlock, and each pair ends in a valid execution or
+// stale_base, never a partial write.
+func TestApproveWorkflowSetRacesProjectWorkflowSwitch(t *testing.T) {
+	for i := range 8 {
+		f := newRebindFixture(t, int64(5505600+i))
+		card := openWorkflowSetCard(t, f)
+		var (
+			wait    sync.WaitGroup
+			out     decisionActionOutcome
+			switchd int
+			start   = make(chan struct{})
+		)
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			out = card.approveRetrying(t)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			req := withURLParam(workflowRequest("POST", "/api/projects/"+f.narrowProj+"/workflow", map[string]any{"workflow_id": f.wide}), "id", f.narrowProj)
+			rec := httptest.NewRecorder()
+			testHandler.SetProjectWorkflow(rec, req)
+			switchd = rec.Code
+			if rec.Code != http.StatusOK {
+				t.Errorf("project switch = %d %s", rec.Code, rec.Body.String())
+			}
+		}()
+		close(start)
+		done := make(chan struct{})
+		go func() { wait.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(60 * time.Second):
+			t.Fatalf("round %d: approval and project switch did not finish (deadlock)", i)
+		}
+		override := issueOverride(t, f.c.issueID)
+		switch {
+		case out.State == "executed" && override == f.wide:
+		case out.State == "failed" && out.ErrorCode == staleBaseCode && override == "":
+		default:
+			t.Fatalf("round %d: outcome %+v with override %q (project switch %d) is not an execution or stale_base", i, out, override, switchd)
+		}
 	}
 }
