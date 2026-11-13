@@ -455,6 +455,10 @@
     "load_more": "더 불러오기",
     "no_lane": "값 없음"
   },
+  "gantt2": {
+    "clipped_start": "이 기간 이전에 시작됨",
+    "now": "지금"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

@@ -455,6 +455,10 @@
     "load_more": "加载更多",
     "no_lane": "无值"
   },
+  "gantt2": {
+    "clipped_start": "在此时间窗口之前开始",
+    "now": "现在"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

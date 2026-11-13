@@ -23,6 +23,8 @@ export default defineConfig({
       "../../workspace/workspace-avatar",
     ].map((id) => ({ find: new RegExp(`^${id.replace(/[/.]/g, "\\$&")}$`), replacement: resolve(here, "workspace-stub.ts") })).concat([
       { find: /^\.\.\/\.\.\/layout\/page-header$/, replacement: resolve(here, "page-header-stub.tsx") },
+      { find: /^@multica\/core\/search-index$/, replacement: resolve(here, "search-index-stub.ts") },
+      { find: /^posthog-js$/, replacement: resolve(here, "posthog-stub.ts") },
     ]),
   },
   build: {

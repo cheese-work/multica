@@ -465,6 +465,10 @@
     "load_more": "Load more",
     "no_lane": "No value"
   },
+  "gantt2": {
+    "clipped_start": "Started before this window",
+    "now": "Now"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
