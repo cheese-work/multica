@@ -660,6 +660,7 @@ export type Priceable = Pick<
 > & {
   provider?: string;
   cost_usd_ticks?: number;
+  credits_micros?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;

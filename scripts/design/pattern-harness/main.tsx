@@ -10,11 +10,21 @@ import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
+import { setApiInstance } from "@multica/core/api";
+import type { ApiClient } from "@multica/core/api/client";
+import { useT } from "../../../packages/views/i18n";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Spinner } from "@multica/ui/components/ui/spinner";
 import { Input } from "@multica/ui/components/ui/input";
-import { Label } from "@multica/ui/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@multica/ui/components/ui/field";
+import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
+import { DecisionActionApproval } from "../../../packages/views/common/decision-action-approval";
+import { DescriptionDisclosure } from "../../../packages/views/issues/components/description-disclosure";
+import { RunBudgetChip } from "../../../packages/views/issues/components/run-budget-chip";
+import { Spinner } from "@multica/ui/components/ui/spinner";
+import { Label } from "@multica/ui/components/ui/label";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -26,9 +36,8 @@ import { cn } from "@multica/ui/lib/utils";
 import { SettingsCard, SettingsRow, SettingsSection } from "../../../packages/views/settings/components/settings-layout";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
-  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
+  Archive, TriangleAlert, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
 } from "@multica/ui/icons";
-import { Badge } from "@multica/ui/components/ui/badge";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
@@ -135,6 +144,89 @@ function IssueMentionChip() {
   );
 }
 
+// DecisionActionApproval reads its outcome from the API on mount. Stub that one read per action id so each
+// reachable state renders without a server: pending -> approve and reject, a terminal state -> its outcome.
+const OUTCOMES: Record<string, unknown> = {
+  "act-pending": { id: "act-pending", state: "pending" },
+  "act-executed": { id: "act-executed", state: "executed", result: { outcome: "cap_applied", from: 20, to: 30 } },
+  "act-failed": { id: "act-failed", state: "failed", error_code: "stale_cap" },
+  "act-rejected": { id: "act-rejected", state: "rejected" },
+};
+setApiInstance({
+  getDecisionActionOutcome: async (id: string) => {
+    const outcome = OUTCOMES[id];
+    if (!outcome) throw new Error("outcome unavailable");
+    return outcome;
+  },
+} as unknown as ApiClient);
+
+function DecisionActionApprovalDemo() {
+  const sha = "0".repeat(64);
+  const Cell = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex items-start gap-4 border-b py-3 last:border-b-0">
+      <span className="w-44 shrink-0 pt-1 text-caption text-muted-foreground">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+  return (
+    <div className="p-6 max-w-[760px]">
+      <Cell label="undecided, owner">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} />
+      </Cell>
+      <Cell label="undecided, not owner (approve hidden)">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} canApprove={false} />
+      </Cell>
+      <Cell label="details unavailable (approve disabled)">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} approveDisabled />
+      </Cell>
+      <Cell label="executed, cap applied"><DecisionActionApproval actionId="act-executed" payloadSha256={sha} /></Cell>
+      <Cell label="failed, stale cap"><DecisionActionApproval actionId="act-failed" payloadSha256={sha} /></Cell>
+      <Cell label="rejected"><DecisionActionApproval actionId="act-rejected" payloadSha256={sha} /></Cell>
+      <Cell label="outcome unreadable (lost)"><DecisionActionApproval actionId="act-unknown" payloadSha256={sha} /></Cell>
+    </div>
+  );
+}
+
+const LONG_DESCRIPTION = Array.from({ length: 9 }, (_, n) =>
+  `Step ${n + 1}: the agent reads the issue, the comment thread and the open decisions before it touches the repository.`);
+function DescriptionDisclosureDemo() {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState<Record<string, boolean>>({ expanded: true });
+  const labels = {
+    preview: "Description preview", loading: "Loading", showMore: t(($) => $.needs_you.show_all, { count: 9 }),
+    showLess: t(($) => $.needs_you.show_less), moreLines: () => "",
+  };
+  const Block = ({ k, lines }: { k: string; lines: string[] }) => (
+    <DescriptionDisclosure id={k} expanded={!!open[k]} onExpandedChange={(v) => setOpen((o) => ({ ...o, [k]: v }))} labels={labels}>
+      <div className="space-y-2 text-body">{lines.map((l) => <p key={l}>{l}</p>)}</div>
+    </DescriptionDisclosure>
+  );
+  return (
+    <div className="p-6 max-w-[640px] space-y-8">
+      <div><p className="mb-2 text-caption text-muted-foreground">collapsed, long text (preview + count)</p><Block k="collapsed" lines={LONG_DESCRIPTION} /></div>
+      <div><p className="mb-2 text-caption text-muted-foreground">expanded (Show less)</p><Block k="expanded" lines={LONG_DESCRIPTION.slice(0, 7)} /></div>
+      <div><p className="mb-2 text-caption text-muted-foreground">short text: no toggle</p><Block k="short" lines={["One short line of description."]} /></div>
+    </div>
+  );
+}
+
+function StatusPillDemo() {
+  return (
+    <div className="p-6">
+      <Row label="Badge default"><Badge>In progress</Badge></Row>
+      <Row label="secondary"><Badge variant="secondary">Todo</Badge></Row>
+      <Row label="outline"><Badge variant="outline">Agent review</Badge></Row>
+      <Row label="destructive"><Badge variant="destructive">Blocked</Badge></Row>
+      <Row label="ghost"><Badge variant="ghost">Backlog</Badge></Row>
+      <Row label="run-budget-chip (real)"><RunBudgetChip issue={{ status: "blocked", run_budget_blocked: true }} /></Row>
+      <Row label="beside a status label">
+        <span className="text-body">CHE-5420</span><Badge variant="destructive">Blocked</Badge>
+        <RunBudgetChip issue={{ status: "blocked", run_budget_blocked: true }} />
+      </Row>
+    </div>
+  );
+}
+
 const VARIANTS = ["default", "outline", "secondary", "ghost", "brand", "brandSubtle", "destructive", "link"] as const;
 function Buttons() {
   return (
@@ -158,6 +250,40 @@ function Buttons() {
         <Button type="submit" disabled aria-busy="true"><Spinner />Saving</Button>
       </Row>
       <Row label="disabled"><Button type="button" disabled>Save</Button></Row>
+    </div>
+  );
+}
+
+function HeaderChipPopoverDemo() {
+  const { t } = useT("chat");
+  const rows = [
+    ["CHE-5428", "x99-claude-sonnet-design", "Approve the cap raise for the doop deploy?"],
+    ["CHE-5420", "x99-codex-leader", "Pick a direction for the Patterns page"],
+    ["CHE-5303", "x99-claude-opus", "Run budget stopped this issue at 20 runs"],
+  ];
+  return (
+    <div className="p-6 min-h-[420px]">
+      <div className="flex items-center justify-between rounded-md border px-3 py-2">
+        <span className="text-body font-medium">Direct message</span>
+        <Popover open>
+          <PopoverTrigger render={<Button variant="outline" size="sm" className="shrink-0 border-warning/40 bg-warning/10 text-warning" />}>
+            {t(($) => $.needs_you.chip, { count: rows.length })}
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-80">
+            <div className="text-caption font-medium text-muted-foreground">{t(($) => $.needs_you.decisions)}</div>
+            <ul className="flex max-h-64 flex-col overflow-y-auto">
+              {rows.map(([key, agent, ask]) => (
+                <li key={key} className="flex min-h-11 flex-col gap-1 rounded-md px-2 py-2 text-caption hover:bg-accent/50">
+                  <span className="flex items-center gap-2 text-muted-foreground">
+                    <span className="font-medium text-foreground">{key}</span><span className="min-w-0 flex-1 truncate">{agent}</span>
+                  </span>
+                  <span className="line-clamp-2 font-medium">{ask}</span>
+                </li>
+              ))}
+            </ul>
+          </PopoverContent>
+        </Popover>
+      </div>
     </div>
   );
 }
@@ -234,7 +360,7 @@ function TabsDemo() {
   );
 }
 
-const Field = ({ label, help, value }: { label: string; help?: string; value: string }) => (
+const CopyField = ({ label, help, value }: { label: string; help?: string; value: string }) => (
   <div className="grid gap-1.5">
     <Label>{label}</Label>
     <Input defaultValue={value} />
@@ -246,12 +372,12 @@ function UiCopy() {
     <div className="grid gap-6 p-6 max-w-[520px]">
       <section className="grid gap-3 rounded-md border p-4">
         <h3 className="text-label font-medium">Omit: the label already says it</h3>
-        <Field label="Workspace name" value="Cheese Work" />
-        <Field label="Wakeup interval (minutes)" help="Minimum 5. Shorter values are rounded up." value="15" />
+        <CopyField label="Workspace name" value="Cheese Work" />
+        <CopyField label="Wakeup interval (minutes)" help="Minimum 5. Shorter values are rounded up." value="15" />
       </section>
       <section className="grid gap-3 rounded-md border p-4">
         <h3 className="text-label font-medium">Avoid: restates the label, the value and the button</h3>
-        <Field label="Workspace name" help="Enter the name of your workspace here. You can change this later." value="Cheese Work" />
+        <CopyField label="Workspace name" help="Enter the name of your workspace here. You can change this later." value="Cheese Work" />
         <Button type="button" className="w-fit">Save</Button>
         <p className="text-caption text-muted-foreground">Click Save to save your changes.</p>
       </section>
@@ -281,6 +407,45 @@ function LazyDetail() {
         <p className="mb-2 text-caption text-muted-foreground">Loaded</p>
         <Suspense fallback={null}><LazyBody /></Suspense>
       </div>
+    </div>
+  );
+}
+
+function FormDialogDemo() {
+  return (
+    <div className="min-h-[640px]">
+      <Dialog open onOpenChange={() => {}}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add local directory</DialogTitle>
+            <DialogDescription>Runs on this machine can read and edit the folder.</DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="dir-label">Label</FieldLabel>
+              <Input id="dir-label" defaultValue="multica fork" />
+            </Field>
+            <Field data-invalid>
+              <FieldLabel htmlFor="dir-ref">Branch</FieldLabel>
+              <Input id="dir-ref" aria-invalid defaultValue="feature//bad" />
+              <FieldDescription>Use letters, digits, dash and slash.</FieldDescription>
+              <FieldError>A branch name cannot hold two slashes in a row.</FieldError>
+            </Field>
+          </FieldGroup>
+          <div className="rounded-md bg-muted px-2.5 py-1.5 font-mono text-micro text-muted-foreground break-all">
+            /mnt/ssd2/multica_workspaces/cheese-work/che-5528/workdir/multica
+          </div>
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertTitle>In-place runs edit this folder</AlertTitle>
+            <AlertDescription>Uncommitted changes in it can be overwritten.</AlertDescription>
+          </Alert>
+          <DialogFooter>
+            <Button variant="ghost">Cancel</Button>
+            <Button>Add directory</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -493,6 +658,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
   "issue-mention-chip": IssueMentionChip,
+  "decision-action-approval": DecisionActionApprovalDemo,
+  "description-disclosure": DescriptionDisclosureDemo,
+  "status-pill": StatusPillDemo,
+  "header-chip-popover": HeaderChipPopoverDemo,
+  "form-dialog": FormDialogDemo,
   "decision-banner": DecisionBanner,
   "hierarchy-minimap": HierarchyMinimap,
   "hierarchy-dialog": HierarchyDialogPage,
