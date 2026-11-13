@@ -30,6 +30,7 @@ WHERE i.project_id=$1 AND i.workspace_id=$2
 -- The workflow_edges watch is the platform's own, not a rule to settle: it
 -- stays and waits out an inactive project in its evaluator.
 AND w.system_rule IS DISTINCT FROM 'workflow_edges'
+AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
 ORDER BY w.id FOR UPDATE OF w;
 
 -- name: BumpProjectWakeupRevisions :exec
