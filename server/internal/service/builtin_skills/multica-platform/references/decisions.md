@@ -272,7 +272,8 @@ refused as `precondition_drift`, a wrong after digest as
   enabled flag, and each skill's bundle hash. Every skill in the after list
   counts as enabled. Read the live list with `multica agent skills list
   <agent-id> --output json` and each skill with `multica skill get <id>
-  --output json`, then run the script below with the skills (a JSON array of
+  --with-content --output json` (without `--with-content` the bodies are
+  missing and the script fails), then run the script below with the skills (a JSON array of
   those `skill get` objects, covering the live and the proposed skills), the
   live assignment (`{"<skill-id>": <enabled>}`) and the proposed id list. It
   prints `base_sha256` then `after_sha256`.
@@ -356,7 +357,7 @@ refused as `denylisted`.
       "compact_prompt": "Keep decisions and open questions.",
       "wakeups_paused": false
     },
-    "base_sha256": "9932f2bdd26537a00ae58c41be55d8ed6d32aa46f7b1e95c690c83a9022e9ec",
+    "base_sha256": "9932f2bdd26537a00ae58c41be55d8ed6d32aa46f7b1e95c690c83a9022e9ecb",
     "after_sha256": "5c61f5f6ae0af114947168ce3751df591ba6059e589a12c2184adf63241caa88"
   }
 }

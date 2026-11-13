@@ -113,6 +113,25 @@ func TestDocumentedActionExampleDigests(t *testing.T) {
 	}
 }
 
+// A digest that is not 64 lowercase hex characters is refused or never matches,
+// and Normalize does not check the format, so the doc test must.
+func TestDocumentedActionExampleDigestsAreHex(t *testing.T) {
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for typ, action := range docActions(t) {
+		var p map[string]json.RawMessage
+		if err := json.Unmarshal(action.Params, &p); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"base_sha256", "after_sha256"} {
+			var digest string
+			_ = json.Unmarshal(p[key], &digest)
+			if !hex64.MatchString(digest) {
+				t.Errorf("%s %s = %q, want 64 lowercase hex characters", typ, key, digest)
+			}
+		}
+	}
+}
+
 func TestDecisionsDocNamesDecisionPropose(t *testing.T) {
 	raw, err := os.ReadFile(decisionsDoc)
 	if err != nil {
