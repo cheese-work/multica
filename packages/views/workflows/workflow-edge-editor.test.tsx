@@ -151,4 +151,51 @@ describe("WorkflowEdgeEditor", () => {
         screen.getByRole("combobox", { name: "Guard" }).getAttribute("aria-disabled") === "true",
     ).toBe(true);
   });
+
+  describe("PR merge rule", () => {
+    const prMerged = [
+      step("in_progress", { edges: [{ to: "in_review", guard: "pr.merged", timeout: "72h" }] }),
+      step("in_review"),
+      step("done"),
+    ];
+
+    it("does not offer pr.merged while the workspace rule is set", async () => {
+      const user = userEvent.setup();
+      renderEditor({ prMergeStatus: "done" });
+      const exit = screen.getByRole("group", { name: "Exit 1: In Review" });
+      await user.click(within(exit).getByRole("combobox", { name: "Guard" }));
+      await screen.findByRole("option", { name: "pr.closed_unmerged" });
+      expect(screen.queryByRole("option", { name: "pr.merged" })).toBeNull();
+    });
+
+    it("offers pr.merged when the rule is none", async () => {
+      const user = userEvent.setup();
+      renderEditor({ prMergeStatus: "none" });
+      const exit = screen.getByRole("group", { name: "Exit 1: In Review" });
+      await user.click(within(exit).getByRole("combobox", { name: "Guard" }));
+      expect(await screen.findByRole("option", { name: "pr.merged" })).toBeTruthy();
+    });
+
+    it("keeps a stored pr.merged exit, tagged deprecated", () => {
+      renderEditor({ steps: prMerged, prMergeStatus: "done" });
+      const exit = screen.getByRole("group", { name: "Exit 1: In Review" });
+      expect(within(exit).getByRole("combobox", { name: "Guard" }).textContent).toContain("pr.merged");
+      expect(within(exit).getByText("deprecated")).toBeTruthy();
+    });
+
+    it("says a merge changes no status when the workflow lacks the target", () => {
+      renderEditor({ prMergeStatus: "merged" });
+      expect(
+        screen.getByText("PR merges change no status in this workflow (Settings → Code moves to merged)."),
+      ).toBeTruthy();
+    });
+
+    it("says nothing for none or a listed target", () => {
+      renderEditor({ prMergeStatus: "none" });
+      expect(screen.queryByText(/PR merges change no status/)).toBeNull();
+      cleanup();
+      renderEditor({ prMergeStatus: "done" });
+      expect(screen.queryByText(/PR merges change no status/)).toBeNull();
+    });
+  });
 });

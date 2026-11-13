@@ -1936,6 +1936,11 @@
       "graph_label": "Graphe du workflow",
       "exits_label": "Sorties du workflow",
       "exit_item": "De {{from}} vers {{to}} quand {{guard}}",
+      "any_step": "Toute étape",
+      "pr_merged": "PR fusionnée",
+      "set_in_settings": "Défini dans Paramètres → Code",
+      "deprecated": "obsolète",
+      "pr_merge_unlisted": "Les fusions de PR ne changent aucun statut dans ce workflow (Paramètres → Code déplace vers {{status}}).",
       "edit": {
         "title": "Sorties de {{step}}",
         "pick": "Sélectionnez une étape pour modifier ses sorties.",

@@ -121,4 +121,54 @@ describe("WorkflowGraph", () => {
     ).toEqual([]);
     expect(within(list).getAllByRole("listitem")).toHaveLength(2);
   });
+
+  describe("PR merge rule", () => {
+    const render = (prMergeStatus?: string) =>
+      renderWithI18n(
+        <WorkflowGraph workflow={{ steps }} project={null} prMergeStatus={prMergeStatus} />,
+      );
+    const exits = () =>
+      within(screen.getByRole("list", { name: /Workflow exits/ }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent);
+
+    it("draws the rule from an Any step marker, labelled PR merged", () => {
+      render("done");
+      expect(exits()).toContain("Any step to Done when PR merged");
+      expect(within(screen.getByTestId("workflow-graph")).getByText("Any step")).toBeTruthy();
+    });
+
+    it("keeps the marker out of the tab order and exposes it in the exits list", () => {
+      render("done");
+      const marker = within(screen.getByTestId("workflow-graph")).getByText("Any step");
+      expect(marker.closest("button, a, [tabindex]")).toBeNull();
+      expect(exits()).toContain("Any step to Done when PR merged");
+    });
+
+    it("tells the target step where the rule is set", () => {
+      render("done");
+      const card = within(screen.getByTestId("workflow-graph"))
+        .getByText("Done")
+        .closest("div[style]") as HTMLElement;
+      expect(within(card).getByText("Set in Settings → Code")).toBeTruthy();
+    });
+
+    it("draws nothing for none or a status the workflow does not list", () => {
+      render("none");
+      expect(exits()).toHaveLength(2);
+      cleanup();
+      render("merged");
+      expect(exits()).toHaveLength(2);
+      expect(screen.queryByText("Any step")).toBeNull();
+      expect(screen.queryByText("Set in Settings → Code")).toBeNull();
+    });
+
+    it("tags a stored pr.merged exit deprecated while the rule is set", () => {
+      render("done");
+      expect(exits().some((x) => /pr\.merged \(deprecated\)/.test(x ?? ""))).toBe(true);
+      cleanup();
+      render("none");
+      expect(exits().some((x) => /deprecated/.test(x ?? ""))).toBe(false);
+    });
+  });
 });

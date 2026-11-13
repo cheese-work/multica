@@ -1,4 +1,5 @@
 import type { IssueWorkflow, IssueWorkflowEdge } from "../types";
+import { PR_MERGE_STATUS_NONE } from "../github/settings";
 import { stepEdges } from "./graph-edit";
 
 export interface WorkflowGraphEdge extends IssueWorkflowEdge {
@@ -6,7 +7,12 @@ export interface WorkflowGraphEdge extends IssueWorkflowEdge {
   from: string;
   /** Position among the step's exits; what the editor addresses an edge by. */
   index: number;
+  /** A derived edge no step holds: it is drawn, never selected, edited or saved. */
+  readOnly?: boolean;
 }
+
+/** `from` of the virtual PR merge edge: the rule applies from any step. */
+export const ANY_STEP = "*";
 
 /**
  * Every exit of every step, for drawing (CHE-2150). A step without `edges`
@@ -15,9 +21,11 @@ export interface WorkflowGraphEdge extends IssueWorkflowEdge {
  */
 export function workflowEdges(
   workflow: Pick<IssueWorkflow, "steps">,
+  /** The workspace `pr_merge_status`; adds the read-only PR merge edge. */
+  prMergeStatus?: string,
 ): WorkflowGraphEdge[] {
   const listed = new Set(workflow.steps.map((s) => s.status_key));
-  return workflow.steps
+  const own = workflow.steps
     .flatMap((step) =>
       stepEdges(workflow.steps, step.status_key).map((e, index) => ({
         ...e,
@@ -27,4 +35,22 @@ export function workflowEdges(
       })),
     )
     .filter((e) => listed.has(e.to));
+  if (
+    !prMergeStatus ||
+    prMergeStatus === PR_MERGE_STATUS_NONE ||
+    !listed.has(prMergeStatus)
+  ) {
+    return own;
+  }
+  return [
+    ...own,
+    {
+      id: `${ANY_STEP}#pr_merge_status`,
+      index: -1,
+      from: ANY_STEP,
+      to: prMergeStatus,
+      guard: "pr_merge_status",
+      readOnly: true,
+    },
+  ];
 }

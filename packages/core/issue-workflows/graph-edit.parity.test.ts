@@ -45,3 +45,20 @@ describe("server parity", () => {
     },
   );
 });
+
+describe("PR merge virtual edge", () => {
+  it("never reaches the steps a save would send", async () => {
+    const { workflowEdges } = await import("./graph");
+    const { stepEdges, addStepEdge } = await import("./graph-edit");
+    const steps = stepsFor("in_progress", {});
+    const before = JSON.stringify(steps);
+    expect(workflowEdges({ steps }, "done").some((e) => e.from === "*")).toBe(true);
+    // The edge is derived for drawing; no step holds it and none can be read from "*".
+    expect(JSON.stringify(steps)).toBe(before);
+    expect(stepEdges(steps, "*")).toEqual([]);
+    expect(
+      JSON.stringify(addStepEdge(steps, "in_progress", "done")).includes("pr_merge_status"),
+    ).toBe(false);
+    expect(validateWorkflowGraph(steps)).toEqual([]);
+  });
+});

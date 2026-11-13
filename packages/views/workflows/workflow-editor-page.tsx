@@ -39,6 +39,7 @@ import {
   EMPTY_WORKFLOW_EDITOR_DRAFT,
   useWorkflowEditorDraftStore,
 } from "@multica/core/issue-workflows/draft-stores";
+import { derivePRMergeStatus } from "@multica/core/github";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { statusColumnKeys } from "@multica/core/issues";
@@ -405,6 +406,7 @@ export function WorkflowEditorPage({
     [draft],
   );
   const graphIssues = useMemo(() => validateWorkflowGraph(graphSteps), [graphSteps]);
+  const prMergeStatus = derivePRMergeStatus(useCurrentWorkspace());
   const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && validMaxRuns(draft.maxRuns) && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
@@ -812,8 +814,9 @@ export function WorkflowEditorPage({
         currentStatus={selectedId}
         onChange={canEdit ? onGraphChange : undefined}
         onSelectStep={setSelected}
+        prMergeStatus={prMergeStatus}
       />
-      <WorkflowEdgeEditor steps={graphSteps} stepKey={graphSteps.some((s) => s.status_key === selectedId) ? selectedId : null} canEdit={canEdit} onChange={onGraphChange} />
+      <WorkflowEdgeEditor prMergeStatus={prMergeStatus} steps={graphSteps} stepKey={graphSteps.some((s) => s.status_key === selectedId) ? selectedId : null} canEdit={canEdit} onChange={onGraphChange} />
       {graphIssues.length > 0 && (
         <ul role="alert" className="space-y-1 text-caption text-destructive">
           {graphIssues.map((i) => (

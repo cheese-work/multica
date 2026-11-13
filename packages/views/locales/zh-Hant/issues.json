@@ -1810,6 +1810,11 @@
       "graph_label": "工作流圖",
       "exits_label": "工作流出口",
       "exit_item": "{{guard}} 時，從 {{from}} 到 {{to}}",
+      "any_step": "任意步驟",
+      "pr_merged": "PR 已合併",
+      "set_in_settings": "在設定 → Code 中設定",
+      "deprecated": "已棄用",
+      "pr_merge_unlisted": "在此工作流程中，PR 合併不會變更任何狀態（設定 → Code 將移至 {{status}}）。",
       "edit": {
         "title": "{{step}} 的出口",
         "pick": "選擇一個步驟以編輯其出口。",

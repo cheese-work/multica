@@ -33,19 +33,32 @@ export function WorkflowEdgeEditor({
   stepKey,
   canEdit,
   onChange,
+  prMergeStatus,
 }: {
   steps: IssueWorkflowStep[];
   stepKey: string | null;
   canEdit: boolean;
   onChange: (steps: IssueWorkflowStep[]) => void;
+  /** The workspace `pr_merge_status`: replaces the `pr.merged` guard (read-only edge). */
+  prMergeStatus?: string;
 }) {
   const { t } = useT("issues");
   const labelOf = useStatusLabel(useWorkspaceId());
+  const prMergeChosen = !!prMergeStatus && prMergeStatus !== "none";
+  const prMergeUnlisted =
+    prMergeChosen && !steps.some((s) => s.status_key === prMergeStatus) ? (
+      <p className="text-caption text-muted-foreground">
+        {t(($) => $.workflows.flow.pr_merge_unlisted, { status: labelOf(prMergeStatus) })}
+      </p>
+    ) : null;
   if (!stepKey) {
     return (
-      <p className="text-caption text-muted-foreground">
-        {t(($) => $.workflows.flow.edit.pick)}
-      </p>
+      <>
+        {prMergeUnlisted}
+        <p className="text-caption text-muted-foreground">
+          {t(($) => $.workflows.flow.edit.pick)}
+        </p>
+      </>
     );
   }
   const edges = stepEdges(steps, stepKey);
@@ -59,6 +72,7 @@ export function WorkflowEdgeEditor({
       aria-label={t(($) => $.workflows.flow.edit.title, { step: labelOf(stepKey) })}
       className="space-y-2"
     >
+      {prMergeUnlisted}
       <h4 className="text-body font-medium">
         {t(($) => $.workflows.flow.edit.title, { step: labelOf(stepKey) })}
       </h4>
@@ -71,7 +85,10 @@ export function WorkflowEdgeEditor({
         // An edge the picker cannot offer (issue_status) stays selectable as-is.
         // CI green cannot move an issue out of every status.
         const pickable = EDITABLE_GUARDS.filter(
-          (g) => g !== "pr.checks_green" || canAdvanceOnCIGreen(stepKey),
+          (g) =>
+            (g !== "pr.checks_green" || canAdvanceOnCIGreen(stepKey)) &&
+            // The workspace rule replaces it; a stored one stays, below.
+            (g !== "pr.merged" || !prMergeChosen),
         );
         const guards = pickable.some((g) => g === e.guard)
           ? [...pickable]
@@ -102,6 +119,11 @@ export function WorkflowEdgeEditor({
                   ))}
                 </SelectContent>
               </Select>
+              {prMergeChosen && e.guard === "pr.merged" && (
+                <span className="text-caption text-muted-foreground">
+                  {t(($) => $.workflows.flow.deprecated)}
+                </span>
+              )}
             </Field>
             <Field label={t(($) => $.workflows.flow.edit.target)}>
               <StatusSelect

@@ -1936,6 +1936,11 @@
       "graph_label": "Workflow graph",
       "exits_label": "Workflow exits",
       "exit_item": "{{from}} to {{to}} when {{guard}}",
+      "any_step": "Any step",
+      "pr_merged": "PR merged",
+      "set_in_settings": "Set in Settings → Code",
+      "deprecated": "deprecated",
+      "pr_merge_unlisted": "PR merges change no status in this workflow (Settings → Code moves to {{status}}).",
       "edit": {
         "title": "Exits from {{step}}",
         "pick": "Select a step to edit its exits.",
