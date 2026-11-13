@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,6 +388,10 @@ type UpdateAutopilotRequest struct {
 	ScriptConfig json.RawMessage `json:"script_config"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
+	// Optional stale-write guard: hex SHA-256 of the description the caller
+	// last read. Requires "description"; a mismatch with the row locked for
+	// update fails the whole request with 409 and writes nothing.
+	ExpectedDescriptionSHA256 *string `json:"expected_description_sha256"`
 }
 
 type SubscriberInput struct {
@@ -1120,8 +1126,13 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.ScriptConfig = scriptCfg
-	if _, ok := rawFields["description"]; ok {
+	_, descriptionSent := rawFields["description"]
+	if descriptionSent {
 		params.Description = ptrToText(req.Description)
+	}
+	if req.ExpectedDescriptionSHA256 != nil && !descriptionSent {
+		writeError(w, http.StatusBadRequest, "expected_description_sha256 requires description")
+		return
 	}
 	if _, ok := rawFields["issue_title_template"]; ok {
 		if req.IssueTitleTemplate != nil {
@@ -1250,6 +1261,17 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ExpectedDescriptionSHA256 != nil {
+		live := sha256.Sum256([]byte(lockedPrev.Description.String))
+		if !strings.EqualFold(*req.ExpectedDescriptionSHA256, hex.EncodeToString(live[:])) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "the autopilot description changed since it was read; re-read it and try again.",
+				"code":  "autopilot_description_conflict",
+			})
+			return
+		}
+	}
+
 	// The subscriber set only enters the audit diff when this request replaces it.
 	var prevSubscriberKeys []string
 	if replaceSubscribers {
@@ -1265,6 +1287,15 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update autopilot")
 		return
+	}
+
+	// Resuming skips the runs missed while the autopilot was not active, so the
+	// display next_run_at left over from before the pause must move to the future.
+	if prev.Status != "active" && autopilot.Status == "active" {
+		if err := refreshScheduleNextRuns(r.Context(), qtx, autopilot.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
 	}
 
 	// A substantive change (target / enabled-state / execution mode) republishes the
@@ -1340,6 +1371,36 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	resp := autopilotToResponse(autopilot, subs)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{"autopilot": resp})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// refreshScheduleNextRuns recomputes next_run_at from the current time for every
+// enabled schedule trigger of the autopilot. A trigger whose cron no longer parses
+// keeps its value: it cannot fire either way, and it must not block the resume.
+func refreshScheduleNextRuns(ctx context.Context, q *db.Queries, autopilotID pgtype.UUID) error {
+	triggers, err := q.ListAutopilotTriggers(ctx, autopilotID)
+	if err != nil {
+		return err
+	}
+	for _, t := range triggers {
+		if t.Kind != "schedule" || !t.Enabled || t.CronExpression.String == "" {
+			continue
+		}
+		tz := "UTC"
+		if t.Timezone.Valid && t.Timezone.String != "" {
+			tz = t.Timezone.String
+		}
+		next, err := computeNextRun(t.CronExpression.String, tz)
+		if err != nil {
+			continue
+		}
+		if _, err := q.UpdateAutopilotTrigger(ctx, db.UpdateAutopilotTriggerParams{
+			ID:        t.ID,
+			NextRunAt: pgtype.Timestamptz{Time: next, Valid: true},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // autopilotRuleSubstantiveChange reports whether a substantive (publish-worthy)

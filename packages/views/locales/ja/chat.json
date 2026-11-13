@@ -97,7 +97,6 @@
     "placeholder_archived_send": "この DM はアーカイブされています。送信するとまずアーカイブを解除します…",
     "command_no_arguments": "/{{command}} は引数を受け取りません。単独で送信するか、先頭の / を削除してください。",
     "command_no_attachments": "/{{command}} は添付ファイルと一緒に送信できません。/{{command}} を実行する前に添付ファイルを削除してください。",
-    "reply_ask_other": "このメッセージは未回答の {{count}} 件の質問への返信です",
     "later_set_toast": "{{time}} ICT まで保留しました",
     "later_bad_duration": "1s〜7d の範囲で指定してください(例: /later 2h)",
     "later_failed_toast": "保留できませんでした。もう一度お試しください。"
@@ -389,8 +388,6 @@
   "annotations": {
     "one_request": "決定リクエストへのコメントは、1件ずつ送信してください。",
     "source_label": "{{name}} のメッセージ",
-    "add": "コメントを追加",
-    "confirm_add": "追加",
     "save": "保存",
     "note_label": "コメント {{number}}",
     "note_placeholder": "コメントを追加…",

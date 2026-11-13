@@ -2164,7 +2164,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		AuthorAvatarUrl: ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
+		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
@@ -2254,6 +2254,14 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
 			for _, issueID := range closingIssueIDs {
 				touched[issueID] = struct{}{}
+			}
+		}
+		// A child's PR event re-runs the parent that counts child PRs (CHE-5242).
+		if err := h.addIncludeChildParents(ctx, wsID, touched, issueIDs...); err != nil {
+			if isOwedClosedReplay(ctx) {
+				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: %w", err))
+			} else {
+				slog.Warn("pr auto-complete failed", "err", err)
 			}
 		}
 		resolver := issuestatus.NewResolver(wsID)

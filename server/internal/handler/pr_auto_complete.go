@@ -76,11 +76,15 @@ type prAutoCompleteDecision struct {
 	// workspace leaves status alone (or its choice no longer resolves).
 	Target string
 	// PRs the state is about: still open for waiting, closed-unmerged for
-	// not_merged, every linked PR for all_merged.
+	// not_merged, every linked PR for all_merged (the merged ones under
+	// include_child_prs).
 	PRs []db.ListIssueLinkedPullRequestStatesRow
 	// IssueDisabled is reported independently of State so the issue menu can
 	// show the right toggle label even when another state wins.
 	IssueDisabled bool
+	// IncludeChildPRs is the issue's workflow flag: the PRs are the issue's and
+	// its children's, and the children's own status is not checked (CHE-5242).
+	IncludeChildPRs bool
 }
 
 // prMergeStatusSetting reads the workspace's choice: "none", or the key of the
@@ -172,7 +176,12 @@ func (h *Handler) resolvePRMergeTarget(ctx context.Context, ws db.Workspace, res
 // shared across one delivery so a webhook touching many issues reads the
 // workspace status catalog at most once; nil builds a fresh one.
 func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, issue db.Issue, resolver *issuestatus.Resolver) (prAutoCompleteDecision, error) {
-	prs, err := h.Queries.ListIssueLinkedPullRequestStates(ctx, issue.ID)
+	def, err := h.issueWorkflowDef(ctx, issue)
+	if err != nil {
+		return prAutoCompleteDecision{}, err
+	}
+	include := def != nil && def.IncludeChildPRs
+	prs, err := prMergeDeliveryPRs(ctx, h.Queries, issue.ID, include)
 	if err != nil {
 		return prAutoCompleteDecision{}, err
 	}
@@ -183,7 +192,7 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 	if resolver == nil {
 		resolver = issuestatus.NewResolver(issue.WorkspaceID)
 	}
-	d := prAutoCompleteDecision{IssueDisabled: disabled, Target: h.resolvePRMergeTarget(ctx, ws, resolver)}
+	d := prAutoCompleteDecision{IssueDisabled: disabled, IncludeChildPRs: include, Target: h.resolvePRMergeTarget(ctx, ws, resolver)}
 	if len(prs) == 0 {
 		d.State = prAutoCompleteNone
 		return d, nil
@@ -207,14 +216,11 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteIssueDisabled
 		return d, nil
 	}
-	// A merge writes only a status the issue's project workflow lists, the same
-	// rule a manual status change follows (applyIssueWorkflow). Default and
-	// issues outside any project accept every status. The issue page shows
-	// nothing for this state: the issue just stays where it is.
-	def, _, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
-	if err != nil {
-		return prAutoCompleteDecision{}, err
-	}
+	// A merge writes only a status the issue's workflow lists (its own, else its
+	// project's), the same rule a manual status change follows
+	// (applyIssueWorkflow). Default and issues outside any workflow accept every
+	// status. The issue page shows nothing for this state: the issue just stays
+	// where it is.
 	switch {
 	case issueworkflow.CheckStatus(def, d.Target) != nil:
 		d.State = prAutoCompleteNotInWorkflow
@@ -234,38 +240,50 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteWorkflowOwned
 		return d, nil
 	}
-	var open, closed []db.ListIssueLinkedPullRequestStatesRow
-	for _, pr := range prs {
-		switch pr.State {
-		case "open", "draft":
-			open = append(open, pr)
-		case "closed":
-			closed = append(closed, pr)
-		}
-	}
-	switch {
-	case len(open) > 0:
-		d.State, d.PRs = prAutoCompleteWaiting, open
-	case len(closed) > 0:
-		d.State, d.PRs = prAutoCompleteNotMerged, closed
-	default:
-		d.State, d.PRs = prAutoCompleteAllMerged, prs
-	}
+	d.State, d.PRs = classifyDeliveryPRs(prs, include)
 	return d, nil
 }
 
 // workflowRoutesPRMerge reports whether the workflow step the issue sits on has
 // a pr.merged edge.
 func (h *Handler) workflowRoutesPRMerge(ctx context.Context, issue db.Issue) (bool, error) {
-	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if err != nil && !errors.Is(err, issueworkflow.ErrOverrideMissing) {
+	def, err := h.issueWorkflowDef(ctx, issue)
+	if err != nil || def == nil {
 		return false, err
-	}
-	if def == nil {
-		return false, nil
 	}
 	step, ok := def.Step(issue.Status)
 	return ok && step.HasGuard(issueworkflow.GuardPRMerged), nil
+}
+
+// issueWorkflowDef is the workflow the issue follows: its own, else its
+// project's. Nil means none, or an override whose workflow is gone, which
+// limits nothing.
+func (h *Handler) issueWorkflowDef(ctx context.Context, issue db.Issue) (*issueworkflow.Definition, error) {
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil && !errors.Is(err, issueworkflow.ErrOverrideMissing) {
+		return nil, err
+	}
+	return def, nil
+}
+
+// prMergeHandsOff reports whether the issue's workflow has a step for target
+// with a handler: the merge then hands the issue to it, as a pr.merged edge does.
+func (h *Handler) prMergeHandsOff(ctx context.Context, issue db.Issue, target string) (bool, error) {
+	def, err := h.issueWorkflowDef(ctx, issue)
+	if err != nil || def == nil {
+		return false, err
+	}
+	step, ok := def.Step(target)
+	return ok && step.HandsOff(), nil
+}
+
+// prStatusRefs is the structured form of the PRs that moved an issue.
+func prStatusRefs(prs []db.ListIssueLinkedPullRequestStatesRow) []service.StatusPRRef {
+	refs := make([]service.StatusPRRef, 0, len(prs))
+	for _, pr := range prs {
+		refs = append(refs, service.StatusPRRef{RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, PRNumber: int(pr.PrNumber), MergeCommitSHA: pr.MergeCommitSha})
+	}
+	return refs
 }
 
 // maybeAutoCompleteIssue is autoCompleteIssue for callers with nothing to retry:
@@ -281,8 +299,8 @@ func (h *Handler) maybeAutoCompleteIssue(ctx context.Context, workspaceID, issue
 // It returns the failures a retry can fix (database reads and writes).
 // Safe to call for any issue: every guard lives in decidePRAutoComplete, and
 // the status write is conditional on the status the decision saw, so
-// concurrent merges move the issue once. It starts no agent run: a merge is not
-// a person handing the issue to anyone.
+// concurrent merges move the issue once. A target step with a handler gets the
+// handoff and its run (handOffPRMerge); any other target starts no run.
 func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pgtype.UUID, resolver *issuestatus.Resolver) error {
 	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
 	if err != nil {
@@ -302,11 +320,12 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 	if d.State != prAutoCompleteAllMerged {
 		return nil
 	}
+	// include_child_prs counts the children's PRs instead of their status.
 	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return fmt.Errorf("list children: %w", err)
 	}
-	if len(children) > 0 {
+	if len(children) > 0 && !d.IncludeChildPRs {
 		effective := h.childStatusResolver(ctx)
 		for _, child := range children {
 			status, err := effective(child)
@@ -319,17 +338,35 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 		}
 	}
 
+	handsOff, err := h.prMergeHandsOff(ctx, issue, d.Target)
+	if err != nil {
+		return fmt.Errorf("workflow: %w", err)
+	}
+	if handsOff {
+		return h.handOffPRMerge(ctx, issue, d)
+	}
+
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+	if d.IncludeChildPRs {
+		// The write's own-links guard cannot see the children's PRs: apply the
+		// rule here, in the write's transaction.
+		if ready, err := prMergeStillReady(ctx, qtx, issue.ID, true); err != nil {
+			return fmt.Errorf("status write: %w", err)
+		} else if !ready {
+			return nil
+		}
+	}
 	updated, err := qtx.MoveIssueFromPullRequests(ctx, db.MoveIssueFromPullRequestsParams{
 		ID:             issue.ID,
 		WorkspaceID:    issue.WorkspaceID,
 		TargetStatus:   d.Target,
 		ExpectedStatus: issue.Status,
+		TreeChecked:    d.IncludeChildPRs,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Someone changed the status since the decision; their write wins.
@@ -342,7 +379,12 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 		cancelledWakeups, err = service.StopClosedIssueWakeups(ctx, qtx, updated)
 	}
 	if err == nil {
-		recorded, err = recordSystemStatusChange(ctx, qtx, issue, updated, service.StatusCausePRMerged, map[string]string{"pr": prNumberList(d.PRs)})
+		trigger := service.BackgroundStatusTrigger(service.StatusCausePRMerged, service.StatusCauseActor{Type: "system"}, map[string]string{"pr": prNumberList(d.PRs)})
+		trigger.Cause.PRs = prStatusRefs(d.PRs)
+		var row db.ActivityLog
+		if row, err = service.RecordStatusChange(ctx, qtx, updated, issue.Status, updated.Status, trigger, nil); err == nil {
+			recorded = &row
+		}
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -374,6 +416,31 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 		"prev_duplicate_of_issue_id": liveDuplicateMark(issue.Status, issue.DuplicateOfIssueID),
 	}
 	h.publishSystemStatusChange(uuidToString(workspaceID), recorded, payload)
+	return nil
+}
+
+// handOffPRMerge moves the issue into the workflow step the merge targets and
+// hands it to that step's handler, with its run, as a pr.merged edge does. The
+// move re-reads the linked PRs in its own transaction, so a PR linked since the
+// decision keeps the issue open; a concurrent writer that changed the issue
+// first wins.
+func (h *Handler) handOffPRMerge(ctx context.Context, issue db.Issue, d prAutoCompleteDecision) error {
+	extra := map[string]any{"pull_requests": prNumberList(d.PRs), "pr_refs": prStatusRefs(d.PRs)}
+	_, _, err := h.tryMoveIssueOnEdgeIf(ctx, issue, d.Target, "pr_automation", extra, true,
+		func(ctx context.Context, q *db.Queries) (bool, error) {
+			if d.IncludeChildPRs {
+				return prMergeStillReady(ctx, q, issue.ID, true)
+			}
+			return q.IssuePullRequestsAllMerged(ctx, issue.ID)
+		})
+	// A writer that moved the issue first wins, whether the revision or the
+	// workflow re-check under the lock saw it.
+	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, errWorkflowChanged) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("status write: %w", err)
+	}
 	return nil
 }
 
@@ -589,6 +656,7 @@ func (h *Handler) LinkIssuePullRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows > 0 {
 		h.maybeAutoCompleteIssue(r.Context(), issue.WorkspaceID, issue.ID, nil)
+		h.rerunIncludeChildParent(r.Context(), issue)
 	}
 	h.publishIssuePullRequestsChanged(workspaceID, issue.ID)
 	h.ListPullRequestsForIssue(w, r)
@@ -659,6 +727,7 @@ func (h *Handler) UnlinkIssuePullRequest(w http.ResponseWriter, r *http.Request)
 	if rows > 0 {
 		// Removing the last unmerged PR can leave only merged ones behind.
 		h.maybeAutoCompleteIssue(r.Context(), issue.WorkspaceID, issue.ID, nil)
+		h.rerunIncludeChildParent(r.Context(), issue)
 	}
 	h.publishIssuePullRequestsChanged(workspaceID, issue.ID)
 	h.ListPullRequestsForIssue(w, r)

@@ -61,6 +61,10 @@ type TaskService struct {
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.
 	WorkflowEdges func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwed settles a pr_merge_owed row when it falls due (CHE-5243): it
+	// re-runs the PR-merge completion decision and fences the row by its
+	// (id, revision). Nil leaves the rows untouched.
+	PRMergeOwed func(ctx context.Context, w db.IssueWakeup) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -73,6 +77,9 @@ type TaskService struct {
 	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
 	// that completion dispatches to. Nil: no background output is written.
 	BackgroundWriters map[string]BackgroundWriter
+	// BackgroundNoAgent maps a task purpose to the path that runs when the
+	// job's chain ends without an output. Nil: the job has no such path.
+	BackgroundNoAgent map[string]BackgroundNoAgentPath
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -6765,7 +6772,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, s.failureNoticeText(ctx, task.AgentID, notice), "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
-		s.failOverRoutingTask(ctx, task, failureReason)
+		s.failOverTask(ctx, task, failureReason)
 	} else if heldRetry.engaged && s.failOverRoutingTask(ctx, task, failureReason) {
 		// CHE-1736 M1.2: the fallback agent owns the step now; the held retry of
 		// the failed agent must not run beside it.

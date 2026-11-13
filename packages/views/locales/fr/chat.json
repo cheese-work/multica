@@ -104,8 +104,6 @@
     "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
     "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
     "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}.",
-    "reply_ask_one": "Ce message répond à la question ouverte",
-    "reply_ask_other": "Ce message répond aux {{count}} questions ouvertes",
     "later_set_toast": "Reporté jusqu'à {{time}} ICT",
     "later_bad_duration": "Utilisez une durée de 1s à 7d, par exemple /later 2h",
     "later_failed_toast": "Échec du report. Réessayez."
@@ -402,8 +400,6 @@
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
-    "add": "Ajouter un commentaire",
-    "confirm_add": "Ajouter",
     "save": "Enregistrer",
     "note_label": "Commentaire {{number}}",
     "note_placeholder": "Ajouter un commentaire…",

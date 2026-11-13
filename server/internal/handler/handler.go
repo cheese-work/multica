@@ -634,6 +634,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		}
 	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
+	taskSvc.PRMergeOwed = h.evaluatePRMergeOwed
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
