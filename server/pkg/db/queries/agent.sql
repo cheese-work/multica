@@ -602,6 +602,24 @@ WHERE id IN (
 )
 RETURNING *;
 
+-- name: CancelBackgroundTasksByPurposeAndMember :many
+-- A member's personal-chain change to one job cancels that member's
+-- non-terminal tasks of the job, from either chain source, in the same
+-- transaction as the settings write (CHE-4114). Other members' tasks and other
+-- jobs are left alone. A cancelled attempt never leaves cancelled.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE id IN (
+    SELECT atq.id FROM agent_task_queue atq
+    JOIN agent a ON a.id = atq.agent_id
+    WHERE a.workspace_id = @workspace_id
+      AND atq.purpose = @purpose
+      AND atq.context->>'member_id' = @member_id::text
+      AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+)
+RETURNING *;
+
 -- name: LinkTaskToIssue :exec
 -- Fenced against workspace teardown: lock_task_owner_rows (migration 284)
 -- locks the owners' workspace rows in the writer's own transaction and returns

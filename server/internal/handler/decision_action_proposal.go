@@ -286,7 +286,12 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 	if !ok {
 		return
 	}
-	draft, err := draftDecisionAction(&decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params})
+	wire := &decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params}
+	if err := withIssueTarget(wire, issue.ID); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	draft, err := draftDecisionAction(wire)
 	if err != nil {
 		writeDecisionError(writer, err, "action proposal")
 		return
@@ -316,8 +321,13 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	paramsHash := sha256.Sum256(draft.Params)
+	class, err := handler.requestClassFor(request.Context(), issue, "reversible", draft)
+	if err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	}
 	input := decisionRequestInput{
-		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+		HumanUserID: recipient, Ask: ask, EscalationClass: class, Action: draft,
 		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr, ChatSessionID: chatSession},
 	}
 	// A duplicate that committed first makes the second pass replay it.

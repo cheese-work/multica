@@ -31,8 +31,8 @@ func routingFailoverFixture(t *testing.T, status string) (*delegatedFailureFixtu
 
 func setRoutingAgent(t *testing.T, rows *dbfx.Fixture, f *delegatedFailureFixture, agent, fallback string) {
 	t.Helper()
-	rows.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('routing_agent',
-		jsonb_build_object('agent_id', $2::text, 'fallback_agent_id', $3::text)) WHERE id = $1`,
+	rows.Exec(t, `UPDATE workspace SET settings = jsonb_build_object('background_agents', jsonb_build_object('routing',
+		jsonb_build_object('agent_id', $2::text, 'fallback_agent_id', $3::text))) WHERE id = $1`,
 		f.workspaceID, agent, fallback)
 }
 
