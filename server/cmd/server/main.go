@@ -761,6 +761,7 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
 	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
