@@ -77,7 +77,7 @@ SELECT COALESCE(pg_xact_status(sqlc.arg('xid')::bigint::text::xid8), 'unknown'):
 -- After the S1d cutover only an interactive session's ui_or_api move opens a
 -- window; a PAT, cli_jwt, a row with no trigger and a remap never do.
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
   AND (
     action = 'run_budget_top_up'
@@ -92,7 +92,7 @@ ORDER BY created_at DESC LIMIT 1;
 -- (decision_wait.sql selects on the same rows); only the run-budget window is
 -- limited to interactive sessions (LatestMemberStatusChange).
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
 ORDER BY created_at DESC LIMIT 1;
 
@@ -116,7 +116,7 @@ RETURNING max_runs_override;
 -- Every time a person moved the issue's status or topped up its run budget after
 -- a point: each one opened a run-budget window, whether or not anything was admitted in it.
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
   AND (
     action = 'run_budget_top_up'

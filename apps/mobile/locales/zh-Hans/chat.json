@@ -254,5 +254,30 @@
   "elapsed.failed": "运行 {{time}} 后失败",
   "alerts.no_permission_message": "你已无权运行该智能体，消息未发送。请联系该智能体的所有者申请权限。",
   "failure.runtime_access_denied": "消息未发送：{{detail}}",
-  "banners.no_agent_action": "在 \"更多 → 智能体\" 中添加或启用智能体即可开始聊天。"
+  "banners.no_agent_action": "在 \"更多 → 智能体\" 中添加或启用智能体即可开始聊天。",
+  "attention": {
+    "kind": {
+      "ask": "提问",
+      "later": "提醒",
+      "unseen": "未读",
+      "decision": "决定"
+    },
+    "level": {
+      "fresh": "新",
+      "yellow": "黄色",
+      "red": "红色"
+    },
+    "age": {
+      "minutes_other": "{{count}} 分钟",
+      "hours_other": "{{count}} 小时",
+      "days_other": "{{count}} 天"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_a11y": "{{kind}}。{{level}}，已等待 {{age}}",
+    "done": "完成",
+    "later": "稍后",
+    "done_a11y": "标为完成:{{title}}",
+    "later_a11y": "稍后提醒:{{title}}",
+    "failed": "更新失败,请重试。"
+  }
 }

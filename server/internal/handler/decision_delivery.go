@@ -431,9 +431,15 @@ func (handler *Handler) deliverDecisionWake(ctx context.Context, snapshot decisi
 	if eligible && snapshot.kind == "" && len(snapshot.requests) > 0 {
 		// An executed or declined action already did its effect; its platform
 		// comment starts no run (CHE-5287). A failed action did not, so the
-		// asker still hears of it. One plain request keeps the wake.
+		// asker still hears of it. One plain request keeps the wake. An agent
+		// proposal is the exception: the proposer hears every terminal state
+		// (CHE-5411).
 		settled := true
 		for _, request := range snapshot.requests {
+			if request.ProposalFingerprint.Valid {
+				settled = false
+				continue
+			}
 			action, err := queries.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: workspaceID})
 			if errors.Is(err, pgx.ErrNoRows) {
 				settled = false

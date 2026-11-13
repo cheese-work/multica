@@ -76,7 +76,7 @@ import {
   useSetChatSessionProject,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { deriveChatTitle, useChatStore } from "@multica/core/chat";
+import { DRAFT_NEW_SESSION, classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
@@ -439,6 +439,7 @@ export function ChatWindow() {
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
       decisionRequestId?: string,
+      askIds?: string[],
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -517,9 +518,22 @@ export function ChatWindow() {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await api.sendChatMessage(sessionId, finalContent, attachmentIds, ...(decisionRequestId ? [decisionRequestId] as const : []));
+        result = await sendWithPendingId(sessionId, finalContent, { attachmentIds, decisionRequestId, askIds });
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
+        // Unknown delivery (timeout, network, 5xx): the message may be stored.
+        // Keep the draft, keep the session, and say so; the retry reuses the
+        // same client_message_id, so the server stores one message (A22).
+        if (classifySendFailure(err) === "unknown") {
+          if (isNewSession) {
+            // The draft follows the session: a retry from the empty new-chat
+            // slot would create a second DM and store the message twice.
+            useChatStore.getState().moveInputDraft(DRAFT_NEW_SESSION, sessionId);
+            setActiveSession(sessionId);
+          }
+          toast.error(t(($) => $.input.send_unconfirmed_toast));
+          return false;
+        }
         const reason = dispatchReasonCode(err);
         toast.error(
           reason === "invocation_not_allowed"
