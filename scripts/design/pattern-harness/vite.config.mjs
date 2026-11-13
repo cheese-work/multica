@@ -14,7 +14,14 @@ export default defineConfig({
   resolve: {
     dedupe: ["react", "react-dom", "@tanstack/react-query", "i18next", "react-i18next"],
     // The harness has no workspace; stub the one hook that reads the URL slug.
-    alias: [{ find: /^@multica\/core\/hooks$/, replacement: resolve(here, "workspace-stub.ts") }],
+    alias: [
+      "@multica/core/hooks",
+      "@multica/core/paths",
+      "@multica/core/workspace/queries",
+      "@multica/core/agents",
+      "../../common/actor-avatar",
+      "../../workspace/workspace-avatar",
+    ].map((id) => ({ find: new RegExp(`^${id.replace(/[/.]/g, "\\$&")}$`), replacement: resolve(here, "workspace-stub.ts") })),
   },
   build: {
     outDir: process.env.HARNESS_OUT,

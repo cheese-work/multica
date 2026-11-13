@@ -29,12 +29,15 @@ const (
 	ActionPass = "pass"
 	ActionFix  = "fix"
 	ActionDeny = "deny"
+	// ActionShadow runs a built-in check that only logs; the call always runs.
+	ActionShadow = "shadow"
 
 	// Decision kinds written to the run's decision log.
 	KindPass        = "pass"
 	KindFixed       = "fixed"
 	KindRefused     = "refused"
 	KindPluginError = "plugin-error"
+	KindShadowHit   = "shadow-hit"
 )
 
 // builtinFlags is the allowlist of flags each built-in action may add or edit.
@@ -42,6 +45,8 @@ const (
 var builtinFlags = map[string][]string{
 	"gh-pr":  {"--draft", "--reviewer", "--add-reviewer", "--title"},
 	"gh-api": {},
+	// multica-wakeup only logs.
+	"multica-wakeup": {},
 }
 
 // Match selects calls: the tool and the leading non-flag words after it.
@@ -89,6 +94,8 @@ func DefaultPolicy() *Policy {
 	return &Policy{Version: 1, Plugins: []Plugin{
 		{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionFix, Builtin: "gh-pr"},
 		{Name: "gh-api", Match: Match{Tool: "gh", Subcommand: []string{"api"}}, Action: ActionDeny, Builtin: "gh-api"},
+		{Name: "wakeup-create", Match: Match{Tool: "multica", Subcommand: []string{"issue", "wakeup", "create"}}, Action: ActionShadow, Builtin: "multica-wakeup"},
+		{Name: "wakeup-update", Match: Match{Tool: "multica", Subcommand: []string{"issue", "wakeup", "update"}}, Action: ActionShadow, Builtin: "multica-wakeup"},
 	}}
 }
 
@@ -102,9 +109,9 @@ func (p *Policy) validate() error {
 		}
 		switch pl.Action {
 		case ActionPass, ActionDeny:
-		case ActionFix:
+		case ActionFix, ActionShadow:
 			if pl.Builtin == "" {
-				return fmt.Errorf("plugin %q: action fix needs a builtin", pl.Name)
+				return fmt.Errorf("plugin %q: action %s needs a builtin", pl.Name, pl.Action)
 			}
 		default:
 			return fmt.Errorf("plugin %q: unknown action %q", pl.Name, pl.Action)
