@@ -8,6 +8,7 @@ import {
   Pause,
   Play,
   RotateCcw,
+  Settings2,
   Square,
   Trash2,
 } from "@multica/ui/icons";
@@ -153,6 +154,14 @@ export function AgentRowActions({
           {tCommon(($) => $.navigation.open_in_new_tab)}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() =>
+            intentNavigate(`${paths.agentDetail(agent.id)}?view=general`, "push")
+          }
+        >
+          <Settings2 className="h-3.5 w-3.5" />
+          {t(($) => $.detail.settings)}
+        </DropdownMenuItem>
         {showStop && (
           <DropdownMenuItem
             onClick={() => setConfirmCancel(true)}

@@ -174,6 +174,18 @@ The session-human API is `POST /api/chat/sessions/{sessionId}/fork` with a requi
 Type `/fork [message]` as the first word of a web DM message. The web app forks the DM directly, with no agent turn: the new DM is a full copy of the visible messages and attachments, and the source stays active with a "Forked into" link. You land in the new DM. With a message, the agent answers it at once; without one, the new DM is idle until you send a first message. The agent in the new DM starts a fresh session and gets the transcript in a context block capped at 64 KiB (newest messages first); it reads earlier ones with `multica chat history`. The agent's private tool memory is not copied. Agent-builder DMs cannot be forked, and there is no fork prompt setting.
 If an open issue with the same title (case-insensitive, extra spaces ignored) already exists under the same project and parent, `issue create` refuses and points to that issue. To create another one anyway, add `--allow-duplicate`. To mark an issue as a duplicate of another, run `multica issue status MUL-124 cancelled --duplicate-of MUL-123`.
 
+### Route an issue
+
+`issue route` moves an issue's status and records why, in one call. A routing step uses it to decide where an issue goes next. `--status`, `--reason` (1 to 500 characters) and `--confidence` (0 to 1) are required:
+
+```bash
+multica issue route MUL-123 --status in_review --reason "Tests pass, needs review" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "Needs a backend fix" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "Reviewer will pick it up later" --confidence 0.9
+```
+
+Without `--owner`, the project workflow picks the handler, as with `issue status`. An explicit `--owner` (a member, agent, or squad; `--owner-id` takes a UUID instead of a name) replaces the workflow's handler. A route that keeps the current status and changes only the owner is allowed. A route with the same status and the same owner is refused with HTTP 409 and writes nothing. `--no-start` starts no agent run, as it does for `issue update`. `--expected-revision` refuses the route if the issue changed in the meantime.
+
 ### Timeline
 
 `issue get` shows an issue as it is now. `issue timeline` lists, in order, the changes to status, priority, assignee, title, and dates and the run outcomes, interleaved with comments, which answers questions like "when did it move to in_review" or "how long has it been stuck in this status":
@@ -477,6 +489,8 @@ A batch card closes the per-issue cards it covers. Pass `--covers <request-id>` 
 
 If a decision-intent comment is still open for the task, the older two-step flow applies: pass `--session` or `--new-dm --for`, and the ask replies under the intent comment. `--parent` is refused there.
 
+`--recovers <event-id>` marks the request as the answer to an ask guard event, for example one named in a refused operation or a recovery notice. The server clears that event in the same transaction as the request, but only when the event is on this issue and was raised for the person the request asks. A request for one person never clears another person's event, and a request without `--recovers` clears nothing, even an unrelated one for the same person. An event for another issue or person is refused with `400`. A request recovers one event only: a retry of the same request that names a second event is refused with `400`.
+
 ### Decision proposals
 
 A running task token proposes a governed action for a person to approve with a passkey. The proposal changes nothing itself.
@@ -488,6 +502,8 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` and `--issue` are required. `--param k=v` sends a string and `--param k:=<json>` sends raw JSON; `--params-file` takes one JSON object and cannot be combined with `--param`. The command prints the approve-card link. For a run-budget action that link opens the approval on the issue; for any other action it links to the card in the chat, where the person approves it. A plain option card (`multica decision request` without `--action-file`) cannot apply a change: Approve only records the answer. The server cannot read intent, so it does not refuse such a card; when the decision or an option reads like a workflow, agent, squad, workspace or budget change (or names an allowlisted action type) it adds an advisory hint. Send that change with `multica decision propose`. A refusal shows the server's status and error code. `multica issue budget raise` and `multica issue budget top-up` use the same route under a task token (add `--for <user-id>`); with a personal access token they open the spend request as before. Both commands take one or more issue IDs: `multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<goal>"`. One ID keeps the single proposal. Several IDs under a task token call the batch route once and print one card link; `--goal` names the batch (default: the action and the issue count) and `--output json` returns the batch id and one proposal id per issue. Under a personal access token each ID opens its own request. The batch route needs a chat task and takes up to 25 issues; the server approves a batch of raises with one passkey but refuses a batch of top-ups at approval, so approve top-ups one by one.
+
+A person can revoke an applied action while it is revocable. Run `multica decision revoke <request-id> --why "<reason>"`. An action is revocable only when it was applied, its type has an exact inverse, and nobody has revoked it. In this release only `agent.pause` has an inverse (`agent.resume`), and only when the approval paused the agent and nobody has changed its pause since. Every other action type stays non-revocable. Only the person the ask is for can revoke, with the same role rule as Approve; an action that needs a passkey is revoked in the app. The server records who revoked, when and why, runs the inverse, and wakes the asking agent with the outcome `revoked`. A revoke is refused for a rejected, expired, not applied, discussion-only or already revoked decision. `multica decision get <request-id>` shows `revocable` and, after a revoke, the `revoke` record (`at`, `by`, `reason`).
 
 `issue.project.set` moves the issue to another project: `multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`. The card shows the project, workflow, run cap and runs used before and after, and says whether the move widens the run budget. A move that widens it is a `spend` card; any other move is `reversible`. Only a workspace owner can approve it. The card is refused if the issue left its project, or the target workflow's budget grew, after the request.
 
@@ -612,7 +628,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | | `usage <issue-id>` | View aggregated token usage | |
 | | `rerun-task <run-id>` | Repeat a specific run with its original agent and trigger context | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | Cancel a running or queued run | `--issue` |
-| `project` | `list/get/create/update/delete` | Manage projects | `create`: `--title` (required), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (repeatable) |
+| `project` | `list/get/create/update/delete` | Manage projects | `create`: `--title` (required), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (repeatable); `update` A/B split (owner, admin or project lead): `--split-arm-b` (workflow ID), `--split-start`, `--split-end` (RFC 3339), `--split-exclude-assignee` / `--split-exclude-squad` (repeatable), `--clear-split` |
 | | `status <id> <status>` | Change project status | |
 | | `resource list/add/update/remove` | Manage project resources | `--type`, `--url`, `--default-branch-hint`, `--ref`, `--local-path`, `--daemon-id`, `--execution-mode` (`in_place` / `worktree` for a local directory) |
 | | `workflow get/set <project-id>` | Show the project's effective workflow, or switch it | `set <project-id> <workflow\|default>`: `--map old=new` (repeatable), `--dry-run` prints the status migration plan; the switch neither reassigns issues nor starts runs. Admins and the project lead only |
@@ -674,6 +690,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | `update` | — | Update the CLI to the latest version | |
 | `version` | — | Print version information | `--output` (`text` or `json`) |
 | `guard` | `exec <tool> -- <args>` | Run a tool call through the guard: `gh pr create`, `edit` and `ready` are forced to draft, tagged and read back; writes to pull requests through `gh api` are refused | Exit code: the tool's own, 2 when the guard refuses. Env: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `plugin list\|get\|set` | Read the stored guard policy (`list`, `get <name>`) or write the decision action file that replaces it (`set --file <policy.json> --out <action.json>`, or `--dry-run`). The policy holds workspace plugins and review rules plus org, repo and path layers; a deeper layer overrides a shallower one key by key, and a layer or the workspace with `locked` freezes its keys against deeper layers. `set` sends nothing: a person approves the `workspace.settings.patch` with a passkey. The daemon hands the approved policy to each run as `MULTICA_GUARD_POLICY` (a file outside the working tree) with `MULTICA_GUARD_POLICY_SHA256` | Output: JSON rows (`--output table` for a table); `set` prints `before_sha256` and `after_sha256` |
 
 ## Driving Multica from another coding agent
 

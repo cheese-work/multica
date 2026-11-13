@@ -61,6 +61,14 @@ type TaskService struct {
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.
 	WorkflowEdges func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwed settles a pr_merge_owed row when it falls due (CHE-5243): it
+	// re-runs the PR-merge completion decision and fences the row by its
+	// (id, revision). Nil leaves the rows untouched.
+	PRMergeOwed func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwe writes the pr_merge_owed intent for an issue inside the
+	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
+	// completion decision, and the intent commits with the claim. Nil skips it.
+	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider

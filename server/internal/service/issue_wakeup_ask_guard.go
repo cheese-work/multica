@@ -61,10 +61,14 @@ func (s *IssueWakeupService) askGuardNeeded(in WakeupInput, binding pgtype.UUID)
 // may be saved.
 func (s *IssueWakeupService) askGuardHit(ctx context.Context, issue db.Issue, in WakeupInput) error {
 	g := s.AskGuard
-	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, askguard.Op{
+	op := askguard.Op{
 		IssueID: issue.ID, TaskID: g.TaskID, Kind: "wakeup",
 		Payload: wakeupOperationPayload(issue, in), WarnOnly: g.WarnOnly,
-	})
+	}
+	if member, err := wakeupUUID(in.FilterActorID); err == nil && in.FilterActorType == "member" {
+		op.MemberID = member
+	}
+	v, err := g.Guard.Hit(ctx, issue.WorkspaceID, op)
 	if err != nil {
 		slog.Warn("ask guard hit failed", "error", err, "kind", "wakeup")
 		return ErrWakeupAskGuardUnavailable
