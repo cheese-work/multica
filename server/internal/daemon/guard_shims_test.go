@@ -43,7 +43,7 @@ func guardMulticaBin(t *testing.T) string {
 		build.Env = append(os.Environ(), "HOME="+guardBuildHome)
 		out, err := build.CombinedOutput()
 		if err != nil {
-			guardBinErr = fmt.Errorf("go build multica: %v\n%s", err, out)
+			guardBinErr = fmt.Errorf("go build multica: %w\n%s", err, out)
 		}
 	})
 	if guardBinErr != nil {
