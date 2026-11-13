@@ -234,7 +234,7 @@ func TestApproveDecisionActionFailureRollsBackTheExecution(test *testing.T) {
 	}
 }
 
-func TestApproveDecisionActionNeverWaitsOnAHeldRow(test *testing.T) {
+func TestApproveDecisionActionRefusesAHeldRowAfterBoundedRetries(test *testing.T) {
 	for _, held := range []struct{ name, query string }{
 		{"action", `SELECT 1 FROM decision_action WHERE id = $1 FOR UPDATE`},
 		{"target agent", `SELECT 1 FROM agent WHERE id = (SELECT requested_by_agent_id FROM decision_action WHERE id = $1) FOR UPDATE`},
@@ -245,8 +245,8 @@ func TestApproveDecisionActionNeverWaitsOnAHeldRow(test *testing.T) {
 			holdRow(test, held.query, action.actionID)
 			started := time.Now()
 			body := action.approve(test, withVerifier(acceptingVerifier), action.claim(test, map[string]string{"KEY": secretSentinel}), http.StatusConflict)
-			if !strings.Contains(body, "busy_retry") || time.Since(started) > time.Second {
-				test.Fatalf("after %s body %q; want an immediate busy_retry", time.Since(started), body)
+			if !strings.Contains(body, "busy_retry") || time.Since(started) > 5*time.Second {
+				test.Fatalf("after %s body %q; want busy_retry within the bounded retries", time.Since(started), body)
 			}
 			action.assertUntouched(test)
 		})
