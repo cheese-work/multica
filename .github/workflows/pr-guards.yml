@@ -2,7 +2,7 @@ name: pr-guards
 
 # CHE-4385: one run per PR event. GitHub disabled Actions on this repo at about 2,500 created runs a day, and a skipped
 # run still counts as created, so every guard that used to start on its own is a job here: close target, changelog line,
-# fork sync, the security gate and the mechanical-tier receipt (the last two are reusable workflows, which add jobs and
+# fork sync, the tag and review-policy check (CHE-5208), the security gate and the mechanical-tier receipt (the last two are reusable workflows, which add jobs and
 # no runs). A comment starts nothing; after posting a verdict, dispatch the gate once:
 #   gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
 #
@@ -107,6 +107,52 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
       - name: Check fork source and test preservation
         run: node scripts/fork-sync-guard.mjs
+
+  # CHE-5208 (CHE-5194 T5b): the blocking backstop for the merge-method tag and the review policy. The in-run shim fixes
+  # a PR before it is published; this job fails one that bypassed the shim (an absolute path to gh, the web UI, a runtime
+  # with no shim). It builds the CLI from the trusted workflow commit and runs `multica guard check-pr`, which reads the
+  # PR back and the repository's `.github/agent-rules.yml` from the current tip of the protected base branch. Nothing is
+  # edited. A red check turns green on the next push or ready-for-review event, or `gh run rerun --failed`: this
+  # workflow has no `edited` trigger (CHE-4385). The review half needs the workspace review policy: set the repository
+  # variable GUARD_POLICY_JSON (from `multica guard plugin get`); unset, only the tag and the repository file are checked.
+  # Making this check required is a branch-protection change, Cheese's call.
+  guard-check:
+    name: PR guard rules
+    if: github.event.pull_request.state != 'closed'
+    runs-on: ${{ vars.RUNNER_PR_GUARD_CHECK || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted workflow commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          cache-dependency-path: server/go.sum
+      - name: Build the guard CLI
+        working-directory: server
+        run: go build -o "$RUNNER_TEMP/multica" ./cmd/multica
+      - name: Check the PR against the guard rules
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          REPO: ${{ github.repository }}
+          GUARD_POLICY_JSON: ${{ vars.GUARD_POLICY_JSON }}
+        run: |
+          MULTICA_GUARD_REAL_GH="$(command -v gh)"
+          export MULTICA_GUARD_REAL_GH
+          if [ -n "$GUARD_POLICY_JSON" ]; then
+            printf '%s' "$GUARD_POLICY_JSON" > "$RUNNER_TEMP/guard-policy.json"
+            MULTICA_GUARD_POLICY="$RUNNER_TEMP/guard-policy.json"
+            MULTICA_GUARD_POLICY_SHA256="$(sha256sum "$MULTICA_GUARD_POLICY" | cut -d' ' -f1)"
+            export MULTICA_GUARD_POLICY MULTICA_GUARD_POLICY_SHA256
+          fi
+          "$RUNNER_TEMP/multica" guard check-pr "$PR_URL" -R "$REPO"
 
   security-gate:
     uses: ./.github/workflows/security-gate.yml
