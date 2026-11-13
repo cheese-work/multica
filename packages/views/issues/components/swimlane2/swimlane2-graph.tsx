@@ -4,6 +4,7 @@
 // Presentational: lane and rank come from layoutSwimlanes (W1), endpoint states from buildGraph (K1).
 // Not registered in the view-mode popup yet (W3).
 import { useId, useMemo } from "react";
+import { Button } from "@multica/ui/components/ui/button";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { buildGraph, type GraphEdgeType, type TimelineEdge, type TimelineNode } from "@multica/core/issues/graph-core";
@@ -189,7 +190,7 @@ function Banner({ text, action, onAction }: { text: string; action: string; onAc
   return (
     <div role="alert" className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-1.5 text-caption">
       <span>{text}</span>
-      <button type="button" onClick={onAction} className="ml-auto font-semibold underline">{action}</button>
+      <Button type="button" variant="outline" size="xs" onClick={onAction} className="ml-auto">{action}</Button>
     </div>
   );
 }
