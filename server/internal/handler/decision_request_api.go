@@ -266,6 +266,10 @@ type decisionRequestResponse struct {
 type decisionReadResponse struct {
 	db.DecisionRequest
 	Answer *decisionAnswerRead `json:"answer,omitempty"`
+	// The outcome of the request's proposed action, once it is terminal (CHE-5411).
+	AppliedAt     *string `json:"applied_at,omitempty"`
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
 }
 
 type decisionAnswerRead struct {
@@ -285,6 +289,14 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	response := decisionReadResponse{DecisionRequest: stored}
+	switch action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: stored.ID, WorkspaceID: stored.WorkspaceID}); {
+	case err == nil:
+		response.Outcome, response.OutcomeReason = decisionActionOutcomeOf(action)
+		response.AppliedAt = appliedAtOf(action)
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision action")
+		return
+	}
 	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
 	switch {
 	case err == nil:

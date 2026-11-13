@@ -114,13 +114,13 @@ describe("IssueDetailRoute approval deep link", () => {
     expect(await screen.findByRole("dialog")).toBeTruthy();
   });
 
-  it.each(["executed", "failed", "rejected", "expired", "cancelled"])("says a %s approval is settled and to propose again, with no approve button", async (state) => {
+  it.each([["executed", "applied"], ["failed", "not applied"], ["rejected", "rejected"], ["expired", "expired"], ["cancelled", "cancelled"]])("says a %s approval is settled and to propose again, with no approve button", async (state, label) => {
     getDecisionAction.mockResolvedValue({
       id: "act-1", action_type: "issue.run_budget.raise", action_version: 1, params: { issue_id: issueId, window_id: "w1", new_cap: 9 },
       payload_sha256: "abc", expires_at: "2026-11-07T00:00:00Z", state,
     });
     renderWithI18n(route("approve=act-1"));
-    expect(await screen.findByText(new RegExp(`already ${state}.*propose it again`, "i"))).toBeTruthy();
+    expect(await screen.findByText(new RegExp(`already ${label}.*propose it again`, "i"))).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
   });
 
