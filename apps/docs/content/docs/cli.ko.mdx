@@ -401,6 +401,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
 
+워크스페이스 멤버는 누구나 스코프와 예측기 버전별 System 1 자격 상태를 읽을 수 있습니다:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope`는 `test_first_waiver` 또는 `ci:<repo>:<protocol>`입니다. 각 행은 예측기 버전 하나의 최신 에포크를 다룹니다. 에포크 시작 이후에 만들어진 관측만 세고, 새 예측기 버전은 자체 에포크를 엽니다. 케이스는 기준 라벨(교체되지 않은 가장 최근 라벨)이 있는 예측 하나입니다. `denominator`는 기권이 아닌 예측과 매핑된 라벨이 있는 케이스, `agreed`는 둘이 일치한 케이스, `abstained`는 예측기가 기권한 라벨 케이스, `unmapped`는 자유 텍스트 답변 수입니다. `status`는 7일 이상, `denominator` 20 이상, 일치율 90% 이상이면 `qualified`입니다. 4주 뒤에도 센 케이스가 20 미만이면 `insufficient_data`, 강등된 에포크는 `demoted`, 그 외는 `collecting`입니다.
+
 ## ID와 출력 형식
 
 태스크에는 `MUL-123` 같은 key 또는 전체 UUID를 사용하며 UUID 짧은 접두사는 허용하지 않습니다.

@@ -552,37 +552,53 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (bool
 // pollCondition evaluates a condition rule when it is due or a related event
 // arrived, and returns the next scheduled evaluation. A newly satisfied
 // predicate becomes one condition.met input for the ordinary dispatch below.
-func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) (pgtype.Timestamptz, error) {
+func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) (pgtype.Timestamptz, []db.AgentTaskQueue, error) {
 	hinted, causes, err := consumeConditionHints(ctx, tx, w.ID)
 	if err != nil {
-		return w.NextFireAt, err
+		return w.NextFireAt, nil, err
 	}
 	if !hinted && w.NextFireAt.Valid && w.NextFireAt.Time.After(now) {
-		return w.NextFireAt, nil
+		return w.NextFireAt, nil, nil
 	}
+	fail := func(err error) (pgtype.Timestamptz, []db.AgentTaskQueue, error) { return w.NextFireAt, nil, err }
 	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
 	if err != nil && !conditionDiagnostic(err) {
-		return w.NextFireAt, err
+		return fail(err)
 	}
 	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
-		return w.NextFireAt, err
+		return fail(err)
 	}
 	// condition_state dedups a satisfied predicate; each new satisfaction
 	// gets its own receipt key.
 	state := w.ConditionState
 	var condition WakeupCondition
 	if err := json.Unmarshal(w.Condition, &condition); err != nil {
-		return w.NextFireAt, err
+		return fail(err)
 	}
 	isRun := condition.Type == "github_run"
+	var withdrawn []db.AgentTaskQueue
+	if condition.Type == "merge_eligibility" {
+		// Queued work for a candidate that is no longer eligible, or whose state
+		// is unknown, goes before anything new is queued (CHE-5122).
+		if withdrawn, err = withdrawStaleMergeRuns(ctx, tx, q, w, observedMergeCandidates(observed["pull_requests"])); err != nil {
+			return fail(err)
+		}
+	}
 	if met {
 		newlyMet := fingerprint != state
 		if isRun || condition.Type == "merge_eligibility" || (condition.Type == "pull_request" && condition.Event == "conflicts") {
 			newlyMet = conditionNewlyMet(state, fingerprint)
 		}
 		if newlyMet && !conditionDropped(observed, state, fingerprint, condition.Event == "conflicts") {
-			if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
-				return w.NextFireAt, err
+			if condition.Type == "merge_eligibility" {
+				if observed, err = dedupeMergeCandidates(ctx, tx, w, observed); err != nil {
+					return fail(err)
+				}
+			}
+			if observed != nil {
+				if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+					return fail(err)
+				}
 			}
 		}
 		state = fingerprint
@@ -593,7 +609,7 @@ func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db
 		state = ""
 	}
 	next := pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}
-	return next, q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: state, NextFireAt: next})
+	return next, withdrawn, q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: state, NextFireAt: next})
 }
 
 // conditionKeys counts the keys of a keyed fingerprint ("pr:" linked PRs,

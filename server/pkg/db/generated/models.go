@@ -3355,6 +3355,16 @@ type SysCronExecution struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type System1Epoch struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Scope            string             `json:"scope"`
+	PredictorID      string             `json:"predictor_id"`
+	PredictorVersion string             `json:"predictor_version"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	DemotedAt        pgtype.Timestamptz `json:"demoted_at"`
+}
+
 type System1Label struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

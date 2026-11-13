@@ -386,7 +386,16 @@
     "unseen_failed": "이 채팅을 읽지 않음으로 표시하지 못했습니다",
     "rename": "이름 바꾸기",
     "select": "여러 개 선택",
-    "undo": "실행 취소"
+    "undo": "실행 취소",
+    "group": {
+      "pinned": "고정됨",
+      "today": "오늘",
+      "yesterday": "어제",
+      "this_week": "이번 주",
+      "older": "이전"
+    },
+    "unseen_dot": "안 봄",
+    "tag_decision": "결정"
   },
   "header": {
     "context_meter": "{{window}} 중 {{pct}}%",

@@ -548,6 +548,14 @@ The `decision` and `routing` blocks cover all time. The `route` block covers the
 
 The `route` block counts one population of events: agent status changes marked as leaving a routing step (`eligible_exits`) and the route labels that carry the same event id (`matched_labels`). `label_coverage` is `matched_labels / eligible_exits` and never exceeds 1. `via_route_share` is the part of matched events whose first label came from `issue route`, not from the status fallback. `duplicate_labels` counts labels that share an event with an earlier label (target 0). `labels_total`, `owner_only_labels` (a route that kept the status, so it has no event) and `non_routing_labels` (a route from a step with no routing agent) sit outside coverage. `overridden` counts agent labels a person reversed within 1 hour, and `override_rate` is `overridden / labels_total`. The block also carries the per-class `decided`, `predicted`, `agreed`, `coverage` and `precision`.
 
+Any workspace member reads the System 1 qualification state of each scope and predictor version:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` is `test_first_waiver` or `ci:<repo>:<protocol>`. Each row covers the latest epoch of one predictor version. Only observations created at or after the epoch start count, and a new predictor version opens its own epoch. A case is one prediction with a label of record (the newest label that is not superseded). `denominator` counts cases with a non-abstaining prediction and a mapped label, `agreed` those where they match, `abstained` labelled cases the predictor skipped, and `unmapped` free-text answers. `status` is `qualified` at 7 days, a denominator of at least 20 and agreement of at least 90%. It is `insufficient_data` after 4 weeks with fewer than 20 counted cases, `demoted` once an epoch is demoted, and `collecting` otherwise.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.

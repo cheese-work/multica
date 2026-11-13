@@ -402,6 +402,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
 
+任何工作区成员都可以读取每个范围和预测器版本的 System 1 资格状态：
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` 为 `test_first_waiver` 或 `ci:<repo>:<protocol>`。每一行对应一个预测器版本的最新纪元。只统计纪元开始之后创建的观测，新的预测器版本会开启自己的纪元。一个案例是带有记录标签（最新且未被取代的标签）的一次预测。`denominator` 统计有非弃权预测且标签已映射的案例，`agreed` 为两者一致的案例，`abstained` 为预测器弃权的已标注案例，`unmapped` 为自由文本回答。满足 7 天、`denominator` 至少 20、一致率至少 90% 时 `status` 为 `qualified`；4 周后统计案例仍少于 20 为 `insufficient_data`，被降级的纪元为 `demoted`，其余为 `collecting`。
+
 ## ID 和输出格式
 
 任务使用 `MUL-123` 这样的 key 或完整 UUID，不接受 UUID 短前缀。

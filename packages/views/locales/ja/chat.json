@@ -386,7 +386,16 @@
     "unseen_failed": "このチャットを未読にできませんでした",
     "rename": "名前を変更",
     "select": "複数選択",
-    "undo": "元に戻す"
+    "undo": "元に戻す",
+    "group": {
+      "pinned": "ピン留め",
+      "today": "今日",
+      "yesterday": "昨日",
+      "this_week": "今週",
+      "older": "それ以前"
+    },
+    "unseen_dot": "未確認",
+    "tag_decision": "決定"
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
