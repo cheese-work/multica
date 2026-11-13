@@ -14,11 +14,50 @@ import (
 // the caller's stdout and stderr; Log, when set, receives one JSON line per
 // guarded call.
 type Engine struct {
+	// Policy may carry org, repo and path layers; Exec resolves it for the
+	// call's target. Read it through pol().
 	Policy *Policy
 	Runner Runner
 	Log    io.Writer
 	Out    io.Writer
 	Err    io.Writer
+
+	eff  *Policy // Policy resolved for the current call
+	path string  // the call's directory inside its repository
+}
+
+func (e *Engine) pol() *Policy {
+	if e.eff != nil {
+		return e.eff
+	}
+	return e.Policy
+}
+
+// target tells where a call runs: the -R/--repo flag or the working
+// directory's repository, and the directory inside it.
+func (e *Engine) target(ctx context.Context, args []string) (Target, bool) {
+	t := Target{}
+	for i, a := range args {
+		switch {
+		case (a == "-R" || a == "--repo") && i+1 < len(args):
+			t.Repo = args[i+1]
+		case strings.HasPrefix(a, "--repo="):
+			t.Repo = strings.TrimPrefix(a, "--repo=")
+		}
+	}
+	if t.Repo == "" {
+		var rv struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		}
+		if err := e.ghJSON(ctx, &rv, "repo", "view", "--json", "nameWithOwner"); err != nil || rv.NameWithOwner == "" {
+			return t, false
+		}
+		t.Repo = rv.NameWithOwner
+	}
+	if prefix, ok := e.git(ctx, "rev-parse", "--show-prefix"); ok {
+		t.Path = strings.TrimSuffix(prefix, "/")
+	}
+	return t, true
 }
 
 // decision is what a plugin concluded about one call.
@@ -49,6 +88,17 @@ type logRecord struct {
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
 	args = e.expandAlias(ctx, tool, args)
+	t := Target{}
+	// ponytail: one extra gh repo view and git call per guarded call when the
+	// policy has layers; cache per run if that shows up.
+	if len(e.Policy.Layers) > 0 {
+		var ok bool
+		if t, ok = e.target(ctx, args); !ok {
+			fmt.Fprintln(e.Err, "guard: refused: cannot tell which repository this call targets, and the policy has org, repo or path layers; run it inside a clone or pass -R owner/name")
+			return 2, nil
+		}
+	}
+	e.eff, e.path = e.Policy.Resolve(t), t.Path
 	pl := e.match(tool, args)
 	if pl == nil {
 		return e.Runner.Stream(ctx, tool, args...)
@@ -100,8 +150,8 @@ func (e *Engine) decide(ctx context.Context, pl *Plugin, args []string) (decisio
 // match returns the first plugin whose tool and leading words fit the call.
 func (e *Engine) match(tool string, args []string) *Plugin {
 	lead := leadingWords(args)
-	for i := range e.Policy.Plugins {
-		pl := &e.Policy.Plugins[i]
+	for i := range e.pol().Plugins {
+		pl := &e.pol().Plugins[i]
 		sub := pl.Match.Subcommand
 		if pl.Match.Tool != tool || len(sub) > len(lead) {
 			continue

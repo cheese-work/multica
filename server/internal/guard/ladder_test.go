@@ -155,7 +155,7 @@ func TestValidateLayers(t *testing.T) {
 	}
 }
 
-func TestLoadPolicyResolvesWorkspaceLevel(t *testing.T) {
+func TestLoadPolicyKeepsLayersForTheEngine(t *testing.T) {
 	raw := `{"version":1,"plugins":[{"name":"x","match":{"tool":"gh"},"action":"deny","message":"ws"}],
 	 "layers":[{"scope":"org","org":"acme","plugins":[{"name":"x","match":{"tool":"gh"},"action":"pass"}]}]}`
 	f := filepath.Join(t.TempDir(), "p.json")
@@ -167,10 +167,46 @@ func TestLoadPolicyResolvesWorkspaceLevel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if x := plug(p, "x"); x == nil || x.Action != ActionDeny || len(p.Layers) != 0 {
-		t.Fatalf("loaded policy should be the workspace resolve: %+v", p)
+	if len(p.Layers) != 1 {
+		t.Fatalf("loaded policy lost its layers: %+v", p)
+	}
+	if x := plug(p.Resolve(Target{}), "x"); x == nil || x.Action != ActionDeny {
+		t.Fatalf("no target should resolve to the workspace level: %+v", x)
+	}
+	if x := plug(p.Resolve(Target{Repo: "acme/app"}), "x"); x == nil || x.Action != ActionPass {
+		t.Fatalf("org layer should apply to acme/app: %+v", x)
 	}
 	if _, err := LoadPolicy(f, strings.Repeat("0", 64)); err == nil {
 		t.Fatal("digest mismatch must fail")
+	}
+}
+
+func TestResolveLockCoversOverlappingReviewPatterns(t *testing.T) {
+	skip := ReviewRule{Repo: "acme/app", GitHub: "skip"}
+	for _, locked := range []string{"*", "acme/*"} {
+		d := &Policy{
+			Version: 1, Locked: true,
+			Review: []ReviewRule{{Repo: locked, Reviewers: []string{"must"}}},
+			Layers: []Layer{{Scope: ScopeOrg, Org: "acme", Review: []ReviewRule{skip}}},
+		}
+		got := d.Resolve(Target{Repo: "acme/app"})
+		if r := got.githubReviewers("acme/app"); len(r) != 1 || r[0] != "must" {
+			t.Errorf("locked %q rule overridden by deeper exact rule: reviewers %v", locked, r)
+		}
+	}
+	// An unlocked broad rule is still overridden, and a lock on one owner does
+	// not reach another.
+	d := &Policy{
+		Version: 1,
+		Review:  []ReviewRule{{Repo: "acme/*", Reviewers: []string{"a"}}},
+		Layers:  []Layer{{Scope: ScopeOrg, Org: "acme", Review: []ReviewRule{skip}, Locked: true}},
+	}
+	if r := d.Resolve(Target{Repo: "acme/app"}).githubReviewers("acme/app"); len(r) != 0 {
+		t.Errorf("unlocked workspace rule must yield to the deeper skip: %v", r)
+	}
+	d = &Policy{Version: 1, Locked: true, Review: []ReviewRule{{Repo: "other/*", Reviewers: []string{"x"}}},
+		Layers: []Layer{{Scope: ScopeOrg, Org: "acme", Review: []ReviewRule{skip}}}}
+	if got := d.Resolve(Target{Repo: "acme/app"}); got.reviewFor("acme/app") == nil || got.reviewFor("acme/app").GitHub != "skip" {
+		t.Errorf("lock on other/* froze acme/app: %+v", got.Review)
 	}
 }

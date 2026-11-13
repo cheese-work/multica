@@ -182,16 +182,23 @@ func LoadPolicy(file, wantSHA string) (*Policy, error) {
 	if err != nil {
 		return nil, err
 	}
-	// ponytail: the guard resolves the workspace level only. Org, repo and path
-	// layers need the repo, which the engine learns mid-call (gh repo view);
-	// wire Resolve(Target) there when a deployment needs them.
-	return p.Resolve(Target{}), nil
+	return p, nil // layers stay: the engine resolves them for each call's target
+}
+
+// lockdownPolicy stands in for a policy that was set but cannot be loaded or
+// verified. The stored rules are unknown, so the guard cannot tell what a PR
+// call must do and refuses it; the `gh api` write refusal stays.
+func lockdownPolicy() *Policy {
+	p := DefaultPolicy()
+	p.Plugins[0] = Plugin{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionDeny,
+		Message: "the workspace guard policy is unavailable or failed verification; gh pr is refused until it is fixed"}
+	return p
 }
 
 // PolicyFromEnv returns the daemon-provided policy. With no policy set it
-// returns the compiled default. A policy that does not verify is ignored: the
-// compiled default is used and warn explains why. Nothing is read from the
-// working tree.
+// returns the compiled default. A policy that is set but does not verify fails
+// closed: gh pr calls are refused and warn explains why. Nothing is read from
+// the working tree.
 func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	file := getenv(PolicyEnv)
 	if file == "" {
@@ -199,7 +206,7 @@ func PolicyFromEnv(getenv func(string) string) (pol *Policy, warn string) {
 	}
 	p, err := LoadPolicy(file, getenv(PolicySHAEnv))
 	if err != nil {
-		return DefaultPolicy(), "guard: policy ignored, using built-in defaults: " + err.Error()
+		return lockdownPolicy(), "guard: policy unavailable, refusing gh pr calls: " + err.Error()
 	}
 	return p, ""
 }

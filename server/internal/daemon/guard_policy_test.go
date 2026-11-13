@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/guard"
@@ -44,16 +43,15 @@ func TestWriteGuardPolicyPublishesDigestCheckedFile(t *testing.T) {
 	}
 }
 
-func TestWriteGuardPolicyNoopAndInvalid(t *testing.T) {
+func TestWriteGuardPolicyNoopWhenNoneStored(t *testing.T) {
 	for name, settings := range map[string]string{
-		"no settings":  ``,
-		"no key":       `{"other":1}`,
-		"null key":     `{"guard_policy":null}`,
-		"bad settings": `{`,
+		"no settings": ``,
+		"no key":      `{"other":1}`,
+		"null key":    `{"guard_policy":null}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			env := map[string]string{}
-			if err := writeGuardPolicy(env, t.TempDir(), []byte(settings)); err != nil && name != "bad settings" {
+			if err := writeGuardPolicy(env, t.TempDir(), []byte(settings)); err != nil {
 				t.Fatal(err)
 			}
 			if len(env) != 0 {
@@ -61,12 +59,36 @@ func TestWriteGuardPolicyNoopAndInvalid(t *testing.T) {
 			}
 		})
 	}
-	env := map[string]string{}
-	err := writeGuardPolicy(env, t.TempDir(), []byte(`{"guard_policy":{"version":9}}`))
-	if err == nil || !strings.Contains(err.Error(), "version") {
-		t.Fatalf("invalid policy not reported: %v", err)
+}
+
+// A policy that is stored but cannot be delivered must not leave the guard on
+// its permissive defaults: the env still points at a policy the guard cannot
+// verify, so the guard fails closed (CHE-5204).
+func TestWriteGuardPolicyFailureFailsClosed(t *testing.T) {
+	cases := map[string]struct {
+		settings string
+		dir      func(*testing.T) string
+	}{
+		"invalid policy": {`{"guard_policy":{"version":9}}`, func(t *testing.T) string { return t.TempDir() }},
+		"bad settings":   {`{`, func(t *testing.T) string { return t.TempDir() }},
+		"unwritable dir": {guardSettings, func(t *testing.T) string { return filepath.Join(t.TempDir(), "missing") }},
 	}
-	if len(env) != 0 {
-		t.Fatalf("env set for an invalid policy: %v", env)
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			env := map[string]string{}
+			if err := writeGuardPolicy(env, c.dir(t), []byte(c.settings)); err == nil {
+				t.Fatal("failure not reported")
+			}
+			if env[guard.PolicyEnv] == "" {
+				t.Fatalf("guard left on its defaults: env %v", env)
+			}
+			pol, warn := guard.PolicyFromEnv(func(k string) string { return env[k] })
+			if warn == "" {
+				t.Fatal("guard accepted an undeliverable policy")
+			}
+			if pl := pol.Plugins[0]; pl.Name != "gh-pr" || pl.Action != guard.ActionDeny {
+				t.Fatalf("gh pr not refused: %+v", pl)
+			}
+		})
 	}
 }

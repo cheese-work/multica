@@ -97,7 +97,7 @@ func (p *Policy) Resolve(t Target) *Policy {
 	frozen := map[string]bool{}
 	var plugins []string // plugin names in first-seen order
 	byPlugin := map[string]Plugin{}
-	var reviews []string
+	var reviews, lockedReviews []string
 	byReview := map[string]ReviewRule{}
 	set := func(key string, locked bool, apply func()) {
 		if frozen[key] {
@@ -119,13 +119,19 @@ func (p *Policy) Resolve(t Target) *Policy {
 			})
 		}
 		for _, r := range l.Review {
+			if coveredBy(lockedReviews, r.Repo) {
+				continue
+			}
 			k := strings.ToLower(r.Repo)
-			set("review:"+k, l.Locked, func() {
-				if _, ok := byReview[k]; !ok {
-					reviews = append(reviews, k)
-				}
-				byReview[k] = r
-			})
+			if _, ok := byReview[k]; !ok {
+				reviews = append(reviews, k)
+			}
+			byReview[k] = r
+		}
+		if l.Locked { // a lock covers every repository its patterns match, not only the same string
+			for _, r := range l.Review {
+				lockedReviews = append(lockedReviews, r.Repo)
+			}
 		}
 	}
 	for _, n := range plugins {
@@ -135,4 +141,18 @@ func (p *Policy) Resolve(t Target) *Policy {
 		out.Review = append(out.Review, byReview[k])
 	}
 	return out
+}
+
+// coveredBy reports whether a locked review pattern in locked matches every
+// repository pattern q selects: the same pattern, "*", or owner/* over q under
+// that owner.
+func coveredBy(locked []string, q string) bool {
+	qOwner, _, _ := strings.Cut(q, "/")
+	for _, p := range locked {
+		pOwner, pName, _ := strings.Cut(p, "/")
+		if strings.EqualFold(p, q) || p == "*" || (pName == "*" && strings.EqualFold(pOwner, qOwner)) {
+			return true
+		}
+	}
+	return false
 }
