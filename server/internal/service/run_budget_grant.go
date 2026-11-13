@@ -13,15 +13,13 @@ import (
 )
 
 // Progress grants and the superseded-head refund (CHE-2297 L2c). A grant adds
-// RunBudgetGrantRuns runs and RunBudgetGrantTokens weighted tokens to the open
-// window without touching its cap; a window takes at most RunBudgetGrantCap of
+// RunBudgetGrantRuns runs to the open window without touching its cap; a window takes at most RunBudgetGrantCap of
 // them, and none once its exhaustion claim exists. Every function runs in the
 // caller's transaction and takes the issue lock, so concurrent grants keep the
 // cap.
 const (
-	RunBudgetGrantRuns   = 6
-	RunBudgetGrantTokens = 15_000_000
-	RunBudgetGrantCap    = 3
+	RunBudgetGrantRuns = 6
+	RunBudgetGrantCap  = 3
 
 	RunBudgetKindStep    = "step"
 	RunBudgetKindHead    = "head"
@@ -58,18 +56,11 @@ func openGrantWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (g
 	return w, true, nil
 }
 
-// grant writes one grant. Tokens are credited only once token accounting is
-// active for the issue; a replayed key writes nothing.
+// grant writes one grant; a replayed key writes nothing.
 func (w grantWindow) grant(ctx context.Context, q *db.Queries, kind, key string) error {
-	var tokens int64
-	if _, active, err := activationEpoch(ctx, q, w.issue.ID); err != nil {
-		return err
-	} else if active && w.usage.tokensStored() {
-		tokens = RunBudgetGrantTokens
-	}
 	return q.InsertIssueRunBudgetGrant(ctx, db.InsertIssueRunBudgetGrantParams{
 		ID: dbid.NewV7(), WorkspaceID: w.issue.WorkspaceID, IssueID: w.issue.ID,
-		WindowID: w.id, Kind: kind, EventKey: key, RunsDelta: RunBudgetGrantRuns, TokensDelta: tokens,
+		WindowID: w.id, Kind: kind, EventKey: key, RunsDelta: RunBudgetGrantRuns,
 	})
 }
 
@@ -114,7 +105,7 @@ func GrantRunBudgetHead(ctx context.Context, q *db.Queries, issueID, prID pgtype
 }
 
 // RefundSupersededRun gives back the run a superseded_head cancellation spent:
-// +1 run, no tokens, once per task. Only a run debited in the current window is
+// +1 run, once per task. Only a run debited in the current window is
 // refunded; an earlier window's debit is not this window's to give back.
 func RefundSupersededRun(ctx context.Context, q *db.Queries, task db.AgentTaskQueue) error {
 	if !task.IssueID.Valid || task.FailureReason.String != FailureReasonSupersededHead {
