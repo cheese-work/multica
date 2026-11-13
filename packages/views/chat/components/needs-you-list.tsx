@@ -48,6 +48,15 @@ function compareAttention(a: ChatSession, b: ChatSession): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+/** One plain line for a list row: no markdown, no mention links, no parameter dump. */
+export function decisionHeadline(ask: string, issueIdentifier: string): string {
+  const proposal = ask.match(/^\*\*Proposed action\*\*\s*\n`([^`]+)`\s+version\s+(\d+)/);
+  if (proposal) return `${proposal[1]} v${proposal[2]} on ${issueIdentifier}`;
+  return (ask.match(/\*\*Decision\*\*\s*\n([\s\S]*?)(?:\n\s*\n|$)/)?.[1] ?? ask)
+    .replace(/\[([^\]]*)\]\(mention:\/\/[^)]*\)/g, "$1")
+    .replace(/[#*`>~]/g, "").replace(/\s+/g, " ").trim();
+}
+
 export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; agents: Agent[] }) {
   const wsId = useWorkspaceId();
   const slug = useWorkspaceSlug();
@@ -253,8 +262,7 @@ export function NeedsYouList({ sessions, agents }: { sessions: ChatSession[]; ag
       )}
       <ul className="max-h-64 overflow-y-auto">
         {requests.map((request) => {
-          const headline = (request.ask.match(/\*\*Decision\*\*\s*\n([\s\S]*?)(?:\n\s*\n|$)/)?.[1] ?? request.ask)
-            .replace(/[#*`>~]/g, "").replace(/\s+/g, " ").trim();
+          const headline = decisionHeadline(request.ask, request.issue_identifier);
           const params = new URLSearchParams({ session: request.chat_session_id });
           if (request.message_id) params.set("message", request.message_id);
           return (

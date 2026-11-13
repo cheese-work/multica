@@ -98,8 +98,64 @@ free text): `observation_id`, `scope`, `kind` (`burn_in`, `eval`), `source`
   remains. The observation row keeps the first answer's choice fields.
 - An ask without the topic gets no label row; its `choice_key` stays
   positional.
-- Later slices add labeller rows (`source`, task id, correction link) and
-  the lookup index when a query needs it.
+- Labeller rows are B4a, below.
+
+### Labeller writes (CHE-4383 B4a)
+
+`POST /api/system1/labels` body `{observation_id, kind, label, supersedes?}`.
+Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
+`task_id`, `agent_id`, `supersedes`) and `99970_system1_label_labeller_key_idx`
+(unique index, concurrent).
+
+- **Who writes:** an agent task token only. Agent and task come from the token
+  (the auth middleware strips client `X-Agent-ID`, `X-Task-ID` and
+  `X-Actor-Source`), as in `RelyAgentDecision`. The task must be `running` for a
+  live agent of the workspace. Member sessions and PATs get 403.
+- **Who is assigned:** workspace setting `system1_labellers`, a map from scope
+  to agent id, set with `PUT /api/system1/labellers` `{scope, agent_id}`
+  (owner only, human only; empty `agent_id` clears). This route is the only
+  writer: a generic workspace settings save (`PUT`/`PATCH /api/workspaces/{id}`)
+  keeps the stored map whatever the body says, so an admin session or a task
+  token cannot assign a labeller that way. An agent that is not
+  assigned for the observation's scope gets 403. An observation of another
+  workspace gets 404.
+- **Closed values:** `test_first_waiver` takes `waive` or `refuse`; any other
+  value gets 400. `kind` is `burn_in` or `eval`.
+- **Idempotency:** key `(observation_id, kind, task_id)` (plus `supersedes` for
+  a correction in the same task). The same body returns 200 and the same row;
+  a different label on the same key gets 409.
+- **Correction:** append-only. A label for an observation and kind that
+  already has a live labeller row needs `supersedes` set to that live row's id
+  (else 409). The new row is written and the old row gets `superseded_at`, in
+  one transaction under a per-observation advisory lock. The label of record is
+  the live row.
+- **Not here:** the check that the labeller's lab differs from the predictor's
+  lab waits for the B3 prediction table. CI scopes (`ci:<repo>:<protocol>`) come
+  with B5/B6.
+
+### Waiver predictions (CHE-4383 B3)
+
+Table `system1_prediction` (migration `99968_system1_prediction`, no foreign
+key): `observation_id`, `scope`, `predictor_id`, `predictor_version`,
+`predicted_key` (NULL = abstained), `predicted_confidence`,
+`predicted_precedents`, `predicted_at`. One row per observation, predictor and
+version (unique). The version is part of the identity; a changed rule is a new
+version, never an edit.
+
+- **Written in the ask transaction**, right after the observation, so both rows
+  exist before any answer (`predicted_at` precedes `answered_at`). Only a
+  waiver ask (topic `test_first_waiver`) writes them; the legacy
+  `system1_observation.predicted_*` columns stay as they were.
+- **`waiver_rule@1`:** `refuse` when `cross_lab_pass_on_head` is false; `waive`
+  when it is true and `weaker_evidence_kind` is not `review_only`; abstains
+  otherwise.
+- **`precedent@1`:** `system1.Predict` over the earlier `waive`/`refuse`
+  labels of record in the workspace (newest 200, not superseded, `unmapped`
+  excluded). Fewer than 5 precedents abstain.
+- `jev@<version>` is not written: Jev is shadow only and needs B0's finding
+  that it is available.
+- Later slices add the epoch, the case rules and the report over these rows
+  (B5), and `ci_rules@<version>` rows for CI scopes (B6).
 
 ## Recommended option stays first
 
@@ -237,6 +293,20 @@ Predict(precedents []string) Prediction
   admin-set names, not user input.
 - Training or fine-tune data is built from this table plus public ask fields.
   DM contents never enter it. Export is a separate, reviewed step.
+
+## Jev availability (slice B0 probe, 8 Nov 2026 02:41 to 02:44 ICT)
+
+Read-only probe for the burn-in plan (CHE-4383, slice CHE-4467). Result: Jev
+is **not available**, so no `jev@<version>` predictor runs in burn-in.
+
+| Check | Command | Exit | Result |
+| --- | --- | --- | --- |
+| Jev registration | `multica workspace get --output json` (read `settings`) | 0 | No `agent_decisions_jev` key: Jev delegation is off, no agent id, no mode. |
+| Brief | `multica decision brief` | 0 | `enabled: true`, 0 decisions, 0 pilot runs. |
+| sub2api model list | `GET /v1/models` with the `hindsight-x99` key (key not recorded) | 0 | HTTP 200, 12 models, none contains `jev`. `jev-latest` is not served for this key group. |
+
+- Same as the 1 Nov 2026 finding (CHE-2946): sub2api does not serve `jev-latest`.
+- To enable Jev later: the owner registers the agent with `PUT /api/agent-decisions/jev`, and sub2api must serve `jev-latest` for the key group. Re-run this probe then.
 
 ## Fine-tune criteria
 

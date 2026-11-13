@@ -104,7 +104,7 @@ Use semantic tokens from `packages/ui/styles/tokens.css`: surface, border, muted
 | dm-attention | doop `y7DenM6GGW` @ 2026-11-07T12:07:33.378Z (B Light), `ztpwE4spMa` @ 2026-11-07T12:07:37.297Z (B Dark) | B | 1194 | n/a (`design/dm-attention/approved/`) |
 | issue-sidebar-compact | doop `UVi0hFp3L_` @ 2026-11-05T10:56:09.927Z | A (v2: C placement, A mechanics) | 1048 | n/a (`design/issue-sidebar-compact/approved/`) |
 | timeline-views | doop `huve-k7jLE` @ 2026-11-06T13:50:07.153Z (Gantt B), `20EKgO9pKX` @ 2026-11-06T14:03:42.763Z (Swimlane A), `mzbsoFU2MX` @ 2026-11-07T06:25:43.109Z (Hierarchy A), `aTIpEERfej` @ 2026-11-06T14:00:23.849Z (Sidebar A) | Gantt B, Swimlane A, Hierarchy A, Sidebar A | 1163 | n/a (`design/timeline-views/approved/`) |
-| decision-card-fold | doop `HtwdZpoCai` @ 2026-11-07T12:47:11.565Z | A | 1183 | n/a (`design/decision-card-fold/approved/`) |
+| decision-card-fold | doop `HtwdZpoCai` @ 2026-11-07T12:47:11.565Z | A | 1183 | n/a (reference files deleted by CHE-4431; read them at merge SHA `6888ddb6d214950cb04bb21ec6a671736a0d65bb`) |
 | workflow-lint-ui | doop `6mYQFWIMvR` @ 2026-11-06T07:54:26.758Z (D light) with dark `u9lNVhB-2k` @ 2026-11-06T07:55:08.558Z, dialog `-IGdS_B1PB` @ 2026-11-06T07:56:19.372Z, `Tz8ZFkiTdl` @ 2026-11-06T07:56:38.931Z, states `-op18JpCVJ` @ 2026-11-06T07:56:54.349Z | D | 1211 | n/a (`design/workflow-lint-ui/approved/`) |
 | delegated-governed-writes | doop `Ocyo3e9IQD` @ 2026-11-08T09:29:28.407Z | B | 1256 | n/a (`design/delegated-governed-writes/approved/`) |
 

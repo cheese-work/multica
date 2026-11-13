@@ -84,9 +84,7 @@ type proposalRequest struct {
 	ChatSessionID pgtype.UUID
 }
 
-// inDM and chatSession are nil-safe: most requests are not proposals.
-func (proposal *proposalRequest) inDM() bool { return proposal != nil && proposal.ChatSessionID.Valid }
-
+// chatSession is nil-safe: most requests are not proposals.
 func (proposal *proposalRequest) chatSession() pgtype.UUID {
 	if proposal == nil {
 		return pgtype.UUID{}
@@ -363,7 +361,7 @@ func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *h
 				return recipient, chatSession, false
 			}
 			if resolved, err := handler.resolveDecisionRecipient(request.Context(), issue, recipient); err != nil || resolved != session.CreatorID {
-				writeError(writer, http.StatusForbidden, "for: a proposal from a chat goes to the chat's creator only")
+				writeError(writer, http.StatusForbidden, "for: a request from a chat goes to the chat's creator only")
 				return recipient, chatSession, false
 			}
 		}
