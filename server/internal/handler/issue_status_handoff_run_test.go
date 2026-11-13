@@ -6,7 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-5485: handoff_comment_id on a status move reaches the destination
@@ -193,5 +196,131 @@ func TestStatusHandoffComment_BadComment_Refused(t *testing.T) {
 				t.Errorf("queued runs = %d, want 0", queued)
 			}
 		})
+	}
+}
+
+func squadWithLeader(t *testing.T, leaderID string) string {
+	t.Helper()
+	var squadID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+		VALUES ($1, 'che5485 squad', '', $2, $3) RETURNING id
+	`, testWorkspaceID, leaderID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("create squad: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID) })
+	return squadID
+}
+
+func backlogSquadIssue(t *testing.T, title, squadID string, cols testutil.Cols) string {
+	t.Helper()
+	c := testutil.Cols{"status": "backlog", "assignee_type": "squad", "assignee_id": squadID}
+	for k, v := range cols {
+		c[k] = v
+	}
+	issueID := dbfx.Issue(t, title, c)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+	})
+	return issueID
+}
+
+func agentMoveWithHandoff(t *testing.T, issueID, comment, moverID, actingTask string) (int, string) {
+	t.Helper()
+	return moveWithHandoff(t, issueID, comment, func(r *http.Request) {
+		r.Header.Del("X-Actor-Source")
+		r.Header.Set("X-Agent-ID", moverID)
+		r.Header.Set("X-Task-ID", actingTask)
+	})
+}
+
+// A squad-assigned issue takes the same handoff: the leader's run carries the
+// comment as status_handoff context, attributed to the mover's acting task and
+// never to the comment author.
+func TestStatusHandoffComment_SquadLeader_RunCarriesContext(t *testing.T) {
+	_, m1, m2 := privateAgentTestFixture(t)
+	moverID := createHandlerTestAgent(t, "che5485-squad-mover", nil)
+	leaderID := createHandlerTestAgent(t, "che5485-squad-leader", nil)
+	issueID := backlogSquadIssue(t, "che5485 squad move", squadWithLeader(t, leaderID), nil)
+	comment := dbfx.Comment(t, issueID, "brief by M1", testutil.Cols{"author_id": m1})
+	actingTask := runningTaskFor(t, moverID, m2)
+
+	if code, body := agentMoveWithHandoff(t, issueID, comment, moverID, actingTask); code != http.StatusOK {
+		t.Fatalf("move = %d: %s", code, body)
+	}
+	run := queuedHandoffRun(t, issueID, leaderID)
+	if run.TriggerCommentID != comment || run.TriggerKind != "status_handoff" {
+		t.Errorf("leader run trigger = (%q, %q), want (%s, status_handoff)", run.TriggerCommentID, run.TriggerKind, comment)
+	}
+	if run.Originator != m2 || run.Source != "delegation" || run.DelegatedFrom != actingTask {
+		t.Errorf("leader run = %+v, want delegation from acting task %s for %s (not %s)", run, actingTask, m2, m1)
+	}
+}
+
+// The squad gate judges the principal the run is persisted with. M1's private
+// leader is not reachable by an agent acting for M2, however M1's comment or
+// the issue's creator reads.
+func TestStatusHandoffComment_SquadLeader_GateJudgesActingTaskHuman(t *testing.T) {
+	privateLeader, m1, m2 := privateAgentTestFixture(t)
+	moverID := createHandlerTestAgent(t, "che5485-squad-mover-gate", nil)
+	issueID := backlogSquadIssue(t, "che5485 squad gate", squadWithLeader(t, privateLeader),
+		testutil.Cols{"creator_type": "member", "creator_id": m1})
+	comment := dbfx.Comment(t, issueID, "brief by M1", testutil.Cols{"author_id": m1})
+	actingTask := runningTaskFor(t, moverID, m2)
+
+	agentMoveWithHandoff(t, issueID, comment, moverID, actingTask)
+
+	var queued int
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, privateLeader).Scan(&queued)
+	if queued != 0 {
+		t.Errorf("private leader runs = %d, want 0: an agent acting for M2 reached M1's private agent", queued)
+	}
+}
+
+// A retry keeps the handoff framing, so the retried run still treats the
+// comment as context rather than a comment to answer.
+func TestStatusHandoffComment_RetryKeepsTriggerKind(t *testing.T) {
+	_, m1, m2 := privateAgentTestFixture(t)
+	agentID := createHandlerTestAgent(t, "che5485-retry", nil)
+	issueID := backlogIssueFor(t, "che5485 retry", agentID)
+	comment := dbfx.Comment(t, issueID, "brief by M1", testutil.Cols{"author_id": m1})
+	if code, body := moveWithHandoff(t, issueID, comment, func(r *http.Request) { r.Header.Set("X-User-ID", m2) }); code != http.StatusOK {
+		t.Fatalf("move = %d: %s", code, body)
+	}
+	var parent string
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID).Scan(&parent)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'failed', completed_at = now(), failure_reason = 'agent_error' WHERE id = $1`, parent)
+
+	child, err := testHandler.Queries.CreateRetryTask(context.Background(), db.CreateRetryTaskParams{ID: parseUUID(parent)})
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if child.TriggerKind.String != "status_handoff" || uuidToString(child.TriggerCommentID) != comment {
+		t.Errorf("retry trigger = (%q, %s), want (status_handoff, %s)", child.TriggerKind.String, uuidToString(child.TriggerCommentID), comment)
+	}
+}
+
+// A manual rerun keeps it too, and attributes the rerun to the member who asked.
+func TestStatusHandoffComment_RerunKeepsTriggerKind(t *testing.T) {
+	_, m1, m2 := privateAgentTestFixture(t)
+	agentID := createHandlerTestAgent(t, "che5485-rerun", nil)
+	issueID := backlogIssueFor(t, "che5485 rerun", agentID)
+	comment := dbfx.Comment(t, issueID, "brief by M1", testutil.Cols{"author_id": m1})
+	if code, body := moveWithHandoff(t, issueID, comment, func(r *http.Request) { r.Header.Set("X-User-ID", m2) }); code != http.StatusOK {
+		t.Fatalf("move = %d: %s", code, body)
+	}
+	var source string
+	dbfx.QueryRow(t, `SELECT id FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, agentID).Scan(&source)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, source)
+
+	task, err := testHandler.TaskService.RerunIssue(context.Background(), parseUUID(issueID), parseUUID(source), pgtype.UUID{}, parseUUID(m2), false, nil)
+	if err != nil {
+		t.Fatalf("rerun: %v", err)
+	}
+	if task.TriggerKind.String != "status_handoff" || uuidToString(task.TriggerCommentID) != comment {
+		t.Errorf("rerun trigger = (%q, %s), want (status_handoff, %s)", task.TriggerKind.String, uuidToString(task.TriggerCommentID), comment)
+	}
+	if uuidToString(task.OriginatorUserID) != m2 {
+		t.Errorf("rerun originator = %s, want the rerunning member %s", uuidToString(task.OriginatorUserID), m2)
 	}
 }

@@ -941,6 +941,21 @@ func (s *TaskService) OriginatorForIssueTask(ctx context.Context, issue db.Issue
 	return s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
 }
 
+// StatusHandoffOriginator is the human a run started by a status move would be
+// attributed to, for the squad-leader access gate to judge the same principal
+// the enqueue persists (CHE-5485). ok is false when ctx carries no handoff
+// comment. A task that cannot be read yields an empty originator: fail closed.
+func (s *TaskService) StatusHandoffOriginator(ctx context.Context, issue db.Issue) (originator pgtype.UUID, ok bool) {
+	if !statusHandoffComment(ctx).Valid {
+		return pgtype.UUID{}, false
+	}
+	attr, err := s.statusHandoffAttribution(ctx, s.Queries, issue, pgtype.UUID{})
+	if err != nil {
+		return pgtype.UUID{}, true
+	}
+	return attr.UserID, true
+}
+
 func (s *TaskService) captureTaskDispatched(ctx context.Context, task db.AgentTaskQueue) {
 	if s.Metrics != nil {
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
@@ -1535,6 +1550,17 @@ func statusHandoffComment(ctx context.Context) pgtype.UUID {
 	return id
 }
 
+// statusHandoffFor is the handoff comment a run with this trigger comment
+// carries: the ctx comment when the run has no trigger yet, or when the trigger
+// is that same comment (a rerun inheriting a status-handoff trigger).
+func statusHandoffFor(ctx context.Context, triggerCommentID pgtype.UUID) pgtype.UUID {
+	id := statusHandoffComment(ctx)
+	if id.Valid && (!triggerCommentID.Valid || triggerCommentID == id) {
+		return id
+	}
+	return pgtype.UUID{}
+}
+
 // statusHandoffAttribution attributes a run started by a status move. A member
 // mover is direct_human. An agent mover delegates from its acting task, so the
 // human is whoever that task serves, never the handoff comment's author. With
@@ -1661,12 +1687,10 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
 	var triggerKind pgtype.Text
-	handoffComment := pgtype.UUID{}
-	if !triggerCommentID.Valid {
-		if handoffComment = statusHandoffComment(ctx); handoffComment.Valid {
-			triggerCommentID = handoffComment
-			triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
-		}
+	handoffComment := statusHandoffFor(ctx, triggerCommentID)
+	if handoffComment.Valid {
+		triggerCommentID = handoffComment
+		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
 	}
 	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, triggerKind, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -1992,7 +2016,7 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
-	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
+	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
 	if err == nil {
 		notifyTaskEnqueued(ctx, task)
@@ -2018,6 +2042,14 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if isLeader {
 		trigger = "squad leader callback"
 	}
+	// A status move into a squad-assigned issue starts the leader with the move's
+	// handoff comment as context only (CHE-5485), exactly as the assignee path does.
+	var triggerKind pgtype.Text
+	handoffComment := statusHandoffFor(ctx, triggerCommentID)
+	if handoffComment.Valid {
+		triggerCommentID = handoffComment
+		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+	}
 	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -2040,7 +2072,15 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	// agent-authored comment is a delegation (the parent task's human is
 	// copied); a member mention is direct_human. attr.UserID matches the
 	// pre-MUL-4302 value, so authorization is unchanged.
-	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	var attr attribution.Result
+	if handoffComment.Valid {
+		// A handoff comment is context only: it never reaches attribution.
+		if attr, err = s.statusHandoffAttribution(ctx, queries, issue, actorUserID); err != nil {
+			return db.CreateAgentTaskParams{}, attribution.Result{}, err
+		}
+	} else {
+		attr = s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	}
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -2058,6 +2098,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		IssueID:              issue.ID,
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
+		TriggerKind:          triggerKind,
 		CoalescedCommentIds:  coalescedCommentIDs,
 		IsLeaderTask:         pgtype.Bool{Bool: isLeader, Valid: isLeader},
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
@@ -7592,6 +7633,11 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 			}
 			if sourceTriggerLive {
 				triggerCommentID = sourceTask.TriggerCommentID
+				// A rerun of a status-handoff run keeps the handoff framing: the
+				// comment stays context, never a comment to reply to (CHE-5485).
+				if sourceTask.TriggerKind.String == TriggerKindStatusHandoff {
+					ctx = WithStatusHandoffComment(ctx, triggerCommentID)
+				}
 			} else if len(coalescedCommentIDs) > 0 {
 				triggerCommentID, coalescedCommentIDs, err = s.promoteNewestSurvivingComment(ctx, coalescedCommentIDs)
 				if err != nil {
