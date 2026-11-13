@@ -441,6 +441,24 @@ func (q *Queries) SettleDecisionWakeReceipt(ctx context.Context, arg SettleDecis
 	return result.RowsAffected(), nil
 }
 
+const summarizeDecisionAnswerWake = `-- name: SummarizeDecisionAnswerWake :one
+SELECT coalesce((array_agg(receipt.outcome ORDER BY CASE receipt.role WHEN 'requester' THEN 0 ELSE 1 END)
+                 FILTER (WHERE receipt.status = 'delivered' AND receipt.outcome IS NOT NULL))[1], 'skipped_ineligible')::text AS outcome
+FROM decision_wake_event event
+JOIN decision_wake_receipt receipt ON receipt.event_id = event.id
+WHERE event.answer_id = $1 AND event.type = 'answered'
+`
+
+// The answer's wake outcome once its answered event is settled: the first
+// delivered receipt's outcome (requester before assignee), else skipped. An
+// answer with no receipts (kind=decision) is skipped.
+func (q *Queries) SummarizeDecisionAnswerWake(ctx context.Context, answerID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, summarizeDecisionAnswerWake, answerID)
+	var outcome string
+	err := row.Scan(&outcome)
+	return outcome, err
+}
+
 const summarizeDecisionWakeEvent = `-- name: SummarizeDecisionWakeEvent :one
 SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
        coalesce((array_agg(outcome ORDER BY CASE role WHEN 'requester' THEN 0 ELSE 1 END)
@@ -489,6 +507,23 @@ WHERE event.id = receipt.event_id AND event.answer_id = $1 AND event.type = 'ans
 // A pending receipt of the taken-back answer never presents it.
 func (q *Queries) SupersedePendingAnswerWakeReceipts(ctx context.Context, answerID pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, supersedePendingAnswerWakeReceipts, answerID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const suppressPendingRequestWakeReceipts = `-- name: SuppressPendingRequestWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'suppressed_issue_closed'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.request_id = $1 AND receipt.status = 'pending'
+`
+
+// The issue-closed lifecycle cancel settles the request's pending receipts in
+// its own transaction. Callers hold the issue and request locks.
+func (q *Queries) SuppressPendingRequestWakeReceipts(ctx context.Context, requestID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, suppressPendingRequestWakeReceipts, requestID)
 	if err != nil {
 		return 0, err
 	}
