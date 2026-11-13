@@ -10,11 +10,21 @@ import { IconButton } from "@multica/ui/components/common/icon-button";
 import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
+import { setApiInstance } from "@multica/core/api";
+import type { ApiClient } from "@multica/core/api/client";
+import { useT } from "../../../packages/views/i18n";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Spinner } from "@multica/ui/components/ui/spinner";
 import { Input } from "@multica/ui/components/ui/input";
-import { Label } from "@multica/ui/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@multica/ui/components/ui/field";
+import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
+import { DecisionActionApproval } from "../../../packages/views/common/decision-action-approval";
+import { DescriptionDisclosure } from "../../../packages/views/issues/components/description-disclosure";
+import { RunBudgetChip } from "../../../packages/views/issues/components/run-budget-chip";
+import { Spinner } from "@multica/ui/components/ui/spinner";
+import { Label } from "@multica/ui/components/ui/label";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
@@ -25,7 +35,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@multica/ui/lib/utils";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
-  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
+  Archive, TriangleAlert, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
 } from "@multica/ui/icons";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { NavigationProvider } from "../../../packages/views/navigation";
@@ -36,7 +46,6 @@ import {
 const SettingsPage = lazy(() =>
   import("../../../packages/views/settings/components/settings-page").then((m) => ({ default: m.SettingsPage })),
 );
-import { Badge } from "@multica/ui/components/ui/badge";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
@@ -170,6 +179,89 @@ function SettingsPageDemo() {
   );
 }
 
+// DecisionActionApproval reads its outcome from the API on mount. Stub that one read per action id so each
+// reachable state renders without a server: pending -> approve and reject, a terminal state -> its outcome.
+const OUTCOMES: Record<string, unknown> = {
+  "act-pending": { id: "act-pending", state: "pending" },
+  "act-executed": { id: "act-executed", state: "executed", result: { outcome: "cap_applied", from: 20, to: 30 } },
+  "act-failed": { id: "act-failed", state: "failed", error_code: "stale_cap" },
+  "act-rejected": { id: "act-rejected", state: "rejected" },
+};
+setApiInstance({
+  getDecisionActionOutcome: async (id: string) => {
+    const outcome = OUTCOMES[id];
+    if (!outcome) throw new Error("outcome unavailable");
+    return outcome;
+  },
+} as unknown as ApiClient);
+
+function DecisionActionApprovalDemo() {
+  const sha = "0".repeat(64);
+  const Cell = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex items-start gap-4 border-b py-3 last:border-b-0">
+      <span className="w-44 shrink-0 pt-1 text-caption text-muted-foreground">{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+  return (
+    <div className="p-6 max-w-[760px]">
+      <Cell label="undecided, owner">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} />
+      </Cell>
+      <Cell label="undecided, not owner (approve hidden)">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} canApprove={false} />
+      </Cell>
+      <Cell label="details unavailable (approve disabled)">
+        <DecisionActionApproval actionId="act-pending" payloadSha256={sha} approveDisabled />
+      </Cell>
+      <Cell label="executed, cap applied"><DecisionActionApproval actionId="act-executed" payloadSha256={sha} /></Cell>
+      <Cell label="failed, stale cap"><DecisionActionApproval actionId="act-failed" payloadSha256={sha} /></Cell>
+      <Cell label="rejected"><DecisionActionApproval actionId="act-rejected" payloadSha256={sha} /></Cell>
+      <Cell label="outcome unreadable (lost)"><DecisionActionApproval actionId="act-unknown" payloadSha256={sha} /></Cell>
+    </div>
+  );
+}
+
+const LONG_DESCRIPTION = Array.from({ length: 9 }, (_, n) =>
+  `Step ${n + 1}: the agent reads the issue, the comment thread and the open decisions before it touches the repository.`);
+function DescriptionDisclosureDemo() {
+  const { t } = useT("chat");
+  const [open, setOpen] = useState<Record<string, boolean>>({ expanded: true });
+  const labels = {
+    preview: "Description preview", loading: "Loading", showMore: t(($) => $.needs_you.show_all, { count: 9 }),
+    showLess: t(($) => $.needs_you.show_less), moreLines: () => "",
+  };
+  const Block = ({ k, lines }: { k: string; lines: string[] }) => (
+    <DescriptionDisclosure id={k} expanded={!!open[k]} onExpandedChange={(v) => setOpen((o) => ({ ...o, [k]: v }))} labels={labels}>
+      <div className="space-y-2 text-body">{lines.map((l) => <p key={l}>{l}</p>)}</div>
+    </DescriptionDisclosure>
+  );
+  return (
+    <div className="p-6 max-w-[640px] space-y-8">
+      <div><p className="mb-2 text-caption text-muted-foreground">collapsed, long text (preview + count)</p><Block k="collapsed" lines={LONG_DESCRIPTION} /></div>
+      <div><p className="mb-2 text-caption text-muted-foreground">expanded (Show less)</p><Block k="expanded" lines={LONG_DESCRIPTION.slice(0, 7)} /></div>
+      <div><p className="mb-2 text-caption text-muted-foreground">short text: no toggle</p><Block k="short" lines={["One short line of description."]} /></div>
+    </div>
+  );
+}
+
+function StatusPillDemo() {
+  return (
+    <div className="p-6">
+      <Row label="Badge default"><Badge>In progress</Badge></Row>
+      <Row label="secondary"><Badge variant="secondary">Todo</Badge></Row>
+      <Row label="outline"><Badge variant="outline">Agent review</Badge></Row>
+      <Row label="destructive"><Badge variant="destructive">Blocked</Badge></Row>
+      <Row label="ghost"><Badge variant="ghost">Backlog</Badge></Row>
+      <Row label="run-budget-chip (real)"><RunBudgetChip issue={{ status: "blocked", run_budget_blocked: true }} /></Row>
+      <Row label="beside a status label">
+        <span className="text-body">CHE-5420</span><Badge variant="destructive">Blocked</Badge>
+        <RunBudgetChip issue={{ status: "blocked", run_budget_blocked: true }} />
+      </Row>
+    </div>
+  );
+}
+
 const VARIANTS = ["default", "outline", "secondary", "ghost", "brand", "brandSubtle", "destructive", "link"] as const;
 function Buttons() {
   return (
@@ -217,6 +309,40 @@ function ReadOnlyMemberView() {
     <div className="max-w-2xl space-y-6 p-6">
       <Row label="owners and admins named"><div className="w-full"><SettingsReadOnlyNotice wsId={WS} /></div></Row>
       <Row label="no manager found"><div className="w-full"><SettingsReadOnlyNotice wsId="ws-no-managers" /></div></Row>
+    </div>
+  );
+}
+
+function HeaderChipPopoverDemo() {
+  const { t } = useT("chat");
+  const rows = [
+    ["CHE-5428", "x99-claude-sonnet-design", "Approve the cap raise for the doop deploy?"],
+    ["CHE-5420", "x99-codex-leader", "Pick a direction for the Patterns page"],
+    ["CHE-5303", "x99-claude-opus", "Run budget stopped this issue at 20 runs"],
+  ];
+  return (
+    <div className="p-6 min-h-[420px]">
+      <div className="flex items-center justify-between rounded-md border px-3 py-2">
+        <span className="text-body font-medium">Direct message</span>
+        <Popover open>
+          <PopoverTrigger render={<Button variant="outline" size="sm" className="shrink-0 border-warning/40 bg-warning/10 text-warning" />}>
+            {t(($) => $.needs_you.chip, { count: rows.length })}
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-80">
+            <div className="text-caption font-medium text-muted-foreground">{t(($) => $.needs_you.decisions)}</div>
+            <ul className="flex max-h-64 flex-col overflow-y-auto">
+              {rows.map(([key, agent, ask]) => (
+                <li key={key} className="flex min-h-11 flex-col gap-1 rounded-md px-2 py-2 text-caption hover:bg-accent/50">
+                  <span className="flex items-center gap-2 text-muted-foreground">
+                    <span className="font-medium text-foreground">{key}</span><span className="min-w-0 flex-1 truncate">{agent}</span>
+                  </span>
+                  <span className="line-clamp-2 font-medium">{ask}</span>
+                </li>
+              ))}
+            </ul>
+          </PopoverContent>
+        </Popover>
+      </div>
     </div>
   );
 }
@@ -293,7 +419,7 @@ function TabsDemo() {
   );
 }
 
-const Field = ({ label, help, value }: { label: string; help?: string; value: string }) => (
+const CopyField = ({ label, help, value }: { label: string; help?: string; value: string }) => (
   <div className="grid gap-1.5">
     <Label>{label}</Label>
     <Input defaultValue={value} />
@@ -305,12 +431,12 @@ function UiCopy() {
     <div className="grid gap-6 p-6 max-w-[520px]">
       <section className="grid gap-3 rounded-md border p-4">
         <h3 className="text-label font-medium">Omit: the label already says it</h3>
-        <Field label="Workspace name" value="Cheese Work" />
-        <Field label="Wakeup interval (minutes)" help="Minimum 5. Shorter values are rounded up." value="15" />
+        <CopyField label="Workspace name" value="Cheese Work" />
+        <CopyField label="Wakeup interval (minutes)" help="Minimum 5. Shorter values are rounded up." value="15" />
       </section>
       <section className="grid gap-3 rounded-md border p-4">
         <h3 className="text-label font-medium">Avoid: restates the label, the value and the button</h3>
-        <Field label="Workspace name" help="Enter the name of your workspace here. You can change this later." value="Cheese Work" />
+        <CopyField label="Workspace name" help="Enter the name of your workspace here. You can change this later." value="Cheese Work" />
         <Button type="button" className="w-fit">Save</Button>
         <p className="text-caption text-muted-foreground">Click Save to save your changes.</p>
       </section>
@@ -352,6 +478,45 @@ function SaveState() {
       <Row label="saving"><SettingsSaveState status="saving" {...labels} /></Row>
       <Row label="saved"><SettingsSaveState status="saved" {...labels} /></Row>
       <Row label="error"><SettingsSaveState status="error" {...labels} /></Row>
+    </div>
+  );
+}
+
+function FormDialogDemo() {
+  return (
+    <div className="min-h-[640px]">
+      <Dialog open onOpenChange={() => {}}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add local directory</DialogTitle>
+            <DialogDescription>Runs on this machine can read and edit the folder.</DialogDescription>
+          </DialogHeader>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="dir-label">Label</FieldLabel>
+              <Input id="dir-label" defaultValue="multica fork" />
+            </Field>
+            <Field data-invalid>
+              <FieldLabel htmlFor="dir-ref">Branch</FieldLabel>
+              <Input id="dir-ref" aria-invalid defaultValue="feature//bad" />
+              <FieldDescription>Use letters, digits, dash and slash.</FieldDescription>
+              <FieldError>A branch name cannot hold two slashes in a row.</FieldError>
+            </Field>
+          </FieldGroup>
+          <div className="rounded-md bg-muted px-2.5 py-1.5 font-mono text-micro text-muted-foreground break-all">
+            /mnt/ssd2/multica_workspaces/cheese-work/che-5528/workdir/multica
+          </div>
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <AlertTitle>In-place runs edit this folder</AlertTitle>
+            <AlertDescription>Uncommitted changes in it can be overwritten.</AlertDescription>
+          </Alert>
+          <DialogFooter>
+            <Button variant="ghost">Cancel</Button>
+            <Button>Add directory</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -560,6 +725,131 @@ function ConfirmDialog() {
   );
 }
 
+// Raw-class views: these ledger entries list no shared component yet (build: "one shared ..."),
+// so each view renders the classes the fork uses today, copied from the cited files.
+function SectionEyebrow() {
+  return (
+    <div className="p-6 max-w-[560px] space-y-6">
+      <section>
+        <p className="text-micro uppercase tracking-wide text-muted-foreground">Runtime</p>
+        <p className="mt-1 text-body">x99-claude-sonnet-design</p>
+      </section>
+      <section>
+        <dl className="grid grid-cols-3 gap-4">
+          {[["Online", "12"], ["Idle", "3"], ["Offline", "1"]].map(([k, v]) => (
+            <div key={k}>
+              <dt className="truncate text-micro uppercase tracking-wider text-muted-foreground">{k}</dt>
+              <dd className="text-title font-semibold">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      <section className="rounded-md border">
+        <div className="grid grid-cols-[1.6fr_1fr_1fr] gap-3 border-b bg-muted/40 px-3 py-2 text-micro uppercase tracking-wide text-muted-foreground">
+          <span>Name</span><span>Status</span><span>Last seen</span>
+        </div>
+        <div className="grid grid-cols-[1.6fr_1fr_1fr] gap-3 px-3 py-2 text-body">
+          <span>c00-runtime</span><span>Online</span><span>2 min ago</span>
+        </div>
+      </section>
+      <section>
+        <p className="text-micro uppercase tracking-wide text-warning">Needs attention</p>
+        <p className="mt-1 text-body">Status colour variants: warning here, emerald in the MCP tab.</p>
+      </section>
+    </div>
+  );
+}
+
+const ROLES: [string, string, string][] = [
+  ["text-micro", "11/15", "counters, badges, timestamps, overline labels"],
+  ["text-caption", "12/16", "chips, shortcut hints, tooltips, helper text"],
+  ["text-label", "13/18", "read in place: activity, property rows, table headers"],
+  ["text-body", "14/20", "UI body, the workhorse"],
+  ["text-body-lg", "15/22", "dialog copy, onboarding prose"],
+  ["text-title-sm", "16/24", "small headings"],
+  ["text-title", "18/28", "section headings"],
+  ["text-title-lg", "20/28", "card and dialog titles"],
+];
+function TypeRoleTokens() {
+  return (
+    <div className="p-6 max-w-[720px]">
+      {ROLES.map(([cls, px, role]) => (
+        <div key={cls} className="flex items-baseline gap-4 border-b py-2">
+          <code className="w-28 shrink-0 text-caption text-muted-foreground">{cls}</code>
+          <span className="w-12 shrink-0 text-caption text-muted-foreground">{px}</span>
+          <span className={cls}>The quick brown fox</span>
+          <span className="ml-auto hidden text-caption text-muted-foreground md:inline">{role}</span>
+        </div>
+      ))}
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        <div className="rounded-md border p-3">
+          <p className="text-caption font-medium text-muted-foreground">Use</p>
+          <p className="text-body">text-caption, text-body</p>
+        </div>
+        <div className="rounded-md border border-destructive/40 p-3">
+          <p className="text-caption font-medium text-destructive">Do not use</p>
+          <p className="text-body">text-xs, text-sm, text-body-sm (not a token)</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InlineLinkAction() {
+  return (
+    <div className="p-6 max-w-[560px] space-y-4 text-body">
+      <p>
+        Continued from <a href="#" className="underline underline-offset-2 hover:text-foreground">chat session 4F2A</a>.
+      </p>
+      <p className="text-muted-foreground">
+        Muted text with a link: <a href="#" className="underline underline-offset-2 hover:text-foreground">view status history</a>
+      </p>
+      <p>
+        Emphasised (font-medium):{" "}
+        <a href="#" className="inline-flex items-center gap-1 rounded-sm font-medium text-foreground underline underline-offset-2 transition-colors hover:text-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Manage runtime profiles
+        </a>
+      </p>
+      <p>
+        Same link on keyboard focus:{" "}
+        <a href="#" className="rounded-sm font-medium text-foreground underline underline-offset-2 outline-none ring-2 ring-ring">Manage runtime profiles</a>
+      </p>
+    </div>
+  );
+}
+
+const CHOICE_MODES = [
+  { id: "link", title: "Link a directory", tag: "recommended", desc: "The agent works in place on your folder." },
+  { id: "copy", title: "Copy a directory", tag: "isolated", desc: "The agent works on a copy; changes stay separate." },
+  { id: "off", title: "Cloud only", tag: "unavailable", desc: "Needs a connected runtime.", disabled: true },
+];
+function ChoiceCard() {
+  return (
+    <div className="p-6 max-w-[480px]">
+      <div role="radiogroup" aria-label="Directory mode" className="space-y-2">
+        {CHOICE_MODES.map((m, i) => {
+          const selected = i === 0;
+          return (
+            <button key={m.id} type="button" role="radio" aria-checked={selected} disabled={m.disabled}
+              className={`flex w-full items-start gap-3 rounded-lg border p-3 text-left transition-colors ${
+                selected ? "border-primary ring-1 ring-primary" : "border-border hover:bg-muted/50"
+              } ${m.disabled ? "cursor-not-allowed opacity-60" : ""}`}>
+              <span className={`mt-0.5 size-4 shrink-0 rounded-full border ${selected ? "border-primary bg-primary" : "border-muted-foreground"}`} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="text-body font-medium">{m.title}</span>
+                  <span className="font-mono text-micro text-muted-foreground">{m.tag}</span>
+                </span>
+                <span className="mt-0.5 block text-caption text-muted-foreground">{m.desc}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
@@ -568,6 +858,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "settings-navigation": SettingsNavigation,
   "read-only-member-view": ReadOnlyMemberView,
   "save-state": SaveState,
+  "decision-action-approval": DecisionActionApprovalDemo,
+  "description-disclosure": DescriptionDisclosureDemo,
+  "status-pill": StatusPillDemo,
+  "header-chip-popover": HeaderChipPopoverDemo,
+  "form-dialog": FormDialogDemo,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,
@@ -583,6 +878,10 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "settings-action-row": SettingsActionRow,
   "create-shell": CreateShell,
   "confirm-dialog": ConfirmDialog,
+  "section-eyebrow": SectionEyebrow,
+  "type-role-tokens": TypeRoleTokens,
+  "inline-link-action": InlineLinkAction,
+  "choice-card": ChoiceCard,
 };
 const id = new URLSearchParams(location.search).get("pattern") ?? "";
 const View = PATTERNS[id];

@@ -62,6 +62,9 @@
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "interactive_login_action": "Se connecter",
     "title": "Discussion",
+    "no_agent_title": "Aucun agent avec qui discuter pour l'instant",
+    "no_agent_description": "Créez un agent, puis décrivez-lui une demande ici pour qu'il la transforme en tâches.",
+    "no_agent_action": "Nouvel agent",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."
   },
@@ -377,6 +380,7 @@
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
+    "agent_settings": "Paramètres de l'agent",
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",

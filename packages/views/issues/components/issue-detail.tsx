@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  FileQuestion,
   Milestone,
   MoreHorizontal,
   PanelRight,
@@ -204,6 +205,7 @@ import {
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
+import { CollectionPageState } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -1275,21 +1277,29 @@ export function IssueNotFound({
           {trailing && <div className="ml-auto flex shrink-0 items-center gap-1">{trailing}</div>}
         </div>
       )}
-      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
-        <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
-        {onRetry && (
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            {t(($) => $.detail.retry)}
-          </Button>
-        )}
-        {showBackLink && (
-          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-            {t(($) => $.detail.back)}
-          </Button>
-        )}
-      </div>
+      <CollectionPageState
+        icon={FileQuestion}
+        title={t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found_title))}
+        description={dataError ? issueKey : onRetry ? undefined : t(($) => $.detail.not_found)}
+        tone={onRetry || dataError ? "destructive" : "muted"}
+        actions={
+          onRetry || showBackLink ? (
+            <>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  {t(($) => $.detail.retry)}
+                </Button>
+              )}
+              {showBackLink && (
+                <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+                  <ChevronLeft aria-hidden="true" />
+                  {t(($) => $.detail.back)}
+                </Button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
     </div>
   );
 }
