@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,7 +60,10 @@ type RunBudgetAutoConfig struct {
 	Enabled       bool `json:"enabled"`
 	DailyEnvelope int  `json:"daily_envelope"`
 	// ExpectedChecks is the check set a pushed head must hold, each finished,
-	// before its CI reads as known. Empty, no head does: the hold stays on.
+	// before its CI reads as known. Each entry is "name@appid": the check name
+	// and the numeric GitHub App id that produces it (GitHub Actions is 15368).
+	// An entry without a valid app id never matches, and an empty set means no
+	// head does: the hold stays on.
 	ExpectedChecks []string `json:"expected_checks"`
 }
 
@@ -102,6 +106,22 @@ func runBudgetAutoErrorKey(msg string) string {
 	return key
 }
 
+// splitExpectedChecks splits "name@appid" entries into parallel name and app id
+// lists. An entry with no valid positive app id gets 0, which no stored row
+// carries, so it can never read as finished (fail closed).
+func splitExpectedChecks(entries []string) ([]string, []int64) {
+	names, appIDs := make([]string, len(entries)), make([]int64, len(entries))
+	for i, e := range entries {
+		names[i] = e
+		if at := strings.LastIndex(e, "@"); at >= 0 {
+			if id, err := strconv.ParseInt(e[at+1:], 10, 64); err == nil && id > 0 {
+				names[i], appIDs[i] = e[:at], id
+			}
+		}
+	}
+	return names, appIDs
+}
+
 // EvaluateRunBudgetAuto judges the spent window that opened at since. It only
 // reads: the caller acts on the verdict. Order: kill switch, anomalies (which
 // are never approved), progress, then the daily envelope.
@@ -122,7 +142,8 @@ func EvaluateRunBudgetAuto(ctx context.Context, q *db.Queries, issue db.Issue, s
 		return RunBudgetAutoVerdict{Reason: "not_budgeted"}, err
 	}
 	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
-	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedChecks: append([]string{}, cfg.ExpectedChecks...)})
+	names, appIDs := splitExpectedChecks(cfg.ExpectedChecks)
+	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedNames: names, ExpectedAppIds: appIDs})
 	if err != nil {
 		return RunBudgetAutoVerdict{}, fmt.Errorf("run budget auto: list runs: %w", err)
 	}

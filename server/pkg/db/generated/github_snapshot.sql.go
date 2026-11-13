@@ -239,9 +239,9 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 
 const insertGitHubPRCheckRun = `-- name: InsertGitHubPRCheckRun :exec
 INSERT INTO github_pull_request_check_run (
-    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause
+    pr_id, head_sha, ordinal, name, status, conclusion, details_url, is_status_context, red_cause, app_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $7, $8, $6, $9
+    $1, $2, $3, $4, $5, $7, $8, $6, $9, $10
 )
 `
 
@@ -255,6 +255,7 @@ type InsertGitHubPRCheckRunParams struct {
 	Conclusion      pgtype.Text `json:"conclusion"`
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	RedCause        pgtype.Text `json:"red_cause"`
+	AppID           pgtype.Int8 `json:"app_id"`
 }
 
 func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPRCheckRunParams) error {
@@ -268,6 +269,7 @@ func (q *Queries) InsertGitHubPRCheckRun(ctx context.Context, arg InsertGitHubPR
 		arg.Conclusion,
 		arg.DetailsUrl,
 		arg.RedCause,
+		arg.AppID,
 	)
 	return err
 }

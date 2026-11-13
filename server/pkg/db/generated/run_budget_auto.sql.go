@@ -152,12 +152,12 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
              AND (
                  cardinality($1::text[]) = 0
                  OR EXISTS (
-                     SELECT 1 FROM unnest($1::text[]) x(name)
+                     SELECT 1 FROM generate_subscripts($1::text[], 1) x(i)
                      WHERE NOT EXISTS (
                          SELECT 1 FROM github_pull_request_check_run cr
-                         WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = x.name
-                           AND NOT cr.is_status_context
-                         HAVING count(*) = 1 AND bool_and(cr.status = 'completed' AND cr.conclusion IS NOT NULL)
+                         WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = ($1::text[])[x.i]
+                           AND cr.app_id = ($2::bigint[])[x.i] AND NOT cr.is_status_context
+                           AND cr.status = 'completed' AND cr.conclusion IS NOT NULL
                      )
                  )
                  OR EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND (cr.status <> 'completed' OR cr.conclusion IS NULL))
@@ -166,12 +166,13 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
        COALESCE((SELECT SUM(u.input_tokens + u.output_tokens) FROM task_usage u WHERE u.task_id = t.id), 0)::bigint AS tokens
 FROM agent_task_queue t
 JOIN agent a ON a.id = t.agent_id
-WHERE t.issue_id = $2::uuid AND t.created_at > $3::timestamptz
+WHERE t.issue_id = $3::uuid AND t.created_at > $4::timestamptz
   AND t.status IN ('completed', 'failed', 'cancelled')
 `
 
 type ListRunBudgetWindowRunsParams struct {
-	ExpectedChecks []string           `json:"expected_checks"`
+	ExpectedNames  []string           `json:"expected_names"`
+	ExpectedAppIds []int64            `json:"expected_app_ids"`
 	IssueID        pgtype.UUID        `json:"issue_id"`
 	Since          pgtype.Timestamptz `json:"since"`
 }
@@ -196,16 +197,22 @@ type ListRunBudgetWindowRunsRow struct {
 // its own error: the failed check names and the CI failure workflows recorded
 // for the heads it pushed, so a loop shows across completed runs. ci_unknown
 // fails closed: it is set unless each head the run pushed holds a finished row
-// for every name in the expected check set (expected_checks, the workspace
-// setting) and no row still queued or running. The snapshot keeps no producer
-// identity, so a name counts only as exactly one Checks API run: a commit status
-// of that name, or a second run of it, is ambiguous and fails closed. A stored snapshot alone is not
-// complete: a check that has not arrived yet has no row. An empty expected set
+// for every expected check (expected_checks, the workspace setting, each a name
+// plus the GitHub App id that produces it) and no row still queued or running.
+// A row satisfies an expected check only with the same name and the same app_id,
+// so a finished run of that name from another App, or a commit status (no
+// app_id), does not. A stored snapshot alone is not complete: a check that has
+// not arrived yet has no row. An empty expected set
 // is no evidence, so every pushed head reads as unknown. A head with no retained
 // check results (they are kept only for a PR's current head, and CI failure
 // events only while the ci_watcher flag is on) says nothing final either.
 func (q *Queries) ListRunBudgetWindowRuns(ctx context.Context, arg ListRunBudgetWindowRunsParams) ([]ListRunBudgetWindowRunsRow, error) {
-	rows, err := q.db.Query(ctx, listRunBudgetWindowRuns, arg.ExpectedChecks, arg.IssueID, arg.Since)
+	rows, err := q.db.Query(ctx, listRunBudgetWindowRuns,
+		arg.ExpectedNames,
+		arg.ExpectedAppIds,
+		arg.IssueID,
+		arg.Since,
+	)
 	if err != nil {
 		return nil, err
 	}

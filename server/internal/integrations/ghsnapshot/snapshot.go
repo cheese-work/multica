@@ -31,6 +31,8 @@ type CheckContext struct {
 	Conclusion      string
 	DetailsURL      string
 	IsStatusContext bool
+	// AppID is the GitHub App that produced a check run; 0 for a commit status.
+	AppID int64
 	// RedCause says why a failing check is red: CausePR, CauseInfra or
 	// CauseOptional. Empty means unknown, and no cause is attributed (CHE-3257).
 	RedCause string
@@ -180,7 +182,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			// refresh queue and the persisted running-check counts.
 			status, conclusion = "queued", ""
 		}
-		snap.Contexts = append(snap.Contexts, CheckContext{Name: run.Name, Status: status, Conclusion: conclusion, DetailsURL: run.DetailsURL})
+		snap.Contexts = append(snap.Contexts, CheckContext{Name: run.Name, Status: status, Conclusion: conclusion, DetailsURL: run.DetailsURL, AppID: run.App.ID})
 	}
 	seenStatuses := make(map[string]struct{}, len(statuses))
 	for _, entry := range statuses {

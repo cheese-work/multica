@@ -678,6 +678,7 @@ func (manager *Manager) applySnapshotGuarded(ctx context.Context, prID pgtype.UU
 			DetailsUrl:      textOrNull(c.DetailsURL),
 			IsStatusContext: c.IsStatusContext,
 			RedCause:        textOrNull(c.RedCause),
+			AppID:           pgtype.Int8{Int64: c.AppID, Valid: c.AppID > 0},
 		}); err != nil {
 			return false, err
 		}

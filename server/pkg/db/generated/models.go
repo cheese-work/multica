@@ -1567,6 +1567,7 @@ type GithubPullRequestCheckRun struct {
 	DetailsUrl      pgtype.Text `json:"details_url"`
 	IsStatusContext bool        `json:"is_status_context"`
 	RedCause        pgtype.Text `json:"red_cause"`
+	AppID           pgtype.Int8 `json:"app_id"`
 }
 
 type GithubPullRequestCheckSuite struct {
