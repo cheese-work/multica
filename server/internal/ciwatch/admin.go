@@ -68,6 +68,9 @@ type WatchEvent struct {
 	Action   string `json:"action"`
 	State    string `json:"state"`
 	Outcome  string `json:"outcome"`
+	// WouldDo is what Shadow would have done: the routed protocol and route when
+	// no action row exists. Empty for P0 skips and for acted runs.
+	WouldDo string `json:"would_do"`
 }
 
 type TxBeginner interface {
@@ -528,9 +531,9 @@ func enrichEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, ev
 	if len(runs) == 0 {
 		return nil
 	}
-	type obs struct{ class, protocol, outcome string }
+	type obs struct{ class, protocol, outcome, route string }
 	bySubject := map[pgtype.UUID]obs{}
-	orows, err := q.Query(ctx, `SELECT DISTINCT ON (subject_id) subject_id, class, COALESCE(choice_key,''), COALESCE(outcome_label,'')
+	orows, err := q.Query(ctx, `SELECT DISTINCT ON (subject_id) subject_id, class, COALESCE(choice_key,''), COALESCE(outcome_label,''), COALESCE(inputs->>'route','')
 		FROM system1_observation WHERE workspace_id=$1::uuid AND kind='ci_event' AND subject_id = ANY($2::uuid[])
 		ORDER BY subject_id, created_at DESC`, ws, subjects)
 	if err != nil {
@@ -539,7 +542,7 @@ func enrichEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, ev
 	for orows.Next() {
 		var id pgtype.UUID
 		var o obs
-		if err := orows.Scan(&id, &o.class, &o.protocol, &o.outcome); err != nil {
+		if err := orows.Scan(&id, &o.class, &o.protocol, &o.outcome, &o.route); err != nil {
 			orows.Close()
 			return err
 		}
@@ -577,7 +580,11 @@ func enrichEvents(ctx context.Context, q rowsQuerier, ws, owner, name string, ev
 		}
 		o := bySubject[subjectID(Run{RepoOwner: owner, RepoName: name, RunID: e.RunID, RunAttempt: attempts[i]})]
 		e.Class, e.Protocol, e.Outcome = o.class, o.protocol, o.outcome
-		if a, ok := byRun[e.RunID]; ok {
+		a, acted := byRun[e.RunID]
+		if !acted && o.protocol != "" && o.protocol != "P0" {
+			e.WouldDo = strings.TrimSpace(o.protocol + " " + o.route)
+		}
+		if acted {
 			e.Action, e.State = a.kind, a.state
 			if a.protocol != "" {
 				e.Protocol = a.protocol
