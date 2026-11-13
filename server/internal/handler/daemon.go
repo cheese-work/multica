@@ -4195,6 +4195,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		projectCtx.applyTo(&resp)
 	}
 
+	// Output-only background task (CHE-4100): no issue / chat / autopilot link.
+	// Workspace and input come from the task context; nothing else is hydrated.
+	if task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+		var bc service.BackgroundTaskContext
+		if json.Unmarshal(task.Context, &bc) == nil && bc.Type == service.BackgroundTaskContextType {
+			resp.BackgroundJob = bc.Job
+			resp.BackgroundInput = bc.Input
+			resp.BackgroundRunSeconds = bc.RunSeconds
+			resp.ThreadName = bc.Job
+			resp.WorkspaceID = bc.WorkspaceID
+			if failure := h.rejectClaimOnWorkspaceMismatch(r.Context(), task, resp.WorkspaceID, runtimeID, runtimeWorkspaceID, false); failure != nil {
+				return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
+			}
+		}
+	}
+
 	// Quick-create task: no issue / chat / autopilot link — workspace and
 	// prompt come from the task's context JSONB. Resolve workspace from
 	// there so the isolation check below has something to compare.
