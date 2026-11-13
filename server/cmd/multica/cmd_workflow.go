@@ -94,12 +94,17 @@ one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
 --start-status KEY sets the status where new issues of the workflow start (an
 unstarted or started step of the workflow; "" restores todo).
-An agent cannot change --max-runs-per-issue or --include-child-prs without a
-decision. Run the same command with --print-hash (nothing is written) to get
-before_sha256 and after_sha256, ask the owner with "multica decision request"
-for the workflow.budget field (or "multica config propose workflow.budget
-<workflow-id> --max-runs N"), then repeat the command with --decision-id. The
-owner approves one passkey card. A budget write carries no --steps-file.
+A task token changes --max-runs-per-issue or --include-child-prs only through
+an owner's approval: with --issue <issue> (and --for <user-id>) the command reads
+the live workflow, opens one workflow.budget.set card with only the budget flags
+you named, prints the card URL and writes nothing until the owner approves with a
+passkey. Repeating the same call returns the same card. A budget call carries no
+--name, --description, --steps-file, --start-status, --map or --dry-run: run two
+commands instead. --print-hash prints before_sha256 and after_sha256 of the
+budget change; "multica decision request" with the workflow.budget field and
+--decision-id is the manual path. "multica config propose workflow.budget"
+names the same budget as --max-runs N (0 restores the default) and
+--include-child-prs.
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
@@ -200,6 +205,8 @@ func init() {
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
 	workflowUpdateCmd.Flags().String("start-status", "", "Status where new issues of the workflow start; an unstarted or started step (\"\" restores todo)")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowUpdateCmd.Flags().String("issue", "", "Task token budget change: issue UUID or identifier the card is about (required)")
+	workflowUpdateCmd.Flags().String("for", "", forFlagHelp)
 
 	workflowSetInstructionsCmd.Flags().String("status", "", "status_key of the step to change (required)")
 	workflowSetInstructionsCmd.Flags().String("file", "", "File holding the new instructions text (required)")
@@ -647,6 +654,9 @@ func runWorkflowCreate(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
+	if proposesWorkflowBudget(cmd) {
+		return proposeWorkflowBudget(cmd, args[0])
+	}
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")

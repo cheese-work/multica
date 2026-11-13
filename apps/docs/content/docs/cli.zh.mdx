@@ -341,7 +341,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `workflow.budget <workflow-id>` 用 `--max-runs <n>`（1 到 1000；0 表示清除上限）和 `--include-child-prs=<true|false>` 代替 `--file`；至少指定一个，省略的字段保持已存储的值。智能体不能直接写入工作流的这两个字段（`budget_requires_decision`）：先提出修改并请求决定，批准后若工作流仍与 CLI 读到的摘要一致，服务端即应用。
 
-智能体也可以自己写入已批准的修改。运行 `multica workflow update <workflow-id> --max-runs 40 --print-hash`（不写入任何内容）读取 `before_sha256` 和 `after_sha256`，为 `workflow.budget` 请求决定，再带 `--decision-id <id>` 重新运行该命令。预算写入不能带 `--steps-file`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
+持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
 
 其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
 
