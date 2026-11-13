@@ -75,7 +75,7 @@ type TxBeginner interface {
 }
 
 type rowsQuerier interface {
-	querier
+	queryer
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
@@ -252,8 +252,8 @@ const configCols = `mode, branches, events, workflows_include, workflows_exclude
 	fix_owner_kind, fix_owner_id::text, notify_member_id::text, max_reruns_per_original_run, max_new_issues_per_day,
 	max_owner_wakes_per_hour, updated_at`
 
-// readConfig returns the stored row, or the defaults (UpdatedAt nil) when the repo has none.
-func readConfig(ctx context.Context, q querier, ws, owner, name, lock string) (ConfigView, error) {
+// readConfigView returns the stored row, or the defaults (UpdatedAt nil) when the repo has none.
+func readConfigView(ctx context.Context, q queryer, ws, owner, name, lock string) (ConfigView, error) {
 	c := ConfigView{Repo: owner + "/" + name}
 	err := q.QueryRow(ctx, `SELECT `+configCols+` FROM ci_watch_config
 		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`+lock, ws, owner, name).Scan(
@@ -267,8 +267,8 @@ func readConfig(ctx context.Context, q querier, ws, owner, name, lock string) (C
 }
 
 // GetConfig reads one repo's settings without creating a row.
-func GetConfig(ctx context.Context, q querier, ws, owner, name string) (ConfigView, error) {
-	return readConfig(ctx, q, ws, owner, name, "")
+func GetConfig(ctx context.Context, q queryer, ws, owner, name string) (ConfigView, error) {
+	return readConfigView(ctx, q, ws, owner, name, "")
 }
 
 // value is the stored value of a column in the same Go types a Patch holds.
@@ -350,7 +350,7 @@ func ApplyConfig(ctx context.Context, db TxBeginner, ws, owner, name, actorID st
 		VALUES ($1::uuid,$2,$3) ON CONFLICT (workspace_id, repo_owner, repo_name) DO NOTHING`, ws, owner, name); err != nil {
 		return ConfigResult{}, err
 	}
-	old, err := readConfig(ctx, tx, ws, owner, name, " FOR UPDATE")
+	old, err := readConfigView(ctx, tx, ws, owner, name, " FOR UPDATE")
 	if err != nil {
 		return ConfigResult{}, err
 	}
@@ -389,7 +389,7 @@ func ApplyConfig(ctx context.Context, db TxBeginner, ws, owner, name, actorID st
 	if err != nil {
 		return ConfigResult{}, err
 	}
-	cur, err := readConfig(ctx, tx, ws, owner, name, "")
+	cur, err := readConfigView(ctx, tx, ws, owner, name, "")
 	if err != nil {
 		return ConfigResult{}, err
 	}

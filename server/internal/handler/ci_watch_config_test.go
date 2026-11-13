@@ -14,8 +14,8 @@ type ciWatchEnv struct {
 	ws, agent, repo string
 }
 
-// ciWatchFixture is a workspace the test user owns, with the watcher flag on.
-func ciWatchFixture(t *testing.T, slug string) ciWatchEnv {
+// ciWatchAdminFixture is a workspace the test user owns, with the watcher flag on.
+func ciWatchAdminFixture(t *testing.T, slug string) ciWatchEnv {
 	t.Helper()
 	withFeatureFlag(t, testHandler, featureflags.CIWatcher, true)
 	ws, agent := delegatedWritesFixture(t, slug)
@@ -50,7 +50,7 @@ func (e ciWatchEnv) auditCount(t *testing.T) (n int) {
 }
 
 func TestCIWatchConfig_NonAdminWriteRefused(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-member")
+	e := ciWatchAdminFixture(t, "ciw-member")
 	dbfx.Exec(t, `UPDATE member SET role='member' WHERE workspace_id=$1 AND user_id=$2`, e.ws, testUserID)
 	e.put(t, map[string]any{"mode": "act"}).Want(http.StatusForbidden)
 	e.call(t, testHandler.GetCIWatchConfig, "GET", "", nil, nil).Want(http.StatusForbidden)
@@ -63,7 +63,7 @@ func TestCIWatchConfig_NonAdminWriteRefused(t *testing.T) {
 }
 
 func TestCIWatchConfig_MachineCredentialRefused(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-token")
+	e := ciWatchAdminFixture(t, "ciw-token")
 	for _, src := range []string{"task_token", "cloud_pat"} {
 		e.call(t, testHandler.PutCIWatchConfig, "PUT", "", map[string]any{"mode": "act"},
 			func(r *http.Request) { r.Header.Set("X-Actor-Source", src) }).Want(http.StatusForbidden)
@@ -74,7 +74,7 @@ func TestCIWatchConfig_MachineCredentialRefused(t *testing.T) {
 }
 
 func TestCIWatchConfig_FlagOffReportsDisabled(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-off")
+	e := ciWatchAdminFixture(t, "ciw-off")
 	withFeatureFlag(t, testHandler, featureflags.CIWatcher, false)
 	for name, res := range map[string]*testutil.Response{
 		"get":    e.call(t, testHandler.GetCIWatchConfig, "GET", "", nil, nil),
@@ -93,7 +93,7 @@ func TestCIWatchConfig_FlagOffReportsDisabled(t *testing.T) {
 }
 
 func TestCIWatchConfig_GetDefaultsThenPutRoundTrip(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-roundtrip")
+	e := ciWatchAdminFixture(t, "ciw-roundtrip")
 	var got map[string]any
 	e.call(t, testHandler.GetCIWatchConfig, "GET", "", nil, nil).Want(http.StatusOK).JSON(&got)
 	if got["repo"] != "acme/widgets" || got["mode"] != "off" || got["p1_mode"] != "shadow" {
@@ -127,7 +127,7 @@ func TestCIWatchConfig_GetDefaultsThenPutRoundTrip(t *testing.T) {
 }
 
 func TestCIWatchConfig_PutValidation(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-validate")
+	e := ciWatchAdminFixture(t, "ciw-validate")
 	bad := []map[string]any{
 		{"mode": "loud"},
 		{"unknown": 1},
@@ -160,7 +160,7 @@ func TestCIWatchConfig_PutValidation(t *testing.T) {
 }
 
 func TestCIWatchConfig_SwitchToShadowCancelsPending(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-cancel")
+	e := ciWatchAdminFixture(t, "ciw-cancel")
 	e.put(t, map[string]any{"mode": "act"}).Want(http.StatusOK)
 	dbfx.Exec(t, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, protocol, state)
 		VALUES ($1,'acme','widgets',1,'issue_create','P1','scheduled')`, e.ws)
@@ -176,7 +176,7 @@ func TestCIWatchConfig_SwitchToShadowCancelsPending(t *testing.T) {
 }
 
 func TestCIWatchConfig_EventsNewestFirstAndLimit(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-events")
+	e := ciWatchAdminFixture(t, "ciw-events")
 	for i := 1; i <= 3; i++ {
 		dbfx.Exec(t, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, conclusion, created_at)
 			VALUES ($1,'acme','widgets',$2::bigint,1,'ci','main','failure', now() - (10 - $2::bigint) * interval '1 minute')`, e.ws, i)
@@ -198,7 +198,7 @@ func TestCIWatchConfig_EventsNewestFirstAndLimit(t *testing.T) {
 }
 
 func TestCIWatchConfig_EventsCarryActionFields(t *testing.T) {
-	e := ciWatchFixture(t, "ciw-events-enriched")
+	e := ciWatchAdminFixture(t, "ciw-events-enriched")
 	dbfx.Exec(t, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion)
 		VALUES ($1,'acme','widgets',77,1,'ci','main','push','failure')`, e.ws)
 	dbfx.Exec(t, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, state, protocol)
