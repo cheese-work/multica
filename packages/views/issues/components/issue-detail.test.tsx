@@ -2385,6 +2385,44 @@ describe("IssueDetail (shared)", () => {
       }
     });
 
+    it("CHE-5437: a real click on Collapse thread collapses a thread with no replies to its one-line header and hides the reply box", async () => {
+      const root = { ...mockTimeline[0]!, id: "lonely-root", content: "Lonely root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Lonely root body");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      // A real pointer press focuses the button; the focus pin must not
+      // read the collapse control's own focus as "the user is interacting".
+      const button = within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      fireEvent.mouseDown(button);
+      act(() => button.focus());
+      fireEvent.click(button);
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
+      // One line: the summary stays in the header, the body block is gone.
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(rootWrapper().querySelector(`#comment-body-${root.id}`)).toBeNull();
+      expect(within(rootWrapper()).getByText("Lonely root body")).toBeInTheDocument();
+    });
+
+    it("CHE-5437: Collapse thread works while the reply box holds unsent text, and the text is still in the draft store", async () => {
+      const root = { ...mockTimeline[0]!, id: "draft-root", content: "Draft root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Draft root body");
+      const draftKey = `reply:issue-1:${root.id}`;
+      act(() => mockDraftStoreState.setDraft(draftKey, { content: "half-typed reply", attachments: [], updatedAt: 1 }));
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      fireEvent.click(within(rootWrapper()).getByRole("button", { name: "Collapse thread" }));
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
+    });
+
     it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
       mockApiObj.getIssue.mockResolvedValue({
         ...mockIssue,

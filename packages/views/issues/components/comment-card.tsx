@@ -1339,6 +1339,7 @@ function CommentCardImpl({
                       title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
                       aria-expanded={open}
                       aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                      data-thread-toggle
                       // Only collapsing (from `open`) can hide a match — expanding
                       // never does, so the control stays live in that direction
                       // even while find owns this thread's reveal.
