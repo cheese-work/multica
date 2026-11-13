@@ -8,6 +8,7 @@ import {
   parseIssueWindowRequest,
   readDesktopWindowContext,
 } from "./issue-window";
+import { encodeWorkspaceWindowArgument } from "./workspace-window";
 
 describe("issue window request", () => {
   it("round trips only allowlisted media pages in a dedicated app window", () => {
@@ -16,6 +17,19 @@ describe("issue window request", () => {
     expect(parseMediaWindowRequest({ path: "https://example.test", title: "HTML" })).toBeNull();
     expect(parseMediaWindowRequest({ path: "/acme/issues/issue-1" })).toBeNull();
     expect(parseMediaWindowRequest({ path: "/acme/media/chats/chat-1/html/../secret" })).toBeNull();
+  });
+  it("keeps media windows and per-workspace main windows distinct", () => {
+    const media = { path: "/acme/media/issues/issue-1/html/content-id", title: "HTML" };
+    expect(
+      readDesktopWindowContext([
+        encodeWorkspaceWindowArgument("beta"),
+        encodeMediaWindowArgument(media),
+      ]),
+    ).toMatchObject({ kind: "media", workspaceSlug: "acme" });
+    expect(readDesktopWindowContext([encodeWorkspaceWindowArgument("beta")])).toEqual({
+      kind: "main",
+      workspaceSlug: "beta",
+    });
   });
   it("accepts and canonicalizes a workspace-scoped issue detail path", () => {
     expect(

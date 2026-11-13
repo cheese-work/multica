@@ -115,6 +115,7 @@ func TestTaskTokenWriteScope(t *testing.T) {
 			{"POST", "/api/issues/" + f.foreign + "/comments/trigger-preview"},
 			{"POST", "/api/issues/" + f.foreign + "/quick-actions/x/render"},
 			{"POST", "/api/issues/query"}, {"POST", "/api/issues/table/rows"}, {"POST", "/api/issues/preview-trigger"},
+			{"POST", "/api/issues/relations/batch"},
 		} {
 			if st, reached := scoped(t, on, f.taskID, f.agentID, c.method, c.path, nil, nil); st != 200 || !reached {
 				t.Errorf("%s %s: status %d reached %v, want pass", c.method, c.path, st, reached)

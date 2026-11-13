@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -66,6 +69,14 @@ func guardAgentIssueStatus(ctx context.Context, queries *db.Queries, params db.U
 		}
 		for _, request := range requests {
 			if request.Status == "open" {
+				// A top-up card left behind by a new window cannot be approved
+				// (stale_window) and must not hold the close.
+				if holds, isCard, err := runBudgetCardHolds(ctx, queries, request); err != nil {
+					return fmt.Errorf("check run budget card: %w", err)
+				} else if isCard && !holds {
+					slog.Warn("done guard: ignoring stale run budget card", "request_id", uuidToString(request.ID))
+					continue
+				}
 				return fmt.Errorf("%w: %s; answer or withdraw the request before closing the issue", errAgentIssueOpenDecision, uuidToString(request.ID))
 			}
 			if request.Status == "answered" {
@@ -73,7 +84,7 @@ func guardAgentIssueStatus(ctx context.Context, queries *db.Queries, params db.U
 				if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 					return fmt.Errorf("check undelivered decision answer: %w", err)
 				}
-				if err == nil && !answer.WokenAt.Valid {
+				if err == nil && !answer.WokenAt.Valid && !deliveryCannotBlockDone(request, answer) {
 					return fmt.Errorf("%w: %s; wait for answer delivery or withdraw the request before closing the issue", errAgentIssueOpenDecision, uuidToString(request.ID))
 				}
 			}
@@ -82,11 +93,31 @@ func guardAgentIssueStatus(ctx context.Context, queries *db.Queries, params db.U
 	return nil
 }
 
+// staleAnswerAge is how long an answer may wait for delivery before it stops
+// blocking done.
+const staleAnswerAge = time.Hour
+
+// deliveryCannotBlockDone reports an answered request whose delivery will not
+// come, so it must not block the close (CHE-5303). A server:run_budget answer
+// is delivered by a run the budget refuses, and any answer over staleAnswerAge
+// old is stuck. The skip is logged; the answer stays undelivered.
+func deliveryCannotBlockDone(request db.DecisionRequest, answer db.DecisionAnswer) bool {
+	budget := strings.HasPrefix(request.RequestFingerprint, serverDecisionFingerprint+"run_budget")
+	stale := answer.CreatedAt.Valid && time.Since(answer.CreatedAt.Time) > staleAnswerAge
+	if budget || stale {
+		slog.Warn("done guard: ignoring undelivered decision answer", "request_id", uuidToString(request.ID), "budget_request", budget, "stale", stale)
+	}
+	return budget || stale
+}
+
 func writeAgentIssueStatusError(writer http.ResponseWriter, err error) bool {
+	var refused *decisionEpisodeRefusal
 	switch {
 	case errors.Is(err, service.ErrAgentIssueApproval):
 		writeError(writer, http.StatusForbidden, err.Error())
 	case errors.Is(err, errAgentIssueOpenPR), errors.Is(err, errAgentIssueOpenDecision):
+		writeError(writer, http.StatusConflict, err.Error())
+	case errors.As(err, &refused):
 		writeError(writer, http.StatusConflict, err.Error())
 	default:
 		return false

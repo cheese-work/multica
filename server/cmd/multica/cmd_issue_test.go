@@ -559,7 +559,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("content-stdin", false, "")
 	cmd.Flags().String("content-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().StringSlice("steer", nil, "")
@@ -921,14 +921,17 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
+	cmd.Flags().Bool("assignee-picker", false, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().StringSlice("attachment-id", nil, "")
 	cmd.Flags().StringArray("property", nil, "")
 	return cmd
@@ -4229,9 +4232,7 @@ func TestRunIssueCreateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("status", "not a status")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4243,9 +4244,7 @@ func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("priority", "P1")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4263,13 +4262,15 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().Bool("description-stdin", false, "")
 	cmd.Flags().String("description-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("status", "", "")
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -5114,6 +5115,29 @@ func TestRunIssueListSendsSortAndDirection(t *testing.T) {
 	}
 }
 
+func TestRunIssueListSendsEffectiveDueSort(t *testing.T) {
+	var gotQuery url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueListTestCmd()
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("sort", "effective_due")
+	if err := runIssueList(cmd, nil); err != nil {
+		t.Fatalf("runIssueList: %v", err)
+	}
+	if got := gotQuery.Get("sort"); got != "effective_due" {
+		t.Fatalf("sort query = %q, want effective_due", got)
+	}
+}
+
 func TestRunIssueListRejectsInvalidSortAndDirection(t *testing.T) {
 	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:0")
 	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
@@ -5151,6 +5175,7 @@ func TestRunIssueListRejectsDirectionWithoutDirectionalSort(t *testing.T) {
 	}{
 		{"direction without sort", ""},
 		{"direction with explicit position sort", "position"},
+		{"direction with effective_due sort", "effective_due"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5195,6 +5220,7 @@ func sampleIssueResponse() handler.IssueResponse {
 	lastActivity := "2024-01-01T00:00:00Z"
 	labels := []handler.LabelResponse{}
 
+	effectiveDue := "2024-02-01"
 	return handler.IssueResponse{
 		ID:             "iss-1",
 		WorkspaceID:    "ws-1",
@@ -5223,6 +5249,10 @@ func sampleIssueResponse() handler.IssueResponse {
 		Metadata:       map[string]any{},
 		Properties:     map[string]any{},
 		Labels:         &labels,
+		// Present on `--sort effective_due` rows (CHE-3463).
+		EffectiveDue: &effectiveDue,
+		DueSource:    "parent:CHE-1",
+		Diagnostics:  []handler.DueDiagnostic{{Type: "depth_limit"}},
 	}
 }
 
@@ -7118,5 +7148,16 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 	out := stderr.read()
 	if !strings.Contains(out, "old-1 superseded and resolved") || !strings.Contains(out, "old-2 superseded, left open (human_reply)") {
 		t.Fatalf("stderr should report each superseded thread, got %q", out)
+	}
+}
+
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
+	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
+		usage := cmd.Flags().Lookup("no-start").Usage
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
+		}
 	}
 }

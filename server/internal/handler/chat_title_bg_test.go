@@ -201,7 +201,7 @@ func TestDMTitleJobUnusableOutputKeepsTitle(t *testing.T) {
 // the LLM client is never called.
 func TestDMTitleJobNoAgentKeepsFallbackTitle(t *testing.T) {
 	requireDB(t)
-	fallback := strings.Repeat("a", chatTitleFallbackMaxLen)
+	fallback := strings.Repeat("a", 80)
 	for _, c := range []struct {
 		name  string
 		setup func(wsID, runtimeID string)

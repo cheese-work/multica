@@ -14,7 +14,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, request *http.Request, issue db.Issue, input CreateCommentRequest) {
@@ -56,11 +55,7 @@ func (handler *Handler) createDecisionVetoComment(writer http.ResponseWriter, re
 		return
 	}
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), request.Header.Get("X-Agent-ID")
-	for _, comment := range result.Comments {
-		handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": commentToResponse(comment, nil, nil), "issue_title": issue.Title, "issue_status": issue.Status})
-	}
-	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
+	handler.publishWithdrawalEvents(workspaceID, "agent", agentID, result, map[string]any{"issue_title": issue.Title, "issue_status": issue.Status})
 	writeJSON(writer, http.StatusCreated, commentToResponse(result.Comments[0], nil, nil))
 }
 
@@ -205,6 +200,9 @@ func (handler *Handler) vetoDecisionAnswerTx(request *http.Request, issue db.Iss
 	}
 	result, err := decisiontx.WithdrawByAgent(ctx, queries, current, answer, session.Status, reason, comment.Comment(), suppress)
 	if err != nil {
+		return empty, err
+	}
+	if err := withdrawCoveredAnswers(ctx, queries, current, &result, pgtype.UUID{}); err != nil {
 		return empty, err
 	}
 	if root != nil {

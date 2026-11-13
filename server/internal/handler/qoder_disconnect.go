@@ -103,6 +103,18 @@ func (h *Handler) DisconnectQoderConnection(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "Qoder is stopped and still cancelling remote sessions; retry shortly")
 		return
 	}
+	var external []string
+	if len(runtimeIDs) > 0 {
+		external = []string{auditExternalRuntimeGone}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "qoder.disconnect", WorkspaceID: ws, TargetID: ws,
+		After:    map[string]any{"runtimes_removed": len(runtimeIDs)},
+		External: external,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "qoder.disconnect")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot disconnect Qoder")
 		return
@@ -153,8 +165,13 @@ func (h *Handler) stopQoderForDisconnect(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusInternalServerError, "cannot revoke runtime credential")
 		return false
 	}
-	if _, err = tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws); err != nil {
+	tag, err := tx.Exec(r.Context(), `UPDATE cloud_agent_connection SET enabled=false,revision=revision+1,status='stopped',last_error='' WHERE provider='qoder_cloud' AND workspace_id=$1`, ws)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot stop Qoder Cloud Agents runtime")
+		return false
+	}
+	if err := h.writeQoderStopAudit(r, tx, ws, tag.RowsAffected()); err != nil {
+		writeAuditFailure(w, r, err, "qoder.stop")
 		return false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -167,10 +184,35 @@ func (h *Handler) stopQoderForDisconnect(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
+// writeQoderStopAudit records a stop in the stop transaction. A stop that
+// matched no connection changed nothing and writes no row. Credentials are
+// never part of the row.
+func (h *Handler) writeQoderStopAudit(r *http.Request, tx pgx.Tx, ws pgtype.UUID, rowsAffected int64) error {
+	if rowsAffected == 0 {
+		return nil
+	}
+	return h.writeAudit(r.Context(), h.Queries.WithTx(tx), r, auditInput{
+		Kind: "qoder.stop", WorkspaceID: ws, TargetID: ws,
+		Before: map[string]any{"enabled": true},
+		After:  map[string]any{"enabled": false, "status": "stopped"},
+	})
+}
+
 // checkQoderDisconnectPlan locks the workspace's Qoder runtimes and refuses
 // while tasks run on them or when their active agents differ from the
 // confirmed set. It returns the runtimes to remove.
 func (h *Handler) checkQoderDisconnectPlan(w http.ResponseWriter, ctx context.Context, tx pgx.Tx, qtx *db.Queries, ws pgtype.UUID, expected map[string]struct{}) ([]pgtype.UUID, bool) {
+	// Chat sessions before the runtime and agent locks: chat enqueue holds a session while it
+	// takes KEY SHARE on the runtime and locks the agent. Read the ids unlocked to find them.
+	planned, err := unlockedRuntimeIDs(ctx, tx, `SELECT id FROM agent_runtime WHERE workspace_id=$1 AND provider='qoder_cloud' ORDER BY id`, ws)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot load Qoder runtime")
+		return nil, true
+	}
+	if _, err := qtx.LockChatSessionsForRuntimes(ctx, planned); err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot lock Qoder chat sessions")
+		return nil, true
+	}
 	rows, err := tx.Query(ctx, `SELECT id FROM agent_runtime WHERE workspace_id=$1 AND provider='qoder_cloud' ORDER BY id FOR UPDATE`, ws)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot load Qoder runtime")
@@ -237,4 +279,14 @@ func (h *Handler) refuseQoderManagedRuntime(w http.ResponseWriter, ctx context.C
 		"code":  "runtime_managed_by_connection",
 	})
 	return true
+}
+
+// unlockedRuntimeIDs reads runtime ids without locking them, so the caller can lock the chat
+// sessions that point at those runtimes before it locks the runtimes themselves.
+func unlockedRuntimeIDs(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]pgtype.UUID, error) {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[pgtype.UUID])
 }

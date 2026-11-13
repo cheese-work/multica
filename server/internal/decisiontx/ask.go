@@ -18,6 +18,8 @@ type AskOption struct {
 	Pros        []string `json:"pros"`
 	Cons        []string `json:"cons"`
 	CostOrTime  string   `json:"cost_or_time"`
+	// OptionKey is the machine key of a waiver-topic option (CHE-4383 B2a). Empty on every other ask.
+	OptionKey string `json:"option_key,omitempty"`
 }
 
 type Ask struct {
@@ -43,6 +45,9 @@ type Ask struct {
 	WhyHuman string   `json:"why_human,omitempty"`
 	Steps    []string `json:"steps,omitempty"`
 	DoneWhen string   `json:"done_when,omitempty"`
+	// Topic and Waiver are the closed waiver-ask contract (CHE-4383 B2a); both are empty on every other ask.
+	Topic  string  `json:"topic,omitempty"`
+	Waiver *Waiver `json:"waiver,omitempty"`
 	// Kind is set by DecodeAskKind; the stored kind is its own column, so it is not fingerprinted.
 	Kind string `json:"-"`
 	// AskedBy is the asking agent's name, set by the server for a new request;
@@ -78,8 +83,8 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts"}
-	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver"}
+	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -143,6 +148,11 @@ func (ask Ask) validateAction() error {
 	if !slices.ContainsFunc(ask.Steps, func(step string) bool { return strings.TrimSpace(step) != "" }) {
 		return &AskError{"ask.steps", "requires at least one nonblank item"}
 	}
+	for index, step := range ask.Steps {
+		if agentOwned(step) {
+			return &AskError{fmt.Sprintf("ask.steps[%d]", index), agentOwnedMessage}
+		}
+	}
 	for _, field := range []struct{ name, value string }{
 		{"source_issue_id", ask.SourceIssueID}, {"source_comment_id", ask.SourceCommentID},
 	} {
@@ -172,7 +182,7 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"decision", &ask.Decision},
 		{"stakes_if_wrong", &ask.StakesIfWrong}, {"recommendation", &ask.Recommendation}, {"recommended_option", &ask.RecommendedOption},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
-		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject},
+		{"after_done", &ask.AfterDone}, {"subject", &ask.Subject}, {"topic", &ask.Topic},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
@@ -182,6 +192,9 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		return ask, err
 	}
 	if err := decodeOptions(fields["options"], &ask.Options); err != nil {
+		return ask, err
+	}
+	if err := decodeWaiver(fields["waiver"], &ask.Waiver); err != nil {
 		return ask, err
 	}
 	if err := decodeSteps(fields["human_steps"], &ask.HumanSteps); err != nil {
@@ -288,7 +301,7 @@ func decodeOptions(raw json.RawMessage, into *[]AskOption) error {
 		for _, field := range []struct {
 			name string
 			into *string
-		}{{"label", &option.Label}, {"what_happens", &option.WhatHappens}, {"cost_or_time", &option.CostOrTime}} {
+		}{{"label", &option.Label}, {"what_happens", &option.WhatHappens}, {"cost_or_time", &option.CostOrTime}, {"option_key", &option.OptionKey}} {
 			if err := decodeString(prefix+"."+field.name, fields[field.name], field.into); err != nil {
 				return err
 			}
@@ -354,7 +367,10 @@ func (ask Ask) Validate() error {
 	if err := ask.validateHumanSteps(); err != nil {
 		return err
 	}
-	return ask.validateArtifacts()
+	if err := ask.validateArtifacts(); err != nil {
+		return err
+	}
+	return ask.validateWaiverContract()
 }
 
 func (ask Ask) Content(workspaceSlug string) string {

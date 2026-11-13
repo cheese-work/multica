@@ -131,7 +131,7 @@ func TestFallbackWakeWithTwoCausesNamesBoth(t *testing.T) {
 	e := newPREventEnv(t)
 	e.asKind(t, "head_changed", "old-head")
 	e.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, base_sha, observed_at, dedupe_key)
-		SELECT workspace_id, issue_id, pull_request_id, 'checks_failed', head_sha, base_sha, now() + interval '1 second', 'checks_failed|new-head' FROM issue_pr_event WHERE id=$1`, e.event)
+		SELECT workspace_id, issue_id, pull_request_id, 'checks_failed', head_sha, base_sha, now() - interval '1 day' + interval '1 second', 'checks_failed|new-head' FROM issue_pr_event WHERE id=$1`, e.event)
 	e.failedCheckRun(t, "lint")
 
 	text := e.wake(t)
@@ -156,7 +156,7 @@ func TestFallbackWakeNamesEachCausesOwnPR(t *testing.T) {
 	e.f.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id=$1`, second)
 	e.f.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)`, e.issue, second)
 	e.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, previous_head_sha, base_sha, observed_at, dedupe_key)
-		VALUES ($1, $2, $3, 'head_changed', 'new-head-904', 'old-head-904', 'base-1', now() + interval '1 second', 'head_changed|new-head-904')`, e.f.WorkspaceID, e.issue, second)
+		VALUES ($1, $2, $3, 'head_changed', 'new-head-904', 'old-head-904', 'base-1', now() - interval '1 day' + interval '1 second', 'head_changed|new-head-904')`, e.f.WorkspaceID, e.issue, second)
 
 	text := e.wake(t)
 
@@ -236,7 +236,7 @@ func TestFallbackWakeKeepsDoNotMergeWhenTheSentenceCapHidesADirtyCause(t *testin
 	env.asKind(t, "head_changed", "old-head")
 	for _, head := range []string{"head-2", "head-3", "head-4", "head-5"} {
 		env.f.Exec(t, `INSERT INTO issue_pr_event (workspace_id, issue_id, pull_request_id, kind, head_sha, previous_head_sha, base_sha, observed_at, dedupe_key)
-			SELECT workspace_id, issue_id, pull_request_id, 'head_changed', $2, 'old-head', base_sha, now() + interval '1 second', 'head_changed|' || $2 FROM issue_pr_event WHERE id=$1`, env.event, head)
+			SELECT workspace_id, issue_id, pull_request_id, 'head_changed', $2, 'old-head', base_sha, now() - interval '1 day' + interval '1 second', 'head_changed|' || $2 FROM issue_pr_event WHERE id=$1`, env.event, head)
 	}
 	env.endWhileDelivering(t)
 	if err := env.s.queueNextTurnPREvents(context.Background(), []pgtype.UUID{parseTestUUID(t, env.f.WorkspaceID)}); err != nil {

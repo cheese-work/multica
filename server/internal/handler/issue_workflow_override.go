@@ -25,6 +25,9 @@ type SetIssueWorkflowRequest struct {
 	WorkflowID *string `json:"workflow_id"`
 	// ExpectedRevision, when set, refuses the switch if the issue moved on.
 	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's widening switch (CHE-5228).
+	DecisionBindingFields
 }
 
 // UnmarshalJSON tells an omitted workflow_id from an explicit null, which
@@ -148,8 +151,10 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
-			writeBudgetRebindingRefused(w)
-			return
+			if err := h.verifyBoundRebinding(ctx, qtx, r, issue.WorkspaceID, req.DecisionBindingFields, issue.ID, issue.ProjectID, issue.WorkflowID, target); err != nil {
+				writeBoundRebindingError(w, err)
+				return
+			}
 		}
 	}
 	if err := issueworkflow.CheckStatus(next, issue.Status); err != nil {

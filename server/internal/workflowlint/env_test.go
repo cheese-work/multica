@@ -255,3 +255,25 @@ func TestEmbeddedConfigsParse(t *testing.T) {
 		t.Fatalf("codex lab: got %q %v", lab, ok)
 	}
 }
+
+// A hidden agent is one the caller may not see. No finding may disclose its
+// provider, runtime version, state or lab.
+func TestHiddenAgentLeaksNothing(t *testing.T) {
+	hidden := Agent{Provider: "codex", RuntimeVersion: "0.1.0", Archived: true, Paused: true, Hidden: true}
+	def := clean()
+	for i := range def.Steps {
+		if def.Steps[i].StatusKey == "in_progress" || def.Steps[i].StatusKey == "agent_review" {
+			def.Steps[i].Handler = agentH("a")
+		}
+	}
+	fs := LintWith(def, Env{Agents: map[string]Agent{"a": hidden}, Live: true})
+	for _, f := range fs {
+		switch f.Rule {
+		case "WF004", "WF005", "WF006", "WF012":
+			t.Fatalf("hidden agent produced %s: %s", f.Rule, f.Message)
+		}
+		if strings.Contains(f.Message, "codex") || strings.Contains(f.Message, "0.1.0") {
+			t.Fatalf("finding leaks agent detail: %s", f.Message)
+		}
+	}
+}

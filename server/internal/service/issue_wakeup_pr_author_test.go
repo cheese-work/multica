@@ -32,7 +32,8 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		{name: "member conflict without author gets FYI", rule: SystemRulePRAttention, assignee: "member", wantFYI: true},
 		{name: "member failed checks without author get FYI", rule: SystemRulePRChecksFailed, assignee: "member", wantFYI: true},
 		{name: "member merged notification unchanged", rule: SystemRulePRMerged, assignee: "member", author: true},
-		{name: "member passed checks unchanged", rule: SystemRulePRChecksPassed, assignee: "member", author: true},
+		{name: "member passed checks wake author", rule: SystemRulePRChecksPassed, assignee: "member", author: true, wantRun: true},
+		{name: "member passed checks without author get FYI", rule: SystemRulePRChecksPassed, assignee: "member", wantFYI: true},
 		{name: "configured default still wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, configured: true, wantRun: true},
 		{name: "behind wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, mergeState: "BEHIND", wantRun: true},
 		{name: "returned to draft wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, reason: PRAttentionDraft, wantRun: true},
@@ -92,6 +93,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				Reason: PRAttentionMergeability, MergeState: "DIRTY", MergeCommit: "merge-head", Conclusion: "FAILURE",
 			}
 			if scenario.rule == SystemRulePRChecksPassed {
+				fixture.Exec(t, `UPDATE workspace SET settings=settings || '{"github_wake_on_ci_success":true}'::jsonb WHERE id=$1`, fixture.WorkspaceID)
 				input.Conclusion = "SUCCESS"
 			}
 			if scenario.mergeState != "" {

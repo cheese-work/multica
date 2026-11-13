@@ -107,6 +107,7 @@ func seedPRForWorkspace(t *testing.T, q *db.Queries, wsID pgtype.UUID, installat
 		State:          "open",
 		HtmlUrl:        "http://x",
 		HeadSha:        headSHA,
+		HeadRepoSame:   true,
 		PrCreatedAt:    ts,
 		PrUpdatedAt:    ts,
 	})
@@ -1029,5 +1030,54 @@ func TestProcessRevalidatesWorkspaceFilterAtWrite(t *testing.T) {
 	}
 	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid || applied != 0 {
 		t.Fatalf("snapshot written after the binding was revoked: applied=%d row=%+v", applied, got)
+	}
+}
+
+// CHE-5313: a PR whose checks are still running and that a checks_finished
+// rule waits on is refreshed by the fast sweep, even when its snapshot is
+// younger than the general undecided-sweep TTL and no webhook arrives.
+func TestChecksWatchSweepRefreshesPendingWatchedPRs(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	now := time.Now()
+	const installationID int64 = 7_313_000_003
+	repo := "checks-" + randHex(t)
+
+	seed := func(number int32, state, rollup string, watchEvent string, enabled bool, fetchedAt time.Time) {
+		t.Helper()
+		pr := seedPRAt(t, pool, q, installationID, repo, number, fmt.Sprintf("H%d", number))
+		if _, err := pool.Exec(ctx, `UPDATE github_pull_request
+			SET state=$2, snapshot_head_sha=head_sha, snapshot_fetched_at=$3, api_mergeable='MERGEABLE', checks_rollup_state=$4
+			WHERE id=$1`, pr.ID, state, fetchedAt, rollup); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID) })
+		if watchEvent != "" {
+			watchPR(t, pool, pr, watchEvent, enabled)
+		}
+	}
+	stale := now.Add(-3 * time.Minute)
+	seed(1, "open", "PENDING", "checks_finished", true, stale)   // swept
+	seed(2, "draft", "PENDING", "checks_finished", true, stale)  // swept
+	seed(3, "open", "PENDING", "checks_finished", true, now)     // fresh
+	seed(4, "open", "SUCCESS", "checks_finished", true, stale)   // decided
+	seed(5, "open", "PENDING", "checks_finished", false, stale)  // rule disabled
+	seed(6, "open", "PENDING", "conflicts", true, stale)         // other event
+	seed(7, "open", "PENDING", "", false, stale)                 // unwatched
+	seed(8, "closed", "PENDING", "checks_finished", true, stale) // closed
+
+	m := NewManager(enabledClient(t), q, pool, nil)
+	m.checksWatchTTL = time.Minute
+	m.sweepChecksWatched(ctx)
+	var got []int32
+	for len(m.queue) > 0 {
+		addr := <-m.queue
+		if addr.InstallationID == installationID && addr.Repo == repo {
+			got = append(got, addr.Number)
+		}
+	}
+	if fmt.Sprint(got) != "[1 2]" && fmt.Sprint(got) != "[2 1]" {
+		t.Fatalf("checks-watch sweep enqueued %v, want PRs 1 and 2", got)
 	}
 }
