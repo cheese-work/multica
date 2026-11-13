@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -53,7 +54,7 @@ func loadRoutingAgent(ctx context.Context, q *db.Queries, ws pgtype.UUID) (Routi
 
 // routingAgentFor returns the agent that should handle a step entering status,
 // or an invalid id when the step keeps its own handler. The configured agent
-// is skipped when archived, then the fallback is tried. A read error routes
+// is skipped when archived or unreachable, then the fallback is tried. A read error routes
 // nothing: the step's own handler is always a safe owner.
 func routingAgentFor(ctx context.Context, q *db.Queries, ws pgtype.UUID, project db.Project, status string) pgtype.UUID {
 	cfg, err := loadRoutingAgent(ctx, q, ws)
@@ -70,7 +71,8 @@ func routingAgentFor(ctx context.Context, q *db.Queries, ws pgtype.UUID, project
 			continue
 		}
 		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: ws})
-		if err == nil && !agent.ArchivedAt.Valid {
+		// An unreachable agent is skipped like an archived one: next slot (CHE-4117).
+		if err == nil && !agent.ArchivedAt.Valid && service.BackgroundAgentReachable(ctx, q, bgagents.Routing, ws, candidate) {
 			return id
 		}
 	}

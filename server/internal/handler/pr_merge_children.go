@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5"
@@ -89,53 +88,6 @@ func prMergeStillReady(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	return state == prAutoCompleteAllMerged, nil
 }
 
-// includeChildPRs reports whether the issue's workflow counts child PRs.
-func (h *Handler) includeChildPRs(ctx context.Context, issue db.Issue) (bool, error) {
-	def, err := h.issueWorkflowDef(ctx, issue)
-	return def != nil && def.IncludeChildPRs, err
-}
-
-// addIncludeChildParents adds to touched the parent of each issue whose
-// workflow counts child PRs, so a child's PR event re-runs the parent's
-// decision. A failed read is returned: the caller retries or logs it the way it
-// does a failed decision, since dropping it would lose the parent's event.
-func (h *Handler) addIncludeChildParents(ctx context.Context, workspaceID pgtype.UUID, touched map[pgtype.UUID]struct{}, issueIDs ...pgtype.UUID) error {
-	for _, id := range issueIDs {
-		parentID, err := h.includeChildParent(ctx, workspaceID, id)
-		if err != nil {
-			return fmt.Errorf("resolve child parent of %s: %w", uuidToString(id), err)
-		}
-		if parentID.Valid {
-			touched[parentID] = struct{}{}
-		}
-	}
-	return nil
-}
-
-// includeChildParent is the parent of issueID when that parent's workflow has
-// include_child_prs, else the zero UUID.
-func (h *Handler) includeChildParent(ctx context.Context, workspaceID, issueID pgtype.UUID) (pgtype.UUID, error) {
-	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issueID, WorkspaceID: workspaceID})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !issue.ParentIssueID.Valid) {
-		return pgtype.UUID{}, nil
-	}
-	if err != nil {
-		return pgtype.UUID{}, err
-	}
-	parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ParentIssueID, WorkspaceID: workspaceID})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return pgtype.UUID{}, nil
-	}
-	if err != nil {
-		return pgtype.UUID{}, err
-	}
-	include, err := h.includeChildPRs(ctx, parent)
-	if err != nil || !include {
-		return pgtype.UUID{}, err
-	}
-	return parent.ID, nil
-}
-
 // rerunPRMergeForParents re-runs the PR merge decision of each parent after a
 // child reached a new status: without include_child_prs the parent waits for
 // every child to be done or cancelled, and no PR event announces that.
@@ -156,18 +108,5 @@ func (h *Handler) rerunPRMergeForParents(ctx context.Context, parentIDs ...pgtyp
 			resolver = issuestatus.NewResolver(parent.WorkspaceID)
 		}
 		h.maybeAutoCompleteIssue(ctx, parent.WorkspaceID, parent.ID, resolver)
-	}
-}
-
-// rerunIncludeChildParent re-runs the decision of the issue's parent after a
-// manual PR link or unlink on the issue, when the parent counts child PRs.
-func (h *Handler) rerunIncludeChildParent(ctx context.Context, issue db.Issue) {
-	touched := map[pgtype.UUID]struct{}{}
-	if err := h.addIncludeChildParents(ctx, issue.WorkspaceID, touched, issue.ID); err != nil {
-		slog.Warn("pr merge: resolve parent failed", "err", err, "issue_id", uuidToString(issue.ID))
-		return
-	}
-	for id := range touched {
-		h.maybeAutoCompleteIssue(ctx, issue.WorkspaceID, id, nil)
 	}
 }
