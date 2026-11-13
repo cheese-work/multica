@@ -3363,6 +3363,17 @@ func (d *Daemon) repoBarePathIsLive(barePath string) bool {
 // the dedicated co-author switch (`co_authored_by_enabled`) so flipping the
 // workspace's master GitHub toggle off also stops new trailers from landing
 // in commits, matching the contract documented in RFC MUL-2414 §4.8.
+// workspaceSettings returns the cached workspace settings JSON (nil when the
+// workspace is unknown), kept fresh by refreshWorkspaceRepos.
+func (d *Daemon) workspaceSettings(workspaceID string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		return ws.settings
+	}
+	return nil
+}
+
 func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -8920,6 +8931,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// failure only costs the guard, never the run.
 	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
+	// Hand the guard the workspace's stored policy (CHE-5204); without one it
+	// keeps the compiled default.
+	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
+		taskLog.Warn("guard policy not applied; guard keeps its built-in defaults", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.

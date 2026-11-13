@@ -122,6 +122,7 @@ Workspace-scoped queries filter by `workspace_id`; membership gates access and `
 
 - The daemon puts a guard `bin/` first on `PATH` for every run, on every runtime, with a `git` and a `gh` shim (`server/internal/daemon/guard_shims.go`, CHE-5194). It does not depend on credential-broker enforcement.
 - A shim execs the first `git`/`gh` on the `PATH` it fronts. Install credential-aware shims (`broker.InstallShims`) on `agentEnv["PATH"]` before calling `frontGuardShims`, so the guard hands over to them and never bypasses the broker. Custom env cannot override `PATH`.
+- The guard policy is `workspace.settings.guard_policy` (CHE-5204): workspace plugins and review rules plus `layers` (org, repo, path; `locked` freezes keys against deeper layers). `guard.ParsePolicy` is the one validator for the generic save, the decision-action patch, the daemon and `multica guard plugin set`. The daemon writes the policy to a 0600 file in the task temp dir and sets `MULTICA_GUARD_POLICY` + `_SHA256`. `LoadPolicy` resolves the workspace level only; org, repo and path layers need `Resolve(Target)` once the engine knows the repo. The key is on the decision-action allow table, so agents propose changes with `multica guard plugin set`.
 
 ## Testing
 

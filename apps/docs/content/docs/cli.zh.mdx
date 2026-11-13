@@ -523,6 +523,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
 | `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request 会被拒绝 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
 
 ### 决策提案
 

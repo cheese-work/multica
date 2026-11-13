@@ -79,6 +79,9 @@ type Policy struct {
 	Verify  *bool        `json:"verify,omitempty"`
 	Plugins []Plugin     `json:"plugins"`
 	Review  []ReviewRule `json:"review,omitempty"`
+	// Locked freezes every key this workspace layer sets against deeper layers.
+	Locked bool    `json:"locked,omitempty"`
+	Layers []Layer `json:"layers,omitempty"`
 }
 
 func (p *Policy) verify() bool { return p == nil || p.Verify == nil || *p.Verify }
@@ -128,6 +131,11 @@ func (p *Policy) validate() error {
 			}
 		}
 	}
+	for i := range p.Layers {
+		if err := p.Layers[i].validate(); err != nil {
+			return fmt.Errorf("layer %d: %w", i, err)
+		}
+	}
 	for _, r := range p.Review {
 		if r.Repo == "" {
 			return fmt.Errorf("review rule without repo")
@@ -137,6 +145,21 @@ func (p *Policy) validate() error {
 		}
 	}
 	return nil
+}
+
+// ParsePolicy decodes and validates a policy document. Unknown fields (for
+// example a script) are an error.
+func ParsePolicy(raw []byte) (*Policy, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p Policy
+	if err := dec.Decode(&p); err != nil {
+		return nil, fmt.Errorf("guard policy: %w", err)
+	}
+	if err := p.validate(); err != nil {
+		return nil, fmt.Errorf("guard policy: %w", err)
+	}
+	return &p, nil
 }
 
 // LoadPolicy reads the policy file and accepts it only when its SHA-256 equals
@@ -155,16 +178,14 @@ func LoadPolicy(file, wantSHA string) (*Policy, error) {
 	if subtle.ConstantTimeCompare([]byte(got), []byte(strings.ToLower(wantSHA))) != 1 {
 		return nil, fmt.Errorf("guard policy digest %s does not match the expected digest", got[:12])
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var p Policy
-	if err := dec.Decode(&p); err != nil {
-		return nil, fmt.Errorf("guard policy: %w", err)
+	p, err := ParsePolicy(raw)
+	if err != nil {
+		return nil, err
 	}
-	if err := p.validate(); err != nil {
-		return nil, fmt.Errorf("guard policy: %w", err)
-	}
-	return &p, nil
+	// ponytail: the guard resolves the workspace level only. Org, repo and path
+	// layers need the repo, which the engine learns mid-call (gh repo view);
+	// wire Resolve(Target) there when a deployment needs them.
+	return p.Resolve(Target{}), nil
 }
 
 // PolicyFromEnv returns the daemon-provided policy. With no policy set it

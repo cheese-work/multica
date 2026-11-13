@@ -521,6 +521,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
 | `guard` | `exec <tool> -- <args>` | Exécuter un appel d'outil via le garde : `gh pr create`, `edit` et `ready` sont forcés en brouillon, étiquetés et relus ; les écritures sur les pull requests via `gh api` sont refusées | Code de sortie : celui de l'outil, 2 si le garde refuse. Env : `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `plugin list\|get\|set` | Lire la politique du garde enregistrée (`list`, `get <name>`) ou écrire le fichier d'action de décision qui la remplace (`set --file <policy.json> --out <action.json>`, ou `--dry-run`). La politique contient les plugins et règles de revue de l'espace de travail, plus des couches org, dépôt et chemin ; une couche plus profonde remplace une couche moins profonde clé par clé, et une couche ou l'espace de travail marqué `locked` fige ses clés face aux couches plus profondes. `set` n'envoie rien : une personne approuve le `workspace.settings.patch` avec une passkey. Le daemon transmet la politique approuvée à chaque exécution via `MULTICA_GUARD_POLICY` (un fichier hors de l'arbre de travail) avec `MULTICA_GUARD_POLICY_SHA256` | Sortie : lignes JSON (`--output table` pour un tableau) ; `set` affiche `before_sha256` et `after_sha256` |
 
 ### Propositions de décision
 
