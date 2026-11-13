@@ -33,4 +33,19 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap buttons \
+  --component packages/ui/components/ui/button.tsx \
+  --token button-height-default --token button-padding-default --token text-body --token bg-primary
+cap dialogs \
+  --component packages/ui/components/ui/dialog.tsx \
+  --token dialog-enter-duration --token dialog-enter-easing --token bg-popover
+cap dialogs-alert \
+  --component packages/ui/components/ui/alert-dialog.tsx \
+  --token dialog-enter-duration --token bg-popover
+cap tabs \
+  --component packages/ui/components/ui/tabs.tsx \
+  --token bg-muted --token text-muted-foreground --token ring-ring
+cap ui-copy \
+  --token text-caption --token text-muted-foreground --token text-label
+
 rm -rf "$build"
