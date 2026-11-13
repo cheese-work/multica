@@ -306,7 +306,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || routeCaptureFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -4864,6 +4864,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
+		// Status-only fallback label (CHE-4439 decision 14): an agent run
+		// leaving the step it works on. The capture decides under the issue
+		// lock whether that step is a routing step.
+		if params.Status.Valid && actorType == "agent" && callerRun != nil && callerRun.WorkflowStep.String != "" {
+			writeCtx = withRouteCapture(writeCtx, &routeCapture{
+				Via: "status", DecisionSource: "agent", Fallback: true,
+				Caller: workflowCaller{run: callerRun, agent: true}, RunStep: callerRun.WorkflowStep.String,
+			})
+		}
 	}
 	if actorType == "member" {
 		writeCtx = withMemberRouteOverride(writeCtx)
