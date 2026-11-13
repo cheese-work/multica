@@ -109,6 +109,33 @@ cap pill-menu \
   --component packages/ui/components/ui/dropdown-menu.tsx \
   --token pillClass --token text-label --token border-surface-border --token bg-accent
 
+cap inline-retry \
+  --component packages/ui/components/ui/button.tsx \
+  --token text-caption --token text-destructive \
+  --copy "error=chat:needs_you.error" --copy "action=chat:needs_you.retry"
+
+cap inline-notice \
+  --component packages/ui/components/ui/alert.tsx \
+  --token text-body --token text-destructive --token bg-card
+
+cap integration-tab \
+  --component packages/ui/components/ui/card.tsx \
+  --component packages/ui/components/ui/alert-dialog.tsx \
+  --token text-body --token text-caption --token text-micro \
+  --copy "revoked=settings:slack.revoked_badge" --copy "installed=settings:slack.installed_at_label" \
+  --copy "not enabled=settings:slack.not_enabled_title" --copy "empty=settings:slack.empty_title" \
+  --copy "disconnected=settings:slack.toast_disconnected"
+
+cap diff-dialog \
+  --component packages/views/chat/components/diff-hunks.tsx \
+  --component packages/ui/components/ui/tabs.tsx \
+  --component packages/ui/components/ui/collapsible.tsx \
+  --token bg-success/10 --token bg-destructive/10 --token text-caption \
+  --copy "hidden lines=chat:decision.artifacts.lines_hidden"
+
+cap ict-timestamp \
+  --token text-body --token text-destructive
+
 cap section-eyebrow \
   --token text-micro --token uppercase --token tracking-wide --token text-muted-foreground
 
