@@ -1568,6 +1568,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1637,6 +1638,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
 	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
+	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
 	return ack, err
 }
 
@@ -5782,7 +5784,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		// The replayed agent steer is now an ordinary input of the follow-up;
 		// its failed receipt would otherwise invite a member to resend it.
-		if handled && c.AuthorType == "agent" && unreadSteers[uuidToString(c.ID)] {
+		if handled && unreadSteers[uuidToString(c.ID)] {
 			if n, err := h.Queries.DeleteUndeliveredTaskSupplementForRun(ctx, db.DeleteUndeliveredTaskSupplementForRunParams{
 				CommentID: c.ID, TaskID: task.ID,
 			}); err == nil && n > 0 {
@@ -6071,13 +6073,21 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 
 	// Verify the caller owns this task's workspace.
-	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	task, workspaceID, ok := h.requireDaemonTaskAccessWithWorkspace(w, r, taskID)
 	if !ok {
 		return
 	}
 
 	var req struct {
 		Usage []TaskUsagePayload `json:"usage"`
+		// Snapshot marks a mid-run cumulative report from a daemon that meters
+		// while its agent works (STOE-30). The rows are upserted identically —
+		// UpsertTaskUsage overwrites per (task_id, provider, model), so a
+		// snapshot can never add up twice — but the additive metrics counter and
+		// the per-run cache-ratio log stay on the terminal report: summing each
+		// cumulative snapshot into RecordLLMUsage would bill the same tokens
+		// once per flush.
+		Snapshot bool `json:"snapshot"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -6125,6 +6135,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	// resolve to a provider instead of landing as '' and pricing $0.
 	var runtimeProvider string
 	runtimeProviderLoaded := false
+	updated := false
 	providers := make([]string, len(req.Usage))
 	for i, u := range req.Usage {
 		provider := normalizeProvider(u.Provider)
@@ -6155,6 +6166,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		providers[i] = provider
+		updated = true
 	}
 	if err := service.SettleRunBudgetUsage(r.Context(), qtx, task); err != nil {
 		slog.Warn("settle run budget usage failed", "task_id", taskID, "error", err)
@@ -6168,25 +6180,44 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, u := range req.Usage {
 		provider := providers[i]
-		h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		// A snapshot reports the run's total so far, so it is not a new charge:
+		// RecordLLMUsage adds, and each flush would bill the tokens the previous
+		// flush already billed. The terminal report carries them once.
+		if !req.Snapshot {
+			h.TaskService.CaptureTaskUsage(r.Context(), task, provider, u.Model, u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens, u.CostUSDTicks)
+		}
 
 		// Surface prompt-cache effectiveness per run so cache hit rates are
 		// observable in logs, not just queryable from runtime_usage. The ratio
 		// is cached input over total input-side tokens; a persistently low
 		// value flags a prompt prefix that is not being reused across runs
 		// (e.g. volatile values poisoning the cacheable prefix). MUL-3887.
-		if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
-			slog.Info("task prompt-cache usage",
-				"task_id", taskID,
-				"provider", provider,
-				"model", u.Model,
-				"input_tokens", u.InputTokens,
-				"output_tokens", u.OutputTokens,
-				"cache_read_tokens", u.CacheReadTokens,
-				"cache_write_tokens", u.CacheWriteTokens,
-				"cache_read_ratio", float64(u.CacheReadTokens)/float64(totalInput),
-			)
+		if !req.Snapshot {
+			if totalInput := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens; totalInput > 0 {
+				slog.Info("task prompt-cache usage",
+					"task_id", taskID,
+					"provider", provider,
+					"model", u.Model,
+					"input_tokens", u.InputTokens,
+					"output_tokens", u.OutputTokens,
+					"cache_read_tokens", u.CacheReadTokens,
+					"cache_write_tokens", u.CacheWriteTokens,
+					"cache_read_ratio", float64(u.CacheReadTokens)/float64(totalInput),
+				)
+			}
 		}
+	}
+
+	if updated {
+		// This invalidates the existing task and issue-usage queries without
+		// broadcasting token counts or changing task progress/status.
+		h.Bus.Publish(events.Event{
+			Type:        protocol.EventTaskUsage,
+			WorkspaceID: workspaceID,
+			ActorType:   "system",
+			TaskID:      uuidToString(task.ID),
+			Payload:     protocol.TaskUsageUpdatedPayload{TaskID: uuidToString(task.ID)},
+		})
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -7544,10 +7575,7 @@ func (h *Handler) GetTaskGCCheck(w http.ResponseWriter, r *http.Request) {
 // be recorded, and the caller then starts a fresh session instead, since a
 // resume that is not marked would run with a grant the transcript has not earned.
 func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQueue, sessionID string) bool {
-	taint, err := h.Queries.InheritSessionTaint(ctx, db.InheritSessionTaintParams{
-		ID:        task.ID,
-		SessionID: sessionID,
-	})
+	taint, err := h.inheritSessionTaintLocked(ctx, task, sessionID)
 	if err != nil {
 		slog.Warn("daemon claim: could not record session taint; starting fresh",
 			"task_id", uuidToString(task.ID), "error", err)
@@ -7555,6 +7583,28 @@ func (h *Handler) inheritSessionTaint(ctx context.Context, task *db.AgentTaskQue
 	}
 	task.TaintIds = taint
 	return true
+}
+
+// inheritSessionTaintLocked takes the issue row lock before it updates the
+// task: the update fires the task's taint trigger, which locks the issue, and
+// every other path that touches the runs of an issue takes the issue first.
+func (h *Handler) inheritSessionTaintLocked(ctx context.Context, task *db.AgentTaskQueue, sessionID string) ([]string, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if task.IssueID.Valid {
+		if _, err := qtx.LockIssueRunBudget(ctx, task.IssueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+	taint, err := qtx.InheritSessionTaint(ctx, db.InheritSessionTaintParams{ID: task.ID, SessionID: sessionID})
+	if err != nil {
+		return nil, err
+	}
+	return taint, tx.Commit(ctx)
 }
 
 // recordChatTaint is the single path by which a DM task takes the taint of chat

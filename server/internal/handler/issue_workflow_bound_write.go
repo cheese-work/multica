@@ -79,18 +79,17 @@ func workflowWriteField(before, after []issueworkflow.Step) string {
 	return workflowStepsField
 }
 
-// refuseUnboundMachineWrite answers 403 for a machine credential that is not
-// an agent task token carrying a decision id or receipt issue, and reports whether it did. A
-// human caller passes.
-func refuseUnboundMachineWrite(w http.ResponseWriter, r *http.Request, binding DecisionBindingFields) bool {
+// refuseMachineWorkflowWrite answers 403 passkey_action_required for every
+// machine credential, a decision-bound or receipt-bound write included
+// (CHE-3482), and reports whether it did. A human caller passes.
+// ponytail: the bound-write verification below is unreachable from the routes
+// now; delete it in a follow-up.
+func refuseMachineWorkflowWrite(w http.ResponseWriter, r *http.Request) bool {
 	if !isMachineCredentialActor(r) {
 		return false
 	}
-	if r.Header.Get("X-Actor-Source") != "task_token" || (strings.TrimSpace(binding.DecisionID) == "" && strings.TrimSpace(binding.ReceiptIssue) == "") {
-		writeError(w, http.StatusForbidden, "agents may change a workflow only with a decision-bound write (decision_id, before_sha256, after_sha256) or, for step instructions, a PASS receipt (receipt_issue, before_sha256, after_sha256)")
-		return true
-	}
-	return false
+	writePasskeyActionRequired(w, workflowStepsAction)
+	return true
 }
 
 // verifyWorkflowWrite proves an agent's workflow write: the live workflow still

@@ -211,6 +211,19 @@ Une règle qu'une personne peut déclencher est une règle d'événement sur un 
 
 En mode `block`, le refus est un 422 dont le message donne la commande de correction. En mode `warn`, la règle est créée et un événement est enregistré.
 
+### Règles de réveil
+
+Les règles de réveil d'espace de travail et de projet (voir [Réveils de ticket](/issue-wakeups)) ont leur propre commande, avec `create` et `get` à côté de celles-ci :
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` est la révision que `list` affiche ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue. Pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement et `issues` les nomme (`--output table` les affiche en liste). L'aperçu examine les 200 premiers tickets du périmètre et évalue ceux qui sont ouverts et hors backlog ; si le périmètre en contient davantage, `truncated` vaut `true` et d'autres tickets peuvent correspondre. Une règle d'événement n'a pas de prédicat : son aperçu n'a pas de `already_satisfied` et ne correspond à aucun ticket existant. Seul un propriétaire ou un administrateur peut modifier ou supprimer une règle. Tout membre humain peut la prévisualiser ; un agent ou une autre identité machine reçoit `403`, et une règle créée par un agent reste désactivée jusqu'à ce qu'un humain l'active.
+
 ### Suivre la progression dans un DM
 
 Un DM suit les tickets que son agent crée pour vous. Les membres gèrent les suivis uniquement dans un DM qu'ils ont créé, avec `--chat`. Un agent exécute `multica issue follow <issue>` sans `--chat` : le DM vient de sa propre tâche, et une tâche sans DM est refusée. Les sous-tickets héritent du suivi actif de leur parent.
@@ -503,7 +516,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `user` | `profile get/update` | Consulter ou mettre à jour le profil de l'utilisateur actuel | |
 | `login` | — | Se connecter via le navigateur et configurer automatiquement tous les espaces de travail | `--token` (demande la saisie de façon interactive dans le terminal lorsque l'option est passée sans valeur) |
 | `setup` | `cloud` (par défaut), `self-host` | Enregistrer l'adresse du serveur, finaliser la connexion et démarrer le daemon | `self-host` : `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Télécharger ou envoyer des pièces jointes | `download` : `--output-dir` ; `upload` : `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Télécharger ou envoyer des pièces jointes ; lister les révisions d'un fichier ; comparer deux révisions | `download` : `--output-dir` ; `upload` : `--task`, `--issue`, `--replaces <attachment-id>` (le nouveau fichier devient la révision suivante de cette pièce jointe) ; `diff` : `--from`, `--to` (numéros de révision) |
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
@@ -520,6 +533,10 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Pour une action de budget d'exécutions, ce lien ouvre l'approbation sur la tâche ; pour toute autre action, il mène à la carte dans le chat, où la personne l'approuve. Une carte à options simple (`multica decision request` sans `--action-file`) ne peut pas appliquer un changement : Approuver n'enregistre que la réponse. Le serveur ne peut pas lire l'intention : il ne refuse pas une telle carte, mais ajoute un conseil quand la décision ou une option ressemble à un changement de workflow, d'agent, d'équipe, d'espace de travail ou de budget (ou nomme un type d'action autorisé). Envoyez ce changement avec `multica decision propose`. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
+
+### Les champs couverts exigent une action par passkey
+
+Un jeton de tâche ou un jeton de nœud cloud ne peut pas écrire ces champs par les anciennes routes : `agent.instructions`, `squad.instructions`, `workspace.context`, les étapes de workflow et leurs instructions, et les clés de réglages d'espace de travail de la liste autorisée des actions de décision (`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` et les autres clés opérationnelles simples). Le serveur répond 403 avec `code: passkey_action_required` et un `action_type` qui nomme l'action à proposer à la place (`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). La valeur stockée ne change pas. Un reçu de vote, une liaison de décision, un reçu PASS et l'exception Hermes ne lèvent plus ce refus. Proposez l'action avec `multica decision propose <action-type>` ; une personne l'approuve avec une passkey. Les écritures faites par une personne et `project.description` fonctionnent comme avant.
 
 ## Piloter Multica depuis un autre agent de codage
 

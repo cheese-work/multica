@@ -14,3 +14,9 @@ UPDATE run_budget_notice SET comment_id = $2 WHERE id = $1;
 SELECT user_id FROM member
 WHERE workspace_id = $1 AND role = 'owner'
 ORDER BY created_at ASC, id ASC;
+
+-- name: ListRunBudgetBlockedIssueIDs :many
+-- Issues the run budget holds in blocked (CHE-5285). The marker exists only
+-- while the issue is blocked (trigger in migration 882), so the set is small.
+SELECT issue_id FROM run_budget_notice
+WHERE workspace_id = $1 AND kind = 'blocked';

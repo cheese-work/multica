@@ -34,12 +34,12 @@ const request = (id: string, overrides: Partial<OpenDecisionRequest> = {}): Open
   ...overrides,
 });
 
-function renderChip() {
+function renderChip(pathname = "/test-ws") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" resources={{ en: { chat: enChat } }}>
-        <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname: "/test-ws", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (p) => p }}>
+        <NavigationProvider value={{ push: vi.fn(), replace: vi.fn(), back: vi.fn(), pathname, searchParams: new URLSearchParams(), hash: "", getShareableUrl: (p) => p }}>
           <OpenDecisionsChip />
         </NavigationProvider>
       </I18nProvider>
@@ -62,13 +62,21 @@ describe("OpenDecisionsChip", () => {
     ]);
     renderChip();
     const link = await screen.findByRole("link", { name: /2 decisions need you/i });
-    expect(link.getAttribute("href")).toBe("/test-ws/issues/issue-1#comment-comment-1");
+    expect(link.getAttribute("href")).toBe("/test-ws/issues/CHE-1#comment-comment-1");
   });
 
   it("falls back to the issue when the card has no comment", async () => {
     listOpen.mockResolvedValue([request("1")]);
     renderChip();
     const link = await screen.findByRole("link", { name: /1 decision needs you/i });
-    expect(link.getAttribute("href")).toBe("/test-ws/issues/issue-1");
+    expect(link.getAttribute("href")).toBe("/test-ws/issues/CHE-1");
+  });
+
+  it("stays off the chat route, where the DM header shows the badge", async () => {
+    listOpen.mockResolvedValue([request("1")]);
+    renderChip("/test-ws/chat");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });

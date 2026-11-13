@@ -1456,6 +1456,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if err := settleQueued(task.ID); err != nil {
 			return err
 		}
+		if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
+			return err
+		}
 		return commit()
 	}
 	// The agent's own unfinished run on the parent closed the stage: no second
@@ -1512,11 +1515,13 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	// CHE-3590: the PR is as it was when the last run on this rule started.
 	inputFingerprint := ""
+	var prStates json.RawMessage
+	commentFingerprint := ""
 	// Returning to draft is an event, not a state: each conversion is new, and
 	// the skip consumes the whole batch, not only its newest fact.
 	if !holdsDraftReturn(receipts) &&
 		(w.SystemRule.String == SystemRulePRChecksFailed || w.SystemRule.String == SystemRulePRAttention) {
-		if inputFingerprint, err = prStateFingerprint(ctx, tx, issue.ID); err != nil {
+		if inputFingerprint, prStates, commentFingerprint, err = prStateFingerprint(ctx, tx, issue.ID, agent.ID, "wakeup_system", w.SystemRule.String); err != nil {
 			return err
 		}
 		// An edited rule (instruction or settings) is not what the last run answered.
@@ -1535,7 +1540,10 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 				return err
 			}
-			if err := note(wakeupActivitySkipped, skippedUnchangedDetails(w.SystemRule.String, lastTask)); err != nil {
+			details := skippedUnchangedDetails(w.SystemRule.String, lastTask)
+			details["pull_requests"] = prStates
+			details["comments_fingerprint"] = commentFingerprint
+			if err := note(wakeupActivitySkipped, details); err != nil {
 				return err
 			}
 			return commit()
@@ -1592,7 +1600,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 	}
-	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup"}); err != nil {
+	if err := guardIssueRunAllowed(ctx, q, issue.ID, OriginDerived, RunTarget{AgentID: agent.ID, Trigger: "system wakeup", SourceWakeupID: w.ID}); err != nil {
 		return err
 	}
 	overlay := s.Tasks.buildRuntimeMCPOverlay(ctx, attr.UserID, agent)
@@ -1620,6 +1628,9 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	if err := settleQueued(task.ID); err != nil {
+		return err
+	}
+	if err := bindRefusedRun(ctx, q, issue.ID, w.ID, pgtype.UUID{}, task.ID); err != nil {
 		return err
 	}
 	if !deferring {

@@ -231,7 +231,9 @@ type Handler struct {
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter
-	Queries        *db.Queries
+	// ciWatch records completed runs for the CI failure watcher; nil = off.
+	ciWatch ciWatcher
+	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
 	ActionRequestsEnabled  bool
@@ -394,6 +396,14 @@ type Handler struct {
 	// WecomCredentials unseals a wecom installation's smart-bot secret for the
 	// WebSocket subscribe frame. Nil disables the wecom integration.
 	WecomCredentials wecom.CredentialsResolver
+	// WecomInstall drives the scan-code install sessions (QR generate + poll).
+	// Nil unless MULTICA_WECOM_SECRET_KEY is set; Configured() is additionally
+	// false without a QR provider, in which case the endpoints return 503 but
+	// in-flight sessions still terminate cleanly.
+	WecomInstall *wecom.InstallService
+	// WecomInstallWorker drives those sessions. Built in cmd/server/router.go;
+	// main.go starts it as an independent worker.
+	WecomInstallWorker *wecom.InstallWorker
 	// WecomBindingTokens mints/redeems the user-binding tokens behind the
 	// "link your Multica account" prompt sent to first-time WeCom users
 	// (their aibot userid is a "T"-prefixed anonymized id with no relation
@@ -614,6 +624,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		return err
 	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	h.enableCIWatch(ghClient)
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
 			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
