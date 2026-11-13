@@ -818,3 +818,47 @@ func TestAutopilotScheduleJobColdStartSkipsStaleMissedOccurrence(t *testing.T) {
 		t.Fatalf("stale cold-start occurrence must be skipped; got plans %v", plans)
 	}
 }
+
+// An active trigger left with a next_run_at far in the past (it was resumed from
+// pause before the resume path recomputed it) is repaired by the next scope-list
+// tick; a fresh future value is left alone (CHE-5500).
+func TestAutopilotScheduleJobScopesHealStaleNextRunAt(t *testing.T) {
+	ctx := context.Background()
+	queries := db.New(testPool)
+	trigger, _, autopilotSvc := setupAutopilotScheduleJob(t, "0 * * * *")
+
+	stale := time.Now().Add(-96 * time.Hour).UTC().Truncate(time.Second)
+	if _, err := testPool.Exec(ctx,
+		`UPDATE autopilot_trigger SET next_run_at = $2 WHERE id = $1`, trigger.ID, stale); err != nil {
+		t.Fatalf("seed stale next_run_at: %v", err)
+	}
+
+	job := scheduler.AutopilotScheduleDispatchJob(testPool, queries, autopilotSvc)
+	if _, err := job.Scopes(ctx, time.Now().UTC()); err != nil {
+		t.Fatalf("scopes: %v", err)
+	}
+
+	got, err := queries.GetAutopilotTrigger(ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("load trigger: %v", err)
+	}
+	if !got.NextRunAt.Valid || !got.NextRunAt.Time.After(time.Now()) {
+		t.Fatalf("next_run_at = %v, want a future time after the scope tick", got.NextRunAt)
+	}
+	if got.LastFiredAt.Valid {
+		t.Fatalf("heal must not touch last_fired_at, got %v", got.LastFiredAt)
+	}
+
+	// Second tick: the healed value is in the future, so it must not move again.
+	healed := got.NextRunAt.Time
+	if _, err := job.Scopes(ctx, time.Now().UTC()); err != nil {
+		t.Fatalf("scopes: %v", err)
+	}
+	again, err := queries.GetAutopilotTrigger(ctx, trigger.ID)
+	if err != nil {
+		t.Fatalf("reload trigger: %v", err)
+	}
+	if !again.NextRunAt.Time.Equal(healed) {
+		t.Fatalf("future next_run_at moved: %v -> %v", healed, again.NextRunAt.Time)
+	}
+}

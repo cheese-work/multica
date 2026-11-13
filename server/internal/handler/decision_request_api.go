@@ -145,11 +145,16 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
-		if draft, err = draftDecisionAction(input.Action); err != nil {
+		if err = withIssueTarget(input.Action, issue.ID); err == nil {
+			draft, err = draftDecisionAction(input.Action)
+		}
+		if err == nil {
+			input.EscalationClass, err = handler.requestClassFor(request.Context(), issue, input.EscalationClass, draft)
+		}
+		if err != nil {
 			writeDecisionError(writer, err, "decision request")
 			return
 		}
-		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
 	}
 	askJSON, err := json.Marshal(parsed)
 	if err != nil {
@@ -279,6 +284,13 @@ type decisionReadResponse struct {
 	AppliedAt     *string `json:"applied_at,omitempty"`
 	Outcome       string  `json:"outcome,omitempty"`
 	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	// The effect readback (B v9 S5, CHE-5415): what the approval did, who decided,
+	// for whom. Revocable is false for every action until S6 adds revocation.
+	Effect       string  `json:"effect,omitempty"`
+	EffectReason *string `json:"effect_reason,omitempty"`
+	DecidedBy    *string `json:"decided_by,omitempty"`
+	OnBehalfOf   *string `json:"on_behalf_of,omitempty"`
+	Revocable    bool    `json:"revocable"`
 }
 
 type decisionAnswerRead struct {
@@ -302,6 +314,8 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 	case err == nil:
 		response.Outcome, response.OutcomeReason = decisionActionOutcomeOf(action)
 		response.AppliedAt = appliedAtOf(action)
+		response.Effect, response.EffectReason = decisionEffectOf(action)
+		response.OnBehalfOf = uuidToPtr(stored.HumanUserID)
 	case !errors.Is(err, pgx.ErrNoRows):
 		writeError(writer, http.StatusInternalServerError, "failed to read decision action")
 		return
@@ -309,6 +323,9 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
 	switch {
 	case err == nil:
+		if response.Effect == "applied" || response.Effect == "not_applied" {
+			response.DecidedBy = uuidToPtr(answer.AnsweredByUserID)
+		}
 		response.Answer = &decisionAnswerRead{
 			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),

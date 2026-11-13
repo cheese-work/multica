@@ -204,7 +204,7 @@ func TestCaptureRouteLabelMarksRoutingExitOnTheActivityRow(t *testing.T) {
 				var before []byte
 				dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&before)
 				t.Cleanup(func() { dbfx.Exec(t, `UPDATE workspace SET settings = $1 WHERE id = $2`, before, testWorkspaceID) })
-				dbfx.Exec(t, `UPDATE workspace SET settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object('routing_agent', jsonb_build_object('agent_id', $1::text, 'statuses', jsonb_build_array('todo'))) WHERE id = $2`, c.agentID, testWorkspaceID)
+				dbfx.Exec(t, `UPDATE workspace SET settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object('background_agents', jsonb_build_object('routing', jsonb_build_object('agent_id', $1::text, 'statuses', jsonb_build_array('todo')))) WHERE id = $2`, c.agentID, testWorkspaceID)
 			}
 			if _, err := c.write(t, "in_progress", nil); err != nil {
 				t.Fatal(err)
