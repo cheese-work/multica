@@ -38,6 +38,7 @@ func newAutopilotUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("issue-title-template", "", "")
 	cmd.Flags().StringArray("subscriber", nil, "")
 	cmd.Flags().Bool("clear-subscribers", false, "")
+	cmd.Flags().String("if-description-sha256", "", "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
 }
@@ -1097,4 +1098,91 @@ func TestAutopilotTriggerRequestError_SurfacesRefusalToTheUser(t *testing.T) {
 			t.Errorf("output = %q, want the shared 403 server reason", got)
 		}
 	})
+}
+
+func TestRunAutopilotUpdateSendsDescriptionGuard(t *testing.T) {
+	const (
+		autopilotID = "33333333-3333-3333-3333-333333333333"
+		digest      = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	)
+
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/config" {
+			json.NewEncoder(w).Encode(map[string]any{"autopilot_description_guard_supported": true})
+			return
+		}
+		if r.URL.Path != "/api/autopilots/"+autopilotID {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": autopilotID, "title": "Daily planner"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newAutopilotUpdateTestCmd()
+	_ = cmd.Flags().Set("description", "New prompt")
+	_ = cmd.Flags().Set("if-description-sha256", digest)
+	if err := runAutopilotUpdate(cmd, []string{autopilotID}); err != nil {
+		t.Fatalf("runAutopilotUpdate: %v", err)
+	}
+	if got := body["expected_description_sha256"]; got != digest {
+		t.Fatalf("expected_description_sha256 = %v, want %q", got, digest)
+	}
+	if got := body["description"]; got != "New prompt" {
+		t.Fatalf("description = %v, want %q", got, "New prompt")
+	}
+}
+
+func TestRunAutopilotUpdateGuardRequiresDescription(t *testing.T) {
+	cmd := newAutopilotUpdateTestCmd()
+	_ = cmd.Flags().Set("title", "Renamed")
+	_ = cmd.Flags().Set("if-description-sha256", "abc")
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:1")
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	err := runAutopilotUpdate(cmd, []string{"33333333-3333-3333-3333-333333333333"})
+	if err == nil || !strings.Contains(err.Error(), "--if-description-sha256 requires --description") {
+		t.Fatalf("err = %v, want guard-requires-description error", err)
+	}
+}
+
+func TestRunAutopilotUpdateGuardFailsClosedOnOldServer(t *testing.T) {
+	const autopilotID = "33333333-3333-3333-3333-333333333333"
+
+	patches := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/config":
+			json.NewEncoder(w).Encode(map[string]any{})
+		case r.Method == http.MethodPatch:
+			patches++
+			json.NewEncoder(w).Encode(map[string]any{"id": autopilotID})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newAutopilotUpdateTestCmd()
+	_ = cmd.Flags().Set("description", "New prompt")
+	_ = cmd.Flags().Set("if-description-sha256", "abc")
+	err := runAutopilotUpdate(cmd, []string{autopilotID})
+	if err == nil || !strings.Contains(err.Error(), "does not support --if-description-sha256") {
+		t.Fatalf("error = %v, want capability failure", err)
+	}
+	if patches != 0 {
+		t.Fatalf("old server received %d PATCH(es), want zero", patches)
+	}
 }

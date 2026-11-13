@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
@@ -276,6 +277,11 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	// A background job prompt is the bounded input only (CHE-4100): none of the
+	// run-scoped blocks below, which carry the originator's name and email.
+	if task.BackgroundJob != "" {
+		return body
+	}
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -289,6 +295,9 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 }
 
 func buildPromptBody(task Task, provider string) string {
+	if task.BackgroundJob != "" {
+		return buildBackgroundPrompt(task)
+	}
 	if task.WakeupID != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
@@ -335,6 +344,31 @@ func buildPromptBody(task Task, provider string) string {
 	// treat the read as mandatory)", which read as if comment-triggered turns
 	// did not (MUL-6984).
 	fmt.Fprintf(&b, "For comment history, workflow step 2 applies. Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
+	return b.String()
+}
+
+// taskRunTimeout is the agent timeout for a task: the daemon default, tightened
+// to the job's run deadline for a background task (CHE-4100). The server does
+// not enforce that deadline, so the daemon does.
+func taskRunTimeout(def time.Duration, task Task) time.Duration {
+	job := time.Duration(task.BackgroundRunSeconds) * time.Second
+	if task.BackgroundJob == "" || job <= 0 || (def > 0 && def <= job) {
+		return def
+	}
+	return job
+}
+
+// buildBackgroundPrompt is the whole prompt of an output_only background task
+// (CHE-4100): a read-only brief and the bounded input the server stored in the
+// task context. It names no issue and no multica command: the run has neither,
+// and its output comes back as the task result.
+func buildBackgroundPrompt(task Task) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are running a read-only background job (%s). Use no tools and change nothing: no files, no commands, no network. Reply with the job output only, no preamble.\n\n", task.BackgroundJob)
+	b.WriteString("Input:\n")
+	for _, line := range strings.Split(task.BackgroundInput, "\n") {
+		fmt.Fprintf(&b, "> %s\n", line)
+	}
 	return b.String()
 }
 

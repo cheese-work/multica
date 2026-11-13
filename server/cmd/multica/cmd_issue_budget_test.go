@@ -16,6 +16,7 @@ func newIssueBudgetRaiseTestCmd() *cobra.Command {
 	c.Flags().Int("runs", 0, "")
 	c.Flags().String("output", "table", "")
 	c.Flags().String("for", "", "")
+	c.Flags().String("goal", "", "")
 	return c
 }
 

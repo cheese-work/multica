@@ -141,6 +141,7 @@ func init() {
 	// update
 	autopilotUpdateCmd.Flags().String("title", "", "New title")
 	autopilotUpdateCmd.Flags().String("description", "", "New description")
+	autopilotUpdateCmd.Flags().String("if-description-sha256", "", "Only write --description if the live description's SHA-256 (hex) equals this value; fails with a conflict otherwise")
 	autopilotUpdateCmd.Flags().String("agent", "", "New assignee agent (name or ID)")
 	autopilotUpdateCmd.Flags().String("project", "", "New project ID (use empty string to clear)")
 	autopilotUpdateCmd.Flags().String("status", "", "New status (active, paused)")
@@ -524,6 +525,22 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("description") {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
+	}
+	if cmd.Flags().Changed("if-description-sha256") {
+		if !cmd.Flags().Changed("description") {
+			return fmt.Errorf("--if-description-sha256 requires --description")
+		}
+		var config struct {
+			AutopilotDescriptionGuardSupported bool `json:"autopilot_description_guard_supported"`
+		}
+		if err := client.GetJSON(ctx, "/api/config", &config); err != nil {
+			return fmt.Errorf("check description guard support: %w", err)
+		}
+		if !config.AutopilotDescriptionGuardSupported {
+			return errors.New("this server version does not support --if-description-sha256; update the server before using it")
+		}
+		v, _ := cmd.Flags().GetString("if-description-sha256")
+		body["expected_description_sha256"] = v
 	}
 	if cmd.Flags().Changed("agent") {
 		v, _ := cmd.Flags().GetString("agent")

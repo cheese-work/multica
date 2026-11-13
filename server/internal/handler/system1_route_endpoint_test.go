@@ -463,3 +463,42 @@ func TestRouteEndpointStartsTheDirectAgentRunForItsOwner(t *testing.T) {
 		t.Fatalf("run = %+v, want started: %s", resp.Run, got.Text())
 	}
 }
+
+// A member's edit that lands between the route's snapshot read and the issue
+// lock must survive the move: the route writes the status, not the snapshot.
+func TestRouteEndpointKeepsAnEditThatLandsBeforeTheLock(t *testing.T) {
+	c := newRouteCase(t)
+	t.Cleanup(func() { routeLockGapHook = func() {} })
+	routeLockGapHook = func() {
+		dbfx.Exec(t, `UPDATE issue SET due_date = '2031-02-03', stage = 7, revision = revision + 1 WHERE id = $1`, c.issueID)
+	}
+
+	c.route(t, routeBody("in_review", nil), nil).Want(http.StatusOK)
+
+	var due string
+	var stage int
+	dbfx.QueryRow(t, `SELECT COALESCE(due_date::text, ''), COALESCE(stage, 0) FROM issue WHERE id = $1`, c.issueID).Scan(&due, &stage)
+	if due != "2031-02-03" || stage != 7 {
+		t.Fatalf("due_date/stage = %q/%d after the move, want the concurrent edit 2031-02-03/7", due, stage)
+	}
+	if status, _, _ := issueStatusAndAssignee(t, c.issueID); status != "in_review" {
+		t.Fatalf("status = %q, want in_review", status)
+	}
+}
+
+// The workflow changing between the snapshot and the lock refuses the call and
+// writes nothing.
+func TestRouteEndpointRefusesAHandlerChangedUnderTheLock(t *testing.T) {
+	c := newRouteCase(t)
+	t.Cleanup(func() { routeLockGapHook = func() {} })
+	other := c.otherAgent(t)
+	routeLockGapHook = func() {
+		setColumnHandoff(t, c.projectID, "in_review", handToAgent(other, "Review it.")).Want(http.StatusOK)
+	}
+
+	body := c.route(t, routeBody("in_review", nil), nil).Want(http.StatusConflict).Map()
+	if body["code"] != "workflow_changed" {
+		t.Fatalf("refusal = %v", body)
+	}
+	c.wantNothingWritten(t, "in_progress")
+}
