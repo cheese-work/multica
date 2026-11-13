@@ -42,19 +42,25 @@ type BackgroundTaskInput struct {
 	MemberID    pgtype.UUID // the DM creator; zero when the task is not member-attributable
 	Source      bgagents.Source
 	Slot        bgagents.SlotName
-	Input       string
+	// FallbackAgentID is the agent a provider failure of this run moves to; zero
+	// when this run holds the last slot.
+	FallbackAgentID pgtype.UUID
+	Input           string
 }
 
-type backgroundTaskContext struct {
-	Type         string `json:"type"`
-	Job          string `json:"job"`
-	WorkspaceID  string `json:"workspace_id"`
-	ChainSource  string `json:"chain_source"`
-	MemberID     string `json:"member_id,omitempty"`
-	Slot         string `json:"slot"`
-	ClaimSeconds int    `json:"claim_deadline_seconds"`
-	RunSeconds   int    `json:"run_deadline_seconds"`
-	Input        string `json:"input"`
+// BackgroundTaskContext is the JSON stored in the task context; the claim
+// handler reads it back.
+type BackgroundTaskContext struct {
+	Type            string `json:"type"`
+	Job             string `json:"job"`
+	WorkspaceID     string `json:"workspace_id"`
+	ChainSource     string `json:"chain_source"`
+	MemberID        string `json:"member_id,omitempty"`
+	Slot            string `json:"slot"`
+	FallbackAgentID string `json:"fallback_agent_id,omitempty"`
+	ClaimSeconds    int    `json:"claim_deadline_seconds"`
+	RunSeconds      int    `json:"run_deadline_seconds"`
+	Input           string `json:"input"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -82,11 +88,14 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 	if r := []rune(input); len(r) > BackgroundInputMaxRunes {
 		input = string(r[:BackgroundInputMaxRunes])
 	}
-	payload := backgroundTaskContext{
+	payload := BackgroundTaskContext{
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
 		ChainSource: string(in.Source), Slot: string(in.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
 		Input: input,
+	}
+	if in.FallbackAgentID.Valid {
+		payload.FallbackAgentID = util.UUIDToString(in.FallbackAgentID)
 	}
 	if in.MemberID.Valid {
 		payload.MemberID = util.UUIDToString(in.MemberID)

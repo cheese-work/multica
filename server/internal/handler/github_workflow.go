@@ -35,7 +35,9 @@ func (h *Handler) handleWorkflowRunEvent(ctx context.Context, body []byte) error
 		if err := writer.ApplyRunEvent(ctx, workspaceID, event); err != nil {
 			return err
 		}
-		return h.watchCompletedRun(ctx, workspaceID, event)
+		err := h.watchCompletedRun(ctx, workspaceID, event)
+		h.ciWatchRunCompleted(ctx, workspaceID, event)
+		return err
 	})
 }
 
