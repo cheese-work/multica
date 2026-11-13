@@ -716,6 +716,13 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// Reload drain (CHE-5453), also guarded by claimMu. While draining, pollers
+	// claim nothing new so the running tasks can finish; reloadKick then wakes
+	// autoUpdateLoop the moment the daemon goes idle. See startReloadDrain.
+	draining     bool
+	drainRetryAt time.Time // no new drain before this (backoff after a timeout)
+	drainTimer   *time.Timer
+	reloadKick   chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -824,6 +831,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		logger:                      logger,
 		terminalReports:             newTerminalReportStore(cfg),
 		terminalReportWakeup:        make(chan struct{}, 1),
+		reloadKick:                  make(chan struct{}, 1),
 		terminalReportNow:           time.Now,
 		terminalReportFlight:        make(map[string]struct{}),
 		workspaces:                  make(map[string]*workspaceState),
@@ -5269,7 +5277,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims || d.heldPauseNow() != nil {
+	if d.pauseClaims || d.draining || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
@@ -5279,8 +5287,9 @@ func (d *Daemon) tryEnterClaim() bool {
 // exitClaim releases the in-flight claim recorded by tryEnterClaim.
 func (d *Daemon) exitClaim() {
 	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
 	d.claimsInFlight--
+	d.claimMu.Unlock()
+	d.kickReloadIfIdle()
 }
 
 // trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
@@ -5552,7 +5561,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
-				defer d.activeTasks.Add(-1)
+				defer d.taskDone()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
