@@ -50,7 +50,7 @@ export function ListError({ onRetry }: { onRetry?: () => void }) {
       <p className="text-body font-medium">{t(($) => $.list.states.error_title)}</p>
       <p className="text-caption text-muted-foreground">{t(($) => $.list.states.error_body)}</p>
       {onRetry && (
-        <Button type="button" variant="outline" size="sm" className="mt-1" onClick={onRetry}>
+        <Button type="button" variant="outline" size="sm" onClick={onRetry} className="mt-1 md:h-7">
           {t(($) => $.list.states.retry)}
         </Button>
       )}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ChevronDown, Pin } from "@multica/ui/icons";
+import { Pin } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
 import type { ChatListView } from "@multica/core/chat/queries";
 import { useT } from "../../i18n";
@@ -126,7 +126,7 @@ export function ChatFilterChips({
           const count = countOf(slot);
           const label = labelOf(slot);
           return (
-            // ui-pattern-ref: allow roving-tabindex chip in a tablist; Button has no tab semantics
+            // ui-pattern-ref: allow toggle pill with roving tabindex and aria-pressed; Button has no pill-toggle variant
             <button
               key={slot}
               type="button"
@@ -157,7 +157,6 @@ export function ChatFilterChips({
                   {count}
                 </span>
               )}
-              {slot === "pin" && <ChevronDown aria-hidden="true" className="size-3" />}
             </button>
           );
         })}
