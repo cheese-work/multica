@@ -1,12 +1,15 @@
 {
   "decision_banner": {
     "title": "결정이 필요합니다",
+    "title_used": "결정",
+    "answered_count": "{{number}}개 답변함",
     "waiting": "에이전트가 아직 결정 카드를 보내지 않았습니다.",
     "queued_since": "{{time}}부터 대기 중",
     "running_since": "{{time}}부터 실행 중",
     "no_run": "활성 실행 없음."
   },
   "needs_you": {
+    "chip_other": "결정 {{count}}건이 기다리고 있습니다",
     "title": "내 결정이 필요해요",
     "loading": "미응답 요청을 불러오는 중…",
     "error": "요청을 불러오지 못했습니다.",
@@ -464,6 +467,8 @@
     "action_unavailable": "세부 정보를 표시할 수 없습니다",
     "action_approve": "패스키로 승인",
     "action_preview": "승인 시 변경되는 내용",
+    "recent_runs": "최근 실행",
+    "recent_runs_status": { "completed": "완료", "failed": "실패", "cancelled": "취소됨", "running": "실행 중", "other": "대기 중" },
     "config_change": {
       "viewer_label": "승인할 변경",
       "tab_changes": "변경 사항",
@@ -481,7 +486,8 @@
       "field_workspace_context": "워크스페이스 컨텍스트",
       "field_workflow_steps": "워크플로 단계",
       "field_workflow_instructions": "워크플로 단계 지침",
-      "field_workspace_settings": "워크스페이스 설정"
+      "field_workspace_settings": "워크스페이스 설정",
+      "field_workflow_budget": "워크플로 실행 예산"
     },
     "agent_note": "에이전트 메모(확인되지 않음)",
     "answer_send_passkey": "패스키로 보내기",

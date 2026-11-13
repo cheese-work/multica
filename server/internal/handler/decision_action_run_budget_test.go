@@ -100,7 +100,7 @@ func TestApproveRunBudgetTopUpTwiceOpensOneWindow(test *testing.T) {
 
 func TestApproveRunBudgetTopUpRefusesAChangedWindow(test *testing.T) {
 	action, _ := newPendingTopUp(test, true)
-	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`,
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`,
 		testWorkspaceID, action.issueID, action.humanID)
 	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
 	if state, code := action.state(test), action.failureCode(test); state != "failed" || code != "stale_window" {
@@ -155,7 +155,7 @@ func TestApproveRunBudgetTopUpWaitsForAMoveInFlight(test *testing.T) {
 		test.Fatalf("the approval finished while a window boundary was in flight: %s", body)
 	}
 	// The move's activity write, which starts the next window.
-	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`,
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`,
 		testWorkspaceID, action.issueID, action.humanID)
 	release()
 	<-done

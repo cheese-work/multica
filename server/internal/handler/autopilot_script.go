@@ -89,3 +89,18 @@ func resolveScriptConfig(mode string, raw json.RawMessage, supplied bool, stored
 	}
 	return cfg, nil
 }
+
+// claimScriptFor is the script the claim hands the daemon. Only script-mode
+// autopilots carry one. A stored config that cannot be read yields an empty
+// script, which the daemon rejects as not allowlisted: failing closed there is
+// what keeps a broken row from becoming a model session.
+func claimScriptFor(mode string, raw []byte) *scriptConfig {
+	if mode != "script" {
+		return nil
+	}
+	var cfg scriptConfig
+	if json.Unmarshal(raw, &cfg) != nil {
+		cfg = scriptConfig{}
+	}
+	return &cfg
+}

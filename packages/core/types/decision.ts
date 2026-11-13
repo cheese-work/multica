@@ -16,6 +16,8 @@ export interface OpenDecisionRequest {
   /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
   covers_request_ids?: string[];
   covered_cards?: DecisionCoveredCard[];
+  /** The pending executable action behind the card, so a page can find a budget request (CHE-5285). */
+  action?: DecisionRequestAction;
 }
 
 /** One answer button on an open decision card. */
@@ -88,7 +90,8 @@ export interface DecisionConfigChange {
   field: string;
   target_id: string;
   keys: string[];
-  diff_kind: "json" | "text" | "lines";
+  /** `json`, `text` or `lines`; a newer server may send another kind, which this client cannot approve. */
+  diff_kind: "json" | "text" | "lines" | (string & {});
   diff: DecisionConfigDiffHunk[];
   /** The value the change writes. A string for text, an array of lines for lines, JSON otherwise. */
   after: unknown;

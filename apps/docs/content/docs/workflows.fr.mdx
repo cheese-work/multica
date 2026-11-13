@@ -66,6 +66,10 @@ La confirmation indique quelles tâches gardent leur statut. Si certaines utilis
 
 Le tableau du projet suit désormais les colonnes du workflow. Chaque tâche propose uniquement les étapes de ce workflow dans son choix de statut et indique qui prend le relais. Les projets sans autre workflow utilisent **Default** ; vous pouvez y revenir plus tard.
 
+## Choisir un workflow selon le type du titre
+
+Un propriétaire ou administrateur peut définir `workflow_by_type` dans les paramètres de l’espace de travail, par exemple `{"design": "<id du workflow>", "plan": "<id du workflow>"}`. Une nouvelle tâche dont le titre commence par un type associé, comme `design(x): …`, suit ce workflow au lieu de celui de son projet. `--workflow` (CLI) ou un choix explicite l’emporte toujours. Un type sans entrée, ou dont le workflow n’existe plus, garde le workflow du projet. `multica issue create` affiche le workflow choisi. La fenêtre de création affiche les statuts et le passage de relais du workflow choisi dès que le titre a un type associé. L’association est une règle de l’espace de travail : elle s’applique à tous les créateurs, agents compris, sans la vérification du budget d’exécutions qu’un `--workflow` explicite subit pour les appelants non interactifs. Si deux clés ne diffèrent que par la casse, la première par ordre alphabétique l’emporte. Modifier le titre plus tard ne change pas le workflow ; la réponse de mise à jour contient un `workflow_hint` d’une ligne (affiché par `multica issue update`) avec la commande qui le déplace.
+
 ## Passer à l’étape suivante
 
 Changez le statut d’une tâche ou faites glisser sa carte vers une autre colonne. Si cette étape prévoit un passage de relais, vérifiez le destinataire et, pour un agent, les consignes qu’il recevra.
@@ -89,6 +93,8 @@ Les administrateurs peuvent aussi configurer un passage de relais depuis le tabl
 Retirer une colonne peut vous demander de choisir un nouveau statut pour les tâches qui s’y trouvent. Les autres restent en place et ce déplacement ne lance pas d’agent. La bibliothèque de statuts, sous la liste des workflows, permet de modifier les noms et les couleurs ; ces changements s’appliquent partout où le statut est utilisé.
 
 Définissez **Exécutions max par ticket** dans l’éditeur de workflow pour limiter le nombre d’exécutions qu’un ticket peut lancer avant que le workflow le bloque (de 1 à 1000 ; laissez vide pour la valeur par défaut de 15). La modification exige une session web ou bureau connectée ; un enregistrement qui ne touche pas ce champ fonctionne depuis n’importe quel client. L’interrupteur **Inclure les PR des sous-tickets** à côté contrôle si les garde-fous de PR lisent aussi les PR des sous-tickets (activé par défaut) et suit la même règle. Un agent ou un jeton ne peut modifier aucun de ces champs directement : il reçoit `budget_requires_decision` et propose la modification avec `multica config propose workflow.budget`, puis un propriétaire l’approuve avec une clé d’accès. La même limite s’applique quand un agent ou un jeton crée un ticket, ou le rattache à un workflow dont le budget est plus large (`budget_rebinding_requires_interactive`). Elle demande la même décision : `multica issue create` et `multica issue update` acceptent `--workflow <id> --decision-id <id>`.
+
+Sur un ticket avec budget d’exécutions, la barre latérale affiche un compteur : exécutions utilisées, restantes, alerte à 80 % et état **Budget d'exécutions épuisé**. **Augmenter** et **Recharger** demandent à un propriétaire de l’espace d’approuver des exécutions supplémentaires. Si vous êtes propriétaire, vous approuvez sur place avec votre passkey ; sinon, le propriétaire reçoit la demande. Dans la liste et sur le tableau, un ticket arrêté par le budget affiche une pastille **Budget utilisé** à côté de son statut.
 
 Pour supprimer un workflow, passez d’abord les projets qui l’utilisent à un autre workflow. Les tâches gardent leur statut actuel.
 

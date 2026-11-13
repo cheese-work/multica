@@ -52,6 +52,18 @@ type decisionRequestInput struct {
 	AskJSON []byte `json:"-"`
 	// Proposal is set only by the action proposal route.
 	Proposal *proposalRequest `json:"-"`
+	// DMSession is the calling chat task's session: the card renders there, for
+	// the session's creator only. Invalid for an issue task.
+	DMSession pgtype.UUID `json:"-"`
+}
+
+// dmSession is the chat session a request from a DM renders in: set by a
+// plain request or a proposal made from a chat task, invalid otherwise.
+func (input decisionRequestInput) dmSession() pgtype.UUID {
+	if input.DMSession.Valid {
+		return input.DMSession
+	}
+	return input.Proposal.chatSession()
 }
 
 type decisionRequestResult struct {
@@ -104,7 +116,7 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	}
 	if input.SourceCommentID.Valid {
 		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && (task.AgentID != agentID || task.IssueID != issue.ID || task.ChatSessionID.Valid || task.Status != "running") {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !runsDecisionRequest(task, agentID, issue, input.dmSession()) {
 			return empty, deny
 		}
 		if err != nil {
@@ -150,6 +162,16 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	return finish(func() (decisionRequestResult, error) {
 		return handler.createSingleCallDecisionTx(request, issue, input, agentID)
 	})
+}
+
+// runsDecisionRequest reports whether task is the agent's running task for this
+// request: the issue's own task, or the chat task of dmSession when the request
+// is made from a DM (a chat task has no issue of its own).
+func runsDecisionRequest(task db.AgentTaskQueue, agentID pgtype.UUID, issue db.Issue, dmSession pgtype.UUID) bool {
+	if task.AgentID != agentID || task.Status != "running" || task.ChatSessionID != dmSession {
+		return false
+	}
+	return dmSession.Valid || task.IssueID == issue.ID
 }
 
 // resolveDecisionRecipient maps the named id to the active member's user id.
@@ -586,10 +608,11 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	var session db.ChatSession
 	reuse := input.SessionID.Valid
-	inDM := input.Proposal.inDM()
+	dmSession := input.dmSession()
+	inDM := dmSession.Valid
 	if inDM {
 		reuse = true
-		if session, err = lockProposalDM(ctx, queries, issue, input.Proposal.ChatSessionID, agentID); err != nil {
+		if session, err = lockProposalDM(ctx, queries, issue, dmSession, agentID); err != nil {
 			return empty, input.Proposal.laneError(err)
 		}
 		if session.CreatorID != input.HumanUserID {
@@ -623,7 +646,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, input.Proposal.chatSession())
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession)
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as

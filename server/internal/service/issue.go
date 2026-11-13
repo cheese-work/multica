@@ -120,6 +120,10 @@ type IssueCreateParams struct {
 	// EntryGate, when set, checks the entry gates of the step the issue lands
 	// on, under the same locks. Platform spawns leave it nil and are not gated.
 	EntryGate CreateEntryGate
+	// PropertyGate, when set, checks the validated property bag against the
+	// resolved workflow before the issue row exists (a mandatory property a
+	// workflow gate needs). Platform spawns leave it nil and are not gated.
+	PropertyGate CreatePropertyGate
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
@@ -130,6 +134,10 @@ type IssueCreateParams struct {
 // the workflow step a new issue enters. It returns no assignee when the step
 // resolves to nobody.
 type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
+
+// CreatePropertyGate refuses a create whose properties the workflow's gates
+// cannot accept. properties is the canonical JSONB bag, keyed by property id.
+type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte) error
 
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
 // It may return a recorder for the new row (warn gates), which Create runs in
@@ -441,6 +449,12 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			if recordEntry, err = p.EntryGate(ctx, qtx, step); err != nil {
 				return IssueCreateResult{}, err
 			}
+		}
+	}
+
+	if p.PropertyGate != nil && def != nil {
+		if err := p.PropertyGate(ctx, qtx, def, properties); err != nil {
+			return IssueCreateResult{}, err
 		}
 	}
 

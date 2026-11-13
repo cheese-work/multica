@@ -20,6 +20,10 @@ var errSkillOutsideWorkspace = decisionIntentRefusal{http.StatusNotFound, "skill
 type skillSetSnapshot struct {
 	LiveSHA256  string
 	AfterSHA256 string
+	// Live maps each assigned skill id to its enabled flag; Names maps every
+	// live and proposed skill id to its name. Both feed the preview.
+	Live  map[string]bool
+	Names map[string]string
 }
 
 // skillSetDigest hashes sorted, deduplicated "skill_id:enabled" pairs and, for
@@ -78,8 +82,10 @@ func loadSkillSetSnapshot(ctx context.Context, queries *db.Queries, workspaceID,
 		return skillSetSnapshot{}, err
 	}
 	bundles := make(map[string]*skillbundle.Skill, len(rows))
+	names := make(map[string]string, len(rows))
 	for _, row := range rows {
 		id := uuidToString(row.ID)
+		names[id] = row.Name
 		bundles[id] = &skillbundle.Skill{ID: id, Source: skillbundle.SourceWorkspace, Name: row.Name, Description: row.Description, Content: row.Content}
 	}
 	for _, file := range files {
@@ -93,5 +99,7 @@ func loadSkillSetSnapshot(ctx context.Context, queries *db.Queries, workspaceID,
 	return skillSetSnapshot{
 		LiveSHA256:  skillSetDigest(live, manifests),
 		AfterSHA256: skillSetDigest(after, manifests),
+		Live:        live,
+		Names:       names,
 	}, nil
 }

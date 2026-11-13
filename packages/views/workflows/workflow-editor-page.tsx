@@ -86,6 +86,7 @@ import { WORKFLOW_TEMPLATES, type WorkflowTemplateId } from "./templates";
 import { WorkflowEdgeEditor } from "./workflow-edge-editor";
 import { WorkflowGraph } from "./workflow-graph";
 import { WorkflowMappingDialog } from "./workflow-mapping-dialog";
+import { WorkflowBudgetRequestBanner } from "./workflow-budget-request-banner";
 
 /**
  * The name and description edit in place. A hover or focus background tells
@@ -660,6 +661,7 @@ export function WorkflowEditorPage({
     <div className="space-y-6">
       <div className="space-y-3">
         <Breadcrumb onBack={onBack} current={title} />
+        {workflowId && <WorkflowBudgetRequestBanner workflowId={workflowId} />}
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <input

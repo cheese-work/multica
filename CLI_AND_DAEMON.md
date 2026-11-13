@@ -1181,6 +1181,8 @@ multica autopilot create \
   --mode create_issue \
   --subscriber "Alice"
 
+multica autopilot create --title "Sweep reconcile" --agent "Lambda" \
+  --mode script --script sweep-reconcile --arg --once
 multica autopilot update <id> --status paused
 multica autopilot update <id> --description "New prompt"
 multica autopilot update <id> --subscriber "Alice" --subscriber "Bob"
@@ -1188,7 +1190,8 @@ multica autopilot update <id> --clear-subscribers
 multica autopilot delete <id>
 ```
 
-`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent) or `run_only` (enqueues a direct agent task without creating an issue). `--agent` accepts either a name or UUID.
+`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent), `run_only` (enqueues a direct agent task without creating an issue) or `script` (runs one allowlisted script, no model session). `--agent` accepts either a name or UUID.
+`--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` require `--mode script`; `--mode script` requires `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script.
 `--subscriber` accepts a workspace member name or user ID and may be repeated; on update it replaces the autopilot's subscriber template. Subscribers receive inbox notifications for issues created by a `create_issue` autopilot. Use `--clear-subscribers` to remove all autopilot subscribers.
 
 ### Manual Trigger

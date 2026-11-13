@@ -43,6 +43,30 @@ export function issueWorkflowListOptions(wsId: string) {
   });
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The workflow id the workspace setting `workflow_by_type` maps a title's
+ * Conventional-Commit type to ("design(x): …" → "design"), or null. Mirrors
+ * `issueworkflow.WorkflowForTitle` on the server, which applies it at create
+ * when no workflow is named. (CHE-5271)
+ */
+export function workflowIdForTitle(settings: Record<string, unknown> | undefined, title: string): string | null {
+  const map = settings?.workflow_by_type;
+  if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+  const end = title.search(/[(!:]/);
+  if (end <= 0) return null;
+  const type = title.slice(0, end).trim().toLowerCase();
+  if (!type || /\s/.test(type)) return null;
+  const entries = Object.entries(map as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [key, raw] of entries) {
+    if (key.trim().toLowerCase() !== type) continue;
+    const id = typeof raw === "string" ? raw.trim() : "";
+    if (UUID_RE.test(id)) return id;
+  }
+  return null;
+}
+
 /** The workspace Default workflow, once loaded. */
 export function defaultWorkflow(workflows: readonly IssueWorkflow[] | undefined): IssueWorkflow | null {
   return workflows?.find((w) => w.is_default) ?? null;

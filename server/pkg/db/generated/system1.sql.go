@@ -61,6 +61,40 @@ func (q *Queries) CreateSystem1Observation(ctx context.Context, arg CreateSystem
 	return err
 }
 
+const createSystem1Prediction = `-- name: CreateSystem1Prediction :exec
+INSERT INTO system1_prediction (workspace_id, observation_id, scope, predictor_id, predictor_version, predicted_key, predicted_confidence, predicted_precedents)
+SELECT o.workspace_id, o.id, o.inputs->>'topic', $1::text, $2::text, $3::text, $4::real, $5::int
+FROM system1_observation o
+WHERE o.kind = 'decision' AND o.subject_id = $6 AND o.workspace_id = $7
+`
+
+type CreateSystem1PredictionParams struct {
+	PredictorID         string        `json:"predictor_id"`
+	PredictorVersion    string        `json:"predictor_version"`
+	PredictedKey        pgtype.Text   `json:"predicted_key"`
+	PredictedConfidence pgtype.Float4 `json:"predicted_confidence"`
+	PredictedPrecedents pgtype.Int4   `json:"predicted_precedents"`
+	SubjectID           pgtype.UUID   `json:"subject_id"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+}
+
+// One predictor's guess for the decision observation of a request (CHE-4383 B3).
+// Runs in the ask transaction right after CreateSystem1Observation, which holds
+// the workspace FOR KEY SHARE lock; if that insert found no workspace, this finds
+// no observation and inserts nothing. A NULL key is an abstention.
+func (q *Queries) CreateSystem1Prediction(ctx context.Context, arg CreateSystem1PredictionParams) error {
+	_, err := q.db.Exec(ctx, createSystem1Prediction,
+		arg.PredictorID,
+		arg.PredictorVersion,
+		arg.PredictedKey,
+		arg.PredictedConfidence,
+		arg.PredictedPrecedents,
+		arg.SubjectID,
+		arg.WorkspaceID,
+	)
+	return err
+}
+
 const getLatestSystem1RouteObservation = `-- name: GetLatestSystem1RouteObservation :one
 SELECT id FROM system1_observation
 WHERE kind = 'route' AND subject_id = $1
@@ -130,6 +164,35 @@ func (q *Queries) ListSystem1PrecedentKeys(ctx context.Context, arg ListSystem1P
 			return nil, err
 		}
 		items = append(items, choice_key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSystem1WaiverPrecedentKeys = `-- name: ListSystem1WaiverPrecedentKeys :many
+SELECT label::text AS label FROM system1_label
+WHERE workspace_id = $1 AND scope = 'test_first_waiver' AND kind = 'burn_in'
+  AND label IN ('waive', 'refuse') AND superseded_at IS NULL
+ORDER BY created_at DESC
+LIMIT 200
+`
+
+// Earlier mapped waiver labels of record, newest first. `unmapped` and superseded labels are not precedents.
+func (q *Queries) ListSystem1WaiverPrecedentKeys(ctx context.Context, workspaceID pgtype.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSystem1WaiverPrecedentKeys, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var label string
+		if err := rows.Scan(&label); err != nil {
+			return nil, err
+		}
+		items = append(items, label)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

@@ -47,6 +47,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `LOG_LEVEL` | アプリのデフォルト | ログレベル |
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | 終了シグナル受信後、グレースフルシャットダウンを開始するまでの待機時間 |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | オフラインのランタイムが処理中の作業を失敗させずに再接続できる猶予時間。`150s` 未満は `150s` に補正されます |
+| `MULTICA_REVIEW_GUARD_AGENT_IDS` | 空（ガード無効） | レビュアーのエージェント ID をカンマ区切りで指定します。そのエージェントが PR の head に対して PASS・FAIL・BLOCKED・NOT-RUN をすでに投稿しており、Issue に開いたリンク済み PR がちょうど 1 件ある場合、レビュー実行は理由 `review_head_answered` でスキップされます。head が変わると再び実行されます。評価は `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN` の行（または `BLOCKED`・`NOT-RUN` で始まる行）と、head SHA を示す `Candidate:` または `Head:` の行で構成されます。スキップはキャンセル済みの実行として実行一覧に表示されます。スケジュールされたチェックインは対象外です |
 
 Kubernetes で shutdown hold を設定する場合、`terminationGracePeriodSeconds` は hold と実際のシャットダウンにかかる時間の合計より大きくしてください。
 
@@ -115,6 +116,7 @@ primary とレプリカの接続上限は独立しています。全 API プロ�
 | `ALLOWED_EMAIL_DOMAINS` | 空 | 登録を許可するメールドメイン。カンマ区切り |
 | `DISABLE_WORKSPACE_CREATION` | `false` | すべてのユーザーのワークスペース新規作成を禁止。owner/admin の例外はありません |
 | `WORKSPACE_CREATION_ALLOWED_EMAILS` | 空 | ワークスペースの新規作成を許可するメールアドレス（完全一致、カンマ区切り）。設定すると、それ以外のユーザーには 403 を返します。`DISABLE_WORKSPACE_CREATION=true` が優先されます。他のワークスペースへのアクセス権は付与しません |
+| `MULTICA_SETUP_COMPONENTS` | 空 | Setup コンポーネント ID（カンマ区切り）。`adoption_linked` クローズゲートは、メタデータ `components` と `none` のクロスチェックをこの一覧と照合する。空の場合、`yes` の Setup change はクローズできない |
 | `MULTICA_DEV_VERIFICATION_CODE` | 空 | 非 production 環境で使う固定 6 桁のテスト認証コード |
 
 allowlist の正確な判定順序は[ログインとサインアップ](/auth-setup#サインアップ制限)を参照してください。

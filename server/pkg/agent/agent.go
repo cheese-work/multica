@@ -38,6 +38,9 @@ type ExecOptions struct {
 	// StableCwd, when set, is the cwd the process sees instead of Cwd (Claude only; see wrapStableCwd).
 	StableCwd string
 	Model     string
+	// PiSkillPaths contains only the SKILL.md files written for this task by
+	// the daemon. Pi loads them explicitly without trusting other project files.
+	PiSkillPaths []string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -164,6 +167,17 @@ type ExecOptions struct {
 	// EnableTaskSupplement, to accept additional messages; other providers
 	// ignore it.
 	CursorHookCommand []string
+	// OnUsage optionally receives the backend's cumulative usage snapshot while
+	// the run is still live, keyed exactly like Result.Usage so a mid-run flush
+	// and the terminal report upsert the same (task, provider, model) rows
+	// instead of adding a second row the rollup would charge twice. Backends
+	// that cannot meter mid-run never call it.
+	//
+	// The callback runs on the backend's protocol reader goroutine and MUST NOT
+	// block: a daemon that reports from here holds the agent's stdout open and
+	// can trip its idle watchdog. Take the snapshot and report on your own
+	// goroutine.
+	OnUsage func(map[string]TokenUsage)
 	// piMcpExtensionPath is set by piBackend.Execute after it writes the
 	// temporary MCP extension. The daemon does not fill it.
 	piMcpExtensionPath string
@@ -398,6 +412,9 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
+	// Script, when set, selects the model-less script backend: New returns it
+	// for any agentType and never reaches the provider switch.
+	Script *ScriptSpec
 }
 
 // New creates a Backend for the given agent type.
@@ -512,6 +529,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// would accept a fixed_args `--output-format text` and break its own
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
+
+	if cfg.Script != nil {
+		return newScriptBackend(cfg), nil
+	}
 
 	switch agentType {
 	case "claude":

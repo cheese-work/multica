@@ -55,6 +55,8 @@ func routeRefusal(err error) (string, bool) {
 		return "stage_queue_full", true
 	case errors.Is(err, service.ErrIssueInTriage):
 		return "issue_in_triage", true
+	case errors.Is(err, service.ErrAgentPaused):
+		return "agent_paused", true
 	case errors.Is(err, service.ErrRecoveryCaused):
 		return "recovery_caused", true
 	case errors.Is(err, errSquadLeaderNotAdmitted):
@@ -232,9 +234,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			if runTrigger.AssigneeType == "agent" && !th.canInvokeAssignedAgent(writeCtx, r, updated, actorType, actorID) {
 				err = errAgentNotInvocable
 			} else if runTrigger.AssigneeType == "agent" {
-				runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, memberActorUserID(actorType, actorID), overlay)
+				_, runAfter, err = th.TaskService.EnqueueIssueRunInTx(writeCtx, q, updated, pgtype.UUID{}, memberActorUserID(actorType, actorID), overlay)
 			} else {
-				runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, actorType, actorID)
+				_, runAfter, err = th.enqueueSquadLeaderRunAsInTx(writeCtx, q, updated, pgtype.UUID{}, actorType, actorID)
 			}
 			duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 			if refused, isRefusal := routeRefusal(err); isRefusal {

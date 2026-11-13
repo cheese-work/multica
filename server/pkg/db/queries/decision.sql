@@ -626,3 +626,11 @@ SELECT * FROM decision_request
 WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id')
   AND request_fingerprint LIKE 'server:ci:%'
 ORDER BY created_at, id;
+
+-- name: GetLatestDecisionAnswer :one
+-- The newest answer of a request, disclaimed or not: what a reader of the request
+-- needs to see that the person answered, and whether the answer still stands.
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id')
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;
