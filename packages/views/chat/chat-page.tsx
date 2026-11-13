@@ -74,6 +74,8 @@ import { useRegisterCommandBarContext } from "../search/register-context";
  * style).
  */
 export function ChatPage() {
+  // The DM list chip lives for as long as Chat is open; leaving Chat resets it.
+  useEffect(() => () => useChatStore.getState().resetListView(), []);
   const { t } = useT("chat");
   const { pathname, searchParams, push, replace } = useNavigation();
   const backOrReplace = useBackOrReplace();
@@ -405,6 +407,8 @@ export function ChatPage() {
         onSelectSession={handleSelect}
         onArchive={handleArchive}
         onOpenSearchHit={handleOpenSearchHit}
+        loadState={c.sessionsLoaded ? undefined : c.sessionsFailed ? "error" : "loading"}
+        onRetry={() => void c.refetchSessions()}
       />
     </div>
   );

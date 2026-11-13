@@ -348,6 +348,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "Filtrer les discussions",
+      "all": "Toutes",
+      "main": "Boîte principale",
+      "decisions": "Décisions",
+      "waiting": "En attente de vous",
+      "unseen": "Non vues",
+      "pinned": "Épinglées",
+      "unpinned": "Non épinglées",
+      "archived": "Archivées",
+      "count_aria": "{{label}}, {{count}}"
+    },
+    "states": {
+      "loading": "Chargement des discussions…",
+      "empty_title": "Aucune discussion",
+      "empty_body": "Écrivez à un agent pour commencer. Les questions et décisions qui vous attendent apparaissent ici.",
+      "empty_view": "Aucune discussion dans cette vue",
+      "empty_waiting": "Rien n'attend votre réponse",
+      "empty_waiting_body": "Chaque question et décision a une réponse.",
+      "error_title": "Impossible de charger les discussions",
+      "error_body": "Le serveur a renvoyé une erreur. Vos messages ne sont pas perdus. Réessayez, ou revenez dans quelques minutes.",
+      "retry": "Réessayer",
+      "offline_title": "Vous êtes hors ligne",
+      "offline_body": "Affichage de la liste enregistrée. La reconnexion est automatique."
+    },
     "typing": "Rédaction…",
     "failed": "Échec de l'envoi",
     "you_prefix": "Vous : ",

@@ -5,8 +5,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArchiveRestore,
-  ChevronLeft,
-  ChevronRight,
   Clock,
   Loader2,
   Pin,
@@ -22,6 +20,8 @@ import { api } from "@multica/core/api";
 import {
   pendingChatTasksOptions,
   chatKeys,
+  filterChatSessions,
+  openDecisionRequestsOptions,
   sortArchivedChatSessions,
   sortChatSessions,
 } from "@multica/core/chat/queries";
@@ -46,6 +46,10 @@ import { useChatSessionActions } from "./use-chat-session-actions";
 import { ChatSearch } from "./chat-search";
 import { formatChatTime } from "./format-chat-time";
 import { NeedsYouList } from "./needs-you-list";
+import { useAttentionRefresh } from "./use-attention-refresh";
+import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
+import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
+import { useOnline } from "../../settings/components/use-online";
 
 const apiLogger = createLogger("chat.api");
 
@@ -110,6 +114,9 @@ interface ChatThreadListProps {
   onArchive: (session: ChatSession) => void;
   /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
   onOpenSearchHit?: (hit: ChatSearchHit) => void;
+  /** First load of the list. Only shown while there are no rows to show. */
+  loadState?: "loading" | "error";
+  onRetry?: () => void;
 }
 
 function ChatThreadListBody({
@@ -118,6 +125,8 @@ function ChatThreadListBody({
   activeSessionId,
   onSelectSession,
   onArchive,
+  loadState,
+  onRetry,
 }: ChatThreadListProps) {
   const { t } = useT("chat");
   const locale = useLocale();
@@ -135,10 +144,8 @@ function ChatThreadListBody({
   const getShareableUrl = navigation?.getShareableUrl;
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
-  // Split the flat cache locally: active chats fill the default history view,
-  // archived chats fill the "Archived" view. Both sorted pinned-first (then by
-  // activity) so the list stays ordered even after an optimistic pin/archive or
-  // a WS patch mutates the flat cache in place.
+  // One flat cache; the chip decides the slice. Every non-archived chip keeps
+  // pinned-first order, Archived sorts by activity only.
   // A continued DM lives on in its successor's transcript, so only the newest
   // DM of a chain gets a row. A successor missing from the cache leaves its
   // source listed rather than lost.
@@ -146,22 +153,36 @@ function ChatThreadListBody({
     const ids = new Set(sessions.map((s) => s.id));
     return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
   }, [sessions]);
-  const historySessions = useMemo(
-    () => sortChatSessions(rows.filter((s) => s.status !== "archived")),
-    [rows],
-  );
-  const archivedSessions = useMemo(
-    () => sortArchivedChatSessions(rows.filter((s) => s.status === "archived")),
-    [rows],
-  );
 
-  // Which view is showing. Falls back to history when the archived list drains
-  // (last chat unarchived / deleted) so we never strand the user on an empty
-  // archive.
-  const [view, setView] = useState<"history" | "archived">("history");
-  useEffect(() => {
-    if (view === "archived" && archivedSessions.length === 0) setView("history");
-  }, [view, archivedSessions.length]);
+  const listView = useChatStore((s) => s.listView);
+  const setListView = useChatStore((s) => s.setListView);
+  const decisionsQuery = useQuery(openDecisionRequestsOptions(wsId));
+  const decisionRequests = Array.isArray(decisionsQuery.data) ? decisionsQuery.data : undefined;
+  const decisionSessionIds = useMemo(
+    () => new Set((decisionRequests ?? []).map((r) => r.chat_session_id)),
+    [decisionRequests],
+  );
+  const visibleSessions = useMemo(() => {
+    const picked = filterChatSessions(rows, listView, decisionSessionIds);
+    return [
+      ...sortChatSessions(picked.filter((s) => s.status !== "archived")),
+      ...sortArchivedChatSessions(picked.filter((s) => s.status === "archived")),
+    ];
+  }, [rows, listView, decisionSessionIds]);
+  const counts = useMemo<ChatFilterCounts>(() => {
+    if (loadState === "loading" && rows.length === 0) return {};
+    const n = (view: Parameters<typeof filterChatSessions>[1]) =>
+      filterChatSessions(rows, view, decisionSessionIds).length;
+    return {
+      ...(decisionRequests ? { decisions: n("decisions") } : {}),
+      waiting: n("waiting"),
+      unseen: n("unseen"),
+      archived: n("archived"),
+    };
+  }, [rows, decisionSessionIds, decisionRequests, loadState]);
+  const hasUnclassified = rows.some((s) => (s.attention_unclassified_keys?.length ?? 0) > 0);
+  useAttentionRefresh(sessions);
+  const online = useOnline();
 
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
@@ -302,7 +323,7 @@ function ChatThreadListBody({
     // is the only place hard-delete lives; the history view offers the
     // reversible archive instead.
     const rowActions: RowActionItem[] =
-      view === "archived"
+      session.status === "archived"
         ? [
             {
               key: "unarchive",
@@ -511,65 +532,25 @@ function ChatThreadListBody({
     );
   };
 
-  // Archived view: a back header, then the archived rows. Delete lives only
-  // here (via each row's hover actions).
-  if (view === "archived") {
-    return (
-      <>
-        <NeedsYouList sessions={rows} agents={agents} />
-        <button
-          type="button"
-          onClick={() => setView("history")}
-          className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <ChevronLeft className="size-4 shrink-0" />
-          <span className="truncate">{t(($) => $.list.archived_title)}</span>
-          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
-            {archivedSessions.length}
-          </span>
-        </button>
-        <div className="contents" data-testid="chat-thread-group-archived">
-          {archivedSessions.map(renderRow)}
-        </div>
-      </>
+  let body: React.ReactNode;
+  if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
+  else if (rows.length === 0 && loadState === "error") body = <ListError onRetry={onRetry} />;
+  else if (listView === "waiting" && (visibleSessions.length > 0 || hasUnclassified))
+    body = <NeedsYouList sessions={rows} agents={agents} refresh={false} />;
+  else if (visibleSessions.length === 0)
+    body = <ListEmpty kind={rows.length === 0 ? "none" : listView === "waiting" ? "waiting" : "view"} />;
+  else
+    body = (
+      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
+        {visibleSessions.map(renderRow)}
+      </div>
     );
-  }
-
-  // History (default) view: active rows + a footer entry into the archive.
-  const archivedEntry = archivedSessions.length > 0 && (
-    <button
-      type="button"
-      onClick={() => setView("archived")}
-      className="mt-1 flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
-    >
-      <span className="flex size-9 shrink-0 items-center justify-center">
-        <Archive className="size-4" />
-      </span>
-      <span className="min-w-0 flex-1 truncate font-medium">{t(($) => $.list.archived_title)}</span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">{archivedSessions.length}</span>
-      <ChevronRight className="size-4 shrink-0 text-faint-foreground" />
-    </button>
-  );
-
-  if (historySessions.length === 0) {
-    return (
-      <>
-        <NeedsYouList sessions={rows} agents={agents} />
-        <div className="px-2 py-1.5 text-caption text-muted-foreground">
-          {t(($) => $.window.no_previous)}
-        </div>
-        {archivedEntry}
-      </>
-    );
-  }
 
   return (
     <>
-      <NeedsYouList sessions={rows} agents={agents} />
-      <div className="contents" data-testid="chat-thread-group-recent">
-        {historySessions.map(renderRow)}
-      </div>
-      {archivedEntry}
+      <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
+      {!online && <ListOffline />}
+      {body}
     </>
   );
 }
