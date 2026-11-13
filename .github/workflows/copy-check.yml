@@ -52,8 +52,12 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          [ -f "$RUNNER_TEMP/copy-check.md" ] || exit 0
           id="$(gh api "repos/$REPO/issues/$PR/comments" --paginate -q '[.[] | select(.body | startswith("<!-- copy-check -->"))][0].id // empty')"
+          if [ ! -f "$RUNNER_TEMP/copy-check.md" ]; then
+            # No hits now: remove a stale hit table from an earlier push.
+            [ -z "$id" ] || gh api -X DELETE "repos/$REPO/issues/comments/$id"
+            exit 0
+          fi
           if [ -n "$id" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$RUNNER_TEMP/copy-check.md"
           else
