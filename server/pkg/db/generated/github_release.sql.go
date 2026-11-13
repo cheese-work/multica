@@ -84,6 +84,44 @@ func (q *Queries) GetGitHubReleaseDeploy(ctx context.Context, arg GetGitHubRelea
 	return i, err
 }
 
+const linkGitHubReleaseDeploy = `-- name: LinkGitHubReleaseDeploy :exec
+
+INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id, issue_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO NOTHING
+`
+
+type LinkGitHubReleaseDeployParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+	SourceSha   string      `json:"source_sha"`
+	ImageDigest string      `json:"image_digest"`
+	OldSha      string      `json:"old_sha"`
+	RunID       int64       `json:"run_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// =====================
+// Release issues from a verified C00 deploy (CHE-4937)
+// Repo owner and name are stored lowercased; callers pass them lowercased.
+// =====================
+// Records which issue a deploy opened. Idempotent: a redelivery, a recovery
+// after a crash and a concurrent caller all write the same row once.
+func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubReleaseDeployParams) error {
+	_, err := q.db.Exec(ctx, linkGitHubReleaseDeploy,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.SourceSha,
+		arg.ImageDigest,
+		arg.OldSha,
+		arg.RunID,
+		arg.IssueID,
+	)
+	return err
+}
+
 const listReleaseMergedPullRequests = `-- name: ListReleaseMergedPullRequests :many
 SELECT pr_number, title, html_url FROM github_pull_request pr
 WHERE pr.workspace_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
@@ -134,39 +172,6 @@ func (q *Queries) ListReleaseMergedPullRequests(ctx context.Context, arg ListRel
 		return nil, err
 	}
 	return items, nil
-}
-
-const linkGitHubReleaseDeploy = `-- name: LinkGitHubReleaseDeploy :exec
-INSERT INTO github_release_deploy (workspace_id, repo_owner, repo_name, source_sha, image_digest, old_sha, run_id, issue_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT (workspace_id, repo_owner, repo_name, source_sha, image_digest) DO NOTHING
-`
-
-type LinkGitHubReleaseDeployParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	RepoOwner   string      `json:"repo_owner"`
-	RepoName    string      `json:"repo_name"`
-	SourceSha   string      `json:"source_sha"`
-	ImageDigest string      `json:"image_digest"`
-	OldSha      string      `json:"old_sha"`
-	RunID       int64       `json:"run_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-}
-
-// Records which issue a deploy opened. Idempotent: a redelivery, a recovery
-// after a crash and a concurrent caller all write the same row once.
-func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubReleaseDeployParams) error {
-	_, err := q.db.Exec(ctx, linkGitHubReleaseDeploy,
-		arg.WorkspaceID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.SourceSha,
-		arg.ImageDigest,
-		arg.OldSha,
-		arg.RunID,
-		arg.IssueID,
-	)
-	return err
 }
 
 const setGitHubReleaseDeployLabeled = `-- name: SetGitHubReleaseDeployLabeled :exec
