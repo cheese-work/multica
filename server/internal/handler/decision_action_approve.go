@@ -74,6 +74,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	issueProjectSetType:      executeIssueProjectSetAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
