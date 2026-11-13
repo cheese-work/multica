@@ -748,7 +748,7 @@ func init() {
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
-	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
+	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task). From an agent run, a move that widens the run budget opens an owner approval card and prints its action id and URL; the issue is unchanged until an owner approves")
 	issueUpdateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
 	issueUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
@@ -2341,6 +2341,11 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("set issue workflow: %w", err)
 		}
+		// A widening move from a run opens an owner approval card instead of
+		// changing the issue (202); nothing else in this call is applied.
+		if action, _ := result["action_id"].(string); action != "" && result["id"] == nil {
+			return printWorkflowApprovalCard(cmd, result)
+		}
 		// The switch advanced the revision; the update that follows chains on
 		// it, and a switch with nothing else to write sends no second request.
 		if len(body) == 1 && body["expected_revision"] != nil {
@@ -2411,6 +2416,15 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	return printIssueUpdateResult(cmd, result)
+}
+
+// printWorkflowApprovalCard reports the approval card a workflow move opened.
+func printWorkflowApprovalCard(cmd *cobra.Command, card map[string]any) error {
+	if output, _ := cmd.Flags().GetString("output"); output != "table" {
+		return cli.PrintJSON(os.Stdout, card)
+	}
+	fmt.Fprintf(os.Stdout, "Workflow change needs an owner's approval; the issue is unchanged.\nAction: %s\nApprove: %s\n", strVal(card, "action_id"), strVal(card, "approve_url"))
+	return nil
 }
 
 func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
