@@ -3448,6 +3448,8 @@ type TaskSupplement struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
 	Implicit        bool               `json:"implicit"`
+	ReplayAttempts  int32              `json:"replay_attempts"`
+	ReplayNextAt    pgtype.Timestamptz `json:"replay_next_at"`
 }
 
 type TaskSupplementCapability struct {
