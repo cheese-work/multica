@@ -396,6 +396,8 @@
     "pin_failed": "Impossible de mettre à jour l’épingle",
     "unseen": "Marquer comme non vu",
     "unseen_failed": "Impossible de marquer cette discussion comme non vue",
+    "rename": "Renommer",
+    "select": "Sélectionner plusieurs",
     "undo": "Annuler"
   },
   "header": {
