@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -537,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1236,5 +1237,76 @@ func TestWorkspaceUpdateDigestRejectsCompactPromptFile(t *testing.T) {
 	_, err := buildWorkspaceUpdateDigestBody(workspaceUpdateCmd)
 	if err == nil || !strings.Contains(err.Error(), "--compact-prompt-file") {
 		t.Fatalf("err = %v, want a conflict naming --compact-prompt-file", err)
+	}
+}
+
+// CHE-3296: the idle guard flags send only idle_started_guard, and only the
+// fields the caller set.
+func TestBuildWorkspaceUpdateBodyIdleGuard(t *testing.T) {
+	for _, testCase := range []struct {
+		flags map[string]string
+		want  map[string]any
+	}{
+		{map[string]string{"idle-guard-mode": "shadow"}, map[string]any{"mode": "shadow"}},
+		{map[string]string{"idle-guard-after-hours": "6"}, map[string]any{"after_hours": 6}},
+		{map[string]string{"idle-guard-mode": "act", "idle-guard-after-hours": "72"}, map[string]any{"mode": "act", "after_hours": 72}},
+	} {
+		resetWorkspaceUpdateFlags(t)
+		for name, value := range testCase.flags {
+			setStringFlag(t, name, value)
+		}
+		body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+		if err != nil {
+			t.Fatalf("%v: %v", testCase.flags, err)
+		}
+		if !reflect.DeepEqual(body, map[string]any{"idle_started_guard": testCase.want}) {
+			t.Errorf("%v: body = %#v, want only idle_started_guard = %#v", testCase.flags, body, testCase.want)
+		}
+	}
+	for _, mode := range []string{"on", "", "ACT"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "idle-guard-mode", mode)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("mode %q: expected an error", mode)
+		}
+	}
+	for _, hours := range []string{"0", "73"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "idle-guard-after-hours", hours)
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("hours %q: expected an error", hours)
+		}
+	}
+}
+
+func TestMergeRoutingFlagsKeepsUnnamedFields(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	current := map[string]any{"agent_id": "a1", "fallback_agent_id": "f1", "statuses": []any{"todo"}, "overrides": map[string]any{"todo": "o1"}}
+	setStringFlag(t, "routing-agent", "a2")
+	next, err := mergeRoutingFlags(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next["agent_id"] != "a2" || next["fallback_agent_id"] != "f1" || len(next["statuses"].([]any)) != 1 || next["overrides"].(map[string]any)["todo"] != "o1" {
+		t.Fatalf("merge = %v", next)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-fallback-agent", "none")
+	setStringFlag(t, "routing-statuses", "todo,blocked")
+	setStringFlag(t, "routing-overrides", "todo=o2, blocked=o3")
+	next, err = mergeRoutingFlags(workspaceUpdateCmd, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrides := next["overrides"].(map[string]string)
+	if next["fallback_agent_id"] != "" || len(next["statuses"].([]string)) != 2 || overrides["todo"] != "o2" || overrides["blocked"] != "o3" {
+		t.Fatalf("merge = %v", next)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "routing-overrides", "todo")
+	if _, err := mergeRoutingFlags(workspaceUpdateCmd, current); err == nil {
+		t.Fatal("malformed override accepted")
 	}
 }

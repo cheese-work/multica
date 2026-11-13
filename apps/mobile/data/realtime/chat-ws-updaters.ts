@@ -348,3 +348,18 @@ export async function refreshTaskMessages(qc: QueryClient, taskId: string) {
   await qc.cancelQueries({ queryKey }, { revert: false, silent: true });
   await qc.invalidateQueries({ queryKey });
 }
+
+/**
+ * A supplement receipt changed (delivered, uncertain, resent). The bubble state
+ * and the head's `head_supplement` both derive from server data, so refetch
+ * rather than patch.
+ */
+export function applyChatSupplementUpdated(
+  qc: QueryClient,
+  payload: { supplement?: { chat_session_id?: string } },
+) {
+  const sessionId = payload.supplement?.chat_session_id;
+  if (!sessionId) return;
+  qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+  invalidatePendingTask(qc, sessionId);
+}

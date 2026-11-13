@@ -32,7 +32,7 @@ import {
 } from "@multica/core/inbox/queries";
 import { useInboxFilters } from "@multica/core/inbox/filter-store";
 import { cn } from "@multica/ui/lib/utils";
-import { StatusIcon } from "../issues/components";
+import { StatusIcon } from "../issues/components/status-icon";
 import { ProjectIcon } from "../projects/components/project-icon";
 import { ActorAvatar } from "../common/actor-avatar";
 import { getInboxDisplayTitle } from "../inbox/components/inbox-display";

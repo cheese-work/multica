@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"math"
 
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 )
@@ -67,11 +68,25 @@ func PreviewRunBudgetRaiseTo(credited, used, target int) (RunBudgetRaise, error)
 	return PreviewRunBudgetRaise(credited, used, target-max(credited, used))
 }
 
-// SuggestedRaiseTarget is the absolute limit the suggested raise sets, or 0
-// when the platform maximum leaves no valid raise.
-func SuggestedRaiseTarget(credited, used int) int {
+// raiseUsed is the runs the raise math treats as spent: the cap less the
+// admitted balance. A grant or refund lowers it, carried debt raises it past
+// the cap, so a raise from this base leaves the balance it promises. The
+// window's task count is usage history, not an input.
+func raiseUsed(credited int, balance int64) int {
+	return int(max(min(int64(credited)-balance, int64(issueworkflow.MaxRunsPerIssueLimit)), math.MinInt32))
+}
+
+// SuggestedRaiseForBalance is the absolute cap the suggested raise sets and the
+// balance it leaves, from the cap and the admitted balance. It is 0, 0 when the
+// platform maximum leaves no valid raise.
+func SuggestedRaiseForBalance(credited int, balance int64) (target, after int) {
+	used := raiseUsed(credited, balance)
 	if MaxAllowedRaise(credited, used) == 0 {
-		return 0
+		return 0, 0
 	}
-	return max(credited, used) + SuggestedRaise(credited, used)
+	raise, err := PreviewRunBudgetRaise(credited, used, SuggestedRaise(credited, used))
+	if err != nil {
+		return 0, 0
+	}
+	return raise.CreditedAfter, raise.BalanceAfter
 }

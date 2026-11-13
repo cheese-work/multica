@@ -72,8 +72,9 @@ func TestPostHogClient_DropsWhenFull(t *testing.T) {
 	// queue. Releasing it during cleanup avoids paying the client's flush timeout.
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var startedOnce sync.Once // Close drains the queue: later requests reach this handler too.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
+		startedOnce.Do(func() { close(started) })
 		<-release
 	}))
 	defer srv.Close()

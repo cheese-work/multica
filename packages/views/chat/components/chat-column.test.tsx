@@ -56,7 +56,9 @@ describe("chat column geometry", () => {
             created_at: "2026-07-30T00:00:00Z",
           },
         ]}
-        onSendNow={() => {}}
+        headSupplement="capable"
+        onSteer={() => {}}
+        onStopAndSend={() => {}}
         onEdit={() => {}}
         onRemove={() => {}}
         onClear={() => {}}

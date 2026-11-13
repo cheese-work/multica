@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithI18n } from "../../test/i18n";
@@ -10,12 +10,21 @@ import {
 } from "../surface/peek-context";
 import { IssuePeekHost } from "./issue-peek";
 
+const markMentionsRead = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/inbox", () => ({
+  useMarkMentionsReadOnOpen: (issueId: string) => markMentionsRead(issueId),
+}));
+
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}` }),
 }));
 
 // The panel's job is hosting; IssueDetail itself is covered by its own suite.
-vi.mock("./issue-detail", () => ({
+const detailLoads = vi.hoisted(() => ({ count: 0 }));
+
+vi.mock("./issue-detail", () => {
+  detailLoads.count += 1;
+  return {
   IssueDetail: ({
     issueId,
     variant,
@@ -41,7 +50,8 @@ vi.mock("./issue-detail", () => ({
     </div>
     );
   },
-}));
+  };
+});
 
 const navigation: NavigationAdapter = {
   push: vi.fn(),
@@ -106,16 +116,37 @@ function renderHost(columns: IssuePeekColumns = COLUMNS) {
 const panel = () => screen.queryByRole("complementary", { name: "Issue preview" });
 // Closing plays a short exit animation before the panel unmounts.
 const waitForClosed = () => waitFor(() => expect(panel()).toBeNull());
-const openCard = (id: string) => fireEvent.click(screen.getByText(`card ${id}`));
+// IssueDetail loads on demand, so the panel's content arrives a tick after the click.
+const openCard = async (id: string) => {
+  fireEvent.click(screen.getByText(`card ${id}`));
+  await screen.findByTestId("detail");
+};
 
 describe("IssuePeekHost", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("opens the peeked issue as a peek-variant detail and marks its card", () => {
+  // The detail chunk is ~800 KiB (editor, markdown, shiki, katex). Warming it when
+  // the page goes idle competes with the list's own first paint on a slow link.
+  it("does not load the issue detail on idle, only once a card is pointed at", async () => {
+    const idle: Array<() => void> = [];
+    vi.stubGlobal("requestIdleCallback", (cb: () => void) => idle.push(cb));
+    vi.stubGlobal("cancelIdleCallback", () => {});
+    renderHost();
+    await act(async () => idle.forEach((run) => run()));
+    expect(detailLoads.count).toBe(0);
+
+    fireEvent.pointerOver(screen.getByText("card i-1"));
+
+    await waitFor(() => expect(detailLoads.count).toBe(1));
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("opens the peeked issue as a peek-variant detail and marks its card", async () => {
     renderHost();
     expect(panel()).toBeNull();
 
-    openCard("i-2");
+    await openCard("i-2");
 
     expect(panel()).not.toBeNull();
     expect(screen.getByTestId("detail")).toHaveAttribute("data-variant", "peek");
@@ -124,19 +155,28 @@ describe("IssuePeekHost", () => {
     expect(screen.getByText("card i-1")).not.toHaveAttribute("data-peeked");
   });
 
+  it("reads the viewer's mentions on the peeked issue, and on the one stepped to", () => {
+    renderHost();
+    openCard("i-2");
+    expect(markMentionsRead).toHaveBeenLastCalledWith("i-2");
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(markMentionsRead).toHaveBeenLastCalledWith("i-3");
+  });
+
   it("switches to another card, and closes when the peeked card is toggled again", async () => {
     renderHost();
-    openCard("i-1");
-    openCard("i-4");
+    await openCard("i-1");
+    await openCard("i-4");
     expect(screen.getByTestId("detail")).toHaveTextContent("i-4");
 
-    openCard("i-4");
+    await openCard("i-4");
     await waitForClosed();
   });
 
-  it("shows the position in the column and steps with J / K", () => {
+  it("shows the position in the column and steps with J / K", async () => {
     renderHost();
-    openCard("i-2");
+    await openCard("i-2");
     expect(panel()).toHaveTextContent("2 / 3");
 
     fireEvent.keyDown(document.body, { key: "j" });
@@ -151,9 +191,9 @@ describe("IssuePeekHost", () => {
     expect(screen.getByTestId("detail")).toHaveTextContent("i-1");
   });
 
-  it("disables the step buttons at the ends of the column", () => {
+  it("disables the step buttons at the ends of the column", async () => {
     renderHost();
-    openCard("i-1");
+    await openCard("i-1");
     expect(screen.getByRole("button", { name: "Previous issue" })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: "Next issue" }));
     expect(screen.getByTestId("detail")).toHaveTextContent("i-2");
@@ -161,7 +201,7 @@ describe("IssuePeekHost", () => {
 
   it("closes on Escape, but not while typing or inside a popup", async () => {
     renderHost();
-    openCard("i-1");
+    await openCard("i-1");
 
     const input = document.createElement("input");
     document.body.appendChild(input);
@@ -181,9 +221,9 @@ describe("IssuePeekHost", () => {
     menu.remove();
   });
 
-  it("ignores J / K typed into an editor", () => {
+  it("ignores J / K typed into an editor", async () => {
     renderHost();
-    openCard("i-1");
+    await openCard("i-1");
     const editor = document.createElement("div");
     editor.setAttribute("contenteditable", "true");
     document.body.appendChild(editor);
@@ -194,27 +234,27 @@ describe("IssuePeekHost", () => {
 
   it("closes from the close button and when the issue is deleted", async () => {
     renderHost();
-    openCard("i-1");
+    await openCard("i-1");
     fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
     await waitForClosed();
 
-    openCard("i-1");
+    await openCard("i-1");
     fireEvent.click(screen.getByRole("button", { name: "delete" }));
     await waitForClosed();
   });
 
-  it("links to the full issue page", () => {
+  it("links to the full issue page", async () => {
     renderHost();
-    openCard("i-3");
+    await openCard("i-3");
     expect(screen.getByRole("link", { name: "Open full page" })).toHaveAttribute(
       "href",
       "/acme/issues/i-3",
     );
   });
 
-  it("stays open when the view changes, stepping in the new view's order", () => {
+  it("stays open when the view changes, stepping in the new view's order", async () => {
     const { setColumns } = renderHost();
-    openCard("i-2");
+    await openCard("i-2");
     // e.g. board → list: one column in display order.
     act(() => setColumns([["i-4", "i-2", "i-1", "i-3"]]));
     expect(screen.getByTestId("detail")).toHaveTextContent("i-2");
@@ -223,14 +263,14 @@ describe("IssuePeekHost", () => {
     expect(screen.getByTestId("detail")).toHaveTextContent("i-1");
   });
 
-  it("brings the peeked card back into view when it moves to another column", () => {
+  it("brings the peeked card back into view when it moves to another column", async () => {
     const scrollIntoView = vi.fn();
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = scrollIntoView;
     try {
       // i-4 is alone in its column; the column to its right is empty.
       const { setColumns } = renderHost([["i-1", "i-2", "i-3"], ["i-4"], []]);
-      openCard("i-4");
+      await openCard("i-4");
       expect(scrollIntoView.mock.contexts.at(-1)).toBe(screen.getByText("card i-4"));
 
       // Its status changes: it lands alone in the empty column. Its neighbours
@@ -252,16 +292,16 @@ describe("IssuePeekHost", () => {
   it("keeps a way to close the panel when the issue fails to render", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     renderHost([["i-1", "boom"]]);
-    openCard("boom");
-    expect(panel()).toHaveTextContent("Could not render this issue");
+    fireEvent.click(screen.getByText("card boom"));
+    expect(await screen.findByText("Could not render this issue")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close preview" }));
     await waitForClosed();
     vi.mocked(console.error).mockRestore();
   });
 
-  it("steps across columns with H / L, keeping the row where it can", () => {
+  it("steps across columns with H / L, keeping the row where it can", async () => {
     renderHost([["a1", "a2", "a3"], [], ["c1"], ["d1", "d2", "d3"]]);
-    openCard("a3");
+    await openCard("a3");
     // The empty column is skipped; the short one clamps to its last card.
     fireEvent.keyDown(document.body, { key: "l" });
     expect(screen.getByTestId("detail")).toHaveTextContent("c1");
@@ -274,9 +314,9 @@ describe("IssuePeekHost", () => {
     expect(screen.getByTestId("detail")).toHaveTextContent("a1");
   });
 
-  it("steps with the arrow keys, unless the reader clicked into the panel", () => {
+  it("steps with the arrow keys, unless the reader clicked into the panel", async () => {
     renderHost();
-    openCard("i-1");
+    await openCard("i-1");
     expect(fireEvent.keyDown(document.body, { key: "ArrowDown" })).toBe(false);
     expect(screen.getByTestId("detail")).toHaveTextContent("i-2");
     fireEvent.keyDown(document.body, { key: "ArrowRight" });

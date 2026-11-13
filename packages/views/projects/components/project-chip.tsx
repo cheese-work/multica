@@ -57,7 +57,7 @@ export function ProjectChip({
   }
 
   return (
-    <span className={cls}>
+    <span className={cls} data-copy-token={project.title}>
       <ProjectIcon project={project} size="md" />
       <span className="min-w-0 truncate text-foreground">{project.title}</span>
     </span>

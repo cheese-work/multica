@@ -1,4 +1,5 @@
 import type { ExpoConfig, ConfigContext } from "expo/config";
+import withFbjniPin from "./plugins/with-fbjni-pin.js";
 
 /**
  * Dynamic Expo config — replaces app.json so we can read APP_ENV at runtime
@@ -14,7 +15,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const isProd = env === "production";
   const isStaging = env === "staging";
 
-  return {
+  return withFbjniPin({
     ...config,
     name: isProd
       ? "Multica"
@@ -95,5 +96,5 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ],
     ],
     extra: { APP_ENV: env },
-  };
+  });
 };

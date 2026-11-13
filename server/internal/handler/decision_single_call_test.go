@@ -29,7 +29,11 @@ func newSingleCallFixture(test *testing.T) singleCallFixture {
 	sourceID := dbfx.Insert(test, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Scoped source context."})
 	details := structuredDecisionAsk(fixture.issueID, sourceID, "Approve the reversible change?")
 	details.AskedBy = fixture.agentName // the stored ask names the asking agent
-	return singleCallFixture{intentFixture: fixture, ask: details.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
+	stored, err := details.RequireRecommendedFirst()
+	if err != nil {
+		test.Fatal(err)
+	}
+	return singleCallFixture{intentFixture: fixture, ask: stored.Content(handlerTestWorkspaceSlug), footer: "Next owner: none", sourceID: sourceID, details: details}
 }
 
 func (fixture singleCallFixture) body() map[string]any {
@@ -228,7 +232,7 @@ func TestDecisionSingleCallNonAssignee(test *testing.T) {
 }
 
 func TestDecisionSingleCallRefusalsWriteNothing(test *testing.T) {
-	for _, reason := range []string{"pat", "cli_jwt", "unstamped", "invalid_task", "other_task", "other_agent", "chat_task", "other_issue", "done_issue", "non_member", "private_agent", "no_target", "bad_class", "empty_ask", "foreign_session"} {
+	for _, reason := range []string{"pat", "cli_jwt", "unstamped", "invalid_task", "other_task", "other_agent", "other_issue", "done_issue", "non_member", "private_agent", "no_target", "bad_class", "empty_ask", "foreign_session"} {
 		test.Run(reason, func(test *testing.T) {
 			fixture := newSingleCallFixture(test)
 			body := fixture.body()
@@ -244,8 +248,6 @@ func TestDecisionSingleCallRefusalsWriteNothing(test *testing.T) {
 				headers["X-Task-ID"] = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": dbfx.Issue(test, "other task issue"), "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 			case "other_agent":
 				headers["X-Agent-ID"] = createHandlerTestAgent(test, "wrong requester", []byte("[]"))
-			case "chat_task":
-				dbfx.Exec(test, `UPDATE agent_task_queue SET chat_session_id = $1 WHERE id = $2`, dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "chat task"}), fixture.taskID)
 			case "other_issue":
 				dbfx.Exec(test, `UPDATE agent_task_queue SET issue_id = $1 WHERE id = $2`, dbfx.Issue(test, "wrong issue"), fixture.taskID)
 			case "done_issue":

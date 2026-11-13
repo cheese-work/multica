@@ -1,6 +1,6 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations } from "./use-comment-annotations";
@@ -73,6 +73,7 @@ function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse
 
 beforeEach(() => {
   useCommentDraftStore.setState({ drafts: {} });
+  useAnnotationNoteDraftStore.setState({ drafts: {} });
   // jsdom has no layout; give Floating UI a viewport for its real hide middleware.
   Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
   Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
@@ -264,6 +265,19 @@ describe("selection to reply", () => {
     expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Please explain");
   });
 
+  it("restores an unconfirmed note after the hook unmounts and remounts", async () => {
+    const first = renderWithI18n(<Fixture />);
+    selectText(first.container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Survives remount" } });
+    first.unmount();
+
+    const second = renderWithI18n(<Fixture />);
+    selectText(second.container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Survives remount");
+  });
+
   it.each([false, true])("keeps dismissed drafts, confirms changes and cancels explicit edits (description: %s)", async (description) => {
     const draftKey = description ? "new:issue" as const : key;
     const { container } = renderWithI18n(description ? <DescriptionFixture /> : <Fixture />);
@@ -378,5 +392,34 @@ describe("selection to reply", () => {
     const event = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
     action.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("opens the action when a drag starts in the gutter and ends in the text", async () => {
+    const { container } = renderWithI18n(<Fixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    const gutter = source.parentElement!;
+    fireEvent.pointerDown(gutter, { pointerType: "mouse", button: 0 });
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+    fireEvent.pointerUp(source);
+    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+  });
+
+  it.each([
+    { key: "End", shiftKey: true },
+    { key: "Home", shiftKey: true },
+    { key: "PageDown", shiftKey: true },
+    { key: "a", ctrlKey: true },
+    { key: "a", metaKey: true },
+  ])("opens the action after the keyboard selection %o", async (keys) => {
+    const { container } = renderWithI18n(<Fixture />);
+    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+    source.focus();
+    const range = document.createRange();
+    range.selectNodeContents(source);
+    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
+    fireEvent.keyUp(source, keys);
+    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
   });
 });

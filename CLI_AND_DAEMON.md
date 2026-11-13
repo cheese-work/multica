@@ -460,8 +460,11 @@ Daemon behavior is configured via flags or environment variables:
 | Healthy WebSocket claim poll upper bound | `--ws-claim-poll-interval` | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` (configured independently of `--poll-interval`; downward jitter makes the normal interval `2m30s`–`2m45s`, while old servers and uncertain claims retain the ordinary poll interval) |
 | Heartbeat interval | `--heartbeat-interval` | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` |
 | Agent timeout | `--agent-timeout` | `MULTICA_AGENT_TIMEOUT` | `0` (no cap; bounded by the watchdogs) |
+| Codex agent timeout | — | `MULTICA_CODEX_AGENT_TIMEOUT` | `0` (off). Positive value caps Codex runs only and overrides the global agent timeout for them; other providers are unaffected |
 | Agent idle watchdog | — | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` (`0` disables the whole watchdog suite) |
 | Agent tool watchdog | — | `MULTICA_AGENT_TOOL_WATCHDOG` | same as the idle watchdog (`0` = never force-stop during a tool call) |
+| Silence warn tier | — | `MULTICA_AGENT_SILENCE_WARN_AFTER` | `15m` (`0` = off; marks the transcript when a run has no message and no tool in flight; also marks a tool call running this long. Never stops the run) |
+| Silence alert tier | — | `MULTICA_AGENT_SILENCE_ALERT_AFTER` | `1h` (`0` = off; also posts one system comment on the issue; raised to the warn value if lower) |
 | Codex semantic inactivity timeout | `--codex-semantic-inactivity-timeout` | `MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT` | same as the idle watchdog (Codex's timer is not tool-aware, so it tracks the larger of the idle / tool budgets) |
 | Codex first-turn no-progress timeout | — | `MULTICA_CODEX_FIRST_TURN_TIMEOUT` | `0` (keeps the built-in `60s` ceiling) |
 | Codex handshake timeout | `--codex-handshake-timeout` | `MULTICA_CODEX_HANDSHAKE_TIMEOUT` | `30s`; `thread/start` and `thread/resume`: `60s` (an explicit value overrides both budgets globally) |
@@ -1178,6 +1181,8 @@ multica autopilot create \
   --mode create_issue \
   --subscriber "Alice"
 
+multica autopilot create --title "Sweep reconcile" --agent "Lambda" \
+  --mode script --script sweep-reconcile --arg --once
 multica autopilot update <id> --status paused
 multica autopilot update <id> --description "New prompt"
 multica autopilot update <id> --subscriber "Alice" --subscriber "Bob"
@@ -1185,7 +1190,8 @@ multica autopilot update <id> --clear-subscribers
 multica autopilot delete <id>
 ```
 
-`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent) or `run_only` (enqueues a direct agent task without creating an issue). `--agent` accepts either a name or UUID.
+`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent), `run_only` (enqueues a direct agent task without creating an issue) or `script` (runs one allowlisted script, no model session). `--agent` accepts either a name or UUID.
+`--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` require `--mode script`; `--mode script` requires `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script.
 `--subscriber` accepts a workspace member name or user ID and may be repeated; on update it replaces the autopilot's subscriber template. Subscribers receive inbox notifications for issues created by a `create_issue` autopilot. Use `--clear-subscribers` to remove all autopilot subscribers.
 
 ### Manual Trigger

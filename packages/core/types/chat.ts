@@ -23,6 +23,7 @@ export type ChatMessageKind =
   | "onboarding_kickoff"
   | "onboarding_opening"
   | "continuation_summary"
+  | "compaction_summary"
   | "compact_notice"
   | "decision_request"
   | "decision_cancel_notice"
@@ -73,6 +74,10 @@ export interface ChatQuickActionsFailureState {
 
 /** Preview of a session's most recent message, for the IM-style list. */
 export interface ChatLastMessage {
+  /** Message identity lets an open detail detect a missed realtime update. */
+  id?: string;
+  /** Task identity distinguishes a reply from an earlier queued turn. */
+  task_id?: string;
   content: string;
   role: "user" | "assistant";
   created_at: string;
@@ -87,6 +92,30 @@ export interface ChatChannelSource {
   installation_id: string;
   route_revision: number;
 }
+
+/** How long the oldest visible thing Cheese owes in a DM has waited. `none` = nothing owed. */
+/** One chain's attention projection, as returned by the DM attention actions. */
+export interface ChatAttentionView {
+  root_id: string;
+  canonical_id: string;
+  stale_level: ChatStaleLevel;
+  attention_source: ChatAttentionSource | null;
+  attention_since: string | null;
+  counts: Record<string, number>;
+  keys: string[];
+  next_change_at: string | null;
+}
+
+/** Result of "Xong tất cả" and its undo: the batch id and the chains' new projections. */
+export interface ChatAttentionBatch {
+  batch_id: string;
+  attention: ChatAttentionView[];
+}
+
+export type ChatStaleLevel = "none" | "fresh" | "yellow" | "red";
+
+/** The kind of the oldest visible obligation in a DM. */
+export type ChatAttentionSource = "ask" | "later" | "unseen" | "decision";
 
 export interface ChatSession {
   forked_from_session_id?: string | null;
@@ -132,6 +161,23 @@ export interface ChatSession {
   context_window?: number | null;
   /** Absent for first-party Chats. */
   is_current_channel_route?: boolean;
+  /** DM attention projection. List-only; absent on older servers and single-session
+   *  payloads. `attention_source` and `attention_since` are null together, and null
+   *  exactly when `stale_level` is "none". */
+  attention_source?: ChatAttentionSource | null;
+  /** ISO time the oldest visible obligation started. */
+  attention_since?: string | null;
+  stale_level?: ChatStaleLevel;
+  /** ISO time the projection next changes (snooze end, 4 h or 24 h crossing, a later due
+   *  time). Refetch the list then. Null when nothing is scheduled. */
+  next_change_at?: string | null;
+  /** Subject keys (`turn:<task_id>`) of visible untyped turns. Listed collapsed with no
+   *  colour or age; not part of `stale_level`. */
+  attention_unclassified_keys?: string[];
+  /** Every displayed subject key. Xong, Để sau and Xong tất cả send these back as the snapshot. */
+  attention_keys?: string[];
+  /** Displayed asks that still need a reply: the `ask_ids` of the reply-to-ask control. */
+  attention_ask_ids?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -281,6 +327,8 @@ export interface ChatMessage {
   decision_requests?: import("./decision").DecisionRequestCard[];
   /** Set when this message is a fired chat wakeup; absent on older servers. */
   scheduled_wakeup?: ChatScheduledWakeup | null;
+  /** Delivery receipt of a user message steered into a running task; absent otherwise. */
+  supplement?: ChatSupplement;
 }
 
 export interface ChatMessagesCursor {
@@ -411,6 +459,40 @@ export interface ChatQueuedTask {
   content?: string;
 }
 
+/**
+ * Delivery state of a DM follow-up steered into the running task (CHE-2820).
+ * `pending`/`delivering`: added to the run; `delivered`: the agent read it;
+ * `uncertain`: claimed but never confirmed (it may have arrived); `failed`:
+ * never claimed before the turn ended, so it is safe to send as a new run.
+ */
+export type ChatSupplementStatus =
+  | "pending"
+  | "delivering"
+  | "delivered"
+  | "uncertain"
+  | "failed";
+
+export interface ChatSupplement {
+  message_id: string;
+  chat_session_id: string;
+  task_id: string;
+  status: ChatSupplementStatus;
+  failure_reason: string | null;
+  delivered_at: string | null;
+  /** Set when the read confirmation landed after a resend: the agent may see the message twice. */
+  acked_after_resend_at: string | null;
+  /** Set once the message was resent as a new queued run. */
+  resent_task_id: string | null;
+}
+
+export interface ResendChatSupplementResponse {
+  task_id: string;
+  supplement: ChatSupplement;
+}
+
+/** Whether the head task of a DM can take a steered follow-up now. */
+export type ChatHeadSupplement = "capable" | "starting" | "unsupported";
+
 export interface PrioritizeQueuedChatTaskResponse {
   task_id: string;
   /** Server-authoritative task to stop after the selected task is prioritized. */
@@ -432,6 +514,12 @@ export interface ChatPendingTask {
   /** Explicit capability gate; absent on servers predating follow-up queues. */
   supports_queue?: boolean;
   /**
+   * Whether a queued follow-up can be steered into the head task. `starting`
+   * means the run has not negotiated yet: wait, do not read it as unsupported.
+   * Absent on servers predating steering, which render as unsupported.
+   */
+  head_supplement?: ChatHeadSupplement;
+  /**
    * Ordered follow-ups behind the root task. The root may itself still have
    * database status `queued` before claim, but is never duplicated here.
    */
@@ -442,8 +530,13 @@ export interface ChatPendingTask {
 export interface ChatWakeup {
   id: string;
   agent_id: string;
-  /** RFC 3339 instant the turn fires. */
+  /** RFC 3339 instant the turn fires; for an issue watch, when it gives up. */
   fire_at: string;
   instruction: string;
   status: string;
+  /** Set when this is an issue watch rather than a time wakeup. */
+  issue_id?: string;
+  event?: string;
+  until_status?: string;
+  on_timeout?: string;
 }

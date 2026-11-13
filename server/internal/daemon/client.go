@@ -213,6 +213,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
 		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 
@@ -543,8 +544,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 			}
 		}
 		negotiated = TaskNegotiation{
-			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1,
-			PREvent:    response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
+				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
 		}
 		return nil
 	}
@@ -719,6 +721,15 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
+// ReportSilenceAlert asks the server to leave one comment on the task's issue
+// for the silent segment. The server dedupes on (task, segment).
+func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID string, silentFor time.Duration) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/silence-alert", taskID), map[string]any{
+		"segment_id":         segmentID,
+		"silent_for_seconds": int(silentFor.Seconds()),
+	}, nil)
+}
+
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
 	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, nil, defaultTerminalRetrySchedule)
 }
@@ -758,6 +769,21 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
 		"usage": usage,
+	}, nil)
+}
+
+// ReportTaskUsageSnapshot posts the same rows mid-run, as a cumulative snapshot
+// of what the agent has spent so far (STOE-30). UpsertTaskUsage overwrites per
+// (task_id, provider, model), so snapshots cannot accumulate; the flag is what
+// keeps the server's additive metrics counter and per-run log on the terminal
+// report, where they would otherwise bill each flush against the last.
+func (c *Client) ReportTaskUsageSnapshot(ctx context.Context, taskID string, usage []TaskUsageEntry) error {
+	if len(usage) == 0 {
+		return nil
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
+		"usage":    usage,
+		"snapshot": true,
 	}, nil)
 }
 
@@ -1509,6 +1535,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

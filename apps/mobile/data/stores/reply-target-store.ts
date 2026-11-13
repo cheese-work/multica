@@ -11,10 +11,10 @@
  *   - Only one reply can be in-flight at a time per issue detail screen,
  *     so a singleton store is the right shape.
  *
- * Lifecycle: the issue-detail screen clears the store on unmount (same
- * pattern as `comment-select-store.ts`). Each fresh navigation into an
- * issue starts with no reply target, so a stale target can't leak across
- * issues.
+ * Lifecycle: this store is the live copy. `InlineCommentComposer` loads it
+ * from the issue's composer draft (`composer-drafts-store`), saves every
+ * change back, and clears it on unmount, so a stale target can't leak across
+ * issues and an unsent reply survives leaving the issue.
  */
 import { create } from "zustand";
 
@@ -29,6 +29,9 @@ export interface ReplyTarget {
    *  replying to without leaving the keyboard. May be empty string for
    *  attachment-only comments. */
   preview: string;
+  /** Set when the target was loaded from a saved draft rather than just
+   *  picked: the composer opens but does not take focus. */
+  restored?: boolean;
 }
 
 interface State {

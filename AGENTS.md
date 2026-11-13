@@ -55,7 +55,7 @@ Run these from the repository root:
 | Combined web/backend verification | `make check` |
 | Mobile | Commands in [apps/mobile/AGENTS.md](apps/mobile/AGENTS.md#verification) |
 
-Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
+Docs ship with the change. A PR that adds or changes user-visible behavior, a CLI flag, an env var, a GitHub App permission or event, or a self-host requirement updates the matching page under `apps/docs/content/docs/` in the same PR, in every locale (`.mdx`, `.fr`, `.ja`, `.ko`, `.zh`). A new App permission or webhook event also updates the **Self-hosting setup** section of `github-integration.mdx` (App permissions, subscribed events). A purely internal change skips docs and says why in the PR checklist. Docs-only changes can use link/reference checks and `git diff --check`; state that code tests were not run.
 
 ## State Rules
 
@@ -69,6 +69,7 @@ Docs-only changes can use link/reference checks and `git diff --check`; state th
 - Optimistic field patches require a predictable result, rare failure, trivial rollback, and staying on the current screen. Snapshot before patching, roll back on failure, and invalidate uncertain projections on settle.
 - Create/delete/leave and confirmation flows await the server before navigation or cleanup; do not optimistically delete entities. Exceptions: workspace leave (known debt under Desktop Rules) and mobile inbox mark-read (mobile instructions).
 - Message sends use visible pending state and retry on failure.
+- Authored input (drafts, notes, choices) persists through the keyed draft store (`packages/core/drafts/`) until a confirmed send or explicit discard; component state alone is not enough in virtualized lists, dialogs or routes.
 
 ## API Compatibility
 
@@ -110,12 +111,17 @@ Workspace-scoped queries filter by `workspace_id`; membership gates access and `
 
 ## Web/Desktop UI Rules
 
-- For Button and Dialog usage, read `packages/ui/docs/button.md` and `packages/ui/docs/dialog.md`. These component contracts also power UI Lab documentation.
+- For Button and Dialog usage, read `packages/ui/docs/button.md` and `packages/ui/docs/dialog.md`.
 - Prefer existing shadcn/Base UI primitives. Add components with `pnpm ui:add <component>`.
 - For `pnpm ui:add @reui/<name>`, decline overwrite prompts. Keep `REUI_LICENSE_KEY` in the environment, never in repo files. Adapt vendored primitives into `packages/ui/components/ui/` and compositions into `packages/views/`.
 - Import icons from `@multica/ui/icons`; no icon library is installed. If the icon you need is missing, draw it by following `.agents/skills/multica-icons/SKILL.md`. Do not substitute an inline SVG or an emoji. Rewrite icon imports in `ui:add` output before committing.
 - Use shared semantic tokens in `packages/ui/styles/`. Typography uses the role-named `--text-*` scale in `packages/ui/styles/tokens.css`, not Tailwind's default size ramp.
 - Selected states remain identifiable on hover. Handle overflow, long text, and scrolling deliberately; avoid unnecessary local state and dividers.
+
+## Daemon Tool Shims
+
+- The daemon puts a guard `bin/` first on `PATH` for every run, on every runtime, with a `git` and a `gh` shim (`server/internal/daemon/guard_shims.go`, CHE-5194). It does not depend on credential-broker enforcement.
+- A shim execs the first `git`/`gh` on the `PATH` it fronts. Install credential-aware shims (`broker.InstallShims`) on `agentEnv["PATH"]` before calling `frontGuardShims`, so the guard hands over to them and never bypasses the broker. Custom env cannot override `PATH`.
 
 ## Testing
 
@@ -136,4 +142,4 @@ Workspace-scoped queries filter by `workspace_id`; membership gates access and `
 - Use names, types, and tests to express behavior. Code comments are English and kept for non-obvious rationale and constraints; remove superseded plans and incident narratives when updating code. Preserve tool directives and mixed-version contracts.
 - New global pre-workspace routes use a single word or `/{noun}/{verb}`, not hyphenated root names. Update `server/internal/handler/reserved_slugs.json`, run `pnpm generate:reserved-slugs`, and commit `packages/core/paths/reserved-slugs.ts` when changing reserved slugs.
 - Use atomic conventional commits and the repository PR template. For releases, follow [.github/RELEASING.md](.github/RELEASING.md); default to a patch bump unless specified otherwise.
-- Every PR description carries one `Changelog:` line outside HTML comments and code fences: one user-facing English sentence (`Changelog: Issue lists now open instantly in large workspaces.`), `Changelog: none`, or a section override (`Changelog(fix): Comments that end in an emoji no longer lose their last word.`). Not plumbing: `Changelog: Refactor X store`, `Changelog: CHE-123 add Y`. Keep the line verbatim, like `Closes`/`Refs`, including in PR-format rewrites. A PR without a valid line is hidden from `/changelog`. The PR that lands a stack on `main` carries the line for the whole stack. Upstream-sync PRs use `Changelog: none`. Details: [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md).
+- Every PR description carries one `Changelog:` line outside HTML comments and code fences: one user-facing English sentence (`Changelog: Issue lists now open instantly in large workspaces.`), `Changelog: none`, or a section override (`Changelog(fix): Comments that end in an emoji no longer lose their last word.`). Not plumbing: `Changelog: Refactor X store`, `Changelog: CHE-123 add Y`. Keep the line verbatim, like `Closes`/`Refs`, including in PR-format rewrites. A PR without a valid line is hidden from `/changelog`. The PR that lands a stack on `main` carries the line for the whole stack. `Changelog: none` is only for internal-only changes: a feat, fix or perf PR that changes user-facing code fails the check with it. Upstream-sync PRs use `Changelog: none`. Details: [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md).

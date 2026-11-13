@@ -169,4 +169,21 @@ describe("useRealtimeSync — comment activity cache coherence", () => {
 
     expect(qc.getQueryState(updatedBoardKey)?.isInvalidated).toBe(false);
   });
+
+  it("invalidates the cached comment preview on update and delete", () => {
+    const previewKey = issueKeys.commentPreview("ws-1", "c1");
+    qc.setQueryData(previewKey, { comment_id: "c1" });
+
+    const { ws, handlers } = createRecordingWs();
+    renderHook(() => useRealtimeSync(ws, createStores()), {
+      wrapper: createWrapper(qc),
+    });
+
+    handlers["comment:updated"]?.({ comment: { id: "c1", issue_id: "issue-1" } });
+    expect(qc.getQueryState(previewKey)?.isInvalidated).toBe(true);
+
+    qc.setQueryData(previewKey, { comment_id: "c1" });
+    handlers["comment:deleted"]?.({ comment_id: "c1", issue_id: "issue-1" });
+    expect(qc.getQueryState(previewKey)?.isInvalidated).toBe(true);
+  });
 });

@@ -57,6 +57,8 @@ import {
   useAppOrigin,
   useOptionalNavigation,
 } from "../navigation";
+import { ChatSessionMentionCard } from "../chat/components/chat-session-mention-card";
+import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
@@ -65,6 +67,9 @@ import {
   openLink,
   isMentionHref,
   parseWorkspaceEntityLink,
+  parseWorkspaceCommentLink,
+  parseWorkspaceChatLink,
+  rewriteToCurrentOrigin,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
@@ -85,6 +90,7 @@ import { RichTable, RichTableSourceContext } from "./rich-table";
 import { getTextContent } from "./rich-table-model";
 import "katex/dist/katex.min.css";
 import "../editor/styles/index.css";
+import { copyChipKeys } from "./chip-copy";
 import "./rich-content.css";
 
 export type RichContentDensity = "compact" | "document";
@@ -186,8 +192,9 @@ function childrenToLabel(children: ReactNode): string | undefined {
  *
  * Three conditions, each load-bearing:
  *   - BARE: the visible text is the URL itself, which is what the linkify
- *     preprocessor emits for a pasted URL. `[路线图](…/projects/<id>)` carries a
- *     label the author chose, and replacing it with a chip would discard it.
+ *     preprocessor emits for a pasted URL, or (issues only) the issue's own
+ *     identifier. `[路线图](…/projects/<id>)` carries a label the author chose,
+ *     and replacing it with a chip would discard it.
  *   - SAME WORKSPACE: a chip resolves its title against the CURRENT workspace,
  *     so unfurling a link into another workspace would turn a working link into
  *     a permanently empty chip. A slug-less path is current-workspace already.
@@ -200,10 +207,15 @@ function unfurlableEntityLink(
   children: ReactNode,
   currentSlug: string | null,
   appOrigin: string | null,
+  rawHref: string = href,
 ): WorkspaceEntityRef | null {
-  if (childrenToLabel(children) !== href) return null;
+  const label = childrenToLabel(children);
   const entity = parseWorkspaceEntityLink(href, appOrigin);
   if (!entity) return null;
+  // A link labelled with its own issue identifier (`[CHE-1](…/issues/CHE-1)`,
+  // what agents write) says nothing the chip does not, so it unfurls too.
+  const labelIsOwnIdentifier = entity.kind === "issue" && label === entity.id;
+  if (label !== href && label !== rawHref && !labelIsOwnIdentifier) return null;
   if (entity.slug !== null && entity.slug !== currentSlug) return null;
   return entity;
 }
@@ -258,9 +270,14 @@ function SelfAwareMention({ memberId, children }: { memberId?: string; children?
   );
 }
 
-function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
+function RichLink({ href: rawHref, children: rawChildren }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
+  // A Multica route on a known host (e.g. the Tailscale host) is the same
+  // destination on the current origin; everything below sees the rewritten link.
+  const rewritten = rawHref ? rewriteToCurrentOrigin(rawHref, appOrigin) : null;
+  const href = rewritten ?? rawHref;
+  const children = rewritten && childrenToLabel(rawChildren) === rawHref ? rewritten : rawChildren;
   const attachmentPublicUrl = useConfigStore((s) => s.attachmentPublicUrl);
   const downloadAttachment = useDownloadAttachment("markdown-link");
   // Platform probe only: `openInNewTab` present means desktop, where native
@@ -291,7 +308,10 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     : undefined;
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
+    const match = href.match(/^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/);
+    if (match?.[1] === "comment" && match[2]) {
+      return <CommentMentionCard commentId={match[2]} fallback={children} />;
+    }
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -361,9 +381,30 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     </a>
   );
 
+  // An in-app issue URL with `#comment-<uuid>` renders as the comment chip,
+  // bare or labeled; a miss keeps the author's link and label.
+  const commentRef = href ? parseWorkspaceCommentLink(href, appOrigin) : null;
+  if (commentRef && (commentRef.slug === null || commentRef.slug === slug)) {
+    return <CommentMentionCard commentId={commentRef.commentId} fallback={plainLink} />;
+  }
+
+  // A bare in-app DM URL renders as a DM chip; a miss keeps the link.
+  const chatRef = href && childrenToLabel(rawChildren) === rawHref
+    ? parseWorkspaceChatLink(href, appOrigin)
+    : null;
+  if (chatRef && (chatRef.slug === null || chatRef.slug === slug)) {
+    return (
+      <ChatSessionMentionCard
+        sessionId={chatRef.sessionId}
+        messageId={chatRef.messageId}
+        fallback={plainLink}
+      />
+    );
+  }
+
   // A bare in-app entity URL renders as the chip its mention form would.
   const entity = href
-    ? unfurlableEntityLink(href, children, slug, appOrigin)
+    ? unfurlableEntityLink(href, children, slug, appOrigin, rawHref)
     : null;
   if (entity?.kind === "issue") {
     // `MUL-123` is the shape "Copy link" produces, so it is the shape most
@@ -648,6 +689,7 @@ export const RichContent = memo(function RichContent({
         data-rich-content=""
         data-density={density}
         data-phase={phase}
+        onCopy={(e) => copyChipKeys(e.nativeEvent)}
         className={cn(
           "rich-text-editor readonly text-body",
           density === "compact" && "rich-content-compact",

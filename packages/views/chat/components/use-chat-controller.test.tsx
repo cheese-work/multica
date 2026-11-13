@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { Agent, ChatPendingTask, ChatSession, Project } from "@multica/core/types";
+import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 
 interface QueuedRestore {
   id: string;
@@ -24,6 +25,7 @@ const h = vi.hoisted(() => {
     setSelectedProjectId: vi.fn((id: string | null) => {
       store.selectedProjectId = id;
     }),
+    moveInputDraft: vi.fn(),
     appliedDraftRestoreIds: [] as string[],
     markDraftRestoreApplied: vi.fn((id: string) => {
       if (!store.appliedDraftRestoreIds.includes(id)) {
@@ -66,6 +68,8 @@ const h = vi.hoisted(() => {
     // Stable across renders so tests can assert on it; lazy-creates the session
     // a new chat's first send needs.
     createSessionMutate: vi.fn(async () => ({ id: "new-session" })),
+    // What the mocked classifySendFailure returns; tests flip it to "unknown".
+    sendFailure: "rejected" as "rejected" | "unknown",
     // Foreground gate for the auto mark-read effect; tests flip it.
     appForeground: { value: true },
     consumeRestoreMutate: vi.fn(),
@@ -119,6 +123,7 @@ vi.mock("@multica/core/api", () => ({
     cancelTaskById: vi.fn(),
     clearQueuedChatTasks: vi.fn(),
     prioritizeQueuedChatTask: vi.fn(),
+    steerChatTask: vi.fn(),
   },
   // Names the 403 that a revoked invoke permission raises (MUL-4525); plain
   // failures have no reason code.
@@ -146,12 +151,29 @@ vi.mock("@multica/core/chat/mutations", () => ({
 vi.mock("../../common/use-app-foreground", () => ({
   useAppForeground: () => h.appForeground.value,
 }));
-vi.mock("@multica/core/chat", () => ({
+vi.mock("@multica/core/chat", async () => {
+  // The real helper lives in core (pending-send.test.ts); here it only has to
+  // reach the mocked api with a client_message_id.
+  const { api } = await import("@multica/core/api");
+  return {
+  DRAFT_NEW_SESSION: "__new__",
+  classifySendFailure: () => h.sendFailure,
+  sendWithPendingId: (
+    sessionId: string,
+    content: string,
+    o: { attachmentIds?: string[]; decisionRequestId?: string; askIds?: string[] } = {},
+  ) =>
+    api.sendChatMessage(sessionId, content, o.attachmentIds, o.decisionRequestId, {
+      clientMessageId: "cm-1",
+      askIds: o.askIds,
+    }),
+  deriveChatTitle: (s: string) => s.slice(0, 60),
   useChatStore: Object.assign(
     (sel: (s: typeof h.store) => unknown) => sel(h.store),
     { getState: () => h.store },
   ),
-}));
+  };
+});
 vi.mock("@multica/core/realtime", () => ({
   removeChatMessageFromCaches: h.removeFromCaches,
 }));
@@ -521,6 +543,7 @@ describe("useChatController queued task actions", () => {
     vi.mocked(api.cancelTaskById).mockReset();
     vi.mocked(api.clearQueuedChatTasks).mockReset();
     vi.mocked(api.prioritizeQueuedChatTask).mockReset();
+    vi.mocked(api.steerChatTask).mockReset();
     h.removeFromCaches.mockClear();
     h.store.enqueuePendingSendRestore.mockClear();
     h.store.pendingSendRestores = {};
@@ -772,7 +795,56 @@ describe("useChatController queued task actions", () => {
     );
   });
 
-  it("prioritizes send-now before stopping the active task", async () => {
+  it("steers a queued task without cancelling or reprioritizing the run", async () => {
+    vi.mocked(api.steerChatTask).mockResolvedValue({
+      status: "pending",
+    } as Awaited<ReturnType<typeof api.steerChatTask>>);
+    const result = setup("sA", [sA], [agentA], {
+      task_id: "task-active",
+      status: "running",
+      head_supplement: "capable",
+      queued_tasks: [
+        { task_id: "task-queued", status: "queued", created_at: "2026-07-01T00:00:01Z" },
+      ],
+    });
+
+    await act(async () => {
+      await result.current.handleSteerQueuedTask("task-queued");
+    });
+
+    expect(api.steerChatTask).toHaveBeenCalledWith("sA", "task-queued");
+    expect(api.cancelTaskById).not.toHaveBeenCalled();
+    expect(api.prioritizeQueuedChatTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the queue item when the steer is refused", async () => {
+    const pending: ChatPendingTask = {
+      task_id: "task-active",
+      status: "running",
+      head_supplement: "capable",
+      queued_tasks: [
+        { task_id: "task-queued", status: "queued", created_at: "2026-07-01T00:00:01Z" },
+      ],
+    };
+    h.queryClient.getQueryData.mockReturnValue(pending);
+    vi.mocked(api.steerChatTask).mockRejectedValue(new Error("task_supplement_unsupported"));
+    const result = setup("sA", [sA], [agentA], pending);
+
+    await act(async () => {
+      await result.current.handleSteerQueuedTask("task-queued");
+    });
+
+    expect(api.cancelTaskById).not.toHaveBeenCalled();
+    expect(h.queryClient.setQueryData).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ queued_tasks: [] }),
+    );
+    expect(h.queryClient.invalidateQueries).toHaveBeenCalledWith(
+      expect.objectContaining({ queryKey: expect.arrayContaining(["pending-task"]) }),
+    );
+  });
+
+  it("prioritizes stop-and-send before stopping the active task", async () => {
     vi.mocked(api.prioritizeQueuedChatTask).mockResolvedValue({
       task_id: "task-queued",
       active_task_id: "task-active",
@@ -789,7 +861,7 @@ describe("useChatController queued task actions", () => {
     });
 
     await act(async () => {
-      await result.current.handleSendQueuedTaskNow("task-queued");
+      await result.current.handleStopAndSendQueuedTask("task-queued");
     });
 
     expect(api.prioritizeQueuedChatTask).toHaveBeenCalledWith("sA", "task-queued");
@@ -815,7 +887,7 @@ describe("useChatController queued task actions", () => {
     const result = setup("sA", [sA], [agentA], pending);
 
     await act(async () => {
-      await result.current.handleSendQueuedTaskNow("task-stale");
+      await result.current.handleStopAndSendQueuedTask("task-stale");
     });
 
     expect(h.queryClient.setQueryData).toHaveBeenLastCalledWith(
@@ -862,6 +934,16 @@ describe("useChatController auto mark-read", () => {
 
     act(() => vi.advanceTimersByTime(1));
     expect(h.markReadMutate).toHaveBeenCalledWith("sA");
+  });
+
+  it("does NOT mark read a session the viewer just marked as unseen", () => {
+    h.store.activeSessionId = "sA";
+    (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId = "sA";
+    renderHook(() => useChatController());
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(h.markReadMutate).not.toHaveBeenCalled();
+    delete (h.store as { autoReadSuppressedId?: string | null }).autoReadSuppressedId;
   });
 
   it("does NOT mark read a session that was only momentarily active on mount", () => {
@@ -1055,6 +1137,7 @@ describe("useChatController durable draft restores (#5219)", () => {
 describe("useChatController.handleSend — compose target tracking", () => {
   beforeEach(() => {
     h.store.setActiveSession.mockClear();
+    h.store.moveInputDraft.mockClear();
     h.createSessionMutate.mockClear();
     h.createSessionMutate.mockResolvedValue({ id: "new-session" });
     vi.mocked(api.sendChatMessage).mockClear();
@@ -1072,7 +1155,13 @@ describe("useChatController.handleSend — compose target tracking", () => {
     h.agents = [agentA];
     const { result } = renderHook(() => useChatController());
     await act(async () => { await result.current.handleSend("> C. CHE-2162\n\n1", undefined, vi.fn(), [], "request-2"); });
-    expect(api.sendChatMessage).toHaveBeenCalledWith(sA.id, "> C. CHE-2162\n\n1", undefined, "request-2");
+    expect(api.sendChatMessage).toHaveBeenCalledWith(
+      sA.id,
+      "> C. CHE-2162\n\n1",
+      undefined,
+      "request-2",
+      expect.objectContaining({ clientMessageId: "cm-1" }),
+    );
   });
 
   function sendFrom(activeSessionId: string | null, whileSending?: () => void) {
@@ -1104,6 +1193,36 @@ describe("useChatController.handleSend — compose target tracking", () => {
       expect.objectContaining({ clearEditor: true, extraDraftKeys: ["new-session"] }),
     );
     expect(h.store.setActiveSession).toHaveBeenCalledWith("new-session");
+  });
+
+  it("moves the new-chat draft to the new session on unknown delivery, and a retry reuses it (A22)", async () => {
+    h.sendFailure = "unknown";
+    vi.mocked(api.sendChatMessage).mockRejectedValueOnce(new Error("timeout"));
+    try {
+      const { commitInput, send } = sendFrom(null);
+      await send();
+
+      // Draft follows the session, so the visible composer still holds it.
+      expect(h.store.moveInputDraft).toHaveBeenCalledWith("__new__", "new-session");
+      expect(h.store.setActiveSession).toHaveBeenCalledWith("new-session");
+      expect(commitInput).not.toHaveBeenCalled();
+
+      // Retry now runs from the session slot: same session, same client id.
+      h.createSessionMutate.mockClear();
+      vi.mocked(api.sendChatMessage).mockClear();
+      const retry = renderHook(() => useChatController());
+      await act(async () => { await retry.result.current.handleSend("hello", undefined, vi.fn()); });
+      expect(h.createSessionMutate).not.toHaveBeenCalled();
+      expect(api.sendChatMessage).toHaveBeenCalledWith(
+        "new-session",
+        "hello",
+        undefined,
+        undefined,
+        expect.objectContaining({ clientMessageId: "cm-1" }),
+      );
+    } finally {
+      h.sendFailure = "rejected";
+    }
   });
 
   it("does not create or send a chat for an unbound agent", async () => {
@@ -1227,5 +1346,73 @@ describe("useChatController revoked invoke permission", () => {
     expect(sent).toBe(false);
     expect(vi.mocked(api.sendChatMessage)).not.toHaveBeenCalled();
     expect(h.createSessionMutate).not.toHaveBeenCalled();
+  });
+});
+
+// CHE-2820: a follow-up sent while a run is active follows `running_agent_reply`.
+describe("useChatController.handleSend — running_agent_reply", () => {
+  const sendQueued = () =>
+    vi.mocked(api.sendChatMessage).mockResolvedValue({
+      message_id: "msg-2",
+      task_id: "task-2",
+      queued: true,
+      supports_queue: true,
+      created_at: new Date(0).toISOString(),
+    } as unknown as Awaited<ReturnType<typeof api.sendChatMessage>>);
+
+  beforeEach(() => {
+    vi.mocked(api.sendChatMessage).mockClear();
+    vi.mocked(api.steerChatTask).mockReset();
+    vi.mocked(api.steerChatTask).mockResolvedValue({
+      status: "pending",
+    } as Awaited<ReturnType<typeof api.steerChatTask>>);
+    sendQueued();
+  });
+
+  async function send(runningAgentReply: "steer" | "after_run", headSupplement: ChatPendingTask["head_supplement"]) {
+    useCommentComposerStore.setState({ runningAgentReply });
+    const result = setup("sA", [sA], [agentA], {
+      task_id: "task-active",
+      status: "running",
+      supports_queue: true,
+      head_supplement: headSupplement,
+    });
+    await act(async () => {
+      await result.current.handleSend("more detail", undefined, vi.fn());
+    });
+  }
+
+  it("steers right after the send when the setting is steer and the run is capable", async () => {
+    await send("steer", "capable");
+    expect(api.steerChatTask).toHaveBeenCalledWith("sA", "task-2");
+  });
+
+  it("leaves the message queued when the setting is after_run", async () => {
+    await send("after_run", "capable");
+    expect(api.steerChatTask).not.toHaveBeenCalled();
+  });
+
+  it.each(["starting", "unsupported", undefined] as const)(
+    "leaves the message queued when the run is %s",
+    async (support) => {
+      await send("steer", support);
+      expect(api.steerChatTask).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the send successful when the auto-steer is refused", async () => {
+    vi.mocked(api.steerChatTask).mockRejectedValue(new Error("task_supplement_turn_ended"));
+    useCommentComposerStore.setState({ runningAgentReply: "steer" });
+    const result = setup("sA", [sA], [agentA], {
+      task_id: "task-active",
+      status: "running",
+      supports_queue: true,
+      head_supplement: "capable",
+    });
+    let sent: boolean | undefined;
+    await act(async () => {
+      sent = await result.current.handleSend("more detail", undefined, vi.fn());
+    });
+    expect(sent).toBe(true);
   });
 });

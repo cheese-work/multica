@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -22,11 +23,24 @@ import (
 
 const maxDecisionCardTextBytes = 8 << 10
 
+// errCoversAckRequired refuses a batch option answer whose client did not
+// acknowledge the covered decisions. Nothing is written or propagated.
+var errCoversAckRequired = decisionIntentRefusal{http.StatusBadRequest, "covers_ack_required: this card also answers other decisions; reload the card to see and acknowledge them"}
+
 // decisionCardAnswerInput is one card answer: a chosen option label, free text,
 // or both. The label must match one the card offers.
 type decisionCardAnswerInput struct {
 	Option string `json:"option"`
 	Text   string `json:"text"`
+	// A gated class also carries the revisions the person saw and the passkey
+	// assertion over them.
+	AnswerRevision int32           `json:"answer_revision,omitempty"`
+	PolicyRevision int32           `json:"policy_revision,omitempty"`
+	Assertion      json.RawMessage `json:"assertion,omitempty"`
+	// A batch card's option answer also closes the cards it covers. It carries
+	// the digest of the covered decisions the person saw (batchCoverAck); a
+	// client that never showed them sends none, and the answer is refused.
+	CoversAck string `json:"covers_ack,omitempty"`
 }
 
 // AnswerDecisionRequest records the request's human answering on the card. The
@@ -56,7 +70,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 		return
 	}
 	var input decisionCardAnswerInput
-	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 2*maxDecisionCardTextBytes)).Decode(&input); err != nil {
+	if err := decodeCardAnswer(writer, request, &input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -68,6 +82,7 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 		}
 	}
 	if err != nil {
+		handler.markSuspectAfterRefusal(request.Context(), err)
 		writeDecisionError(writer, err, "decision answer")
 		return
 	}
@@ -83,7 +98,12 @@ func (handler *Handler) AnswerDecisionRequest(writer http.ResponseWriter, reques
 			ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
 		})
 	}
+	handler.publishCoveredCards(request.Context(), workspaceUUID, workspaceID, actorID, result.Covered)
 	writeJSON(writer, http.StatusCreated, response)
+}
+
+func decodeCardAnswer(writer http.ResponseWriter, request *http.Request, input *decisionCardAnswerInput) error {
+	return json.NewDecoder(http.MaxBytesReader(writer, request.Body, 2*maxDecisionCardTextBytes)).Decode(input)
 }
 
 func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspaceID, requestID, userID pgtype.UUID, input decisionCardAnswerInput) (decisionRecordResult, error) {
@@ -99,6 +119,9 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if located.HumanUserID != userID {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "only the request's human can answer"}
 	}
+	if input.Option != "" && located.AskJson == nil {
+		return empty, decisionIntentRefusal{http.StatusBadRequest, "this request has no options to click; type an answer"}
+	}
 	content, err := cardAnswerContent(located, input)
 	if err != nil {
 		return empty, err
@@ -109,6 +132,13 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	}
 	defer transaction.Rollback(ctx)
 	queries := handler.Queries.WithTx(transaction)
+	// First lock of the transaction, so recovery (which holds the user row
+	// FOR UPDATE) is ordered before or after the whole answer, never inside it.
+	if err := holdCurrentSession(ctx, transaction, queries, userID, request.Header.Get(auth.SessionGenerationHeader)); errors.Is(err, errSessionRevoked) {
+		return empty, decisionIntentRefusal{http.StatusUnauthorized, "session revoked"}
+	} else if err != nil {
+		return empty, err
+	}
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, workspaceID); err != nil {
 		return empty, err
 	}
@@ -158,6 +188,15 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
+	if len(decision.CoversRequestIds) > 0 && input.Option != "" && input.CoversAck != batchCoverAck(decision, input.Option) {
+		return empty, errCoversAckRequired
+	}
+	if err := refuseGatedAnswerWhileRecovering(ctx, queries, workspace, decision, userID); err != nil {
+		return empty, err
+	}
+	if err := handler.verifyGatedAnswer(ctx, queries, workspace, decision, userID, request.Header.Get("X-Session-ID"), input); err != nil {
+		return empty, err
+	}
 	effectiveAt, err := queries.DecisionRecordEffectiveAt(ctx, db.DecisionRecordEffectiveAtParams{WorkspaceID: workspaceID, ID: decision.ID})
 	if err != nil {
 		return empty, err
@@ -173,7 +212,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: decision.ID, AnsweredByUserID: userID, AnswerSource: pgtype.Text{String: "card", Valid: true}, SourceChatSessionID: session.ID, ChatMessageIds: []pgtype.UUID{answerMessage.ID}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ChosenOptionIndex: chosen, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
 	if err != nil {
 		return empty, err
 	}
@@ -197,18 +236,22 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
 		return empty, err
 	}
-	decision, err = queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: workspaceID, ID: decision.ID})
+	decision, err = handler.markDecisionRequestAnswered(ctx, queries, decision, answer)
 	if err != nil {
 		return empty, err
 	}
 	if _, err := queries.MarkInboxReadByDecisionRequest(ctx, db.MarkInboxReadByDecisionRequestParams{WorkspaceID: workspaceID, DecisionRequestID: uuidToString(decision.ID)}); err != nil {
 		return empty, err
 	}
+	covered, err := handler.answerCoveredCards(ctx, queries, workspace, decision, input, content)
+	if err != nil {
+		return empty, err
+	}
 	if err := transaction.Commit(ctx); err != nil {
 		return empty, err
 	}
 	handler.DecisionWorker.Notify()
-	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared}, nil
+	return decisionRecordResult{Request: decision, Answer: answer, Comment: comment.Comment(), Message: message, AnswerMessage: answerMessage, ClearedComments: cleared, Covered: covered}, nil
 }
 
 // cardAnswerContent joins the chosen option label and the free text into the

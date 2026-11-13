@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"errors"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,9 @@ func (service *Service) StartRevocationByCode(ctx context.Context, userID, targe
 	if err := revocable(target, userID); err != nil {
 		return Started{}, err
 	}
+	if err := enforceFloor(ctx, service.Queries, userID, targetID); err != nil {
+		return Started{}, err
+	}
 	row, err := service.mailCeremony(ctx, userID, email, ceremony{
 		Purpose: ceremonyRevoke, Target: targetID, Session: []byte("{}"),
 		Subject: revokeCodeSubject, Lead: "Your code to remove a passkey is",
@@ -38,7 +42,7 @@ func (service *Service) StartRevocationByCode(ctx context.Context, userID, targe
 	if err != nil {
 		return Started{}, err
 	}
-	return Started{CeremonyID: row.ID, ExpiresAt: row.ExpiresAt.Time}, nil
+	return Started{CeremonyID: row.ID, ExpiresAt: row.ExpiresAt.Time, Tag: AttemptTag(row.ID)}, nil
 }
 
 // RevokeByCode retires the target once the mailed code of the user's
@@ -72,16 +76,32 @@ func (service *Service) RevokeByCode(ctx context.Context, userID, targetID, cere
 		return conflict("ceremony_expired: start a new revocation")
 	}
 	if !hmac.Equal(ceremony.CodeHmac, codeMAC(service.CodeKey, userID, code)) {
-		return service.spendAttempt(ctx, tx, queries, ceremony.ID, userID, email, forbidden("invalid_code: the code does not match"))
+		return service.spendAttempt(ctx, tx, queries, ceremony.ID, userID, email, service.wrongCode(ctx, queries, userID, ceremonyRevoke, ceremony.ID, code))
 	}
-	locked, err := queries.LockPasskeysNowait(ctx, []pgtype.UUID{targetID})
+	// The target and every usable passkey are locked together, so the floor
+	// check below sees the set no concurrent revocation can change.
+	usable, err := queries.ListUsablePasskeys(ctx, userID)
+	if err != nil {
+		return err
+	}
+	ids := []pgtype.UUID{targetID}
+	for _, key := range usable {
+		if key.ID != targetID {
+			ids = append(ids, key.ID)
+		}
+	}
+	locked, err := queries.LockPasskeysNowait(ctx, ids)
 	if err != nil {
 		return busyOr(err)
 	}
-	if len(locked) != 1 {
+	index := slices.IndexFunc(locked, func(key db.UserPasskey) bool { return key.ID == targetID })
+	if index < 0 {
 		return forbidden("credential_not_yours: no such passkey")
 	}
-	if err := revocable(locked[0], userID); err != nil {
+	if err := revocable(locked[index], userID); err != nil {
+		return err
+	}
+	if err := enforceFloor(ctx, queries, userID, targetID); err != nil {
 		return err
 	}
 	if err := queries.RevokePasskey(ctx, targetID); err != nil {

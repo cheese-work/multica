@@ -100,3 +100,37 @@ func TestRenewedCookieAuthProvenance(test *testing.T) {
 		})
 	}
 }
+
+func TestAuthSessionIDComesOnlyFromTheSignedClaim(test *testing.T) {
+	for name, testcase := range map[string]struct {
+		sid  any
+		sent string
+		want string
+	}{
+		"claim wins over a forged header": {sid: "sid-real", sent: "sid-forged", want: "sid-real"},
+		"no claim drops a forged header":  {sent: "sid-forged", want: ""},
+		"non-string claim is ignored":     {sid: 7, sent: "sid-forged", want: ""},
+	} {
+		test.Run(name, func(test *testing.T) {
+			claims := validClaims()
+			claims["amr"] = "interactive"
+			if testcase.sid != nil {
+				claims["sid"] = testcase.sid
+			}
+			req := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			req.Header.Set("Authorization", "Bearer "+generateToken(claims, auth.JWTSecret()))
+			req.Header.Set("X-Session-ID", testcase.sent)
+			handler := authMiddleware(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if got := request.Header.Get("X-Session-ID"); got != testcase.want {
+					test.Errorf("X-Session-ID = %q, want %q", got, testcase.want)
+				}
+				writer.WriteHeader(http.StatusOK)
+			}))
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, req)
+			if response.Code != http.StatusOK {
+				test.Fatalf("status = %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/inbox"
-	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -64,7 +64,7 @@ func (handler *Handler) deliverDecisionExpiryDigest(ctx context.Context, workspa
 		}
 		requestIDs[index] = request.ID
 		identifier := fmt.Sprintf("%s-%d", issuePrefixForWorkspace(workspace), issue.Number)
-		link := channel.IssueWebLink(resolveFrontendAppURL(), workspace.Slug, identifier)
+		link := weblink.Issue(workspace.Slug, identifier)
 		fmt.Fprintf(&body, "\n- %s: %s", identifier, decisionAskPreview(request.Ask))
 		if link != "" {
 			fmt.Fprintf(&body, "\n  %s#comment-%s", link, uuidToString(request.IssueCommentID))

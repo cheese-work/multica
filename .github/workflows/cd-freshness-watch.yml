@@ -1,0 +1,35 @@
+name: C00 deploy freshness alarm
+
+on:
+  schedule:
+    - cron: "12,27,42,57 * * * *"
+  pull_request:
+    paths:
+      - .github/workflows/cd-freshness-watch.yml
+      - deploy/cd/check-deploy-freshness.py
+      - deploy/cd/test-check-deploy-freshness.py
+
+# actions: write is only for `gh run rerun --failed` on the main qualification run and the one backup
+# `gh workflow run cd-deploy.yml --ref main` for a dropped schedule slot (CHE-5353). A separate file from
+# cd-queue-watch.yml, whose tests pin it to read-only permissions. Like that alarm: GitHub-hosted runner,
+# no concurrency group, so a dead deploy or X99 runner cannot suppress it. The live C00 revision check runs on X99
+# in its own schedule-only file, cd-live-revision.yml.
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  freshness-alarm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify freshness-rule regression cases
+        run: python3 deploy/cd/test-check-deploy-freshness.py
+      - name: Rerun a failed main build once; alarm when main is not on C00 within 90 min
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 deploy/cd/check-deploy-freshness.py

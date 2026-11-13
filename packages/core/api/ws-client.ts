@@ -15,6 +15,8 @@ const UNPARSEABLE_LOG_MAX_CHARS = 200;
 // expose a visible disconnected state or manual retry action.
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
+const PROBE_THROTTLE_MS = 5_000;
+const PROBE_TIMEOUT_MS = 5_000;
 
 function summarizeUnparseable(data: unknown): string {
   const text = typeof data === "string" ? data : String(data);
@@ -41,6 +43,8 @@ export class WSClient {
   private identity: WSClientIdentity | undefined;
   private handlers = new Map<WSEventType, Set<EventHandler>>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastProbeAt = Number.NEGATIVE_INFINITY;
   private reconnectAttempt = 0;
   private hasConnectedBefore = false;
   // One-shot per connection. A non-conforming frame can repeat hundreds of
@@ -144,6 +148,11 @@ export class WSClient {
         this.onAuthenticated();
         return;
       }
+      if ((msg as any).type === "pong") {
+        if (this.probeTimer) clearTimeout(this.probeTimer);
+        this.probeTimer = null;
+        return;
+      }
       this.logger.debug("received", msg.type);
       const eventHandlers = this.handlers.get(msg.type);
       if (eventHandlers) {
@@ -190,6 +199,42 @@ export class WSClient {
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
+  probe() {
+    const now = Date.now();
+    if (now - this.lastProbeAt < PROBE_THROTTLE_MS) return;
+    this.lastProbeAt = now;
+
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      if (this.probeTimer) clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      const socket = this.ws;
+      if (socket) {
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.close();
+      }
+      this.ws = null;
+      this.connect();
+      return;
+    }
+
+    const socket = this.ws;
+    socket.send(JSON.stringify({ type: "ping" }));
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws !== socket) return;
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.close();
+      this.reconnectAttempt++;
+      this.connect();
+    }, PROBE_TIMEOUT_MS);
+  }
+
   private onAuthenticated() {
     this.logger.info("connected");
     const recoveredConnection = this.hasConnectedBefore || this.reconnectAttempt > 0;
@@ -210,6 +255,10 @@ export class WSClient {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
     }
     if (this.ws) {
       // Remove handlers before close to prevent onclose from scheduling a reconnect

@@ -37,12 +37,46 @@ func spendBudget(t *testing.T, c edgeCase, max int, status string) db.Issue {
 		}
 		finishRuns(t, c)
 	}
+	waitForRunBudgetWarning(t, c)
 	c.enter(t, status)
 	issue, err = testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return issue
+}
+
+// waitForRunBudgetWarning waits for the 80% warning that the run reaching it
+// fires in a goroutine. The warning's system comment bumps the issue revision,
+// so a test that goes on to write the issue with an expected revision would
+// otherwise lose that write to it.
+func waitForRunBudgetWarning(t *testing.T, c edgeCase) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if dbfx.Count(t, `SELECT count(*) FROM run_budget_notice WHERE issue_id=$1 AND kind='warn80' AND comment_id IS NOT NULL`, c.issueID) > 0 {
+			return
+		}
+	}
+	t.Fatal("the run budget warning did not finish in 10s")
+}
+
+// withoutRunBudgetWriters mutes the 80% warning and the exhaustion block until
+// the returned func runs. Each is written by a goroutine that outlives the
+// enqueue, bumps the issue revision and reads testHandler fields; setup runs
+// have no use for them, and a later test must not race them (CHE-3014).
+func withoutRunBudgetWriters() (restore func()) {
+	service.SetOnRunBudgetEvent(nil)
+	service.SetOnRunBudgetExhausted(nil)
+	return giveBackRunBudgetHooks
+}
+
+// giveBackRunBudgetHooks hands the process-wide budget hooks back to
+// testHandler. Every Handler New() registers them on its own bus, so a test that
+// builds a second Handler would leave them there for the run-budget tests that
+// share its shard.
+func giveBackRunBudgetHooks() {
+	service.SetOnRunBudgetEvent(testHandler.onRunBudgetEvent)
+	service.SetOnRunBudgetExhausted(testHandler.onRunBudgetExhausted)
 }
 
 func finishRuns(t *testing.T, c edgeCase) {
@@ -198,10 +232,30 @@ func TestRunBudgetBlockNamesRefusedRunAndRaiseCommand(t *testing.T) {
 	if got := c.status(t); got != "blocked" {
 		t.Fatalf("issue is %s, want blocked after a plain retry past the cap", got)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_command' LIKE 'multica issue budget raise % --runs %' AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
-		t.Fatalf("run_budget_exhausted activity with refused_run and raise_command = %d, want 1", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='run_budget_exhausted' AND details->>'raise_target' IS NOT NULL AND details->>'refused_run' <> ''`, c.issueID); n != 1 {
+		t.Fatalf("run_budget_exhausted activity with refused_run and raise_target = %d, want 1", n)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%multica issue budget raise %'`, c.issueID); n != 1 {
-		t.Fatalf("block comment naming the run and the raise command = %d, want 1", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND type='system' AND content LIKE '%a run for agent % (trigger: assignment or status handoff) while the issue was in_progress%' AND content LIKE '%was refused because the issue used 2 of 2 runs%' AND content LIKE '%approves a raise to % runs in the web app%'`, c.issueID); n != 1 {
+		t.Fatalf("block comment naming the run and the web-app raise = %d, want 1", n)
+	}
+}
+
+// spendBudget is setup. The 80% warning its last run raises writes a comment
+// from a goroutine about 100 ms later, which bumped the issue revision under
+// whatever the test did next: moveIssueOnEdge lost its revision check
+// silently (CHE-3014).
+func TestSpendBudgetLeavesNoLateIssueWriter(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c := newEdgeCase(t, 3014001, mergeEdgeSteps)
+	issue := spendBudget(t, c, 2, "in_progress")
+	time.Sleep(500 * time.Millisecond)
+	after, err := testHandler.Queries.GetIssue(context.Background(), issue.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != issue.Revision {
+		t.Fatalf("issue revision moved from %d to %d after spendBudget returned: a late writer is racing the test", issue.Revision, after.Revision)
 	}
 }

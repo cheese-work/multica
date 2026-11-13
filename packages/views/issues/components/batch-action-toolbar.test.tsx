@@ -65,9 +65,10 @@ vi.mock("../../i18n", () => ({
 // Render each picker as a probe that surfaces the value the toolbar passed in,
 // so the test asserts the wiring (real `commonIssueFields` runs underneath).
 vi.mock("./pickers", () => ({
-  StatusPicker: ({ status, allowedStatuses }: { status: string | null; allowedStatuses?: ReadonlySet<string> | null }) => (
+  StatusPicker: ({ status, allowedStatuses, workflowId }: { status: string | null; allowedStatuses?: ReadonlySet<string> | null; workflowId?: string | null }) => (
     <div
       data-testid="status-picker"
+      data-workflow-id={workflowId ?? "__none__"}
       data-status={status ?? "__none__"}
       data-allowed={allowedStatuses ? [...allowedStatuses].sort().join(",") : "__all__"}
     />
@@ -185,13 +186,41 @@ describe("BatchActionToolbar picker wiring", () => {
     expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "done,todo");
   });
 
-  it("offers every status when no selected issue has a named workflow", () => {
+  it("lists an override's own workflow, not the project's, when the selection shares it (CHE-2822)", () => {
+    const issues = [
+      makeIssue({ id: "a", project_id: "p-dev", workflow_id: "design" }),
+      makeIssue({ id: "b", project_id: "p-dev", workflow_id: "design" }),
+    ];
+    selection.selectedIds = new Set(["a", "b"]);
+
+    render(<BatchActionToolbar issues={issues} />);
+
+    const picker = screen.getByTestId("status-picker");
+    expect(picker).toHaveAttribute("data-workflow-id", "design");
+    expect(picker).toHaveAttribute("data-allowed", "__all__");
+  });
+
+  it("intersects workflows when the selection has different overrides", () => {
+    const issues = [
+      makeIssue({ id: "a", project_id: "p-dev", workflow_id: "design" }),
+      makeIssue({ id: "b", project_id: "p-dev" }),
+    ];
+    selection.selectedIds = new Set(["a", "b"]);
+
+    render(<BatchActionToolbar issues={issues} />);
+
+    const picker = screen.getByTestId("status-picker");
+    expect(picker).toHaveAttribute("data-workflow-id", "__none__");
+    expect(picker).toHaveAttribute("data-allowed", "done,todo");
+  });
+
+  it("offers Default's statuses for issues on Default or outside any project (MUL-8250)", () => {
     const issues = [makeIssue({ id: "a", project_id: "p-default" }), makeIssue({ id: "b" })];
     selection.selectedIds = new Set(["a", "b"]);
 
     render(<BatchActionToolbar issues={issues} />);
 
-    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "__all__");
+    expect(screen.getByTestId("status-picker")).toHaveAttribute("data-allowed", "done,in_progress,todo");
   });
 
   it("renders nothing when nothing is selected", () => {

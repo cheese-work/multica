@@ -25,8 +25,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/governance/credential"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
@@ -47,7 +45,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
-	"github.com/multica-ai/multica/server/pkg/jev"
 	"github.com/multica-ai/multica/server/pkg/llm"
 )
 
@@ -70,6 +67,11 @@ type dbExecutor interface {
 }
 
 type Config struct {
+	// SetupComponents is the registry of Setup component ids the
+	// adoption_linked close gate checks metadata `components` and the `none`
+	// cross-check against (MULTICA_SETUP_COMPONENTS, comma separated). The
+	// registry lives outside this repo, so the operator mirrors its ids here.
+	SetupComponents     []string
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
@@ -224,10 +226,17 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
+	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
-	workflowWriter         workflowWriter
-	Queries                *db.Queries
+	workflowWriter workflowWriter
+	// ciWatch records completed runs for the CI failure watcher; nil = off.
+	ciWatch ciWatcher
+	Queries *db.Queries
+	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
+	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
+	ActionRequestsEnabled  bool
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -253,6 +262,9 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. New wires the real guard; nil
+	// refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service
@@ -263,18 +275,9 @@ type Handler struct {
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
-	// GovernanceReceipts runs the CHE-685 observe-only Jev governance
-	// receipt capture hook after a comment create/edit commits. Nil is the
-	// safe default (every call site checks for it before use) — every
-	// production Handler must still set the field to get a real *receipt.Observer
-	// wired with Store: queries, but its Provider stays nil until a later,
-	// still-blocked delivery wires a live Jev client (see CHE-685 scope:
-	// this delivery never sets Provider to anything but a fake in tests).
-	GovernanceReceipts *receipt.Observer
-	// governanceBudget, when positive, replaces receipt.Budget as the
-	// observation hook's deadline. Tests only: a loaded test database can
-	// spend 50ms on the control snapshot alone.
-	governanceBudget time.Duration
+	// WakeupActivationKey selects the wakeup definition activation the write gate
+	// reads; empty is production's. Tests set their own.
+	WakeupActivationKey string
 	// IssueStatusCatalog reads the workspace status catalog. Defaults to
 	// Queries; a test can substitute a counting wrapper to assert HOW MANY
 	// catalog reads a request performs, which is the only property that
@@ -341,17 +344,6 @@ type Handler struct {
 	// the composio HTTP handlers return 403 in that case. Wired in
 	// cmd/server/router.go after handler.New.
 	Composio *composio.Service
-	// Jev is the TypeSafe System One evaluation client (CHE-683). Nil when
-	// JEV_API_KEY is unset; every call also goes through the jev_enabled
-	// flag and per-workspace targeting via its attached
-	// featureflags.JevProductionGate, so a non-nil Jev does not by itself
-	// mean calls are permitted. Wired in cmd/server/router.go after
-	// handler.New.
-	Jev *jev.Client
-	// JevCredentials holds per-workspace provider credentials encrypted with a
-	// dedicated keyring. Nil is intentional default-off: write requests fail
-	// closed and no credential can be persisted in plaintext.
-	JevCredentials *credential.Keyring
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic
@@ -404,6 +396,14 @@ type Handler struct {
 	// WecomCredentials unseals a wecom installation's smart-bot secret for the
 	// WebSocket subscribe frame. Nil disables the wecom integration.
 	WecomCredentials wecom.CredentialsResolver
+	// WecomInstall drives the scan-code install sessions (QR generate + poll).
+	// Nil unless MULTICA_WECOM_SECRET_KEY is set; Configured() is additionally
+	// false without a QR provider, in which case the endpoints return 503 but
+	// in-flight sessions still terminate cleanly.
+	WecomInstall *wecom.InstallService
+	// WecomInstallWorker drives those sessions. Built in cmd/server/router.go;
+	// main.go starts it as an independent worker.
+	WecomInstallWorker *wecom.InstallWorker
 	// WecomBindingTokens mints/redeems the user-binding tokens behind the
 	// "link your Multica account" prompt sent to first-time WeCom users
 	// (their aibot userid is a "T"-prefixed anonymized id with no relation
@@ -475,6 +475,12 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
+
+	// ConfigSyncGitHub builds the GitHub reader for one config repo (CHE-3284);
+	// nil when the GitHub App is not configured. configSyncRun runs one
+	// evaluation (nil = in a goroutine); tests run it inline.
+	ConfigSyncGitHub func(installationID int64, owner, repo string) ConfigSyncGitHub
+	configSyncRun    func(func())
 	// fetchPullRequestJSON overrides the REST pull request read of
 	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
@@ -553,6 +559,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
+		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
@@ -609,9 +616,24 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
+	h.PRRefresh.SetOnClosed(func(ctx context.Context, installationID int64, owner, repo string, number int32) error {
+		err := h.replayClosedPullRequest(ctx, installationID, owner, repo, number)
+		if err != nil {
+			slog.Warn("github: closed pull request replay failed", "repo", owner+"/"+repo, "pr_number", number, "err", err)
+		}
+		return err
+	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	h.enableCIWatch(ghClient)
+	if h.PRRefresh.Enabled() {
+		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
+			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
+		}
+	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
+	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -1065,6 +1087,10 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
+	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
+}
+
+func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1073,7 +1099,7 @@ func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID st
 	if err != nil {
 		return db.Member{}, err
 	}
-	return h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})

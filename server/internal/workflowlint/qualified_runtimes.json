@@ -1,0 +1,9 @@
+{
+  "codex": [
+    {
+      "version": "0.155.1",
+      "runtime_id": "bc0835c7-a25d-4a16-a3bc-e2921d092ed9",
+      "note": "CHE-735: X99 Codex runtime, write-qualified in workspace-write only on this version"
+    }
+  ]
+}

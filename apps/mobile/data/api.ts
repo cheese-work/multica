@@ -14,11 +14,14 @@
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
 import type {
+  ChatAttentionView,
+  CommentPreview,
   Agent,
   AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
+  ChatSupplement,
   ChatSession,
   ChatSessionUsage,
   Comment,
@@ -61,9 +64,13 @@ import type {
   Workspace,
   WorkspaceSubscriptionSummary,
   WorkflowHandoffPreview,
+  ListIssueWorkflowsResponse,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
+  ChatAttentionEnvelopeSchema,
+  CommentPreviewSchema,
+  EMPTY_CHAT_ATTENTION_VIEW,
   EMPTY_APP_CONFIG,
   EMPTY_REFRESH_SESSION_RESPONSE,
   RefreshSessionResponseSchema,
@@ -73,6 +80,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
+  ListIssueWorkflowsResponseSchema,
   TimelineEntriesSchema,
   WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
@@ -90,6 +98,8 @@ import {
   ChatMessageListSchema,
   CommentSchema,
   ChatPendingTaskSchema,
+  ChatSupplementSchema,
+  ResendChatSupplementResponseSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
   ChatSessionUsageSchema,
@@ -105,7 +115,6 @@ import {
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
-  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -141,7 +150,7 @@ import {
 } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
-import { parseWithFallback } from "@/lib/parse-response";
+import { parseOrThrow, parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
 import { buildCommentUpdateBody } from "./revision";
 
@@ -497,12 +506,25 @@ class ApiClient {
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
+    return (await this.listWorkspacesChecked(opts)).workspaces;
+  }
+
+  /** `validated` is false when the response did not match the schema and the
+   *  empty fallback was returned instead. Only a validated list may be taken
+   *  as the user's real workspaces (draft cleanup relies on it). */
+  async listWorkspacesChecked(opts?: {
+    signal?: AbortSignal;
+  }): Promise<{ workspaces: Workspace[]; validated: boolean }> {
     const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
     });
-    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
-      endpoint: "listWorkspaces",
-    });
+    const workspaces = parseWithFallback(
+      raw,
+      WorkspaceListSchema,
+      EMPTY_WORKSPACE_LIST,
+      { endpoint: "listWorkspaces" },
+    );
+    return { workspaces, validated: Array.isArray(raw) && workspaces !== EMPTY_WORKSPACE_LIST };
   }
 
   // --- Inbox ---
@@ -686,12 +708,30 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    return this.fetchValidated(
-      `/api/issues/${id}`,
-      IssueSchema,
-      EMPTY_ISSUE_FALLBACK,
-      { ...opts, endpoint: "getIssue" },
-    );
+    // No fallback: an empty issue made the screen say "not found" for data it could not read.
+    const raw = await this.fetch<unknown>(`/api/issues/${id}`, { signal: opts?.signal });
+    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "getIssue" });
+  }
+
+  /**
+   * Where a comment lives plus a one-line preview, for comment-ID chips.
+   * `null` means "render the id as plain text": the server answers 404 for an
+   * unknown, deleted or unreadable comment (no leak), and a malformed body
+   * must not become a half-filled chip.
+   */
+  async getCommentPreview(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<CommentPreview | null> {
+    let raw: unknown;
+    try {
+      raw = await this.fetch<unknown>(`/api/comments/${id}/preview`, opts);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+    const parsed = CommentPreviewSchema.safeParse(raw);
+    return parsed.success ? (parsed.data as CommentPreview) : null;
   }
 
   /**
@@ -806,6 +846,9 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+          // Mobile has no steer receipt for issue comments, so it never takes
+          // the server's default of folding into a running turn (CHE-5286).
+          steer: false,
         }),
       },
       { endpoint: "createComment" },
@@ -999,6 +1042,28 @@ class ApiClient {
       EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
       { ...opts, endpoint: "GET /api/issue-statuses" },
     );
+  }
+
+  /**
+   * Workspace workflows, for the statuses an issue offers under its project's
+   * or its own workflow (CHE-2822). An empty fallback reads as "unknown": the
+   * status picker then offers the whole catalog and the server still judges.
+   */
+  async listIssueWorkflows(opts?: { signal?: AbortSignal }): Promise<ListIssueWorkflowsResponse> {
+    return this.fetchValidated(
+      "/api/issue-workflows",
+      ListIssueWorkflowsResponseSchema,
+      { workflows: [], total: 0 },
+      { ...opts, endpoint: "GET /api/issue-workflows" },
+    ) as Promise<ListIssueWorkflowsResponse>;
+  }
+
+  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
+  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
+    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
   }
 
   // --- Projects ---
@@ -1223,7 +1288,7 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    opts?: { attachmentIds?: string[] },
+    opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1232,10 +1297,20 @@ class ApiClient {
     // server-side `chat.go` back-fills `chat_message_id` on the listed
     // attachments after the message row is inserted (see
     // server/internal/handler/chat.go:410-456).
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    //
+    // `client_message_id` makes a retry idempotent (A22): the server stores
+    // one message per (session, id). `ask_ids` answers displayed asks.
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+      client_message_id?: string;
+      ask_ids?: string[];
+    } = { content };
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
     }
+    if (opts?.clientMessageId) body.client_message_id = opts.clientMessageId;
+    if (opts?.askIds && opts.askIds.length > 0) body.ask_ids = opts.askIds;
     const raw = await this.fetch<unknown>(
       `/api/chat/sessions/${sessionId}/messages`,
       {
@@ -1267,6 +1342,78 @@ class ApiClient {
       EMPTY_CHAT_PENDING_TASK,
       { endpoint: "GET /api/chat/sessions/:id/pending-task" },
     );
+  }
+
+  /** Adds a queued DM follow-up to the running task instead of cancelling it. */
+  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
+      { method: "POST" },
+    );
+    const parsed = ChatSupplementSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Steer response invalid", 0, raw);
+    }
+    return parsed.data;
+  }
+
+  /** Sends a never-received or unconfirmed follow-up as a new run. An
+   *  `uncertain` receipt needs `confirmPossibleDuplicate`. */
+  async resendChatSupplement(
+    sessionId: string,
+    messageId: string,
+    opts: { confirmPossibleDuplicate?: boolean } = {},
+  ): Promise<{ task_id: string; supplement: ChatSupplement }> {
+    const raw = await this.fetch<unknown>(
+      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          confirm_possible_duplicate: opts.confirmPossibleDuplicate === true,
+        }),
+      },
+    );
+    const parsed = ResendChatSupplementResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new ApiError("Resend response invalid", 0, raw);
+    }
+    return parsed.data;
+  }
+
+  // DM attention actions (plan r4 T3, T5). Each call sends the exact subject
+  // keys the row displayed; the server acts on those keys only.
+  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(
+      raw,
+      ChatAttentionEnvelopeSchema,
+      { attention: EMPTY_CHAT_ATTENTION_VIEW },
+      { endpoint: "POST /api/chat/sessions/:id/attention/xong" },
+    ).attention;
+  }
+
+  async chatAttentionLater(
+    sessionId: string,
+    subjectKeys: string[],
+    options: { durationSeconds?: number; requestId: string },
+  ): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_keys: subjectKeys,
+        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
+        request_id: options.requestId,
+      }),
+    });
+    return parseWithFallback(
+      raw,
+      ChatAttentionEnvelopeSchema,
+      { attention: EMPTY_CHAT_ATTENTION_VIEW },
+      { endpoint: "POST /api/chat/sessions/:id/attention/later" },
+    ).attention;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {

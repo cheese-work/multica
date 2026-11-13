@@ -107,6 +107,7 @@ func seedPRForWorkspace(t *testing.T, q *db.Queries, wsID pgtype.UUID, installat
 		State:          "open",
 		HtmlUrl:        "http://x",
 		HeadSha:        headSHA,
+		HeadRepoSame:   true,
 		PrCreatedAt:    ts,
 		PrUpdatedAt:    ts,
 	})
@@ -877,8 +878,12 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 				conclusion = "failure"
 			}
 			_, _ = fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"head_sha":"sha1","name":"ci","status":"completed","conclusion":%q}]}`, conclusion)
-		case "/repos/o/r/commits/sha1/status":
+		case "/repos/o/r/commits/sha1/status", "/repos/o/r/commits/base-tip/status":
 			_, _ = w.Write([]byte(`{"total_count":0,"statuses":[]}`))
+		case "/repos/o/r/rules/branches/release/1.x":
+			_, _ = w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"}]}}]`))
+		case "/repos/o/r/commits/base-tip/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":1,"check_runs":[{"id":9,"head_sha":"base-tip","name":"ci","status":"completed","conclusion":"failure"}]}`))
 		default:
 			t.Errorf("unexpected request: %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -899,8 +904,180 @@ func TestRESTSnapshotRefreshStoresResultsAndPreservesThemOnPermissionFailure(t *
 		if got.SnapshotHeadSha != "sha1" || !got.SnapshotFetchedAt.Valid || got.ChecksRollupState.String != want || checkRunCount(t, pool, pr.ID) != 1 {
 			t.Fatalf("phase %d: stored snapshot=%+v, want %s", i, got, want)
 		}
+		if want == "FAILURE" {
+			var cause *string
+			if err := pool.QueryRow(ctx, `SELECT red_cause FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID).Scan(&cause); err != nil {
+				t.Fatal(err)
+			}
+			if cause == nil || *cause != CauseInfra {
+				t.Fatalf("phase %d: stored red_cause=%v, want %q: required check also red on the base tip (CHE-3257)", i, cause, CauseInfra)
+			}
+		}
 	}
 	if applied != 2 || len(m.rateUntil) != 0 {
 		t.Fatalf("permission failure must preserve snapshot without notification or installation pause: applied=%d limits=%v", applied, m.rateUntil)
+	}
+}
+
+// CHE-3257: a required check stored red on a head that comes back green on the
+// same head is marked flaky, and the mark survives later green snapshots, so
+// the workflow can still park an issue that pr.checks_red already moved. A
+// check that was never red stays unmarked.
+func TestRESTSnapshotRefreshMarksGreenRerunOfRedHeadAsFlaky(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	pr := seedPRAt(t, pool, q, 1, "r", 5, "sha1")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(ctx, `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+	var phase atomic.Int32
+	srv := snapshotServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/o/r/pulls/5":
+			writeTestPR(w, "sha1", true, "clean")
+		case "/repos/o/r/commits/sha1/check-runs":
+			conclusion := "success"
+			if phase.Load() == 0 {
+				conclusion = "failure"
+			}
+			_, _ = fmt.Fprintf(w, `{"total_count":2,"check_runs":[{"id":1,"head_sha":"sha1","name":"ci","status":"completed","conclusion":%q},{"id":2,"head_sha":"sha1","name":"lint","status":"completed","conclusion":"success"}]}`, conclusion)
+		case "/repos/o/r/commits/sha1/status", "/repos/o/r/commits/base-tip/status":
+			_, _ = w.Write([]byte(`{"total_count":0,"statuses":[]}`))
+		case "/repos/o/r/rules/branches/release/1.x":
+			_, _ = w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"ci"},{"context":"lint"}]}}]`))
+		case "/repos/o/r/commits/base-tip/check-runs":
+			_, _ = w.Write([]byte(`{"total_count":0,"check_runs":[]}`))
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	defer srv.Close()
+	m := NewManager(newTestClient(t, srv.URL), q, pool, func(context.Context, pgtype.UUID) {})
+	m.jitter = func() time.Duration { return 0 }
+	addr := address{InstallationID: 1, Owner: "o", Repo: "r", Number: 5}
+	causes := func() map[string]string {
+		rows, err := pool.Query(ctx, `SELECT name, COALESCE(red_cause, '') FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		got := map[string]string{}
+		for rows.Next() {
+			var name, cause string
+			if err := rows.Scan(&name, &cause); err != nil {
+				t.Fatal(err)
+			}
+			got[name] = cause
+		}
+		return got
+	}
+	for i, want := range []map[string]string{
+		{"ci": CausePR, "lint": ""},
+		{"ci": CauseFlaky, "lint": ""},
+		{"ci": CauseFlaky, "lint": ""},
+	} {
+		phase.Store(int32(i))
+		m.process(ctx, addr)
+		if got := causes(); got["ci"] != want["ci"] || got["lint"] != want["lint"] {
+			t.Fatalf("snapshot %d: red_cause = %v, want %v", i, got, want)
+		}
+	}
+}
+
+// A binding that becomes disallowed after row selection and before the write
+// must not receive the snapshot.
+func TestProcessRevalidatesWorkspaceFilterAtWrite(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	const installationID = 555444
+	const repoName = "revalidate-repo"
+	const prNumber = int32(78)
+
+	ws := seedWorkspaceWithSettings(t, pool, `{}`)
+	pr := seedPRForWorkspace(t, q, ws, installationID, repoName, prNumber, "A")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request_check_run WHERE pr_id=$1`, pr.ID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID)
+	})
+
+	applied := 0
+	m := NewManager(enabledClient(t), q, pool, func(context.Context, pgtype.UUID) { applied++ })
+	m.jitter = func() time.Duration { return 0 }
+	m.ctx = ctx
+	m.fetch = func(context.Context, *Client, int64, string, string, int32) (*PRSnapshot, error) {
+		return &PRSnapshot{HeadSHA: "A", Mergeable: "MERGEABLE", MergeStateStatus: "CLEAN"}, nil
+	}
+	// Calls 1 and 2 are the pre-fetch and post-fetch row selections; the
+	// binding is revoked right after the second one, before the write.
+	var filterCalls atomic.Int32
+	m.SetWorkspaceFilter(func(context.Context, *db.Queries, int64) (map[pgtype.UUID]bool, error) {
+		if filterCalls.Add(1) > 2 {
+			return map[pgtype.UUID]bool{}, nil
+		}
+		return map[pgtype.UUID]bool{ws: true}, nil
+	})
+
+	m.process(ctx, address{InstallationID: installationID, Owner: "o", Repo: repoName, Number: prNumber})
+
+	got, err := q.GetGitHubPullRequestByID(ctx, pr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotHeadSha != "" || got.ApiMergeable.Valid || applied != 0 {
+		t.Fatalf("snapshot written after the binding was revoked: applied=%d row=%+v", applied, got)
+	}
+}
+
+// CHE-5313: a PR whose checks are still running and that a checks_finished
+// rule waits on is refreshed by the fast sweep, even when its snapshot is
+// younger than the general undecided-sweep TTL and no webhook arrives.
+func TestChecksWatchSweepRefreshesPendingWatchedPRs(t *testing.T) {
+	pool := testDBPool(t)
+	q := db.New(pool)
+	ctx := context.Background()
+	now := time.Now()
+	const installationID int64 = 7_313_000_003
+	repo := "checks-" + randHex(t)
+
+	seed := func(number int32, state, rollup string, watchEvent string, enabled bool, fetchedAt time.Time) {
+		t.Helper()
+		pr := seedPRAt(t, pool, q, installationID, repo, number, fmt.Sprintf("H%d", number))
+		if _, err := pool.Exec(ctx, `UPDATE github_pull_request
+			SET state=$2, snapshot_head_sha=head_sha, snapshot_fetched_at=$3, api_mergeable='MERGEABLE', checks_rollup_state=$4
+			WHERE id=$1`, pr.ID, state, fetchedAt, rollup); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM github_pull_request WHERE id=$1`, pr.ID) })
+		if watchEvent != "" {
+			watchPR(t, pool, pr, watchEvent, enabled)
+		}
+	}
+	stale := now.Add(-3 * time.Minute)
+	seed(1, "open", "PENDING", "checks_finished", true, stale)   // swept
+	seed(2, "draft", "PENDING", "checks_finished", true, stale)  // swept
+	seed(3, "open", "PENDING", "checks_finished", true, now)     // fresh
+	seed(4, "open", "SUCCESS", "checks_finished", true, stale)   // decided
+	seed(5, "open", "PENDING", "checks_finished", false, stale)  // rule disabled
+	seed(6, "open", "PENDING", "conflicts", true, stale)         // other event
+	seed(7, "open", "PENDING", "", false, stale)                 // unwatched
+	seed(8, "closed", "PENDING", "checks_finished", true, stale) // closed
+
+	m := NewManager(enabledClient(t), q, pool, nil)
+	m.checksWatchTTL = time.Minute
+	m.sweepChecksWatched(ctx)
+	var got []int32
+	for len(m.queue) > 0 {
+		addr := <-m.queue
+		if addr.InstallationID == installationID && addr.Repo == repo {
+			got = append(got, addr.Number)
+		}
+	}
+	if fmt.Sprint(got) != "[1 2]" && fmt.Sprint(got) != "[2 1]" {
+		t.Fatalf("checks-watch sweep enqueued %v, want PRs 1 and 2", got)
 	}
 }

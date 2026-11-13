@@ -79,8 +79,8 @@ func TestChatContinueForkFlagPostsToForkAPI(t *testing.T) {
 	if flag == nil || flag.DefValue != "false" {
 		t.Fatal("chat continue must expose --fork, disabled by default")
 	}
-	if !strings.Contains(chatContinueCmd.Long, "archives") || !strings.Contains(chatContinueCmd.Long, "--fork") {
-		t.Fatalf("help does not contrast archive and --fork: %q", chatContinueCmd.Long)
+	if !strings.Contains(chatContinueCmd.Long, "in place") || !strings.Contains(chatContinueCmd.Long, "--fork") {
+		t.Fatalf("help does not contrast in-place compaction and --fork: %q", chatContinueCmd.Long)
 	}
 	status := http.StatusCreated
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

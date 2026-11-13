@@ -102,7 +102,15 @@ func TestCompleteTaskFallbackCommentKeepsProseLabelsAndMasksTokens(t *testing.T)
 	requireProseKept(t, "synthesized fallback comment", content)
 }
 
-func TestCompactSummaryContentKeepsProseLabelsAndMasksTokens(t *testing.T) {
-	requireProseKept(t, "continued-DM summary",
-		compactSummaryContent("", proseCell+" "+proseGitHubToken(), "https://example.test/chat/1"))
+func TestCompactSummaryKeepsProseLabelsAndMasksTokens(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	_, sessionID, _, _ := setupDirectChatSession(t, context.Background(), "prose redaction")
+	if response := continueChatRequest(t, sessionID, proseCell+" "+proseGitHubToken(), ""); response.Code != http.StatusOK {
+		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
+	}
+	var content string
+	dbfx.QueryRow(t, `SELECT content FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'compaction_summary'`, sessionID).Scan(&content)
+	requireProseKept(t, "compaction summary", content)
 }

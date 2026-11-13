@@ -220,3 +220,45 @@ func TestCommandsAndExplicitLimits(t *testing.T) {
 		t.Fatal("invalid arguments reached API")
 	}
 }
+
+func TestRecoverPasskeysCommand(t *testing.T) {
+	var got []string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Method+" "+r.URL.Path)
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = io.WriteString(w, `{"passkey_recovery":{"user_id":"u","passkey_state":"recovery_required","session_generation":3,"revoked_passkeys":2}}`)
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"recover-passkeys", "--email", "a@b.test"}, u.Port(), &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"POST /maintenance/passkey-recovery"}) || body["email"] != "a@b.test" || !strings.Contains(out.String(), `"session_generation":3`) {
+		t.Fatalf("calls=%v body=%v out=%s", got, body, out.String())
+	}
+	for _, args := range [][]string{
+		{"recover-passkeys"},
+		{"recover-passkeys", "--email", "not an email"},
+		{"recover-passkeys", "--email", "a@b.test", "--job", testID},
+		{"recover-passkeys", "--email", "a@b.test", "--port", "0"},
+		{"status", "--job", testID, "--email", "a@b.test"},
+	} {
+		if err := run(context.Background(), args, u.Port(), io.Discard, io.Discard); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("invalid arguments reached the API: %v", got)
+	}
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		_, _ = io.WriteString(w, `{"error":"no such user"}`)
+	}))
+	defer failing.Close()
+	fu, _ := url.Parse(failing.URL)
+	if err := run(context.Background(), []string{"recover-passkeys", "--email", "a@b.test"}, fu.Port(), io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "no such user") {
+		t.Fatalf("err = %v, want the server's refusal", err)
+	}
+}

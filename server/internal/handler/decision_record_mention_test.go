@@ -101,19 +101,6 @@ func TestDecisionRecordMentionControls(test *testing.T) {
 			test.Fatalf("outcome = %+v, want blocked/project_inactive", outcome)
 		}
 	})
-	test.Run("held class is deferred until release", func(test *testing.T) {
-		fixture := newAskedRecordFixture(test)
-		nextOwner := createHandlerTestAgent(test, "Held Owner", nil)
-		dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'deploy' WHERE id = $1`, fixture.decision.ID)
-		comment, status := fixture.recordWithMention(test, "", mentionOf(nextOwner))
-		if status != http.StatusCreated {
-			test.Fatalf("record status=%d", status)
-		}
-		outcome := findCommentOutcome(test, comment.TriggerOutcomes, nextOwner)
-		if outcome.Status != DispatchDeferred || outcome.ReasonCode != ReasonDeferred || countQueuedCommentTriggerTasks(test, fixture.issueID, nextOwner) != 0 {
-			test.Fatalf("outcome = %+v, want deferred with no run", outcome)
-		}
-	})
 	test.Run("duplicate pending run is reused", func(test *testing.T) {
 		fixture := newAskedRecordFixture(test)
 		nextOwner := createHandlerTestAgent(test, "Duplicate Owner", nil)

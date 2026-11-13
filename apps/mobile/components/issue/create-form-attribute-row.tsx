@@ -46,7 +46,8 @@ const NEW_ISSUE_PICKER_PATHNAMES = {
   "due-date": "/[workspace]/new-issue-picker/due-date",
 } as const satisfies Record<NewIssuePickerField, string>;
 
-export function CreateFormAttributeRow() {
+/** `disabled` locks every chip until the saved draft has restored. */
+export function CreateFormAttributeRow({ disabled = false }: { disabled?: boolean }) {
   const { t } = useT("issues");
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const status = useNewIssueDraftStore((s) => s.status);
@@ -65,7 +66,7 @@ export function CreateFormAttributeRow() {
     priority === "none" ? t("filters.priority") : t(PRIORITY_LABEL[priority]);
 
   const open = (field: NewIssuePickerField) => {
-    if (!wsSlug) return;
+    if (!wsSlug || disabled) return;
     router.push({
       pathname: NEW_ISSUE_PICKER_PATHNAMES[field],
       params: { workspace: wsSlug },
@@ -73,7 +74,7 @@ export function CreateFormAttributeRow() {
   };
 
   return (
-    <View>
+    <View pointerEvents={disabled ? "none" : "auto"} className={disabled ? "opacity-50" : undefined}>
       <View className="flex-row flex-wrap gap-2">
         <AttributeChip
           icon={

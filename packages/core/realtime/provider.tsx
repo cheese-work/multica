@@ -46,6 +46,8 @@ export interface WSProviderProps {
   identity?: ClientIdentity;
   /** Optional callback for showing toast messages (platform-specific, e.g. sonner) */
   onToast?: (message: string, type?: "info" | "error") => void;
+  /** Lets the host app attach platform lifecycle events to this client. */
+  onClientReady?: (client: WSClient) => void | (() => void);
 }
 
 export function WSProvider({
@@ -56,6 +58,7 @@ export function WSProvider({
   cookieAuth,
   identity,
   onToast,
+  onClientReady,
 }: WSProviderProps) {
   const user = authStore((s) => s.user);
   // Reactive read of the current workspace slug (URL-driven singleton in
@@ -70,6 +73,11 @@ export function WSProvider({
   );
   const wsId = useSyncExternalStore(subscribeToCurrentSlug, getCurrentWsId, () => null);
   const [wsClient, setWsClient] = useState<WSClient | null>(null);
+
+  useEffect(() => {
+    if (!wsClient) return;
+    return onClientReady?.(wsClient);
+  }, [wsClient, onClientReady]);
 
   // Depend on identity primitives instead of the object reference so a parent
   // re-render that passes a new `{ platform, version, os }` literal does not

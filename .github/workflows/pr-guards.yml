@@ -1,0 +1,129 @@
+name: pr-guards
+
+# CHE-4385: one run per PR event. GitHub disabled Actions on this repo at about 2,500 created runs a day, and a skipped
+# run still counts as created, so every guard that used to start on its own is a job here: close target, changelog line,
+# fork sync, the security gate and the mechanical-tier receipt (the last two are reusable workflows, which add jobs and
+# no runs). A comment starts nothing; after posting a verdict, dispatch the gate once:
+#   gh workflow run security-gate.yml -R cheese-work/multica --ref main -f pr=<number>
+#
+# SECURITY — `pull_request_target` runs this definition from the base branch. Every job checks out the trusted workflow
+# commit (`github.workflow_sha`) and reads the PR as data only. Never check out or execute the PR head, and never add a
+# secret to this workflow. Each job holds its own read-only permissions; the gate alone holds `statuses: write`.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: pr-guards-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  close-target:
+    name: Validate intended issue close target
+    if: github.event.pull_request.state != 'closed'
+    runs-on: ${{ vars.RUNNER_PR_CLOSE_TARGET_CHECK || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      # Heals workspaces a past sparse checkout left with core.sparseCheckout=true: the
+      # checkout action's own disable is undone when it unsets extensions.worktreeConfig (CHE-1961).
+      - name: Reset leaked sparse-checkout state
+        run: |
+          [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
+          git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
+      # Full checkout on purpose: a sparse input would leak the same state again.
+      - name: Checkout trusted workflow checker
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate intended issue close target
+        run: node scripts/pr-close-target-check.mjs --event "$GITHUB_EVENT_PATH"
+
+  # Prints the /changelog entry this PR will publish (CHE-1631). Fails a feat/fix/perf PR without a valid `Changelog:`
+  # line, or `Changelog: none` on user-facing files (CHE-4016). The PR body comes from the event payload, the changed files
+  # from the read-only workflow token; the script is the trusted base copy. upstream-sync/* heads are
+  # reported as `Hidden: upstream-sync` and pass. Making this check required is Cheese's call.
+  changelog-line:
+    name: Changelog line
+    # CHE-5014: an upstream candidate (base upstream-main) carries no fork-only Changelog line; a skipped job is neutral.
+    if: github.event.pull_request.state != 'closed' && github.base_ref != 'upstream-main'
+    runs-on: ${{ vars.RUNNER_PR_CHANGELOG_CHECK || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # the changed-file list; a failed read warns and passes (CHE-4016)
+    steps:
+      - name: Checkout trusted workflow checker
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: List the changed files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt" \
+            || rm -f "$RUNNER_TEMP/files.txt"
+      - name: Compute the changelog entry
+        run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
+
+  fork-sync-guard:
+    name: Fork sync preservation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Fetch PR head as data without checking it out
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+      - name: Check fork source and test preservation
+        run: node scripts/fork-sync-guard.mjs
+
+  security-gate:
+    uses: ./.github/workflows/security-gate.yml
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+      checks: read # the nested mechanical-tier job in security-gate.yml (skipped here) asks for it
+
+  # Receipt at push time: CI is still pending, so it usually reads Tier 1. The receipt taken after CI and a verdict
+  # comes from the security-gate dispatch above.
+  # CHE-5014: skipped for an upstream-main base, where the base has no classifier; the caller skip is neutral.
+  mechanical-tier:
+    if: github.base_ref != 'upstream-main'
+    uses: ./.github/workflows/mechanical-tier.yml
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api/client";
+import { issueKeys } from "@multica/core/issues/queries";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { DecisionQuoteCard } from "./decision-quote-card";
@@ -67,9 +68,54 @@ function renderCard(entry: TimelineEntry, currentUserId = "human-1", compact = f
   return { ...view, invalidate };
 }
 
+function renderWithTimeline(entry: TimelineEntry, timeline: TimelineEntry[], onJumpToComment = vi.fn()) {
+  const qc = new QueryClient();
+  qc.setQueryData(issueKeys.timeline("issue-1"), timeline);
+  renderWithI18n(
+    <QueryClientProvider client={qc}>
+      <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId="human-1" onJumpToComment={onJumpToComment} />
+    </QueryClientProvider>,
+  );
+  return onJumpToComment;
+}
+
+const ask = (overrides: Partial<TimelineEntry> = {}): TimelineEntry => ({
+  type: "comment",
+  id: "ask-comment",
+  actor_type: "agent",
+  actor_id: "agent-1",
+  created_at: "2026-10-23T04:00:00Z",
+  content: "Ship it?",
+  decision_comment_kind: "ask",
+  decision_request_id: "request-1",
+  ...overrides,
+});
+
 beforeEach(() => {
   calls.length = 0;
   outcome = async () => ({});
+});
+
+describe("DecisionQuoteCard — jump to ask", () => {
+  it("jumps to the ask comment this answer replies to", () => {
+    const answer = quote({ parent_id: "ask-comment" });
+    const jump = renderWithTimeline(answer, [ask(), answer]);
+    fireEvent.click(screen.getByTestId("decision-quote-jump-to-ask"));
+    expect(screen.getByTestId("decision-quote-jump-to-ask")).toHaveTextContent("Jump to ask");
+    expect(jump).toHaveBeenCalledWith("ask-comment");
+  });
+
+  it("offers no jump when the parent is not an ask comment", () => {
+    const answer = quote({ parent_id: "plain" });
+    renderWithTimeline(answer, [ask({ id: "plain", decision_comment_kind: undefined }), answer]);
+    expect(screen.queryByTestId("decision-quote-jump-to-ask")).toBeNull();
+  });
+
+  it("offers no jump when the ask is not in the timeline", () => {
+    const answer = quote({ parent_id: "ask-comment" });
+    renderWithTimeline(answer, [answer]);
+    expect(screen.queryByTestId("decision-quote-jump-to-ask")).toBeNull();
+  });
 });
 
 describe("DecisionQuoteCard", () => {

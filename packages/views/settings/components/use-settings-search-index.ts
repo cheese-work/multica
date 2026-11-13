@@ -70,6 +70,11 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "recent-agents",
+        title: t(($) => $.chat.recent_agents_label),
+      },
+      {
+        tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.click),
         description: t(($) => $.issue.opening.hint),
@@ -116,6 +121,11 @@ export function useSettingsSearchIndex(
         description: t(($) => $.tokens.purpose),
       },
       {
+        tab: "passkeys",
+        title: t(($) => $.page.tabs.passkeys),
+        description: t(($) => $.passkeys.purpose),
+      },
+      {
         tab: "shortcuts",
         title: t(($) => $.page.tabs.shortcuts),
         description: t(($) => $.shortcuts.description),
@@ -146,6 +156,30 @@ export function useSettingsSearchIndex(
         title: t(($) => $.workspace.auto_compact_label),
         description: t(($) => $.workspace.auto_compact_hint),
       },
+      {
+        tab: "workspace",
+        anchor: "runtime-profile",
+        title: t(($) => $.workspace.runtime_profile_label),
+        description: t(($) => $.workspace.runtime_profile_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "idle-guard",
+        title: t(($) => $.workspace.idle_guard_label),
+        description: t(($) => $.workspace.idle_guard_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "routing-agent",
+        title: t(($) => $.workspace.routing_agent_label),
+        description: t(($) => $.workspace.routing_agent_hint),
+      },
+      {
+        tab: "workspace",
+        anchor: "routing-fallback-agent",
+        title: t(($) => $.workspace.routing_fallback_label),
+        description: t(($) => $.workspace.routing_fallback_hint),
+      },
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",
@@ -167,6 +201,11 @@ export function useSettingsSearchIndex(
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),
         description: t(($) => $.wakeups.child_done_description),
+      },
+      {
+        tab: "provider-breakers",
+        title: t(($) => $.page.tabs.provider_breakers),
+        description: t(($) => $.provider_breakers.description),
       },
       {
         tab: "labels",

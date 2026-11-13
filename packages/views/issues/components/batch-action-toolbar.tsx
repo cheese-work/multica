@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import { X, Trash2 } from "@multica/ui/icons";
+import { Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -36,12 +35,9 @@ import {
 } from "../../workflows/batch-handoff-confirm-dialog";
 import { useNotifyCatalogUnresolved } from "../../workflows/use-notify-catalog-unresolved";
 import { StatusPicker, PriorityPicker, AssigneePicker } from "./pickers";
+import { BatchWorkflowPicker } from "./batch-workflow-picker";
 import { useT } from "../../i18n";
-import { cn } from "@multica/ui/lib/utils";
-import {
-  UI_EASE_OUT,
-  UI_MOTION_DURATION,
-} from "@multica/ui/lib/motion";
+import { CollectionBatchBar } from "../../layout/collection-list";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
 import { useRegisterCommandBarContext } from "../../search/register-context";
@@ -78,7 +74,6 @@ export function BatchActionToolbar({
   const selection = useIssueSurfaceSelection();
   const selectedIds = selection.selectedIds;
   const clear = selection.clear;
-  const shouldReduceMotion = useReducedMotion() ?? false;
 
   // The authoritative selection is selectedIds ∩ the visible universe. Acting
   // on raw selectedIds while other consumers (Export selected, common fields)
@@ -122,12 +117,23 @@ export function BatchActionToolbar({
     enabled: count > 0 && selectedIssues.some((i) => i.project_id !== null),
   });
   const notifyCatalogUnresolved = useNotifyCatalogUnresolved();
+  // One override shared by the whole selection is listed by the picker itself,
+  // handoffs included, instead of being cut down from the project's list.
+  // (CHE-2822)
+  const sharedWorkflowId = useMemo(() => {
+    const first = selectedIssues[0]?.workflow_id ?? null;
+    return first && selectedIssues.every((i) => i.workflow_id === first) ? first : null;
+  }, [selectedIssues]);
+  // Differing effective workflows (overrides, or an override beside its
+  // project's) list the whole catalog narrowed to the keys they share; the
+  // project's own list would hide a shared status it lacks.
+  const sameWorkflow = !!sharedWorkflowId || !selectedIssues.some((i) => i.workflow_id);
   const allowedStatuses = useMemo(
     () =>
-      sharedProjectId && !selectedIssues.some((i) => i.workflow_id)
+      sharedWorkflowId || (sharedProjectId && !selectedIssues.some((i) => i.workflow_id))
         ? null
         : sharedWorkflowStatusKeys(workflows, projects, selectedIssues),
-    [sharedProjectId, workflows, projects, selectedIssues],
+    [sharedWorkflowId, sharedProjectId, workflows, projects, selectedIssues],
   );
 
   const [statusOpen, setStatusOpen] = useState(false);
@@ -329,63 +335,19 @@ export function BatchActionToolbar({
 
   return (
     <>
-      <AnimatePresence initial={false}>
-        {count > 0 && (
-          <div
-            key="issue-batch-toolbar"
-            className={cn(
-              "z-50",
-              placement === "fixed-bottom"
-                ? "fixed bottom-6 left-1/2 -translate-x-1/2 max-md:above-chat-launcher"
-                : "mb-2 w-fit",
-            )}
-          >
-            <motion.div
-              className="flex items-center gap-1 rounded-lg border bg-background px-2 py-1.5 shadow-lg"
-              initial={{
-                opacity: 0,
-                transform: shouldReduceMotion
-                  ? "translateY(0)"
-                  : "translateY(8px)",
-              }}
-              animate={{
-                opacity: 1,
-                transform: "translateY(0)",
-                transition: {
-                  duration: UI_MOTION_DURATION.fast,
-                  ease: UI_EASE_OUT,
-                },
-              }}
-              exit={{
-                opacity: 0,
-                transform: shouldReduceMotion
-                  ? "translateY(0)"
-                  : "translateY(8px)",
-                transition: {
-                  duration: shouldReduceMotion
-                    ? UI_MOTION_DURATION.fast
-                    : UI_MOTION_DURATION.micro,
-                  ease: UI_EASE_OUT,
-                },
-              }}
-            >
-        <div className="flex items-center gap-1.5 pl-1 pr-2 border-r mr-1">
-          <span className="text-body font-medium">{t(($) => $.batch.selected, { count })}</span>
-          <button
-            type="button"
-            onClick={clear}
-            className="rounded-xs p-0.5 hover:bg-accent transition-colors"
-          >
-            <X className="size-3.5 text-muted-foreground" />
-          </button>
-        </div>
-
+      <CollectionBatchBar
+        count={count}
+        onClear={clear}
+        placement={placement === "fixed-bottom" ? "fixed" : "inline"}
+        label={t(($) => $.batch.selected, { count })}
+      >
         {/* Status */}
         <StatusPicker
           status={common.status}
           // No shared project spans projects (or none): not the Default-only
           // list of a single issue outside a project. (MUL-8121)
-          projectId={sharedProjectId ?? undefined}
+          projectId={sameWorkflow ? (sharedProjectId ?? undefined) : undefined}
+          workflowId={sharedWorkflowId}
           allowedStatuses={allowedStatuses}
           onUpdate={handleBatchStatus}
           open={statusOpen}
@@ -419,6 +381,12 @@ export function BatchActionToolbar({
           align="center"
         />
 
+        {/* Workflow */}
+        <BatchWorkflowPicker
+          issues={selectedIssues}
+          onApplied={clearSelectionOnApply ? clear : undefined}
+        />
+
         {/* Delete */}
         <Button
           variant="ghost"
@@ -430,10 +398,7 @@ export function BatchActionToolbar({
           <Trash2 className="size-3.5 mr-1" />
           {t(($) => $.batch.delete)}
         </Button>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      </CollectionBatchBar>
 
       {pendingHandoff && (
         <BatchHandoffConfirmDialog

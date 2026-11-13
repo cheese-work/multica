@@ -19,6 +19,17 @@ multica workflow get <workflow-id> --output json      # steps, instructions, rul
 (guarded exits: `[{"to","guard","timeout","on_timeout"}]`; PR guards need a
 `timeout`).
 
+## Lint a workflow
+
+```bash
+multica workflow lint <workflow-id> --output json
+multica workflow lint --all
+```
+
+Prints findings per rule (`WF###`, level, step, message, hint). Exit status is
+non-zero when any unwaived error exists; warnings and infos do not fail it.
+Give a workflow id or `--all`, not both.
+
 ## Change one step's instructions
 
 ```bash
@@ -61,20 +72,19 @@ workspace's own change process before running it.
 
 ```bash
 multica issue budget get <issue-id> --output json
-multica issue budget raise <issue-id> --runs <total> --output json
-multica issue budget top-up <issue-id> --output json
 ```
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
   its state and what a suggested raise would leave.
-- `raise` sets this issue's own cap to `--runs` total runs. `--runs` must be
-  above the cap now in force (the workflow's, or an earlier raise). Other
-  issues on the workflow keep the workflow's cap.
-- `top-up` opens a new run window on the issue, as a person's status move
-  does, without moving its status. The window credit is the workflow's cap;
-  usage history is kept.
-- `raise` and `top-up` are members only; the server rejects an agent. An agent that hit the
-  cap reports the blocker and asks a person; it never raises its own budget.
+- `multica issue budget raise [--runs N]` and `multica issue budget top-up`
+  open a spend decision request and print its approve URL. They change nothing
+  themselves: an owner approves with a passkey in the web app, which a CLI
+  credential cannot do.
+- With a PAT, a person runs them and the request is the A1d spend request.
+- With a task token, an agent that hit the cap runs the same command (add
+  `--for <user-id>` inside an issue task). It creates an action proposal
+  (`decision propose`, see `decisions.md`) and prints the card link. The agent
+  never raises its own budget: the proposal waits for a person's approval.
 
 ## Inbound webhook endpoints
 

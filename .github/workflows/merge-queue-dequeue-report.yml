@@ -1,0 +1,44 @@
+name: Merge queue dequeue report
+
+# Explains a failed-check removal from the merge queue on the PR itself and marks the PR head red.
+# The queue build (PR + current main) fails while the PR head checks stay green, so without this
+# nobody is told. Advisory only: `merge-queue-result` is deliberately not a required check.
+#
+# Trust boundary: this job holds a write token. It uses `pull_request_target` so it always runs the
+# workflow and script from the default branch (never PR code) and so fork PRs get a write token too.
+# Never check out or run anything from the PR head here.
+on:
+  pull_request_target:
+    types: [dequeued]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number to report on (reads its latest queue removal)
+        required: true
+      dry_run:
+        description: Print the comment and status instead of writing them
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25 # 2 rate-limit waits of up to 10 min + work
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Report the failed queue run on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: node scripts/merge-queue-dequeue-report.mjs --repo "$GITHUB_REPOSITORY" --pr "$PR" ${EVENT_HEAD_SHA:+--head-sha "$EVENT_HEAD_SHA"} $DRY_RUN

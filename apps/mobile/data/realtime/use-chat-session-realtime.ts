@@ -32,6 +32,7 @@ import {
   appendTaskMessage,
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
+  applyChatSupplementUpdated,
   invalidatePendingTask,
   promotePendingTaskToRunning,
   seedPendingTaskFromQueued,
@@ -117,6 +118,10 @@ export function useChatSessionRealtime(
           invalidatePendingTask(qc, sessionId);
           qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
           invalidateUsage();
+        }),
+        ws.on("chat:supplement_updated", (payload) => {
+          if (payload.supplement?.chat_session_id !== sessionId) return;
+          applyChatSupplementUpdated(qc, payload);
         }),
         ws.on("chat:session_deleted", (payload) => {
           if (!isMine(payload)) return;

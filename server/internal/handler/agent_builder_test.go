@@ -836,7 +836,7 @@ func TestSendDirectChatMessageUsesCurrentlyBoundRuntime(t *testing.T) {
 	})
 
 	sent, err := testHandler.TaskService.SendDirectChatMessage(
-		ctx, session, staleAgent, parseUUID(testUserID), "hello after the switch", nil, "member", parseUUID(testUserID), "interactive_jwt",
+		ctx, session, staleAgent, parseUUID(testUserID), "hello after the switch", nil, "member", parseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{},
 	)
 	if err != nil {
 		t.Fatalf("SendDirectChatMessage: %v", err)
@@ -963,7 +963,7 @@ func TestSendDirectChatMessageWaitsForUncommittedRebind(t *testing.T) {
 	go func() {
 		sent, err := testHandler.TaskService.SendDirectChatMessage(
 			context.Background(), session, staleAgent, parseUUID(testUserID),
-			"sent while the rebind was still open", nil, "member", parseUUID(testUserID), "interactive_jwt",
+			"sent while the rebind was still open", nil, "member", parseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{},
 		)
 		if err != nil {
 			results <- sendResult{err: err}
@@ -1036,7 +1036,7 @@ func TestSendDirectChatMessageRejectsSessionArchivedWhileWaitingForLock(t *testi
 	go func() {
 		_, err := testHandler.TaskService.SendDirectChatMessage(
 			context.Background(), session, agent, parseUUID(testUserID),
-			"must not enqueue after archive", nil, "member", parseUUID(testUserID), "interactive_jwt",
+			"must not enqueue after archive", nil, "member", parseUUID(testUserID), "interactive_jwt", service.DirectChatSendOptions{},
 		)
 		results <- err
 	}()
@@ -1079,7 +1079,7 @@ func TestDeleteBuilderSessionLocksAgentBeforeTasks(t *testing.T) {
 	}
 	ctx := context.Background()
 	created := newBuilderSession(t)
-	taskID := insertPendingChatTask(t, created.BuilderAgentID, created.SessionID, "queued")
+	insertPendingChatTask(t, created.BuilderAgentID, created.SessionID, "queued")
 	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, testRuntimeID); err != nil {
 		t.Fatalf("refresh builder runtime heartbeat: %v", err)
 	}
@@ -1112,17 +1112,17 @@ func TestDeleteBuilderSessionLocksAgentBeforeTasks(t *testing.T) {
 	if !waitForWaiterBlockedBy(t, holderPID, 10*time.Second) {
 		t.Fatal("delete did not wait for the builder agent lock")
 	}
+	// Delete holds the session row, so the claim skips that DM's task (Rule E,
+	// FOR SHARE SKIP LOCKED) instead of waiting on the session row while it
+	// holds the agent: no wait-for edge, no deadlock.
 	claimed, err := qtx.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
 		AgentID:          agent.ID,
 		RuntimeID:        agent.RuntimeID,
 		PrepareLeaseSecs: 30,
 		RuntimeStaleSecs: service.RuntimeClaimFreshnessSeconds,
 	})
-	if err != nil {
-		t.Fatalf("claim while delete waits for agent lock: %v", err)
-	}
-	if got := uuidToString(claimed.ID); got != taskID {
-		t.Fatalf("claimed task = %q, want %q", got, taskID)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("claim while delete holds the session and waits for the agent lock = %v (task %v), want no rows", err, uuidToString(claimed.ID))
 	}
 	if err := claimTx.Rollback(ctx); err != nil {
 		t.Fatalf("release claim transaction: %v", err)

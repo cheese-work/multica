@@ -6,7 +6,7 @@
  * Cancel/dismiss flow: header Cancel + iOS drag-down gesture both check
  * dirty state and pop an Alert if there are unsaved edits.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/input-tokens";
 import { projectDetailOptions } from "@/data/queries/projects";
 import { useUpdateProject } from "@/data/mutations/projects";
+import { useProjectEditDraft } from "@/data/stores/use-form-drafts";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/i18n";
 
@@ -36,31 +37,20 @@ export default function EditProject() {
   const detail = useQuery(projectDetailOptions(wsId, id));
   const update = useUpdateProject(id);
 
-  const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
-  const [icon, setIcon] = useState("");
-  const [seeded, setSeeded] = useState(false);
-
-  // Seed once when data arrives, before committing the form. Background
-  // refetches must not overwrite edits already in progress.
-  if (detail.data && !seeded) {
-    setTitle(detail.data.title);
-    setDescription(detail.data.description ?? "");
-    setIcon(detail.data.icon ?? "");
-    setSeeded(true);
-  }
-
-  const dirty = useMemo(() => {
-    if (!detail.data) return false;
-    return (
-      title.trim() !== detail.data.title ||
-      description.trim() !== (detail.data.description ?? "") ||
-      icon.trim() !== (detail.data.icon ?? "")
-    );
-  }, [detail.data, title, description, icon]);
+  const {
+    title,
+    setTitle,
+    description,
+    setDescription,
+    icon,
+    setIcon,
+    restored,
+    dirty,
+    settle,
+  } = useProjectEditDraft(id, detail.data);
 
   const canSave =
-    seeded && title.trim().length > 0 && dirty && !update.isPending;
+    restored && title.trim().length > 0 && dirty && !update.isPending;
 
   const onCancel = useCallback(() => {
     if (!dirty) {
@@ -75,11 +65,14 @@ export default function EditProject() {
         {
           text: t("common:actions.discard"),
           style: "destructive",
-          onPress: () => router.back(),
+          onPress: () => {
+            settle();
+            router.back();
+          },
         },
       ],
     );
-  }, [dirty, t]);
+  }, [dirty, settle, t]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -89,7 +82,10 @@ export default function EditProject() {
       icon: icon.trim() || null,
     };
     update.mutate(patch, {
-      onSuccess: () => router.back(),
+      onSuccess: () => {
+        settle();
+        router.back();
+      },
       onError: (err) => {
         Alert.alert(
           t("form.save_failed_edit"),
@@ -97,7 +93,7 @@ export default function EditProject() {
         );
       },
     });
-  }, [canSave, title, description, icon, update, t]);
+  }, [canSave, title, description, icon, update, settle, t]);
 
   const headerLeft = useCallback(() => {
     return (
@@ -133,7 +129,7 @@ export default function EditProject() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
-          {!detail.data ? (
+          {!detail.data || !restored ? (
             <Text className="text-sm text-muted-foreground">
               {t("common:states.loading")}
             </Text>

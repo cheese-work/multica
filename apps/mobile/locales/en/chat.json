@@ -171,6 +171,30 @@
   },
   "picker.title": "Choose an agent",
   "no_response": "The agent finished this turn without a text reply.",
+  "steer": {
+    "label": "Steer",
+    "fallback": "Queued message",
+    "unavailable": "Steer is available after the current reply starts",
+    "starting": "Run is starting",
+    "unsupported": "This run can't take new messages. The message stays queued.",
+    "no_permission": "You no longer have permission to run this agent",
+    "failed": "Couldn't add the message to the run. It stays queued."
+  },
+  "supplement": {
+    "added": "Added to run",
+    "read": "Read by agent",
+    "read_twice": "Read by agent; also sent again, the agent may see it twice",
+    "not_received": "Not received",
+    "unconfirmed": "Delivery unconfirmed",
+    "resent": "Sent again as a new run",
+    "send_new_run": "Send as a new run",
+    "send_again_anyway": "Send again anyway",
+    "confirm_title": "Send this message again?",
+    "confirm_body": "The agent may already have received this message. Sending it again can make the agent act on it twice.",
+    "confirm_send": "Send again",
+    "cancel": "Cancel",
+    "resend_failed": "Couldn't send the message again"
+  },
   "continuation_summary": "Conversation summary",
   "failure_reason": {
     "default": "Run failed",
@@ -220,5 +244,33 @@
     "tool_result_unnamed": "result: ",
     "truncated": "…(truncated)",
     "error": "Error"
+  },
+  "attention": {
+    "kind": {
+      "ask": "Question",
+      "later": "Reminder",
+      "unseen": "Unread",
+      "decision": "Decision"
+    },
+    "level": {
+      "fresh": "New",
+      "yellow": "Yellow",
+      "red": "Red"
+    },
+    "age": {
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} hour",
+      "hours_other": "{{count}} hours",
+      "days_one": "{{count}} day",
+      "days_other": "{{count}} days"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_a11y": "{{kind}}. {{level}}, waiting {{age}}",
+    "done": "Done",
+    "later": "Later",
+    "done_a11y": "Mark done: {{title}}",
+    "later_a11y": "Remind me later: {{title}}",
+    "failed": "Could not update. Try again."
   }
 }

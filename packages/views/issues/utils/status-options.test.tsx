@@ -4,7 +4,7 @@ import { buildIssueStatusCatalog } from "@multica/core/issue-statuses";
 import { statusCategoryOfKey } from "@multica/core/issues";
 import type { IssueStatusEntry } from "@multica/core/types";
 import en from "../../locales/en/issues.json";
-import { useStatusOptions } from "./status-options";
+import { useIssueStatusOptions, useStatusOptions } from "./status-options";
 import { useStatusLabel } from "./status-label";
 
 // The catalog itself is server state; this suite is about what the picker and
@@ -14,6 +14,11 @@ let catalogEntries: IssueStatusEntry[] | undefined;
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "workspace-1",
 }));
+
+// The project/override resolver is exercised in core; here only what this hook
+// hands it, and what it does with the answer.
+const resolveWorkflow = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/issue-workflows", () => ({ useProjectWithWorkflow: resolveWorkflow }));
 
 vi.mock("@multica/core/issue-statuses/hooks", () => ({
   useIssueStatuses: () => buildIssueStatusCatalog(catalogEntries),
@@ -173,5 +178,42 @@ describe("useStatusLabel", () => {
     const { result } = renderHook(() => useStatusLabel("workspace-1"));
 
     expect(result.current("never-seen")).toBe("never-seen");
+  });
+});
+
+describe("useIssueStatusOptions", () => {
+  const step = (status_key: string) => ({ status_key, handler: { type: "none" } });
+  const override = { id: "wf-own", is_default: false, steps: [step("todo"), step("done")] };
+  const projectOwn = { id: "wf-project", is_default: false, steps: [step("backlog")] };
+
+  it("resolves an issue's own workflow, not its project's", () => {
+    catalogEntries = BUILT_INS;
+    resolveWorkflow.mockImplementation((_ws, _project, workflowId) => ({
+      workflow: workflowId ? override : projectOwn,
+      project: null,
+      defaultWorkflow: null,
+      resolved: true,
+      retry: vi.fn(),
+    }));
+    const { result } = renderHook(() => useIssueStatusOptions("workspace-1", "project-1", "todo", "wf-own"));
+
+    expect(resolveWorkflow).toHaveBeenLastCalledWith("workspace-1", "project-1", "wf-own");
+    expect(result.current.workflow).toBe(override);
+    expect(result.current.options.map((o) => o.key)).toEqual(["todo", "done"]);
+  });
+
+  it("does not fall back to the Default scope while an override outside a project is unresolved", () => {
+    catalogEntries = BUILT_INS;
+    resolveWorkflow.mockReturnValue({
+      workflow: null,
+      project: null,
+      defaultWorkflow: { id: "wf-default", is_default: true, steps: [step("todo")] },
+      resolved: false,
+      retry: vi.fn(),
+    });
+    const { result } = renderHook(() => useIssueStatusOptions("workspace-1", null, "todo", "wf-own"));
+
+    expect(result.current.defaultScope).toBeNull();
+    expect(result.current.resolved).toBe(false);
   });
 });

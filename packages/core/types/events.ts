@@ -25,10 +25,12 @@ export type WSEventType =
   | "agent:archived"
   | "agent:restored"
   | "task:queued"
+  | "task:coalesced"
   | "task:dispatch"
   | "task:running"
   | "task:waiting_local_directory"
   | "task:progress"
+  | "task:usage"
   | "task:completed"
   | "task:failed"
   | "task:message"
@@ -65,6 +67,7 @@ export type WSEventType =
   | "chat:session_read"
   | "chat:session_deleted"
   | "chat:session_updated"
+  | "chat:supplement_updated"
   | "project:created"
   | "project:updated"
   | "project:deleted"
@@ -75,12 +78,15 @@ export type WSEventType =
   | "label:updated"
   | "label:deleted"
   | "issue_labels:changed"
+  | "issue_unread:changed"
   | "issue_metadata:changed"
   | "issue_properties:changed"
   | "property:created"
   | "property:updated"
   | "issue_status:changed"
   | "issue_workflow:changed"
+  | "issue_view:changed"
+  | "issue_view_preference:changed"
   | "pin:created"
   | "pin:deleted"
   | "pin:reordered"
@@ -178,6 +184,21 @@ export interface IssueWorkflowChangedPayload {
   action?: "created" | "updated" | "deleted";
 }
 
+/**
+ * A saved view was created, edited or deleted. Clients re-read their views;
+ * the payload names the view only, so a view going private carries nothing out.
+ */
+export interface IssueViewChangedPayload {
+  view_id: string;
+  action?: "created" | "updated" | "deleted";
+}
+
+/** One of this member's own preference documents was saved, on any device. */
+export interface IssueViewPreferenceChangedPayload {
+  scope_type: string;
+  scope_id: string | null;
+}
+
 export interface AgentStatusPayload {
   agent: Agent;
 }
@@ -218,6 +239,15 @@ export interface InboxUnarchivedPayload {
   item_id: string;
   issue_id: string | null;
   recipient_id: string;
+}
+
+/** Personal: the recipient's unread mark on an issue changed. Workspace-tagged
+ *  because personal events reach every connection the user has. */
+export interface IssueUnreadChangedPayload {
+  workspace_id: string;
+  recipient_id: string;
+  issue_id: string;
+  unread: boolean;
 }
 
 export interface InboxBatchReadPayload {
@@ -312,7 +342,14 @@ export interface TaskMessagePayload {
   issue_id: string;
   chat_session_id?: string;
   seq: number;
-  type: "text" | "thinking" | "tool_use" | "tool_result" | "error";
+  type:
+    | "text"
+    | "thinking"
+    | "tool_use"
+    | "tool_result"
+    | "error"
+    | "silence_warn"
+    | "tool_stalled";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
@@ -340,6 +377,17 @@ export interface TaskQueuedPayload {
   status: string;
 }
 
+// task:coalesced fires when a comment folds into a run that has not started.
+// The status is unchanged, but the run's trigger and covered comments changed,
+// which moves its block under the newest comment it answers.
+export interface TaskCoalescedPayload {
+  task_id: string;
+  agent_id: string;
+  issue_id: string;
+  chat_session_id?: string;
+  status: string;
+}
+
 export interface TaskDispatchPayload {
   task_id: string;
   agent_id: string;
@@ -354,6 +402,10 @@ export interface TaskRunningPayload {
   issue_id: string;
   chat_session_id?: string;
   status: string;
+}
+
+export interface TaskUsageUpdatedPayload {
+  task_id: string;
 }
 
 // task:waiting_local_directory fires when the daemon dequeues a task but
@@ -436,6 +488,10 @@ export interface ChatMessageEventPayload {
   task_id?: string;
   created_at: string;
   message_kind?: import("./chat").ChatMessageKind;
+}
+
+export interface ChatSupplementUpdatedPayload {
+  supplement: import("./chat").ChatSupplement;
 }
 
 export interface ChatDonePayload {
@@ -592,11 +648,14 @@ export interface WSEventPayloadMap {
   "issue:deleted": IssueDeletedPayload;
   "issue_attachments:changed": IssueAttachmentsChangedPayload;
   "issue_labels:changed": IssueLabelsChangedPayload;
+  "issue_unread:changed": IssueUnreadChangedPayload;
   "issue_properties:changed": IssuePropertiesChangedPayload;
   "property:created": PropertyChangedPayload;
   "property:updated": PropertyChangedPayload;
   "issue_status:changed": IssueStatusChangedPayload;
   "issue_workflow:changed": IssueWorkflowChangedPayload;
+  "issue_view:changed": IssueViewChangedPayload;
+  "issue_view_preference:changed": IssueViewPreferenceChangedPayload;
   "issue_reaction:added": IssueReactionAddedPayload;
   "issue_reaction:removed": IssueReactionRemovedPayload;
   "comment:created": CommentCreatedPayload;
@@ -612,6 +671,7 @@ export interface WSEventPayloadMap {
   "agent:archived": AgentArchivedPayload;
   "agent:restored": AgentRestoredPayload;
   "task:queued": TaskQueuedPayload;
+  "task:coalesced": TaskCoalescedPayload;
   "task:dispatch": TaskDispatchPayload;
   "task:running": TaskRunningPayload;
   "task:waiting_local_directory": TaskWaitingLocalDirectoryPayload;
@@ -620,6 +680,7 @@ export interface WSEventPayloadMap {
   "task:message": TaskMessagePayload;
   "task:cancelled": TaskCancelledPayload;
   "task:progress": unknown;
+  "task:usage": TaskUsageUpdatedPayload;
   "inbox:new": InboxNewPayload;
   "inbox:read": InboxReadPayload;
   "inbox:unread": InboxUnreadPayload;
@@ -643,6 +704,7 @@ export interface WSEventPayloadMap {
   "chat:session_read": ChatSessionReadPayload;
   "chat:session_deleted": ChatSessionDeletedPayload;
   "chat:session_updated": unknown;
+  "chat:supplement_updated": ChatSupplementUpdatedPayload;
   "project:created": ProjectCreatedPayload;
   "project:updated": ProjectUpdatedPayload;
   "project:deleted": ProjectDeletedPayload;

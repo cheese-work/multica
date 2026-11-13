@@ -12,6 +12,7 @@
 import { create } from "zustand";
 import type { User } from "@multica/core/types";
 import { api, ApiError } from "./api";
+import { clearAllDrafts } from "./draft-persistence";
 import { clearToken, getToken, setToken } from "./secure-storage";
 import { invalidateSessionEpoch } from "./session-epoch";
 import { useWorkspaceStore } from "./workspace-store";
@@ -26,6 +27,16 @@ interface AuthState {
   /** Overwrite the in-memory user — call after PATCH /api/me so name/avatar
    *  edits land without a refetch. Server response is the source of truth. */
   setUser: (user: User) => void;
+}
+
+// Draft cleanup must never keep the user signed in: drafts are scoped per user
+// on disk, so a failed delete leaves them unreadable by the next account.
+async function clearDraftsOnSessionEnd() {
+  try {
+    await clearAllDrafts();
+  } catch (err) {
+    console.warn("[auth] could not delete saved drafts", err);
+  }
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -57,6 +68,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         invalidateSessionEpoch();
         await clearToken();
         api.setToken(null);
+        await clearDraftsOnSessionEnd();
       }
       set({ user: null, isLoading: false });
     }
@@ -85,6 +97,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     invalidateSessionEpoch();
     await clearToken();
     api.setToken(null);
+    // Unsent drafts belong to the account that is leaving.
+    await clearDraftsOnSessionEnd();
     set({ user: null });
   },
 

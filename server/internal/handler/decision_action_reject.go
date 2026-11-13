@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -52,6 +53,24 @@ func actionTxBusy(err error) bool {
 	}
 	return strings.HasPrefix(pgError.Code, "08")
 }
+
+// refuseWhileRecovering answers 403 recovery_required while the person is in
+// recovery. The state is read under the share lock the gate check takes, inside
+// the caller's transaction (CHE-2798 P6).
+func refuseWhileRecovering(ctx context.Context, queries *db.Queries, userID pgtype.UUID) error {
+	recovering, err := passkey.UserRecovering(ctx, queries, userID)
+	switch {
+	case errors.Is(err, passkey.ErrBusy):
+		return errBusyRetry
+	case err != nil:
+		return err
+	case recovering:
+		return errRecoveryRequired
+	}
+	return nil
+}
+
+var errRecoveryRequired = decisionIntentRefusal{http.StatusForbidden, "recovery_required: enroll two new passkeys before deciding"}
 
 var (
 	errBusyRetry      = decisionIntentRefusal{http.StatusConflict, "busy_retry: another change holds this decision; retry"}
@@ -131,6 +150,9 @@ func (handler *Handler) RejectDecisionAction(writer http.ResponseWriter, request
 		writeDecisionActionError(writer, err)
 		return
 	}
+	if err := handler.publishDecisionActionCardUpdated(context.WithoutCancel(ctx), action); err != nil {
+		slog.Warn("decision action: card update not published", "action_id", uuidToString(action.ID), "error", err)
+	}
 	handler.DecisionWorker.Notify()
 	writeJSON(writer, http.StatusOK, newDecisionActionResponse(action))
 }
@@ -153,6 +175,35 @@ func (handler *Handler) GetDecisionActionOutcome(writer http.ResponseWriter, req
 		return
 	}
 	writeJSON(writer, http.StatusOK, newDecisionActionOutcome(action))
+}
+
+// GetDecisionAction returns the card view of one action to the request's
+// human, so the approval page can show what it asks and name its payload hash.
+func (handler *Handler) GetDecisionAction(writer http.ResponseWriter, request *http.Request) {
+	caller, ok := handler.authorizeDecisionActionCaller(writer, request)
+	if !ok {
+		return
+	}
+	action, err := handler.Queries.GetDecisionAction(request.Context(), db.GetDecisionActionParams{WorkspaceID: caller.workspaceID, ID: caller.actionID})
+	var decisionRequest db.DecisionRequest
+	if err == nil {
+		decisionRequest, err = handler.Queries.GetDecisionRequest(request.Context(), db.GetDecisionRequestParams{WorkspaceID: caller.workspaceID, ID: action.DecisionRequestID})
+	}
+	if err == nil && decisionRequest.HumanUserID != caller.userID {
+		err = errNotTheHuman
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = errNotTheHuman
+	}
+	if err != nil {
+		writeDecisionActionError(writer, err)
+		return
+	}
+	view := newDecisionActionResponse(action)
+	if decisionRequest.ChatSessionID.Valid {
+		view.ChatSessionID = uuidToString(decisionRequest.ChatSessionID)
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (handler *Handler) isActionsHuman(ctx context.Context, caller decisionActionCaller, action db.DecisionAction) bool {
@@ -320,4 +371,15 @@ func (handler *Handler) locateDecisionAction(ctx context.Context, caller decisio
 		return preview, located, errNotTheHuman
 	}
 	return preview, located, nil
+}
+
+// refuseGatedAnswerWhileRecovering is refuseWhileRecovering for an answer that
+// is gated (not reversible, workspace gate on block). The card answer calls it
+// inside its transaction. A decision record takes reversible classes only
+// (cardOnlyRefusal), which this never gates.
+func refuseGatedAnswerWhileRecovering(ctx context.Context, queries *db.Queries, workspace db.Workspace, decision db.DecisionRequest, userID pgtype.UUID) error {
+	if decision.EscalationClass == "reversible" || workspace.DecisionPasskeyGate != passkey.GateBlock {
+		return nil
+	}
+	return refuseWhileRecovering(ctx, queries, userID)
 }

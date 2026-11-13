@@ -1,15 +1,21 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -30,6 +36,10 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		ParentID        string              `json:"parent_id"`
 		EscalationClass string              `json:"escalation_class"`
 		Action          *decisionActionWire `json:"action"`
+		Kind            string              `json:"kind"`
+		ExpiresIn       string              `json:"expires_in"`
+		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid decision request")
@@ -42,11 +52,24 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
+	if input.Action == nil && handler.refuseBudgetQuestion(writer, request, issue) {
+		return
+	}
 	if len(input.Ask) == 0 || string(input.Ask) == "null" {
 		writeError(writer, http.StatusBadRequest, "a structured ask is required")
 		return
 	}
-	parsed, err := decisiontx.DecodeAsk(input.Ask)
+	kind, expiresInSeconds, ok := handler.actionRequestTerms(writer, input.Kind, input.ExpiresIn, input.Action != nil)
+	if !ok {
+		return
+	}
+	parsed, err := decisiontx.DecodeAskKind(input.Ask, kind)
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The recommended option is shown first (CHE-3628); an ask with two or more options must identify it.
+	parsed, err = parsed.RequireRecommendedFirst()
 	if err != nil {
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
@@ -74,6 +97,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusBadRequest, "ask is too long")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision {
+		hints = append(hints, plainCardConfigHints(parsed)...)
+	}
 	if err := handler.verifyAskArtifacts(request.Context(), issue, parsed); err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -95,6 +121,28 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			return
 		}
 	}
+	var dmSession pgtype.UUID
+	if taskID, err := util.ParseUUID(request.Header.Get("X-Task-ID")); err == nil {
+		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			writeError(writer, http.StatusInternalServerError, "failed to load task")
+			return
+		}
+		if err == nil && task.ChatSessionID.Valid {
+			// A DM agent asks its own member in its own DM, never elsewhere.
+			if input.NewDM || sessionID.Valid || parentID.Valid {
+				writeError(writer, http.StatusBadRequest, "a request from a chat takes no new_dm, session_id or parent_id")
+				return
+			}
+			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For); !ok {
+				return
+			}
+		}
+	}
+	covers, ok := parseBatchCovers(writer, input.CoversRequestIDs, input.Action != nil)
+	if !ok {
+		return
+	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
 		if draft, err = draftDecisionAction(input.Action); err != nil {
@@ -108,11 +156,43 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, Parsed: &parsed, Slug: workspace.Slug})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
+	handler.writeDecisionResult(writer, request, issue, result, hints)
+}
+
+// configChangeWords matches a decision or option that reads like a change to
+// a workflow, agent, squad, workspace or budget in plain words.
+var configChangeWords = regexp.MustCompile(`(?i)\b(?:workflow|squad|agent|workspace)\b.{0,80}\b(?:handler|instructions?|steps?|context|env(?:ironment)?|budget|prompt)\b|\bbudget\b.{0,40}\b(?:raise|top.?up|increase)|\b(?:raise|top.?up|increase)\b.{0,40}\bbudget\b`)
+
+// plainCardConfigHints returns an advisory hint when an option card reads like
+// a change an allowlisted action applies. Approve on an option card only
+// records an answer, so the change would never apply and the person would be
+// sent a second link (CHE-5229). The server cannot read intent, so this never
+// refuses: it scans the decision and the options (not the agent_did detail)
+// for an action type string or plain words naming such a change.
+func plainCardConfigHints(ask decisiontx.Ask) []string {
+	texts := []string{ask.Decision}
+	for _, option := range ask.Options {
+		texts = append(texts, option.Label, option.WhatHappens)
+	}
+	text := strings.Join(texts, "\n")
+	matched := configChangeWords.MatchString(text)
+	for _, actionType := range decisionaction.Types() {
+		matched = matched || strings.Contains(text, actionType)
+	}
+	if !matched {
+		return nil
+	}
+	return []string{"the decision or an option reads like a change to a workflow, agent, squad, workspace or budget; Approve on an option card only records the answer and applies nothing. If one approval should apply the change, send it with `multica decision propose` (or `multica decision request --action-file`)"}
+}
+
+// writeDecisionResult answers a replay with 200, or publishes the events of a
+// new request and answers 201.
+func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request *http.Request, issue db.Issue, result decisionRequestResult, hints []string) {
 	if result.Replayed {
 		action, err := handler.replayedDecisionAction(request.Context(), issue, result.Request)
 		if err != nil {
@@ -158,6 +238,9 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 			"decision_intent_targets": []string{uuidToString(result.Request.HumanUserID)},
 		})
 	}
+	if result.ParkedActivity != nil {
+		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
+	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,
@@ -178,10 +261,43 @@ type decisionRequestResponse struct {
 	Action *decisionActionResponse `json:"action,omitempty"`
 }
 
+// decisionReadResponse is the stored request plus its newest answer, so an
+// agent reads the same state the person saw: who answered, when, with what.
+type decisionReadResponse struct {
+	db.DecisionRequest
+	Answer *decisionAnswerRead `json:"answer,omitempty"`
+}
+
+type decisionAnswerRead struct {
+	ID                string  `json:"id"`
+	AnsweredByUserID  *string `json:"answered_by_user_id"`
+	AnswerSource      string  `json:"answer_source"`
+	ChosenOptionIndex *int32  `json:"chosen_option_index"`
+	ContentSnapshot   string  `json:"content_snapshot"`
+	CreatedAt         *string `json:"created_at"`
+	DisclaimedAt      *string `json:"disclaimed_at"`
+	DisclaimReason    *string `json:"disclaim_reason"`
+}
+
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
-	if stored, _, ok := handler.loadDecisionForRead(writer, request); ok {
-		writeJSON(writer, http.StatusOK, stored)
+	stored, _, ok := handler.loadDecisionForRead(writer, request)
+	if !ok {
+		return
 	}
+	response := decisionReadResponse{DecisionRequest: stored}
+	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
+	switch {
+	case err == nil:
+		response.Answer = &decisionAnswerRead{
+			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
+			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
+			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
+		}
+	case !errors.Is(err, pgx.ErrNoRows):
+		writeError(writer, http.StatusInternalServerError, "failed to read decision answer")
+		return
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 // loadDecisionForRead resolves {id} for a workspace member who can read the
@@ -247,23 +363,41 @@ func (handler *Handler) ListOpenDecisions(writer http.ResponseWriter, request *h
 		writeError(writer, http.StatusInternalServerError, "failed to list open decision requests")
 		return
 	}
-	writeJSON(writer, http.StatusOK, openDecisionResponses(requests))
+	writeJSON(writer, http.StatusOK, handler.openDecisionResponses(request.Context(), member.WorkspaceID, requests))
 }
 
 // openDecisionResponse sends options as JSON, not as the row's base64 bytes,
-// so the issue-page banner can render the answer buttons.
+// so the issue-page banner can render the answer buttons. A batch card also
+// carries the decisions it covers: the issue page shows them next to the
+// answer form, so a human never answers for a card they cannot see.
 type openDecisionResponse struct {
 	db.ListOpenDecisionRequestsForHumanRow
-	Options json.RawMessage `json:"options"`
+	Options          json.RawMessage              `json:"options"`
+	CoversRequestIDs []string                     `json:"covers_request_ids,omitempty"`
+	CoveredCards     []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
+	// Action is the executable action behind the card, so a page can tell which
+	// card is a run-budget or workflow-budget ask (CHE-5285).
+	Action *DecisionRequestCardAction `json:"action,omitempty"`
 }
 
-func openDecisionResponses(rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
+func (handler *Handler) openDecisionResponses(ctx context.Context, workspaceUUID pgtype.UUID, rows []db.ListOpenDecisionRequestsForHumanRow) []openDecisionResponse {
 	out := make([]openDecisionResponse, len(rows))
 	for i, row := range rows {
-		out[i] = openDecisionResponse{row, row.Options}
+		out[i] = openDecisionResponse{ListOpenDecisionRequestsForHumanRow: row, Options: row.Options}
 		if len(out[i].Options) == 0 {
 			out[i].Options = json.RawMessage("[]")
 		}
+		for _, covered := range row.CoversRequestIds {
+			out[i].CoversRequestIDs = append(out[i].CoversRequestIDs, uuidToString(covered))
+		}
+		// On a read failure the card keeps covers_request_ids but lists no covered
+		// cards; the client then refuses the answer form (fail closed).
+		covered, err := handler.coveredCardSummaries(ctx, workspaceUUID, row.CoversRequestIds)
+		if err != nil {
+			slog.ErrorContext(ctx, "list covered decision cards", "request_id", uuidToString(row.ID), "error", err)
+		}
+		out[i].CoveredCards = covered
+		out[i].Action = handler.decisionCardAction(ctx, workspaceUUID, row.ID)
 	}
 	return out
 }
@@ -318,4 +452,80 @@ func (handler *Handler) ListOpenDecisionAsks(writer http.ResponseWriter, request
 		})
 	}
 	writeJSON(writer, http.StatusOK, asks)
+}
+
+const (
+	defaultActionExpiry = 72 * time.Hour
+	maxActionExpiry     = 168 * time.Hour
+)
+
+// actionRequestTerms checks the request kind and its expiry, and answers 400 for
+// anything the kind does not allow. The returned kind is "decision" or "action";
+// the seconds are 0 for a decision, which keeps its fixed lifetime.
+func (handler *Handler) actionRequestTerms(writer http.ResponseWriter, kind, expiresIn string, hasAction bool) (string, float64, bool) {
+	switch kind {
+	case "", decisiontx.KindDecision:
+		if expiresIn != "" {
+			writeError(writer, http.StatusBadRequest, "expires_in applies to action requests only")
+			return "", 0, false
+		}
+		return decisiontx.KindDecision, 0, true
+	case decisiontx.KindAction:
+	default:
+		writeError(writer, http.StatusBadRequest, "kind must be decision or action")
+		return "", 0, false
+	}
+	if !handler.ActionRequestsEnabled {
+		writeErrorCode(writer, http.StatusBadRequest, "action_requests_unavailable", "action requests are not available yet")
+		return "", 0, false
+	}
+	if hasAction {
+		writeError(writer, http.StatusBadRequest, "an action request cannot carry an action")
+		return "", 0, false
+	}
+	expiry := defaultActionExpiry
+	if expiresIn != "" {
+		parsed, err := time.ParseDuration(expiresIn)
+		if err != nil || parsed <= 0 || parsed > maxActionExpiry {
+			writeError(writer, http.StatusBadRequest, "expires_in must be a duration above 0 and at most 168h")
+			return "", 0, false
+		}
+		expiry = parsed
+	}
+	return decisiontx.KindAction, expiry.Seconds(), true
+}
+
+// refuseBudgetQuestion refuses a question about a budget block while the
+// platform's top-up card is open: the card is the only way to reopen the
+// budget, and a second card for the same block makes two requests (CHE-5303).
+func (handler *Handler) refuseBudgetQuestion(writer http.ResponseWriter, request *http.Request, issue db.Issue) bool {
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+		return true
+	}
+	for _, open := range requests {
+		holds, isCard, err := runBudgetCardHolds(request.Context(), handler.Queries, open)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to check the run budget card")
+			return true
+		}
+		if !isCard || !holds {
+			continue
+		}
+		action, err := handler.Queries.GetDecisionActionByRequest(request.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the run budget card")
+			return true
+		}
+		workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to read the workspace")
+			return true
+		}
+		url := "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID)
+		writeErrorCode(writer, http.StatusConflict, "budget_card_open", "this issue's run budget top-up card is already open; the person approves it at "+url+" - do not ask a second question")
+		return true
+	}
+	return false
 }

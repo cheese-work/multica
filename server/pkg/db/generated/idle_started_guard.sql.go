@@ -11,6 +11,52 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteIssueIdleGuard = `-- name: DeleteIssueIdleGuard :exec
+DELETE FROM issue_idle_guard WHERE workspace_id = $1 AND issue_id = $2
+`
+
+type DeleteIssueIdleGuardParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) DeleteIssueIdleGuard(ctx context.Context, arg DeleteIssueIdleGuardParams) error {
+	_, err := q.db.Exec(ctx, deleteIssueIdleGuard, arg.WorkspaceID, arg.IssueID)
+	return err
+}
+
+const getIssueIdleGuard = `-- name: GetIssueIdleGuard :one
+SELECT issue_id, workspace_id, state, kind, from_status, to_status, idle_since, moved_at, attempts, alert_id, comment_id, error, alert_attempts, alert_at, alert_error FROM issue_idle_guard WHERE workspace_id = $1 AND issue_id = $2
+`
+
+type GetIssueIdleGuardParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+func (q *Queries) GetIssueIdleGuard(ctx context.Context, arg GetIssueIdleGuardParams) (IssueIdleGuard, error) {
+	row := q.db.QueryRow(ctx, getIssueIdleGuard, arg.WorkspaceID, arg.IssueID)
+	var i IssueIdleGuard
+	err := row.Scan(
+		&i.IssueID,
+		&i.WorkspaceID,
+		&i.State,
+		&i.Kind,
+		&i.FromStatus,
+		&i.ToStatus,
+		&i.IdleSince,
+		&i.MovedAt,
+		&i.Attempts,
+		&i.AlertID,
+		&i.CommentID,
+		&i.Error,
+		&i.AlertAttempts,
+		&i.AlertAt,
+		&i.AlertError,
+	)
+	return i, err
+}
+
 const idleStartedGuardHumanWait = `-- name: IdleStartedGuardHumanWait :one
 SELECT (
   EXISTS (
@@ -35,41 +81,41 @@ func (q *Queries) IdleStartedGuardHumanWait(ctx context.Context, issueID pgtype.
 }
 
 const listIdleStartedGuardEpisodes = `-- name: ListIdleStartedGuardEpisodes :many
-SELECT i.id, i.workspace_id, i.status, (i.metadata -> 'idle_guard')::jsonb AS receipt
+SELECT i.id, i.workspace_id, i.status, g.issue_id, g.workspace_id, g.state, g.kind, g.from_status, g.to_status, g.idle_since, g.moved_at, g.attempts, g.alert_id, g.comment_id, g.error, g.alert_attempts, g.alert_at, g.alert_error
 FROM issue i
+JOIN issue_idle_guard g ON g.issue_id = i.id
 CROSS JOIN LATERAL (
   SELECT GREATEST(
     i.created_at,
     (SELECT max(c.created_at) FROM comment c
       WHERE c.issue_id = i.id AND c.deleted_at IS NULL AND c.author_type <> 'system'),
     (SELECT max(GREATEST(t.created_at, t.completed_at)) FROM agent_task_queue t
-      WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM (i.metadata -> 'idle_guard' ->> 'alert_id')),
+      WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM g.alert_id::text),
     (SELECT max(a.created_at) FROM activity_log a
       WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent'))
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = $1
-  AND i.metadata ? 'idle_guard'
   AND NOT (
-    i.status = i.metadata -> 'idle_guard' ->> 'to'
-    AND i.metadata -> 'idle_guard' ->> 'state' IN ('notified', 'gave_up', 'resumed')
-    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') <> '')
+    i.status = g.to_status
+    AND g.state IN ('notified', 'gave_up', 'resumed')
+    AND g.moved_at IS NOT NULL)
   AND NOT (
-    i.status = i.metadata -> 'idle_guard' ->> 'from'
-    AND i.metadata -> 'idle_guard' ->> 'state' = 'gave_up'
-    AND COALESCE(i.metadata -> 'idle_guard' ->> 'moved_at', '') = ''
-    AND clock.idle_since <= (i.metadata -> 'idle_guard' ->> 'idle_since')::timestamptz)
+    i.status = g.from_status
+    AND g.state = 'gave_up'
+    AND g.moved_at IS NULL
+    AND clock.idle_since <= g.idle_since)
 ORDER BY i.id
 `
 
 type ListIdleStartedGuardEpisodesRow struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	Status      string      `json:"status"`
-	Receipt     []byte      `json:"receipt"`
+	ID             pgtype.UUID    `json:"id"`
+	WorkspaceID    pgtype.UUID    `json:"workspace_id"`
+	Status         string         `json:"status"`
+	IssueIdleGuard IssueIdleGuard `json:"issue_idle_guard"`
 }
 
-// Issues with an idle_guard receipt that need another look: a notice owed, a
+// Issues with an issue_idle_guard receipt that need another look: a notice owed, a
 // refused move to retry, or an issue that left the episode (a repair). A settled
 // receipt on an issue still where it settled is left alone. A move the guard
 // gave up on is settled until a person or an agent acts on the issue again: the
@@ -88,7 +134,21 @@ func (q *Queries) ListIdleStartedGuardEpisodes(ctx context.Context, workspaceID 
 			&i.ID,
 			&i.WorkspaceID,
 			&i.Status,
-			&i.Receipt,
+			&i.IssueIdleGuard.IssueID,
+			&i.IssueIdleGuard.WorkspaceID,
+			&i.IssueIdleGuard.State,
+			&i.IssueIdleGuard.Kind,
+			&i.IssueIdleGuard.FromStatus,
+			&i.IssueIdleGuard.ToStatus,
+			&i.IssueIdleGuard.IdleSince,
+			&i.IssueIdleGuard.MovedAt,
+			&i.IssueIdleGuard.Attempts,
+			&i.IssueIdleGuard.AlertID,
+			&i.IssueIdleGuard.CommentID,
+			&i.IssueIdleGuard.Error,
+			&i.IssueIdleGuard.AlertAttempts,
+			&i.IssueIdleGuard.AlertAt,
+			&i.IssueIdleGuard.AlertError,
 		); err != nil {
 			return nil, err
 		}
@@ -116,7 +176,7 @@ CROSS JOIN LATERAL (
 WHERE i.workspace_id = $1
   AND ($2::uuid IS NULL OR i.id = $2::uuid)
   AND i.status = ANY ($3::text[])
-  AND ($4::bool IS TRUE OR NOT i.metadata ? 'idle_guard')
+  AND ($4::bool IS TRUE OR NOT EXISTS (SELECT 1 FROM issue_idle_guard g WHERE g.issue_id = i.id))
   AND clock.idle_since <= now() - make_interval(secs => $5::float8)
   AND NOT EXISTS (
     SELECT 1 FROM agent_task_queue t
@@ -164,10 +224,10 @@ type ListIdleStartedGuardIssuesRow struct {
 
 // Main scan. idle_since is the newest human or agent signal on the issue; system
 // comments, system activity and metadata writes never count, so the guard's own
-// writes cannot reset the clock. Issues that already carry an idle_guard episode
+// writes cannot reset the clock. Issues that already carry an issue_idle_guard episode
 // are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
 // the scan to one issue: act mode re-runs it under the issue lock. episode keeps
-// an issue that carries an idle_guard receipt, for re-checking its own episode.
+// an issue that carries an issue_idle_guard receipt, for re-checking its own episode.
 func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleStartedGuardIssuesParams) ([]ListIdleStartedGuardIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues,
 		arg.WorkspaceID,
@@ -227,4 +287,56 @@ func (q *Queries) ListIdleStartedGuardWorkspaces(ctx context.Context) ([]ListIdl
 		return nil, err
 	}
 	return items, nil
+}
+
+const upsertIssueIdleGuard = `-- name: UpsertIssueIdleGuard :exec
+INSERT INTO issue_idle_guard (issue_id, workspace_id, state, kind, from_status, to_status, idle_since, moved_at,
+                              attempts, alert_id, comment_id, error, alert_attempts, alert_at, alert_error)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, $8, $9, $10,
+        $11, $12, $13, $14, $15)
+ON CONFLICT (issue_id) DO UPDATE SET
+    state = EXCLUDED.state, kind = EXCLUDED.kind, from_status = EXCLUDED.from_status, to_status = EXCLUDED.to_status,
+    idle_since = EXCLUDED.idle_since, moved_at = EXCLUDED.moved_at, attempts = EXCLUDED.attempts,
+    alert_id = EXCLUDED.alert_id, comment_id = EXCLUDED.comment_id, error = EXCLUDED.error,
+    alert_attempts = EXCLUDED.alert_attempts, alert_at = EXCLUDED.alert_at, alert_error = EXCLUDED.alert_error
+`
+
+type UpsertIssueIdleGuardParams struct {
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	State         string             `json:"state"`
+	Kind          string             `json:"kind"`
+	FromStatus    string             `json:"from_status"`
+	ToStatus      string             `json:"to_status"`
+	IdleSince     pgtype.Timestamptz `json:"idle_since"`
+	MovedAt       pgtype.Timestamptz `json:"moved_at"`
+	Attempts      int32              `json:"attempts"`
+	AlertID       pgtype.UUID        `json:"alert_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	Error         string             `json:"error"`
+	AlertAttempts int32              `json:"alert_attempts"`
+	AlertAt       pgtype.Timestamptz `json:"alert_at"`
+	AlertError    string             `json:"alert_error"`
+}
+
+func (q *Queries) UpsertIssueIdleGuard(ctx context.Context, arg UpsertIssueIdleGuardParams) error {
+	_, err := q.db.Exec(ctx, upsertIssueIdleGuard,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.State,
+		arg.Kind,
+		arg.FromStatus,
+		arg.ToStatus,
+		arg.IdleSince,
+		arg.MovedAt,
+		arg.Attempts,
+		arg.AlertID,
+		arg.CommentID,
+		arg.Error,
+		arg.AlertAttempts,
+		arg.AlertAt,
+		arg.AlertError,
+	)
+	return err
 }

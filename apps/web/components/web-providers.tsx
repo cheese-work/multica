@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { CoreProvider } from "@multica/core/platform";
+import type { WSClient } from "@multica/core/api/ws-client";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
@@ -13,6 +14,24 @@ import {
 } from "@/features/auth/auth-cookie";
 import { detectWebOS } from "@/platform/client-os";
 import { useUserLocaleSyncEnabled } from "@/platform/user-locale-sync";
+
+function watchWSLifecycle(client: WSClient) {
+  const onVisible = () => {
+    if (document.visibilityState === "visible") client.probe();
+  };
+  const onOnline = () => client.probe();
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (event.persisted) client.probe();
+  };
+  document.addEventListener("visibilitychange", onVisible);
+  window.addEventListener("online", onOnline);
+  window.addEventListener("pageshow", onPageShow);
+  return () => {
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", onOnline);
+    window.removeEventListener("pageshow", onPageShow);
+  };
+}
 
 // Legacy token in localStorage → keep this session in token mode so users who
 // logged in before the cookie-auth migration stay authed. They migrate to
@@ -78,6 +97,7 @@ export function WebProviders({
       resources={resources}
       localeAdapter={localeAdapter}
       syncUserLocale={syncUserLocale}
+      onWSClientReady={watchWSLifecycle}
     >
       <WebNavigationProvider>
         <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>

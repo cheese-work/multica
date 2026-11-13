@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
@@ -98,6 +99,7 @@ func TestTopUpIssueRunBudgetRefusesACloudNodeCredential(t *testing.T) {
 // many it admitted: the balance as admission sees it, not as the ledger rows add up.
 func admitUntilRefused(t *testing.T, c edgeCase, limit int) int {
 	t.Helper()
+	defer withoutRunBudgetWriters()()
 	ctx := context.Background()
 	issue, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
 	if err != nil {
@@ -137,7 +139,7 @@ func TestTopUpCarriesTheRunsLeftIntoTheNewWindow(t *testing.T) {
 	}
 }
 
-func TestTopUpSubtractsAnOverdrawnWindow(t *testing.T) {
+func TestTopUpClearsAnOverdrawnWindow(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -156,8 +158,8 @@ func TestTopUpSubtractsAnOverdrawnWindow(t *testing.T) {
 	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
 		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
 	}
-	if got := admitUntilRefused(t, c, 10); got != 1 {
-		t.Fatalf("runs admitted after the top-up = %d, want 1 (a 2-run window minus 1 overdrawn)", got)
+	if got := admitUntilRefused(t, c, 10); got != 2 {
+		t.Fatalf("runs admitted after the top-up = %d, want 2 (a fresh 2-run window; the overdraft is forgiven)", got)
 	}
 }
 
@@ -179,5 +181,54 @@ func TestRepeatedTopUpsStayAdditive(t *testing.T) {
 	}
 	if got := admitUntilRefused(t, c, 10); got != 6 {
 		t.Fatalf("runs admitted after three top-ups = %d, want 6 (three 2-run windows)", got)
+	}
+}
+
+// admitUntilRefused is setup. The warning and exhaustion writers its runs raise
+// are goroutines that outlive the helper, bump the issue revision and read
+// testHandler fields a later test swaps (CHE-3014).
+func TestAdmitUntilRefusedLeavesNoLateIssueWriter(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("isolated database required")
+	}
+	c, _ := budgetedAt(t, 40, 37)
+	openLedger(t, c)
+	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
+	}
+	admitUntilRefused(t, c, 50)
+	ctx := context.Background()
+	before, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	after, err := testHandler.Queries.GetIssue(ctx, parseUUID(c.issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision {
+		t.Fatalf("issue revision moved from %d to %d after admitUntilRefused returned: a late writer outlives the helper", before.Revision, after.Revision)
+	}
+}
+
+// A top-up pays for a fresh window: debt an old window ran up does not leave
+// the issue "over" with runs still unused (CHE-5331).
+func TestTopUpIssueRunBudgetClearsCarriedDebt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := budgetedAt(t, 40, 43)
+
+	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
+	}
+	snap := visibleSnapshot(t, c)
+	if snap.RunsLeft != 40 || snap.State != service.RunBudgetOK || len(snap.Blocking) != 0 {
+		t.Fatalf("after top-up: left=%d state=%q blocking=%v, want 40 left, ok, not blocked", snap.RunsLeft, snap.State, snap.Blocking)
+	}
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 39 {
+		t.Fatalf("balance after one admission = %d, want 39", got)
 	}
 }

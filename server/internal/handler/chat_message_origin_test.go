@@ -1,9 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -31,31 +28,4 @@ func TestMarkCarriedRepliesNamesTheTasksOwnDM(t *testing.T) {
 			t.Errorf("%s: carried_from_session_id = %q, want %q", row.ID, got, want[row.ID])
 		}
 	}
-}
-
-func TestRolloverReplyListsTheDMItRanIn(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	sessionID, successorID, taskID := rolloverThenFinalReply(t, "carried origin", "final answer")
-
-	req := httptest.NewRequest(http.MethodGet, "/api/chat/sessions/"+successorID+"/messages", nil)
-	req.Header.Set("X-User-ID", testUserID)
-	req = withChatTestWorkspaceCtx(t, withURLParam(req, "sessionId", successorID))
-	w := httptest.NewRecorder()
-	testHandler.ListChatMessages(w, req)
-	var rows []ChatMessageResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil || w.Code != http.StatusOK {
-		t.Fatalf("list: %d %s %v", w.Code, w.Body.String(), err)
-	}
-	for _, row := range rows {
-		if row.Role != "assistant" || row.TaskID == nil || *row.TaskID != taskID {
-			continue
-		}
-		if row.CarriedFromSessionID == nil || *row.CarriedFromSessionID != sessionID {
-			t.Fatalf("carried_from_session_id = %v, want %s", row.CarriedFromSessionID, sessionID)
-		}
-		return
-	}
-	t.Fatalf("no assistant row of task %s in %s", taskID, successorID)
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -27,8 +28,11 @@ func writeDecisionIntentError(writer http.ResponseWriter, err error) {
 
 func writeDecisionError(writer http.ResponseWriter, err error, operation string) {
 	var refusal decisionIntentRefusal
+	var proofRefusal passkey.Refusal
 	if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
+	} else if errors.As(err, &proofRefusal) {
+		writeError(writer, proofRefusal.Status, proofRefusal.Message)
 	} else if decisiontx.IsRetryable(err) {
 		writer.Header().Set("Retry-After", "1")
 		writeError(writer, http.StatusServiceUnavailable, operation+" is busy; retry")
@@ -41,6 +45,13 @@ func writeDecisionError(writer http.ResponseWriter, err error, operation string)
 // authorID's running, non-chat task on this open issue. Issue assignment
 // does not grant or revoke a task's decision authority.
 func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
+	return handler.authorizeDecisionTaskIn(request, queries, issue, authorType, authorID, pgtype.UUID{})
+}
+
+// authorizeDecisionTaskIn is authorizeDecisionTask for a task that runs in
+// chatSession: a chat task has no issue of its own, so the issue is only the
+// anchor it names. An invalid chatSession means an issue task.
+func (handler *Handler) authorizeDecisionTaskIn(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID, chatSession pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
 	ctx := request.Context()
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running non-chat issue task on this issue"}
 	if request.Header.Get("X-Actor-Source") != "task_token" || authorType != "agent" {
@@ -77,7 +88,7 @@ func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db
 	if err != nil {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
-	if task.Status != "running" || task.ChatSessionID.Valid || task.IssueID != issue.ID || task.AgentID != authorID {
+	if task.Status != "running" || task.ChatSessionID != chatSession || task.AgentID != authorID || !chatSession.Valid && task.IssueID != issue.ID {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
 
@@ -98,7 +109,7 @@ func (handler *Handler) checkDecisionTarget(request *http.Request, queries *db.Q
 		}
 		return err
 	}
-	if !handler.canInvokeAgent(ctx, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)) {
+	if allowed, _ := handler.invokeAgentDecisionVia(ctx, queries, agent, "member", uuidToString(humanID), "", uuidToString(issue.WorkspaceID)); !allowed {
 		return decisionIntentRefusal{http.StatusBadRequest, "named person cannot invoke the asking agent: " + uuidToString(humanID)}
 	}
 	return nil

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,20 +72,27 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err := json.Unmarshal(workspace.Settings, &settings); err != nil {
 		return fmt.Errorf("decision wait settings: %w", err)
 	}
-	eligible, err := decisionWaitEligible(ctx, queries, issue)
-	if err != nil {
-		return err
-	}
 	requests, err := queries.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil {
 		return err
 	}
-	for _, request := range requests {
-		if request.Status == "open" {
-			eligible = false
+	hasOpen := slices.ContainsFunc(requests, func(request db.DecisionRequest) bool { return request.Status == "open" })
+	// A request cancelled outside the answer path (lane archived, recipient
+	// removed, expired, withdrawn) leaves its park behind; undo it here.
+	if restored, recorded, err := unparkIssueAfterDecision(ctx, queries, issue, nil); err != nil {
+		return err
+	} else if recorded != nil {
+		if err := transaction.Commit(ctx); err != nil {
+			return err
 		}
+		handler.publishDecisionStatusChange(ctx, issue, restored, recorded, "decision_cancel")
+		return nil
 	}
-	if settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
+	eligible, err := decisionWaitEligible(ctx, queries, issue)
+	if err != nil {
+		return err
+	}
+	if hasOpen || settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
 		eligible = false
 	}
 	if !eligible {
@@ -205,6 +213,10 @@ func decisionWaitEligible(ctx context.Context, queries *db.Queries, issue db.Iss
 		return false, nil
 	}
 	category, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, issue.Status)
+	// The scan also selects parked issues, which can sit in a status the catalog no longer lists.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
 	if err != nil || category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return false, err
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -29,9 +28,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
-	"github.com/multica-ai/multica/server/internal/governance"
-	"github.com/multica-ai/multica/server/internal/governance/credential"
-	"github.com/multica-ai/multica/server/internal/governance/receipt"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -64,10 +60,6 @@ var defaultOrigins = []string{
 }
 
 const pluginBridgePrefix = "/api/plugin-bridge/v1"
-
-type serverBudgetClock struct{}
-
-func (serverBudgetClock) Now() time.Time { return time.Now().UTC() }
 
 // corsAllowedHeaders must list every header the browser clients send. A header
 // missing here fails the preflight, so the request never reaches the handler at
@@ -461,6 +453,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmailDomains:            splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		DisableWorkspaceCreation:       os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
 		WorkspaceCreationAllowedEmails: splitAndTrim(os.Getenv("WORKSPACE_CREATION_ALLOWED_EMAILS")),
+		SetupComponents:                splitAndTrim(os.Getenv("MULTICA_SETUP_COMPONENTS")),
 		VCSIntegrationEnabled:          os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                      strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                         appURLFromEnv(),
@@ -492,29 +485,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.Metrics = opts.BusinessMetrics
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
-	// GovernanceReceipts (CHE-685): receipt-capture-only, gated behind the
-	// separate JevReceipts flag (off by default). Provider stays nil in
-	// every wiring path this delivery adds — a nil Provider makes every
-	// observation record status="error"/shed_reason="error" rather than
-	// attempting a call, which is the intended no-key, no-network behavior
-	// for D03. Wiring a live jev.Client here is explicitly out of scope
-	// until a later delivery lifts the CHE-697 viability block.
-	budgetPolicy, budgetPolicyErr := governance.ParseDeploymentBudgetPolicy(os.Getenv("MULTICA_GOVERNANCE_BUDGET_POLICY"))
-	if budgetPolicyErr != nil {
-		slog.Error("governance deployment budget policy is invalid; evaluation admission fails closed", "error", budgetPolicyErr)
-	} else if budgetPolicy == nil {
-		slog.Warn("governance deployment budget policy is unset; evaluation admission fails closed", "configuration", "MULTICA_GOVERNANCE_BUDGET_POLICY")
-	}
-	var budgetAdmission receipt.BudgetAdmission
-	if pool != nil {
-		budgetService, budgetServiceErr := governance.NewBudgetService(pool, serverBudgetClock{})
-		if budgetServiceErr != nil {
-			slog.Error("governance budget service unavailable; evaluation admission fails closed", "error", budgetServiceErr)
-		} else {
-			budgetAdmission = budgetService
-		}
-	}
-	h.GovernanceReceipts = &receipt.Observer{Store: queries, BudgetAdmission: budgetAdmission, BudgetPolicy: budgetPolicy}
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	entitlementClient, entitlementErr := entitlement.New(entitlement.Config{
@@ -758,6 +728,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// is bridge code — it will simply find no rows to update
 				// on a fresh deployment and exit. MUL-2671.
 				go lark.BackfillBotUnionIDs(context.Background(), cs, larkClient, installSvc, slog.Default())
+				go lark.BackfillLegacyInboundReceipts(context.Background(), cs, slog.Default())
 
 				// Upgrade repair for deployments that ran the whole
 				// integration against Lark international via the deployment-
@@ -1105,7 +1076,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// language, resolved when the round is opened and carried
 					// on the handle to whichever closer gets there.
 					Languages: queries,
-					Logger:    slog.Default(),
+					// Who is asking, which is what decides whether their
+					// bubble may show the run's steps. Without it every
+					// bubble falls to the closed tier and shows none.
+					Identities: queries,
+					Logger:     slog.Default(),
 				})
 				// Subscribes task:failed and task:cancelled — neither a failed
 				// nor a cancelled run publishes chat:done, so this is the sole
@@ -1125,6 +1100,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 						store,
 						engine.NewDBMediaIntentLedger(queries),
 						wecomSenders,
+						queries,
 						slog.Default(),
 					)
 				}
@@ -1220,6 +1196,51 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				if wecom.SetTrace(os.Getenv("MULTICA_WECOM_TRACE") == "1") {
 					slog.Warn("wecom: frame tracing ON — records message text; unset MULTICA_WECOM_TRACE when done")
 				}
+
+				// Scan-code install: the admin scans a QR in WeCom and the bot is
+				// created and bound without anyone handling its secret. The
+				// worker drives the WeCom calls out of band and runs even when
+				// the scan flow is off, so a session already in flight reaches a
+				// terminal state instead of spinning in the admin's dialog.
+				var wecomProvider wecom.Provider
+				wecomSourceID := strings.TrimSpace(os.Getenv("MULTICA_WECOM_SOURCE_ID"))
+				if wecomSourceID == "" {
+					wecomSourceID = wecom.DefaultSourceID
+				}
+				if provider, provErr := wecom.NewHTTPProvider(wecom.HTTPProviderConfig{
+					SourceID: wecomSourceID,
+					Logger:   slog.Default(),
+				}); provErr != nil {
+					slog.Error("wecom: QR provider init failed; scan install disabled", "error", provErr)
+				} else {
+					wecomProvider = provider
+				}
+				// Assigned through the interface only when non-nil: a nil
+				// *InstallationService in a BotBinder is a non-nil interface,
+				// which would defeat Configured() and panic at finalize.
+				var wecomBotBinder wecom.BotBinder
+				if svc, instErr := wecom.NewInstallationService(queries, pool, box); instErr != nil {
+					slog.Error("wecom: InstallationService init failed; scan install disabled", "error", instErr)
+				} else {
+					wecomBotBinder = svc
+				}
+				wecomInstall := wecom.NewInstallService(queries, pool, wecomBotBinder, wecom.InstallServiceConfig{
+					Provider: wecomProvider,
+					Box:      box,
+					Logger:   slog.Default(),
+				})
+				// Same typed-nil hazard: the supervisor is nil when its lease
+				// configuration is invalid, and a nil *Supervisor in the
+				// Notifier interface would panic on the first scanned bot.
+				var wecomInstallNotifier wecom.Notifier
+				if h.ChannelSupervisor != nil {
+					wecomInstallNotifier = h.ChannelSupervisor
+				}
+				h.WecomInstall = wecomInstall
+				h.WecomInstallWorker = wecom.NewInstallWorker(wecomInstall, wecom.InstallWorkerConfig{
+					Bus:        bus,
+					Supervisor: wecomInstallNotifier,
+				})
 
 				slog.Info("wecom integration enabled (smart bot, long connection)")
 				// REPLICA TOPOLOGY: WeCom outbound (agent replies + inbox
@@ -1360,43 +1381,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		}
 	} else {
 		slog.Info("composio integration disabled (COMPOSIO_API_KEY not set)")
-	}
-
-	// Jev integration (CHE-683): TypeSafe System One evaluation. Gated by
-	// JEV_API_KEY; the jev_enabled feature flag and per-workspace targeting
-	// are enforced per call by featureflags.JevProductionGate, not here — an
-	// unset key disables the client outright with no error, since this is a
-	// paid optional dependency and startup must succeed without it.
-	if jevAPIKey := strings.TrimSpace(os.Getenv("JEV_API_KEY")); jevAPIKey != "" {
-		jevClient, jerr := newJevClient(jevAPIKey, h.FeatureFlags)
-		if jerr != nil {
-			slog.Error("jev: client init failed; jev integration disabled", "error", jerr)
-		} else {
-			h.Jev = jevClient
-			slog.Info("jev integration enabled")
-		}
-	} else {
-		slog.Info("jev integration disabled (JEV_API_KEY not set)")
-	}
-	// Per-workspace Jev credentials are separate from the legacy process-wide
-	// JEV_API_KEY. Without a dedicated at-rest key, the management endpoints
-	// fail closed and cannot write plaintext. The feature remains default-off.
-	if key, err := credential.DecodeKey("current", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY"))); err == nil {
-		key.ID = credential.KeyID(key.Material)
-		keys := []credential.Key{key}
-		if previous, err := credential.DecodeKey("previous", strings.TrimSpace(os.Getenv("MULTICA_JEV_SECRET_KEY_PREVIOUS"))); err == nil {
-			previous.ID = credential.KeyID(previous.Material)
-			if !bytes.Equal(previous.Material, key.Material) {
-				keys = append(keys, previous)
-			}
-		}
-		if ring, err := credential.NewKeyring(keys...); err != nil {
-			slog.Error("jev: credential keyring disabled", "error", err)
-		} else {
-			h.JevCredentials = ring
-		}
-	} else {
-		slog.Info("jev credential storage disabled (MULTICA_JEV_SECRET_KEY not set)")
 	}
 
 	// VCS at-rest encryption: the box encrypts per-workspace access tokens and
@@ -1718,11 +1702,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/external-read", h.MarkTaskExternalRead)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
+		r.Get("/tasks/{taskId}/elevation", h.GetTaskElevation)
+		r.Post("/tasks/{taskId}/elevation/launch-scopes-ended", h.EndTaskLaunchScopes)
 		r.Post("/tasks/{taskId}/elevation/authorize", h.AuthorizeElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/ops/{opId}/complete", h.CompleteElevatedOp)
 		r.Post("/tasks/{taskId}/elevation/revision-check", h.CheckElevatedRevision)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
+		r.Post("/tasks/{taskId}/silence-alert", h.ReportSilenceAlert)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 		r.Post("/tasks/{taskId}/cancel-ack", h.AckTaskCancelled)
 
@@ -1756,9 +1743,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the host over MessagePort; the host calls this internal route with the
 	// signed-in user's session and the installation header. Keeping it outside
 	// /v1 prevents the Public API from accepting session cookies.
+	// A5b: routes that change other runs' issues or tasks without naming them.
+	denyRunToken := h.DenyTaskTokenWrites(taskWriteScopeMode())
+	// Human-only actions refuse a run's task token in every mode, not only under the rollout flag,
+	// and refuse a cloud-node credential (RequireHumanActor), which acts as its owner.
+	denyTaskToken := h.DenyTaskTokenWrites(handler.TaskWriteScopeOn)
+	humanOnly := func(next http.Handler) http.Handler { return handler.RequireHumanActor(denyTaskToken(next)) }
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, cfSigner))
 		r.Use(handler.RejectRecoveryWrites)
+		// A5b: a run token reaches this relay too, so it gets the write scope.
+		r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
 		r.Route(pluginBridgePrefix, func(r chi.Router) {
 			registerPluginActionRoutes(r, h)
 			// ui / manual only. `event` is dispatched by the host off the event
@@ -1800,7 +1795,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// string (Desktop, mobile). Browsers get theirs re-issued inline by
 		// middleware.Auth and never call this (MUL-7436).
 		r.Post("/api/auth/refresh", h.RefreshSession)
-		r.Post("/api/upload-file", h.UploadFile)
+		// Not in the workspace group, so the A5b write scope is attached here: an
+		// upload with issue_id or comment_id is a write to that issue.
+		r.With(h.TaskTokenWriteScope(taskWriteScopeMode())).Post("/api/upload-file", h.UploadFile)
 		r.Route("/api/push", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Get("/config", h.GetPushConfig)
@@ -1843,7 +1840,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
 					r.Get("/", h.GetWorkspace)
 					r.Get("/members", h.ListMembersWithUser)
-					r.Post("/leave", h.LeaveWorkspace)
+					r.Get("/provider-breakers", h.ListProviderBreakers)
+					r.With(denyRunToken).Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
 					// integrations tab no longer renders blank for non-admins;
@@ -1854,6 +1852,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// for the same reason as GitHub installations; connect /
 					// disconnect are admin-gated in the group below.
 					r.Get("/vcs/connections", h.ListVCSConnections)
+					r.Get("/background-agents", h.GetBackgroundAgents)
+					r.Get("/me/background-agents", h.GetMyBackgroundAgents)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -1866,8 +1866,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// The payload is names and transports only; the stored
 					// entries are write-only.
 					r.Get("/mcp-servers", h.ListWorkspaceMcpServers)
-					r.Get("/governance/config", h.GetGovernanceConfig)
-					r.Get("/jev/credential", h.GetJevCredential)
 					// Installed Plugins are member-visible so a member can
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
@@ -1877,18 +1875,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
 				})
+				// Owner-only: the decision passkey gate, signed with a passkey.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
+					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
+					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Put("/", h.UpdateWorkspace)
 					r.Patch("/", h.UpdateWorkspace)
-					r.Patch("/governance/config", h.PatchGovernanceConfig)
-					r.Put("/jev/credential", h.PutJevCredential)
-					r.Delete("/jev/credential", h.DeleteJevCredential)
+					// Scheduling pause: the handler also refuses agent credentials.
+					r.Post("/pause", h.PauseWorkspaceScheduling)
+					r.Post("/resume", h.ResumeWorkspaceScheduling)
+					r.With(handler.RequireHumanActor).Post("/provider-breakers/{provider}/reset", h.ResetProviderBreaker)
 					r.Post("/members", h.CreateInvitation)
 					r.Route("/members/{memberId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateMember)
-						r.Delete("/", h.DeleteMember)
+						r.With(denyRunToken).Delete("/", h.DeleteMember)
 					})
 					r.Delete("/invitations/{invitationId}", h.RevokeInvitation)
 					// CHE-766: export privacy policy (CHE-755 redaction mode +
@@ -1901,6 +1906,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
+					// CHE-3627: routing agent. Human owner/admin only.
+					r.With(handler.RequireHumanActor).Get("/routing-agent", h.GetRoutingAgent)
+					r.With(handler.RequireHumanActor).Put("/routing-agent", h.UpdateRoutingAgent)
+					// CHE-4098: background agents. Owner/admin only; the handler refuses a
+					// machine actor itself so the refusal carries a stable code and an
+					// unchanged machine write stays accepted.
+					r.Put("/background-agents", h.UpdateBackgroundAgents)
+					r.Delete("/background-agents", h.ResetBackgroundAgents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
@@ -1946,7 +1959,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
 				// Owner-only access
-				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
+				r.With(denyRunToken, middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
 				// GitHub integration — connect / disconnect remain admin-only;
 				// the read-only list endpoint lives in the member-level group
@@ -2012,6 +2025,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/slack/install/byo", h.RegisterSlackBYO)
 					r.Delete("/wecom/installations/{installationId}", h.RevokeWecomInstallation)
 					r.Post("/wecom/install/byo", h.RegisterWecomBYO)
+					// Scan-code install creates and binds a bot, so it sits with
+					// the manual install and the revoke: whoever can connect a
+					// bot this way can also disconnect it.
+					r.Post("/wecom/install/begin", h.BeginWecomInstall)
+					r.Get("/wecom/install/{sessionId}", h.GetWecomInstallStatus)
 				})
 
 				r.Group(func(r chi.Router) {
@@ -2159,14 +2177,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Use(middleware.RequireWorkspaceMember(queries))
 			// Task-token write scoping (CHE-2216 A5a). Off until the A6 cutover:
 			// ordinary runs keep their ambient capabilities (risk decision 8).
-			r.Use(h.TaskTokenWriteScope(strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_TASK_WRITE_SCOPE")))))
+			r.Use(h.TaskTokenWriteScope(taskWriteScopeMode()))
+			// Every /api/chat* route is classed for task tokens (CHE-3702).
+			r.Use(h.ChatTaskTokenGate)
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)
 
 			// R3 exact-snapshot approval (CHE-2126 plan 5.3): the handler checks can_route per issue.
 			r.Get("/api/github/intake/revisions/{id}/snapshot", h.GetGitHubRevisionSnapshot)
-			r.Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
+			r.With(denyRunToken).Post("/api/github/intake/revisions/{id}/approve", h.ApproveGitHubRevisionSnapshot)
 
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
@@ -2189,6 +2209,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/agent-decisions", func(r chi.Router) {
 				r.Get("/brief", h.GetAgentDecisionBrief)
 				r.With(handler.RequireHumanActor).Put("/setting", h.SetAgentDecisionSetting)
+				r.With(handler.RequireHumanActor).Put("/jev", h.SetAgentDecisionJev)
+			})
+
+			// System 1 labels (CHE-4383 B4a): the assigned labeller agent writes with a
+			// task token; the owner assigns the labeller and a task token must not.
+			r.Route("/api/system1", func(r chi.Router) {
+				r.Post("/labels", h.WriteSystem1Label)
+				r.With(handler.RequireHumanActor).Put("/labellers", h.SetSystem1Labeller)
 			})
 
 			// Issues
@@ -2197,10 +2225,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/table/groups", h.ListIssueTableGroups)
 				r.Post("/table/rows", h.ListIssueTableRows)
 				r.Post("/table/facets", h.ListIssueTableFacets)
+				r.Post("/timeline", h.ListIssueActualTimeline)
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
+				r.Get("/urgent-orphans", h.ListUrgentOrphanIssues)
 				r.Get("/children", h.ListChildrenByParents)
 				r.Get("/grouped", h.ListGroupedIssues)
+				// The caller's issues with an agent result they have not seen
+				// yet; backs the sidebar's unread dot.
+				r.Get("/unread", h.ListIssueUnread)
 				r.Get("/", h.ListIssues)
 				// POST twin of GET /api/issues for oversized filter sets
 				// (agents-working ids facet) — see QueryIssues.
@@ -2210,22 +2243,29 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/preview-trigger", h.PreviewIssueTrigger)
 				r.Post("/batch-update", h.BatchUpdateIssues)
 				r.Post("/batch-delete", h.BatchDeleteIssues)
+				r.Post("/relations/batch", h.GetIssueRelationsBatch)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssue)
 					r.Get("/agent-decisions", h.LookupAgentDecision)
+					r.Get("/human-in-charge", h.GetHumanInCharge)
 					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
+					r.Post("/route", h.RouteIssue)
 					r.Delete("/", h.DeleteIssue)
 					r.Post("/comments/trigger-preview", h.PreviewCommentTriggers)
 					r.Post("/comments", h.CreateComment)
 					r.Get("/comments", h.ListComments)
 					r.Get("/timeline", h.ListTimeline)
+					r.Get("/description/history", h.ListIssueDescriptionRevisions)
+					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
-					r.Post("/run-budget", h.RaiseIssueRunBudget)
-					r.With(handler.RequireHumanActor).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					r.Get("/stage-queue", h.GetIssueStageQueue)
+					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
+					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					r.With(handler.RequireHumanActor).Post("/run-budget/requests", h.RequestIssueRunBudgetAction)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)
 					// CHE-2514: a person clears the taint that keeps one issue's runs restricted.
@@ -2236,6 +2276,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/subscribe", h.SubscribeToIssue)
 					r.Post("/unsubscribe", h.UnsubscribeFromIssue)
 					r.Post("/unsubscribe/subtree", h.UnsubscribeFromIssueSubtree)
+					r.Post("/progress-follow", h.FollowIssueProgress)
+					r.Delete("/progress-follow", h.UnfollowIssueProgress)
+					r.Post("/progress-follow/mute", h.MuteIssueProgress)
+					r.Post("/progress-follow/unmute", h.UnmuteIssueProgress)
+					r.Post("/read", h.MarkIssueRead)
+					r.Post("/unread", h.MarkIssueUnread)
 					r.Get("/wakeups", h.ListIssueWakeups)
 					r.Post("/wakeups", h.CreateIssueWakeup)
 					r.Put("/wakeups/{wakeupID}", h.CreateIssueWakeup)
@@ -2294,14 +2340,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// CHE-755 read-only provenance export. Human owners/admins only; the
 			// handler re-checks the role and actor source as a backstop.
 			r.With(handler.RequireHumanActor).Post("/api/provenance/export", h.ExportProvenance)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases", h.ListGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Get("/api/governance/cases/{caseId}", h.GetGovernanceCaseAudit)
-			r.With(handler.RequireHumanActor).Post("/api/governance/cases/{caseId}/export", h.ExportGovernanceCaseAudit)
-			r.Route("/api/governance/proposals/{caseId}/attempts/{attemptId}", func(r chi.Router) {
-				r.Get("/evidence", h.GetGovernanceProposalEvidence)
-				r.Post("/heartbeat", h.HeartbeatGovernanceProposalAttempt)
-				r.Post("/result", h.SubmitGovernanceProposalResult)
-			})
 
 			// Issue quick actions (definitions; running one lives under
 			// /api/issues/{id}/quick-actions/{quickActionId}/run)
@@ -2331,7 +2369,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetLabel)
 					r.Put("/", h.UpdateLabel)
-					r.Delete("/", h.DeleteLabel)
+					r.With(denyRunToken).Delete("/", h.DeleteLabel)
 				})
 			})
 
@@ -2360,8 +2398,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issue-workflows", func(r chi.Router) {
 				r.Get("/", h.ListIssueWorkflows)
 				r.Post("/", h.CreateIssueWorkflow)
+				r.Get("/lint", h.LintIssueWorkflows)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueWorkflow)
+					r.Get("/lint", h.LintIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Patch("/", h.UpdateIssueWorkflow)
 					r.With(handler.RequireHumanActor).Delete("/", h.DeleteIssueWorkflow)
 					r.With(handler.RequireHumanOrTaskToken).Put("/handoffs/{status}", h.SetIssueWorkflowHandoff)
@@ -2380,9 +2420,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetProject)
-					r.Put("/", h.UpdateProject)
-					r.Delete("/", h.DeleteProject)
-					r.Post("/workflow", h.SetProjectWorkflow)
+					r.With(denyRunToken).Put("/", h.UpdateProject)
+					r.With(denyRunToken).Delete("/", h.DeleteProject)
+					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -2409,7 +2449,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetSquad)
 					r.Put("/", h.UpdateSquad)
-					r.Delete("/", h.DeleteSquad)
+					r.With(denyRunToken).Delete("/", h.DeleteSquad)
 					r.Get("/members", h.ListSquadMembers)
 					r.Get("/members/status", h.ListSquadMemberStatus)
 					r.Post("/members", h.AddSquadMember)
@@ -2478,10 +2518,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// (MUL-3130). The handler self-resolves the workspace
 			// from the attachment row.
 			r.Get("/api/attachments/{id}/content", h.GetAttachmentContent)
+			r.Get("/api/attachments/{id}/history", h.ListAttachmentRevisions)
+			r.Get("/api/attachments/{id}/diff", h.DiffAttachmentRevisions)
 			r.Delete("/api/attachments/{id}", h.DeleteAttachment)
 
 			// Comments
 			r.Route("/api/comments/{commentId}", func(r chi.Router) {
+				r.Get("/preview", h.GetCommentPreview)
 				r.With(handler.RequireHumanActor).Get("/sub-issue-preview", h.PreviewCommentSubIssue)
 				r.With(handler.RequireHumanActor).Post("/sub-issues", h.CreateCommentSubIssue)
 				r.Put("/", h.UpdateComment)
@@ -2510,9 +2553,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
-					r.Post("/archive", h.ArchiveAgent)
+					r.With(denyRunToken).Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
-					r.Post("/cancel-tasks", h.CancelAgentTasks)
+					// Scheduling pause: person owner/admin only (the handler
+					// refuses agent credentials; canManageAgent would not).
+					r.Post("/pause", h.PauseAgentScheduling)
+					r.Post("/resume", h.ResumeAgentScheduling)
+					r.Get("/scheduling-impact", h.GetAgentSchedulingImpact)
+					r.With(denyRunToken).Post("/cancel-tasks", h.CancelAgentTasks)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/dingtalk/groups", h.ListDingTalkGroupsForAgent)
 					r.Get("/skills", h.ListAgentSkills)
@@ -2620,7 +2668,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/local-skills/{requestId}", h.GetLocalSkillListRequest)
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
-					r.Delete("/", h.DeleteAgentRuntime)
+					r.With(denyRunToken).Delete("/", h.DeleteAgentRuntime)
 					// Confirmed variant of DELETE: unbind every agent bound to
 					// this runtime (they keep their configuration and chats and
 					// need a new runtime to run again), cancel their tasks,
@@ -2628,16 +2676,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// in one transaction. Used by the DeleteRuntimeDialog when
 					// the strict DELETE refused with
 					// `runtime_has_active_agents` and the user confirmed.
-					r.Post("/unbind-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					r.With(denyRunToken).Post("/unbind-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
 					// Confirmed public-to-private transition. The normal PATCH
 					// returns a structured plan when teammates still have agents
 					// or active work on the runtime; this route applies that plan
 					// atomically after the owner reviews it.
-					r.Post("/revoke-workspace-access", h.RevokeRuntimeWorkspaceAccess)
+					r.With(denyRunToken).Post("/revoke-workspace-access", h.RevokeRuntimeWorkspaceAccess)
 					// Legacy path for installed clients built against the
 					// archive-and-delete contract (MUL-5559 renamed the
 					// behaviour, not just the route). Same handler.
-					r.Post("/archive-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
+					r.With(denyRunToken).Post("/archive-agents-and-delete", h.UnbindAgentsAndDeleteRuntime)
 				})
 			})
 
@@ -2692,6 +2740,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/api/agent-run-counts", h.GetWorkspaceAgentRunCounts)
 
 			r.Get("/api/chat/search", h.SearchChats)
+			r.Get("/api/dm-progress/follows", h.ListDMProgressFollows)
 			r.Route("/api/chat/sessions", func(r chi.Router) {
 				r.Post("/", h.CreateChatSession)
 				r.Get("/", h.ListChatSessions)
@@ -2699,11 +2748,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/", h.GetChatSession)
 					r.Patch("/", h.UpdateChatSession)
 					r.Patch("/pin", h.SetChatSessionPinned)
-					r.Patch("/archive", h.SetChatSessionArchived)
+					r.With(denyRunToken).Patch("/archive", h.SetChatSessionArchived)
 					r.Get("/usage", h.GetChatSessionUsage)
 					r.Get("/wakeups", h.ListChatSessionWakeups)
 					r.Delete("/wakeups/{wakeupId}", h.CancelChatSessionWakeup)
-					r.Delete("/", h.DeleteChatSession)
+					r.With(denyRunToken).Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
 					r.Post("/continue", h.ContinueChatSession)
 					r.Post("/fork", h.ForkChatSession)
@@ -2713,16 +2762,27 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/quick-actions/regenerate", h.RegenerateChatQuickActions)
 					r.Get("/messages", h.ListChatMessages)
 					r.Get("/messages/page", h.ListChatMessagesPage)
+					r.Get("/segments", h.ListChatSegments)
+					r.Get("/segment", h.GetChatSegment)
 					r.Get("/pending-task", h.GetPendingChatTask)
-					r.Delete("/queued-tasks", h.ClearQueuedChatTasks)
-					r.Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
+					r.With(denyRunToken).Delete("/queued-tasks", h.ClearQueuedChatTasks)
+					r.With(denyRunToken).Post("/queued-tasks/{taskId}/prioritize", h.PrioritizeQueuedChatTask)
+					r.With(denyRunToken).Post("/tasks/{taskId}/steer", h.SteerChatTask)
+					r.Post("/messages/{messageId}/supplement/resend", h.ResendChatSupplement)
 					r.Post("/read", h.MarkChatSessionRead)
+					r.Post("/unread", h.MarkChatSessionUnread)
+					// DM attention (CHE-4147): human-only Xong / Để sau on the displayed keys.
+					r.With(humanOnly).Get("/attention", h.GetChatSessionAttention)
+					r.With(humanOnly).Post("/attention/xong", h.ChatAttentionXong)
+					r.With(humanOnly).Post("/attention/later", h.ChatAttentionLater)
 					// Deferred-cancellation draft restores (#5219):
 					// creator-only fetch + idempotent consume.
 					r.Get("/draft-restores", h.ListChatDraftRestores)
 					r.Delete("/draft-restores/{restoreId}", h.ConsumeChatDraftRestore)
 				})
 			})
+			r.With(humanOnly).Post("/api/chat/attention/xong-all", h.ChatAttentionXongAll)
+			r.With(humanOnly).Post("/api/chat/attention/xong-all/{batchId}/undo", h.ChatAttentionUndoXongAll)
 			r.Get("/api/chat/pending-tasks", h.ListPendingChatTasks)
 			r.Get("/api/chat/pending-tasks/has-any", h.HasPendingChatTasks)
 
@@ -2741,6 +2801,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Post("/api/chat/continue", h.ContinueChatSession)
 			r.Post("/api/chat/compact", h.CompactChatSession)
 			// Agent-facing DM wakeups: the task token names the DM.
+			r.Post("/api/chat/outcome", h.PostChatOutcome)
 			r.Post("/api/chat/wakeups", h.CreateChatWakeup)
 			r.Get("/api/chat/wakeups", h.ListChatWakeups)
 			r.Delete("/api/chat/wakeups/{wakeupId}", h.CancelChatWakeup)
@@ -2771,9 +2832,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			r.Route("/api/decisions", func(r chi.Router) {
 				r.Post("/", h.RequestDecision)
+				r.Post("/ask", h.AskDecision)
+				r.Post("/ci", h.CreateCIDecision)
 				r.Get("/", h.ListDecisions)
 				r.With(handler.RequireHumanActor).Get("/open", h.ListOpenDecisions)
+				r.With(handler.RequireHumanActor).Get("/issue-cards", h.ListIssueDecisionCards)
 				r.Get("/feed", h.ListDecisionFeed)
+				r.Get("/shadow-report", h.GetSystem1Report)
 				r.Post("/feed/{id}/ack", h.AckDecisionFeed)
 				r.Get("/open-asks", h.ListOpenDecisionAsks)
 				r.Get("/{id}", h.GetDecision)
@@ -2782,8 +2847,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
+			r.Post("/api/decision-actions/proposals", h.ProposeDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/challenge", h.ChallengePasskeyRevocation)
@@ -2791,8 +2858,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/code", h.StartPasskeyRevocationByCode)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/{id}/revoke/confirm", h.ConfirmPasskeyRevocationByCode)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/approve", h.ApproveDecisionAction)
+			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}", h.GetDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences
 			r.Route("/api/notification-preferences", func(r chi.Router) {
@@ -2808,6 +2877,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+// taskWriteScopeMode reads the task-token write-scope mode: off (default),
+// audit or on.
+func taskWriteScopeMode() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_TASK_WRITE_SCOPE")))
 }
 
 // buildLarkConnector wires the real WS long-conn connector that talks
@@ -2871,6 +2946,7 @@ func buildLarkConnector(installSvc *lark.InstallationService, apiClient lark.API
 		FrameDecoder:        decoder,
 		Enricher:            enricher,
 		CredentialsProvider: credsProvider,
+		InboundVerifier:     installSvc,
 		Logger:              slog.Default(),
 	})
 	if err != nil {

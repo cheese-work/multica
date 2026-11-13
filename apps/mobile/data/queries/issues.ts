@@ -94,3 +94,16 @@ export const issueAttachmentsOptions = (wsId: string | null, id: string) =>
     queryFn: ({ signal }) => api.listAttachments(id, { signal }),
     enabled: !!wsId && !!id,
   });
+
+/**
+ * Comment-ID chip preview. `null` (404 / malformed) is a settled answer, so it
+ * is cached like any other. `useCommentPreviewRealtime` refetches on comment
+ * edit/delete and reconnect; `staleTime` additionally refetches on remount.
+ */
+export const commentPreviewOptions = (wsId: string | null, commentId: string) =>
+  queryOptions({
+    queryKey: issueKeys.commentPreview(wsId, commentId),
+    queryFn: ({ signal }) => api.getCommentPreview(commentId, { signal }),
+    enabled: !!wsId,
+    staleTime: 60_000,
+  });

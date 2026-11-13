@@ -297,11 +297,12 @@ func TestCommentTriggerOnComment(t *testing.T) {
 
 	t.Run("top-level comment mentioning only others suppresses trigger", func(t *testing.T) {
 		clearTasks(t, issueID)
-		// Mention a fake agent UUID that is not the assignee.
-		content := "[@SomeoneElse](mention://agent/00000000-0000-0000-0000-000000000001) what do you think?"
+		// Mention a real agent that is not the assignee.
+		other := createSecondAgent(t)
+		content := fmt.Sprintf("[@SomeoneElse](mention://agent/%s) what do you think?", other)
 		postComment(t, issueID, content, nil)
-		if n := countPendingTasks(t, issueID); n != 0 {
-			t.Errorf("expected 0 pending tasks, got %d", n)
+		if n := countPendingTasksForAgent(t, issueID, agentID); n != 0 {
+			t.Errorf("expected 0 pending tasks for the assignee, got %d", n)
 		}
 	})
 
@@ -374,6 +375,32 @@ func TestCommentTriggerOnComment(t *testing.T) {
 		postCommentAsAgent(t, issueID, "Working on it, found the root cause.", agentID, strPtr(threadID))
 		// Member follows up in the same thread without @mentioning the agent.
 		postComment(t, issueID, "Great, please also check the edge case", strPtr(threadID))
+		if n := countPendingTasks(t, issueID); n != 1 {
+			t.Errorf("expected 1 pending task (conversation continuation), got %d", n)
+		}
+	})
+
+	// MUL-8416: a reply that merges into the root's still-queued task takes
+	// over trigger_comment_id. Later replies under the root must still reach
+	// the agent once that task has finished.
+	t.Run("reply to member thread whose root was folded into a queued task continues agent", func(t *testing.T) {
+		clearTasks(t, issueID)
+		threadID := postComment(t, issueID, "Please fix this bug", nil)
+		followUpID := postComment(t, issueID, "Also check the spacing", strPtr(threadID))
+		if n := countPendingTasks(t, issueID); n != 1 {
+			t.Fatalf("expected the follow-up to merge into the root's task, got %d pending tasks", n)
+		}
+		if got := latestTriggerCommentID(t, issueID); got != followUpID {
+			t.Fatalf("trigger_comment_id = %q, want merged follow-up %q", got, followUpID)
+		}
+		if _, err := testPool.Exec(context.Background(), `
+			UPDATE agent_task_queue
+			SET status = 'completed', completed_at = now()
+			WHERE issue_id = $1 AND trigger_comment_id = $2
+		`, issueID, followUpID); err != nil {
+			t.Fatalf("failed to complete merged task: %v", err)
+		}
+		postComment(t, issueID, "Should the page header go too?", strPtr(threadID))
 		if n := countPendingTasks(t, issueID); n != 1 {
 			t.Errorf("expected 1 pending task (conversation continuation), got %d", n)
 		}

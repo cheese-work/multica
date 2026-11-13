@@ -118,7 +118,7 @@ func (h *Handler) canRouteMember(ctx context.Context, userID pgtype.UUID, issue 
 // ponytail: the PR row has no GitHub repo-ID or fork column, so owner/name stands
 // in for repo identity here; the repo-ID check lands with the column that stores it.
 func (h *Handler) routeTargetIssues(ctx context.Context, installationID int64, repoOwner, repoName string, prNumber int32) ([]db.Issue, error) {
-	installations, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, installationID)
+	installations, err := h.allowedGitHubInstallations(ctx, installationID)
 	if err != nil {
 		return nil, err
 	}

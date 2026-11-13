@@ -123,7 +123,7 @@ func eventTriggerEvents(trigger wakeupObject) []string {
 // scope.
 func WakeupEventSelector(p WakeupConfigPatch) []string {
 	events := append([]string{}, eventTriggerEvents(p.Trigger)...)
-	if spec, ok := triggerSpec(p.Trigger); ok && spec.Kind == wakeupTriggerKindCondition {
+	if spec, ok := triggerSpec(p.Trigger); ok && (spec.Kind == wakeupTriggerKindCondition || isScheduleTriggerKind(spec.Kind)) {
 		events = append(events, wakeupActivateEvent)
 		slices.Sort(events)
 	}
@@ -473,9 +473,11 @@ type scopedRule struct {
 	events      []string
 	// condition is the normalized predicate of a condition rule, nil for an event rule.
 	condition []byte
-	ensured   bool
-	instance  db.IssueWakeup
-	reason    string
+	// schedule is the schedule of a schedule rule, nil for every other.
+	schedule *wakeupSchedule
+	ensured  bool
+	instance db.IssueWakeup
+	reason   string
 }
 
 // scopedDefinitionStamp is one stored definition as capture records it:
@@ -590,6 +592,10 @@ func newScopedRule(issue db.Issue, key string, chain *scopedRuleChain) *scopedRu
 		return r
 	}
 	r.eff, r.events, r.condition = eff, eventTriggerEvents(eff.Config.Trigger), customCondition(eff.Config.Trigger)
+	if r.schedule, err = customSchedule(eff.Config); err != nil {
+		r.invalid = true
+		return r
+	}
 	// The member who wrote the layer that named the target answers for it; with
 	// no named target, the member who wrote the most specific layer.
 	layer, named := eff.Sources["target"]

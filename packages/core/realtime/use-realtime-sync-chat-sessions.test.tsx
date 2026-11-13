@@ -1,12 +1,17 @@
 /** @vitest-environment jsdom */
-import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClientProvider, QueryObserver, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import type { WSClient } from "../api/ws-client";
-import { chatKeys, chatSessionsOptions } from "../chat/queries";
+import {
+  chatKeys,
+  chatMessagesPageOptions,
+  chatSessionsOptions,
+  pendingChatTaskOptions,
+} from "../chat/queries";
 import { createQueryClient } from "../query-client";
 import type { ChatSession } from "../types/chat";
 import type { ChatMessageEventPayload } from "../types/events";
@@ -49,8 +54,7 @@ describe("useRealtimeSync — chat message session list refresh", () => {
     vi.restoreAllMocks();
   });
 
-  async function mountSessionList() {
-    const listChatSessions = vi.fn(async (): Promise<ChatSession[]> => [readSession]);
+  async function mountSessionList(listChatSessions = vi.fn(async (): Promise<ChatSession[]> => [readSession])) {
     setApiInstance({ listChatSessions } as unknown as ApiClient);
     const handlers: Record<string, (payload: unknown) => void> = {};
     const ws = {
@@ -115,6 +119,156 @@ describe("useRealtimeSync — chat message session list refresh", () => {
 
     await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(sessionList.result.current.data).toEqual([newSession, readSession]));
+  });
+
+  it("heals a mounted DM when the refreshed list has a newer message", async () => {
+    const newerSession = {
+      ...readSession,
+      last_message: {
+        id: "00000000-0000-4000-8000-000000000002",
+        task_id: "task-1",
+        content: "The reply",
+        role: "assistant",
+        created_at: "2026-10-14T00:02:00Z",
+      },
+    } as unknown as ChatSession;
+    const listChatSessions = vi.fn()
+      .mockResolvedValueOnce([readSession])
+      .mockResolvedValueOnce([newerSession]);
+    const assistantMessage = {
+      id: "00000000-0000-4000-8000-000000000002",
+      chat_session_id: readSession.id,
+      role: "assistant",
+      content: "The reply",
+      created_at: "2026-10-14T00:02:00Z",
+    };
+    const userMessage = {
+      ...assistantMessage,
+      id: "00000000-0000-4000-8000-000000000001",
+      role: "user",
+      content: "The prompt",
+      created_at: "2026-10-14T00:01:00Z",
+    };
+    const listChatMessagesPage = vi.fn()
+      .mockResolvedValueOnce({ messages: [userMessage], limit: 50, has_more: false })
+      .mockResolvedValue({ messages: [userMessage, assistantMessage], limit: 50, has_more: false });
+    const getPendingChatTask = vi.fn()
+      .mockResolvedValueOnce({ task_id: "task-1", status: "dispatched", created_at: "2026-10-14T00:01:00Z" })
+      .mockResolvedValue({});
+    setApiInstance({ listChatSessions, listChatMessagesPage, getPendingChatTask } as unknown as ApiClient);
+    const handlers: Record<string, (payload: unknown) => void> = {};
+    const ws = {
+      on: (event: string, handler: (payload: unknown) => void) => {
+        handlers[event] = handler;
+        return () => delete handlers[event];
+      },
+      onAny: () => () => {},
+      onReconnect: () => () => {},
+    } as unknown as WSClient;
+    const stores = {
+      authStore: { getState: () => ({ user: { id: "u1" } }) },
+    } as unknown as RealtimeSyncStores;
+    function Wrapper({ children }: { children: ReactNode }) {
+      return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+    }
+    const mounted = renderHook(() => {
+      useRealtimeSync(ws, stores);
+      return {
+        sessions: useQuery(chatSessionsOptions("ws-1")),
+        messages: useInfiniteQuery(chatMessagesPageOptions(readSession.id)),
+        pending: useQuery(pendingChatTaskOptions(readSession.id)),
+      };
+    }, { wrapper: Wrapper });
+
+    await waitFor(() => expect(mounted.result.current.pending.data?.status).toBe("dispatched"));
+    await waitFor(() => expect(mounted.result.current.messages.data?.pages[0]?.messages).toHaveLength(1));
+    await act(async () => {
+      handlers["chat:session_read"]!({ chat_session_id: readSession.id });
+    });
+
+    await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(listChatMessagesPage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getPendingChatTask).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mounted.result.current.messages.data?.pages[0]?.messages).toContainEqual(assistantMessage));
+    expect(mounted.result.current.pending.data).toEqual({});
+
+    await act(async () => {
+      handlers["chat:session_read"]!({ chat_session_id: readSession.id });
+    });
+    await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(3));
+    expect(listChatMessagesPage).toHaveBeenCalledTimes(2);
+    expect(getPendingChatTask).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks an unmounted DM detail stale without refetching it", async () => {
+    const newerSession = {
+      ...readSession,
+      last_message: {
+        id: "00000000-0000-4000-8000-000000000002",
+        task_id: "task-1",
+        content: "The reply",
+        role: "assistant",
+        created_at: "2026-10-14T00:02:00Z",
+      },
+    } as unknown as ChatSession;
+    const listChatSessions = vi.fn()
+      .mockResolvedValueOnce([readSession])
+      .mockResolvedValueOnce([newerSession]);
+    const { handlers } = await mountSessionList(listChatSessions);
+    const pageKey = chatKeys.messagesPage(readSession.id);
+    const pendingKey = chatKeys.pendingTask(readSession.id);
+    queryClient.setQueryData(pageKey, {
+      pages: [{ messages: [{ id: "00000000-0000-4000-8000-000000000001" }] }],
+      pageParams: [null],
+    });
+    queryClient.setQueryData(pendingKey, {
+      task_id: "task-1",
+      status: "dispatched",
+      created_at: "2026-10-14T00:01:00Z",
+    });
+
+    await act(async () => {
+      handlers["chat:session_read"]!({ chat_session_id: readSession.id });
+    });
+    await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(2));
+
+    expect(queryClient.getQueryState(pageKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(pendingKey)?.isInvalidated).toBe(true);
+  });
+
+  it("does not refetch a pending task for an assistant reply from its predecessor", async () => {
+    const priorReplySession = {
+      ...readSession,
+      last_message: {
+        id: "00000000-0000-4000-8000-000000000003",
+        task_id: "task-1",
+        content: "Previous reply",
+        role: "assistant",
+        created_at: "2026-10-14T00:02:00Z",
+      },
+    } as unknown as ChatSession;
+    const listChatSessions = vi.fn()
+      .mockResolvedValueOnce([readSession])
+      .mockResolvedValue([priorReplySession]);
+    const getPendingChatTask = vi.fn().mockResolvedValue({
+      task_id: "task-2",
+      status: "running",
+      created_at: "2026-10-14T00:01:00Z",
+    });
+    const { handlers } = await mountSessionList(listChatSessions);
+    setApiInstance({ listChatSessions, getPendingChatTask } as unknown as ApiClient);
+    const pendingObserver = new QueryObserver(queryClient, pendingChatTaskOptions(readSession.id));
+    const unsubscribe = pendingObserver.subscribe(() => undefined);
+    try {
+      await waitFor(() => expect(getPendingChatTask).toHaveBeenCalledTimes(1));
+      await act(async () => {
+        handlers["chat:session_read"]!({ chat_session_id: readSession.id });
+        await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(2));
+      });
+      expect(getPendingChatTask).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("does not invalidate or refetch the DM list for a user message", async () => {

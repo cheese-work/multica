@@ -18,7 +18,7 @@ func TestUnpromptedDecisionRecordRollback(test *testing.T) {
 		test.Run(query, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			input := fixture.recordInput()
-			input.ParentID, input.EscalationClass = pgtype.UUID{}, "spend"
+			input.ParentID, input.EscalationClass = pgtype.UUID{}, "reversible"
 			failure := errors.New("injected rollback")
 			useRequestCoreStarter(test, &requestCoreStarter{base: testHandler.TxStarter, query: "-- name: " + query, fail: failure})
 			result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)

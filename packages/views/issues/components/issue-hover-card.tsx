@@ -1,5 +1,7 @@
 "use client";
 
+import { isSchemaValidationError } from "@multica/core/api/schema";
+import { isNotFoundError } from "@multica/core/issues/canonical-id";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useStatusLabel } from "./../utils/status-label";
@@ -29,6 +31,7 @@ import {
   HoverCardContent,
 } from "@multica/ui/components/ui/hover-card";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
+import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
@@ -134,6 +137,7 @@ function IssueHoverCardBody({
   // the identifier the way the chip degrades, so the card still says which
   // issue it is about.
   if (detail.isError || !issue) {
+    const dataError = isSchemaValidationError(detail.error);
     return (
       <div className="flex flex-col gap-1.5">
         {fallbackLabel && (
@@ -141,7 +145,20 @@ function IssueHoverCardBody({
             {fallbackLabel}
           </span>
         )}
-        <p className="text-caption text-muted-foreground">{t(($) => $.detail.not_found)}</p>
+        <p className="text-caption text-muted-foreground">
+          {t(($) =>
+            dataError
+              ? $.detail.data_error
+              : detail.isError && !isNotFoundError(detail.error)
+                ? $.detail.card_load_failed
+                : $.detail.not_found,
+          )}
+        </p>
+        {dataError && (
+          <Button variant="outline" size="xs" className="self-start" onClick={() => void detail.refetch()}>
+            {t(($) => $.detail.retry)}
+          </Button>
+        )}
       </div>
     );
   }

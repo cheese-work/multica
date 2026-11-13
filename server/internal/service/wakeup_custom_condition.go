@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -20,12 +22,12 @@ import (
 // start per issue when it names no limit.
 const wakeupCustomFireDefault = 20
 
-// withRootFireDefault gives a newly created repeating custom event or condition
-// rule the per-issue fire cap it did not set. Only creation calls it: updates,
+// withRootFireDefault gives a newly created repeating custom event, condition,
+// interval or cron rule the per-issue fire cap it did not set. Only creation calls it: updates,
 // built-ins and overrides never gain a default.
 func withRootFireDefault(p *WakeupConfigPatch) {
 	spec, ok := triggerSpec(p.Trigger)
-	if !ok || spec.Kind != wakeupTriggerKindEvent && spec.Kind != wakeupTriggerKindCondition {
+	if !ok || !slices.Contains([]string{wakeupTriggerKindEvent, wakeupTriggerKindCondition, wakeupTriggerKindEvery, wakeupTriggerKindCron}, spec.Kind) {
 		return
 	}
 	if !p.MaxFires.Set && !(p.Mode.Set && !p.Mode.Null && p.Mode.Value == "once") {
@@ -81,6 +83,16 @@ const wakeupPreviewExamineLimit = 200
 type WakeupSatisfiedPreview struct {
 	Satisfied, Examined int
 	Truncated           bool
+	// Issues names the satisfied issues, one per Satisfied, in scope order.
+	Issues []WakeupMatchedIssue
+}
+
+// WakeupMatchedIssue identifies one issue a previewed condition already meets.
+// Number lets the HTTP layer render the workspace's identifier.
+type WakeupMatchedIssue struct {
+	ID     string
+	Number int32
+	Title  string
 }
 
 // previewSatisfied counts the already-satisfied issues of a proposed condition
@@ -131,6 +143,7 @@ func (s *IssueWakeupService) previewSatisfied(ctx context.Context, ref WakeupSco
 		}
 		if met {
 			out.Satisfied++
+			out.Issues = append(out.Issues, WakeupMatchedIssue{ID: util.UUIDToString(issue.ID), Number: issue.Number, Title: issue.Title})
 		}
 	}
 	return out, nil

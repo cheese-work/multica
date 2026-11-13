@@ -5,14 +5,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { TriangleAlert } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { cn } from "@multica/ui/lib/utils";
-import {
-  ContentEditor,
-  type ContentEditorRef,
-  useFileDropZone,
-  FileDropOverlay,
-  useUploadGate,
-  useComposerSubmit,
-} from "../../editor";
+import type { ContentEditorRef } from "../../editor/content-editor";
+import { useFileDropZone } from "../../editor/use-file-drop-zone";
+import { FileDropOverlay } from "../../editor/file-drop-overlay";
+import { useUploadGate } from "../../editor/use-upload-gate";
+import { useComposerSubmit } from "../../editor/use-composer-submit";
 import { PASTE_AS_FILE_THRESHOLD } from "../../editor/paste-as-file";
 import { parseForkCommand } from "../../editor/extensions/parse-fork-command";
 import { parseDmClientCommandAttempt } from "../../editor/extensions/parse-dm-client-command";
@@ -22,8 +19,12 @@ import {
   type UploadDraftBinding,
 } from "../../editor/use-coordinated-uploads";
 import { SubmitButton } from "@multica/ui/components/common/submit-button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
+import { DeferredContentEditor as ContentEditor } from "./deferred-content-editor";
 import { ChatAddMenu } from "./chat-add-menu";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
+import { useVisualViewportKeyboard } from "./use-visual-viewport-keyboard";
+import { keyboardComposerMaxHeight } from "./keyboard-composer-cap";
 import { useChatStore, DRAFT_NEW_SESSION } from "@multica/core/chat";
 import { attachmentToDraftUpload, type DraftUpload } from "@multica/core/drafts";
 import { createLogger } from "@multica/core/logger";
@@ -63,10 +64,18 @@ function isAttachmentReferenced(content: string, attachment: Attachment): boolea
   return attachmentReferenceUrls(attachment).some((url) => content.includes(url));
 }
 
+const LATER_COMMAND = /^\/later(?:\s+([\s\S]*))?$/i;
+
 interface ChatInputProps {
   /** Comments on agent replies for this DM. They are sent with the next message as quotes. */
   annotationScope?: ChatInputAnnotations;
   onRename?: (title: string) => Promise<boolean>;
+  /**
+   * Handles `/later [duration]` (the owner snoozes the DM; nothing is sent to
+   * the agent). Receives the raw duration text, "" for the server default. A
+   * handler that resolves `false` keeps the command in the box.
+   */
+  onLater?: (duration: string) => Promise<boolean>;
   /**
    * Handles `/fork` (the server copies the DM — nothing is sent to the agent).
    * Pass it only for a saved, active web DM; without it `/fork` is an ordinary
@@ -75,13 +84,14 @@ interface ChatInputProps {
   onFork?: (message: string, attachmentIds: string[]) => Promise<ForkResult>;
   /**
    * DM commands the owner answers itself; nothing is sent to the agent. Pass a
-   * handler only when the command applies to the open DM: `/archive` and `/pin`
-   * on an active DM, `/unarchive` on an archived one. A handler that resolves
+   * handler only when the command applies to the open DM: `/archive`, `/pin`
+   * and `/unseen` on an active DM, `/unarchive` on an archived one. A handler that resolves
    * `false` keeps the command in the box.
    */
   onStatistic?: () => void | boolean | Promise<void | boolean>;
   onArchive?: () => void | boolean | Promise<void | boolean>;
   onPin?: () => void | boolean | Promise<void | boolean>;
+  onUnseen?: () => void | boolean | Promise<void | boolean>;
   onUnarchive?: () => void | boolean | Promise<void | boolean>;
   /** The open, active DM's agent: offers `/preset <name>` completions for its presets. */
   presetAgentId?: string;
@@ -89,12 +99,20 @@ interface ChatInputProps {
   sessionArchived?: boolean;
   /** Identifies the composer for UI checks; the floating window overrides it. */
   testId?: string;
+  /**
+   * Open asks (question cards) the DM is waiting on. Shows a "this message
+   * answers the open question" checkbox: checked by default for exactly one
+   * ask, unchecked for several. When checked, `onSend` gets all of them as
+   * `askIds`; there is no per-ask choice.
+   */
+  replyAskIds?: string[];
   onSend: (
     content: string,
     attachmentIds: string[] | undefined,
     commitInput: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
     draftAttachments: Attachment[],
     decisionRequestId?: string,
+    askIds?: string[],
   ) => void | boolean | Promise<void | boolean>;
   restoreDraftRequest?: {
     id: string;
@@ -211,10 +229,13 @@ export function ChatInput({
   annotationScope,
   onSend,
   onRename,
+  onLater,
+  replyAskIds,
   onFork,
   onStatistic,
   onArchive,
   onPin,
+  onUnseen,
   onUnarchive,
   presetAgentId,
   sessionArchived,
@@ -252,6 +273,7 @@ export function ChatInput({
   const sendShortcut = useShortcut("send");
   const editorRef = useRef<ContentEditorRef>(null);
   const composerRef = useRef<HTMLDivElement>(null);
+  const keyboard = useVisualViewportKeyboard();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   // Two keys with deliberately different concerns:
   //
@@ -293,16 +315,22 @@ export function ChatInput({
   const [isEmpty, setIsEmpty] = useState(!inputDraft.trim());
   // One inline line for the last failed `/fork`; edits and DM switches retire it.
   const [forkError, setForkError] = useState<string | null>(null);
+  const askCount = replyAskIds?.length ?? 0;
+  // The user's choice is kept per set of asks: a changed set resets to the default.
+  const askKey = (replyAskIds ?? []).join(",");
+  const [askChoice, setAskChoice] = useState<{ key: string; checked: boolean } | null>(null);
+  const replyToAsks = askChoice?.key === askKey ? askChoice.checked : askCount === 1;
   useEffect(() => {
     setForkError(null);
   }, [draftKey]);
   // A fork input keeps the Send action even while a turn runs: a fork never
   // joins the agent's queue, so it is not gated by queue support.
-  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unarchive: onUnarchive };
+  const dmCommandHandlers = { statistic: onStatistic, archive: onArchive, pin: onPin, unseen: onUnseen, unarchive: onUnarchive };
   const draftDmAttempt = parseDmClientCommandAttempt(inputDraft);
   // A DM command is answered locally and never joins the agent's queue either.
   const isForkInput =
     (!!onFork && parseForkCommand(inputDraft) !== null) ||
+    (!!onLater && LATER_COMMAND.test(inputDraft.trim())) ||
     (!!draftDmAttempt && !!dmCommandHandlers[draftDmAttempt.command]);
   // `isEmpty` tracks the LIVE editor, which the persisted draft lags by a
   // debounce, so the send affordance cannot be derived from `inputDraft` alone.
@@ -461,6 +489,7 @@ export function ChatInput({
   // started) so the user can type immediately. The editor's `focus()` latches
   // through to `onCreate` when it isn't mounted yet, so this works even on the
   // first render of a freshly-mounted compose box. `0` is inert on purpose.
+  // The composer loads its editor on demand; this call is what summons it.
   useEffect(() => {
     if (!focusRequest) return;
     editorRef.current?.focus();
@@ -569,7 +598,7 @@ export function ChatInput({
       // These states disable the SubmitButton, but Mod+Enter bypasses it — so a
       // read-only or busy composer must still refuse the keyboard path.
       const fork = onFork ? parseForkCommand(content) : null;
-      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnarchive);
+      const hasDmCommandHandler = !!(onStatistic || onArchive || onPin || onUnseen || onUnarchive);
       const dmAttempt = hasDmCommandHandler
         ? parseDmClientCommandAttempt(editorRef.current?.getText() ?? "")
         : null;
@@ -583,7 +612,8 @@ export function ChatInput({
         dmAttempt && !isLegacyOrdinaryArchiveNow
           ? dmCommandHandlers[dmAttempt.command]
           : undefined;
-      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler)) {
+      const laterMatch = onLater ? LATER_COMMAND.exec(editorRef.current?.getText().trim() ?? "") : null;
+      if (disabled || noAgent || (isRunning && !allowSubmitWhileRunning && !fork && !dmCommandHandler && !laterMatch)) {
         logger.debug("input.send skipped", {
           disabled,
           noAgent,
@@ -694,6 +724,17 @@ export function ChatInput({
         commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
         return true;
       }
+      if (onLater && laterMatch) {
+        if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
+          setForkError(t(($) => $.input.command_no_attachments, { command: "later" }));
+          return false;
+        }
+        setForkError(null);
+        // The command text is cleared only once the server confirmed the snooze.
+        if (!await onLater((laterMatch[1] ?? "").trim())) return false;
+        commitInput({ clearEditor: editorDraftKeyRef.current === keyAtSend });
+        return true;
+      }
       const command = onRename ? editorRef.current?.getText().trim() ?? "" : "";
       if (onRename && /^\/rename(?:\s|$)/.test(command)) {
         if (uniqueActiveIds.length > 0 || draftUploads.length > 0) {
@@ -712,12 +753,19 @@ export function ChatInput({
         draftKey: keyAtSend,
         attachmentCount: uniqueActiveIds.length,
       });
+      // Trailing args are appended only when set, so plain sends keep the short call.
+      const askIds = askCount > 0 && replyToAsks ? replyAskIds : undefined;
+      const sendTail: [decisionRequestId?: string, askIds?: string[]] = askIds
+        ? [prepared.decisionRequestId, askIds]
+        : prepared.decisionRequestId
+          ? [prepared.decisionRequestId]
+          : [];
       const accepted = await onSend(
         content,
         uniqueActiveIds.length > 0 ? uniqueActiveIds : undefined,
         commitInput,
         draftAttachments.filter((attachment) => uniqueActiveIds.includes(attachment.id)),
-        ...(prepared.decisionRequestId ? [prepared.decisionRequestId] as const : []),
+        ...sendTail,
       );
       // Owner rejected the send (or threw, which useComposerSubmit also treats
       // as a rejection): the draft was never committed, so it stays put for
@@ -815,6 +863,12 @@ export function ChatInput({
     <div
       ref={composerRef}
       data-testid={testId}
+      // Soft keyboards (iOS) leave the layout viewport full-height, so the
+      // percentage cap below resolves against a surface mostly hidden behind
+      // the keyboard (CHE-3534). While it is up, cap by the visible strip
+      // instead so the message list keeps the rest. Always written, so the
+      // cap clears when the keyboard closes.
+      style={{ maxHeight: keyboardComposerMaxHeight(keyboard?.viewportHeight) }}
       className={cn(
         // The composer grows with the draft up to half the surface it sits on
         // — a fixed 160px cap made long drafts unreadable in a five-line
@@ -909,6 +963,8 @@ export function ChatInput({
             // intentionally tracks neither the session nor the agent.
             key={editorKey}
             ref={editorRef}
+            // Queued file/quote calls made before the editor chunk loads are bound to this draft.
+            draftKey={draftKey}
             value={inputDraft}
             placeholder={placeholder}
             onUpdate={(md) => {
@@ -933,6 +989,8 @@ export function ChatInput({
             enableStatisticCommand={!!onStatistic}
             enableArchiveCommand={!!onArchive}
             enablePinCommand={!!onPin}
+            enableUnseenCommand={!!onUnseen}
+            enableLaterCommand={!!onLater}
             enableUnarchiveCommand={!!onUnarchive}
             presetAgentId={presetAgentId}
             enableCompactCommand={!sessionArchived}
@@ -1010,6 +1068,15 @@ export function ChatInput({
         </div>
         {uploadEnabled && isDragOver && <FileDropOverlay />}
       </div>
+      {askCount > 0 && (
+        <label className={cn(CHAT_COLUMN, "flex items-center gap-1.5 px-1 pt-1.5 text-caption text-muted-foreground")}>
+          <Checkbox
+            checked={replyToAsks}
+            onCheckedChange={(checked) => setAskChoice({ key: askKey, checked: checked === true })}
+          />
+          {t(($) => $.input.reply_ask, { count: askCount })}
+        </label>
+      )}
       {forkError && (
         <p role="alert" className={cn(CHAT_COLUMN, "px-1 pt-1.5 text-caption text-destructive")}>
           {forkError}

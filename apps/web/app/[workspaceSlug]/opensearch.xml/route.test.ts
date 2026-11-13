@@ -81,14 +81,25 @@ describe("workspace OpenSearch description", () => {
     );
   });
 
-  it("does not let request headers override the configured public origin", async () => {
-    vi.stubEnv("MULTICA_APP_URL", "https://app.example.com:8443/");
+  it("uses the visitor's own origin when it differs from the configured public origin", async () => {
+    vi.stubEnv("MULTICA_APP_URL", "https://congvc-c00.taila6fa8a.ts.net:19443");
     const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
-      headers: { host: "attacker.test:1234", "x-forwarded-proto": "http" },
+      headers: { host: "multica.congvc.dev", "x-forwarded-proto": "https" },
     }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    expect(response.status).toBe(200);
     expect(await response.text()).toContain(
-      'template="https://app.example.com:8443/acme/search?q={searchTerms}"',
+      'template="https://multica.congvc.dev/acme/search?q={searchTerms}"',
     );
+  });
+
+  it("keeps HTTPS for an alternate host when the proxy hop reports http", async () => {
+    vi.stubEnv("MULTICA_APP_URL", "https://congvc-c00.taila6fa8a.ts.net:19443");
+    const response = await GET(new Request("http://0.0.0.0:3000/acme/opensearch.xml", {
+      headers: { host: "alias.example.test", "x-forwarded-proto": "http" },
+    }), { params: Promise.resolve({ workspaceSlug: "acme" }) });
+    const text = await response.text();
+    expect(text).toContain('template="https://alias.example.test/acme/search?q={searchTerms}"');
+    expect(text).not.toContain("http://alias.example.test");
   });
 
   it("reflects an unconfigured request host only in its own uncached response", async () => {

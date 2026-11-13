@@ -255,6 +255,20 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		unreadableAssistantCount := 0
 		controlErrors := make(chan error, 1)
 		var controlWrites sync.WaitGroup
+		var controlMu sync.Mutex
+		pendingControls := 0
+		closeRequested := false
+		closeAfterControls := func() {
+			if supplements != nil {
+				supplements.end()
+			}
+			controlMu.Lock()
+			defer controlMu.Unlock()
+			closeRequested = true
+			if pendingControls == 0 {
+				closeStdin()
+			}
+		}
 		var stopAfterErrorResultOnce sync.Once
 		// stopAfterErrorResult terminates a claude that outlives its error
 		// result past the grace period, the same way cancellation does.
@@ -373,7 +387,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					}
 				}
 				contextWindow = claudeContextWindow(msg.ModelUsage, contextModel)
-				closeStdin()
+				// Keep draining stdout while accepted control replies finish writing.
+				// Once those replies drain, stdin closes; requests arriving after that
+				// cannot be answered.
+				closeAfterControls()
 				if resultIsError || terminalReasonError != "" {
 					stopAfterErrorResultOnce.Do(func() { go stopAfterErrorResult() })
 				}
@@ -390,9 +407,20 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if supplements != nil {
 					reply, _ = supplements.prepareHook(msg)
 				}
+				controlMu.Lock()
+				pendingControls++
+				controlMu.Unlock()
 				controlWrites.Add(1)
 				go func(msg claudeSDKMessage, reply func(io.Writer) error) {
 					defer controlWrites.Done()
+					defer func() {
+						controlMu.Lock()
+						defer controlMu.Unlock()
+						pendingControls--
+						if closeRequested && pendingControls == 0 {
+							closeStdin()
+						}
+					}()
 					if reply == nil {
 						b.handleControlRequest(msg, inputWriter)
 						return
@@ -991,6 +1019,12 @@ func (s *claudeUsageSnapshot) appendedCostStateUsage() (map[string]TokenUsage, b
 	return readLastClaudeCostStateUsage(f, s.offset, info.Size())
 }
 
+// ClaudeConfigDir resolves Claude's config directory using the same inherited
+// environment and task overrides as the backend's child process.
+func ClaudeConfigDir(extraEnv map[string]string, cwd string) (string, error) {
+	return claudeConfigDir(buildEnv(extraEnv), cwd)
+}
+
 func claudeConfigDir(env []string, cwd string) (string, error) {
 	if value, ok := lastClaudeEnvValue(env, "CLAUDE_CONFIG_DIR"); ok && value != "" {
 		return resolveClaudeConfigPath(value, cwd)
@@ -1224,6 +1258,9 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	// Claude Code loads the per-task CLAUDE.md the daemon writes into the
 	// workdir, so inlining the same runtime brief would duplicate it on every
 	// turn. Verified against Claude Code 2.1.220 (MUL-5392).
+	if opts.AppendSystemPromptFile != "" {
+		args = append(args, "--append-system-prompt-file", opts.AppendSystemPromptFile)
+	}
 	if opts.ResumeSessionID != "" {
 		args = append(args, "--resume", opts.ResumeSessionID)
 	}
@@ -1242,6 +1279,11 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args = append(args, filterCustomArgs(opts.CustomArgs, blockedArgs, logger)...)
 	if opts.ClaudeSettingsPath != "" {
 		args = append(args, "--settings", opts.ClaudeSettingsPath)
+	}
+	if opts.DisableProviderWebTools {
+		// Last, so no earlier user argument can follow it. A deny rule beats
+		// any --allowedTools entry.
+		args = append(args, "--disallowedTools", "WebSearch,WebFetch")
 	}
 	return args
 }

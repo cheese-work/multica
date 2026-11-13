@@ -11,6 +11,7 @@ import type {
 import {
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
+  applyChatSupplementUpdated,
   patchSessionListAfterRename,
   promotePendingTaskToRunning,
   seedAcceptedPendingTask,
@@ -460,5 +461,27 @@ describe("patchSessionListAfterRename", () => {
     const [row] = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId)) ?? [];
     expect(row?.status).toBe("archived");
     expect(row?.pinned).toBe(false);
+  });
+});
+
+describe("applyChatSupplementUpdated", () => {
+  it("refetches the DM's messages and pending task so the bubble and Steer state follow the receipt", () => {
+    const qc = new QueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    applyChatSupplementUpdated(qc, { supplement: { chat_session_id: SESSION } });
+
+    const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+    expect(keys).toContainEqual(chatKeys.messages(SESSION));
+    expect(keys).toContainEqual(chatKeys.pendingTask(SESSION));
+  });
+
+  it("ignores a payload without a session id", () => {
+    const qc = new QueryClient();
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+
+    applyChatSupplementUpdated(qc, {});
+
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

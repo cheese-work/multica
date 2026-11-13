@@ -10,6 +10,13 @@ import (
 	"time"
 )
 
+const (
+	CausePR       = "pr"       // required, and not red on the base tip or on another run of the head
+	CauseInfra    = "infra"    // red on the base tip, or green on another run of the same head
+	CauseOptional = "optional" // not required by the base branch rules
+	CauseFlaky    = "flaky"    // a passing check that was red on this same head earlier
+)
+
 // CheckContext is one normalized check for a PR head. Both check runs and commit
 // statuses are flattened into this shape, so
 // downstream storage and aggregation are uniform.
@@ -24,6 +31,9 @@ type CheckContext struct {
 	Conclusion      string
 	DetailsURL      string
 	IsStatusContext bool
+	// RedCause says why a failing check is red: CausePR, CauseInfra or
+	// CauseOptional. Empty means unknown, and no cause is attributed (CHE-3257).
+	RedCause string
 }
 
 // PRSnapshot is the atomic unit written per fetch. It mirrors exactly what the
@@ -44,6 +54,8 @@ type PRSnapshot struct {
 	// as passed (acceptance criterion 5).
 	HasChecks bool
 	Contexts  []CheckContext
+	// Closed is true when GitHub reports the PR closed or merged.
+	Closed bool
 }
 
 // Decided reports whether the snapshot has settled: no check is still running
@@ -73,7 +85,8 @@ const (
 )
 
 type restPullRequest struct {
-	Head struct {
+	State string `json:"state"`
+	Head  struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
 	Base struct {
@@ -126,7 +139,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		return nil, err
 	}
 
-	snap := &PRSnapshot{HeadSHA: pr.Head.SHA}
+	snap := &PRSnapshot{HeadSHA: pr.Head.SHA, Closed: pr.State == "closed"}
 	seenRuns := make(map[int64]struct{}, len(runs))
 	type checkKey struct {
 		Name  string
@@ -329,11 +342,11 @@ func normalizeStatusState(s string) (status, conclusion string) {
 
 // FetchPullRequest returns the raw REST pull request. Its shape matches the
 // webhook pull_request object, so a caller can replay it as an event.
-func (c *Client) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
-	if !c.Enabled() {
+func (client *Client) FetchPullRequest(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error) {
+	if !client.Enabled() {
 		return nil, errors.New("ghsnapshot: client not configured")
 	}
-	return c.restGet(ctx, installationID, fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number))
+	return client.restGet(ctx, installationID, fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number))
 }
 
 // FetchPullRequest is Client.FetchPullRequest on the manager's client.

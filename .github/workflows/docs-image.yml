@@ -1,0 +1,71 @@
+name: Docs image
+
+# Builds the fork docs image on X99 and publishes it by digest. Never builds on
+# C00; deploy consumes the digest from the job summary (first deploy of this
+# service is a per-item C00 approval, so nothing here deploys).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/docs/**"
+      - "packages/ui/**"
+      - "Dockerfile.docs"
+      - "Dockerfile.docs.dockerignore"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/docs-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docs-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, cheese-x99]
+    timeout-minutes: 30
+    env:
+      DOCS_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-docs
+    steps:
+      - name: Assert trusted main on X99 amd64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(uname -m)" = x86_64
+          test "${GITHUB_REPOSITORY}" = cheese-work/multica
+
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish amd64 docs image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --metadata-file docs-metadata.json \
+            --push \
+            --tag "${DOCS_IMAGE}:sha-${GITHUB_SHA}" \
+            --file Dockerfile.docs .
+          digest="$(node -p 'const d=require("./docs-metadata.json")["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); d')"
+          echo "${DOCS_IMAGE}@${digest} (source ${GITHUB_SHA})" | tee -a "$GITHUB_STEP_SUMMARY"
