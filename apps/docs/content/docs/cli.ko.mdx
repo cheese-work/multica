@@ -149,6 +149,18 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
 
+### 이슈 라우팅
+
+`issue route`는 이슈의 상태를 바꾸고 그 이유를 한 번의 호출로 기록합니다. 라우팅 단계가 이슈를 다음에 어디로 보낼지 정할 때 사용합니다. `--status`, `--reason`(1~500자), `--confidence`(0~1)는 필수입니다.
+
+```bash
+multica issue route MUL-123 --status in_review --reason "테스트 통과, 리뷰 필요" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "백엔드 수정 필요" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "리뷰어가 나중에 가져감" --confidence 0.9
+```
+
+`--owner`가 없으면 `issue status`와 같이 프로젝트 워크플로가 담당자를 정합니다. 명시적인 `--owner`(멤버, 에이전트 또는 스쿼드. `--owner-id`는 이름 대신 UUID를 받습니다)는 워크플로의 담당자를 대체합니다. 현재 상태는 유지하고 담당자만 바꾸는 라우트는 허용됩니다. 상태와 담당자가 모두 같은 라우트는 HTTP 409로 거부되며 아무것도 기록하지 않습니다. `--no-start`는 `issue update`와 같이 에이전트 실행을 시작하지 않습니다. `--expected-revision`을 지정하면 그 사이에 이슈가 바뀐 경우 라우트를 거부합니다.
+
 ### 타임라인
 
 `issue get`은 태스크의 현재 상태를 보여 줍니다. `issue timeline`은 상태, 우선순위, 담당자, 제목, 날짜 변경과 실행 결과를 시간순으로 나열하고 댓글도 섞어 보여 줍니다. "언제 in_review로 바뀌었나", "지금 상태에 얼마나 머물러 있나"를 확인할 때 씁니다.
