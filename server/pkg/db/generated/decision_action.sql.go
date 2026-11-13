@@ -337,6 +337,64 @@ func (q *Queries) ListDecisionActionsAwaitingPostCommit(ctx context.Context, bat
 	return items, nil
 }
 
+const listDecisionBatchActions = `-- name: ListDecisionBatchActions :many
+SELECT action.id, action.workspace_id, action.decision_request_id, action.action_type, action.action_version, action.params, action.preconditions, action.secret_slots, action.payload_sha256, action.expires_at, action.state, action.requested_by_agent_id, action.requested_by_task_id, action.approved_by_user_id, action.approved_at, action.executed_at, action.webauthn_credential_id, action.result, action.error_code, action.error_message, action.post_commit_done_at, action.created_at, action.updated_at FROM decision_action action
+JOIN decision_request request ON request.id = action.decision_request_id AND request.workspace_id = action.workspace_id
+WHERE request.workspace_id = $1 AND request.batch_id = $2
+ORDER BY action.id
+`
+
+type ListDecisionBatchActionsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchID     pgtype.UUID `json:"batch_id"`
+}
+
+// A batch's actions in id order; the first is the batch's lead, the action its
+// passkey challenge names.
+func (q *Queries) ListDecisionBatchActions(ctx context.Context, arg ListDecisionBatchActionsParams) ([]DecisionAction, error) {
+	rows, err := q.db.Query(ctx, listDecisionBatchActions, arg.WorkspaceID, arg.BatchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionAction{}
+	for rows.Next() {
+		var i DecisionAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DecisionRequestID,
+			&i.ActionType,
+			&i.ActionVersion,
+			&i.Params,
+			&i.Preconditions,
+			&i.SecretSlots,
+			&i.PayloadSha256,
+			&i.ExpiresAt,
+			&i.State,
+			&i.RequestedByAgentID,
+			&i.RequestedByTaskID,
+			&i.ApprovedByUserID,
+			&i.ApprovedAt,
+			&i.ExecutedAt,
+			&i.WebauthnCredentialID,
+			&i.Result,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.PostCommitDoneAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentRejectedProposalParams = `-- name: ListRecentRejectedProposalParams :many
 SELECT a.params, a.updated_at
 FROM decision_action a
