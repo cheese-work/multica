@@ -2247,6 +2247,13 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	var autoCompleteErrs []error
+	if state == "merged" {
+		ctx = withMergedPRInput(ctx, service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
+			RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL,
+			HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
+		})
+	}
 	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
 		// An owed closed-PR replay runs after an earlier attempt may have failed
 		// past the commit: the links are unchanged but the auto-completion they
