@@ -17,21 +17,21 @@ import (
 
 // Needs a migrated database: DATABASE_URL=... go test ./internal/ciwatch -run Ledger
 
-type ledgerClock struct {
+type actClock struct {
 	mu sync.Mutex
 	t  time.Time
 }
 
-func (c *ledgerClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
-func (c *ledgerClock) Advance(d time.Duration) {
+func (c *actClock) Now() time.Time { c.mu.Lock(); defer c.mu.Unlock(); return c.t }
+func (c *actClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	c.t = c.t.Add(d)
 	c.mu.Unlock()
 }
 
-type ledgerEnv struct {
+type actEnv struct {
 	pool    *pgxpool.Pool
-	clock   *ledgerClock
+	clock   *actClock
 	ledger  *Ledger
 	ws      string
 	repo    string
@@ -39,7 +39,7 @@ type ledgerEnv struct {
 	effects atomic.Int32
 }
 
-func newLedgerEnv(t *testing.T) *ledgerEnv {
+func newLedgerEnv(t *testing.T) *actEnv {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
@@ -50,7 +50,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &ledgerEnv{pool: pool, clock: &ledgerClock{t: time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)},
+	e := &actEnv{pool: pool, clock: &actClock{t: time.Date(2026, 11, 6, 10, 0, 0, 0, time.UTC)},
 		ws: uuid.NewString(), repo: "r" + uuid.NewString()[:8]}
 	e.verdict.Store(Verdict{})
 	e.ledger = NewLedger(pool, func(context.Context, pgx.Tx, Action) (Verdict, error) {
@@ -73,12 +73,12 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	return e
 }
 
-func (e *ledgerEnv) action(runID int64, kind, sig string) NewAction {
+func (e *actEnv) action(runID int64, kind, sig string) NewAction {
 	return NewAction{WorkspaceID: e.ws, RepoOwner: "o", RepoName: e.repo, OriginalRunID: runID,
 		Kind: kind, Protocol: "p1", SignatureHash: sig, DueAt: e.clock.Now(), RunCompletedAt: e.clock.Now()}
 }
 
-func (e *ledgerEnv) count(t *testing.T, kind string) int {
+func (e *actEnv) count(t *testing.T, kind string) int {
 	t.Helper()
 	var n int
 	if err := e.pool.QueryRow(context.Background(),
@@ -88,7 +88,7 @@ func (e *ledgerEnv) count(t *testing.T, kind string) int {
 	return n
 }
 
-func (e *ledgerEnv) get(t *testing.T, id string) Action {
+func (e *actEnv) get(t *testing.T, id string) Action {
 	t.Helper()
 	a, err := e.ledger.Get(context.Background(), id)
 	if err != nil {
@@ -99,7 +99,7 @@ func (e *ledgerEnv) get(t *testing.T, id string) Action {
 
 // insertEffect writes the destination row (issue, comment, notification) and
 // the owner wake in the caller's transaction, as the real executors do.
-func (e *ledgerEnv) insertEffect(kind string) LocalEffect {
+func (e *actEnv) insertEffect(kind string) LocalEffect {
 	return func(ctx context.Context, tx pgx.Tx, a Action) (string, error) {
 		e.effects.Add(1)
 		dest := uuid.NewString()
@@ -515,7 +515,7 @@ func TestLedgerRestartMidPostBecomesAmbiguousAndReconcilesToDone(t *testing.T) {
 }
 
 // claim runs ClaimAndSchedule for the run and reports whether it claimed.
-func (e *ledgerEnv) claim(t *testing.T, run int64, sig string) (Action, bool) {
+func (e *actEnv) claim(t *testing.T, run int64, sig string) (Action, bool) {
 	t.Helper()
 	a, ok, err := e.ledger.ClaimAndSchedule(context.Background(), e.action(run, ActionIssueCreate, sig), 24*time.Hour)
 	if err != nil {
@@ -525,7 +525,7 @@ func (e *ledgerEnv) claim(t *testing.T, run int64, sig string) (Action, bool) {
 }
 
 // schedule inserts an action; issue_create goes through ClaimAndSchedule.
-func (e *ledgerEnv) schedule(t *testing.T, run int64, kind, sig string) Action {
+func (e *actEnv) schedule(t *testing.T, run int64, kind, sig string) Action {
 	t.Helper()
 	if kind == ActionIssueCreate {
 		a, ok := e.claim(t, run, sig)
@@ -541,7 +541,7 @@ func (e *ledgerEnv) schedule(t *testing.T, run int64, kind, sig string) Action {
 	return a
 }
 
-func (e *ledgerEnv) ownerCount(t *testing.T, sig string) int {
+func (e *actEnv) ownerCount(t *testing.T, sig string) int {
 	t.Helper()
 	var n int
 	if err := e.pool.QueryRow(context.Background(),
