@@ -1,5 +1,6 @@
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 import { countDiffLines } from "@multica/core/issues/decision-artifacts";
+import { workflowStepTarget } from "@multica/core/issues/decision-action-preview";
 import type { DecisionConfigChange } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
@@ -13,6 +14,15 @@ function resultText({ diff_kind, after }: DecisionConfigChange): string {
   if (typeof after === "string") return after;
   if (diff_kind === "lines" && Array.isArray(after)) return after.map(String).join("\n");
   return JSON.stringify(after, null, 2) ?? "";
+}
+
+// The server's counts of a text change, in the unit it counted in. Shown as sent, never recounted;
+// anything but non-negative whole numbers in a known unit is not shown.
+function serverCounts(meta: DecisionConfigChange["meta"]): { before: number; after: number; cap?: number } | undefined {
+  const { unit, chars_before: before, chars_after: after, cap } = meta ?? {};
+  const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  if (unit !== "code_points" || !count(before) || !count(after)) return undefined;
+  return { before, after, ...(count(cap) ? { cap } : {}) };
 }
 
 /**
@@ -35,11 +45,18 @@ export function ConfigChangeViewer({ change }: { change: DecisionConfigChange })
       case "workspace.context": return t(($) => $.decision.config_change.field_workspace_context);
       case "workflow.steps": return t(($) => $.decision.config_change.field_workflow_steps);
       case "workflow.instructions": return t(($) => $.decision.config_change.field_workflow_instructions);
+      case "workflow.budget": return t(($) => $.decision.config_change.field_workflow_budget);
+      case "workspace.routing_agent": return t(($) => $.decision.config_change.field_workspace_routing_agent);
+      case "workspace.delegated_writes": return t(($) => $.decision.config_change.field_workspace_delegated_writes);
+      case "agent.skills": return t(($) => $.decision.config_change.field_agent_skills);
       case "workspace.settings": return t(($) => $.decision.config_change.field_workspace_settings);
       default: return change.field;
     }
   })();
+  const stepTarget = change.field === "workflow.instructions" ? workflowStepTarget(change) : undefined;
   const { added, removed } = countDiffLines(change.diff);
+  const counts = serverCounts(change.meta);
+  const number = new Intl.NumberFormat();
   const tabId = (key: TabKey) => `${id}-tab-${key}`;
 
   const onKeyDown = (event: KeyboardEvent, key: TabKey) => {
@@ -63,6 +80,23 @@ export function ConfigChangeViewer({ change }: { change: DecisionConfigChange })
         <p className="break-all text-caption text-muted-foreground">
           {t(($) => $.decision.config_change.target)}: <code className="font-mono">{change.target_id}</code>
         </p>
+        {stepTarget && (
+          <>
+            <p data-testid="config-change-workflow" className="break-all text-caption text-muted-foreground">
+              {t(($) => $.decision.config_change.workflow)}: <span className="font-semibold text-foreground">{stepTarget.workflowName}</span>
+            </p>
+            <p data-testid="config-change-status" className="break-all text-caption text-muted-foreground">
+              {t(($) => $.decision.config_change.step_status)}: <code className="font-mono">{stepTarget.statusKey}</code>
+            </p>
+          </>
+        )}
+        {counts && (
+          <p data-testid="config-change-counts" className="text-caption text-muted-foreground">
+            {counts.cap === undefined
+              ? t(($) => $.decision.config_change.counts, { before: number.format(counts.before), after: number.format(counts.after) })
+              : t(($) => $.decision.config_change.counts_cap, { before: number.format(counts.before), after: number.format(counts.after), cap: number.format(counts.cap) })}
+          </p>
+        )}
         {change.keys.length > 0 && (
           <p data-testid="config-change-keys" className="break-all text-caption text-muted-foreground">
             {t(($) => $.decision.config_change.keys)}: <code className="font-mono">{change.keys.join(", ")}</code>

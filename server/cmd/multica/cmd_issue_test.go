@@ -559,7 +559,7 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("content-stdin", false, "")
 	cmd.Flags().String("content-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().StringSlice("steer", nil, "")
@@ -921,14 +921,17 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
+	cmd.Flags().Bool("assignee-picker", false, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().StringSlice("attachment-id", nil, "")
 	cmd.Flags().StringArray("property", nil, "")
 	return cmd
@@ -4229,9 +4232,7 @@ func TestRunIssueCreateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("status", "not a status")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4243,9 +4244,7 @@ func TestRunIssueUpdateRejectsInvalidStatusBeforeRequest(t *testing.T) {
 }
 
 func TestRunIssueUpdateRejectsInvalidPriorityBeforeRequest(t *testing.T) {
-	cmd := &cobra.Command{Use: "update"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("priority", "", "")
+	cmd := newIssueUpdateTestCmd()
 	_ = cmd.Flags().Set("priority", "P1")
 	err := runIssueUpdate(cmd, []string{"MUL-1"})
 	if err == nil {
@@ -4263,13 +4262,15 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().Bool("description-stdin", false, "")
 	cmd.Flags().String("description-file", "", "")
 	cmd.Flags().Bool("allow-external-file", false, "")
-	cmd.Flags().StringSlice("attachment", nil, "")
+	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("status", "", "")
 	cmd.Flags().String("priority", "", "")
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
 	cmd.Flags().String("workflow", "", "")
+	cmd.Flags().String("decision-id", "", "")
+	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -7150,13 +7151,13 @@ func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
 	}
 }
 
-// A workflow handoff to someone other than the caller keeps its run even with
-// --no-start (server: suppressRunForWrite). The help must say so (CHE-4613).
-func TestNoStartHelpNamesWorkflowHandoffRun(t *testing.T) {
+// --no-start starts no run, including a workflow step handler's run (CHE-4964).
+// The help must not promise an exception.
+func TestNoStartHelpHasNoHandoffException(t *testing.T) {
 	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
 		usage := cmd.Flags().Lookup("no-start").Usage
-		if !strings.Contains(usage, "workflow handoff") {
-			t.Errorf("issue %s --no-start help = %q, want it to mention the workflow handoff run", name, usage)
+		if strings.Contains(usage, "Exception") {
+			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
 		}
 	}
 }

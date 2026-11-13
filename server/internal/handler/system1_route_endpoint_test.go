@@ -319,16 +319,16 @@ func TestRouteEndpointRollsBackWhenTheStopIsNotConfirmed(t *testing.T) {
 	c.wantNothingWritten(t, "in_progress")
 }
 
-func TestRouteEndpointNoStartStillRunsADifferentHandler(t *testing.T) {
+func TestRouteEndpointNoStartSkipsTheRunOfADifferentHandler(t *testing.T) {
 	c := newRouteCase(t)
 	var out routeResponse
 	c.route(t, routeBody("in_review", map[string]any{"suppress_run": true}), nil).Want(http.StatusOK).JSON(&out)
 
-	if !out.Run.Started || out.Run.Reason != handoffRunReasonTargetDiffers {
-		t.Fatalf("run = %+v, want started with reason %s", out.Run, handoffRunReasonTargetDiffers)
+	if out.Run.Started {
+		t.Fatalf("run = %+v, want no run", out.Run)
 	}
-	if steps := pendingStepRuns(t, c.issueID, c.handlerID); len(steps) != 1 {
-		t.Fatalf("handler runs = %v, want one", steps)
+	if steps := pendingStepRuns(t, c.issueID, c.handlerID); len(steps) != 0 {
+		t.Fatalf("handler runs = %v, want none", steps)
 	}
 }
 

@@ -90,6 +90,15 @@ SELECT * FROM task_message
 WHERE task_id = $1
 ORDER BY seq ASC;
 
+-- name: ListTaskTextSteps :many
+-- Step order plus the text rows' content only. Chat interim messages (CHE-4704)
+-- rebuild message boundaries from this on every step batch of a running chat
+-- turn, so tool input/output stay out of the read.
+SELECT seq, type, COALESCE(CASE WHEN type = 'text' THEN content END, '')::text AS content
+FROM task_message
+WHERE task_id = $1
+ORDER BY seq ASC;
+
 -- name: ListTaskMessagesSince :many
 SELECT * FROM task_message
 WHERE task_id = $1 AND seq > $2

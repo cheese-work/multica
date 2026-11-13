@@ -9,6 +9,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/stagequeue"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 const admissionHead = "aaaa1111"
@@ -211,6 +212,22 @@ func TestAdmissionAdmitsGreenHead(t *testing.T) {
 	f := newAdmissionFixture(t, "CLEAN")
 	f.check(t, "ci", "completed", "success")
 	f.wantAdmitted(t)
+}
+
+// CHE-5432: a draft PR is judged like an open one. A draft head with green
+// checks admits the review; a draft head with a red check still defers.
+func TestAdmissionAdmitsGreenDraftHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.Exec(t, `UPDATE github_pull_request SET state = 'draft' WHERE id = $1`, f.pr)
+	f.check(t, "ci", "completed", "success")
+	f.wantAdmitted(t)
+}
+
+func TestAdmissionDefersRedDraftHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.Exec(t, `UPDATE github_pull_request SET state = 'draft' WHERE id = $1`, f.pr)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
 }
 
 // A check stored for an older head is not evidence for this head.
@@ -525,4 +542,132 @@ func TestAdmissionEnabledFromEnv(t *testing.T) {
 			t.Fatalf("MULTICA_REVIEW_ADMISSION=%q: enabled = %v, want %v", c.value, got, c.want)
 		}
 	}
+}
+
+// CHE-5432: the stored snapshot is not evidence for the head until it was
+// fetched for that exact head. A head judged on an empty or stale snapshot asks
+// for a refresh; the refreshed snapshot then releases the deferred run.
+func (f *admissionFixture) captureRefresh(t *testing.T) *[]db.GithubPullRequest {
+	t.Helper()
+	var asked []db.GithubPullRequest
+	prev := admissionRefreshPR
+	admissionRefreshPR = func(pr db.GithubPullRequest) { asked = append(asked, pr) }
+	t.Cleanup(func() { admissionRefreshPR = prev })
+	return &asked
+}
+
+func (f *admissionFixture) setSnapshot(t *testing.T, head string, age time.Duration) {
+	t.Helper()
+	f.Exec(t, `UPDATE github_pull_request SET snapshot_head_sha = $2, snapshot_fetched_at = now() - make_interval(secs => $3) WHERE id = $1`,
+		f.pr, head, age.Seconds())
+}
+
+func TestAdmissionRefreshesEmptySnapshot(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	asked := f.captureRefresh(t)
+	f.wantDeferred(t, "ci: missing")
+	if len(*asked) != 1 || util.UUIDToString((*asked)[0].ID) != f.pr || (*asked)[0].HeadSha != admissionHead {
+		t.Fatalf("refresh asked for %v, want exactly the PR %s at %s", *asked, f.pr, admissionHead)
+	}
+}
+
+func TestAdmissionRefreshesSnapshotOfAnotherHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	asked := f.captureRefresh(t)
+	f.setSnapshot(t, "bbbb2222", 0)
+	f.wantDeferred(t, "ci: missing")
+	if len(*asked) != 1 {
+		t.Fatalf("refresh asked %d times, want once for a snapshot of another head", len(*asked))
+	}
+}
+
+func TestAdmissionRefreshesOldSnapshot(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	asked := f.captureRefresh(t)
+	f.setSnapshot(t, admissionHead, time.Hour)
+	f.wantDeferred(t, "ci: missing")
+	if len(*asked) != 1 {
+		t.Fatalf("refresh asked %d times, want once for an old snapshot", len(*asked))
+	}
+}
+
+// A fresh snapshot of this head is judged as stored: asking again on every
+// release would loop a refresh against a persistently red head.
+func TestAdmissionDoesNotRefreshFreshSnapshot(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	asked := f.captureRefresh(t)
+	f.setSnapshot(t, admissionHead, 0)
+	f.check(t, "ci", "completed", "failure")
+	f.wantDeferred(t, "ci: failing")
+	if len(*asked) != 0 {
+		t.Fatalf("refresh asked %d times for a fresh snapshot, want none", len(*asked))
+	}
+}
+
+// An admitted head asks for nothing.
+func TestAdmissionDoesNotRefreshAdmittedHead(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	asked := f.captureRefresh(t)
+	f.check(t, "ci", "completed", "success")
+	f.wantAdmitted(t)
+	if len(*asked) != 0 {
+		t.Fatalf("refresh asked %d times for an admitted head, want none", len(*asked))
+	}
+}
+
+// CHE-5432: a repo whose CI reports none of the configured names is judged on
+// every check it reports (at least one, none red or pending), not deferred as
+// "missing" forever.
+func TestAdmissionAdmitsRepoWithOtherCheckNames(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "lint", "completed", "success")
+	f.check(t, "build", "completed", "success")
+	f.wantAdmitted(t)
+}
+
+func TestAdmissionDefersRepoWithOtherCheckNamesPending(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "lint", "completed", "success")
+	f.check(t, "build", "in_progress", "")
+	f.wantDeferred(t, "build: pending")
+}
+
+func TestAdmissionDefersRepoWithOtherCheckNamesFailing(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "lint", "completed", "success")
+	f.check(t, "build", "completed", "failure")
+	f.wantDeferred(t, "build: failing")
+}
+
+func TestAdmissionDefersRepoWithOtherCheckNamesConflict(t *testing.T) {
+	f := newAdmissionFixture(t, "DIRTY")
+	f.check(t, "build", "completed", "success")
+	f.wantDeferred(t, "merge conflict")
+}
+
+// The reviewer-dependent check waits on the reviewer, so it never counts as a
+// reported check for the repo.
+func TestAdmissionIgnoresReviewerDependentCheckInReportedSet(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "build", "completed", "success")
+	f.check(t, "security-gate", "in_progress", "")
+	f.wantAdmitted(t)
+}
+
+// Only the reviewer-dependent check reported: nothing else shows CI ran, so
+// the configured names are still missing.
+func TestAdmissionDefersWhenOnlyReviewerDependentCheckReported(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	f.check(t, "security-gate", "completed", "success")
+	f.wantDeferred(t, "ci: missing")
+}
+
+// A repo that reports one configured name keeps the configured set: the other
+// configured names stay required.
+func TestAdmissionKeepsConfiguredSetWhenRepoReportsOne(t *testing.T) {
+	f := newAdmissionFixture(t, "CLEAN")
+	admissionChecks = []string{"ci", "e2e"}
+	f.check(t, "ci", "completed", "success")
+	f.check(t, "build", "completed", "success")
+	f.wantDeferred(t, "e2e: missing")
 }

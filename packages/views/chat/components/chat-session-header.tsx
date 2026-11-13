@@ -48,6 +48,7 @@ import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { useT } from "../../i18n";
 import { ChatContextMeter } from "./chat-context-meter";
 import { ChatPresetPicker } from "./chat-preset-picker";
+import { OpenDecisionsBadge } from "./open-decisions-badge";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 
@@ -244,7 +245,7 @@ export function ChatSessionHeader({
       className="min-w-0 max-w-96 flex-1 rounded-sm bg-background px-1 py-0.5 text-body font-medium outline-none ring-1 ring-border focus-visible:ring-brand"
     />
   ) : (
-    <TooltipHint label={t(($) => $.header.rename)}>
+    <TooltipHint label={title}>
       <button
         type="button"
         onClick={startRename}
@@ -284,6 +285,7 @@ export function ChatSessionHeader({
         leaf={leaf}
         actions={
           <>
+            <OpenDecisionsBadge />
             {isArchived ? null : (
               <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
             )}

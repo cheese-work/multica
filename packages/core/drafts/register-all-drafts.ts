@@ -17,6 +17,7 @@
 import "../issues/stores/draft-store";
 import "../issues/stores/quick-create-store";
 import "../issues/stores/comment-draft-store";
+import "../issues/stores/decision-answer-draft-store";
 import "../issues/stores/unsent-edit-drafts";
 import "../issues/stores/decision-answer-draft-store";
 import "../projects/draft-store";

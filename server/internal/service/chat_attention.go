@@ -67,6 +67,7 @@ type ChatAttention struct {
 	AttentionSince  *time.Time
 	Counts          AttentionCounts
 	Keys            []string // every displayed subject key: the snapshot a client sends back
+	AskKeys         []string // displayed `item:` keys of asks that still need a reply (not waiting): reply-to-ask targets
 	Unclassified    []string
 	NextChangeAt    *time.Time
 }
@@ -114,6 +115,7 @@ func ProjectChatAttention(c ChatAttentionChain, now time.Time) ChatAttention {
 		switch s.Kind {
 		case AttentionKindAsk:
 			out.Counts.Ask++
+			out.AskKeys = append(out.AskKeys, s.Key)
 		case AttentionKindLater:
 			out.Counts.Later++
 		case AttentionKindUnseen:
@@ -148,6 +150,7 @@ func ProjectChatAttention(c ChatAttentionChain, now time.Time) ChatAttention {
 	}
 	slices.Sort(out.Keys)
 	slices.Sort(out.Unclassified)
+	slices.Sort(out.AskKeys)
 	return out
 }
 

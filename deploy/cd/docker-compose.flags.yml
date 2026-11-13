@@ -8,6 +8,12 @@ services:
       MULTICA_WEBAUTHN_RP_ID: ${MULTICA_WEBAUTHN_RP_ID:-}
       MULTICA_WEBAUTHN_ORIGINS: ${MULTICA_WEBAUTHN_ORIGINS:-}
       MULTICA_PASSKEY_ENROLL_KEY: ${MULTICA_PASSKEY_ENROLL_KEY:-}
+      # Review admission (CHE-4650, CHE-4982). Same reason: a cutover drops
+      # keys the released overlay does not forward, and the server reads them
+      # once at start. Values live in the compose dir's .env. Unset = off.
+      MULTICA_REVIEW_ADMISSION: ${MULTICA_REVIEW_ADMISSION:-}
+      MULTICA_REVIEW_ADMISSION_CHECKS: ${MULTICA_REVIEW_ADMISSION_CHECKS:-}
+      MULTICA_REVIEW_ADMISSION_REVIEWERS: ${MULTICA_REVIEW_ADMISSION_REVIEWERS:-}
     volumes:
       - type: bind
         source: ${MULTICA_FEATURE_FLAGS_FILE:-${MULTICA_JEV_FLAGS_FILE:?set the absolute path of the feature-flag file}}

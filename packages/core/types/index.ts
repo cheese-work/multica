@@ -1,5 +1,6 @@
 export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, CommentPreview, SourceContextAuthorState, IssueSourceContext,
   IssueDuplicateOf,
+  IssueUnread,
 } from "./issue";
 export type {
   IssueStatusCategory,
@@ -30,6 +31,7 @@ export type {
 } from "./issue-workflow";
 export type {
   Agent,
+  AgentSchedulingImpact,
   AgentConversationStarter,
   AgentStatus,
   AgentRuntimeMode,
@@ -39,6 +41,8 @@ export type {
   AgentInvocationTargetInput,
   AgentTask,
   AgentPreset,
+  TaskInitContext,
+  TaskInitContextPart,
   TaskPresetRun,
   TaskPresetSettings,
   TaskPresetSkip,
@@ -181,7 +185,7 @@ export type {
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
-export type { Attachment } from "./attachment";
+export type { Attachment, AttachmentRevisionDiff } from "./attachment";
 export {
   attachmentDownloadPath,
   attachmentIdFromDownloadURL,
@@ -190,6 +194,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatStaleLevel,
   ChatAttentionSource,
   ChatContinueResponse,
@@ -303,6 +309,8 @@ export type {
   ListWecomInstallationsResponse,
   RegisterWecomBYORequest,
   RedeemWecomBindingTokenResponse,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
 } from "./wecom";
 export type {
   TelegramInstallation,

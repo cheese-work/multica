@@ -103,6 +103,8 @@ func TestMain(m *testing.M) {
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
 	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
+	// The run-budget suites spend many runs in seconds; the loop breaker has its own tests.
+	os.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "0")
 	code := m.Run()
 	stopHeartbeat()
 	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {
@@ -135,8 +137,8 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 
 	var workspaceID string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO workspace (name, slug, description, issue_prefix, settings)
+		VALUES ($1, $2, $3, $4, '{"run_budget_auto":{"enabled":false}}')
 		RETURNING id
 	`, "Handler Tests", handlerTestWorkspaceSlug, "Temporary workspace for handler tests", "HAN").Scan(&workspaceID); err != nil {
 		return "", "", err

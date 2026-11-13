@@ -29,7 +29,10 @@ func (h *Handler) handleWorkflowRunEvent(ctx context.Context, body []byte) error
 	}
 	writer := h.defaultWorkflowWriter()
 	return h.fanOutWorkflowEvent(ctx, event.InstallationID, func(workspaceID pgtype.UUID) error {
-		return writer.ApplyRunEvent(ctx, workspaceID, event)
+		if err := writer.ApplyRunEvent(ctx, workspaceID, event); err != nil {
+			return err
+		}
+		return h.watchCompletedRun(ctx, workspaceID, event)
 	})
 }
 

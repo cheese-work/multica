@@ -244,5 +244,33 @@
     "tool_result_unnamed": "result: ",
     "truncated": "…(truncated)",
     "error": "Error"
+  },
+  "attention": {
+    "kind": {
+      "ask": "Question",
+      "later": "Reminder",
+      "unseen": "Unread",
+      "decision": "Decision"
+    },
+    "level": {
+      "fresh": "New",
+      "yellow": "Yellow",
+      "red": "Red"
+    },
+    "age": {
+      "minutes_one": "{{count}} minute",
+      "minutes_other": "{{count}} minutes",
+      "hours_one": "{{count}} hour",
+      "hours_other": "{{count}} hours",
+      "days_one": "{{count}} day",
+      "days_other": "{{count}} days"
+    },
+    "level_age": "{{level}} · {{age}}",
+    "row_a11y": "{{kind}}. {{level}}, waiting {{age}}",
+    "done": "Done",
+    "later": "Later",
+    "done_a11y": "Mark done: {{title}}",
+    "later_a11y": "Remind me later: {{title}}",
+    "failed": "Could not update. Try again."
   }
 }

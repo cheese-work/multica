@@ -14,8 +14,9 @@ import (
 const Retention = 30 * 24 * time.Hour
 
 type deliveryRepository struct {
-	Name  string `json:"name"`
-	Owner struct {
+	Name          string `json:"name"`
+	DefaultBranch string `json:"default_branch"`
+	Owner         struct {
 		Login string `json:"login"`
 	} `json:"owner"`
 }
@@ -84,7 +85,7 @@ func ParseRunEvent(body []byte) (RunEvent, bool) {
 	updatedAt, _ := time.Parse(time.RFC3339, run.UpdatedAt)
 	return RunEvent{
 		InstallationID: delivery.Installation.ID,
-		RepoOwner:      repo.Owner.Login, RepoName: repo.Name,
+		RepoOwner:      repo.Owner.Login, RepoName: repo.Name, DefaultBranch: repo.DefaultBranch,
 		RunID: run.ID, RunAttempt: attemptOrOne(run.RunAttempt),
 		StatusRank: runRank(status), Status: status, Conclusion: run.Conclusion,
 		GhUpdatedAt:  updatedAt,

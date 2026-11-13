@@ -48,14 +48,61 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
+	// The outcome readback (CHE-5411): empty while the action is pending.
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	AppliedAt     *string `json:"applied_at,omitempty"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
+	outcome, reason := decisionActionOutcomeOf(action)
 	return &decisionActionResponse{
 		ID: uuidToString(action.ID), ActionType: action.ActionType, ActionVersion: action.ActionVersion,
 		Params: action.Params, Preconditions: action.Preconditions, SecretSlots: action.SecretSlots,
 		PayloadSHA256: action.PayloadSha256, ExpiresAt: timestampToString(action.ExpiresAt), State: action.State,
+		Outcome: outcome, OutcomeReason: reason, AppliedAt: appliedAtOf(action),
 	}
+}
+
+// decisionActionOutcomeOf is the one place a stored action state becomes the
+// outcome the card, the CLI and the wake text state. "" means still pending.
+func decisionActionOutcomeOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "executed":
+		return "applied", nil
+	case "rejected":
+		return "rejected", nil
+	case "failed":
+		reason := action.ErrorMessage.String
+		if reason == "" {
+			reason = action.ErrorCode.String
+		}
+		return "not_applied", &reason
+	case "expired", "cancelled":
+		return "not_applied", &action.State
+	}
+	return "", nil
+}
+
+func appliedAtOf(action db.DecisionAction) *string {
+	if action.State != "executed" {
+		return nil
+	}
+	return timestampToPtr(action.ExecutedAt)
+}
+
+// decisionActionSummary is the wake and card text of a terminal action.
+func decisionActionSummary(action db.DecisionAction) string {
+	switch outcome, reason := decisionActionOutcomeOf(action); outcome {
+	case "applied":
+		return "Applied " + action.ActionType + "."
+	case "not_applied":
+		return "Not applied " + action.ActionType + ": " + *reason + "."
+	}
+	return "Rejected " + action.ActionType + "."
 }
 
 // draftDecisionAction validates the wire action against the allowlist.
@@ -116,6 +163,15 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentSchedulingParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		if _, err := loadAgent(params.AgentID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`
