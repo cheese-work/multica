@@ -440,6 +440,18 @@
     "empty": "Aucune tâche planifiée pour l'instant — définissez une date de début ou d'échéance sur une tâche pour la voir sur la frise.",
     "inverted_dates_warning": "La date de début est postérieure à la date d'échéance — la barre s'affiche du minimum au maximum."
   },
+  "swimlane2": {
+    "edge_wakeup": "Réveil",
+    "edge_dependency": "Dépendance",
+    "edge_parent": "Parent / enfant",
+    "edge_mention": "Mention",
+    "edge_types": "Types de liens",
+    "relations_incomplete": "Relations incomplètes : certains liens ne se sont pas chargés.",
+    "more_issues": "D'autres tickets ne sont pas chargés.",
+    "retry": "Réessayer",
+    "load_more": "Charger plus",
+    "no_lane": "Aucune valeur"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

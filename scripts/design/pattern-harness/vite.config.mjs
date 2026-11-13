@@ -15,11 +15,17 @@ export default defineConfig({
     dedupe: ["react", "react-dom", "@tanstack/react-query", "i18next", "react-i18next"],
     // The harness has no workspace; stub the one hook that reads the URL slug.
     alias: [
-      { find: /^@multica\/core\/hooks$/, replacement: resolve(here, "workspace-stub.ts") },
       // settings-navigation renders the real SettingsPage shell; its tabs and auth-bound hooks are stubbed.
+      // These come first: the first matching alias wins, and workspace-stub.ts's paths are a thin subset.
       { find: /^@multica\/core\/paths$/, replacement: resolve(here, "paths-stub.ts") },
       { find: /^@multica\/core\/permissions$/, replacement: resolve(here, "permissions-stub.ts") },
       { find: /^\.{1,2}\/(?:[\w-]+\/)*[\w-]+-tab$/, replacement: resolve(here, "settings-stubs.tsx") },
+      ...[
+        "@multica/core/hooks",
+        "@multica/core/workspace/queries",
+        "../../common/actor-avatar",
+        "../../workspace/workspace-avatar",
+      ].map((id) => ({ find: new RegExp(`^${id.replace(/[/.]/g, "\\$&")}$`), replacement: resolve(here, "workspace-stub.ts") })),
     ],
   },
   build: {
