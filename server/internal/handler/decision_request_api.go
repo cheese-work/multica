@@ -145,11 +145,16 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
-		if draft, err = draftDecisionAction(input.Action); err != nil {
+		if err = withIssueTarget(input.Action, issue.ID); err == nil {
+			draft, err = draftDecisionAction(input.Action)
+		}
+		if err == nil {
+			input.EscalationClass, err = handler.requestClassFor(request.Context(), issue, input.EscalationClass, draft)
+		}
+		if err != nil {
 			writeDecisionError(writer, err, "decision request")
 			return
 		}
-		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
 	}
 	askJSON, err := json.Marshal(parsed)
 	if err != nil {

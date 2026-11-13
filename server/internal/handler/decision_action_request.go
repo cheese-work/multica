@@ -367,6 +367,9 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
+		if draft.Type == issueProjectSetType {
+			return issueProjectPreconditions(ctx, queries, issue, draft)
+		}
 		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
 			return nil, err
 		}
