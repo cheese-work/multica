@@ -247,6 +247,7 @@ type AgentTaskQueue struct {
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
+	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 }
 
 type AgentToLabel struct {

@@ -5381,6 +5381,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			EnableChatSupplement: offered.ChatSupplement,
 			EnableProcessCleanup: offered.ProcessCleanup,
 		})
+		if errors.Is(err, pgx.ErrNoRows) && strings.HasPrefix(candidate.Purpose.String, "bg:") {
+			// The start fence refused it: past its start bound (CHE-4103). A 409
+			// to the daemon; the deadline sweep fails the attempt.
+			return fmt.Errorf("%w: %w", ErrBackgroundAttemptExpired, err)
+		}
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
 		}
