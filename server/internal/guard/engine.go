@@ -23,11 +23,14 @@ type Engine struct {
 
 // decision is what a plugin concluded about one call.
 type decision struct {
-	kind string
-	line string   // the one guard line, without the "guard: " prefix
-	code int      // exit code when done
-	args []string // call to stream when not done
-	done bool     // the plugin already ran the call and printed its output
+	kind  string
+	line  string   // the one guard line, without the "guard: " prefix
+	code  int      // exit code when done
+	args  []string // call to stream when not done
+	done  bool     // the plugin already ran the call and printed its output
+	issue string   // issue key the call names, for the log
+	sub   string   // command to log when the leading words are not enough
+	note  string   // log-only text; never printed to the agent
 }
 
 func pass(args []string) decision { return decision{kind: KindPass, args: args} }
@@ -43,6 +46,8 @@ type logRecord struct {
 	Tool   string `json:"tool"`
 	Sub    string `json:"subcommand"`
 	Line   string `json:"line"`
+	Issue  string `json:"issue,omitempty"`
+	Note   string `json:"note,omitempty"`
 }
 
 // Exec runs tool with args under the policy and returns the exit code the
@@ -91,6 +96,8 @@ func (e *Engine) decide(ctx context.Context, pl *Plugin, args []string) (decisio
 		return e.ghPR(ctx, pl, args)
 	case pl.Builtin == "gh-api":
 		return ghAPI(args), nil
+	case pl.Builtin == "multica-wakeup":
+		return e.wakeupShadow(ctx, args)
 	case pl.Action == ActionDeny:
 		return refuse(2, "%s", pl.Message), nil
 	}
@@ -121,8 +128,12 @@ func (e *Engine) log(pl *Plugin, tool string, args []string, d decision) {
 	if len(lead) > 2 {
 		lead = lead[:2]
 	}
+	sub := strings.Join(lead, " ")
+	if d.sub != "" {
+		sub = d.sub
+	}
 	b, err := json.Marshal(logRecord{Time: time.Now().UTC().Format(time.RFC3339), Plugin: pl.Name,
-		Action: d.kind, Tool: tool, Sub: strings.Join(lead, " "), Line: d.line})
+		Action: d.kind, Tool: tool, Sub: sub, Line: d.line, Issue: d.issue, Note: d.note})
 	if err == nil {
 		fmt.Fprintf(e.Log, "%s\n", b)
 	}

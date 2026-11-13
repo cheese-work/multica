@@ -28,13 +28,20 @@ export default defineConfig({
     // The harness has no workspace, session or websocket: stub the hook that reads the URL slug, the auth
     // store and the realtime barrel (both hang headless Chrome at module init).
     alias: [
-      { find: /^@multica\/core\/hooks$/, replacement: resolve(here, "workspace-stub.ts") },
       { find: /^@multica\/core\/auth$/, replacement: resolve(here, "auth-stub.ts") },
-      { find: /^@multica\/core\/paths$/, replacement: resolve(here, "paths-stub.ts") },
       { find: /^@multica\/core\/realtime$/, replacement: resolve(here, "realtime-stub.ts") },
       // editor/attachment.tsx imports these by relative path; the real preview modal is a 14 MB graph that hangs headless Chrome.
       { find: /^\.\/attachment-preview-modal$/, replacement: resolve(here, "preview-stub.ts") },
       { find: /^\.\/preview-sequence-context$/, replacement: resolve(here, "sequence-stub.ts") },
+      // paths: leaf re-exports, so the F4 components get the path helpers without the barrel.
+      { find: /^@multica\/core\/paths$/, replacement: resolve(here, "paths-stub.ts") },
+      ...[
+        "@multica/core/hooks",
+        "@multica/core/workspace/queries",
+        "@multica/core/agents",
+        "../../common/actor-avatar",
+        "../../workspace/workspace-avatar",
+      ].map((id) => ({ find: new RegExp(`^${id.replace(/[/.]/g, "\\$&")}$`), replacement: resolve(here, "workspace-stub.ts") })),
     ],
   },
   build: {
