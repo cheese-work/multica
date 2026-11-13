@@ -156,7 +156,8 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
                      WHERE NOT EXISTS (
                          SELECT 1 FROM github_pull_request_check_run cr
                          WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = x.name
-                           AND cr.status = 'completed' AND cr.conclusion IS NOT NULL
+                           AND NOT cr.is_status_context
+                         HAVING count(*) = 1 AND bool_and(cr.status = 'completed' AND cr.conclusion IS NOT NULL)
                      )
                  )
                  OR EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND (cr.status <> 'completed' OR cr.conclusion IS NULL))
@@ -196,7 +197,9 @@ type ListRunBudgetWindowRunsRow struct {
 // for the heads it pushed, so a loop shows across completed runs. ci_unknown
 // fails closed: it is set unless each head the run pushed holds a finished row
 // for every name in the expected check set (expected_checks, the workspace
-// setting) and no row still queued or running. A stored snapshot alone is not
+// setting) and no row still queued or running. The snapshot keeps no producer
+// identity, so a name counts only as exactly one Checks API run: a commit status
+// of that name, or a second run of it, is ambiguous and fails closed. A stored snapshot alone is not
 // complete: a check that has not arrived yet has no row. An empty expected set
 // is no evidence, so every pushed head reads as unknown. A head with no retained
 // check results (they are kept only for a PR's current head, and CI failure

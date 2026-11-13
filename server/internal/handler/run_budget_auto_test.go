@@ -23,6 +23,8 @@ type autoRun struct {
 	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported); a CI failure event does not replace them
 	partial   bool     // the pushed head has only some of the expected checks, all completed and green: the rest have not arrived
 	pending   bool     // the pushed head has a passing check and one still queued or running, so its CI has not finished
+	statusCtx bool     // the other expected check name is reported only by a commit status, a different producer than a check run
+	twin      bool     // two completed check runs carry the other expected name, so the producer of that check is ambiguous
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -89,8 +91,14 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				if len(r.checks) == 0 && r.ci == "" && !r.noChecks {
 					// A head whose results are retained and all passed.
 					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 0, 'go-test', 'completed', 'success')`, prID, head)
-					if !r.partial && !r.pending {
+					if !r.partial && !r.pending && !r.statusCtx {
 						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success')`, prID, head)
+					}
+					if r.statusCtx {
+						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, is_status_context) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success', TRUE)`, prID, head)
+					}
+					if r.twin {
+						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 2, 'web-e2e', 'completed', 'success')`, prID, head)
 					}
 				}
 				if r.pending {
@@ -409,6 +417,12 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 		}, false},
 		{"one pushed head missing an expected check among complete ones", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, partial: true}, {status: "completed", prUpdate: true},
+		}, false},
+		{"three pushed heads where a commit status stands in for the missing expected check run", []autoRun{
+			{status: "completed", prUpdate: true, statusCtx: true}, {status: "completed", prUpdate: true, statusCtx: true}, {status: "completed", prUpdate: true, statusCtx: true},
+		}, false},
+		{"one pushed head where two check runs share an expected name", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, twin: true}, {status: "completed", prUpdate: true},
 		}, false},
 		{"pushed heads whose results are retained and passed", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true},
