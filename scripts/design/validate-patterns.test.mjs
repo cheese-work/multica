@@ -179,6 +179,15 @@ test("batch F2 patterns link a frame on the Patterns page (CHE-5527)", () => {
   }
 });
 
+test("the four batch F6 patterns link a frame on the Patterns page (CHE-5531)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  for (const id of ["section-eyebrow", "type-role-tokens", "inline-link-action", "choice-card"]) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
 test("batch F5 patterns link their captured frames on the Patterns page (CHE-5530)", () => {
   const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
   const frames = {
