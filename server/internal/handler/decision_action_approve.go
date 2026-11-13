@@ -76,6 +76,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
 	issueProjectSetType:      executeIssueProjectSetAction,
+	doopDeployLiftAction:     executeDoopDeployLiftAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -164,7 +165,7 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 	var target pgtype.UUID
 	var targeted bool
 	switch actionTargetKind(preview) {
-	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace:
+	case decisionaction.TargetIssue, decisionaction.TargetWorkflow, decisionaction.TargetSquad, decisionaction.TargetWorkspace, decisionaction.TargetNone:
 		targeted = true
 	default:
 		target, targeted = decisionActionTarget(preview)

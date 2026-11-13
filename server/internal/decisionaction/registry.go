@@ -61,6 +61,9 @@ const (
 	TargetSquad Target = "squad"
 	// TargetWorkspace is the request's own workspace, named by params.workspace_id.
 	TargetWorkspace Target = "workspace"
+	// TargetNone is an action that reads or changes no row: the approval is the
+	// whole effect.
+	TargetNone Target = "none"
 )
 
 // Definition is one allowlisted action. Execution is added with the extracted

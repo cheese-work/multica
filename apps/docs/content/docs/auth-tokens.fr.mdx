@@ -77,6 +77,7 @@ Un PAT peut être créé avec une liste `scopes`. Un PAT à portée limitée n'o
 | --- | --- |
 | `decisions:feed` | `GET /api/decisions/feed` et son accusé de réception |
 | `decisions:ci_request` | `POST /api/decisions/ci` |
+| `decisions:read` | `GET /api/decisions/{id}/state` |
 
 `decisions:ci_request` permet à un job de CI, qui n'a aucune tâche d'agent en cours, d'ouvrir une carte de décision. La carte est toujours de classe `deploy`, pour le ticket nommé et le membre nommé (`for`). Le corps contient un `ask` structuré, un `candidate_sha` (7 à 64 chiffres hexadécimaux) et un `candidate_at` (heure du commit, RFC 3339). Il ne contient ni `action` ni cartes couvertes.
 
@@ -99,6 +100,26 @@ curl -X POST https://api.multica.ai/api/decisions/ci \
 - Un SHA plus récent (selon `candidate_at`) retire la carte ouverte plus ancienne de ce ticket.
 - Un SHA plus ancien après un plus récent renvoie `409` et ne crée rien.
 - Tout autre identifiant, un PAT sans la portée, ou un PAT dont l'utilisateur n'est pas propriétaire de l'espace de travail renvoie `403`.
+
+`decisions:read` permet à un job de CI de lire ce qu'est devenue une décision d'action, par exemple `doop.deploy_lift` (version 1, paramètres `marker_value` et `repo`). Seule l'approbation par passkey du propriétaire de l'espace de travail répond à cette action. La route est en lecture seule et se base sur l'identifiant de la décision (requête).
+
+```bash
+curl https://api.multica.ai/api/decisions/<decision-id>/state \
+  -H "Authorization: Bearer $MULTICA_READ_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID"
+```
+
+La réponse `200` contient `decision_id`, `action_id`, `action_type`, `action_version`, `state`, `approver_id`, `answered_at`, `withdrawn_at`, `revoked_at`, `expires_at` et `params`. `state` vaut l'une de ces valeurs :
+
+- `pending` : en attente du propriétaire.
+- `approved` : le propriétaire a approuvé avec une passkey. `approver_id` et `answered_at` sont renseignés.
+- `rejected` : le propriétaire a refusé.
+- `withdrawn` : la demande a été retirée avant utilisation. C'est ainsi qu'on révoque une approbation non encore utilisée.
+- `revoked` : l'approbation a été reprise après avoir été donnée. `revoked_at` est renseigné.
+- `expired` : la fenêtre s'est fermée avant une réponse.
+- `cancelled` et `failed` : l'action s'est terminée sans qu'une approbation prenne effet.
+
+Une décision inconnue renvoie `404`. Tout autre identifiant, un PAT sans cette portée ou un PAT dont l'utilisateur n'est pas propriétaire de l'espace de travail renvoie `403`.
 
 ## Déconnexion et révocation
 

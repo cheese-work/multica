@@ -77,6 +77,7 @@ curl https://api.multica.ai/api/issues \
 | --- | --- |
 | `decisions:feed` | `GET /api/decisions/feed` 及其确认 |
 | `decisions:ci_request` | `POST /api/decisions/ci` |
+| `decisions:read` | `GET /api/decisions/{id}/state` |
 
 `decisions:ci_request` 让没有正在运行的智能体任务的 CI 作业可以创建一张决策卡。卡片的类别固定为 `deploy`，针对指定的 issue 和指定的成员（`for`）。请求体包含结构化的 `ask`、`candidate_sha`（7 到 64 位十六进制）和 `candidate_at`（RFC 3339 提交时间）。不能包含 `action`，也不能包含被覆盖的卡片。
 
@@ -99,6 +100,26 @@ curl -X POST https://api.multica.ai/api/decisions/ci \
 - 更新的 SHA（按 `candidate_at` 判断）会撤回该 issue 上较旧的未处理卡片。
 - 在更新的 SHA 之后提交较旧的 SHA 返回 `409`，且不创建任何内容。
 - 其他凭据、没有该范围的 PAT，或用户不是工作区所有者的 PAT，返回 `403`。
+
+`decisions:read` 让 CI 作业可以读取某个动作决策的结果，例如 `doop.deploy_lift`（版本 1，参数为 `marker_value` 和 `repo`）。只有工作区所有者的通行密钥（passkey）批准才能回答该动作。该路由只读，以决策（请求）ID 为键。
+
+```bash
+curl https://api.multica.ai/api/decisions/<decision-id>/state \
+  -H "Authorization: Bearer $MULTICA_READ_TOKEN" \
+  -H "X-Workspace-ID: $MULTICA_WORKSPACE_ID"
+```
+
+`200` 响应包含 `decision_id`、`action_id`、`action_type`、`action_version`、`state`、`approver_id`、`answered_at`、`withdrawn_at`、`revoked_at`、`expires_at` 和 `params`。`state` 取下列值之一：
+
+- `pending`：等待所有者回答。
+- `approved`：所有者已用通行密钥批准。`approver_id` 和 `answered_at` 已设置。
+- `rejected`：所有者已拒绝。
+- `withdrawn`：请求在使用前被撤回。这是撤销尚未使用的批准的方式。
+- `revoked`：批准在给出之后被收回。`revoked_at` 已设置。
+- `expired`：在回答之前窗口已关闭。
+- `cancelled` 和 `failed`：动作结束，但没有任何批准生效。
+
+未知的决策返回 `404`。其他凭据、没有该范围的 PAT，或用户不是工作区所有者的 PAT，返回 `403`。
 
 ## 退出登录与吊销
 

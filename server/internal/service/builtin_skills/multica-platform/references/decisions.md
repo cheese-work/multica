@@ -236,6 +236,23 @@ multica config propose workspace.settings --set compact_prompt="..." --out ./act
 - `workflow.steps` takes the steps array as the workflow GET returns it; the
   server refuses a differently normalized array (`after_digest_mismatch`).
 
+## doop.deploy_lift and the decision state read
+
+`doop.deploy_lift` version 1 is the decision a doop train lift waits for.
+Params: `marker_value` (1 to 128 characters of letters, digits and `. _ : / @ + = -`)
+and `repo` (an `owner/name` slug). Send it with `multica decision propose
+doop.deploy_lift --version 1 --issue <issue> --for <user-id> --params-file
+./params.json`. It takes no secret slots and changes no Multica row: only the
+owner's passkey approval answers it, and CI reads that answer back.
+
+`GET /api/decisions/{decision-id}/state` (PAT with the `decisions:read` scope
+only, owner of the workspace) returns `decision_id`, `action_id`,
+`action_type`, `action_version`, `state`, `approver_id`, `answered_at`,
+`withdrawn_at`, `revoked_at`, `expires_at` and `params`. `state` is `pending`,
+`approved`, `rejected`, `withdrawn`, `revoked`, `expired`, `cancelled` or
+`failed`. Withdrawing the request before the lift runs is the revoke path for
+this action. An unknown id is 404; any other credential is 403.
+
 ## Config-change action files
 
 Six action types change workspace or agent configuration. An owner approves
