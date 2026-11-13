@@ -390,3 +390,37 @@ func TestListEvents_EnrichedWithClassProtocolActionOutcome(t *testing.T) {
 		t.Fatalf("event without observation/action = %+v", bare)
 	}
 }
+
+func TestListEvents_WouldDoIsRoutedProtocolUnlessActed(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_failure_event (workspace_id, repo_owner, repo_name, run_id, run_attempt, workflow_name, head_branch, event, conclusion)
+		VALUES ($1,$2,$3,301,1,'CI','main','push','failure'), ($1,$2,$3,302,1,'CI','main','push','failure'), ($1,$2,$3,303,1,'CI','main','push','failure'), ($1,$2,$3,304,1,'CI','main','push','failure')`, e.ws, e.owner, e.name); err != nil {
+		t.Fatal(err)
+	}
+	obs := func(run int64, choice, inputs string) {
+		subj := subjectID(Run{RepoOwner: e.owner, RepoName: e.name, RunID: run, RunAttempt: 1})
+		if _, err := e.pool.Exec(ctx, `INSERT INTO system1_observation (workspace_id, kind, subject_id, class, choice_key, inputs)
+			VALUES ($1,'ci_event',$2,'flake',$3,$4::jsonb)`, e.ws, subj, choice, inputs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	obs(301, "P2", `{"route":"triage"}`) // routed, no action: Shadow would have triaged
+	obs(302, "P1", `{}`)                 // routed without a route
+	obs(303, "P0", `{"route":"skip"}`)   // P0 is a skip: nothing would be done
+	obs(304, "P1", `{}`)                 // acted: the action row says what happened
+	if _, err := e.pool.Exec(ctx, `INSERT INTO ci_watch_action (workspace_id, repo_owner, repo_name, original_run_id, action_kind, state, protocol, reason)
+		VALUES ($1,$2,$3,304,'rerun','done','P1','')`, e.ws, e.owner, e.name); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ListEvents(ctx, e.pool, e.ws, e.owner, e.name, 50)
+	if err != nil || len(got) != 4 {
+		t.Fatalf("events = %+v, %v", got, err)
+	}
+	want := map[int64]string{301: "P2 triage", 302: "P1", 303: "", 304: ""}
+	for _, ev := range got {
+		if ev.WouldDo != want[ev.RunID] {
+			t.Errorf("run %d would_do = %q, want %q", ev.RunID, ev.WouldDo, want[ev.RunID])
+		}
+	}
+}
