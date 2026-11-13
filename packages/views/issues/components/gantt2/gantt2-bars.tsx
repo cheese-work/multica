@@ -66,13 +66,16 @@ export function Gantt2Bars({ rows, window, asOf }: Gantt2BarsProps) {
     <div className="min-h-0 flex-1 overflow-auto">
       <div className="relative" style={{ width: LABEL_W + TRACK_W }}>
         {rows.map(({ identifier, title, timeline }) => {
-          const segments = timeline.segments;
           const open = timeline.actual_end === null;
+          // The server closes the last segment at `asOf`, so a done issue's last segment runs to now. The bar ends at
+          // `actual_end` instead: each segment end is clamped to it and a segment that becomes empty is dropped.
+          const end = open ? 1 : axis.at(timeline.actual_end, axis.now);
+          const segments = timeline.segments.filter((s) => axis.at(s.from, axis.from) < end);
           const last = segments[segments.length - 1];
           const first = segments[0];
           // The bar spans the segments; an unknown `from` (history before the records) starts at the window edge.
           const left = first ? axis.at(first.from, axis.from) : 0;
-          const right = last ? axis.at(last.to, axis.now) : 0;
+          const right = last ? Math.min(end, axis.at(last.to, axis.now)) : 0;
           const clippedStart = !!first?.clipped_start;
           return (
             <div key={timeline.issue_id + identifier} className="flex items-center border-b" style={{ height: ROW_H }}>
@@ -95,7 +98,7 @@ export function Gantt2Bars({ rows, window, asOf }: Gantt2BarsProps) {
                     )}
                     {segments.map((s, i) => {
                       const a = axis.at(s.from, axis.from);
-                      const b = axis.at(s.to, axis.now);
+                      const b = Math.min(end, axis.at(s.to, axis.now));
                       const px = (b - a) * TRACK_W;
                       const label = statusLabel(s.status);
                       return (

@@ -60,21 +60,21 @@ describe("Gantt2Bars actual bar (T1–T3)", () => {
     expect(bar.style.width).toBe("100%");
   });
 
-  it("T2: a completed interval that crosses `from` shows the seed segment and ends at actual_end with a done icon", () => {
+  it("T2: a completed interval that crosses `from` shows the seed segment and ends at actual_end with a done icon (server shape: the done segment runs to now)", () => {
     const { container } = renderBars([
       row("t2", {
         status: "done",
         actual_start: ago(40),
-        actual_end: ago(10),
-        segments: [seg("in_progress", "started", ago(30), ago(20), { clipped_start: true }), seg("done", "done", ago(20), ago(10))],
+        actual_end: ago(20),
+        segments: [seg("in_progress", "started", ago(30), ago(20), { clipped_start: true }), seg("done", "done", ago(20), ago(0))],
       }),
     ]);
     const bar = barOf(container);
     expect(bar.dataset.clippedStart).toBe("true");
     expect(bar.dataset.open).toBe("false");
     expect(bar.style.left).toBe("0%");
-    expect(parseFloat(bar.style.width)).toBeCloseTo((20 / 30) * 100, 1);
-    expect(within(bar).getAllByTestId("gantt-segment")).toHaveLength(2);
+    expect(parseFloat(bar.style.width)).toBeCloseTo((10 / 30) * 100, 1);
+    expect(within(bar).getAllByTestId("gantt-segment")).toHaveLength(1);
     expect(within(bar).getByTestId("gantt-end-icon").getAttribute("aria-label")).toBe("Done");
   });
 
