@@ -2439,6 +2439,7 @@ type IssueWakeup struct {
 	Purpose                   pgtype.Text        `json:"purpose"`
 	DecisionRequestID         pgtype.UUID        `json:"decision_request_id"`
 	FollowupInstanceID        pgtype.UUID        `json:"followup_instance_id"`
+	WatchInputs               []string           `json:"watch_inputs"`
 }
 
 type IssueWakeupDefinition struct {

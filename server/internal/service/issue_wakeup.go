@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/askguard"
@@ -23,6 +24,9 @@ import (
 )
 
 var ErrWakeupInput = errors.New("invalid wakeup")
+// ErrWakeupWatchInput marks a watch_inputs value or placement the API refuses
+// with 422 (CHE-5455).
+var ErrWakeupWatchInput = errors.New("invalid watch_inputs")
 var ErrWakeupConflict = errors.New("wakeup changed; refresh and retry")
 var ErrWakeupForbidden = errors.New("wakeup permission denied")
 
@@ -83,6 +87,23 @@ type WakeupInput struct {
 	// register a rule a member's action can fire.
 	Purpose           string `json:"purpose"`
 	DecisionRequestID string `json:"decision_request_id"`
+	// WatchInputs declares what a time wakeup watches: issue, pr, children or
+	// thread:<comment-uuid>. Empty means undeclared: always run.
+	WatchInputs []string `json:"watch_inputs"`
+}
+
+const watchInputsAccepted = "accepted values are issue, pr, children, thread:<comment-uuid>, on at, every and cron wakeups only"
+
+func validWatchInput(v string) bool {
+	if v == "issue" || v == "pr" || v == "children" {
+		return true
+	}
+	id, ok := strings.CutPrefix(v, "thread:")
+	if !ok {
+		return false
+	}
+	_, err := uuid.Parse(id)
+	return err == nil
 }
 
 func hasWakeupCondition(raw json.RawMessage) bool {
@@ -206,6 +227,15 @@ func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Ti
 	}
 	if hasWakeupCondition(in.Condition) && in.Kind != "event" {
 		return bad("conditions use kind event")
+	}
+	if len(in.WatchInputs) > 0 {
+		timeRule := in.Kind == "at" || in.Kind == "every" || in.Kind == "cron"
+		if !timeRule || slices.ContainsFunc(in.WatchInputs, func(v string) bool { return !validWatchInput(v) }) {
+			return pgtype.Timestamptz{}, fmt.Errorf("%w: %s", ErrWakeupWatchInput, watchInputsAccepted)
+		}
+	}
+	if in.WatchInputs == nil {
+		in.WatchInputs = []string{}
 	}
 	switch in.Kind {
 	case "event":
@@ -471,7 +501,7 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			}
 			return ""
 		}
-		in = WakeupInput{Purpose: old.Purpose.String, DecisionRequestID: optionalID(old.DecisionRequestID), AgentID: optionalID(old.AgentID), Instruction: old.Instruction, Kind: old.Kind, Mode: old.Mode, EventTypes: old.EventTypes, FilterAgentID: optionalID(old.FilterAgentID), FilterTaskID: optionalID(old.FilterTaskID), FilterActorType: old.FilterActorType.String, FilterActorID: optionalID(old.FilterActorID), ParentCommentID: optionalID(old.ParentCommentID), IntervalSeconds: old.IntervalSeconds.Int64, CronExpression: old.CronExpression.String, Timezone: old.Timezone, OnTimeout: old.OnTimeout.String}
+		in = WakeupInput{Purpose: old.Purpose.String, DecisionRequestID: optionalID(old.DecisionRequestID), AgentID: optionalID(old.AgentID), Instruction: old.Instruction, Kind: old.Kind, Mode: old.Mode, EventTypes: old.EventTypes, FilterAgentID: optionalID(old.FilterAgentID), FilterTaskID: optionalID(old.FilterTaskID), FilterActorType: old.FilterActorType.String, FilterActorID: optionalID(old.FilterActorID), ParentCommentID: optionalID(old.ParentCommentID), IntervalSeconds: old.IntervalSeconds.Int64, CronExpression: old.CronExpression.String, Timezone: old.Timezone, OnTimeout: old.OnTimeout.String, WatchInputs: old.WatchInputs}
 		// A relative wait restarts from now; an absolute deadline is kept and
 		// must still be in the future.
 		if len(old.Condition) > 0 {
@@ -654,9 +684,9 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 			return out, fmt.Errorf("%w: run and agent filters disagree", ErrWakeupInput)
 		}
 	}
-	params := db.CreateIssueWakeupParams{ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next, ExpiresAt: expiresAt, ExpirySeconds: expirySeconds, OnTimeout: onTimeout, Condition: condition, MaxFires: maxFires, Purpose: pgtype.Text{String: in.Purpose, Valid: in.Purpose != ""}, DecisionRequestID: binding}
+	params := db.CreateIssueWakeupParams{WatchInputs: in.WatchInputs, ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AgentID: agent.ID, CreatedBy: member, SourceTaskID: source, ParentCommentID: parent, Instruction: in.Instruction, Kind: in.Kind, Mode: in.Mode, EventTypes: append([]string{}, in.EventTypes...), FilterAgentID: filterAgent, FilterTaskID: filterTask, FilterActorType: pgtype.Text{String: in.FilterActorType, Valid: in.FilterActorType != ""}, FilterActorID: filterActor, IntervalSeconds: pgtype.Int8{Int64: in.IntervalSeconds, Valid: in.IntervalSeconds > 0}, CronExpression: pgtype.Text{String: in.CronExpression, Valid: in.CronExpression != ""}, Timezone: in.Timezone, NextFireAt: next, ExpiresAt: expiresAt, ExpirySeconds: expirySeconds, OnTimeout: onTimeout, Condition: condition, MaxFires: maxFires, Purpose: pgtype.Text{String: in.Purpose, Valid: in.Purpose != ""}, DecisionRequestID: binding}
 	if existingID.Valid {
-		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,purpose=$23,decision_request_id=$24,workflow_step=CASE WHEN $4::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=issue_wakeup.issue_id) END,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires, params.Purpose, binding)
+		_, err = tx.Exec(ctx, `UPDATE issue_wakeup SET agent_id=$2,created_by=$3,source_task_id=$4,parent_comment_id=$5,instruction=$6,kind=$7,mode=$8,event_types=$9,filter_agent_id=$10,filter_task_id=$11,interval_seconds=$12,cron_expression=$13,timezone=$14,next_fire_at=$15,filter_actor_type=$16,filter_actor_id=$17,expires_at=$18,expiry_seconds=$19,on_timeout=$20,timed_out_at=NULL,condition=$21,max_fires=$22,purpose=$23,decision_request_id=$24,watch_inputs=$25,workflow_step=CASE WHEN $4::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=issue_wakeup.issue_id) END,condition_state='',fire_count=0,paused_reason=NULL,enabled=true,disabled_at=NULL,revision=revision+1,last_task_id=NULL,last_error=NULL,updated_at=now() WHERE id=$1`, existingID, params.AgentID, member, source, parent, in.Instruction, in.Kind, in.Mode, params.EventTypes, filterAgent, filterTask, params.IntervalSeconds, params.CronExpression, in.Timezone, next, params.FilterActorType, filterActor, expiresAt, expirySeconds, onTimeout, condition, maxFires, params.Purpose, binding, in.WatchInputs)
 		if err == nil {
 			out, err = q.LockIssueWakeup(ctx, existingID)
 		}
