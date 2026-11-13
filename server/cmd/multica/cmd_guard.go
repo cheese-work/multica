@@ -26,7 +26,10 @@ var guardExecCmd = &cobra.Command{
 	Long: `Run <tool> with <args> after the guard has checked, fixed or refused the call.
 
 Today the guard covers "gh pr create|edit|ready" and writes to pull requests
-and issues through "gh api". Every other call runs unchanged.
+and issues through "gh api". Shadow check: "multica issue wakeup create|update"
+with --filter-actor-type member logs a hit when the issue has no open decision
+request for that member after the last answered one; the call always runs and
+nothing is printed. Every other call runs unchanged.
 
 Environment:
   MULTICA_GUARD_POLICY, MULTICA_GUARD_POLICY_SHA256  signed policy file and its digest
