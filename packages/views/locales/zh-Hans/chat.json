@@ -388,8 +388,6 @@
   "annotations": {
     "one_request": "请每次只发送针对一个决策请求的评论。",
     "source_label": "{{name}} 的消息",
-    "add": "添加评论",
-    "confirm_add": "添加",
     "save": "保存",
     "note_label": "评论 {{number}}",
     "note_placeholder": "添加评论…",

@@ -148,8 +148,7 @@ func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 }
 
 // TopUpIssueRunBudget opens a new run-budget window on the issue without a
-// status move (CHE-2297 L2d): the window credit is the cap in force, and the
-// token allowance follows once token accounting is active. Members only, for
+// status move (CHE-2297 L2d): the window credit is the cap in force. Members only, for
 // the same reason as a raise: an agent cannot pay for its own runs. The
 // activity row is the window's start, so it commits with the credit.
 func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
@@ -428,11 +427,10 @@ func (h *Handler) beginRunBudgetMove(w http.ResponseWriter, r *http.Request, act
 }
 
 // openRunBudgetWindowForMove opens the run-budget window a person's status move
-// started, so its token allowance is claimed when the move is recorded rather
-// than at the next admission or report. It runs after the event is published:
-// the activity listener has written the move by then, and the window begins at
-// that row. A failure is logged; the next admission or report claims the same
-// allowance.
+// started, when the move is recorded rather than at the next admission. It runs
+// after the event is published: the activity listener has written the move by
+// then, and the window begins at that row. A failure is logged; the next
+// admission opens the same window.
 func (h *Handler) openRunBudgetWindowForMove(ctx context.Context, issue db.Issue) {
 	if err := h.openRunBudgetWindow(ctx, issue); err != nil {
 		slog.Warn("run budget: open window for status move", "issue_id", uuidToString(issue.ID), "error", err)

@@ -2870,6 +2870,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}", h.GetDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/discuss", h.DiscussDecisionRequest)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences
