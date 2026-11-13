@@ -112,16 +112,3 @@ WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uui
   AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
 RETURNING max_runs_override;
 
--- name: ListMemberStatusChangesAfter :many
--- Every time a person moved the issue's status or topped up its run budget after
--- a point: each one opened a run-budget window, whether or not anything was admitted in it.
-SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
-  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
-  AND (
-    action = 'run_budget_top_up'
-    OR created_at < (SELECT cutover_at FROM run_budget_window_cutover)
-    OR (details->'trigger'->>'auth_source' = 'interactive_jwt' AND details->'trigger'->'cause'->>'kind' = 'ui_or_api')
-  )
-  AND created_at > sqlc.arg('after')::timestamptz
-ORDER BY created_at;

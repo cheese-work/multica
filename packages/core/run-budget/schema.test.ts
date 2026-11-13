@@ -13,7 +13,6 @@ const budgeted = {
   state: "near",
   blocking: [],
   can_raise: true,
-  tokens_active: false,
   raise_preview: { add_runs: 5, balance_after: 7, limit_after: 15, max_allowed_add: 30 },
 };
 
@@ -47,7 +46,7 @@ describe("run-budget meter response boundary (CHE-2851)", () => {
   });
 
   it("treats an unbudgeted snapshot as unbudgeted", () => {
-    expect(parseRunBudget({ budgeted: false, runs_used: 0, runs_left: 0, runs_limit: 0, window_started_at: "0001-01-01T00:00:00Z", blocking: [], tokens_active: false, tokens_balance: 0, tokens_overshoot: 0, can_raise: false })).toEqual(UNBUDGETED);
+    expect(parseRunBudget({ budgeted: false, runs_used: 0, runs_left: 0, runs_limit: 0, window_started_at: "0001-01-01T00:00:00Z", blocking: [], can_raise: false })).toEqual(UNBUDGETED);
   });
 
   it("tolerates a server without window_id (A1b2 not shipped)", () => {
