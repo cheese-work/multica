@@ -114,7 +114,7 @@ jobs:
   # PR back and the repository's `.github/agent-rules.yml` from the current tip of the protected base branch. Nothing is
   # edited. A red check turns green on the next push or ready-for-review event, or `gh run rerun --failed`: this
   # workflow has no `edited` trigger (CHE-4385). The review half needs the workspace review policy: set the repository
-  # variable GUARD_POLICY_JSON (from `multica guard plugin get`); unset, only the tag and the repository file are checked.
+  # variable GUARD_POLICY_JSON (the policy JSON, as `multica guard plugin set --file` takes it); unset, only the tag and the repository file are checked.
   # Making this check required is a branch-protection change, Cheese's call.
   guard-check:
     name: PR guard rules
