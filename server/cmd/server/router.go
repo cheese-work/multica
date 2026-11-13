@@ -1854,6 +1854,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/vcs/connections", h.ListVCSConnections)
 					r.Get("/background-agents", h.GetBackgroundAgents)
 					r.Get("/me/background-agents", h.GetMyBackgroundAgents)
+					// CHE-4113: a member writes only their own row, so these are member
+					// routes. The handler refuses a machine actor itself (stable code;
+					// unchanged writes stay accepted) and, until CHE-4114, every
+					// effective human write (409).
+					r.Put("/me/background-agents", h.UpdateMyBackgroundAgents)
+					r.Delete("/me/background-agents/{job}", h.ResetMyBackgroundAgent)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible

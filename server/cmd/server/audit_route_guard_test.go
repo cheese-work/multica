@@ -253,6 +253,8 @@ func init() {
 		"PUT /api/workspaces/{id}/routing-agent",
 		"PUT /api/workspaces/{id}/background-agents",
 		"DELETE /api/workspaces/{id}/background-agents",
+		"PUT /api/workspaces/{id}/me/background-agents",
+		"DELETE /api/workspaces/{id}/me/background-agents/{job}",
 		"POST /api/workspaces/{id}/provider-breakers/{provider}/reset",
 	} {
 		auditPendingL5b[route] = true
