@@ -257,6 +257,7 @@ type AgentTaskQueue struct {
 	HoldReason                pgtype.Text        `json:"hold_reason"`
 	ReservationLeaseID        pgtype.UUID        `json:"reservation_lease_id"`
 	ReservationExpiresAt      pgtype.Timestamptz `json:"reservation_expires_at"`
+	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 }
 
 type AgentToLabel struct {
@@ -266,14 +267,18 @@ type AgentToLabel struct {
 }
 
 type AskGuardEvent struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	TaskID        pgtype.UUID        `json:"task_id"`
-	OperationKind string             `json:"operation_kind"`
-	PayloadSha256 string             `json:"payload_sha256"`
-	Mode          string             `json:"mode"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	OperationKind      string             `json:"operation_kind"`
+	PayloadSha256      string             `json:"payload_sha256"`
+	Mode               string             `json:"mode"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	IntentID           pgtype.UUID        `json:"intent_id"`
+	MemberID           pgtype.UUID        `json:"member_id"`
+	ClearedAt          pgtype.Timestamptz `json:"cleared_at"`
+	ClearedByRequestID pgtype.UUID        `json:"cleared_by_request_id"`
 }
 
 type Attachment struct {

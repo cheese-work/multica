@@ -2432,6 +2432,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Put("/", h.UpdateProject)
 					r.With(denyRunToken).Delete("/", h.DeleteProject)
 					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
+					r.With(denyRunToken).Put("/wip-limit", h.SetProjectWIPLimit)
 					r.With(denyRunToken).Put("/workflow-split", h.SetProjectWorkflowSplit)
 					r.With(denyRunToken).Delete("/workflow-split", h.ClearProjectWorkflowSplit)
 					r.Get("/resources", h.ListProjectResources)

@@ -159,6 +159,8 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+`multica decision request`의 `--recovers <event-id>`는 요청이 ask 가드 이벤트(거부된 작업이나 복구 알림에 표시된 이벤트)에 대한 응답임을 나타냅니다. 서버는 이벤트가 이 이슈에 있고 요청이 묻는 사람을 위해 발생한 경우에만, 요청과 같은 트랜잭션에서 그 이벤트를 해제합니다. 한 사람에 대한 요청은 다른 사람의 이벤트를 해제하지 않으며, `--recovers`가 없는 요청은 아무것도 해제하지 않습니다. 다른 이슈나 다른 사람의 이벤트는 `400`으로 거부됩니다.하나의 요청은 이벤트 하나만 복구합니다. 같은 요청을 재시도하면서 두 번째 이벤트를 지정하면 `400`으로 거부됩니다.
+
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
 
 ### 이슈 라우팅
