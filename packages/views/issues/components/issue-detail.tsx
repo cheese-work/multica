@@ -2040,6 +2040,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return ids;
   }, [draftsByKey, id, timelineView.threadReplies]);
 
+  // CHE-5437: what may pin a thread open against an explicit manual Collapse.
+  // Reply TEXT does not: it lives in the draft store, so the composer restores
+  // it on expand. An upload in flight or an inline edit does: both are
+  // component-local and would be lost on unmount.
+  const rootIdsPinnedByLocalWork = useMemo(() => {
+    const ids = new Set<string>();
+    const uploading = (key: string) => !!draftsByKey[key]?.attachments.some((u) => u.status === "uploading");
+    const editing = (key: string) => uploading(key) || (draftsByKey[key]?.content.trim().length ?? 0) > 0;
+    for (const [rootId, replies] of timelineView.threadReplies) {
+      if (uploading(`reply:${id}:${rootId}`) || editing(`edit:${id}:${rootId}`)
+        || replies.some((reply) => editing(`edit:${id}:${reply.id}`))) ids.add(rootId);
+    }
+    return ids;
+  }, [draftsByKey, id, timelineView.threadReplies]);
+
   // Root ids with an active (queued/running) run that has no published reply
   // yet, anchored to the root itself or to one of the root's replies. Split
   // out from `forceThreadOpen` below so it can also feed the latch effect
@@ -2112,6 +2127,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const ids = new Set<string>();
       for (const node of [active, selAnchor]) {
         const element = node instanceof Element ? node : node?.parentElement;
+        // CHE-5437: pressing Collapse focuses that button inside the thread.
+        // Its own focus is not an interaction to protect from hiding.
+        if (element?.closest("[data-thread-toggle]")) continue;
         const rootId = element?.closest<HTMLElement>("[data-thread-root]")?.dataset.threadRoot;
         if (rootId) ids.add(rootId);
       }
@@ -2156,7 +2174,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const forceThreadOpen = useCallback((rootId: string): boolean => {
     if (findRootId === rootId) return true;
     if (targetRootId === rootId) return true;
-    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsPinnedByLocalWork.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
     if (rootIdsWithActiveFocusOrSelection.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
@@ -2164,7 +2182,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       return true;
     }
     return false;
-  }, [findRootId, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
+  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
 
   // CHE-554: same reasons as `forceThreadOpen` above, MINUS a bare
   // focus/selection-only pin. `forceThreadOpen` correctly forces `open` (the
