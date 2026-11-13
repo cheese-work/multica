@@ -39,6 +39,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
 		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		Recovers         string   `json:"recovers"`
 		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
@@ -109,11 +110,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	var sessionID, humanID, parentID pgtype.UUID
+	var recovers pgtype.UUID
 	for _, field := range []struct {
 		value string
 		name  string
 		into  *pgtype.UUID
-	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}} {
 		if field.value == "" {
 			continue
 		}
@@ -161,7 +163,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
