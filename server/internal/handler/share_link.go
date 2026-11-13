@@ -157,6 +157,14 @@ func (h *Handler) CreateShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "share_link.create", WorkspaceID: link.WorkspaceID, TargetID: link.ID,
+		After: shareLinkAuditFields(link),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "share_link.create")
+		return
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit share link failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to create share link")
@@ -371,6 +379,13 @@ func (h *Handler) JoinByShareLink(w http.ResponseWriter, r *http.Request) {
 		// No pending invitation for this email — the common case.
 	default:
 		writeError(w, http.StatusInternalServerError, "failed to join workspace")
+		return
+	}
+
+	// Orders this join against the passkey gate checks (enrolling, revoking by
+	// email code), which read the user's memberships under the same row lock.
+	if err := qtx.LockUserForMembershipChange(r.Context(), user.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create membership")
 		return
 	}
 

@@ -38,6 +38,21 @@ func RequireHumanOrTaskToken(next http.Handler) http.Handler {
 	})
 }
 
+// RequireInteractiveSession admits only an interactive web or desktop session.
+// A PAT, cloud PAT, cli_jwt and task token all read as another actor source, and
+// Auth overwrites any client-supplied X-Actor-Source, so a forged header fails
+// here too. For routes that spend budget, which no credential an agent host can
+// read may authorize (CHE-2798 S1a).
+func RequireInteractiveSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Actor-Source") != "interactive_jwt" {
+			writeError(w, http.StatusForbidden, "this endpoint is only available to an interactive session; approve in the web app")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isMachineCredentialActor centralizes the authoritative actor-source check so
 // sensitive handlers can keep a fail-closed backstop in addition to their
 // router middleware. Unknown actor sources intentionally remain human-equivalent

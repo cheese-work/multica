@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -71,7 +72,9 @@ func createSkillWithFilesInTx(ctx context.Context, qtx *db.Queries, input skillC
 	}, nil
 }
 
-func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInput) (SkillWithFilesResponse, error) {
+// createSkillWithFiles audits skill.create in its own tx; a failed audit insert
+// comes back as an auditWriteError and nothing is created.
+func (h *Handler) createSkillWithFiles(ctx context.Context, r *http.Request, input skillCreateInput) (SkillWithFilesResponse, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
@@ -83,6 +86,13 @@ func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInp
 	result, err := createSkillWithFilesInTx(ctx, qtx, input)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
+	}
+	resultConfig, _ := json.Marshal(result.Config)
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "skill.create", WorkspaceID: input.WorkspaceID, TargetID: parseUUID(result.ID),
+		After: skillAuditFields(result.Name, result.Description, result.Content, resultConfig, skillAuditFilesFromResponses(result.Files)),
+	}); err != nil {
+		return SkillWithFilesResponse{}, auditWriteError{err}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -138,7 +148,7 @@ type skillOverwriteInput struct {
 // content, config (origin), and the full file set — files absent from the new
 // bundle are pruned via DeleteSkillFilesBySkill. On any error the tx rolls back,
 // leaving the original skill unchanged.
-func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwriteInput) (SkillWithFilesResponse, error) {
+func (h *Handler) overwriteSkillWithFiles(ctx context.Context, r *http.Request, input skillOverwriteInput) (SkillWithFilesResponse, error) {
 	config, err := json.Marshal(input.Config)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
@@ -208,6 +218,11 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 		return SkillWithFilesResponse{}, err
 	}
 
+	oldFiles, err := qtx.ListSkillFiles(ctx, existing.ID)
+	if err != nil {
+		return SkillWithFilesResponse{}, err
+	}
+
 	// Full replace: drop every existing file, then re-insert the new set so
 	// files no longer present in the local source are removed.
 	if err := qtx.DeleteSkillFilesBySkill(ctx, skill.ID); err != nil {
@@ -224,6 +239,14 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 			return SkillWithFilesResponse{}, err
 		}
 		fileResps = append(fileResps, skillFileToResponse(sf))
+	}
+
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "skill.update", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(existing, oldFiles),
+		After:  skillAuditFields(skill.Name, skill.Description, skill.Content, skill.Config, skillAuditFilesFromResponses(fileResps)),
+	}); err != nil {
+		return SkillWithFilesResponse{}, auditWriteError{err}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

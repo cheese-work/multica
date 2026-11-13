@@ -923,6 +923,13 @@ func TestSweepResetsInProgressIssueToTodo(t *testing.T) {
 	if issueStatus != "todo" {
 		t.Fatalf("expected issue status 'todo' after sweep, got '%s' — issue is stuck", issueStatus)
 	}
+	var resetRows int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'status_changed' AND details #>> '{trigger,cause,kind}' = 'task_reset' AND details #>> '{trigger,cause,ref,run_id}' = $2`, issueID, taskID).Scan(&resetRows); err != nil {
+		t.Fatal(err)
+	}
+	if resetRows != 1 {
+		t.Fatalf("task_reset status_changed rows = %d, want 1", resetRows)
+	}
 }
 
 // TestSweepDoesNotResetIssueAlreadyInReview verifies that the sweeper only resets

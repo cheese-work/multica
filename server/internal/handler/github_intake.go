@@ -97,6 +97,22 @@ func (payload githubIntakePayload) revision(event string) (githubIntakeObject, s
 }
 
 func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery, signature string, body []byte) error {
+	// A signed delivery from an unbound or disallowed installation stores nothing.
+	var probe struct {
+		Installation struct {
+			ID int64 `json:"id"`
+		} `json:"installation"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	allowed, err := h.allowedGitHubInstallations(ctx, probe.Installation.ID)
+	if err != nil {
+		return err
+	}
+	if len(allowed) == 0 {
+		slog.Warn("github: intake dropped; no allowed installation binding",
+			"delivery_guid", delivery, "event", event, "installation_id", probe.Installation.ID)
+		return nil
+	}
 	transaction, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return err
@@ -129,9 +145,15 @@ func (h *Handler) handleGitHubWebhookIntake(ctx context.Context, event, delivery
 		if invalid != "" {
 			state, reason = "denied", invalid
 		} else {
-			installations, err := queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
+			listed, err := queries.ListGitHubInstallationsByInstallationID(ctx, payload.Installation.ID)
 			if err != nil {
 				return err
+			}
+			installations := listed[:0:0]
+			for _, installation := range listed {
+				if h.githubInstallationAllowed(installation) {
+					installations = append(installations, installation)
+				}
 			}
 			if len(installations) == 0 {
 				state, reason = "denied", "unknown_installation"

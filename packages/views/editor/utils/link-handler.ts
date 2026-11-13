@@ -10,7 +10,7 @@ import {
   isKnownWorkspacePath,
   workspaceSlugForPath,
 } from "@multica/core/paths";
-import { isIssueIdentifier } from "@multica/ui/markdown";
+import { COMMENT_ID_PATTERN, isIssueIdentifier } from "@multica/ui/markdown";
 import type { LinkClickIntent } from "../../navigation/click-intent";
 
 /**
@@ -64,10 +64,10 @@ export function toInternalAppPath(
   } catch {
     return null;
   }
-  if (target.origin !== app.origin) return null;
   // Opaque origins (file:, data:) compare equal to each other; only real web
   // origins identify the app.
   if (target.protocol !== "http:" && target.protocol !== "https:") return null;
+  if (target.origin !== app.origin && !rewriteToCurrentOrigin(href, appOrigin)) return null;
   if (!workspaceSlugForPath(target.pathname)) return null;
   return `${target.pathname}${target.search}${target.hash}`;
 }
@@ -270,7 +270,97 @@ export function openLink(
   }
 }
 
+/**
+ * Origins that serve this Multica deployment. Agents paste links on any of
+ * them (decision `card_link` uses the Tailscale host; people use the public
+ * one), so a link on one of these is the same destination as on the current
+ * origin. The single place to add a host.
+ */
+export const KNOWN_MULTICA_ORIGINS: readonly string[] = [
+  "https://multica.congvc.dev",
+  "https://congvc-c00.taila6fa8a.ts.net:19443",
+];
+
+/**
+ * Rewrite an absolute link on a known Multica origin (or the current one) whose
+ * path is a Multica route onto the current origin; `null` for everything else
+ * (external hosts, lookalikes, non-route paths like `/uploads/...`).
+ * Origins are compared through `URL`, never by string prefix.
+ */
+export function rewriteToCurrentOrigin(
+  href: string,
+  appOrigin?: string | null,
+): string | null {
+  let target: URL;
+  try {
+    target = new URL(href);
+  } catch {
+    return null;
+  }
+  if (target.protocol !== "http:" && target.protocol !== "https:") return null;
+  if (target.username || target.password) return null;
+  const known = appOrigin ? [...KNOWN_MULTICA_ORIGINS, appOrigin] : KNOWN_MULTICA_ORIGINS;
+  const isKnown = known.some((o) => {
+    try {
+      return new URL(o).origin === target.origin;
+    } catch {
+      return false;
+    }
+  });
+  if (!isKnown || !workspaceSlugForPath(target.pathname)) return null;
+  return `${appOrigin ?? ""}${target.pathname}${target.search}${target.hash}`;
+}
+
+/**
+ * Parse a DM link: `/{slug}/chat?session=<uuid>[&message=<uuid>]` and nothing
+ * else. `null` for everything else.
+ */
+export function parseWorkspaceChatLink(
+  href: string,
+  appOrigin?: string | null,
+): { sessionId: string; messageId: string | null; slug: string | null } | null {
+  const path = toSameOriginPath(href, appOrigin);
+  if (!path || path.includes("#")) return null;
+  const url = new URL(path, RELATIVE_BASE);
+  const segments = url.pathname.split("/").filter(Boolean);
+  let slug: string | null;
+  if (segments.length === 2 && segments[1] === "chat" && workspaceSlugForPath(url.pathname)) {
+    slug = segments[0] ?? null;
+  } else if (segments.length === 1 && segments[0] === "chat") {
+    slug = null;
+  } else {
+    return null;
+  }
+  const params = url.searchParams;
+  const sessionId = params.get("session");
+  const messageId = params.get("message");
+  if (!sessionId || !UUID_RE.test(sessionId)) return null;
+  if (messageId !== null && !UUID_RE.test(messageId)) return null;
+  if ([...params.keys()].some((k) => k !== "session" && k !== "message")) return null;
+  return { sessionId, messageId, slug };
+}
+
 /** Check if a href is a mention protocol link (should not be opened as a regular link). */
 export function isMentionHref(href: string | null | undefined): href is string {
   return !!href && href.startsWith("mention://");
+}
+
+/**
+ * Parse a link to a single comment: an in-app issue URL whose fragment is
+ * `#comment-<uuid>`. `null` for everything else. Queries are rejected for the
+ * same reason `parseWorkspaceEntityLink` rejects them.
+ */
+export function parseWorkspaceCommentLink(
+  href: string,
+  appOrigin?: string | null,
+): { commentId: string; slug: string | null } | null {
+  const path = toSameOriginPath(href, appOrigin);
+  if (!path || path.includes("?")) return null;
+  const hashAt = path.indexOf("#");
+  if (hashAt < 0) return null;
+  const commentId = path.slice(hashAt + 1).match(/^comment-(.+)$/)?.[1];
+  if (!commentId || !COMMENT_ID_PATTERN.test(commentId)) return null;
+  const issue = parseWorkspaceEntityLink(path.slice(0, hashAt), appOrigin);
+  if (issue?.kind !== "issue") return null;
+  return { commentId, slug: issue.slug };
 }

@@ -11,7 +11,7 @@ import {
 } from "./commands";
 
 describe("chat command registry", () => {
-  it("registers all seven built-in DM commands in composer order with complete metadata", () => {
+  it("registers all eight built-in DM commands in composer order with complete metadata", () => {
     expect(CHAT_COMMANDS.map((cmd) => cmd.id)).toEqual([
       "statistic",
       "archive",
@@ -20,6 +20,7 @@ describe("chat command registry", () => {
       "compact",
       "rename",
       "fork",
+      "unseen",
     ]);
 
     for (const cmd of CHAT_COMMANDS) {
@@ -56,6 +57,12 @@ describe("chat command registry", () => {
       argumentHint: null,
       argumentHintKey: null,
     });
+    expect(CHAT_COMMANDS_BY_ID.unseen).toMatchObject({
+      kind: "client",
+      args: "none",
+      argumentHint: null,
+      argumentHintKey: null,
+    });
     expect(CHAT_COMMANDS_BY_ID.compact).toMatchObject({
       kind: "prompt",
       args: "optional_text",
@@ -85,6 +92,7 @@ describe("chat command registry", () => {
       "compact",
       "rename",
       "fork",
+      "unseen",
     ]);
 
     const archivedComposer = getAvailableChatCommands({ archived: true, surface: "composer" });
@@ -97,6 +105,7 @@ describe("chat command registry", () => {
     expect(CHAT_COMMANDS_BY_ID.archive.isAvailable({ archived: true, surface: "menu" })).toBe(false);
     expect(CHAT_COMMANDS_BY_ID.unarchive.isAvailable({ archived: true, surface: "menu" })).toBe(true);
     expect(CHAT_COMMANDS_BY_ID.unarchive.isAvailable({ archived: false, surface: "menu" })).toBe(false);
+    expect(CHAT_COMMANDS_BY_ID.unseen.isAvailable({ archived: true, surface: "menu" })).toBe(false);
   });
 
   it("matches /statistic by search terms stats, statistics, and usage, and lists all available commands on empty query (DES-5)", () => {
@@ -112,17 +121,18 @@ describe("chat command registry", () => {
       "compact",
       "rename",
       "fork",
+      "unseen",
     ]);
     expect(filterChatCommands("", { archived: true }).map((c) => c.id)).toEqual(["unarchive"]);
   });
 
   it("parses standalone case-insensitive no-arg commands and rejects extra text or attachments on client commands", () => {
-    for (const input of ["/archive", "  /ARCHIVE  ", "/UnArchive", "/Statistic", "/PIN"]) {
+    for (const input of ["/archive", "  /ARCHIVE  ", "/UnArchive", "/Statistic", "/PIN", "/UNSEEN"]) {
       const parsed = parseChatCommandInput(input);
       expect(parsed).toMatchObject({ status: "ok", args: "" });
     }
 
-    for (const input of ["/archive extra", "/unarchive now", "/statistic today", "/pin top"]) {
+    for (const input of ["/archive extra", "/unarchive now", "/statistic today", "/pin top", "/unseen now"]) {
       const parsed = parseChatCommandInput(input);
       expect(parsed).toMatchObject({
         status: "invalid",
@@ -130,7 +140,7 @@ describe("chat command registry", () => {
       });
     }
 
-    for (const input of ["/archive", "/unarchive", "/statistic", "/pin", "/rename New title", "/fork", "/fork continue with plan B"]) {
+    for (const input of ["/archive", "/unarchive", "/statistic", "/pin", "/unseen", "/rename New title", "/fork", "/fork continue with plan B"]) {
       const parsed = parseChatCommandInput(input, { hasAttachments: true });
       expect(parsed).toMatchObject({
         status: "invalid",
@@ -149,6 +159,7 @@ describe("chat command registry", () => {
     expect(getChatSessionMenuItems({ archived: false }).map((item) => item.id)).toEqual([
       "statistic",
       "pin",
+      "unseen",
       "rename",
       "archive",
     ]);

@@ -1,0 +1,4 @@
+{"name":"upstream-main immutable","target":"branch","enforcement":"active",
+ "conditions":{"ref_name":{"include":["refs/heads/upstream-main"],"exclude":[]}},
+ "bypass_actors":[],
+ "rules":[{"type":"deletion"},{"type":"non_fast_forward"}]}

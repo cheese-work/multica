@@ -1,0 +1,159 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><style>
+:root{--fg:oklch(.141 .005 285.8);--mf:oklch(.505 .016 285.9);--ff:oklch(.606 .016 285.9);--mu:oklch(.967 .001 286.4);--sb:oklch(.92 .004 286.3);--bd:oklch(.945 .003 286.3);--bg:oklch(.988 0 0);--sf:#fff;--br:oklch(.56 .194 256.4);--de:oklch(.577 .245 27.3);--wa:oklch(.75 .16 85)}
+*{margin:0;box-sizing:border-box}
+body{width:1440px;padding:24px;background:var(--bg);color:var(--fg);font:14px/20px Helvetica,Arial,"Liberation Sans",sans-serif}
+code{font:12px ui-monospace,Menlo,monospace;background:var(--mu);padding:0 4px;border-radius:4px}
+h1{font-size:18px;line-height:28px}.lead{color:var(--mf);max-width:1150px;margin:2px 0 6px}
+.row{display:grid;grid-template-columns:900px 440px;gap:40px;align-items:start;margin-top:26px}
+h2{font-size:12px;line-height:16px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--mf);margin:0 0 8px}
+.cap{font-size:12px;line-height:16px;color:var(--mf);margin:12px 0 4px}
+.note{font-size:12px;line-height:16px;color:var(--mf);margin-top:6px}
+.cmp{background:var(--sf);border:1px solid var(--sb);border-radius:12px;padding:10px 12px}
+.ed{color:var(--ff);min-height:22px}.ft{display:flex;align-items:center;gap:8px;margin-top:10px}
+.chips{display:flex;flex-wrap:wrap;align-items:center;gap:6px;flex:1;min-width:0}
+.send{width:32px;height:32px;border-radius:8px;background:var(--fg);color:#fff;display:grid;place-items:center;flex:none}
+.chip{display:inline-flex;align-items:center;gap:6px;height:24px;max-width:100%;padding:0 6px;border-radius:6px;border:1px solid transparent;font-size:11px;line-height:15px;font-weight:500;color:var(--mf);white-space:nowrap}
+.chip svg{flex:none;color:var(--ff)}.chip .l{overflow:hidden;text-overflow:ellipsis}
+.st{color:var(--fg);background:color-mix(in oklab,var(--br) 7%,transparent);border-color:color-mix(in oklab,var(--br) 28%,transparent)}
+.rs{color:var(--de)}.sk .av{opacity:.4;filter:grayscale(1)}.sk .av i{display:none}
+.hv{background:var(--mu);color:var(--fg)}
+.bl{color:var(--de)}.bl .l{display:inline-flex;gap:4px;min-width:0}.bl .l b{font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.av{position:relative;flex:none;width:18px;height:18px;border-radius:50%;display:inline-grid;place-items:center;color:#fff;font-size:8px;font-weight:600;line-height:1}
+.av i{position:absolute;right:-1px;bottom:-1px;width:6px;height:6px;border-radius:50%;background:#16a34a;border:1px solid var(--sf)}
+.a1{background:#0f766e}.a2{background:#b45309}.a3{background:#6d28d9}.a4{background:#be185d}.a5{background:#475569}
+.stack{display:inline-flex}.stack .av{box-shadow:0 0 0 2px var(--sf)}.stack .av+.av{margin-left:-3px}.stack .av i{display:none}
+.stack .av.rst{box-shadow:0 0 0 1.5px var(--sf),0 0 0 3px var(--br)}.stack .av.rrs{box-shadow:0 0 0 1.5px var(--sf),0 0 0 3px var(--de)}.stack .av.rsk{opacity:.4;filter:grayscale(1)}
+.more{background:var(--mu)!important;color:var(--mf)!important;font-size:9px}
+.pop{background:var(--sf);border:1px solid var(--sb);border-radius:9px;box-shadow:0 8px 24px rgb(0 0 0/.12);padding:8px;font-size:13px;line-height:18px}
+.pt{display:flex;font-size:12px;line-height:16px;font-weight:500;color:var(--mf);padding:0 6px 6px}.pt em{font-style:normal;margin-left:auto}
+.rw{display:flex;align-items:center;gap:8px;height:40px;padding:0 6px;border-radius:6px}
+.rw .nm{flex:none;width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rw.sk .nm{color:var(--mf)}.rw.sk .av{opacity:.4;filter:grayscale(1)}
+.dseg{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:var(--mu);padding:2px;border-radius:8px;flex:1}
+.dseg span{height:28px;border-radius:6px;display:grid;place-items:center;font-size:12px;line-height:16px;color:var(--mf);white-space:nowrap}
+.dseg .on{background:var(--sf);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px color-mix(in oklab,var(--br) 40%,transparent)}
+.dseg .on.d{color:var(--de);box-shadow:0 0 0 1px color-mix(in oklab,var(--de) 40%,transparent)}
+.dseg .on.g{color:var(--mf);box-shadow:0 0 0 1px var(--sb)}
+.dseg .fo{outline:2px solid var(--br);outline-offset:-2px;background:var(--sf);color:var(--fg)}
+.dseg .na{opacity:.4}
+.ds{border-top:1px solid var(--bd);margin:6px -8px 0;padding:8px 14px 2px;font-size:12px;line-height:16px;color:var(--mf);min-height:26px}
+.ph{width:390px;border:1px solid var(--sb);border-radius:28px;background:var(--bg);padding:16px;overflow:hidden}
+.p .chip{height:40px;padding:0 10px;font-size:12px;line-height:16px;gap:8px}.p .av{width:20px;height:20px;font-size:9px}
+.p .chip svg{width:14px;height:14px}
+.pn{display:flex;align-items:center;gap:8px;height:24px;margin:6px 4px 4px;font-size:13px}.pn .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pn.sk .nm{color:var(--mf)}.pn.sk .av{opacity:.4;filter:grayscale(1)}
+.pseg{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:6px}
+.pseg span{height:40px;border-radius:8px;border:1px solid var(--sb);display:grid;place-items:center;font-size:12px;line-height:16px;color:var(--mf);text-align:center;padding:0 2px}
+.pseg .on{color:var(--fg);font-weight:600;border-color:color-mix(in oklab,var(--br) 40%,transparent);background:color-mix(in oklab,var(--br) 9%,transparent)}
+.pseg .on.d{color:var(--de);border-color:color-mix(in oklab,var(--de) 40%,transparent);background:color-mix(in oklab,var(--de) 8%,transparent)}
+.pseg .on.g{color:var(--mf);border-color:var(--sb);background:var(--mu)}
+.tl{height:9px;border-radius:5px;background:var(--mu);margin:0 0 8px}
+.cnt{display:inline-block;font-size:11px;line-height:16px;font-weight:600;padding:0 7px;border-radius:9px;background:var(--mu);color:var(--fg);margin-left:6px;text-transform:none;letter-spacing:0}
+.cnt.bad{background:color-mix(in oklab,var(--de) 12%,transparent);color:var(--de)}
+.stg{position:relative}.tri{position:absolute;left:0;top:0;pointer-events:none}
+.lab{position:absolute;font-size:12px;line-height:16px;color:var(--mf);width:270px}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="c" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="s" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7M12 19V5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="w" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3ZM12 9v4m0 4h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</defs></svg>
+<h1>C · One summary chip, hover popover with the modes inline in each agent row</h1>
+<p class="lead">One chip for any number of recipients, same as B. Hover opens one popover (<code>openOnHover</code>, safe polygon between chip and popover). Each agent is one row: avatar, name, and a four-way mode control with every mode visible at once. No second menu to travel to. The line under the rows shows the full description of the mode under the pointer or focus. Desktop: hover, <b>1 click</b>, any count. iPhone: tap the chip, tap a mode: <b>2 taps</b>, any count. The popover is anchored and non-modal (B uses a modal sheet on touch). Left: desktop, 900 px column of a 1440 px window. Right: iPhone Safari, 390 px, 40 px controls (a proposal). Names and states are sample data; today's states: frame "Ref · today's run-mode chip".</p>
+<div class="row"><div>
+<h2>1 · One summary chip — 1, 2 and 3 recipients <span class="cnt">hover + 1 click</span></h2>
+<div class="cap">1 recipient — start (chip keeps today's mode label)</div>
+<div class="cmp"><div class="ed">@x99-codex-terra please re-run the migration check.</div><div class="ft"><div class="chips"><span class="chip"><span class="av a1">T<i></i></span><span class="l">Will start when sent</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+<div class="cap">2 recipients — steer, start</div>
+<div class="cmp"><div class="ed">@x99-claude-opus @x99-codex-terra review the lock PR and report back.</div><div class="ft"><div class="chips"><span class="chip"><span class="stack"><span class="av a2 rst">O</span><span class="av a1">T</span></span><span class="l">2 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+<div class="cap">3 recipients — steer, restart, skip</div>
+<div class="cmp"><div class="ed">@x99-claude-opus @x99-codex-terra @x99-agy-gemini-ux the design needs a second pass.</div><div class="ft"><div class="chips"><span class="chip"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span></span><span class="l">3 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+<p class="note">Same chip as B: one line at any count, the modes read from the avatar rings (brand = steer, red = restart, dimmed = skip). The difference from B is inside the popover.</p>
+</div><div>
+<h2>1 · iPhone, 3 recipients <span class="cnt">1 line</span></h2>
+<div class="ph p"><div class="tl" style="width:80%"></div><div class="tl" style="width:55%;margin-bottom:14px"></div>
+<div class="cmp"><div class="ed">@x99-claude-opus @x99-codex-terra @x99-agy-gemini-ux second pass.</div><div class="ft"><div class="chips"><span class="chip"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span></span><span class="l">3 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div></div>
+<p class="note">Composer height does not change with the number of recipients.</p>
+</div></div>
+<div class="row"><div>
+<h2>2 · Desktop 1440, popover open on hover <span class="cnt">safe triangle</span></h2>
+<div class="cap">Pointer rests on the chip. The popover is one level, so the triangle only has to cover the way from the chip to the popover.</div>
+<div class="stg" style="height:330px">
+<div class="pop" style="position:absolute;left:0;bottom:61px;width:480px;z-index:2">
+<div class="pt">Recipients<em>3 agents will receive this</em></div>
+<div class="rw"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus</span><div class="dseg"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div></div>
+<div class="rw"><span class="av a1">T<i></i></span><span class="nm">x99-codex-terra</span><div class="dseg"><span>Add to run</span><span>After run</span><span class="on d fo">Restart</span><span>Skip</span></div></div>
+<div class="rw sk"><span class="av a3">G</span><span class="nm">x99-agy-gemini-ux</span><div class="dseg"><span class="na">Add to run</span><span>After run</span><span>Restart</span><span class="on g">Skip</span></div></div>
+<div class="ds"><b style="font-weight:600;color:var(--de)">Stop and start over.</b> Stops the current run now and starts over from this message.</div>
+</div>
+<svg class="tri" width="900" height="330" style="z-index:3">
+<polygon points="75,282 0,77 480,77" fill="oklch(.56 .194 256.4 / .10)" stroke="oklch(.56 .194 256.4)" stroke-width="1.5" stroke-dasharray="5 4"/>
+<path d="M75 282 L355 172" fill="none" stroke="oklch(.141 .005 285.8)" stroke-width="2" stroke-dasharray="2 4" stroke-linecap="round"/>
+<path d="M355 172 l-10 2 M355 172 l-4 9" stroke="oklch(.141 .005 285.8)" stroke-width="2" stroke-linecap="round"/>
+<path d="M75 282 l0 15 l4 -4 l3 7 l3 -1.5 l-3 -7 l6 0 z" fill="#fff" stroke="oklch(.141 .005 285.8)" stroke-width="1.2" transform="translate(-4 -4)"/>
+</svg>
+<div class="lab" style="left:520px;top:70px;color:var(--br);font-weight:500">Safe triangle: apex at the pointer, base = the popover's far edge.</div>
+<div class="lab" style="left:520px;top:108px">The path to “Restart” crosses the Opus controls. Hover only highlights, so passing over a control changes nothing.</div>
+<div class="lab" style="left:520px;top:172px">Leave the triangle and the popover closes after a short grace period (proposal: 150 ms).</div>
+<div class="cmp" style="position:absolute;left:0;top:230px;width:900px;z-index:1"><div class="ed">@x99-claude-opus @x99-codex-terra @x99-agy-gemini-ux the design needs a second pass.</div><div class="ft"><div class="chips"><span class="chip hv"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span></span><span class="l">3 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+</div>
+<p class="note">Popover opens upward, left-aligned to the chip, 480 px (as today it is 320 px; it grows by 160 px to hold the four-way control). The focused or hovered mode shows its full description in the line under the rows. Modes that do not apply (agent not running) are dimmed and not clickable, as today.</p>
+</div><div>
+<h2>2 · iPhone 390, popover open <span class="cnt">tap chip, tap mode</span></h2>
+<div class="ph p" style="padding:0"><div class="stg" style="height:520px;overflow:hidden">
+<div style="padding:16px"><div class="tl" style="width:80%"></div><div class="tl" style="width:55%"></div></div>
+<div class="pop" style="position:absolute;left:12px;right:12px;bottom:84px;z-index:2">
+<div class="pt">Recipients<em>3 agents will receive this</em></div>
+<div class="pn"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus</span></div><div class="pseg"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div>
+<div class="pn"><span class="av a1">T<i></i></span><span class="nm">x99-codex-terra</span></div><div class="pseg"><span>Add to run</span><span>After run</span><span class="on d">Restart</span><span>Skip</span></div>
+<div class="pn sk"><span class="av a3">G</span><span class="nm">x99-agy-gemini-ux</span></div><div class="pseg"><span>Add to run</span><span>After run</span><span>Restart</span><span class="on g">Skip</span></div>
+</div>
+<div class="cmp" style="position:absolute;left:12px;right:12px;bottom:12px;z-index:1"><div class="ed">@x99-claude-opus @x99-codex-terra +1 second pass.</div><div class="ft"><div class="chips"><span class="chip hv"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span></span><span class="l">3 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+</div></div>
+<p class="note">Same popover, full width minus 12 px, anchored above the chip, no backdrop: the composer stays visible and editable. Short labels, as in B. Tap outside closes.</p>
+</div></div>
+<div class="row"><div>
+<h2>3 · Five recipients <span class="cnt">same: hover + 1 click</span></h2>
+<div class="stg" style="height:380px">
+<div class="pop" style="position:absolute;left:0;bottom:61px;width:480px;z-index:2">
+<div class="pt">Recipients<em>5 agents will receive this</em></div>
+<div class="rw"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus</span><div class="dseg"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div></div>
+<div class="rw"><span class="av a1">T<i></i></span><span class="nm">x99-codex-terra</span><div class="dseg"><span>Add to run</span><span>After run</span><span class="on d">Restart</span><span>Skip</span></div></div>
+<div class="rw sk"><span class="av a3">G</span><span class="nm">x99-agy-gemini-ux</span><div class="dseg"><span class="na">Add to run</span><span>After run</span><span>Restart</span><span class="on g">Skip</span></div></div>
+<div class="rw"><span class="av a4">S<i></i></span><span class="nm">x99-claude-sonnet-d…</span><div class="dseg"><span class="na">Add to run</span><span class="na">After run</span><span>Restart</span><span>Skip</span></div></div>
+<div class="rw"><span class="av a5">C<i></i></span><span class="nm">x99-codex-cora</span><div class="dseg"><span>Add to run</span><span class="on">After run</span><span>Restart</span><span>Skip</span></div></div>
+<div class="ds">Hover or focus a mode to read its description here.</div>
+</div>
+<div class="cmp" style="position:absolute;left:0;top:280px;width:900px;z-index:1"><div class="ed">@x99-claude-opus @x99-codex-terra @x99-agy-gemini-ux @x99-claude-sonnet-design @x99-codex-cora all hands.</div><div class="ft"><div class="chips"><span class="chip hv"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span><span class="av more">+2</span></span><span class="l">5 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+</div>
+<p class="note">Every mode of every agent stays visible; 40 px per agent. A not-yet-started agent (Sonnet) has no "Add to run" or "After run" (nothing is running to join), so those two are dimmed. The name column is 150 px and truncates ("x99-claude-sonnet-d…"), the avatar and the full name in the tooltip identify it.</p>
+</div><div>
+<h2>3 · iPhone 390, five recipients <span class="cnt">2 taps</span></h2>
+<div class="ph p" style="padding:0"><div class="stg" style="height:690px;overflow:hidden">
+<div style="padding:16px"><div class="tl" style="width:80%"></div></div>
+<div class="pop" style="position:absolute;left:12px;right:12px;bottom:84px;z-index:2">
+<div class="pt">Recipients<em>5 agents will receive this</em></div>
+<div class="pn"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus</span></div><div class="pseg"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div>
+<div class="pn"><span class="av a1">T<i></i></span><span class="nm">x99-codex-terra</span></div><div class="pseg"><span>Add to run</span><span>After run</span><span class="on d">Restart</span><span>Skip</span></div>
+<div class="pn sk"><span class="av a3">G</span><span class="nm">x99-agy-gemini-ux</span></div><div class="pseg"><span>Add to run</span><span>After run</span><span>Restart</span><span class="on g">Skip</span></div>
+<div class="pn"><span class="av a4">S<i></i></span><span class="nm">x99-claude-sonnet-design</span></div><div class="pseg"><span style="opacity:.4">Add to run</span><span style="opacity:.4">After run</span><span>Restart</span><span>Skip</span></div>
+<div class="pn"><span class="av a5">C<i></i></span><span class="nm">x99-codex-cora</span></div><div class="pseg"><span>Add to run</span><span class="on">After run</span><span>Restart</span><span>Skip</span></div>
+</div>
+<div class="cmp" style="position:absolute;left:12px;right:12px;bottom:12px;z-index:1"><div class="ed">@x99-claude-opus @x99-codex-terra +3 all hands.</div><div class="ft"><div class="chips"><span class="chip hv"><span class="stack"><span class="av a2 rst">O</span><span class="av a1 rrs">T</span><span class="av a3 rsk">G</span><span class="av more">+2</span></span><span class="l">5 agents will receive this</span><svg width="12" height="12"><use href="#c"/></svg></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+</div></div>
+<p class="note">Five agents is about 500 px of the popover; above about 6 agents it scrolls inside (max height = screen minus the composer).</p>
+</div></div>
+<div class="row"><div>
+<h2>4 · Long agent name and a blocked mention <span class="cnt">desktop</span></h2>
+<div class="cmp"><div class="ed">@x99-claude-opus-long-running-design-review-agent @x99-codex-terra-with-a-very-long-agent-name please look.</div><div class="ft"><div class="chips"><span class="chip"><span class="stack"><span class="av a2 rst">O</span></span><span class="l">Add to current run</span><svg width="12" height="12"><use href="#c"/></svg></span><span class="chip bl"><svg width="12" height="12" style="color:var(--de)"><use href="#w"/></svg><span class="l"><b style="max-width:260px">x99-codex-terra-with-a-very-long-agent-name</b><span>Runtime offline</span></span></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+<div class="cap">Popover row with the long name (cropped)</div>
+<div class="pop" style="width:480px"><div class="pt">Recipients<em>1 agent will receive this</em></div>
+<div class="rw"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus-long-running-design-review-agent</span><div class="dseg"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div></div></div>
+<p class="note">The 150 px name column truncates the 48-character name to "x99-claude-opus-long-r…"; two agents that share a prefix (for example two "x99-claude-opus-…" names) look the same here. The full name is in the tooltip and the aria label. The blocked chip keeps today's look and is not part of the popover.</p>
+</div><div>
+<h2>4 · iPhone 390, blocked chip <span class="cnt">wrap</span></h2>
+<div class="ph p"><div class="tl" style="width:70%;margin-bottom:12px"></div>
+<div class="cmp"><div class="ed">@x99-claude-opus-long-running-design-review-agent @x99-codex-terra-with-a-very-long-agent-name second pass.</div><div class="ft" style="align-items:flex-end"><div class="chips"><span class="chip"><span class="stack"><span class="av a2 rst">O</span></span><span class="l">Add to current run</span><svg width="12" height="12"><use href="#c"/></svg></span><span class="chip bl"><svg width="14" height="14" style="color:var(--de)"><use href="#w"/></svg><span class="l"><b>x99-codex-terra-with-a-very-long-agent-name</b><span>Runtime offline</span></span></span></div><span class="send"><svg width="16" height="16"><use href="#s"/></svg></span></div></div>
+<div class="pop" style="margin-top:14px"><div class="pn" style="margin-top:0"><span class="av a2">O<i></i></span><span class="nm">x99-claude-opus-long-running-design-review-agent</span></div><div class="pseg" style="margin-bottom:0"><span class="on">Add to run</span><span>After run</span><span>Restart</span><span>Skip</span></div></div></div>
+<p class="note">Below the composer: the popover row with the long name truncated at the full popover width (about 300 px): the name is more readable on the phone than on desktop.</p>
+</div></div>

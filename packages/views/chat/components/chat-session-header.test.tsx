@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { ChatSession } from "@multica/core/types";
+import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 import enCommon from "../../locales/en/common.json";
 
@@ -27,9 +27,12 @@ vi.mock("../../common/actor-avatar", () => ({
 }));
 
 vi.mock("../../navigation", () => ({
-  AppLink: ({ children }: { children: React.ReactNode }) => <a>{children}</a>,
+  AppLink: ({ children, href }: { children: React.ReactNode; href: string }) => (
+    <a href={href}>{children}</a>
+  ),
 }));
 
+vi.mock("./open-decisions-badge", () => ({ OpenDecisionsBadge: () => null }));
 vi.mock("./scheduled-wakeups-chip", () => ({ ScheduledWakeupsChip: () => null }));
 
 import { ChatSessionHeader } from "./chat-session-header";
@@ -52,6 +55,52 @@ const session: ChatSession = {
   created_at: new Date(0).toISOString(),
   updated_at: new Date(0).toISOString(),
 };
+
+describe("ChatSessionHeader breadcrumb", () => {
+  it("leads with the agent as a link to its page, then the chat title", () => {
+    const agent = { id: "agent-1", name: "Lambda" } as Agent;
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={agent} />
+      </I18nProvider>,
+    );
+
+    const header = within(screen.getByRole("banner"));
+    const agentLink = header.getByRole("link", { name: "Lambda" });
+    expect(agentLink).toHaveAttribute("href", "/agents/agent-1");
+    const title = header.getByRole("button", { name: "Original title" });
+    expect(agentLink).not.toContainElement(title);
+    expect(
+      agentLink.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders a long title in full: no fixed character cap, full text in the tooltip", async () => {
+    const longTitle = "tôi muốn adopt ý tưởng này vào hệ thống chat của chúng ta để tiêu đề hiển thị đầy đủ hơn ".repeat(2).trim();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={{ ...session, title: longTitle }} agent={null} />
+      </I18nProvider>,
+    );
+    const button = screen.getByRole("button", { name: longTitle });
+    expect(button.textContent).toBe(longTitle);
+    expect(button.className).toContain("truncate");
+    act(() => button.focus());
+    expect((await screen.findAllByText(longTitle)).length).toBeGreaterThan(1);
+  });
+
+  it("shows only the title when the chat's agent is unavailable", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatSessionHeader session={session} agent={null} />
+      </I18nProvider>,
+    );
+
+    const header = within(screen.getByRole("banner"));
+    expect(header.queryByRole("link")).not.toBeInTheDocument();
+    expect(header.getByRole("button", { name: "Original title" })).toBeInTheDocument();
+  });
+});
 
 function startRename(): HTMLInputElement {
   render(
@@ -204,7 +253,7 @@ describe("ChatSessionHeader rename keyboard behavior", () => {
 });
 
 // CHE-1808: the context meter shows the latest completed run's prompt size
-// against the model's window, warns ten points below the auto-compact
+// against the model's window, warns near the auto-compact token
 // threshold, and the menu offers "Compact now".
 describe("ChatSessionHeader context meter", () => {
   const withContext = (tokens?: number | null, window?: number | null) =>
@@ -212,7 +261,7 @@ describe("ChatSessionHeader context meter", () => {
 
   function renderHeader(
     sessionValue: ChatSession,
-    props: { autoCompactThresholdPct?: number | null; onCompact?: () => void } = {},
+    props: { autoCompactThresholdTokens?: number | null; lastTurnTokens?: number | null; onCompact?: () => void } = {},
   ) {
     const Header = ChatSessionHeader as unknown as React.ComponentType<Record<string, unknown>>;
     return render(
@@ -228,49 +277,90 @@ describe("ChatSessionHeader context meter", () => {
     ["no tokens", null, 200_000],
     ["zero window", 124_000, 0],
   ])("is hidden when the run reported %s", (_name, tokens, window) => {
-    renderHeader(withContext(tokens, window), { autoCompactThresholdPct: 80 });
+    renderHeader(withContext(tokens, window), { autoCompactThresholdTokens: 160_000 });
 
     expect(screen.queryByText(/ of \d/)).not.toBeInTheDocument();
   });
 
   it("shows the share and the window below the warning zone", () => {
-    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdPct: 80 });
+    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdTokens: 160_000 });
 
     expect(screen.getByText("62% of 200k")).toBeInTheDocument();
     expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
   });
 
-  it("does not warn one token short of ten points below the threshold", () => {
-    renderHeader(withContext(139_999, 200_000), { autoCompactThresholdPct: 80 });
+  // CHE-4418: a 1M window with the 200k default is a 20% threshold. The old
+  // ten-point band warned at 10% (100k), half the threshold.
+  it("does not warn at 110k of a 1M window with a 200k threshold", () => {
+    renderHeader(withContext(110_000, 1_000_000), { autoCompactThresholdTokens: 200_000 });
+
+    expect(screen.getByText("11% of 1M")).toBeInTheDocument();
+    expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
     expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
   });
 
-  it("warns at exactly ten points below and above", () => {
-    const { unmount } = renderHeader(withContext(140_000, 200_000), { autoCompactThresholdPct: 80 });
-    expect(screen.getByText("70% of 200k")).toBeInTheDocument();
-    expect(screen.getByText("Will compact after the next reply")).toBeInTheDocument();
+  it("does not warn one token short of 90% of the threshold tokens", () => {
+    renderHeader(withContext(179_999, 1_000_000), { autoCompactThresholdTokens: 200_000 });
+    expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
+  });
+
+  it("shows the threshold and current size from 90% of the threshold tokens", () => {
+    renderHeader(withContext(180_000, 1_000_000), { autoCompactThresholdTokens: 200_000 });
+    expect(screen.getByText("Compacts at 200k (now 180k)")).toBeInTheDocument();
+    expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
+  });
+
+  it("uses the exact token threshold, not one rebuilt from a percent", () => {
+    // 1,048,576 window with the 200k default: 20% rounds up to 209,715 tokens.
+    const { unmount } = renderHeader(withContext(179_999, 1_048_576), { autoCompactThresholdTokens: 200_000 });
+    expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
     unmount();
 
-    renderHeader(withContext(190_000, 200_000), { autoCompactThresholdPct: 80 });
+    renderHeader(withContext(180_000, 1_048_576), { autoCompactThresholdTokens: 200_000 });
+    expect(screen.getByText("Compacts at 200k (now 180k)")).toBeInTheDocument();
+  });
+
+  it("uses the same rule on a 200k window at 80%", () => {
+    const { unmount } = renderHeader(withContext(143_999, 200_000), { autoCompactThresholdTokens: 160_000 });
+    expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
+    unmount();
+
+    renderHeader(withContext(144_000, 200_000), { autoCompactThresholdTokens: 160_000 });
+    expect(screen.getByText("Compacts at 160k (now 144k)")).toBeInTheDocument();
+  });
+
+  it("keeps the old text only when less than one last turn remains", () => {
+    const { unmount } = renderHeader(withContext(150_000, 1_000_000), {
+      autoCompactThresholdTokens: 200_000,
+      lastTurnTokens: 40_000,
+    });
+    expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Compacts at/)).not.toBeInTheDocument();
+    unmount();
+
+    renderHeader(withContext(170_000, 1_000_000), {
+      autoCompactThresholdTokens: 200_000,
+      lastTurnTokens: 40_000,
+    });
     expect(screen.getByText("Will compact after the next reply")).toBeInTheDocument();
   });
 
   it("never warns when auto-compact is off", () => {
-    renderHeader(withContext(190_000, 200_000), { autoCompactThresholdPct: null });
+    renderHeader(withContext(190_000, 200_000), { autoCompactThresholdTokens: null });
 
     expect(screen.getByText("95% of 200k")).toBeInTheDocument();
     expect(screen.queryByText("Will compact after the next reply")).not.toBeInTheDocument();
   });
 
   it("writes a 1M window as 1M", () => {
-    renderHeader(withContext(120_000, 1_000_000), { autoCompactThresholdPct: 80 });
+    renderHeader(withContext(120_000, 1_000_000), { autoCompactThresholdTokens: 160_000 });
 
     expect(screen.getByText("12% of 1M")).toBeInTheDocument();
   });
 
   it("sends /compact from the menu's Compact now item", async () => {
     const onCompact = vi.fn();
-    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdPct: 80, onCompact });
+    renderHeader(withContext(124_000, 200_000), { autoCompactThresholdTokens: 160_000, onCompact });
 
     fireEvent.click(screen.getByRole("button", { name: "More actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Compact now" }));

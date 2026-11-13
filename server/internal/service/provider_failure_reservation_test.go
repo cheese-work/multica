@@ -170,7 +170,7 @@ func reserveConcurrently(ctx context.Context, pool *pgxpool.Pool, reservation pr
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error { return nil })
+	inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error { return nil })
 	if err != nil {
 		return 0, err
 	}
@@ -260,7 +260,7 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 		t.Fatal(err)
 	}
 	applied := false
-	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+	if inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
 		applied = true
 		_, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('fail')`)
 		return err
@@ -286,7 +286,7 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE recovery_apply_test (value text NOT NULL CHECK (value <> 'fail')) ON COMMIT DROP`); err != nil {
 		t.Fatal(err)
 	}
-	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+	if inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO recovery_apply_test(value) VALUES ('ok')`)
 		return err
 	}); err != nil || !inserted {
@@ -308,7 +308,7 @@ func TestProviderFailureRecoveryReservationRollsBackWithFailedApply(t *testing.T
 	}
 	defer tx.Rollback(ctx)
 	applyCalled := false
-	if inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error {
+	if inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(reservation), func(context.Context, pgx.Tx) error {
 		applyCalled = true
 		return nil
 	}); err != nil || inserted || applyCalled {
@@ -336,7 +336,7 @@ func TestProviderFailureReservationApplyErrorKeepsCallerTransaction(t *testing.T
 	if _, err := tx.Exec(ctx, `INSERT INTO recovery_caller_test(value) VALUES ('before')`); err != nil {
 		t.Fatal(err)
 	}
-	inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
+	inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(reservation), func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `INSERT INTO recovery_caller_test(value) VALUES ('fail')`)
 		return err
 	})
@@ -409,7 +409,7 @@ func TestProviderFailureReservationRefusesDuplicateEffectsWithoutAbortingCaller(
 			}
 			defer tx.Rollback(ctx)
 			applyCalled := false
-			inserted, err := reserveProviderFailureRecoveryAndApply(ctx, tx, providerFailureReservationParams(duplicate), func(context.Context, pgx.Tx) error {
+			inserted, err := applyProviderFailureReservation(ctx, tx, providerFailureReservationParams(duplicate), func(context.Context, pgx.Tx) error {
 				applyCalled = true
 				return nil
 			})
@@ -596,6 +596,7 @@ func TestProviderFailureRecoveryWriterInventory(t *testing.T) {
 		"pkg/db/queries/agent.sql#ExpireStaleQueuedTasks":             "queued_expired",
 		"pkg/db/queries/agent.sql#FailExpiredRuntimeReconnectRetries": "runtime_reconnect_timeout",
 		"pkg/db/queries/runtime.sql#FailTasksForOfflineRuntimes":      "runtime_offline",
+		"pkg/db/queries/provider_hold.sql#FailExpiredProviderHolds":   "provider_breaker_hold_expired",
 	}
 	if err := validateProviderFailureWriterInventory(actual, expected); err != nil {
 		t.Fatal(err)

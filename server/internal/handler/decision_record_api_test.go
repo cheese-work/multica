@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,7 @@ import (
 
 func TestUnpromptedDecisionRecordAPI(test *testing.T) {
 	fixture := newAskedRecordFixture(test)
-	body := `{"decision_record":true,"message_ids":["` + fixture.messageID + `"],"escalation_class":"deploy"}`
+	body := `{"decision_record":true,"message_ids":["` + fixture.messageID + `"],"escalation_class":"reversible"}`
 	request := fixture.recordRequest()
 	request.Body = ioBody(body)
 	request = withIssueParam(request, fixture.issueID)
@@ -41,9 +42,6 @@ func TestUnpromptedDecisionRecordAPI(test *testing.T) {
 	}
 	if decision.Origin != "unprompted" || decision.Status != "answered" || decision.PingMessageID.Valid || decision.DecisionIntentID.Valid || decision.HumanUserID != parseUUID(fixture.humanID) || decision.IssueCommentID != comment.ID || answer.WakeAt.Valid || answer.ContentSnapshot != "  Yes.\nKeep the exact words.  " {
 		test.Fatalf("incorrect pending unprompted record: %+v %+v", decision, answer)
-	}
-	if answer.EffectiveAt.Time.Sub(answer.CreatedAt.Time).Minutes() < 9.9 {
-		test.Fatal("deploy record lacks the hold")
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID) != 1 {
 		test.Fatal("pending quote triggered another issue task")
@@ -105,25 +103,24 @@ func withIssueParam(request *http.Request, issueID string) *http.Request {
 	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, route))
 }
 
-func TestUnpromptedDecisionRecordClassesAndParents(test *testing.T) {
-	for _, class := range []string{"reversible", "spend", "deploy", "publish", "irreversible", "product_direction"} {
-		test.Run(class, func(test *testing.T) {
+func TestUnpromptedDecisionRecordParents(test *testing.T) {
+	for _, withParent := range []bool{false, true} {
+		test.Run(fmt.Sprintf("parent=%t", withParent), func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			input := fixture.recordInput()
-			input.ParentID, input.EscalationClass = pgtype.UUID{}, class
-			if class != "reversible" {
+			input.ParentID, input.EscalationClass = pgtype.UUID{}, "reversible"
+			if withParent {
 				input.ParentID = parseUUID(dbfx.Comment(test, fixture.issueID, "An ordinary thread"))
 			}
 			result, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, input)
 			if err != nil {
 				test.Fatal(err)
 			}
-			if result.Request.Origin != "unprompted" || result.Comment.ParentID != input.ParentID || result.Request.IssueCommentID != result.Comment.ID || result.Answer.WakeAt.Valid || !strings.Contains(result.Message.Content, class) || strings.Contains(result.Message.Content, "/disclaim") {
+			if result.Request.Origin != "unprompted" || result.Comment.ParentID != input.ParentID || result.Request.IssueCommentID != result.Comment.ID || result.Answer.WakeAt.Valid || !strings.Contains(result.Message.Content, "reversible") || strings.Contains(result.Message.Content, "/disclaim") {
 				test.Fatalf("wrong unprompted record: %+v", result)
 			}
-			held := result.Answer.EffectiveAt.Time.Sub(result.Answer.CreatedAt.Time).Minutes() > 9.9
-			if held != (class != "reversible") {
-				test.Fatalf("class=%s held=%t", class, held)
+			if result.Answer.EffectiveAt.Time.Sub(result.Answer.CreatedAt.Time).Minutes() > 9.9 {
+				test.Fatal("reversible record was held")
 			}
 		})
 	}
@@ -134,7 +131,7 @@ func TestUnpromptedDecisionSourceRefusals(test *testing.T) {
 		test.Run(mutation, func(test *testing.T) {
 			fixture := newAskedRecordFixture(test)
 			input, request := fixture.recordInput(), fixture.recordRequest()
-			input.ParentID, input.EscalationClass = pgtype.UUID{}, "spend"
+			input.ParentID, input.EscalationClass = pgtype.UUID{}, "reversible"
 			switch mutation {
 			case "archived":
 				dbfx.Exec(test, `UPDATE chat_session SET status = 'archived' WHERE id = $1`, fixture.sessionID)

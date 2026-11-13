@@ -60,7 +60,7 @@ import { WakeupDemo } from "@/components/demos/wakeup-demo";
 | 关联 | 其他任务的状态变化 | 另一条任务完成、完成或取消，或进入审核中。 |
 | | 自定义事件 | 从 25 种原始事件里勾选，例如表态、附件、评论被编辑或讨论被解决。 |
 
-字段、子任务、PR 和其他任务这几类条件由平台自己去查：条件在创建时已经成立的，下一次检查（约 30 秒内）就会唤醒；"CI 结束"例外，它只认创建之后才出结果的检查。
+字段、子任务、PR 和其他任务这几类条件由平台自己去查：条件在创建时已经成立的，下一次检查（约 30 秒内）就会唤醒；"CI 结束"例外：它忽略旧推送上已出结果的检查，但 PR 当前 head 上已经出结果的检查会在约 30 秒内唤醒。同一个智能体上一条“CI 结束”规则已在某个 PR head 上触发后，不能在该 head 上再创建第二条“CI 结束”规则：请求返回 `409`（`wakeup_head_unchanged`），文本为`head <sha> unchanged since the last checks_finished fire; wait for a new head or use --until-status`。请推送新的 head，或改为等待状态。
 
 时间以外的条件都是"等某件事发生"，还有三项设置：
 
@@ -158,6 +158,75 @@ multica issue wakeup create OPS-56 --until-status in_review --instruction "检�
 | `multica issue wakeup checkin <任务> <唤醒 ID> --note "..."` | 定期检查没发现需要回复的事时静默结束，只能由这条规则开始的运行调用 |
 
 `list`、`get` 和 `runs` 加 `--output table` 输出表格。其他命令见[使用 CLI](/cli)。
+
+## 工作区或项目的默认唤醒 [#defaults]
+
+所有者和管理员可以为整个工作区或某个项目设置默认唤醒，这样每个符合条件的工单都会自动带上这条规则，无需手动创建。之后，成员可以在单个工单上覆盖或关闭默认规则。
+
+**优先级。** 内置默认值 → 工作区 → 项目 → 工单。每一级只保存它修改过的字段，其余字段沿用上一级。`"enabled": false` 会在该级关闭规则。`trigger`、`target`、`schedule`、`filters`、`rate_limit`、`active_run` 这类嵌套设置会整体替换继承来的值。
+
+| 范围 | 位置 | 谁可以修改 |
+|---|---|---|
+| 工作区 | **设置 → 唤醒 → 工作区规则** | 所有者和管理员 |
+| 项目 | 项目页面的**项目规则** | 所有者和管理员 |
+| 工单 | 工单的**默认唤醒**列表：**覆盖**、**编辑覆盖**、**重置** | 成员 |
+
+每条默认规则都会显示取值来自哪里（**继承自工作区**、继承自项目，或**在此工单上已覆盖**）以及状态：**开启**、**已停用**，或**已暂停**并附原因。**重置**会删除覆盖，工单重新沿用上一级。
+
+**API。** 三个范围都可以通过 API 使用。`revision` 以字符串发送：创建时用 `"0"`，更新时用上次读取到的版本号。版本过期会返回 `409`，请重新读取后再试。
+
+```bash
+# Workspace default: turn "PR merged" on with an instruction (owner or admin)
+curl -X PUT "$MULTICA_URL/api/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": true, "instruction": "Summarise the merge."}}'
+
+# Project override: change only the instruction for one project
+curl -X PUT "$MULTICA_URL/api/projects/$PROJECT_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "instruction": "Check the release notes."}}'
+
+# Issue override: turn the rule off for this issue only
+curl -X PUT "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID" \
+  -H "Content-Type: application/json" \
+  -d '{"revision": "0", "config": {"v": 1, "enabled": false}}'
+
+# What the issue ends up with, where each field came from, and the runtime state
+curl "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged/effective" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+
+# The same read from the CLI (workspace scope; add --project or --issue)
+multica wakeup-definition get pr_merged --issue "$ISSUE_ID"
+
+# Reset the issue override (revision comes from the last read)
+curl -X DELETE "$MULTICA_URL/api/issues/$ISSUE_ID/wakeup-definitions/pr_merged?revision=1" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Workspace-ID: $WORKSPACE_ID"
+```
+
+`effective` 响应就是应用里显示的内容。`sources` 标明每个字段来自哪一级，`overrides` 列出本级覆盖了继承值的字段，`execution` 只在工单范围出现，且仅当工单已有该规则的运行实例时才有：
+
+```json
+{
+  "scope": "issue",
+  "rule_key": "pr_merged",
+  "applicable": true,
+  "enabled": false,
+  "sources": { "enabled": "issue", "instruction": "project" },
+  "overrides": ["enabled"],
+  "execution": { "instance_id": "…", "enabled": true, "paused_reason": "loop" }
+}
+```
+
+**限制。**
+
+- 在工作区现有的唤醒设置转换完成之前，写入保持关闭（`403`，代码 `wakeup_definition_writes_closed`），应用也会隐藏编辑入口。读取和预览不受影响。
+- 智能体只能提议工作区或项目规则：在运行中使用 `multica wakeup-definition create --config-file rule.json`（项目规则加 `--project <project>`），或用运行令牌调用 `POST /api/wakeup-definitions` 与 `POST /api/projects/{id}/wakeup-definitions`。无论请求如何填写，服务器都以 `enabled: false` 保存该规则；在工作区所有者或管理员启用之前，它在其下任何范围都不会触发，成员的议题覆盖也不能让它生效。智能体不能修改、删除或预览定义，也不能写入议题范围（`403`）。其他机器凭证完全不能写入（`403`，不保存任何内容）。
+- 在 CLI 中，`multica wakeup-definition get pr_merged` 可读取工作区规则的最终生效值。项目规则加 `--project <project>`，issue 加 `--issue <issue>`。它输出与 API 相同的 `effective` JSON，`--output table` 输出一行。工作区和项目规则也可通过 CLI 的 `list`、`update`、`delete`、`preview` 处理（见 [CLI 页面](/cli)）。issue 级写入仍在 API 和应用中进行（智能体也可用 `create` 提议规则）。`multica issue wakeup list` 和 `get` 显示规则正在运行的实例（含暂停状态）。
+- 规则的目标必须是编写者有权调用的智能体或小队。看不到目标智能体的查看者，看到的规则不含目标和指令。
+- 新建的自定义规则默认限制为每小时 12 次唤醒。编辑器的**预览**会在保存前显示已有多少个未关闭工单符合条件。
 
 ## 和自动化的区别 [#vs-autopilots]
 

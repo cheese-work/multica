@@ -7,7 +7,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -66,32 +65,6 @@ func TestArchivingAChatSessionClearsItsPin(t *testing.T) {
 	setChatSessionArchived(t, sessionID, false)
 	if chatSessionPinned(t, sessionID) {
 		t.Error("unarchive restored the pin; it must leave the DM unpinned")
-	}
-}
-
-func TestContinuingAPinnedChatSessionMovesThePinToTheNewDM(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	sessionID := newPinnedChatSession(t, "continue-moves-pin")
-	dbfx.Insert(t, "chat_message", testutil.Cols{"chat_session_id": sessionID, "role": "user", "content": "goal"})
-
-	response := continueChatRequest(t, sessionID, "Goal: kept.", "")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("continue: %d %s", response.Code, response.Body.String())
-	}
-	var result ChatContinueResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatal(err)
-	}
-	dbfx.Cleanup(t, `DELETE FROM chat_message WHERE chat_session_id = $1`, result.Session.ID)
-	dbfx.Cleanup(t, `DELETE FROM chat_session WHERE id = $1`, result.Session.ID)
-
-	if chatSessionPinned(t, sessionID) {
-		t.Error("continued (archived) source kept its pin")
-	}
-	if !chatSessionPinned(t, result.Session.ID) {
-		t.Error("continued DM lost the copied pin")
 	}
 }
 

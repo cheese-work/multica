@@ -1,0 +1,11 @@
+DROP TRIGGER IF EXISTS comment_search_text_delete ON comment;
+DROP TRIGGER IF EXISTS issue_search_text_delete ON issue;
+DROP TRIGGER IF EXISTS comment_search_text_sync ON comment;
+DROP TRIGGER IF EXISTS issue_search_text_sync ON issue;
+DROP FUNCTION IF EXISTS comment_search_text_delete();
+DROP FUNCTION IF EXISTS issue_search_text_delete();
+DROP FUNCTION IF EXISTS comment_search_text_sync();
+DROP FUNCTION IF EXISTS issue_search_text_sync();
+DROP FUNCTION IF EXISTS search_fold(text);
+DROP TABLE IF EXISTS comment_search_text;
+DROP TABLE IF EXISTS issue_search_text;

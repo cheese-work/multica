@@ -45,9 +45,9 @@ type authorizeElevatedOpRequest struct {
 // AuthorizeElevatedOp records one operation the caller is about to run with the
 // exact input it hashed. One transaction under the task's row lock checks grant
 // liveness, scope, state and epoch, so a fence either precedes the check or
-// waits for it. Task and issue taint also refuse, read under share locks (task
-// row, then issue row, the order a taint writer takes through its trigger) so a
-// writer serializes with it.
+// waits for it. Task and issue taint also refuse, read under share locks so a
+// writer serializes with them. The issue row is locked first, before any task
+// row: the one lock order of every path that touches a run of an issue.
 func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
 	if !ok {
@@ -73,6 +73,15 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if !task.IssueID.Valid {
+		writeError(w, http.StatusForbidden, "task is not elevated")
+		return
+	}
+	issueTaint, err := lockedIssueTaint(r.Context(), qtx, task.IssueID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to authorize")
+		return
+	}
 	te, err := qtx.LockTaskElevation(r.Context(), task.ID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusForbidden, "task is not elevated")
@@ -83,11 +92,6 @@ func (h *Handler) AuthorizeElevatedOp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taint, err := qtx.LockTaskTaintIDs(r.Context(), task.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to authorize")
-		return
-	}
-	issueTaint, err := lockedIssueTaint(r.Context(), qtx, te.IssueID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to authorize")
 		return
@@ -234,4 +238,43 @@ func (h *Handler) fenceRound(ctx context.Context) error {
 		slog.Info("elevation fence finished", "task_id", uuidToString(id))
 	}
 	return nil
+}
+
+// GetTaskElevation tells the daemon where the task's fence stands. The daemon
+// polls it: a state other than elevated, or a newer epoch, starts its local fence.
+func (h *Handler) GetTaskElevation(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	te, err := h.Queries.GetTaskElevation(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "task is not elevated")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read elevation")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"state": te.State, "epoch": te.Epoch})
+}
+
+// EndTaskLaunchScopes records that the processes holding the task's docker or
+// device: scopes exited, which lets a fence finish. Idempotent; refused while
+// the task is still elevated.
+func (h *Handler) EndTaskLaunchScopes(w http.ResponseWriter, r *http.Request) {
+	task, ok := h.requireDaemonTaskAccess(w, r, chi.URLParam(r, "taskId"))
+	if !ok {
+		return
+	}
+	_, err := h.Queries.EndTaskLaunchScopes(r.Context(), task.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusConflict, "task is not fenced")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record launch-scope end")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ended": true})
 }

@@ -1,0 +1,130 @@
+# Mechanical review tier check (CHE-1298, phase 2 of CHE-1286) — PROPOSED, NOT ACTIVE. Copy of
+# cheese-work/multica-dotfiles .github/workflows/mechanical-tier.yml for multica PRs (CHE-3339); same pattern as security-gate.yml.
+#
+# Publishing this file activates no tier waiver. The check only records a receipt; it never approves a merge.
+# Register `mechanical-tier` as a required check only through the owner rollout of the CHE-1286 card.
+#
+# SECURITY — the classifier and its registry come from the PR's BASE commit, never from the PR head.
+# `pull_request_target` runs this workflow definition from the base branch; the job checks out the base SHA and
+# only FETCHES the head's objects (no checkout, nothing from the head is executed). The classifier also refuses to
+# trust itself unless its bytes equal the base revision's copy, so a PR that edits the classifier or registry is
+# Tier 2 and cannot classify itself. Do not add a head checkout or a secret to this workflow.
+#
+# Runs (CHE-4385): never as a run of its own. GitHub disabled Actions at about 2,500 created runs a day, so this is a
+# reusable workflow: pr-guards.yml calls it at push time, and security-gate.yml calls it after a verdict dispatch. A
+# receipt records required-check state at classification time, so the push-time receipt usually reads Tier 1 (CI is
+# pending); the useful receipt is the one a `workflow_dispatch` of security-gate.yml takes once CI and the verdict exist.
+# There is no `workflow_run`, `status` or `issue_comment` trigger.
+# `find` names every open pull request whose head is the dispatched pull request's head SHA (so a
+# sibling PR on the same head is refreshed too). The pull request, base SHA and head SHA come from the API, `find` checks
+# nothing out, and each `mechanical-tier` job still checks out only its base. The dispatch input is matched against a
+# digits-only pattern before use. The run records the fresh receipt in its step summary; it attaches no check to the
+# pull request. Merge decisions use the latest receipt for the exact head, re-verified with `verify`.
+#
+# Runner (CHE-3603): GitHub-hosted. The repo is public, so minutes are free, and 61 queued runs no longer block X99 runners.
+# CHE-3990: no `concurrency` block, on purpose. A cancelled run becomes the latest check for its head and shows red
+# even after an earlier run passed. GitHub keeps one running and one pending job per group, so a third event on a head
+# cancels the pending job even with `cancel-in-progress: false`. Every run is an idempotent receipt: run them all.
+# Do not add a shared group back.
+#
+# The classifier excludes its own check name from the required-check set, so it is never its own evidence.
+
+name: mechanical-tier
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+  statuses: read
+
+jobs:
+  find:
+    name: mechanical-tier-find
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      targets: ${{ steps.find.outputs.targets }}
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      INPUT_PR: ${{ github.event.inputs.pr }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Name the open pull requests to classify
+        id: find
+        run: |
+          set -euo pipefail
+          repo="repos/$GITHUB_REPOSITORY"
+          if [ "$EVENT_NAME" = pull_request_target ]; then
+            targets="[{\"pr\":$PR_NUMBER,\"base\":\"$BASE_SHA\",\"head\":\"$HEAD_SHA\"}]"
+          else
+            if [ "$EVENT_NAME" = workflow_dispatch ]; then
+              [[ "$INPUT_PR" =~ ^[0-9]+$ ]] || { echo "pr must be digits only" >&2; exit 1; }
+              HEAD_SHA="$(gh api "$repo/pulls/$INPUT_PR" --jq .head.sha)"
+            fi
+            numbers="$(gh api "$repo/commits/$HEAD_SHA/pulls" \
+              --jq '.[] | select(.state == "open" and .head.sha == env.HEAD_SHA) | .number')"
+            # A matrix holds 256 jobs. Fail loudly rather than drop pull requests. The excess is not retried by a
+            # re-run of the same event: re-run after fewer PRs are stale, or classify the rest by hand.
+            if [ "$(echo $numbers | wc -w)" -gt 256 ]; then
+              echo "More than 256 pull requests need a refresh; failing so none is dropped silently." >&2
+              exit 1
+            fi
+            items=""
+            for n in $numbers; do
+              items="$items$(gh api "$repo/pulls/$n" --jq '{pr: .number, base: .base.sha, head: .head.sha}'),"
+            done
+            targets="[${items%,}]"
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "Pull requests to classify: $targets"
+
+  mechanical-tier:
+    name: mechanical-tier
+    needs: find
+    if: needs.find.outputs.targets != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.find.outputs.targets) }}
+    env:
+      PR_NUMBER: ${{ matrix.pr }}
+      BASE_SHA: ${{ matrix.base }}
+      HEAD_SHA: ${{ matrix.head }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # A reused self-hosted workspace can be a `blob:none` partial clone; checkout keeps that filter, the head fetch
+      # then skips head blobs and `git diff` fails on an uncredentialed lazy fetch (CHE-1681). Start from nothing.
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      - name: Check out the trusted base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.base }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the head objects without checking them out
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+      - name: Classify with the base classifier and read real required-check evidence
+        run: |
+          python3 scripts/mechanical-tier/mechanical_tier.py classify \
+            --repo . --base "$BASE_SHA" --head "$HEAD_SHA" \
+            --github "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" --out receipt.json
+          {
+            echo '### mechanical-tier receipt'
+            echo '```json'
+            cat receipt.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

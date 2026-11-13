@@ -33,7 +33,8 @@ import {
   useMarkChatSessionRead,
   useSetChatSessionProject,
 } from "@multica/core/chat/mutations";
-import { useChatStore } from "@multica/core/chat";
+import { deriveChatTitle, useChatStore } from "@multica/core/chat";
+import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import {
   enqueuePendingChatTask,
@@ -54,23 +55,6 @@ import { useAppForeground } from "../../common/use-app-foreground";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
-
-// Derive a concise session title from the first user message: first line,
-// markdown stripped, whitespace collapsed, capped. A deterministic title
-// (no LLM) — the server has no summarization model, so this is the sensible
-// default until a runtime-generated title is wired up.
-const CHAT_TITLE_MAX = 30;
-export function deriveChatTitle(content: string): string {
-  const firstLine = (content.split("\n").find((l) => l.trim()) ?? content).trim();
-  const cleaned = firstLine
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/[#*`>~_]/g, "")
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // markdown links/images → their text
-    .replace(/\s+/g, " ")
-    .trim();
-  if (cleaned.length <= CHAT_TITLE_MAX) return cleaned;
-  return cleaned.slice(0, CHAT_TITLE_MAX - 1).trimEnd() + "…";
-}
 
 /**
  * After a send resolves: is the user still composing to the target they sent
@@ -188,8 +172,6 @@ export function seedAcceptedPendingTask(
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
 
-const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
-
 
 /**
  * Layout-agnostic chat controller. Holds every piece of chat conversation
@@ -248,13 +230,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const showSkeleton =
     !!activeSessionId && (messagesLoading || pendingTaskLoading);
   const messages = hideQueuedChatMessages(allMessages, pendingTask);
-  const olderMessageCount = messagePages
-    .slice(1)
-    .reduce((sum, page) => sum + page.messages.length, 0);
-  const firstItemIndex =
-    messages.length > 0
-      ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
-      : 0;
   const pendingTaskId = pendingTask?.task_id ?? null;
   const stopRequestedBeforeTaskRef = useRef(false);
   // Durable deferred-cancellation draft restores (#5219). The whole lifecycle —
@@ -274,8 +249,11 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    handleSendQueuedTaskNow,
+    steerQueuedChatTask,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
   } = useChatTaskActions(activeSessionId, enqueueLocalRestore);
+  const runningAgentReply = useCommentComposerStore((s) => s.runningAgentReply);
   // Nonce handed to ChatInput to pull focus into the compose box when a new
   // chat starts. Bumped by handleNewChat / handleStartNewChat only, so
   // selecting an existing chat or a deep link never steals focus.
@@ -421,7 +399,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     if (!currentHasUnread) return;
     const sessionId = activeSessionId;
     const timer = setTimeout(() => {
-      if (useChatStore.getState().activeSessionId !== sessionId) return;
+      const { activeSessionId: openId, autoReadSuppressedId } = useChatStore.getState();
+      if (openId !== sessionId || autoReadSuppressedId === sessionId) return;
       uiLogger.info("auto markRead", { sessionId });
       markRead.mutate(sessionId);
     }, 0);
@@ -668,6 +647,17 @@ export function useChatController(opts?: { isActive?: boolean }) {
           toast.error(t(($) => $.input.attachment_bind_failed_toast));
         }
       }
+      // `running_agent_reply = steer`: add the follow-up to the running reply
+      // right away. Only a capable run is steered; a starting or unsupported one
+      // keeps the message queued. A refused steer leaves it queued too, so the
+      // send itself still succeeded.
+      if (
+        result.queued === true &&
+        runningAgentReply === "steer" &&
+        pendingTask?.head_supplement === "capable"
+      ) {
+        await steerQueuedChatTask(sessionId, result.task_id);
+      }
       qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
       return true;
@@ -682,6 +672,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
       isAgentRuntimeBound,
       ensureSession,
       cancelChatTask,
+      steerQueuedChatTask,
+      runningAgentReply,
       qc,
       setActiveSession,
       t,
@@ -868,7 +860,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     showSkeleton,
     messagesLoaded,
     hasMessages,
-    firstItemIndex,
     hasOlderMessages: !!hasOlderMessages,
     isFetchingOlderMessages,
     fetchOlderMessages,
@@ -883,7 +874,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     // actions
     handleSend,
     handleStop,
-    handleSendQueuedTaskNow,
+    handleSteerQueuedTask,
+    handleStopAndSendQueuedTask,
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,

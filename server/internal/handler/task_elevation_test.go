@@ -294,3 +294,54 @@ func TestFenceLeavesLiveElevationsAlone(t *testing.T) {
 	}
 	f.authorizeOK(t, "repo_write:1234")
 }
+
+// The daemon reads the fence from here and, for a run holding a launch-time
+// scope, reports that the processes exited (slice B4b; T28 (j) server half).
+func (f elevatedFixture) read(t *testing.T) *testutil.Response {
+	t.Helper()
+	req := newOwnerDaemonRequest("GET", "/api/daemon/tasks/"+f.taskID+"/elevation", nil)
+	return testutil.Call(t, testHandler.GetTaskElevation, withURLParam(req, "taskId", f.taskID))
+}
+
+func (f elevatedFixture) launchScopesEnded(t *testing.T) *testutil.Response {
+	t.Helper()
+	req := newOwnerDaemonRequest("POST", "/api/daemon/tasks/"+f.taskID+"/elevation/launch-scopes-ended", nil)
+	return testutil.Call(t, testHandler.EndTaskLaunchScopes, withURLParam(req, "taskId", f.taskID))
+}
+
+func TestDaemonReadsElevationStateAndEpoch(t *testing.T) {
+	f := claimElevated(t, "repo_write:1234")
+	var got struct {
+		State string `json:"state"`
+		Epoch int64  `json:"epoch"`
+	}
+	f.read(t).Want(http.StatusOK).JSON(&got)
+	if got.State != "elevated" || got.Epoch != 1 {
+		t.Fatalf("read = %+v, want elevated epoch 1", got)
+	}
+	f.revokeGrant(t)
+	fenceNow(t)
+	f.read(t).Want(http.StatusOK).JSON(&got)
+	if got.State != "restricted_final" && got.State != "fencing" || got.Epoch != 2 {
+		t.Fatalf("read after the fence = %+v, want fenced epoch 2", got)
+	}
+}
+
+func TestLaunchScopesEndedOnlyCountsWhileFencing(t *testing.T) {
+	f := claimElevated(t, "docker")
+	f.launchScopesEnded(t).Want(http.StatusConflict) // still elevated: nothing ended
+	if n := dbfx.Count(t, `SELECT count(*) FROM task_elevation WHERE task_id = $1 AND launch_scopes_ended_at IS NOT NULL`, f.taskID); n != 0 {
+		t.Fatal("launch_scopes_ended_at written while the task was still elevated")
+	}
+	f.revokeGrant(t)
+	fenceNow(t)
+	if s, _ := f.state(t); s != "fencing" {
+		t.Fatalf("state = %s, want fencing until the processes exit", s)
+	}
+	f.launchScopesEnded(t).Want(http.StatusOK)
+	f.launchScopesEnded(t).Want(http.StatusOK) // the daemon may repeat the report
+	fenceNow(t)
+	if s, _ := f.state(t); s != "restricted_final" {
+		t.Fatalf("state = %s, want restricted_final once the daemon reported", s)
+	}
+}

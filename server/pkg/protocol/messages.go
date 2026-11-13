@@ -77,6 +77,11 @@ const (
 	// coexist on one task and a daemon with only the old capability never
 	// receives a PR event through the mid-run channel.
 	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
+	// DaemonCapabilityTaskSupplementChatV1 extends task-supplement-v1 to a DM
+	// chat run: a steered follow-up is claimed through the same supplement
+	// endpoints. Offered only for chat tasks, so an old daemon's chat run has
+	// no capability row and its follow-ups stay queued.
+	DaemonCapabilityTaskSupplementChatV1 = "task-supplement-chat-v1"
 	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
 	// descendant cleanup and explicitly confirms its cancellation outcome.
 	// Persist only at start; old daemons must retain their cancellation contract.
@@ -100,6 +105,11 @@ const (
 	// launch selection it passed to the CLI (model, thinking level, service
 	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
 	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
+	// DaemonCapabilityRuntimeProfileV1 advertises that the daemon honors the
+	// claim's harness_profile (personal | managed). A daemon without it would
+	// drop the field and launch the user's personal config, so the server never
+	// hands a managed task to a claimer that lacks it.
+	DaemonCapabilityRuntimeProfileV1 = "runtime-profile-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -215,6 +225,12 @@ type TaskProgressPayload struct {
 	Summary string `json:"summary"`
 	Step    int    `json:"step,omitempty"`
 	Total   int    `json:"total,omitempty"`
+}
+
+// TaskUsageUpdatedPayload invalidates cached usage after a successful report.
+// It carries no usage values; clients refetch through their authorized APIs.
+type TaskUsageUpdatedPayload struct {
+	TaskID string `json:"task_id"`
 }
 
 // TaskCompletedPayload is sent from daemon to server when a task finishes.
@@ -451,6 +467,17 @@ type DaemonHeartbeatRequestPayload struct {
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
 	// not report it; zero is a real "idle".
 	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
+	// LiveTaskIDs is the ids of every task the daemon still holds: claimed and
+	// not yet finished, cancel-ack and process cleanup included (CHE-3114 part
+	// 2). A cancelled run absent from it is proven stopped. Nil from a daemon
+	// that does not report it, which proves nothing; an empty non-nil set is a
+	// real "holds none".
+	LiveTaskIDs *[]string `json:"live_task_ids,omitempty"`
+	// DaemonUptimeMs is how long this daemon process has been up, sent with
+	// LiveTaskIDs. A restarted daemon starts with an empty set while the runner
+	// of a run it did not start can still be alive, so the server attests only
+	// runs dispatched since the process booted. Nil attests nothing.
+	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

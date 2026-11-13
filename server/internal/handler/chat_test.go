@@ -966,3 +966,114 @@ func TestListChatSessions_ArchivedSessionReportsZeroUnread(t *testing.T) {
 		t.Fatalf("unarchived session unread: want count=1 has=true, got count=%d has=%v", n, has)
 	}
 }
+
+func TestListChatSessionsIncludesLastMessageID(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	agentID := createHandlerTestAgent(t, "ChatLastMessageIDAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+	var messageID string
+	if err := testPool.QueryRow(ctx,
+		`INSERT INTO chat_message (chat_session_id, role, content) VALUES ($1, 'assistant', 'reply') RETURNING id`,
+		sessionID).Scan(&messageID); err != nil {
+		t.Fatalf("insert assistant message: %v", err)
+	}
+
+	req := newRequest("GET", "/api/chat/sessions?status=all", nil)
+	req = withChatTestWorkspaceCtx(t, req)
+	w := httptest.NewRecorder()
+	testHandler.ListChatSessions(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListChatSessions: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var sessions []ChatSessionResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	for _, session := range sessions {
+		if session.ID != sessionID {
+			continue
+		}
+		if session.LastMessage == nil || session.LastMessage.ID == nil || *session.LastMessage.ID != messageID {
+			t.Fatalf("last_message.id = %v, want %q", session.LastMessage, messageID)
+		}
+		return
+	}
+	t.Fatalf("session %s not found in list of %d", sessionID, len(sessions))
+}
+
+func TestListChatSessionsLastMessageMatchesVisibleHistoryWithQueuedFollowup(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	agentID := createHandlerTestAgent(t, "ChatQueuedFollowupPreviewAgent", []byte("[]"))
+	sessionID := createHandlerTestChatSession(t, agentID)
+	send := func(content string) SendChatMessageResponse {
+		t.Helper()
+		req := newRequest("POST", "/api/chat-sessions/"+sessionID+"/messages", map[string]any{"content": content})
+		req = withURLParam(req, "sessionId", sessionID)
+		req = withChatTestWorkspaceCtx(t, req)
+		w := httptest.NewRecorder()
+		testHandler.SendChatMessage(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("SendChatMessage: expected 201, got %d: %s", w.Code, w.Body.String())
+		}
+		var response SendChatMessageResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode send response: %v", err)
+		}
+		return response
+	}
+
+	first := send("active prompt")
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1
+	`, first.TaskID); err != nil {
+		t.Fatalf("mark first task running: %v", err)
+	}
+	followup := send("queued follow-up")
+	if !followup.Queued {
+		t.Fatal("second message should be queued behind the running task")
+	}
+
+	visibleMessages, err := testHandler.Queries.ListChatMessages(context.Background(), parseUUID(sessionID))
+	if err != nil {
+		t.Fatalf("list visible chat messages: %v", err)
+	}
+	if len(visibleMessages) != 1 || uuidToString(visibleMessages[0].ID) != first.MessageID {
+		t.Fatalf("visible messages = %+v, want only active prompt %q", visibleMessages, first.MessageID)
+	}
+
+	for _, status := range []string{"active", "all"} {
+		req := newRequest("GET", "/api/chat/sessions?status="+status, nil)
+		req = withChatTestWorkspaceCtx(t, req)
+		w := httptest.NewRecorder()
+		testHandler.ListChatSessions(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("ListChatSessions(%s): expected 200, got %d: %s", status, w.Code, w.Body.String())
+		}
+		var sessions []ChatSessionResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &sessions); err != nil {
+			t.Fatalf("decode %s list: %v", status, err)
+		}
+		found := false
+		for _, session := range sessions {
+			if session.ID != sessionID {
+				continue
+			}
+			if session.LastMessage == nil || session.LastMessage.ID == nil || *session.LastMessage.ID != first.MessageID ||
+				session.LastMessage.TaskID == nil || *session.LastMessage.TaskID != first.TaskID {
+				t.Fatalf("%s last_message = %v, want visible message %q for task %q", status, session.LastMessage, first.MessageID, first.TaskID)
+			}
+			found = true
+			break
+		}
+		if !found {
+			t.Fatalf("session %s not found in %s list of %d", sessionID, status, len(sessions))
+		}
+	}
+}

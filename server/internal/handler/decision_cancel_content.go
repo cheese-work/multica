@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/decisiontx"
-	"github.com/multica-ai/multica/server/internal/integrations/channel"
+	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -23,7 +23,7 @@ type decisionCancelIssue struct {
 func decisionCancelIssueFor(issue db.Issue, workspace db.Workspace, closedAt time.Time) decisionCancelIssue {
 	identifier := fmt.Sprintf("%s-%d", issuePrefixForWorkspace(workspace), issue.Number)
 	ref := identifier
-	if link := channel.IssueWebLink(resolveFrontendAppURL(), workspace.Slug, identifier); link != "" {
+	if link := weblink.Issue(workspace.Slug, identifier); link != "" {
 		ref = "[" + identifier + "](" + link + ")"
 	}
 	// The viewer's timezone is not stored on the server, so the close time stays ISO UTC.
@@ -84,6 +84,9 @@ func decisionCancelOtherContent(reason string, cancelled decisionCancelIssue) st
 	content := fmt.Sprintf("Decision request cancelled: %s. Issue: %s, status %s.", reason, cancelled.subject(), cancelled.status)
 	if reason == "human_removed" {
 		content += " The person asked is no longer a workspace member. Ask again with a new decision request."
+	}
+	if reason == "agent_unavailable" {
+		content += " The asking agent has no runtime binding or is a system agent, so it cannot resume the work."
 	}
 	if reason == decisiontx.ClassNeedsOwner || reason == "delegate_removed" {
 		content += " " + decisiontx.OwnerRequiredNotice

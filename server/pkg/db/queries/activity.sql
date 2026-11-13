@@ -28,8 +28,8 @@ WHERE id = $1;
 
 -- name: CreateActivity :one
 INSERT INTO activity_log (
-    workspace_id, issue_id, actor_type, actor_id, action, details, id
-) VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()))
+    workspace_id, issue_id, actor_type, actor_id, action, details, id, created_at
+) VALUES ($1, $2, $3, $4, $5, $6, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()), COALESCE(sqlc.narg('created_at')::timestamptz, now()))
 RETURNING *;
 
 -- name: HasSquadLeaderNoActionEvaluationForTask :one
@@ -78,3 +78,11 @@ FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid
   AND action = 'entry_gate_warning'
   AND details->>'step' = sqlc.arg('step')::text;
+
+-- name: ListIssueRunSkips :many
+-- The runs the platform declined to start on an issue (CHE-4649), newest
+-- first. They are no task rows, so the run list reads them from the activity.
+SELECT id, created_at, details FROM activity_log
+WHERE issue_id = $1 AND action = 'run_skipped'
+ORDER BY created_at DESC
+LIMIT 50;

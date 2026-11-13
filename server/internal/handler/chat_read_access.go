@@ -23,17 +23,21 @@ func (handler *Handler) callingChatSession(writer http.ResponseWriter, request *
 		return db.ChatSession{}, false
 	}
 	task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
-	if err != nil || !task.ChatSessionID.Valid || task.Status != "running" {
+	if err != nil || !task.ChatSessionID.Valid {
 		writeError(writer, http.StatusForbidden, "this task is not a chat task")
 		return db.ChatSession{}, false
 	}
 	session, err := handler.Queries.GetChatSession(request.Context(), task.ChatSessionID)
-	if err != nil || uuidToString(session.WorkspaceID) != ctxWorkspaceID(request.Context()) || session.AgentID != task.AgentID {
+	if err != nil {
 		writeError(writer, http.StatusForbidden, "chat task does not belong to this session and workspace")
 		return db.ChatSession{}, false
 	}
+	// The target check comes first so a refused target never logs a grant.
 	if target := chi.URLParam(request, "sessionId"); target != "" && target != uuidToString(session.ID) {
 		writeError(writer, http.StatusForbidden, "chat task cannot access another session")
+		return db.ChatSession{}, false
+	}
+	if !handler.authorizeChatTask(request.Context(), writer, handler.Queries, chatOpRead, task, session, ctxWorkspaceID(request.Context())) {
 		return db.ChatSession{}, false
 	}
 	return session, true

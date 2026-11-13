@@ -7,12 +7,14 @@ import enChat from "../../locales/en/chat.json";
 
 const archiveAsync = vi.hoisted(() => vi.fn());
 const pinAsync = vi.hoisted(() => vi.fn());
+const unseenAsync = vi.hoisted(() => vi.fn());
 const toastError = vi.hoisted(() => vi.fn());
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: toastError }) }));
 vi.mock("@multica/core/chat/mutations", () => ({
   useSetChatSessionArchived: () => ({ mutateAsync: archiveAsync }),
   useSetChatSessionPinned: () => ({ mutateAsync: pinAsync }),
+  useMarkChatSessionUnread: () => ({ mutateAsync: unseenAsync }),
 }));
 vi.mock("./chat-session-stats-dialog", () => ({
   ChatSessionStatsDialog: ({ open, sessionId }: { open: boolean; sessionId: string | null }) =>
@@ -29,6 +31,7 @@ function setup(session: ChatSession | null) {
     send: vi.fn(async () => true),
     onOpenSession: vi.fn(),
     onArchived: vi.fn(),
+    onUnseen: vi.fn(),
     onRename: vi.fn(async () => true),
     onFork: vi.fn(),
   };
@@ -54,6 +57,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   archiveAsync.mockReset();
   pinAsync.mockReset();
+  unseenAsync.mockReset();
   registerChatStore(createChatStore({ storage: localStorage }));
 });
 
@@ -64,6 +68,7 @@ describe("useDmSessionSurface", () => {
     expect(input.onStatistic).toBeTypeOf("function");
     expect(input.onArchive).toBeTypeOf("function");
     expect(input.onPin).toBeTypeOf("function");
+    expect(input.onUnseen).toBeTypeOf("function");
     expect(input.onUnarchive).toBeUndefined();
     expect(input.onRename).toBe(onRename);
     expect(input.onFork).toBe(onFork);
@@ -77,6 +82,7 @@ describe("useDmSessionSurface", () => {
     expect(input.onStatistic).toBeUndefined();
     expect(input.onArchive).toBeUndefined();
     expect(input.onPin).toBeUndefined();
+    expect(input.onUnseen).toBeUndefined();
     expect(input.onRename).toBeUndefined();
     expect(input.onFork).toBeUndefined();
     expect(input.sessionArchived).toBe(true);
@@ -108,6 +114,33 @@ describe("useDmSessionSurface", () => {
 
     expect(order).toEqual(["server", "navigate"]);
     expect(onArchived).toHaveBeenCalledWith(active);
+  });
+
+  it("moves the pane off the DM only after the server marked it unseen", async () => {
+    const order: string[] = [];
+    unseenAsync.mockImplementation(async () => void order.push("server"));
+    const { result, onUnseen } = setup(active);
+    onUnseen.mockImplementation(() => void order.push("navigate"));
+
+    await act(async () => {
+      await result.current.inputProps.onUnseen?.();
+    });
+
+    expect(order).toEqual(["server", "navigate"]);
+    expect(onUnseen).toHaveBeenCalledWith(active);
+  });
+
+  it("keeps the DM open when marking unseen fails", async () => {
+    unseenAsync.mockRejectedValue(new Error("nope"));
+    const { result, onUnseen } = setup(active);
+
+    let ok: boolean | void = true;
+    await act(async () => {
+      ok = await result.current.inputProps.onUnseen?.();
+    });
+
+    expect(ok).toBe(false);
+    expect(onUnseen).not.toHaveBeenCalled();
   });
 
   it("keeps the DM open and reports the server error when the archive fails", async () => {

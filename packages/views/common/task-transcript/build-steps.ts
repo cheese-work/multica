@@ -27,14 +27,18 @@ export interface TraceCallStep {
   result?: TimelineItem;
   startedAt?: string;
   endedAt?: string;
+  /** The daemon's `tool_stalled` marker for this call, if it ran past the
+   *  warn threshold. Never set on a call that has no matching ID. */
+  stalled?: TimelineItem;
   /** Wall-clock ms between call and result. Undefined when either side is
    *  missing a timestamp — never guessed. */
   durationMs?: number;
 }
 
-/** Agent prose, model thinking, or an error: one message, nothing to pair. */
+/** Agent prose, model thinking, an error, or a watchdog silence marker: one
+ *  message, nothing to pair. */
 export interface TraceMessageStep {
-  kind: "text" | "thinking" | "error";
+  kind: "text" | "thinking" | "error" | "silence_warn";
   seq: number;
   item: TimelineItem;
   startedAt?: string;
@@ -91,6 +95,17 @@ function durationBetween(start?: string, end?: string): number | undefined {
   return Math.max(0, b - a);
 }
 
+/**
+ * Whole minutes in a watchdog marker's text ("No agent activity for 15m0s"),
+ * which carries a Go duration. Undefined when it does not parse, so the UI
+ * drops the number rather than guess one.
+ */
+export function silentMinutes(content: string | undefined): number | undefined {
+  const m = content?.match(/for (?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?(?:\s|$)/);
+  if (!m || (!m[1] && !m[2] && !m[3])) return undefined;
+  return Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0) + Math.floor(Number(m[3] ?? 0) / 60);
+}
+
 /** Fold `tool_use` / `tool_result` pairs into single steps, in stream order. */
 export function buildSteps(items: TimelineItem[]): TraceStep[] {
   const steps: TraceStep[] = [];
@@ -99,6 +114,12 @@ export function buildSteps(items: TimelineItem[]): TraceStep[] {
   const open = new Map<string, TraceCallStep[]>();
 
   for (const item of items) {
+    if (item.type === "tool_stalled") {
+      // A badge on its call, not a step of its own; no matching call, no row.
+      const target = item.callId ? open.get(`id:${item.callId}`)?.[0] : undefined;
+      if (target) target.stalled = item;
+      continue;
+    }
     const pairingKey = item.callId ? `id:${item.callId}` : `tool:${item.tool ?? ""}`;
     if (item.type === "tool_use") {
       const tool = item.tool ?? "";
@@ -209,7 +230,12 @@ export function isCallStep(row: TraceRow): row is TraceCallStep {
 }
 
 export function isMessageStep(row: TraceRow): row is TraceMessageStep {
-  return row.kind === "text" || row.kind === "thinking" || row.kind === "error";
+  return (
+    row.kind === "text" ||
+    row.kind === "thinking" ||
+    row.kind === "error" ||
+    row.kind === "silence_warn"
+  );
 }
 
 /** Every call inside a row, so a group and a lone call read the same way. */

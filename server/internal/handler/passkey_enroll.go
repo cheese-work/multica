@@ -66,8 +66,12 @@ func writeEnrollError(writer http.ResponseWriter, err error) {
 
 type enrollStartResponse struct {
 	CeremonyID string          `json:"ceremony_id"`
+	Tag        string          `json:"tag"`
 	Options    json.RawMessage `json:"options"`
 	ExpiresAt  time.Time       `json:"expires_at"`
+	// Assertion is present when the decision gate blocks and the user already
+	// has a passkey: sign it and send it back with the finish.
+	Assertion *challengeResponse `json:"assertion,omitempty"`
 }
 
 // StartPasskeyEnrollment mails the signed-in human a code and returns the
@@ -89,13 +93,20 @@ func (handler *Handler) StartPasskeyEnrollment(writer http.ResponseWriter, reque
 		writeEnrollError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, enrollStartResponse{CeremonyID: uuidToString(started.CeremonyID), Options: started.Options, ExpiresAt: started.ExpiresAt})
+	response := enrollStartResponse{CeremonyID: uuidToString(started.CeremonyID), Tag: started.Tag, Options: started.Options, ExpiresAt: started.ExpiresAt}
+	if started.Assertion != nil {
+		response.Assertion = &challengeResponse{
+			ChallengeID: uuidToString(started.Assertion.ChallengeID), Options: started.Assertion.Options, ExpiresAt: started.Assertion.ExpiresAt,
+		}
+	}
+	writeJSON(writer, http.StatusOK, response)
 }
 
 type enrollFinishRequest struct {
 	CeremonyID  string          `json:"ceremony_id"`
 	Code        string          `json:"code"`
 	Attestation json.RawMessage `json:"attestation"`
+	Assertion   json.RawMessage `json:"assertion"`
 }
 
 // FinishPasskeyEnrollment stores the credential when the mailed code and the
@@ -121,7 +132,7 @@ func (handler *Handler) FinishPasskeyEnrollment(writer http.ResponseWriter, requ
 		writeEnrollError(writer, err)
 		return
 	}
-	if err := handler.Passkeys.FinishEnrollment(ctx, userID, ceremonyID, body.Code, body.Attestation, user.Email); err != nil {
+	if err := handler.Passkeys.FinishEnrollment(ctx, userID, ceremonyID, body.Code, body.Attestation, body.Assertion, user.Email); err != nil {
 		writeEnrollError(writer, err)
 		return
 	}

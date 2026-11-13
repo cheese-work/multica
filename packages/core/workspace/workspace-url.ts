@@ -3,6 +3,8 @@
 // deliberately omits `daemon_app_url` for the managed cloud (and for any
 // self-hosted server that has not set MULTICA_APP_URL / FRONTEND_ORIGIN), so
 // this literal must remain the ultimate fallback.
+import { instanceOrigin } from "../config/instance-origin";
+
 const BRAND_WORKSPACE_HOST = "multica.ai";
 
 /**
@@ -10,13 +12,14 @@ const BRAND_WORKSPACE_HOST = "multica.ai";
  * create-workspace and onboarding UI. Derived from the deployment's app URL
  * (`daemon_app_url` from `/api/config`, surfaced through the config store) so
  * self-hosted instances show their own domain instead of `multica.ai`. Falls
- * back to the brand host when no app URL is configured.
+ * back to the brand host when no app URL is configured. On a web page the
+ * origin the visitor is on wins over the configured URL.
  */
 export function workspaceUrlHost(
   daemonAppUrl: string | null | undefined,
 ): string {
-  const trimmed = daemonAppUrl?.trim();
-  if (!trimmed) return BRAND_WORKSPACE_HOST;
+  if (!daemonAppUrl?.trim()) return BRAND_WORKSPACE_HOST;
+  const trimmed = instanceOrigin(daemonAppUrl);
   try {
     return new URL(trimmed).host || BRAND_WORKSPACE_HOST;
   } catch {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -28,7 +29,7 @@ func newInstallSessionRedis(t *testing.T) redis.UniversalClient {
 	if err != nil {
 		t.Fatalf("parse REDIS_TEST_URL: %v", err)
 	}
-	opts.DB = installSessionStoreRedisDB
+	opts.DB = testutil.RedisTestDB(opts.DB, installSessionStoreRedisDB)
 	rdb := redis.NewClient(opts)
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {

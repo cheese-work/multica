@@ -12,8 +12,31 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+// advanceIssueOnCIGreenUnlessHalted runs the CI-green advance while holding the
+// kill switch's shared lock, so a switch change either waits for the advance and
+// sweeps the run it starts, or commits first and the advance does not start
+// (CHE-2223). The advance writes through the pool; the held transaction only
+// carries the lock. A halted or failed check reports false: the caller's own
+// wakeup path then drops the event.
+func (h *Handler) advanceIssueOnCIGreenUnlessHalted(ctx context.Context, pr db.GithubPullRequest, issueID pgtype.UUID) (ranHandler bool) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		slog.Warn("ci advance: lock failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	q := h.Queries.WithTx(tx)
+	if err := q.LockGitHubDispatchHaltShared(ctx, pr.WorkspaceID); err != nil {
+		slog.Warn("ci advance: lock failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
+		return false
+	}
+	return h.advanceIssueOnCIGreen(ctx, issueID, pr.SnapshotHeadSha, pr.State)
+}
 
 // advanceIssueOnCIGreen moves an issue one workflow step when the checks of a
 // linked PR pass on headSHA and the issue's current step has an edge that
@@ -70,7 +93,7 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		if task.IssueID != issue.ID {
 			return
 		}
-		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green"}); err != nil {
+		if err := h.Queries.MarkGitHubDispatchRun(ctx, db.MarkGitHubDispatchRunParams{TaskID: task.ID, IssueID: issue.ID, Source: "ci_green", Repo: ""}); err != nil {
 			slog.Warn("ci advance: mark run failed", "err", err, "issue_id", uuidToString(issueID))
 		}
 	})
@@ -102,70 +125,60 @@ func (h *Handler) moveIssueOnEdge(ctx context.Context, issue db.Issue, to, sourc
 // tryMoveIssueOnEdge is moveIssueOnEdge for a caller that needs the reason a
 // move did not happen: pgx.ErrNoRows means a concurrent writer won.
 func (h *Handler) tryMoveIssueOnEdge(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool) (moved, ranHandler bool, err error) {
-	params := db.UpdateIssueParams{
-		ID:               issue.ID,
-		ExpectedRevision: pgtype.Int8{Int64: issue.Revision, Valid: true},
-		Status:           pgtype.Text{String: to, Valid: true},
-		AssigneeType:     issue.AssigneeType,
-		AssigneeID:       issue.AssigneeID,
-		StartDate:        issue.StartDate,
-		DueDate:          issue.DueDate,
-		ParentIssueID:    issue.ParentIssueID,
-		ProjectID:        issue.ProjectID,
-		Stage:            issue.Stage,
-	}
-	handoff, write, err := h.decideIssueWorkflow(ctx, issue, &params, true, false, false, workflowCaller{})
-	if err != nil {
-		return false, false, fmt.Errorf("workflow refused the move: %w", err)
-	}
-	write.system = true
-	updated, err := h.updateIssueWithStatusGuard(ctx, issue.WorkspaceID, to, params, write)
-	if err != nil {
-		return false, false, fmt.Errorf("status write failed: %w", err)
-	}
-
-	assigneeChanged := handoff != nil &&
-		(issue.AssigneeType.String != updated.AssigneeType.String || uuidToString(issue.AssigneeID) != uuidToString(updated.AssigneeID))
-	var willRun bool
-	var trigger service.IssueRunTrigger
-	if handoff != nil && startHandler {
-		trigger, willRun = h.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
-		}, service.IssueTriggerProbe{})
-	}
-	payload := map[string]any{
-		"issue":            h.issueResponseWithCategory(ctx, updated),
-		"assignee_changed": assigneeChanged,
-		"status_changed":   true,
-		"prev_status":      issue.Status,
-		"creator_type":     issue.CreatorType,
-		"creator_id":       uuidToString(issue.CreatorID),
-		"source":           source,
-	}
-	for k, v := range extra {
-		payload[k] = v
-	}
-	if assigneeChanged {
-		payload["prev_assignee_type"] = textToPtr(issue.AssigneeType)
-		payload["prev_assignee_id"] = uuidToPtr(issue.AssigneeID)
-	}
-	if handoff != nil {
-		payload["workflow_handoff"] = workflowHandoffPayload(updated, handoff, h.workflowHandoffBrief(ctx, updated, handoff), willRun, "")
-	}
-	h.publish(protocol.EventIssueUpdated, uuidToString(updated.WorkspaceID), "system", "", payload)
-	// The block an exhausted budget causes is a consequence of exhaustion, and
-	// it lands before the window's exhaustion claim: it must not grant.
+	// The lock holds through the commit, so a person's move cannot read this
+	// issue's status between this write and its grant. The block an exhausted
+	// budget causes neither grants nor needs it: it runs under the refused
+	// admission's locks, after that admission wrote the window's ledger row, and
+	// the boundary lock comes before those locks everywhere else.
+	// The overlay can call the network: build it before any lock or transaction.
+	overlay := h.prepareEdgeRunOverlay(ctx, issue, to, startHandler)
+	release := func() {}
 	if source != "run_budget" {
-		h.grantRunBudgetStep(ctx, updated, issue.Status)
+		if release, err = h.lockRunBudgetBoundary(ctx, issue.ID); err != nil {
+			return false, false, fmt.Errorf("run budget boundary: %w", err)
+		}
 	}
-	if willRun {
-		h.IssueService.CancelStaleStepRuns(ctx, updated, trigger.AgentID)
-		ranHandler = h.dispatchIssueRun(ctx, updated, trigger, "system", "", "")
+	defer release()
+	tx, err := h.beginWakeupWrite(ctx)
+	if err != nil {
+		return false, false, err
 	}
-	if updated.ParentIssueID.Valid || issue.ParentIssueID.Valid {
-		h.processChildEvents(ctx, updated.ParentIssueID, issue.ParentIssueID)
+	defer tx.Rollback(ctx)
+	move, err := h.moveIssueOnEdgeTx(ctx, h.Queries.WithTx(tx), issue, to, source, extra, startHandler, overlay)
+	if err != nil {
+		var notConfirmed *service.StopNotConfirmedError
+		if errors.As(err, &notConfirmed) {
+			// The move holds the issue row; the activity row needs a key-share lock on it.
+			_ = tx.Rollback(ctx)
+			h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
+		}
+		return false, false, err
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("commit edge move: %w", err)
+	}
+	release()
+	if move.RunRefused != nil && !errors.Is(move.RunRefused, service.ErrDuplicatePendingTask) {
+		slog.Debug("workflow edge: run refused", "err", move.RunRefused, "issue_id", uuidToString(issue.ID), "to", to, "source", source)
+	}
+	ranHandler = move.AfterCommit(ctx)
 	return true, ranHandler, nil
+}
+
+// edgeMoveCause maps the source of an edge move to the cause kind its history
+// row carries.
+func edgeMoveCause(source string) string {
+	switch source {
+	case "workflow_edge":
+		return "workflow_edge"
+	case "ci_green_advance":
+		return "ci_advance"
+	case "run_budget":
+		return "run_budget"
+	case "idle_started_guard":
+		return "watchdog"
+	}
+	return "system"
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.

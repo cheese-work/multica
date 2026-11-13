@@ -28,6 +28,7 @@ type edgeCase struct {
 // it at backlog; enter moves it onto a step as a person would.
 func newEdgeCase(t *testing.T, installationID int64, steps []map[string]any) edgeCase {
 	t.Helper()
+	giveBackRunBudgetHooks()
 	seedTestCatalog(t)
 	fx := newPRMergeWebhookFixture(t, installationID)
 	wf := createTestWorkflowSteps(t, "Edges "+workflowTestSuffix(), steps)
@@ -410,4 +411,106 @@ func TestWorkflowRunRulesPersistAndPreserve(t *testing.T) {
 	}
 	req := withURLParam(workflowRequest("PUT", "/api/issue-workflows/"+wf.ID, map[string]any{"max_runs_per_issue": 1001}), "id", wf.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusBadRequest)
+}
+
+// CHE-3257: in_review sends a PR-caused required red back to in_progress, parks
+// an infra or flaky red in blocked, and leaves a red on non-required checks or
+// of unknown cause where it is (the edge timeout parks it).
+func TestEdgesChecksRedSplitsPRCausedFromInfra(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cases := []struct {
+		name  string
+		runs  [][2]any // name, red_cause (nil = unknown)
+		want  string
+		prNum int32
+	}{
+		{"required red the PR caused", [][2]any{{"backend-tests", "pr"}}, "in_progress", 325701},
+		{"required red also red on base or flaky", [][2]any{{"backend-tests", "infra"}}, "blocked", 325702},
+		{"only a non-required check is red", [][2]any{{"docs-preview", "optional"}}, "in_review", 325703},
+		{"one PR-caused red among infra reds", [][2]any{{"backend-tests", "infra"}, {"lint", "pr"}}, "in_progress", 325704},
+		{"cause could not be read", [][2]any{{"backend-tests", nil}}, "in_review", 325705},
+		{"unknown cause next to infra stays put", [][2]any{{"backend-tests", "infra"}, {"lint", nil}}, "in_review", 325706},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(3257000 + tc.prNum)
+			c := newEdgeCase(t, installationID, []map[string]any{
+				{"status_key": "in_progress"},
+				{"status_key": "in_review", "edges": []map[string]any{
+					{"to": "in_progress", "guard": "pr.checks_red", "timeout": "72h", "on_timeout": "blocked"},
+					{"to": "blocked", "guard": "pr.checks_infra_red", "timeout": "72h", "on_timeout": "blocked"},
+				}},
+				{"status_key": "blocked"},
+			})
+			linkedPRForWakeup(t, c.fx, installationID, tc.prNum, "edge-r")
+			ctx := context.Background()
+			if _, err := testPool.Exec(ctx, `UPDATE github_pull_request SET checks_rollup_state='FAILURE', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, tc.prNum); err != nil {
+				t.Fatal(err)
+			}
+			for i, r := range tc.runs {
+				if _, err := testPool.Exec(ctx, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, red_cause)
+					SELECT id, head_sha, $3, $4, 'completed', 'failure', $5 FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`,
+					testWorkspaceID, tc.prNum, i, r[0], r[1]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.enter(t, "in_review")
+			tickEdges(t)
+			if got := c.status(t); got != tc.want {
+				t.Fatalf("issue is %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// CHE-3257: red on the head moves in_review to in_progress; when the same head
+// then comes back green on a rerun (the snapshot marks the check flaky), the
+// in_progress edge parks the issue in blocked.
+func TestEdgesGreenRerunOfRedHeadParksTheIssueInBlocked(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const prNum, installationID = int32(325707), int64(3257000 + 325707)
+	c := newEdgeCase(t, installationID, []map[string]any{
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "blocked", "guard": "pr.checks_flaky", "timeout": "72h", "on_timeout": "blocked"},
+		}},
+		{"status_key": "in_review", "edges": []map[string]any{
+			{"to": "in_progress", "guard": "pr.checks_red", "timeout": "72h", "on_timeout": "blocked"},
+		}},
+		{"status_key": "blocked"},
+	})
+	linkedPRForWakeup(t, c.fx, installationID, prNum, "edge-r")
+	ctx := context.Background()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := testPool.Exec(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE github_pull_request SET checks_rollup_state='FAILURE', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	exec(`INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, red_cause)
+		SELECT id, head_sha, 0, 'backend-tests', 'completed', 'failure', 'pr' FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	c.enter(t, "in_review")
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("red head: issue is %s, want in_progress", got)
+	}
+	due := func() {
+		exec(`UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+	}
+	due()
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("still red: issue is %s, want in_progress", got)
+	}
+	exec(`UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, prNum)
+	exec(`UPDATE github_pull_request_check_run SET conclusion='success', red_cause='flaky' WHERE pr_id IN (SELECT id FROM github_pull_request WHERE workspace_id=$1 AND pr_number=$2)`, testWorkspaceID, prNum)
+	due()
+	tickEdges(t)
+	if got := c.status(t); got != "blocked" {
+		t.Fatalf("green rerun of the red head: issue is %s, want blocked", got)
+	}
 }

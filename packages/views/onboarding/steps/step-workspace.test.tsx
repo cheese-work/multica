@@ -154,13 +154,13 @@ describe("StepWorkspace — workspace URL prefix", () => {
     expect(screen.getByText("multica.ai/")).toBeInTheDocument();
   });
 
-  it("shows the deployment host for self-hosted instances", () => {
+  it("shows the host the visitor is on for self-hosted instances", () => {
     renderStep({
       existing: null,
       disabled: false,
       daemonAppUrl: "https://multica.example.com",
     });
-    expect(screen.getByText("multica.example.com/")).toBeInTheDocument();
+    expect(screen.getByText(`${window.location.host}/`)).toBeInTheDocument();
     expect(screen.queryByText("multica.ai/")).not.toBeInTheDocument();
   });
 });

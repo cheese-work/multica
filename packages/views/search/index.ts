@@ -1,3 +1,2 @@
-export { SearchCommand } from "./search-command";
-export { SearchTrigger } from "./search-trigger";
+export { SearchCommand } from "./lazy-search-command";
 export { useSearchStore } from "./search-store";

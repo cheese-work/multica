@@ -64,6 +64,8 @@ const (
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
 	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
+	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
 	DefaultWorkspaceBootstrapSyncInterval = 30 * time.Second
 	DefaultWorkspaceLegacySyncInterval    = 5 * time.Minute
@@ -138,6 +140,8 @@ type Config struct {
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
+	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
+	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex
 	// first-turn no-progress ceiling (MULTICA_CODEX_FIRST_TURN_TIMEOUT). 0 means
@@ -155,6 +159,8 @@ type Config struct {
 	OpenCodeIdleWatchdog        time.Duration // OpenCode-specific no-message window; 0 falls back to AgentIdleWatchdog and values above it cannot extend the global bound
 	AgentIdleWatchdog           time.Duration // force-stop a run when the backend goes silent this long with an empty queue (0 = disabled)
 	AgentToolWatchdog           time.Duration // force-stop a run when a single tool call stays in flight (silent) this long (0 = never force-stop during a tool call, which now also covers a live Cursor background shell); defaults to AgentIdleWatchdog, so operators tune one number unless they deliberately want a wider tool budget
+	AgentSilenceWarnAfter       time.Duration // mark the transcript when a run is silent (no message, no tool in flight) this long (0 = off)
+	AgentSilenceAlertAfter      time.Duration // also post one comment on the issue after this much silence (0 = off); never below the warn tier when both are on
 	ClaudeArgs                  []string
 	CodexArgs                   []string
 	CodebuddyArgs               []string
@@ -341,12 +347,32 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		agentTimeout = *overrides.AgentTimeout
 	}
 
+	codexAgentTimeout, err := durationFromEnv("MULTICA_CODEX_AGENT_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
 	// MULTICA_AGENT_IDLE_WATCHDOG=0 disables the per-task idle watchdog. We
 	// route 0 through durationFromEnv so the operator can opt out without
 	// patching the binary; any positive duration overrides DefaultAgentIdleWatchdog.
 	agentIdleWatchdog, err := durationFromEnv("MULTICA_AGENT_IDLE_WATCHDOG", DefaultAgentIdleWatchdog)
 	if err != nil {
 		return Config{}, err
+	}
+	// The silence tiers only mark and report; the idle watchdog above stays the
+	// only thing that stops a run. 0 turns a tier off.
+	silenceWarnAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_WARN_AFTER", DefaultAgentSilenceWarnAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	silenceAlertAfter, err := durationFromEnv("MULTICA_AGENT_SILENCE_ALERT_AFTER", DefaultAgentSilenceAlertAfter)
+	if err != nil {
+		return Config{}, err
+	}
+	silenceWarnAfter, silenceAlertAfter, clamped := resolveSilenceTiers(silenceWarnAfter, silenceAlertAfter)
+	if clamped {
+		slog.Warn("MULTICA_AGENT_SILENCE_ALERT_AFTER is below MULTICA_AGENT_SILENCE_WARN_AFTER; using the warn value",
+			"warn_after", silenceWarnAfter)
 	}
 	// MULTICA_OPENCODE_IDLE_WATCHDOG narrows the no-message window for
 	// OpenCode's streamed model responses. Zero removes the provider-specific
@@ -668,6 +694,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
+		CodexAgentTimeout:               codexAgentTimeout,
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
@@ -677,6 +704,8 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		StableCwdAgents:                 patternsFromEnv("MULTICA_STABLE_CWD_AGENTS", nil),
 		OpenCodeIdleWatchdog:            openCodeIdleWatchdog,
 		AgentIdleWatchdog:               agentIdleWatchdog,
+		AgentSilenceWarnAfter:           silenceWarnAfter,
+		AgentSilenceAlertAfter:          silenceAlertAfter,
 		AgentToolWatchdog:               agentToolWatchdog,
 		ClaudeArgs:                      claudeArgs,
 		CodexArgs:                       codexArgs,
@@ -1524,4 +1553,12 @@ func applyOpenclawOverride(oc *cli.OpenClawOverride) {
 			_ = os.Setenv(execenv.OpenclawCLITimeoutEnv, oc.CLITimeout)
 		}
 	}
+}
+
+// agentTimeoutFor returns the absolute run cap for provider.
+func (c Config) agentTimeoutFor(provider string) time.Duration {
+	if provider == "codex" && c.CodexAgentTimeout > 0 {
+		return c.CodexAgentTimeout
+	}
+	return c.AgentTimeout
 }

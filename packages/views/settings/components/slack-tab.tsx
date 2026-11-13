@@ -35,7 +35,7 @@ import { slackInstallationsOptions, slackKeys } from "@multica/core/slack";
 import { api } from "@multica/core/api";
 import type { SlackInstallation } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { docsLocalePrefix } from "../../common/docs-locale";
+import { docsUrl } from "../../common/docs-url";
 import { openExternal } from "../../platform";
 import { useLocale, useT } from "../../i18n";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -244,7 +244,7 @@ const SLACK_BYO_VIDEO_URL = "";
 // prefixes (English has none), matching the convention used elsewhere in the
 // app for doc links (e.g. the autopilots webhook docs link).
 function slackDocsUrl(lang: string | undefined): string {
-  return `https://multica.ai/docs${docsLocalePrefix(lang)}/slack-bot-integration`;
+  return docsUrl("/slack-bot-integration", lang);
 }
 
 // SlackAgentBindButton is the per-agent CTA exposed from the agent detail page.

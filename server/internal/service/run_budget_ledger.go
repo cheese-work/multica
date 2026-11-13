@@ -34,6 +34,10 @@ const (
 	runBudgetKindRun    = "run"
 	runBudgetKindRaise  = "raise"
 	runBudgetKindCap    = "cap"
+	// forgive zeroes the debt an old window ran up, when a person's top-up
+	// opens the next one (CHE-5331): a top-up buys a fresh window, so the
+	// issue is not left "over" with runs unused.
+	runBudgetKindForgive = "forgive"
 )
 
 type readOnlyRunBudgetKey struct{}
@@ -152,14 +156,53 @@ func peekRunBudgetBalance(ctx context.Context, q *db.Queries, issue db.Issue, us
 // and returns that cap (0: the issue has no budget). The caller raises from
 // this cap, not from one it read before the lock.
 func OpenRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (int, error) {
+	max, _, err := OpenRunBudgetWindowID(ctx, q, issueID)
+	return max, err
+}
+
+// OpenRunBudgetWindowID is OpenRunBudgetWindow that also returns the id of the
+// window it opened (the snapshot's window_id), read under the same lock.
+func OpenRunBudgetWindowID(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (max int, windowID string, err error) {
 	_, usage, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
-		return 0, nil
+		return 0, "", nil
 	}
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	return usage.Max, nil
+	return usage.Max, runBudgetWindowID(usage.Since), nil
+}
+
+// LockRunBudgetWindow is OpenRunBudgetWindow that also returns the id of the
+// window it opened (empty: the issue has no budget), so a caller can compare
+// the window a person approved against the one in force under the lock.
+func LockRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (string, error) {
+	_, usage, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && usage == nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return runBudgetWindowID(usage.Since), nil
+}
+
+// ForgiveRunBudgetDebt writes off a negative balance. The caller is a top-up
+// that already brought the old window's ledger up to date under the issue lock.
+func ForgiveRunBudgetDebt(ctx context.Context, q *db.Queries, issueID pgtype.UUID) error {
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	usage, err := loadRunBudgetUsage(ctx, q, issue)
+	if err != nil || usage == nil {
+		return err
+	}
+	balance, err := runBudgetBalance(ctx, q, issueID)
+	if err != nil || balance >= 0 {
+		return err
+	}
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindForgive, runBudgetKindForgive+":"+util.UUIDToString(dbid.NewV7()), int(-balance), 0)
 }
 
 // RecordRunBudgetRaise credits the runs a person added to the issue's cap. The
@@ -167,11 +210,21 @@ func OpenRunBudgetWindow(ctx context.Context, q *db.Queries, issueID pgtype.UUID
 // only difference between the ledger's cap and the issue's.
 // eventKey is the audit row's id, so a replay is a no-op.
 func RecordRunBudgetRaise(ctx context.Context, q *db.Queries, issue db.Issue, eventKey pgtype.UUID, delta int) error {
+	return recordRunBudgetRaise(ctx, q, issue, runBudgetKindRaise+":"+util.UUIDToString(eventKey), delta)
+}
+
+// RecordRunBudgetActionRaise is RecordRunBudgetRaise for an approved decision
+// action; its entry is named by the action, so a replay is a no-op.
+func RecordRunBudgetActionRaise(ctx context.Context, q *db.Queries, issue db.Issue, actionID pgtype.UUID, delta int) error {
+	return recordRunBudgetRaise(ctx, q, issue, runBudgetKindRaise+":action:"+util.UUIDToString(actionID), delta)
+}
+
+func recordRunBudgetRaise(ctx context.Context, q *db.Queries, issue db.Issue, eventKey string, delta int) error {
 	usage, err := loadRunBudgetUsage(ctx, q, issue)
 	if err != nil || usage == nil {
 		return err
 	}
-	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, runBudgetKindRaise+":"+util.UUIDToString(eventKey), delta, delta)
+	return recordRunBudgetEntry(ctx, q, issue, runBudgetWindowID(usage.Since), runBudgetKindRaise, eventKey, delta, delta)
 }
 
 // debitRun charges the run just inserted to the open window.

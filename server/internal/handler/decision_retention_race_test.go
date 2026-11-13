@@ -68,8 +68,6 @@ func startDecisionSessionAction(test *testing.T, handler *Handler, request *http
 		response := httptest.NewRecorder()
 		if action == "archive" {
 			handler.SetChatSessionArchived(response, request.WithContext(ctx))
-		} else if action == "continue" {
-			handler.ContinueChatSession(response, request.WithContext(ctx))
 		} else {
 			handler.DeleteChatSession(response, request.WithContext(ctx))
 		}
@@ -90,7 +88,8 @@ func awaitDecisionSessionAction(test *testing.T, finished <-chan int) int {
 }
 
 func TestDecisionPingArchiveOrders(test *testing.T) {
-	for _, action := range []string{"archive", "continue"} {
+	// A compaction keeps the DM, so it takes no part in the decision-lane fence.
+	for _, action := range []string{"archive"} {
 		for _, first := range []string{"ping", "archive"} {
 			test.Run(action+"/"+first+"_first", func(test *testing.T) {
 				fixture := newRequestCoreFixture(test, false)
@@ -130,11 +129,7 @@ func TestDecisionPingArchiveOrders(test *testing.T) {
 					}
 					fixture.assertCounts(test, 1)
 				} else {
-					wanted := http.StatusOK
-					if action == "continue" {
-						wanted = http.StatusCreated
-					}
-					if outcome.err == nil || status != wanted {
+					if outcome.err == nil || status != http.StatusOK {
 						test.Fatalf("archive-first outcome: %v, archive %d", outcome.err, status)
 					}
 					fixture.assertCounts(test, 0)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
+	"github.com/multica-ai/multica/server/pkg/redact"
 )
 
 // runBudgetCommitWait bounds how long a warning waits, after its transaction
@@ -114,24 +116,47 @@ func (h *Handler) admissionTxFinished(ctx context.Context, e service.RunBudgetEv
 var runBudgetBeforeNotice = func() {}
 
 func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetEvent, text string) {
+	_ = h.writeRunBudgetNoticeFrom(ctx, e, hookRef{}, nil, func(context.Context, *db.Queries) string { return text })
+}
+
+// writeRunBudgetNoticeFrom is writeRunBudgetNotice with the text worded inside
+// the transaction, under the budget lock, by a function of the transaction's
+// queries. A non-nil recovery run is claimed in the same transaction.
+//
+// A valid hook id is the refusal whose hook this notice finishes (tx N): the
+// hook advances to done in the notice's transaction, and a refusal that no
+// longer applies returns *hookIneligible, with nothing written. Without one, a
+// lifted refusal is dropped silently.
+func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBudgetEvent, hook hookRef, recovery *service.BudgetRecoveryRun, text func(context.Context, *db.Queries) string) error {
 	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
-		return
+		return err
 	}
-	content, title := h.runBudgetNoticeText(ctx, issue, e, text)
+	usage := h.runBudgetUsageNote(ctx, issue)
+	recent := ""
+	if e.Kind == service.RunBudgetKindExhausted {
+		recent = h.runBudgetRecentRunsNote(ctx, issue)
+	}
 	runBudgetBeforeNotice()
+	var content, title string
 	var comment db.Comment
 	var revision int64
 	var items []db.InboxItem
 	var decisions []decisionRequestResult
-	err = h.withTx(ctx, func(qtx *db.Queries) error {
+	recovered := false
+	err = h.withPgxTx(ctx, func(tx pgx.Tx) error {
+		qtx := h.Queries.WithTx(tx)
 		noticeID, err := qtx.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
 			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: e.Kind,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
+			if !hook.id.Valid {
+				return nil
+			}
+			// A notice for this window exists already: nothing is left to write.
+			return h.retireHookInTx(ctx, qtx, hook, "notice_exists")
 		}
 		if err != nil {
 			return fmt.Errorf("claim notice: %w", err)
@@ -144,7 +169,11 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		// order every decision transaction takes.
 		var plan runBudgetDecisionPlan
 		if e.Kind == service.RunBudgetKindExhausted {
-			if plan, err = h.planRunBudgetDecisions(ctx, qtx, issue, recipients); err != nil {
+			owners, err := runBudgetCardRecipients(ctx, qtx, issue, recipients)
+			if err != nil {
+				return fmt.Errorf("card recipients: %w", err)
+			}
+			if plan, err = h.planRunBudgetDecisions(ctx, qtx, issue, owners); err != nil {
 				return fmt.Errorf("plan decisions: %w", err)
 			}
 		}
@@ -154,8 +183,62 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		// decision, and the claim rolls back with the transaction.
 		if e.Kind == service.RunBudgetKindExhausted {
 			if err := runBudgetRefusalStillHolds(ctx, qtx, e); err != nil {
+				if hook.id.Valid && errors.Is(err, errRefusalLifted) {
+					return &hookIneligible{reason: "budget_restored"}
+				}
 				return err
 			}
+			if hook.id.Valid {
+				// Read under the row lock: a requester that joined the hook before
+				// this point is in the taint the recovery run carries.
+				taint, err := lockHookStep(ctx, qtx, hook.id, hook.generation, "blocked")
+				if err != nil {
+					return err
+				}
+				if recovery != nil {
+					// The issue lock is held, so an assignment that committed first is read here.
+					assigned, err := qtx.GetIssueRunTaint(ctx, e.IssueID)
+					if err != nil {
+						return err
+					}
+					recovery.WithTaint(append(taint, assigned...))
+				}
+				if err := qtx.SetRunBudgetRefusalHook(ctx, db.SetRunBudgetRefusalHookParams{ID: hook.id, HookPhase: "done"}); err != nil {
+					return fmt.Errorf("finish hook: %w", err)
+				}
+			}
+		}
+		// The recovery run debits the ledger, so it commits with the notice
+		// that states the balance: both or neither. A run that cannot be
+		// inserted undoes only itself (Claim's savepoint): the notice still
+		// goes out, worded without a debit that did not commit, and the
+		// window's claim stays free for a later refusal.
+		if recovery != nil && e.Kind == service.RunBudgetKindExhausted {
+			switch err := recovery.Claim(ctx, tx, e.Since); {
+			case err == nil:
+				recovered = true
+			case errors.Is(err, service.ErrRecoveryClaimed), errors.Is(err, service.ErrRecoveryBlockEnded):
+			case errors.Is(err, service.ErrRecoveryWindowLifted):
+				if hook.id.Valid {
+					return &hookIneligible{reason: "budget_restored"}
+				}
+				return errRefusalLifted
+			default:
+				slog.Warn("run budget: recovery run not enqueued", "err", err, "issue_id", uuidToString(issue.ID))
+			}
+		}
+		// Worded under the budget lock, so a command in it describes the ledger
+		// this transaction commits against.
+		content, title = runBudgetNoticeText(usage, recent, e, text(ctx, qtx))
+		// The platform opens the top-up card itself and the notice links it:
+		// one card, one passkey click, no agent run (CHE-5303).
+		if e.Kind == service.RunBudgetKindExhausted && len(plan.lanes) > 0 {
+			links, opened, err := h.openRunBudgetActionCards(ctx, qtx, issue, plan, "top_up", 0, e.Since.UTC().Format(time.RFC3339Nano), runBudgetRefusalAsk(issue))
+			if err != nil {
+				return fmt.Errorf("open top-up card: %w", err)
+			}
+			decisions = opened
+			content += "\n\n[Approve the top-up](" + links[0].ApproveURL + ")"
 		}
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
@@ -183,21 +266,23 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 				items = append(items, item)
 			}
 		}
-		if e.Kind != service.RunBudgetKindExhausted {
-			return nil
-		}
-		decisions, err = h.openRunBudgetDecisions(ctx, qtx, issue, e, comment, plan)
-		return err
+		return nil
 	})
 	if errors.Is(err, errRefusalLifted) {
-		return
+		return nil
 	}
 	if err != nil {
-		slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
-		return
+		var ineligible *hookIneligible
+		if !errors.Is(err, errHookAdvanced) && !errors.As(err, &ineligible) {
+			slog.Warn("run budget: write notice failed", "err", err, "issue_id", uuidToString(issue.ID), "kind", e.Kind)
+		}
+		return err
+	}
+	if recovered {
+		recovery.Published(ctx)
 	}
 	if !comment.ID.Valid {
-		return
+		return nil
 	}
 	workspaceID := uuidToString(issue.WorkspaceID)
 	h.publish(protocol.EventCommentCreated, workspaceID, "system", "", map[string]any{
@@ -212,6 +297,13 @@ func (h *Handler) writeRunBudgetNotice(ctx context.Context, e service.RunBudgetE
 		h.publish(protocol.EventInboxNew, workspaceID, "system", "", map[string]any{"item": inboxToResponse(item)})
 	}
 	h.publishRunBudgetDecisions(issue, decisions)
+	return nil
+}
+
+// retireHookInTx retires an unfinished hook in the caller's transaction and
+// reports it as finished.
+func (h *Handler) retireHookInTx(ctx context.Context, q *db.Queries, hook hookRef, reason string) error {
+	return q.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: hook.id, Generation: hook.generation, Reason: reason})
 }
 
 // runBudgetRefusalStillHolds takes the budget lock and reports errRefusalLifted
@@ -242,16 +334,60 @@ func runBudgetRecipients(ctx context.Context, q *db.Queries, issue db.Issue) ([]
 	return q.ListWorkspaceOwnerUserIDs(ctx, issue.WorkspaceID)
 }
 
-// runBudgetNoticeText appends the token figure to the notice text, best-effort:
-// a failed read leaves it as "unknown" rather than losing the notice.
-func (h *Handler) runBudgetNoticeText(ctx context.Context, issue db.Issue, e service.RunBudgetEvent, text string) (content, title string) {
-	tokens := "unknown"
-	if u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID); err == nil {
-		tokens = fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
-	} else {
+// runBudgetUsageNote is the token figure a notice carries, best-effort: a
+// failed read leaves it as "unknown" rather than losing the notice. It reads on
+// the pool, so it runs before the notice's transaction opens.
+func (h *Handler) runBudgetUsageNote(ctx context.Context, issue db.Issue) string {
+	u, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
+	if err != nil {
 		slog.Warn("run budget: usage summary failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return "unknown"
 	}
-	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.", text, tokens)
+	return fmt.Sprintf("%d (%d runs have not reported usage)", u.TotalInputTokens+u.TotalOutputTokens, u.UnreportedTaskCount)
+}
+
+// recentRunsShown is how many finished runs the exhaustion notice lists.
+const recentRunsShown = 3
+
+// recentRunSnippetLen caps one run's result or error in the notice.
+const recentRunSnippetLen = 200
+
+// runBudgetRecentRunsNote lists the issue's newest finished runs with their
+// outcome (redacted, as run output may hold credentials), so whoever reads the exhaustion notice sees what the budget was spent
+// on without opening the history. Best effort like the token figure: a failed
+// read drops the list, never the notice. It reads on the pool, before the
+// notice's transaction opens.
+func (h *Handler) runBudgetRecentRunsNote(ctx context.Context, issue db.Issue) string {
+	runs, err := h.Queries.ListRecentIssueRunResults(ctx, db.ListRecentIssueRunResultsParams{IssueID: issue.ID, MaxRuns: recentRunsShown})
+	if err != nil {
+		slog.Warn("run budget: recent runs failed", "err", err, "issue_id", uuidToString(issue.ID))
+		return ""
+	}
+	if len(runs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nLast %d runs, newest first:", len(runs))
+	for _, run := range runs {
+		detail := strings.TrimSpace(run.Error)
+		if detail == "" {
+			detail = strings.TrimSpace(run.Output)
+		}
+		if detail == "" {
+			detail = "no result recorded"
+		}
+		// Redact the whole text before cutting it: a credential that straddles the
+		// cut would otherwise survive as a prefix no pattern matches.
+		detail = truncateRunes(redact.Text(detail), recentRunSnippetLen)
+		fmt.Fprintf(&b, "\n- %s, %s: %s", run.AgentName, run.Status, strings.Join(strings.Fields(detail), " "))
+	}
+	return b.String()
+}
+
+// runBudgetNoticeText appends the token figure and the recent runs to the
+// notice text.
+func runBudgetNoticeText(tokens, recentRuns string, e service.RunBudgetEvent, text string) (content, title string) {
+	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.%s", text, tokens, recentRuns)
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:
 		return content, "Run budget at 80%"

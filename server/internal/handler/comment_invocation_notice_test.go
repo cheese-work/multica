@@ -48,9 +48,16 @@ func TestCommentInvocationDeniedNoticePersistsWithoutDisclosure(t *testing.T) {
 			}
 		}
 	})
+	// Unreachable agents are refused before the save; only the squad whose
+	// private leader the caller cannot invoke keeps the persisted notice.
+	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusUnprocessableEntity)
+	if countIssueComments(t, issueID) != 0 {
+		t.Fatal("refused submission saved a comment")
+	}
+	content = fmt.Sprintf("[@Team alias](mention://squad/%s) [@Allowed alias](mention://agent/%s)", squadID, allowedID)
 	var posted CommentResponse
 	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
-	if len(posted.TriggerOutcomes) != 5 || findCommentOutcome(t, posted.TriggerOutcomes, allowedID).Status != DispatchQueued {
+	if len(posted.TriggerOutcomes) != 2 || findCommentOutcome(t, posted.TriggerOutcomes, allowedID).Status != DispatchQueued {
 		t.Fatalf("partial submission outcomes = %+v", posted.TriggerOutcomes)
 	}
 	if len(notices) != 1 {
@@ -60,12 +67,10 @@ func TestCommentInvocationDeniedNoticePersistsWithoutDisclosure(t *testing.T) {
 	if notice.ParentID == nil || *notice.ParentID != posted.ID || notice.Type != "system" {
 		t.Fatalf("notice is not a system reply to the submitted comment: %+v", notice)
 	}
-	for _, alias := range []string{"Private alias", "Missing alias", "Foreign alias", "Team alias"} {
-		if !strings.Contains(notice.Content, alias) {
-			t.Errorf("notice omitted %q: %s", alias, notice.Content)
-		}
+	if !strings.Contains(notice.Content, "Team alias") {
+		t.Errorf("notice omitted the denied squad: %s", notice.Content)
 	}
-	if strings.Count(notice.Content, "Target not found or permission not granted") != 4 {
+	if strings.Count(notice.Content, "Target not found or permission not granted") != 1 {
 		t.Errorf("denied targets do not share the generic reason: %s", notice.Content)
 	}
 	for _, secret := range []string{"private-access-test-agent", "Other workspace secret", "private-agent-owner@multica.test", "Allowed alias"} {
@@ -95,25 +100,21 @@ func TestCommentInvocationDeniedNoticePersistsWithoutDisclosure(t *testing.T) {
 	t.Fatal("saved notice is absent from the timeline")
 }
 
-func TestCommentInvocationDeniedNoticeForAgentEditsKeepsHistory(t *testing.T) {
+// Agents cannot mention squads, and an agent mention they cannot invoke is
+// refused before the save, so the notice history is exercised by a member.
+func TestCommentInvocationDeniedNoticeForEditsKeepsHistory(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	privateID, _, _ := privateAgentTestFixture(t)
-	leaderID := createHandlerTestAgent(t, "Denied handoff leader", nil)
-	issueID := dbfx.Issue(t, "Denied agent handoff", testutil.Cols{"status": "in_progress"})
+	squadID := createCommentTriggerPreviewSquad(t, "Denied handoff squad", privateID)
+	issueID := dbfx.Issue(t, "Denied squad handoff", testutil.Cols{"status": "in_progress"})
 	dbfx.Cleanup(t, `DELETE FROM comment WHERE issue_id = $1`, issueID)
-	sourceTaskID := dbfx.Task(t, leaderID, testutil.Cols{"issue_id": issueID, "runtime_id": handlerTestRuntimeID(t), "status": "running", "originator_user_id": testUserID, "accountable_user_id": testUserID})
-	content := fmt.Sprintf("[@Worker alias](mention://agent/%s) take over", privateID)
-	request := func(method, path string, body any) *http.Request {
-		req := newRequest(method, path, body)
-		req.Header.Set("X-Agent-ID", leaderID)
-		req.Header.Set("X-Task-ID", sourceTaskID)
-		return req
-	}
+	content := fmt.Sprintf("[@Worker alias](mention://squad/%s) take over", squadID)
+	request := newRequest
 	var posted CommentResponse
 	testutil.Call(t, testHandler.CreateComment, withURLParam(request(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": content}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
-	if posted.AuthorType != "agent" || findCommentOutcome(t, posted.TriggerOutcomes, privateID).Status != DispatchBlocked {
+	if posted.AuthorType != "member" || findCommentOutcome(t, posted.TriggerOutcomes, squadID).Status != DispatchBlocked {
 		t.Fatalf("agent handoff = %+v", posted)
 	}
 	var firstNoticeID, firstNotice string
@@ -147,7 +148,7 @@ func TestCommentInvocationDeniedNoticeForAgentEditsKeepsHistory(t *testing.T) {
 	}
 	var tasks int
 	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, issueID).Scan(&tasks)
-	if tasks != 1 {
+	if tasks != 0 {
 		t.Fatalf("handoff or notices created extra runs: %d tasks", tasks)
 	}
 	stored, err := testHandler.Queries.GetComment(context.Background(), parseUUID(firstNoticeID))
@@ -160,13 +161,9 @@ func TestCommentInvocationDeniedNoticeSkipsOtherSubmissions(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	privateID, _, _ := privateAgentTestFixture(t)
 	allowedID := createHandlerTestAgent(t, "Successful notice target", nil)
-	// The fork's mention parser resolves mentions inside code spans, so a
-	// denied one there is a real refusal and keeps its notice.
 	for _, tc := range []struct{ name, content string }{
 		{"successful", fmt.Sprintf("[@Allowed](mention://agent/%s) proceed", allowedID)},
-		{"note", fmt.Sprintf("/note [@Private](mention://agent/%s) reference only", privateID)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issueID := dbfx.Issue(t, "No permission notice for "+tc.name)
@@ -187,6 +184,7 @@ func TestCommentInvocationDeniedNoticeSkipsDeletedParent(t *testing.T) {
 		t.Skip("database not available")
 	}
 	privateID, _, _ := privateAgentTestFixture(t)
+	squadID := createCommentTriggerPreviewSquad(t, "Delete before notice squad", privateID)
 	issueID := dbfx.Issue(t, "Delete before permission notice")
 	h := *testHandler
 	h.Bus = events.New()
@@ -202,9 +200,9 @@ func TestCommentInvocationDeniedNoticeSkipsDeletedParent(t *testing.T) {
 	})
 	var posted CommentResponse
 	testutil.Call(t, h.CreateComment, withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{
-		"content": fmt.Sprintf("[@Private](mention://agent/%s)", privateID),
+		"content": fmt.Sprintf("[@Private](mention://squad/%s)", squadID),
 	}), "id", issueID)).Want(http.StatusCreated).JSON(&posted)
-	if findCommentOutcome(t, posted.TriggerOutcomes, privateID).Status != DispatchBlocked {
+	if findCommentOutcome(t, posted.TriggerOutcomes, squadID).Status != DispatchBlocked {
 		t.Fatal("notice failure changed the admission result")
 	}
 	var comments int

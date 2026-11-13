@@ -88,20 +88,34 @@ test("blank values and <placeholders> count as missing, none is explicit", async
   assert.equal(parseChangelogLine(undefined).status, "missing");
 });
 
-test("text over 140 code points is cut without splitting a grapheme and warns", async () => {
-  const { parseChangelogLine } = await load();
+test("text over 140 code points is kept whole and flagged, never cut", async () => {
+  const { parseChangelogLine, evaluatePr, formatCheck } = await load();
   const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}"; // one grapheme, 5 code points
-  const cut = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
-  assert.equal(cut.text, "a".repeat(138), "the grapheme that crosses 140 is dropped whole");
-  assert.ok(cut.warnings.some((w) => /truncat/i.test(w)), cut.warnings.join("|"));
-  assert.ok([...cut.text].length <= 140);
+  const long = parseChangelogLine(`Changelog: ${"a".repeat(138)}${family}`);
+  assert.equal(long.status, "text");
+  assert.equal(long.text, `${"a".repeat(138)}${family}`, "the sentence is complete");
+  assert.equal(long.overLimit, true);
+  assert.ok(long.warnings.some((w) => /over 140/.test(w)), long.warnings.join("|"));
 
   const exact = parseChangelogLine(`Changelog: ${"b".repeat(140)}`);
   assert.equal(exact.text.length, 140);
-  assert.ok(!exact.warnings.some((w) => /truncat/i.test(w)));
+  assert.notEqual(exact.overLimit, true);
+  assert.equal(parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`).overLimit, true);
 
-  const emoji = parseChangelogLine(`Changelog: ${"\u{1F600}".repeat(150)}`);
-  assert.equal([...emoji.text].length, 140);
+  // the PR check fails the PR, whatever its type, so the author shortens the line
+  for (const title of ["feat: x", "fix: x", "docs: x"]) {
+    const check = formatCheck(evaluatePr({ number: 1, title, body: `Changelog: ${"c".repeat(141)}`, headRef: "h" }));
+    assert.equal(check.failing, true, title);
+  }
+});
+
+test("a merged PR whose line is over the limit still publishes its complete sentence", async () => {
+  const text = "Agents can now keep named presets and switch them with a command or in a chat, and the list shows which preset each agent uses today, so nobody has to open each agent to check.";
+  assert.ok([...text].length > 140);
+  const result = await run([pr(731, { body: `Changelog: ${text}` })]);
+  assert.equal(result.entries.length, 1);
+  assert.equal(result.entries[0].text, text);
+  assert.equal(result.counts.byReason["too-long"], undefined);
 });
 
 // --- sanitizing ------------------------------------------------------------
@@ -207,7 +221,7 @@ test("feat, fix and perf PRs without a valid line fail the check; none and syncs
 test("warnings reach the check output", async () => {
   const { evaluatePr, formatCheck } = await load();
   const got = formatCheck(evaluatePr(pr(1, { body: `Changelog: ${"x".repeat(200)}` })));
-  assert.ok(got.warnings.some((w) => /truncat/i.test(w)), got.warnings.join("|"));
+  assert.ok(got.warnings.some((w) => /over 140/.test(w)), got.warnings.join("|"));
 });
 
 // --- generator --------------------------------------------------------------
@@ -369,7 +383,7 @@ test("warnings are collected per PR", async () => {
   const result = await run([pr(1, { body: `Changelog: ${"x".repeat(200)}` })]);
   assert.equal(result.warnings.length, 1);
   assert.equal(result.warnings[0].number, 1);
-  assert.match(result.warnings[0].message, /truncat/i);
+  assert.match(result.warnings[0].message, /over 140/);
 });
 
 test("serializeEntries is stable JSON with a trailing newline", async () => {
@@ -422,15 +436,16 @@ function cli(args, env = {}) {
 }
 const tmp = () => mkdtempSync(join(tmpdir(), "fork-changelog-"));
 
-test("preview: --fixture and --out write one known entry with no credentials", () => {
+test("preview: --fixture and --out write the known entries and three deploys with no credentials", () => {
   const out = join(tmp(), "preview.json");
   const fixture = new URL("./fixtures/fork-changelog-preview.json", import.meta.url).pathname;
   const res = cli(["--fixture", fixture, "--out", out]);
   assert.equal(res.status, 0, res.stderr);
   const written = JSON.parse(readFileSync(out, "utf8"));
-  assert.equal(written.entries.length, 1);
-  assert.equal(written.entries[0].id, "fork-pr-1");
-  assert.equal(written.entries[0].text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.entries.length, 4);
+  assert.equal(written.entries.find((e) => e.id === "fork-pr-1").text, "Issue lists now open instantly in large workspaces.");
+  assert.equal(written.deploys.length, 4);
+  assert.equal(written.deploys.filter((d) => d.deployedAt.startsWith("2026-11-05")).length, 3);
 });
 
 test("preview: a bad fixture exits non-zero and leaves no output file", () => {
@@ -483,10 +498,11 @@ test("PR check: a feat PR without a line writes Hidden and fails", () => {
   assert.match(summary, /Hidden: missing — add "Changelog: <sentence>" to publish/);
 });
 
-test("PR check: warnings are annotated, a closed PR is skipped, a sync head passes", () => {
+test("PR check: an over-limit line fails with an annotation, a closed PR is skipped, a sync head passes", () => {
   const warn = checkEvent({ title: "fix(a): b", body: `Changelog: ${"y".repeat(200)}` });
-  assert.equal(warn.res.status, 0);
-  assert.match(warn.res.stdout, /::warning::.*truncat/i);
+  assert.equal(warn.res.status, 1);
+  assert.match(warn.res.stdout, /::warning::.*over 140/);
+  assert.match(warn.res.stdout, /::error::/);
 
   const closed = checkEvent({ title: "feat(a): b", body: "" }, "closed");
   assert.equal(closed.res.status, 0);
@@ -497,18 +513,24 @@ test("PR check: warnings are annotated, a closed PR is skipped, a sync head pass
   assert.match(sync.summary, /Hidden: upstream-sync/);
 });
 
-test("PR check workflow: GitHub-hosted, permissions: {}, no secrets, skips closed PRs", () => {
-  const raw = readFileSync(new URL("../.github/workflows/pr-changelog-check.yml", import.meta.url), "utf8");
+test("PR check job (pr-guards): GitHub-hosted, no secrets, skips closed PRs, trusted checkout", () => {
+  const raw = readFileSync(new URL("../.github/workflows/pr-guards.yml", import.meta.url), "utf8");
   const wf = raw.replace(/^\s*#.*$/gm, "");
+  const job = wf.slice(wf.indexOf("\n  changelog-line:"), wf.indexOf("\n  fork-sync-guard:"));
   assert.match(wf, /^permissions: \{\}$/m);
-  assert.match(wf, /runs-on: ubuntu-24\.04/);
-  assert.doesNotMatch(wf, /self-hosted|secrets\./);
-  for (const type of ["opened", "edited", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
-  assert.match(wf, /pull_request:/);
-  assert.doesNotMatch(wf, /pull_request_target/);
-  assert.match(wf, /state != 'closed'/);
-  assert.match(raw, /upstream-sync\//, "the header explains why sync heads stay off X99");
-  assert.match(wf, /fork-changelog\.mjs --event/);
+  assert.match(job, /runs-on: \$\{\{ vars\.RUNNER_PR_CHANGELOG_CHECK \|\| 'ubuntu-24\.04' \}\}/);
+  assert.doesNotMatch(wf, /self-hosted/);
+  assert.deepEqual(wf.match(/secrets\.\w+/g), ["secrets.GITHUB_TOKEN"], "only the read-only workflow token");
+  assert.match(job, /pull-requests: read/);
+  assert.match(job, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/);
+  assert.match(job, /pulls\/\$\{?PR_NUMBER\}?\/files/);
+  assert.match(job, /fork-changelog\.mjs --event "\$GITHUB_EVENT_PATH" --files/);
+  for (const type of ["opened", "synchronize", "reopened"]) assert.match(wf, new RegExp(type));
+  assert.doesNotMatch(wf, /types: \[[^\]]*edited/); // CHE-4385: a body edit does not re-run the check
+  assert.match(wf, /pull_request_target:/);
+  assert.match(job, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(job, /state != 'closed'/);
+  assert.match(job, /fork-changelog\.mjs --event/);
 });
 
 // --- review round 1 (x99-codex-sol, PR 229): F1-F4 ----------------------------
@@ -800,6 +822,150 @@ test("preview: --backfill adds the backfill entries to the fixture entries", () 
   assert.equal(res.status, 0, res.stderr);
   const { entries } = JSON.parse(readFileSync(out, "utf8"));
   // Fixture PR #1 is also a backfill number: the fixture entry wins, so it is not counted twice.
-  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length);
+  assert.equal(entries.length, JSON.parse(readFileSync(backfill, "utf8")).entries.length + 3);
   assert.equal(entries.find((e) => e.number === 1).text, "Issue lists now open instantly in large workspaces.");
+});
+
+// --- CHE-4016: `Changelog: none` on a user-facing feat/fix/perf PR fails -----------
+
+const NONE_WARNING = /could not read the changed files/i;
+
+function noneCheck(title, files) {
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(
+    event,
+    JSON.stringify({ pull_request: { number: 5, state: "open", title, body: "Changelog: none", head: { ref: "agent/x/5" } } }),
+  );
+  const args = ["--event", event];
+  if (files !== undefined) {
+    const list = join(dir, "files.txt");
+    writeFileSync(list, files.map((f) => `${f}\n`).join(""));
+    args.push("--files", list);
+  }
+  return cli(args, {});
+}
+
+test("CHE-4016: a fix PR with none that touches packages/views fails and names the rule and the file", () => {
+  const res = noneCheck("fix(settings): b", ["packages/views/settings/a.tsx", "scripts/x.mjs"]);
+  assert.equal(res.status, 1);
+  assert.match(res.stdout, /::error::This `fix` PR changes user-facing code\. Write one sentence a user understands in `Changelog:`, or use a non-user-facing type \(for example `ci`, `test`, `chore`\)\./);
+  assert.match(res.stdout, /packages\/views\/settings\/a\.tsx/);
+  assert.doesNotMatch(res.stdout, /scripts\/x\.mjs/, "internal-only files are not listed");
+});
+
+test("CHE-4016: a feat PR with none that touches only internal paths passes", () => {
+  const res = noneCheck("feat(ci): b", [".github/workflows/a.yml", "a/b.test.ts", "README.md", "docs/x.mdx".replace(".mdx", ".md"), "server/x_test.go", "e2e/a.ts", "pkg/__tests__/a.ts", "scripts/a.mjs", "fixtures/a.json", "a/b.spec.tsx"]);
+  assert.equal(res.status, 0, res.stdout);
+});
+
+test("CHE-4016: a ci or chore PR with none passes even with user-facing files", () => {
+  for (const type of ["ci", "chore", "test", "docs", "refactor"]) {
+    assert.equal(noneCheck(`${type}: b`, ["packages/views/a.tsx"]).status, 0, type);
+  }
+});
+
+test("CHE-4016: an unreadable file list warns and passes", () => {
+  for (const files of [undefined]) {
+    const res = noneCheck("fix: b", files);
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, NONE_WARNING);
+  }
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 5, state: "open", title: "fix: b", body: "Changelog: none", head: { ref: "h" } } }));
+  const res = cli(["--event", event, "--files", join(dir, "missing.txt")], {});
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /::warning::.*could not read the changed files/i);
+});
+
+test("CHE-4016: the failure message lists at most 5 user-facing files", () => {
+  const files = Array.from({ length: 8 }, (_, i) => `apps/web/f${i}.tsx`);
+  const res = noneCheck("perf: b", files);
+  assert.equal(res.status, 1);
+  const listed = res.stdout.match(/apps\/web\/f\d\.tsx/g) ?? [];
+  assert.equal(new Set(listed).size, 5);
+  assert.match(res.stdout, /and 3 more/);
+});
+
+test("CHE-4016: a file name with CR or LF cannot forge workflow annotations", () => {
+  const res = noneCheck("fix: b", ["packages/views/a\r::error::forged.tsx", "packages/views/b\n::warning::forged2.tsx"]);
+  assert.equal(res.status, 1);
+  assert.doesNotMatch(res.stdout, /\r/, "no raw CR in the output");
+  const commands = res.stdout.split("\n").filter((line) => line.startsWith("::"));
+  assert.equal(commands.length, 1, `only the real error command: ${JSON.stringify(commands)}`);
+  assert.match(commands[0], /^::error::/);
+  assert.match(commands[0], /%0D::error::forged\.tsx/);
+});
+
+test("CHE-4016: a real sentence on a user-facing PR still passes and the files are not required", () => {
+  const dir = tmp();
+  const event = join(dir, "event.json");
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 5, state: "open", title: "fix: b", body: "Changelog: It works.", head: { ref: "h" } } }));
+  const res = cli(["--event", event], {});
+  assert.equal(res.status, 0);
+  assert.doesNotMatch(res.stdout, NONE_WARNING);
+});
+
+test("CHE-4016: template and AGENTS.md say none is only for internal-only changes", () => {
+  const read = (p) => readFileSync(new URL(`../${p}`, import.meta.url), "utf8");
+  for (const text of [read(".github/PULL_REQUEST_TEMPLATE.md"), read("AGENTS.md")]) {
+    assert.match(text, /`?Changelog: none`? is only for internal-only changes/i);
+  }
+});
+
+// CHE-4015: bucket entries into C00 deploys.
+// first-parent is newest first: idx0 = qualified (live) build, 1..5 older commits.
+test("each entry gets the first deploy that contains it; duplicates, rollbacks and failures do not add dividers", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [5, 4, 3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00+07:00` }));
+  const prs = [1, 2, 3, 4, 5].map((n) => pr(n, { mergedAt: `2026-10-13T0${n}:00:00Z` }));
+  prs[1].body = "Changelog: none"; // PR 2 hidden, reason none
+  prs[2].body = "no line"; // PR 3 hidden, reason missing
+  const deployments = [
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T03:00:00Z" },
+    { sha: sha(2), state: "SUCCESS", createdAt: "2026-10-13T02:00:00Z" }, // duplicate: earliest wins
+    { sha: sha(4), state: "SUCCESS", createdAt: "2026-10-13T05:00:00Z" },
+    { sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T06:00:00Z" }, // rollback to older SHA, after sha(4)
+    { sha: sha(3), state: "FAILURE", createdAt: "2026-10-13T04:00:00Z" }, // failed: ignored
+    { sha: sha(5), state: "SUCCESS", createdAt: "2026-10-13T07:00:00Z" }, // the qualified SHA itself: ignored
+    { sha: sha(9), state: "SUCCESS", createdAt: "2026-10-13T08:00:00Z" }, // not in history: ignored
+  ];
+  const out = generateEntries({ prs, firstParent, deployments }, { versionOf: (s) => `v-${Number(s)}` });
+  assert.deepEqual(out.deploys.map(({ sha: s, version, deployedAt, hiddenCount, live }) => [Number(s), version, deployedAt, hiddenCount, live ?? false]), [
+    [5, "v-5", "2026-10-13T06:00:00.000Z", 0, true], // commit time 22:00Z the day before, clamped to the newest earlier deploy
+    [4, "v-4", "2026-10-13T05:00:00.000Z", 1, false], // PR 3 (missing) sits newer than deploy 2
+    [2, "v-2", "2026-10-13T02:00:00.000Z", 1, false], // PR 2 (none)
+    [1, "v-1", "2026-10-13T06:00:00.000Z", 0, false],
+  ]);
+  const deployOf = Object.fromEntries(out.entries.map((e) => [e.number, e.deploy === "live" ? "live" : Number(e.deploy)]));
+  assert.deepEqual(deployOf, { 1: 1, 4: 4, 5: "live" });
+});
+
+test("hiddenCount ignores upstream-sync, reverted and before-start-date", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [3, 2, 1].map((n) => ({ sha: sha(n), message: "", time: "2026-10-13T00:00:00Z" }));
+  const prs = [
+    pr(1, { body: "Changelog: none" }),
+    pr(2, { headRef: "upstream-sync/x", body: "none" }),
+    pr(3, { body: "Changelog: none", mergedAt: "2026-10-01T00:00:00Z" }),
+  ];
+  const out = generateEntries({ prs, firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T01:00:00Z" }] }, { versionOf: (s) => s });
+  assert.equal(out.deploys.find((d) => d.sha === sha(1)).hiddenCount, 1);
+  assert.equal(out.deploys.find((d) => d.live).hiddenCount, 0);
+});
+
+test("without deployments the output has no deploys field and entries have no deploy", async () => {
+  const { generateEntries, serializeEntries } = await load();
+  const out = generateEntries({ prs: [pr(1)], firstParent: [sha(1)] });
+  assert.equal(out.deploys, undefined);
+  assert.equal("deploy" in out.entries[0], false);
+  assert.equal("deploys" in JSON.parse(serializeEntries(out)), false);
+});
+
+test("Live is never dated before a later-deployed previous build", async () => {
+  const { generateEntries } = await load();
+  const firstParent = [2, 1].map((n) => ({ sha: sha(n), message: "", time: `2026-10-13T0${n}:00:00Z` }));
+  const out = generateEntries({ prs: [], firstParent, deployments: [{ sha: sha(1), state: "SUCCESS", createdAt: "2026-10-13T09:00:00Z" }] }, { versionOf: (s) => s });
+  assert.deepEqual(out.deploys.map((d) => [Number(d.sha), d.deployedAt]), [[2, "2026-10-13T09:00:00.000Z"], [1, "2026-10-13T09:00:00.000Z"]]);
 });

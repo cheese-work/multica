@@ -4,7 +4,8 @@
  *
  *   - `onSubmit` → `useCreateComment(issueId).mutateAsync`
  *   - Reply target sourced from `useReplyTargetStore` (set by the
- *     comment long-press action sheet)
+ *     comment long-press action sheet); saved in the issue's composer
+ *     draft so it survives leaving the issue
  *   - Mention picker path → `/[workspace]/mention-picker?mode=comment`
  *   - Upload context binds attachments to this issue
  *
@@ -12,8 +13,9 @@
  * composer (`components/chat/chat-composer.tsx`) uses the same component
  * with chat-mode props.
  */
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 import { useCreateComment } from "@/data/mutations/issues";
+import { useComposerDraftsStore } from "@/data/stores/composer-drafts-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { MessageComposer } from "@/components/composer/message-composer";
@@ -25,6 +27,32 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const replyTarget = useReplyTargetStore((s) => s.target);
   const clearReplyTarget = useReplyTargetStore((s) => s.clear);
+  const draftKey = `comment:${issueId}`;
+  const draftsHydrated = useComposerDraftsStore((s) => s.hydrated);
+
+  // The reply store is the live copy (the long-press sheet writes to it).
+  // Load it from this issue's draft, mirror later changes back, and empty it
+  // on leaving. Unsubscribe before emptying so that is not saved as a clear.
+  // A restored target must not pop the keyboard: only a target set after
+  // the restore triggers expand + focus.
+  useEffect(() => {
+    const saved =
+      useComposerDraftsStore.getState().drafts[draftKey]?.reply ?? null;
+    useReplyTargetStore.setState({
+      target: saved && { ...saved, restored: true },
+    });
+    const unsubscribe = useReplyTargetStore.subscribe((state, prev) => {
+      if (state.target !== prev.target) {
+        useComposerDraftsStore
+          .getState()
+          .patch(draftKey, { reply: state.target });
+      }
+    });
+    return () => {
+      unsubscribe();
+      useReplyTargetStore.getState().clear();
+    };
+  }, [draftKey, draftsHydrated]);
 
   const onSubmit = useCallback(
     async ({
@@ -52,6 +80,7 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
 
   return (
     <MessageComposer
+      draftKey={draftKey}
       onSubmit={onSubmit}
       mentionPickerPath={{
         pathname: "/[workspace]/mention-picker",
@@ -70,7 +99,9 @@ export function InlineCommentComposer({ issueId }: { issueId: string }) {
           : null
       }
       onClearReplyTarget={clearReplyTarget}
-      expandTrigger={replyTarget?.commentId ?? null}
+      expandTrigger={
+        replyTarget && !replyTarget.restored ? replyTarget.commentId : null
+      }
     />
   );
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,11 +30,7 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 		"user_id", userID,
 		"auth_path", authPath,
 	)
-	if isGovernanceProposalRoute(r) {
-		writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_access_denied")
-	} else {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-	}
+	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
 	return true
 }
 
@@ -73,6 +70,10 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
+			// X-Session-ID is the signed `sid` claim of a JWT login, set
+			// below; a passkey assertion binds a card answer to it.
+			r.Header.Del("X-Session-ID")
+			r.Header.Del(auth.SessionGenerationHeader)
 			r.Header.Del("X-Task-Token-Purpose")
 			r.Header.Del("X-Governance-Case-ID")
 			r.Header.Del("X-Governance-Attempt-ID")
@@ -104,11 +105,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// Cookie-based auth requires CSRF validation for state-changing methods.
 			if fromCookie && !auth.ValidateCSRF(r) {
 				slog.Debug("auth: CSRF validation failed", "path", r.URL.Path)
-				if isGovernanceProposalRoute(r) {
-					writeGovernanceProposalProblem(w, r, http.StatusForbidden, "csrf_validation_failed")
-				} else {
-					http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
-				}
+				http.Error(w, `{"error":"CSRF validation failed"}`, http.StatusForbidden)
 				return
 			}
 
@@ -140,20 +137,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						writeInvalidTaskToken(w, r)
 						return
 					}
-				case GovernanceProposalTaskPurpose:
-					if !tt.GovernanceCaseID.Valid || !tt.GovernanceAttemptID.Valid ||
-						!tt.GovernanceAttemptFence.Valid || !tt.GovernanceEvidenceEpoch.Valid ||
-						tt.GovernanceEvidenceEpoch.Int32 < 0 {
-						writeInvalidTaskToken(w, r)
-						return
-					}
-					if governanceProposalCapability(
-						r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery,
-						uuidToString(tt.GovernanceCaseID), uuidToString(tt.GovernanceAttemptID),
-					) == "" {
-						writeGovernanceProposalProblem(w, r, http.StatusForbidden, "proposal_token_scope_denied")
-						return
-					}
 				default:
 					writeInvalidTaskToken(w, r)
 					return
@@ -176,12 +159,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
 				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
 				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
-				if tt.Purpose == GovernanceProposalTaskPurpose {
-					r.Header.Set("X-Governance-Case-ID", uuidToString(tt.GovernanceCaseID))
-					r.Header.Set("X-Governance-Attempt-ID", uuidToString(tt.GovernanceAttemptID))
-					r.Header.Set("X-Governance-Attempt-Fence", uuidToString(tt.GovernanceAttemptFence))
-					r.Header.Set("X-Governance-Evidence-Epoch", strconv.FormatInt(int64(tt.GovernanceEvidenceEpoch.Int32), 10))
-				}
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
 				// token table.
@@ -239,11 +216,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					// 503 so callers (CLI / daemon) can retry — a 401
 					// here would tell them to throw out a valid token.
 					slog.Warn("auth: cloud pat verify unavailable", "path", r.URL.Path, "error", err)
-					if isGovernanceProposalRoute(r) {
-						writeGovernanceProposalProblem(w, r, http.StatusServiceUnavailable, "authentication_unavailable")
-					} else {
-						http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
-					}
+					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
 					return
 				}
 				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
@@ -298,7 +271,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// A scoped PAT is a restricted credential: it reaches only the
 				// routes its scope names and is never cached, so a cache hit
 				// can never widen it to the owner's full access.
-				if len(pat.Scopes) > 0 && !scopedPATMayCall(r) {
+				if len(pat.Scopes) > 0 && !scopedPATMayCall(r, pat.Scopes) {
 					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
 					return
 				}
@@ -361,9 +334,15 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
+			// The generation this JWT was signed with, for handlers that
+			// must recheck it inside their own transaction.
+			r.Header.Set(auth.SessionGenerationHeader, strconv.Itoa(int(auth.SessionGeneration(claims))))
 			r.Header.Set("X-Actor-Source", "cli_jwt")
 			if method, ok := claims["amr"].(string); ok && method == "interactive" {
 				r.Header.Set("X-Actor-Source", "interactive_jwt")
+			}
+			if sid, ok := claims["sid"].(string); ok {
+				r.Header.Set("X-Session-ID", sid)
 			}
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
@@ -407,17 +386,21 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 	return "", false
 }
 
-// scopedPATMayCall reports whether a scoped PAT may call this route. The only
-// scope today, decisions:feed, opens the answer feed and its ack and nothing else.
-func scopedPATMayCall(r *http.Request) bool {
+// scopedPATMayCall reports whether a scoped PAT may call this route. Each scope
+// opens only its own routes: decisions:feed the answer feed and its ack,
+// decisions:ci_request the CI decision-card create. Nothing else.
+func scopedPATMayCall(r *http.Request, scopes []string) bool {
 	path := r.URL.Path
 	switch r.Method {
 	case http.MethodGet:
-		return path == "/api/decisions/feed"
+		return path == "/api/decisions/feed" && slices.Contains(scopes, "decisions:feed")
 	case http.MethodPost:
+		if path == "/api/decisions/ci" {
+			return slices.Contains(scopes, "decisions:ci_request")
+		}
 		rest, found := strings.CutPrefix(path, "/api/decisions/feed/")
 		id, ack := strings.CutSuffix(rest, "/ack")
-		return found && ack && id != "" && !strings.Contains(id, "/")
+		return found && ack && id != "" && !strings.Contains(id, "/") && slices.Contains(scopes, "decisions:feed")
 	}
 	return false
 }

@@ -64,9 +64,23 @@ type LegacyBackfillResult struct {
 // copied: they live on in the canonical settings aliases. It is idempotent
 // and restartable, never replaces an existing definition, and only inserts
 // definition rows: it creates no receipts, tasks or runtime rows and changes
-// none. Nothing calls it yet; activating it belongs to the layer that opens
-// definition writes.
+// none. Only the activation (wakeup_activation.go) runs it in production.
 func (s *IssueWakeupService) BackfillLegacyWakeupDefinitions(ctx context.Context, req LegacyBackfillRequest) (LegacyBackfillResult, error) {
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	out, err := backfillLegacyPage(ctx, s.Tasks.Queries.WithTx(tx), req)
+	if err != nil {
+		return LegacyBackfillResult{}, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+// backfillLegacyPage is one page on the caller's transaction, so a caller can
+// commit its own bookkeeping together with the page.
+func backfillLegacyPage(ctx context.Context, q *db.Queries, req LegacyBackfillRequest) (LegacyBackfillResult, error) {
 	if req.Limit < 1 {
 		return LegacyBackfillResult{}, fmt.Errorf("%w: backfill page limit must be at least 1", ErrWakeupInput)
 	}
@@ -75,12 +89,6 @@ func (s *IssueWakeupService) BackfillLegacyWakeupDefinitions(ctx context.Context
 	if !after.Valid {
 		after = pgtype.UUID{Valid: true}
 	}
-	tx, err := s.Tasks.TxStarter.Begin(ctx)
-	if err != nil {
-		return LegacyBackfillResult{}, err
-	}
-	defer tx.Rollback(ctx)
-	q := s.Tasks.Queries.WithTx(tx)
 	rows, err := q.ListCustomizedSystemWakeupsAfter(ctx, db.ListCustomizedSystemWakeupsAfterParams{AfterID: after, WorkspaceID: req.WorkspaceID, PageLimit: limit})
 	if err != nil {
 		return LegacyBackfillResult{}, err
@@ -108,7 +116,7 @@ func (s *IssueWakeupService) BackfillLegacyWakeupDefinitions(ctx context.Context
 		}
 		out.Inserted += int(n)
 	}
-	return out, tx.Commit(ctx)
+	return out, nil
 }
 
 // RunLegacyWakeupBackfill pages through the whole backfill from the start. A

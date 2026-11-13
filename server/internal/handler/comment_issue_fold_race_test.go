@@ -151,6 +151,7 @@ func TestConcurrentArrivalsFinishOnSaturatedPool_CHE1418(t *testing.T) {
 	hub := realtime.NewHub()
 	go hub.Run()
 	h := New(db.New(small), small, hub, events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
 
 	const arrivals = 6
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

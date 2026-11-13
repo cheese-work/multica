@@ -12,9 +12,10 @@
  * local composer state because no route outside the composer needs to
  * touch them.
  *
- * Lifecycle: composer's `useEffect` cleanup calls `clear()` so navigating
- * to another issue starts with an empty mention array. Send success also
- * clears.
+ * Lifecycle: this store is the live copy. `MessageComposer` loads it from
+ * its composer draft (`composer-drafts-store`), saves every change back, and
+ * clears it on unmount so navigating to another issue starts with an empty
+ * mention array. Send success also clears.
  */
 import { create } from "zustand";
 

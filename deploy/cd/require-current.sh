@@ -3,6 +3,11 @@ set -euo pipefail
 
 source_sha=${1:?candidate SHA is required}
 [[ "$source_sha" =~ ^[a-f0-9]{40}$ ]]
+deadline=${CHECKS_DEADLINE:-$(( $(date +%s) + ${CHECKS_WAIT_SECONDS:-3600} ))}
+
+gh_api() {
+  python3 deploy/cd/github-api-retry.py "$deadline" "$@"
+}
 
 skip_candidate() {
   echo 'current=false' >> "$GITHUB_OUTPUT"
@@ -11,10 +16,10 @@ skip_candidate() {
   exit 0
 }
 
-main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+main_sha="$(gh_api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
 [[ "$main_sha" =~ ^[a-f0-9]{40}$ ]]
 if [ "$source_sha" != "$main_sha" ]; then
-  status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${source_sha}...${main_sha}?per_page=1" --jq '.status')"
+  status="$(gh_api "repos/${GITHUB_REPOSITORY}/compare/${source_sha}...${main_sha}?per_page=1" --jq '.status')"
   case "$status" in
     ahead) ;;
     behind|diverged|identical) skip_candidate 'is not an ancestor of main' "$main_sha" ;;
@@ -34,12 +39,12 @@ live_sha="$live_version"
 if [ "${#live_sha}" -ne 40 ]; then
   # A 7-char prefix can be ambiguous across the fork network (GitHub API 422); the checkout is full-depth.
   live_sha="$(git rev-parse --verify --quiet "${live_version}^{commit}" 2>/dev/null \
-    || gh api "repos/${GITHUB_REPOSITORY}/commits/${live_version}" --jq '.sha')"
+    || gh_api "repos/${GITHUB_REPOSITORY}/commits/${live_version}" --jq '.sha')"
 fi
 [[ "$live_sha" =~ ^[a-f0-9]{40}$ && "$live_sha" == "$live_version"* ]]
 [ "$source_sha" != "$live_sha" ] || skip_candidate 'is already running on C00' "$live_sha"
 
-status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${live_sha}...${source_sha}?per_page=1" --jq '.status')"
+status="$(gh_api "repos/${GITHUB_REPOSITORY}/compare/${live_sha}...${source_sha}?per_page=1" --jq '.status')"
 case "$status" in
   ahead) ;;
   behind|identical|diverged) skip_candidate 'does not move forward from C00' "$live_sha" ;;

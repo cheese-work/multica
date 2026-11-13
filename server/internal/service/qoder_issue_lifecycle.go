@@ -9,7 +9,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 type qoderIssueChange struct {
@@ -71,14 +70,13 @@ func syncQoderIssue(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, 
 			return nil, err
 		}
 	}
-	details, _ := json.Marshal(map[string]any{"from": issue.Status, "to": target, "source": "qoder_cloud", "task_id": util.UUIDToString(task.ID)})
-	activity, err := q.CreateActivity(ctx, db.CreateActivityParams{
-		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-		ActorType: util.StrToText("agent"), ActorID: task.AgentID, Action: "status_changed", Details: details,
-	})
+	by := StatusCauseActor{Type: "agent", ID: util.UUIDToString(task.AgentID)}
+	trigger := BackgroundStatusTrigger(StatusCauseQoder, by, map[string]string{"run_id": util.UUIDToString(task.ID)})
+	activity, err := RecordStatusChange(ctx, q, updated, issue.Status, target, trigger, nil)
 	if err != nil {
 		return nil, err
 	}
+	details := activity.Details
 	return &qoderIssueChange{issue: updated, previous: issue.Status, activity: wakeupActivity{row: activity, actorType: "agent", actorID: util.UUIDToString(task.AgentID), details: details}}, nil
 }
 
@@ -100,6 +98,6 @@ func (s *TaskService) publishQoderIssueChange(ctx context.Context, change *qoder
 	if change == nil || s.Bus == nil {
 		return
 	}
-	s.broadcastIssueUpdated(ctx, change.issue, change.previous)
+	s.broadcastIssueUpdatedWith(ctx, change.issue, change.previous, map[string]any{"activity_id": util.UUIDToString(change.activity.row.ID)})
 	(&IssueWakeupService{Tasks: s}).publishWakeupActivities(change.activity)
 }

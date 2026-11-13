@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS chat_task_supplement_task_status_idx;

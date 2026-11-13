@@ -1,5 +1,6 @@
-export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, SourceContextAuthorState, IssueSourceContext,
+export type { Issue, IssueStatus, BuiltInIssueStatus, IssuePriority, IssueAssigneeType, IssueMetadata, IssueMetadataValue, IssueReaction, SourceContextAttachment, SourceContextAuthor, SourceContextIssueSnapshot, SourceContextCommentSnapshot, SourceContextSnapshot, SourceContextLimitUsage, SourceContextPreview, CommentPreview, SourceContextAuthorState, IssueSourceContext,
   IssueDuplicateOf,
+  IssueUnread,
 } from "./issue";
 export type {
   IssueStatusCategory,
@@ -30,6 +31,7 @@ export type {
 } from "./issue-workflow";
 export type {
   Agent,
+  AgentSchedulingImpact,
   AgentConversationStarter,
   AgentStatus,
   AgentRuntimeMode,
@@ -94,6 +96,7 @@ export type {
   DashboardFailureDaily,
   DashboardFailureByAgent,
   RuntimeUpdate,
+  RuntimeUpdateProgress,
   RuntimeUpdateStatus,
   RuntimeModel,
   RuntimeModelServiceTier,
@@ -154,7 +157,7 @@ export type {
   NotificationPreferenceResponse,
   UpdateNotificationChannelRequest,
 } from "./notification-preference";
-export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
+export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionConfigChange, DecisionConfigDiffHunk, DecisionCard, DecisionCoveredCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
 export type { Comment, CommentType, CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, ListIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";
@@ -180,7 +183,7 @@ export type {
 export type { IssueSubscriber } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
-export type { Attachment } from "./attachment";
+export type { Attachment, AttachmentRevisionDiff } from "./attachment";
 export {
   attachmentDownloadPath,
   attachmentIdFromDownloadURL,
@@ -189,6 +192,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatStaleLevel,
+  ChatAttentionSource,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -208,6 +213,10 @@ export type {
   ChatPendingTask,
   ChatQueuedTask,
   PrioritizeQueuedChatTaskResponse,
+  ChatSupplement,
+  ChatSupplementStatus,
+  ChatHeadSupplement,
+  ResendChatSupplementResponse,
   PendingChatTaskItem,
   PendingChatTasksResponse,
   HasPendingChatTasksResponse,
@@ -296,6 +305,8 @@ export type {
   ListWecomInstallationsResponse,
   RegisterWecomBYORequest,
   RedeemWecomBindingTokenResponse,
+  BeginWecomInstallResponse,
+  WecomInstallStatusResponse,
 } from "./wecom";
 export type {
   TelegramInstallation,
@@ -389,3 +400,5 @@ export type {
 export type { IssueWakeup, IssueWakeupInput, SystemWakeup, WorkspaceSystemWakeup, WakeupPreview, IssueWakeupSummaryRow, WakeupCondition, WakeupPausedReason, WakeupRun, PausedWakeup, WakeupSource, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupDefinitionScopeKind, WakeupCapabilities, WakeupEffectiveRule } from "./issue-wakeup";
 
 export type { WorkspaceWakeup, WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupScope } from "./issue-wakeup";
+
+export type { ProviderBreaker, ProviderBreakerState } from "./provider-breaker";

@@ -1,5 +1,5 @@
 import { cloneElement, forwardRef, useEffect, useRef, useImperativeHandle } from "react";
-import { beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
@@ -78,23 +78,18 @@ const editorState = vi.hoisted(() => ({
   adopted: [] as string[],
 }));
 
-vi.mock("../../editor", async () => ({
-  // Real submit gate (pure React) driven by the mock editor's
-  // `hasActiveUploads` / `onUploadingChange`.
-  ...(await vi.importActual<typeof import("../../editor/use-upload-gate")>(
-    "../../editor/use-upload-gate",
-  )),
-  // Real await-then-render submit contract (pure React) — it only imports
-  // types from ContentEditor / the upload gate, so it pulls in no Tiptap tree.
-  ...(await vi.importActual<typeof import("../../editor/use-composer-submit")>(
-    "../../editor/use-composer-submit",
-  )),
+// The real submit gate and await-then-render submit contract (pure React, no
+// Tiptap) are used as-is; only the drop zone and the editor are replaced.
+vi.mock("../../editor/use-file-drop-zone", () => ({
   useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
     dropHandlers.onDrop = onDrop;
     return { isDragOver: false, dropZoneProps: { "data-testid": "drop-zone" } };
   },
-  FileDropOverlay: () => null,
-  ContentEditor: forwardRef(function MockContentEditor(
+}));
+vi.mock("../../editor/file-drop-overlay", () => ({ FileDropOverlay: () => null }));
+
+vi.mock("./deferred-content-editor", () => ({
+  DeferredContentEditor: forwardRef(function MockContentEditor(
     props: {
       defaultValue?: string;
       value?: string;
@@ -104,6 +99,7 @@ vi.mock("../../editor", async () => ({
       onUploadingChange?: (uploading: boolean) => void;
       mentionMode?: string;
       mentionContextItems?: unknown[];
+      onReady?: () => void;
     },
     ref: React.Ref<unknown>,
   ) {
@@ -114,7 +110,13 @@ vi.mock("../../editor", async () => ({
       placeholder,
       onUploadFile,
       onUploadingChange,
+      onReady,
     } = props;
+    // The real editor signals once its Tiptap instance exists; ChatInput defers
+    // a focus request until then because the chunk loads lazily.
+    useEffect(() => {
+      onReady?.();
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
     editorProps.last = props as unknown as Record<string, unknown>;
     const valueRef = useRef<string>(value ?? defaultValue ?? "");
     const uploadingRef = useRef(0);
@@ -2100,5 +2102,43 @@ describe("ChatInput after a decision card closes", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(onSend.mock.calls[0]![0]).toBe("Next question");
     expect(onSend.mock.calls[0]![4]).toBeUndefined();
+  });
+});
+
+// CHE-3534: iOS keeps the layout viewport full-height under the soft
+// keyboard, so the wrapper's percentage cap resolved against a surface mostly
+// hidden behind it and a long draft squeezed the message list to one line.
+describe("ChatInput keyboard height cap", () => {
+  class FakeVisualViewport extends EventTarget {
+    offsetTop = 0;
+    scale = 1;
+    constructor(public height: number) {
+      super();
+    }
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(document.documentElement, "clientHeight");
+    Reflect.deleteProperty(window, "visualViewport");
+  });
+
+  function setViewport(visibleHeight: number) {
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: new FakeVisualViewport(visibleHeight),
+    });
+  }
+
+  it("caps the composer at 40% of the visible viewport while the keyboard is open", () => {
+    setViewport(400);
+    renderInput();
+    expect(screen.getByTestId("chat-composer").style.maxHeight).toBe("160px");
+  });
+
+  it("leaves the CSS cap alone when the keyboard is closed", () => {
+    setViewport(800);
+    renderInput();
+    expect(screen.getByTestId("chat-composer").style.maxHeight).toBe("");
   });
 });

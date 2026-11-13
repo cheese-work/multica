@@ -13,9 +13,14 @@
  * floor means "run it again by hand", not "regression".
  *
  *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>]
+ *
+ * `--scenario page-load` measures the five-route page-load spec (CHE-2976)
+ * instead, on the desktop and phone profiles, with the same lifecycle and the
+ * same honesty rules. The spec runs `--runs` times per profile (default 5), one
+ * sample and one CPU-profiled load each, and every number is a median over runs.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, openSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
@@ -29,8 +34,18 @@ const flag = (name, fallback) => {
 const baseRef = flag("base");
 const headRef = flag("head", "HEAD");
 const outDir = resolve(flag("out", join(repoRoot, "perf-report")));
+const scenario = flag("scenario", "typing");
+const pageLoadRuns = Number(flag("runs", 5));
 if (!baseRef) {
-  console.error("usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>]");
+  console.error("usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>] [--scenario typing|page-load [--runs N]]");
+  process.exit(2);
+}
+if (!["typing", "page-load"].includes(scenario)) {
+  console.error(`unknown scenario "${scenario}" (expected typing or page-load)`);
+  process.exit(2);
+}
+if (!Number.isInteger(pageLoadRuns) || pageLoadRuns < 1) {
+  console.error("--runs must be a positive integer");
   process.exit(2);
 }
 
@@ -169,6 +184,81 @@ const waitForServer = async (port, timeoutMs = 120_000) => {
   throw new Error(`frontend on :${port} did not become reachable`);
 };
 
+/**
+ * Time the CPU profile attributed to webpack's runtime chunk, where module
+ * evaluation lands. Null when the chunk is not among the profile's top files.
+ */
+function webpackSelfMs(evidence) {
+  const files = (evidence.top_files ?? []).filter((file) => /^webpack-[0-9a-f]+\.js$/.test(file.name));
+  return files.length ? files.reduce((total, file) => total + file.ms, 0) : null;
+}
+
+const PAGE_LOAD_PROFILES = ["desktop", "phone"];
+const PAGE_LOAD_ROUTES = ["issues", "issue-detail", "chat", "inbox", "projects"];
+
+/**
+ * The page-load spec, run against the server on `port`. Each run is one
+ * sample plus one CPU-profiled load per route, in its own report directory so a
+ * report left by an earlier run can never be read back. A run that exits
+ * non-zero, or leaves no readable report, makes the whole side invalid.
+ */
+function measurePageLoad(label, port) {
+  const profiles = {};
+  const profileEvidence = {};
+  const invalid = [];
+  for (const profile of PAGE_LOAD_PROFILES) {
+    profiles[profile] = Object.fromEntries(PAGE_LOAD_ROUTES.map((route) => [route, []]));
+    profileEvidence[profile] = Object.fromEntries(PAGE_LOAD_ROUTES.map((route) => [route, []]));
+    for (let n = 1; n <= pageLoadRuns; n++) {
+      const reportDir = join(outDir, `${label}-${profile}-${n}`);
+      rmSync(reportDir, { recursive: true, force: true });
+      mkdirSync(reportDir, { recursive: true });
+      let exit = 0;
+      try {
+        run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", `--project=${profile}`], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
+            PERF_REPORT_DIR: reportDir,
+            PERF_SAMPLES: "1",
+            PERF_PROFILE: "1",
+          },
+        });
+      } catch (error) {
+        exit = typeof error.status === "number" ? error.status : 1;
+      }
+      if (exit !== 0) invalid.push(`${profile} run ${n}: the scenario process exited ${exit}`);
+      let report;
+      try {
+        report = JSON.parse(readFileSync(join(reportDir, `page-load-${profile}.json`), "utf8"));
+      } catch {
+        invalid.push(`${profile} run ${n}: the scenario produced no readable report`);
+        continue;
+      }
+      for (const route of PAGE_LOAD_ROUTES) {
+        const samples = report.profiles?.[profile]?.[route];
+        if (!samples?.length) invalid.push(`${profile} run ${n}: no sample for ${route}`);
+        else profiles[profile][route].push(...samples);
+        const evidence = report.profile_evidence?.[route];
+        if (!evidence) invalid.push(`${profile} run ${n}: no profile evidence for ${route}`);
+        else if (webpackSelfMs(evidence) === null) {
+          // The spec keeps only its top files. A runtime chunk that fell out of
+          // them was not measured: 0 ms would claim a number nobody took.
+          invalid.push(`${profile} run ${n}: webpack-*.js is not among the top files for ${route}`);
+        } else profileEvidence[profile][route].push(evidence);
+      }
+    }
+  }
+  return {
+    status: invalid.length ? "invalid" : "ok",
+    invalid,
+    runs: pageLoadRuns,
+    profiles,
+    profile_evidence: profileEvidence,
+  };
+}
+
 const seconds = (from) => Math.round((Date.now() - from) / 100) / 10;
 
 async function measure(ref, label) {
@@ -212,12 +302,22 @@ async function measure(ref, label) {
     server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
       env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
-      stdio: "ignore",
+      // Kept: a server that dies mid-run is otherwise only a refused connection.
+      stdio: ["ignore", openSync(join(outDir, `${label}-server.log`), "w"), "inherit"],
       detached: true,
     });
     liveServers.add(server);
     await waitForServer(port);
     const startS = seconds(startStart);
+
+    if (scenario === "page-load") {
+      const measureStart = Date.now();
+      const result = measurePageLoad(label, port);
+      return {
+        ...result, ref, sha, build_cached: buildCached,
+        timings_s: { install: installS, build: buildS, start: startS, measure: seconds(measureStart) },
+      };
+    }
 
     // The spec, fixture and browser come from this working tree, not the ref's.
     const reportPath = join(outDir, `${label}.json`);
@@ -268,6 +368,9 @@ async function measure(ref, label) {
   }
 }
 
+const timing = (r) =>
+  `install ${r.timings_s.install}s · build ${r.timings_s.build}s${r.build_cached ? " (restored from cache — not a real build)" : ""} · start ${r.timings_s.start}s · measure ${r.timings_s.measure}s`;
+
 const METRICS = [
   ["typing_elapsed_ms", "Typing elapsed (primary)"],
   ["scenario_elapsed_ms", "Scenario elapsed"],
@@ -289,8 +392,6 @@ function markdown(base, head) {
     const ratio = a === 0 ? "N/A" : `${((b / a - 1) * 100).toFixed(1)}%`;
     return `| ${label} | ${a} | ${b} | ${delta >= 0 ? "+" : ""}${delta} | ${ratio} |`;
   });
-  const timing = (r) =>
-    `install ${r.timings_s.install}s · build ${r.timings_s.build}s${r.build_cached ? " (restored from cache — not a real build)" : ""} · start ${r.timings_s.start}s · measure ${r.timings_s.measure}s`;
   return [
     "## Comment typing under live runs (MUL-7227)",
     "",
@@ -312,6 +413,57 @@ function markdown(base, head) {
   ].join("\n");
 }
 
+/** Median of the numbers in `values`; null when none. */
+const median = (values) => {
+  const sorted = values.filter((v) => typeof v === "number").sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+const cell = (value) => (value === null ? "—" : Math.round(value));
+const delta = (a, b) => (a === null || b === null ? "—" : `${b - a >= 0 ? "+" : ""}${Math.round(b - a)}`);
+
+function pageLoadMarkdown(base, head) {
+  const usable = base.status === "ok" && head.status === "ok";
+  const route = (side, profile, name) => {
+    const samples = side.profiles?.[profile]?.[name] ?? [];
+    const evidence = side.profile_evidence?.[profile]?.[name] ?? [];
+    return {
+      js: median(samples.map((s) => s.js_transferred_bytes / 1024)),
+      lcp: median(samples.map((s) => s.lcp_ms)),
+      longTask: median(samples.map((s) => s.long_task_total_ms)),
+      webpack: median(evidence.map(webpackSelfMs)),
+      script: median(evidence.map((e) => e.script_ms)),
+    };
+  };
+  const tables = PAGE_LOAD_PROFILES.flatMap((profile) => [
+    `### ${profile}`,
+    "",
+    "| Route | JS KiB base | JS KiB head | Δ KiB | webpack self base (ms) | webpack self head (ms) | Δ ms | LCP base (ms) | LCP head (ms) | Long-task base (ms) | Long-task head (ms) |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ...PAGE_LOAD_ROUTES.map((name) => {
+      const a = route(base, profile, name);
+      const b = route(head, profile, name);
+      return `| ${name} | ${cell(a.js)} | ${cell(b.js)} | ${delta(a.js, b.js)} | ${cell(a.webpack)} | ${cell(b.webpack)} | ${delta(a.webpack, b.webpack)} | ${cell(a.lcp)} | ${cell(b.lcp)} | ${cell(a.longTask)} | ${cell(b.longTask)} |`;
+    }),
+    "",
+  ]);
+  return [
+    "## Page load per route (CHE-3018)",
+    "",
+    usable
+      ? `Median of ${head.runs} runs per profile, one sample each. "webpack self" is the CPU-profiler time in the \`webpack-*.js\` runtime chunk (module evaluation). A report, not a merge gate.`
+      : `**Not a usable comparison.** base: \`${base.status}\`, head: \`${head.status}\`.`,
+    "",
+    ...tables,
+    `- base \`${base.ref}\` (${base.sha.slice(0, 9)}) — ${base.status}${base.invalid?.length ? `: ${base.invalid.join("; ")}` : ""}`,
+    `- head \`${head.ref}\` (${head.sha.slice(0, 9)}) — ${head.status}${head.invalid?.length ? `: ${head.invalid.join("; ")}` : ""}`,
+    `- base timings: ${timing(base)}`,
+    `- head timings: ${timing(head)}`,
+  ].join("\n");
+}
+
 mkdirSync(outDir, { recursive: true });
 // The files this script writes, cleared up front: a comparison that aborts
 // early must not leave the previous run's summary looking like its own.
@@ -327,7 +479,7 @@ try {
   head = await measure(headRef, "head");
   const totalS = seconds(totalStart);
 
-  const summary = markdown(base, head);
+  const summary = scenario === "page-load" ? pageLoadMarkdown(base, head) : markdown(base, head);
   writeFileSync(join(outDir, "comparison.json"), JSON.stringify({ base, head, total_s: totalS }, null, 2));
   writeFileSync(join(outDir, "comparison.md"), `${summary}\n\n- total wall clock: ${totalS}s\n`);
   console.log(`\n${summary}\n\n- total wall clock: ${totalS}s`);

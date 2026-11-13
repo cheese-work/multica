@@ -185,7 +185,7 @@ func TestCachedPATCannotForgeChatProvenance(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	options.DB = 14
+	options.DB = testutil.RedisTestDB(options.DB, 14)
 	client := redis.NewClient(options)
 	test.Cleanup(func() { client.Close() })
 	cache := auth.NewPATCache(client)

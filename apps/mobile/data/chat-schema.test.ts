@@ -142,3 +142,54 @@ describe("ChatMessageSchema", () => {
     expect(parsed.message_kind).toBe("continuation_summary");
   });
 });
+
+describe("ChatMessageSchema supplement receipt", () => {
+  const message = {
+    id: "m1",
+    chat_session_id: "s1",
+    role: "user",
+    content: "also check the migration",
+    task_id: "t1",
+    created_at: "2026-11-01T00:00:00Z",
+  };
+  const receipt = {
+    message_id: "m1",
+    chat_session_id: "s1",
+    task_id: "t1",
+    status: "delivered",
+    failure_reason: null,
+    delivered_at: "2026-11-01T00:00:01Z",
+    acked_after_resend_at: null,
+    resent_task_id: null,
+  };
+
+  it.each(["pending", "delivering", "delivered", "uncertain", "failed"])("keeps status %s", (status) => {
+    expect(ChatMessageSchema.parse({ ...message, supplement: { ...receipt, status } }).supplement?.status).toBe(status);
+  });
+
+  it("treats an unknown status as uncertain, never delivered or failed", () => {
+    expect(ChatMessageSchema.parse({ ...message, supplement: { ...receipt, status: "teleported" } }).supplement?.status).toBe(
+      "uncertain",
+    );
+  });
+
+  it("drops a malformed receipt without losing the message", () => {
+    const parsed = ChatMessageSchema.parse({ ...message, supplement: { status: 7 } });
+    expect(parsed.content).toBe("also check the migration");
+    expect(parsed.supplement).toBeUndefined();
+  });
+});
+
+describe("ChatPendingTaskSchema head_supplement", () => {
+  it.each(["capable", "starting", "unsupported"])("keeps %s", (value) => {
+    expect(ChatPendingTaskSchema.parse({ head_supplement: value }).head_supplement).toBe(value);
+  });
+
+  it("maps an unknown value to unsupported so a steer never fires on a guess", () => {
+    expect(ChatPendingTaskSchema.parse({ head_supplement: "maybe" }).head_supplement).toBe("unsupported");
+  });
+
+  it("leaves it absent for an older server", () => {
+    expect(ChatPendingTaskSchema.parse({ task_id: "t" }).head_supplement).toBeUndefined();
+  });
+});

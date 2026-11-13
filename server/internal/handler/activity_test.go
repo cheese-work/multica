@@ -296,3 +296,38 @@ func TestListTimeline_EmptyIssue(t *testing.T) {
 		t.Fatalf("entries = %d, want 0", got)
 	}
 }
+
+// CHE-1732 M0c: the recovery receipt and the wakeup generation event are inert
+// activity rows; the timeline must return both with their details intact.
+func TestListTimeline_ReturnsRecoveryReceiptRows(t *testing.T) {
+	issueID := createIssueForTimeline(t, "recovery receipt timeline")
+	ctx := context.Background()
+	for _, row := range []struct{ action, details string }{
+		{"provider_recovery_reserved", `{"failed_task_id":"f1","effect_kind":"wakeup_rearm","effect_ref":"w1","wakeup_revision":2,"reservation":"f1"}`},
+		{"wakeup_rearmed", `{"failed_task_id":"f1","wakeup_revision":2}`},
+	} {
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details)
+			VALUES ($1, $2, 'system', $3, $4::jsonb)`, testWorkspaceID, issueID, row.action, row.details); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, code := fetchTimeline(t, issueID)
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+	seen := map[string]map[string]any{}
+	for _, e := range entries {
+		if e.Action != nil {
+			d := map[string]any{}
+			_ = json.Unmarshal(e.Details, &d)
+			seen[*e.Action] = d
+		}
+	}
+	if d := seen["provider_recovery_reserved"]; d["failed_task_id"] != "f1" || d["effect_kind"] != "wakeup_rearm" || d["effect_ref"] != "w1" {
+		t.Fatalf("receipt missing or wrong: %v", seen)
+	}
+	if d := seen["wakeup_rearmed"]; d["failed_task_id"] != "f1" || d["wakeup_revision"] != float64(2) {
+		t.Fatalf("generation event missing or wrong: %v", seen)
+	}
+}

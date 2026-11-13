@@ -6,9 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -35,92 +33,16 @@ func requireNoDeliveryEffects(test *testing.T, fixture askedRecordFixture, recor
 	}
 }
 
-// pauseBeforeWakeAck holds a delivery transaction just before its wake
-// acknowledgement, after every earlier read and side effect.
-type pauseBeforeWakeAck struct {
-	txStarter
-	paused  chan<- struct{}
-	resume  <-chan struct{}
-	pending bool
-}
-
-type pauseBeforeWakeAckTx struct {
-	pgx.Tx
-	starter *pauseBeforeWakeAck
-}
-
-func (starter *pauseBeforeWakeAck) Begin(ctx context.Context) (pgx.Tx, error) {
-	transaction, err := starter.txStarter.Begin(ctx)
-	return pauseBeforeWakeAckTx{Tx: transaction, starter: starter}, err
-}
-
-func (transaction pauseBeforeWakeAckTx) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
-	if starter := transaction.starter; starter.pending && strings.Contains(sql, "UPDATE decision_answer") && strings.Contains(sql, "SET woken_at") {
-		starter.pending = false
-		starter.paused <- struct{}{}
-		select {
-		case <-starter.resume:
-		case <-ctx.Done():
-			return pgconn.CommandTag{}, ctx.Err()
-		}
-	}
-	return transaction.Tx.Exec(ctx, sql, arguments...)
-}
-
-// A worker that read a pre-cutover non-card answer of a non-reversible class
-// acknowledges it after the trigger migration: the acknowledgement fails and
-// every delivery side effect of that transaction rolls back.
-func TestDecisionWakeTriggerCutoverRace(test *testing.T) {
-	migration, err := os.ReadFile("../../migrations/870_decision_wake_policy.up.sql")
-	if err != nil {
-		test.Fatal(err)
-	}
-	fixture, recorded := readyDecisionDelivery(test)
-	dbfx.Exec(test, `UPDATE decision_request SET escalation_class = 'spend' WHERE id = $1`, fixture.decision.ID)
-	// The database before the migration: no trigger.
-	dbfx.Exec(test, `DROP TRIGGER decision_answer_wake_policy ON decision_answer`)
-	installTrigger := func() {
-		dbfx.Exec(test, `DROP TRIGGER IF EXISTS decision_answer_wake_policy ON decision_answer`)
-		dbfx.Exec(test, string(migration))
-	}
-	test.Cleanup(func() {
-		if dbfx.Count(test, `SELECT count(*) FROM pg_trigger WHERE tgname = 'decision_answer_wake_policy' AND NOT tgisinternal`) == 0 {
-			installTrigger()
-		}
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	paused, resume := make(chan struct{}, 1), make(chan struct{})
-	handler, _ := newDecisionRunnerFixture(test)
-	handler.TxStarter = &pauseBeforeWakeAck{txStarter: testPool, paused: paused, resume: resume, pending: true}
-	done := make(chan error, 1)
-	go func() { done <- handler.DeliverDecisionWake(ctx, fixture.issue.WorkspaceID, fixture.decision.ID) }()
-	select {
-	case <-paused:
-	case err := <-done:
-		test.Fatalf("delivery ended before its acknowledgement: %v", err)
-	case <-time.After(10 * time.Second):
-		test.Fatal("timed out waiting for the worker to reach its acknowledgement")
-	}
-	// The worker has read the answer and done its delivery work. The migration commits now.
-	installTrigger()
-	close(resume)
-	select {
-	case err := <-done:
-		requireWakePolicyRefusal(test, err)
-	case <-time.After(10 * time.Second):
-		test.Fatal("timed out waiting for the refused delivery")
-	}
-	requireNoDeliveryEffects(test, fixture, recorded)
-}
-
+// The delivery policy check refuses a forbidden answer before it reaches the
+// acknowledgement, so the trigger is exercised through the acknowledgement query.
 func TestDecisionWakeTriggerRefusesForbiddenAcknowledgement(test *testing.T) {
 	for _, class := range []string{"spend", "deploy", "publish", "irreversible", "product_direction"} {
 		test.Run(class, func(test *testing.T) {
 			fixture, recorded := readyDecisionDelivery(test)
 			dbfx.Exec(test, `UPDATE decision_request SET escalation_class = $2 WHERE id = $1`, fixture.decision.ID, class)
-			handler, _ := newDecisionRunnerFixture(test)
-			requireWakePolicyRefusal(test, deliverDecisionForTest(handler, fixture))
+			_, err := testHandler.Queries.AcknowledgeDecisionWake(context.Background(), db.AcknowledgeDecisionWakeParams{
+				WorkspaceID: fixture.issue.WorkspaceID, ID: recorded.Answer.ID, Outcome: pgtype.Text{String: "run_enqueued", Valid: true}})
+			requireWakePolicyRefusal(test, err)
 			requireNoDeliveryEffects(test, fixture, recorded)
 		})
 	}

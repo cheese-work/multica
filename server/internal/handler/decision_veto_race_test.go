@@ -208,8 +208,13 @@ func TestDecisionMutationOrders(test *testing.T) {
 				if firstError != nil {
 					test.Fatal(firstError)
 				}
+				var refusal decisionIntentRefusal
 				if pair == [2]string{"veto", "disclaim"} || pair == [2]string{"veto", "veto"} {
 					requireDecisionConflict(test, secondError)
+				} else if first == "raise" && second == "record" {
+					if !errors.As(secondError, &refusal) || refusal.status != http.StatusForbidden {
+						test.Fatalf("record after a class raise must be refused, got %v", secondError)
+					}
 				} else if secondError != nil {
 					test.Fatal(secondError)
 				}

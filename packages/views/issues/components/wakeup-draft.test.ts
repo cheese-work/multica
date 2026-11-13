@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { buildWakeupInput, emptyWakeupDraft, wakesAssigneeOnComments, type WakeupDraft } from "./wakeup-draft";
+import { buildWakeupInput, emptyWakeupDraft, wakeupConditionsFor, wakesAssigneeOnComments, type WakeupDraft } from "./wakeup-draft";
 
 const now = new Date(2026, 8, 24, 15, 0, 0);
 const draft = (patch: Partial<WakeupDraft>): WakeupDraft => ({
@@ -133,5 +133,24 @@ describe("wakesAssigneeOnComments", () => {
     expect(wakesAssigneeOnComments(draft({ condition: "custom", agentId: "agent", events: ["issue.status_changed"] }), "agent")).toBe(false);
     expect(wakesAssigneeOnComments(reply, "someone-else")).toBe(false);
     expect(wakesAssigneeOnComments(reply, null)).toBe(false);
+  });
+});
+
+describe("wakeupConditionsFor", () => {
+  it("offers every condition inside an issue", () => {
+    expect(wakeupConditionsFor({ workspaceId: "ws", issueId: "issue" })).toHaveLength(9);
+  });
+
+  it("drops the conditions that name a second issue when no issue is in scope", () => {
+    const conditions = wakeupConditionsFor({ workspaceId: "ws" });
+    expect(conditions).not.toContain("other_issue");
+    expect(conditions).toContain("children");
+  });
+
+  it("drops the schedules for a workspace definition, which has none", () => {
+    const conditions = wakeupConditionsFor({ workspaceId: "ws", definition: true });
+    expect(conditions).not.toContain("at");
+    expect(conditions).not.toContain("recurring");
+    expect(conditions).toEqual(expect.arrayContaining(["reply", "field", "run_end", "children", "pull_request", "custom"]));
   });
 });

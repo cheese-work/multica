@@ -1,10 +1,15 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, clientErrorMessage } from "@multica/core/api";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { useWorkspaceId } from "@multica/core/hooks";
+import {
+  EMPTY_WORKFLOW_HANDOFF_DRAFT,
+  useWorkflowHandoffDraftStore,
+} from "@multica/core/issue-workflows/draft-stores";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useSetWorkflowHandoff, workflowNextStatus } from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
@@ -51,7 +56,7 @@ function modeOf(handler: IssueWorkflowStep["handler"]): HandoffMode {
  * The parts of a handoff that are saved. Instructions and next/back statuses
  * only reach an agent's brief, so they are kept for agent handoffs alone.
  */
-export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green">>(
+export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee">>(
   step: T,
 ): T {
   if (step.handler.type === "agent") return step;
@@ -65,7 +70,8 @@ function sameStep(a: IssueWorkflowStep, b: IssueWorkflowStep): boolean {
     a.instructions === b.instructions &&
     (a.next_status_key ?? "") === (b.next_status_key ?? "") &&
     (a.back_status_key ?? "") === (b.back_status_key ?? "") &&
-    !!a.advance_on_ci_green === !!b.advance_on_ci_green
+    !!a.advance_on_ci_green === !!b.advance_on_ci_green &&
+    !!a.keep_other_assignee === !!b.keep_other_assignee
   );
 }
 
@@ -123,7 +129,13 @@ export function WorkflowHandoffForm({
 }) {
   const { t } = useT("issues");
   const sharing = useWorkflowSharing(workflow, project?.id);
-  const [scope, setScope] = useState<SaveScope>("all");
+  // Unsaved edits per workflow column survive the popover closing or a reload.
+  const [held, holdDraft, dropDraft] = usePersistedDraft(
+    useWorkflowHandoffDraftStore,
+    `${workflow.id}:${statusKey}`,
+    EMPTY_WORKFLOW_HANDOFF_DRAFT,
+  );
+  const [scope, setScope] = useState<SaveScope>(held.scope);
   const saved = useMemo<IssueWorkflowStep>(
     () =>
       workflow.steps.find((s) => s.status_key === statusKey) ?? {
@@ -133,22 +145,68 @@ export function WorkflowHandoffForm({
       },
     [statusKey, workflow.steps],
   );
-  const [draft, setDraft] = useState<IssueWorkflowStep>(saved);
+  const [draft, setDraft] = useState<IssueWorkflowStep>(held.step ?? saved);
   const [previewOpen, setPreviewOpen] = useState(false);
   const setHandoff = useSetWorkflowHandoff();
-  useEffect(() => setDraft(saved), [saved]);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
+  // The saved step the edits sit on. It moves with the saved step while the
+  // draft is clean, and only by an explicit choice once the edits conflict.
+  const base = useRef<IssueWorkflowStep>(held.base ?? saved);
+  // A saved step that changed under unsaved edits (live, or while the form was
+  // away) is a conflict: keep the edits and hold Save until the admin chooses.
+  // What this form last sent to the server, so its own save arriving is no conflict.
+  const submitted = useRef<IssueWorkflowStep | null>(null);
+  // Bumped when `base` moves without the draft changing, so the stored draft is rewritten.
+  const [baseMoves, setBaseMoves] = useState(0);
+  const [changedElsewhere, setChangedElsewhere] = useState(
+    () => held.step !== null && !sameStep(savedHandoff(base.current), savedHandoff(saved)),
+  );
+  useEffect(() => {
+    if (sameStep(savedHandoff(draft), savedHandoff(saved))) {
+      base.current = saved;
+    } else if (sameStep(savedHandoff(base.current), savedHandoff(saved))) {
+      // Same content under a new identity: nothing changed.
+    } else if (submitted.current && sameStep(savedHandoff(saved), submitted.current)) {
+      // This form's own save arrived. Edits made after sending it sit on it.
+      if (sameStep(savedHandoff(draft), savedHandoff(base.current))) setDraft(saved);
+      base.current = saved;
+    } else if (sameStep(savedHandoff(draft), savedHandoff(base.current))) {
+      base.current = saved;
+      setDraft(saved);
+    } else {
+      setChangedElsewhere(true);
+    }
+    // Only a new saved step matters here; the draft is read as it stands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
 
   const handler = draft.handler;
   const needsTarget = (handler.type === "agent" || handler.type === "member") && !handler.id;
   const dirty = !sameStep(savedHandoff(draft), savedHandoff(saved));
   const askScope = canEdit && canCopyForProject && dirty && !!project && !workflow.is_default && sharing.others.length > 0;
   useEffect(() => {
-    if (!dirty) setScope("all");
+    if (!dirty) {
+      setScope("all");
+      setChangedElsewhere(false);
+      base.current = savedRef.current;
+    }
   }, [dirty]);
+  const holding = useRef(held.step !== null);
+  useEffect(() => {
+    if (dirty) {
+      holding.current = true;
+      holdDraft({ step: draft, scope, base: base.current });
+    } else if (holding.current) {
+      holding.current = false;
+      dropDraft();
+    }
+  }, [dirty, draft, scope, changedElsewhere, baseMoves, holdDraft, dropDraft]);
 
   const save = async () => {
     const out = savedHandoff(draft);
     const copyFor = askScope && scope === "project" ? project : undefined;
+    submitted.current = copyFor ? null : out;
     try {
       const result = await setHandoff.mutateAsync({
         workflowId: workflow.id,
@@ -158,6 +216,7 @@ export function WorkflowHandoffForm({
         next_status_key: out.next_status_key,
         back_status_key: out.back_status_key,
         advance_on_ci_green: out.advance_on_ci_green,
+        keep_other_assignee: out.keep_other_assignee,
         copyForProjectId: copyFor?.id,
       });
       toast.success(
@@ -165,8 +224,17 @@ export function WorkflowHandoffForm({
           ? t(($) => $.workflows.handoff.saved_copy, { workflow: result.name, project: copyFor.title })
           : t(($) => $.workflows.handoff.saved),
       );
+      // Fields stay editable while the request is pending: only a draft still
+      // equal to what was sent resets. A copy leaves this workflow's step as it
+      // was, so it resets to that explicitly.
+      setDraft((d) => (sameStep(savedHandoff(d), out) ? (copyFor ? savedRef.current : out) : d));
+      if (!copyFor) {
+        base.current = out;
+        setBaseMoves((n) => n + 1);
+      }
       onSaved?.();
     } catch (err) {
+      submitted.current = null;
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.handoff.error));
     }
   };
@@ -209,6 +277,34 @@ export function WorkflowHandoffForm({
           </div>
         </div>
       )}
+      {canEdit && dirty && changedElsewhere && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-surface-border bg-muted/40 p-2">
+          <p className="text-caption text-muted-foreground">{t(($) => $.workflows.editor.changed_elsewhere)}</p>
+          <div className="flex shrink-0 gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                base.current = saved;
+                setDraft(saved);
+                setChangedElsewhere(false);
+              }}
+            >
+              {t(($) => $.workflows.editor.load_latest)}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                base.current = saved;
+                setChangedElsewhere(false);
+              }}
+            >
+              {t(($) => $.workflows.editor.keep_edits)}
+            </Button>
+          </div>
+        </div>
+      )}
       {canEdit ? (
         <div className="flex items-center justify-end gap-2">
           {dirty && (
@@ -216,7 +312,7 @@ export function WorkflowHandoffForm({
               {t(($) => $.workflows.editor.cancel)}
             </Button>
           )}
-          <Button size="sm" onClick={() => void save()} disabled={!dirty || needsTarget || setHandoff.isPending}>
+          <Button size="sm" onClick={() => void save()} disabled={!dirty || needsTarget || changedElsewhere || setHandoff.isPending}>
             {setHandoff.isPending && <Spinner className="size-3.5" />}
             {t(($) => $.workflows.editor.save)}
           </Button>

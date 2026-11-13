@@ -20,36 +20,33 @@ import {
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useModalStore } from "@multica/core/modals";
 import { useConfigStore } from "@multica/core/config";
-import { normalizeCommandURL } from "@multica/core/runtimes";
+import { instanceOrigin } from "@multica/core/config/instance-origin";
 import { isDesktopShell } from "../platform/local-directory";
 import { DISCORD_URL, DiscordIcon } from "./discord";
 import { useT } from "../i18n";
-import { docsLocalePrefix } from "../common/docs-locale";
+import { docsUrl } from "../common/docs-url";
+import { RAIL_ICON_BUTTON_CLASS } from "./rail-styles";
+import { DOWNLOAD_URL } from "./help-links";
 
-const DOCS_URL = "https://multica.ai/docs";
 const BRAND_URL = "https://multica.ai";
-// Absolute, including on self-hosted deployments: the installers we ship are
-// the same binaries either way, and the desktop client can point at a
-// self-hosted backend once installed. A self-host-relative /download would
-// only serve a copy of this page that still has to reach our release assets.
-const DOWNLOAD_URL = "https://multica.ai/download";
 
 export function HelpLauncher() {
   const { t, i18n } = useT("layout");
   const serverVersion = useConfigStore((state) => state.serverVersion);
   const serverBuild = useConfigStore((state) => state.serverBuild);
   // Self-hosted instances serve their own /changelog; `daemon_app_url` is
-  // omitted for the managed cloud, which keeps the brand site.
+  // omitted for the managed cloud, which keeps the brand site. Link to the
+  // origin the visitor is on, not the canonical app URL.
   const appUrl = useConfigStore((state) => state.daemonAppUrl);
-  const changelogUrl = `${normalizeCommandURL(appUrl) || BRAND_URL}/changelog`;
+  const changelogUrl = `${(appUrl && instanceOrigin(appUrl)) || BRAND_URL}/changelog`;
   const displayVersion = serverVersion
     ? serverBuild
       ? `${serverVersion}-${serverBuild}`
       : serverVersion
     : "";
   // Web-only: offering "download the desktop app" inside the desktop app is
-  // nonsense, and this sidebar is shared — apps/desktop renders the same
-  // AppSidebar as the web dashboard, so the entry has to be gated here.
+  // nonsense, and this rail is shared — apps/desktop renders the same app
+  // shell as the web dashboard, so the entry has to be gated here.
   //
   // No `mounted` deferral (cf. browser-notification-setting.tsx): the desktop
   // renderer is a locally-bundled SPA with no SSR pass, and on web
@@ -59,17 +56,17 @@ export function HelpLauncher() {
   const desktop = isDesktopShell();
   return (
     <DropdownMenu>
-      <TooltipHint label={t(($) => $.help.trigger)}>
+      <TooltipHint label={t(($) => $.help.trigger)} side="right">
         <DropdownMenuTrigger
           aria-label={t(($) => $.help.trigger)}
-          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+          className={RAIL_ICON_BUTTON_CLASS}
         >
-          <CircleHelp className="size-4" />
+          <CircleHelp />
         </DropdownMenuTrigger>
       </TooltipHint>
       <DropdownMenuContent
         align="end"
-        side="top"
+        side="right"
         sideOffset={8}
         className="min-w-40 max-w-56"
       >
@@ -94,7 +91,7 @@ export function HelpLauncher() {
         <DropdownMenuItem
           render={
             <a
-              href={`${DOCS_URL}${docsLocalePrefix(i18n.language)}`}
+              href={docsUrl("", i18n.language)}
               target="_blank"
               rel="noopener noreferrer"
             />
@@ -139,7 +136,7 @@ export function HelpLauncher() {
                 a Menu.Group context and throws if it has no Group ancestor. It
                 must always be wrapped in a DropdownMenuGroup — without it the
                 Help menu crashes the whole app on open (no error boundary sits
-                above the sidebar). */}
+                above the rail). */}
             <DropdownMenuGroup>
               <DropdownMenuLabel className="font-normal break-words">
                 {t(($) => $.help.server_version, { version: displayVersion })}

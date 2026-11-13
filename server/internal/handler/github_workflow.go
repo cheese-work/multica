@@ -28,7 +28,10 @@ func (h *Handler) handleWorkflowRunEvent(ctx context.Context, body []byte) error
 	}
 	writer := h.defaultWorkflowWriter()
 	return h.fanOutWorkflowEvent(ctx, event.InstallationID, func(workspaceID pgtype.UUID) error {
-		return writer.ApplyRunEvent(ctx, workspaceID, event)
+		if err := writer.ApplyRunEvent(ctx, workspaceID, event); err != nil {
+			return err
+		}
+		return h.watchCompletedRun(ctx, workspaceID, event)
 	})
 }
 
@@ -48,7 +51,7 @@ func (h *Handler) handleWorkflowJobEvent(ctx context.Context, body []byte) error
 // every failure is joined. Writes are guarded, so a replay of the whole
 // delivery is safe after a partial failure.
 func (h *Handler) fanOutWorkflowEvent(ctx context.Context, installationID int64, apply func(pgtype.UUID) error) error {
-	insts, err := h.Queries.ListGitHubInstallationsByInstallationID(ctx, installationID)
+	insts, err := h.allowedGitHubInstallations(ctx, installationID)
 	if err != nil {
 		return fmt.Errorf("list installations by installation id: %w", err)
 	}

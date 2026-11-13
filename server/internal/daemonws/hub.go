@@ -14,10 +14,12 @@ import (
 )
 
 const (
-	writeWait  = 10 * time.Second
-	pongWait   = 60 * time.Second
-	pingPeriod = (pongWait * 9) / 10
+	writeWait = 10 * time.Second
+	pongWait  = 60 * time.Second
 )
+
+// pingPeriod is a var so a test can shorten it.
+var pingPeriod = (pongWait * 9) / 10
 
 // ClientIdentity captures the already-authenticated daemon connection scope.
 type ClientIdentity struct {
@@ -48,6 +50,11 @@ type ClientIdentity struct {
 	// Capabilities is the raw X-Client-Capabilities header captured at connect,
 	// so RPC handlers can honor the same capability gating as the HTTP path.
 	Capabilities string
+	// SessionRecheck is set for a JWT connection and nil otherwise. It reports
+	// an error once the JWT was revoked (passkey recovery) or its generation
+	// cannot be read. The hub runs it before every heartbeat and RPC frame and
+	// on every ping, and closes the socket on any error (fail closed).
+	SessionRecheck func(ctx context.Context) error
 }
 
 // RuntimeLease is the connection-scoped liveness state for one already
@@ -992,6 +999,10 @@ func (c *client) handleFrame(raw []byte) {
 	if rec := c.hub.messageKindRecorder(); rec != nil {
 		rec.RecordDaemonWSMessageReceived(kind)
 	}
+	if (msg.Type == protocol.EventDaemonHeartbeat || msg.Type == protocol.EventDaemonRPCRequest) && c.sessionRevoked() {
+		c.conn.Close()
+		return
+	}
 	switch msg.Type {
 	case protocol.EventDaemonHeartbeat:
 		c.handleHeartbeatFrame(msg.Payload)
@@ -1144,6 +1155,23 @@ func (c *client) handleHeartbeatFrame(raw json.RawMessage) {
 	}
 }
 
+// sessionRevoked reports whether the connection's JWT lost its session after
+// it connected, or could not be checked. A daemon route acts for the JWT's
+// owner, so a revoked session must not keep claiming work on an open socket.
+func (c *client) sessionRevoked() bool {
+	if c.identity.SessionRecheck == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	defer cancel()
+	err := c.identity.SessionRecheck(ctx)
+	if err == nil {
+		return false
+	}
+	slog.Warn("daemon websocket: session closed", "daemon_id", c.identity.DaemonID, "user_id", c.identity.UserID, "error", err)
+	return true
+}
+
 func (c *client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -1164,6 +1192,9 @@ func (c *client) writePump() {
 				return
 			}
 		case <-ticker.C:
+			if c.sessionRevoked() {
+				return
+			}
 			c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return

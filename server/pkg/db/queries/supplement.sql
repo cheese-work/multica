@@ -3,7 +3,7 @@
 -- are one state transition. A missing row is the fail-closed value for old
 -- daemons, old servers, unsupported providers and application rollback.
 WITH candidate AS MATERIALIZED (
-    SELECT t.id, t.issue_id, r.workspace_id, r.provider
+    SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = @task_id
@@ -16,6 +16,18 @@ WITH candidate AS MATERIALIZED (
     WHERE @enable_task_supplement::boolean
       AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
       AND issue_id IS NOT NULL
+    ON CONFLICT DO NOTHING
+    RETURNING task_id
+), chat_capability AS (
+    -- Compaction runs never carry a human turn, so they never take steers.
+    INSERT INTO task_supplement_capability (task_id, workspace_id, chat_session_id, capability)
+    SELECT id, workspace_id, chat_session_id, 'task-supplement-chat-v1'
+    FROM candidate
+    WHERE @enable_chat_supplement::boolean
+      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
+      AND issue_id IS NULL
+      AND chat_session_id IS NOT NULL
+      AND task_kind IS DISTINCT FROM 'compact'
     ON CONFLICT DO NOTHING
     RETURNING task_id
 )
@@ -32,6 +44,7 @@ WHERE t.id = candidate.id
   -- Reference the data-modifying CTE explicitly: capability persistence and
   -- the returned running row are one indivisible statement.
   AND (SELECT count(*) FROM capability) >= 0
+  AND (SELECT count(*) FROM chat_capability) >= 0
 RETURNING t.*;
 
 -- name: CreateTaskSupplement :one
@@ -137,10 +150,10 @@ WITH locked_task AS MATERIALIZED (
 ), inserted AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
-        client_request_id, status
+        client_request_id, status, implicit
     )
     SELECT t.id, @workspace_id, t.issue_id, @comment_id, @author_id,
-           @client_request_id, 'pending'
+           @client_request_id, 'pending', @implicit::bool
     FROM locked_task t
     RETURNING *
 )

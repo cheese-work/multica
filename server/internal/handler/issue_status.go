@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -262,6 +263,11 @@ func (h *Handler) createIssueStatusEntry(ctx context.Context, workspaceID pgtype
 	if badRequest != "" || err != nil {
 		return db.IssueStatus{}, badRequest, err
 	}
+	// A status created inside a workflow's editor goes through
+	// createIssueStatusEntryLocked alone and stays out of Default.
+	if err := issueworkflow.AddToDefault(ctx, qtx, workspaceID, entry.Key); err != nil {
+		return db.IssueStatus{}, "", err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.IssueStatus{}, "", err
 	}
@@ -484,6 +490,12 @@ func validIssueStatusIcon(icon string) bool {
 
 // ArchiveIssueStatus retires an empty custom status from future assignment.
 func (h *Handler) ArchiveIssueStatus(w http.ResponseWriter, r *http.Request) {
+	// Archiving drops the status's step, handoff and instructions from the
+	// Default workflow: a covered write (CHE-3482). The owner's user id would
+	// pass the owner/admin check for a machine credential, so refuse first.
+	if refuseMachineWorkflowWrite(w, r) {
+		return
+	}
 	entry, wsUUID, member, ok := h.loadIssueStatusForAdmin(w, r)
 	if !ok {
 		return

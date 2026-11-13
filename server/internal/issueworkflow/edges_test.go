@@ -103,6 +103,7 @@ func TestValidateEdges(t *testing.T) {
 		{"webhook with timeout", []Edge{{To: "done", Guard: "webhook(ci)", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
 		{"review guard needs timeout", []Edge{{To: "implement", Guard: "pr.review_changes_requested", OnTimeout: "blocked"}}, nil, "timeout"},
 		{"review guard valid", []Edge{{To: "implement", Guard: "pr.review_changes_requested", Timeout: "72h", OnTimeout: "blocked"}}, nil, ""},
+		{"adoption_linked is an entry gate only", []Edge{{To: "done", Guard: "adoption_linked"}}, nil, "entry gate"},
 		{"too many edges", make([]Edge, MaxEdgesPerStep+1), nil, "at most"},
 	}
 	for _, c := range cases {
@@ -386,5 +387,69 @@ func TestSubWorkflowSurvivesStorage(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].SubWorkflow == nil || *out[0].SubWorkflow != *in[0].SubWorkflow {
 		t.Fatalf("stored and read back %+v, want %+v", out, in[0].SubWorkflow)
+	}
+}
+
+// CHE-3257: pr.checks_red fires only for a red the PR caused on a required
+// check; a required red that is also red on the base or green on a re-run is infra and fires
+// pr.checks_infra_red; a red on non-required checks only fires neither.
+func TestChecksRedSplitsPRCausedFromInfraAndOptional(t *testing.T) {
+	red := PRFact{State: "open", ChecksRollup: "FAILURE", HeadFresh: true}
+	withCause := func(cause string) PRFact { p := red; p.RedCause = cause; return p }
+	edges := []Edge{
+		{To: "in_progress", Guard: "pr.checks_red"},
+		{To: "blocked", Guard: "pr.checks_infra_red"},
+	}
+	cases := []struct {
+		name string
+		pr   PRFact
+		want string
+	}{
+		{"no per-check evidence stored", red, "in_progress"},
+		{"PR-caused required red", withCause("pr"), "in_progress"},
+		{"infra or flaky required red", withCause("infra"), "blocked"},
+		{"red on non-required checks only", withCause("optional"), ""},
+		{"unreadable cause is not the PR's", withCause("unknown"), ""},
+		{"stale head ignored", PRFact{State: "open", ChecksRollup: "FAILURE", RedCause: "infra"}, ""},
+	}
+	for _, c := range cases {
+		got, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}})
+		if c.want == "" && ok || c.want != "" && got.To != c.want {
+			t.Errorf("%s: got %+v ok=%v, want %q", c.name, got, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_infra_red"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_infra_red must parse and need a timeout: %v", err)
+	}
+}
+
+// CHE-3257: a required check that was red on this head and is green now on the
+// same head (a rerun) is flaky. pr.checks_flaky holds only on a fresh green
+// snapshot carrying that mark, so an issue already sent to in_progress by
+// pr.checks_red can still be parked in blocked.
+func TestChecksFlakyHoldsOnlyOnGreenRerunOfTheSameHead(t *testing.T) {
+	edges := []Edge{{To: "blocked", Guard: "pr.checks_flaky"}}
+	green := PRFact{State: "open", ChecksRollup: "SUCCESS", HeadFresh: true, RedCause: "flaky"}
+	stale, plain, red := green, green, green
+	stale.HeadFresh = false
+	plain.RedCause = ""
+	red.ChecksRollup = "FAILURE"
+	cases := []struct {
+		name string
+		pr   PRFact
+		want bool
+	}{
+		{"green rerun of a red head", green, true},
+		{"green and never red", plain, false},
+		{"stale head", stale, false},
+		{"still red", red, false},
+	}
+	for _, c := range cases {
+		if _, ok := FirstMatch(edges, Facts{PRs: []PRFact{c.pr}}); ok != c.want {
+			t.Errorf("%s: matched=%v, want %v", c.name, ok, c.want)
+		}
+	}
+	if g, err := ParseGuard("pr.checks_flaky"); err != nil || !g.needsTimeout() {
+		t.Errorf("pr.checks_flaky must parse and need a timeout: %v", err)
 	}
 }

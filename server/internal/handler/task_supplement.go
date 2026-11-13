@@ -160,6 +160,9 @@ const (
 type commentSteerRequest struct {
 	TaskIDs []pgtype.UUID
 	All     bool
+	// Implicit marks a default steer the author never asked for (CHE-5286): an
+	// unread one is replayed on completion instead of left for the author to retry.
+	Implicit bool
 }
 
 func (s commentSteerRequest) empty() bool { return len(s.TaskIDs) == 0 && !s.All }
@@ -223,7 +226,7 @@ func (h *Handler) steerCommentAgentTriggers(ctx context.Context, issue db.Issue,
 		bound, err := h.bindCommentSteer(ctx, db.BindCommentTaskSupplementParams{
 			TaskID: taskID, IssueID: issue.ID, AgentID: trigger.Agent.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: comment.AuthorType, MaxAgentBindings: maxAgentSteersPerTurn, MaxBindingsPerAgent: maxAgentSteersPerAgentPerTurn,
-			CommentID: comment.ID, AuthorID: comment.AuthorID, ClientRequestID: comment.ID,
+			CommentID: comment.ID, AuthorID: comment.AuthorID, ClientRequestID: comment.ID, Implicit: steer.Implicit,
 		})
 		if err != nil {
 			if !errors.Is(err, pgx.ErrNoRows) {
@@ -467,7 +470,12 @@ type ackTaskSupplementRequest struct {
 
 func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
+		return
+	}
+	if task.ChatSessionID.Valid {
+		h.claimChatTaskSupplement(w, r, task)
 		return
 	}
 	var req struct {
@@ -497,7 +505,8 @@ func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) AckTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
-	if _, ok := h.requireDaemonTaskAccess(w, r, taskID); !ok {
+	task, ok := h.requireDaemonTaskAccess(w, r, taskID)
+	if !ok {
 		return
 	}
 	commentID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "commentId"), "comment id")
@@ -507,6 +516,10 @@ func (h *Handler) AckTaskSupplement(w http.ResponseWriter, r *http.Request) {
 	var req ackTaskSupplementRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if task.ChatSessionID.Valid {
+		h.ackChatTaskSupplement(w, r, task, commentID, req)
 		return
 	}
 	var row db.TaskSupplement

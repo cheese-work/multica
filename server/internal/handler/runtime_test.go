@@ -83,6 +83,29 @@ func TestRuntimeHandlersRejectMalformedRuntimeID(t *testing.T) {
 	}
 }
 
+// seedStrayRuntime adds an ownerless runtime to the fixture workspace, then
+// rewrites the fixture runtime so the heap scan returns the stray row first.
+// Runtime usage tests must pin testRuntimeID instead of taking "any runtime in
+// the workspace": an ownerless runtime is hidden from every member (404).
+func seedStrayRuntime(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	var strayID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+		VALUES ($1, NULL, 'Stray ownerless runtime', 'cloud', 'stray_test_provider', 'online', 'stray', '{}'::jsonb, now())
+		RETURNING id
+	`, testWorkspaceID).Scan(&strayID); err != nil {
+		t.Fatalf("seed stray runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, strayID)
+	})
+	if _, err := testPool.Exec(ctx, `UPDATE agent_runtime SET last_seen_at = now() WHERE id = $1`, testRuntimeID); err != nil {
+		t.Fatalf("touch fixture runtime: %v", err)
+	}
+}
+
 // TestGetRuntimeUsage_BucketsByUsageTime ensures a task that was enqueued on
 // one calendar day but whose tokens were reported the next day (e.g. execution
 // crossed midnight, or the task sat in the queue) is attributed to the day
@@ -94,14 +117,9 @@ func TestGetRuntimeUsage_BucketsByUsageTime(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
+	seedStrayRuntime(t)
 
-	// Pick a runtime bound to the fixture workspace.
-	var runtimeID string
-	if err := testPool.QueryRow(ctx, `
-		SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&runtimeID); err != nil {
-		t.Fatalf("fetch runtime: %v", err)
-	}
+	runtimeID := testRuntimeID
 	var agentID string
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
@@ -219,13 +237,10 @@ func TestListRuntimeUsageByAgent_MergesMixedCaseProvider(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
+	seedStrayRuntime(t)
 
-	var runtimeID, agentID string
-	if err := testPool.QueryRow(ctx, `
-		SELECT id FROM agent_runtime WHERE workspace_id = $1 LIMIT 1
-	`, testWorkspaceID).Scan(&runtimeID); err != nil {
-		t.Fatalf("fetch runtime: %v", err)
-	}
+	runtimeID := testRuntimeID
+	var agentID string
 	if err := testPool.QueryRow(ctx, `
 		SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
 	`, testWorkspaceID).Scan(&agentID); err != nil {

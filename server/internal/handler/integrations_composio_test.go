@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -365,4 +367,55 @@ func (f *composioCapturingSDK) stateFromCallback() string {
 		return ""
 	}
 	return f.lastCallbackURL[idx+len("state="):]
+}
+
+// CHE-3622: the callback returns the browser to the origin that started the
+// connect flow, but only when that origin is in CORS_ALLOWED_ORIGINS.
+func TestComposio_CallbackReturnsToStartingOrigin(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://multica.ai,https://multica.congvc.dev")
+	cases := []struct{ name, origin, wantPrefix string }{
+		{"allow-listed origin", "https://multica.congvc.dev", "https://multica.congvc.dev/settings?"},
+		{"origin outside allow-list", "https://evil.example", "https://multica.ai/settings?"},
+		{"no origin", "", "https://multica.ai/settings?"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			capturing := &composioCapturingSDK{}
+			h := newComposioTestHandler(t, capturing, &composioFakeStore{})
+			init := composioReq(http.MethodPost, "/", `{"toolkit_slug":"notion"}`)
+			if c.origin != "" {
+				init.Header.Set("Origin", c.origin)
+			}
+			h.ComposioConnectInit(httptest.NewRecorder(), init)
+			state := capturing.stateFromCallback()
+			for _, status := range []string{"success", "failed"} {
+				w := httptest.NewRecorder()
+				h.ComposioCallback(w, composioReq(http.MethodGet, "/callback?state="+state+"&status="+status+"&connected_account_id=ca_1", ""))
+				if loc := w.Header().Get("Location"); !strings.HasPrefix(loc, c.wantPrefix) {
+					t.Errorf("status=%s location = %q, want prefix %q", status, loc, c.wantPrefix)
+				}
+			}
+		})
+	}
+}
+
+func TestComposio_CallbackTamperedStateOriginIgnored(t *testing.T) {
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://multica.ai,https://multica.congvc.dev")
+	capturing := &composioCapturingSDK{}
+	h := newComposioTestHandler(t, capturing, &composioFakeStore{})
+	init := composioReq(http.MethodPost, "/", `{"toolkit_slug":"notion"}`)
+	init.Header.Set("Origin", "https://multica.ai")
+	h.ComposioConnectInit(httptest.NewRecorder(), init)
+	payload, sig, _ := strings.Cut(capturing.stateFromCallback(), ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(payload)
+	forged := base64.RawURLEncoding.EncodeToString(bytes.Replace(raw, []byte("https://multica.ai"), []byte("https://multica.congvc.dev"), 1))
+	if forged == payload {
+		t.Fatal("test bug: state did not carry the origin")
+	}
+	w := httptest.NewRecorder()
+	h.ComposioCallback(w, composioReq(http.MethodGet, "/callback?state="+forged+"."+sig+"&status=success&connected_account_id=ca_1", ""))
+	loc := w.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://multica.ai/settings?") || !strings.Contains(loc, "error=composio_connect_failed") {
+		t.Errorf("tampered state location = %q, want failure redirect to FrontendBaseURL", loc)
+	}
 }

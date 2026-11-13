@@ -7,6 +7,7 @@ export {
   registerDraftCleanup,
   clearRegisteredWorkspaceDrafts,
   resetAllRegisteredDrafts,
+  DRAFT_SESSION_KEY,
   type DraftCleanupEntry,
 } from "./cleanup-registry";
 export {
@@ -28,3 +29,12 @@ export {
   attachmentToDraftUpload,
   normalizeStoredUploads,
 } from "./draft-upload";
+export {
+  createKeyedDraftStore,
+  KEYED_DRAFT_TTL_MS,
+  type KeyedDraftEntry,
+  type KeyedDraftStore,
+  type KeyedDraftStoreConfig,
+} from "./create-keyed-draft-store";
+export { usePersistedDraft } from "./use-persisted-draft";
+export { useUploadCancelledNotice } from "./upload-cancelled-notice";

@@ -6,7 +6,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { setApiInstance } from "../api";
+import { ApiError, setApiInstance } from "../api";
 import { configStore } from "../config";
 import type { ApiClient } from "../api/client";
 import { createQueryClient } from "../query-client";
@@ -1509,5 +1509,57 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
     expect(
       qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID))?.map((e) => e.id),
     ).toEqual(["comment-1"]);
+  });
+});
+
+describe("comment mutations — 422 invalid_agent_mentions", () => {
+  const issueId = "issue-1";
+  const entry = (content: string): TimelineEntry => ({
+    type: "comment",
+    id: "comment-1",
+    actor_type: "member",
+    actor_id: "user-1",
+    content,
+    parent_id: null,
+    comment_type: "comment",
+    reactions: [],
+    attachments: [],
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  });
+  const rejection = () =>
+    new ApiError("nope", 422, "Unprocessable Entity", {
+      code: "invalid_agent_mentions",
+      invalid_mentions: [{ start: 0, end: 5 }],
+    });
+
+  it("a rejected edit rolls the optimistic content back", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(issueId), [entry("before")]);
+    setApiInstance({ updateComment: vi.fn().mockRejectedValue(rejection()) } as unknown as ApiClient);
+    const { result } = renderHook(() => useUpdateComment(issueId), { wrapper: createWrapper(qc) });
+
+    await act(async () => {
+      await expect(
+        result.current.mutateAsync({ commentId: "comment-1", content: "after", attachmentIds: [] }),
+      ).rejects.toBeInstanceOf(ApiError);
+    });
+
+    expect(qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(issueId))?.[0]?.content).toBe("before");
+    qc.clear();
+  });
+
+  it("a rejected create adds no timeline row", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(issueId), []);
+    setApiInstance({ createComment: vi.fn().mockRejectedValue(rejection()) } as unknown as ApiClient);
+    const { result } = renderHook(() => useCreateComment(issueId), { wrapper: createWrapper(qc) });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync({ content: "x" })).rejects.toBeInstanceOf(ApiError);
+    });
+
+    expect(qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(issueId))).toEqual([]);
+    qc.clear();
   });
 });

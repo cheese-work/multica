@@ -51,6 +51,9 @@ func requireObject(f wakeupObject) error {
 	return nil
 }
 
+// Disable sets the patch to store the rule switched off, whatever it asked for.
+func (p *WakeupConfigPatch) Disable() { p.Enabled = wakeupField[bool]{Set: true} }
+
 // WakeupConfigPatch is the sparse, versioned configuration one scope can set
 // for a rule. Field semantics and the resolution order are in
 // ResolveWakeupConfig. It is a data model only: validating a complete resolved

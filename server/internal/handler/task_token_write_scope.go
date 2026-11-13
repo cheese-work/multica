@@ -19,8 +19,13 @@ import (
 // writes to its own issue, that issue's descendants and the issues its task
 // created; any other issue answers 403. Reads stay workspace-wide.
 //
-// This slice covers the issue routes (/api/issues/...). Every other write
-// endpoint is audited against this middleware in A5b.
+// The issue routes (/api/issues/...) carry the issue in the path or body. The
+// routes outside that prefix that still change an issue (comments, attachments,
+// tasks, decisions, upload-file) resolve to their issue in
+// task_token_write_scope_indirect.go (A5b). Routes that change other runs'
+// issues or tasks without naming them are refused outright
+// (task_token_write_scope_deny.go); the audit table in the router test names
+// every other write route and why it needs no issue check.
 const (
 	TaskWriteScopeOff   = "off"
 	TaskWriteScopeAudit = "audit"
@@ -34,7 +39,7 @@ const (
 )
 
 // writeScopeReadOnlyPOSTs are fixed /api/issues/* POST routes that only read.
-var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger"}
+var writeScopeReadOnlyPOSTs = []string{"query", "table", "preview-trigger", "relations"}
 
 // TaskTokenWriteScope returns the middleware for one enforcement mode: "on"
 // refuses, "audit" logs what it would refuse and passes, anything else is off.
@@ -50,7 +55,7 @@ func (h *Handler) TaskTokenWriteScope(mode string) func(http.Handler) http.Handl
 				next.ServeHTTP(w, r)
 				return
 			}
-			refs, bad := writeScopeTargets(r)
+			refs, bad := h.writeScopeTargets(w, r)
 			if bad || !h.allTargetsInWriteScope(r, refs) {
 				slog.Warn("task token write outside run scope",
 					"mode", mode, "method", r.Method, "path", r.URL.Path,
@@ -71,10 +76,13 @@ func isReadMethod(m string) bool {
 
 // writeScopeTargets lists the issue references a write request touches. bad is
 // true when the request cannot be read in full, which fails closed.
-func writeScopeTargets(r *http.Request) (refs []string, bad bool) {
+func (h *Handler) writeScopeTargets(w http.ResponseWriter, r *http.Request) (refs []string, bad bool) {
 	segs := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-	if len(segs) < 2 || segs[0] != "api" || segs[1] != "issues" {
+	if len(segs) < 2 || segs[0] != "api" {
 		return nil, false
+	}
+	if segs[1] != "issues" {
+		return h.indirectWriteTargets(w, r, segs)
 	}
 	rest := segs[2:]
 	switch {

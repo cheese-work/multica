@@ -35,7 +35,7 @@ const (
 	idleGuardNeedDecision = "need_decision"
 )
 
-// idleGuardReceipt is the issue.metadata.idle_guard episode record. It is the
+// idleGuardReceipt is the issue_idle_guard episode record. It is the
 // once-per-episode mark: the main scan skips an issue that carries one, and the
 // episode pass removes it when the issue leaves the episode's status. MovedAt is
 // empty while the move has not happened; From is where an unmoved episode sits.
@@ -100,7 +100,10 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 	if err != nil {
 		return err
 	}
-	prior, _ := readIdleGuardReceipt(issue)
+	prior, _, err := readIdleGuardReceipt(ctx, handler.Queries, issue.WorkspaceID, issue.ID)
+	if err != nil {
+		return err
+	}
 	idleGuardBeforeMove()
 	receipt := idleGuardReceipt{State: idleGuardMoved, From: issue.Status, IdleSince: finding.IdleSince.UTC().Format(time.RFC3339Nano)}
 	if prior.State == idleGuardRefused {
@@ -156,17 +159,22 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 		}
 		comment = created.Comment()
 		receipt.CommentID = uuidToString(comment.ID)
-		written, err := writeIdleGuardReceipt(ctx, q, issue, receipt)
-		if err != nil {
+		if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 			return err
 		}
 		if receipt.To == issuestatus.Blocked {
 			reason, _ := json.Marshal("idle-no-continuation")
-			if written, err = q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "blocked_reason", Value: reason}); err != nil {
+			if _, err := q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "blocked_reason", Value: reason}); err != nil {
 				return err
 			}
 		}
-		params.ExpectedRevision = pgtype.Int8{Int64: written.Revision, Valid: true}
+		// The comment and the metadata write bumped the revision the status
+		// write expects.
+		current, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID})
+		if err != nil {
+			return err
+		}
+		params.ExpectedRevision = pgtype.Int8{Int64: current.Revision, Valid: true}
 		return nil
 	}
 	extra := map[string]any{"kind": receipt.Kind, "idle_since": idleGuardWhen(receipt.IdleSince)}
@@ -251,7 +259,7 @@ func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) 
 		return false, nil
 	}
 	switch step.Handler.Type {
-	case issueworkflow.HandlerMember, issueworkflow.HandlerProjectLead, issueworkflow.HandlerCreator, issueworkflow.HandlerHumanByRole:
+	case issueworkflow.HandlerMember, issueworkflow.HandlerProjectLead, issueworkflow.HandlerCreator, issueworkflow.HandlerHumanByRole, issueworkflow.HandlerHumanInCharge:
 		return true, nil
 	}
 	return false, nil
@@ -260,14 +268,18 @@ func (handler *Handler) idleGuardHumanWait(ctx context.Context, issue db.Issue) 
 // idleGuardStatusAvailable reports whether the issue can sit in status: its
 // workflow lists it, or, with no workflow, the workspace catalog knows it.
 func (handler *Handler) idleGuardStatusAvailable(ctx context.Context, issue db.Issue, status string) (bool, error) {
-	def, _, err := issueworkflow.ForIssue(ctx, handler.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	return statusAvailableToIssue(ctx, handler.Queries, issue, status)
+}
+
+func statusAvailableToIssue(ctx context.Context, queries *db.Queries, issue db.Issue, status string) (bool, error) {
+	def, _, err := issueworkflow.ForIssue(ctx, queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
 	if err != nil {
 		return false, err
 	}
 	if def != nil {
 		return def.Has(status), nil
 	}
-	if _, err := issuestatus.CategoryWithError(ctx, handler.Queries, issue.WorkspaceID, status); err != nil {
+	if _, err := issuestatus.CategoryWithError(ctx, queries, issue.WorkspaceID, status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -286,8 +298,7 @@ func (handler *Handler) refuseIdleMove(ctx context.Context, settings idleGuardSe
 	receipt.Attempts = min(receipt.Attempts+1, idleGuardAttempts)
 	slog.Warn("idle_started_guard move refused", "issue_id", uuidToString(issue.ID), "attempt", receipt.Attempts, "err", cause)
 	if receipt.Attempts < idleGuardAttempts {
-		_, err := writeIdleGuardReceipt(ctx, handler.Queries, issue, receipt)
-		return err
+		return writeIdleGuardReceipt(ctx, handler.Queries, issue, receipt)
 	}
 	return handler.giveUpIdleMove(ctx, settings, issue, receipt)
 }
@@ -321,7 +332,7 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, settings idleGuardSe
 		return err
 	}
 	if waiting {
-		if _, err := q.DeleteIssueMetadataKey(ctx, db.DeleteIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: "idle_guard"}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		if err := deleteIdleGuardReceipt(ctx, q, issue.WorkspaceID, issue.ID); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
@@ -346,7 +357,7 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, settings idleGuardSe
 		receipt.AlertAttempts++
 		receipt.AlertAt, receipt.AlertError = time.Now().UTC().Format(time.RFC3339Nano), truncateIdleGuardError(admitErr)
 		if receipt.AlertAttempts < idleGuardAttempts {
-			if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+			if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 				return err
 			}
 			return tx.Commit(ctx)
@@ -364,7 +375,7 @@ func (handler *Handler) giveUpIdleMove(ctx context.Context, settings idleGuardSe
 	if alert.ID.Valid {
 		receipt.AlertID = uuidToString(alert.ID)
 	}
-	if _, err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
+	if err := writeIdleGuardReceipt(ctx, q, issue, receipt); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {

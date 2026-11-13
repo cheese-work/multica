@@ -47,6 +47,11 @@ import {
   useUpdateAutopilotTrigger,
 } from "@multica/core/autopilots/mutations";
 import { buildAutopilotWebhookUrl } from "@multica/core/autopilots";
+import {
+  useAutopilotDialogDraftStore,
+  type AutopilotDialogDraft,
+} from "@multica/core/autopilots/stores";
+import { usePersistedDraft } from "@multica/core/drafts";
 import { api } from "@multica/core/api";
 import type {
   AutopilotAssigneeType,
@@ -54,7 +59,7 @@ import type {
   AutopilotExecutionMode,
   AutopilotTrigger,
 } from "@multica/core/types";
-import { TitleEditor, ContentEditor, type TitleEditorRef } from "../../editor";
+import { TitleEditor, ContentEditor, type ContentEditorRef, type TitleEditorRef } from "../../editor";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { SegmentedToggle } from "../../common/segmented-toggle";
 import { ProjectPicker } from "../../projects/components/project-picker";
@@ -113,6 +118,8 @@ const OUTPUT_MODE_ICONS: Record<AutopilotExecutionMode, typeof FilePlus2> = {
   run_only: Play,
 };
 
+const EMPTY_DRAFT: AutopilotDialogDraft = {};
+
 // Webhook event-filter dirty detection
 
 // serializeEventFilters returns a stable JSON string so the edit-mode dirty
@@ -142,19 +149,62 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     ? props.initial ?? {}
     : props.initial;
 
-  const [title, setTitle] = useState(initial.title ?? "");
-  const [description, setDescription] = useState(initial.description ?? "");
-  const [projectId, setProjectId] = useState<string | null>(initial.project_id ?? null);
+  // Unsent input is mirrored into the keyed draft store and read back on mount,
+  // so it survives the dialog unmounting. It overlays `initial` (a template, or
+  // the autopilot being edited) and is cleared once the autopilot is saved.
+  const [draft, patchDraft, clearDraft] = usePersistedDraft(
+    useAutopilotDialogDraftStore,
+    isCreate
+      ? `create${initial.title ? `:${initial.title}` : ""}`
+      : `edit:${props.autopilotId}`,
+    EMPTY_DRAFT,
+  );
+  // Seeded once from the draft at mount; later reads come from this state.
+  const [seed] = useState(draft);
+
+  const [title, setTitleState] = useState(seed.title ?? initial.title ?? "");
+  const setTitle = (v: string) => {
+    setTitleState(v);
+    patchDraft({ title: v });
+  };
+  const [description, setDescriptionState] = useState(
+    seed.description ?? initial.description ?? "",
+  );
+  // Set once the save has gone through and the draft is cleared: the runbook
+  // editor flushes a pending update on unmount, and that late write must not
+  // bring the cleared draft back.
+  const savedRef = useRef(false);
+  const setDescription = (v: string) => {
+    setDescriptionState(v);
+    if (!savedRef.current) patchDraft({ description: v });
+  };
+  const [projectId, setProjectIdState] = useState<string | null>(
+    seed.projectId !== undefined ? seed.projectId : (initial.project_id ?? null),
+  );
+  const setProjectId = (v: string | null) => {
+    setProjectIdState(v);
+    patchDraft({ projectId: v });
+  };
   const [assigneeType, setAssigneeType] = useState<AutopilotAssigneeType>(
-    initial.assignee_type ?? "agent",
+    seed.assigneeType ?? initial.assignee_type ?? "agent",
   );
-  const [assigneeId, setAssigneeId] = useState<string>(initial.assignee_id ?? "");
-  const [executionMode, setExecutionMode] = useState<AutopilotExecutionMode>(
-    initial.execution_mode ?? "create_issue",
+  const [assigneeId, setAssigneeId] = useState<string>(
+    seed.assigneeId ?? initial.assignee_id ?? "",
   );
-  const [subscriberUserIds, setSubscriberUserIds] = useState<string[]>(
-    initial.subscriber_user_ids ?? [],
+  const [executionMode, setExecutionModeState] = useState<AutopilotExecutionMode>(
+    seed.executionMode ?? initial.execution_mode ?? "create_issue",
   );
+  const setExecutionMode = (v: AutopilotExecutionMode) => {
+    setExecutionModeState(v);
+    patchDraft({ executionMode: v });
+  };
+  const [subscriberUserIds, setSubscriberUserIdsState] = useState<string[]>(
+    seed.subscriberUserIds ?? initial.subscriber_user_ids ?? [],
+  );
+  const setSubscriberUserIds = (v: string[]) => {
+    setSubscriberUserIdsState(v);
+    patchDraft({ subscriberUserIds: v });
+  };
 
   // The schedule panel speaks for the autopilot's SCHEDULE trigger, not for
   // `triggers[0]` — on a webhook- or api-triggered autopilot that row is one no
@@ -174,7 +224,13 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     }
     return getDefaultScheduleConfig(browserTimezone());
   })();
-  const [schedule, setSchedule] = useState<ScheduleConfig>(initialCfg);
+  const [schedule, setScheduleState] = useState<ScheduleConfig>(() =>
+    seed.schedule ? parseCron(seed.schedule.cron, seed.schedule.timezone) : initialCfg,
+  );
+  const setSchedule = (cfg: ScheduleConfig) => {
+    setScheduleState(cfg);
+    patchDraft({ schedule: { cron: toCron(cfg), timezone: cfg.timezone } });
+  };
 
   // Editing an autopilot that has no schedule: the panel has nothing to
   // reflect, so anything it showed would be a proposal dressed as the
@@ -183,7 +239,11 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   // (MUL-5649). The schedule is asked for explicitly instead: until the user
   // adds one, the panel says the autopilot is manual, and once they do, Save
   // writes what it shows whether or not they touched the default.
-  const [scheduleAdded, setScheduleAdded] = useState(false);
+  const [scheduleAdded, setScheduleAddedState] = useState(seed.scheduleAdded ?? false);
+  const setScheduleAdded = (v: boolean) => {
+    setScheduleAddedState(v);
+    patchDraft({ scheduleAdded: v });
+  };
 
   // Trigger kind selector. Only meaningful in create mode — edit mode does
   // not support converting between kinds inline (PLAN.md calls that
@@ -197,11 +257,23 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
     if (first?.kind === "webhook") return "webhook";
     return "schedule";
   })();
-  const [triggerKind, setTriggerKind] = useState<"schedule" | "webhook">(initialKind);
+  const [triggerKind, setTriggerKindState] = useState<"schedule" | "webhook">(
+    seed.triggerKind ?? initialKind,
+  );
+  const setTriggerKind = (v: "schedule" | "webhook") => {
+    setTriggerKindState(v);
+    patchDraft({ triggerKind: v });
+  };
 
   const initialEventFilters: WebhookEventFilter[] =
     !isCreate && props.triggers[0]?.event_filters ? props.triggers[0].event_filters : [];
-  const [eventFilters, setEventFilters] = useState<WebhookEventFilter[]>(initialEventFilters);
+  const [eventFilters, setEventFiltersState] = useState<WebhookEventFilter[]>(
+    seed.eventFilters ?? initialEventFilters,
+  );
+  const setEventFilters = (v: WebhookEventFilter[]) => {
+    setEventFiltersState(v);
+    patchDraft({ eventFilters: v });
+  };
 
   const initialCronRef = useRef(toCron(initialCfg));
   const initialTimezoneRef = useRef(initialCfg.timezone);
@@ -253,6 +325,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const handleAssigneeChange = (next: AssigneeSelection) => {
     setAssigneeType(next.type);
     setAssigneeId(next.id);
+    patchDraft({ assigneeType: next.type, assigneeId: next.id });
   };
 
   const createAutopilot = useCreateAutopilot();
@@ -260,6 +333,10 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   const updateAutopilot = useUpdateAutopilot();
   const updateTrigger = useUpdateAutopilotTrigger();
   const [submitting, setSubmitting] = useState(false);
+  // The autopilot a create already made when only its trigger write failed.
+  const [createdAutopilotId, setCreatedAutopilotId] = useState(
+    seed.createdAutopilotId ?? null,
+  );
 
   // After a successful webhook-kind create, we don't close the dialog —
   // we swap to a confirmation state showing the freshly minted URL with
@@ -292,6 +369,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
   // so filling the field clears its error without a second submit.
   const [showErrors, setShowErrors] = useState(false);
   const titleEditorRef = useRef<TitleEditorRef>(null);
+  const descriptionEditorRef = useRef<ContentEditorRef>(null);
   const assigneeTriggerRef = useRef<HTMLButtonElement>(null);
   const assigneeErrorId = useId();
 
@@ -306,15 +384,20 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
       return;
     }
     setSubmitting(true);
+    // The runbook state lags the editor by its debounce: take any text typed
+    // just before Save, and keep it in the draft in case the save fails.
+    const pendingRunbook = descriptionEditorRef.current?.flushPendingUpdate() ?? null;
+    if (pendingRunbook !== null) setDescription(pendingRunbook);
+    const runbook = pendingRunbook ?? description;
     try {
       if (scheduleWillBeWritten && !(await scheduleGate.ensureAccepted(schedule))) {
         setSubmitting(false);
         return;
       }
       if (isCreate) {
-        const autopilot = await createAutopilot.mutateAsync({
+        const fields = {
           title: title.trim(),
-          description: description.trim() || undefined,
+          description: runbook.trim() || undefined,
           project_id: projectId,
           assignee_type: assigneeType,
           assignee_id: assigneeId,
@@ -323,20 +406,34 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             user_type: "member" as const,
             user_id,
           })),
-        });
+        };
+        let autopilotId = createdAutopilotId;
+        if (autopilotId) {
+          // A previous attempt made the autopilot and failed on its trigger:
+          // save the form onto it again rather than creating a second one.
+          await updateAutopilot.mutateAsync({
+            id: autopilotId,
+            ...fields,
+            description: runbook.trim() || null,
+          });
+        } else {
+          autopilotId = (await createAutopilot.mutateAsync(fields)).id;
+          setCreatedAutopilotId(autopilotId);
+          patchDraft({ createdAutopilotId: autopilotId });
+        }
         let triggerOk = true;
         let triggerErrMessage: string | null = null;
         let webhookTrigger: AutopilotTrigger | null = null;
         try {
           if (triggerKind === "webhook") {
             webhookTrigger = await createTrigger.mutateAsync({
-              autopilotId: autopilot.id,
+              autopilotId,
               kind: "webhook",
               event_filters: eventFilters.length > 0 ? eventFilters : undefined,
             });
           } else {
             await createTrigger.mutateAsync({
-              autopilotId: autopilot.id,
+              autopilotId,
               kind: "schedule",
               cron_expression: toCron(schedule),
               timezone: schedule.timezone,
@@ -347,6 +444,14 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           triggerErrMessage =
             err instanceof Error && err.message ? err.message : null;
         }
+        if (!triggerOk) {
+          // Partial success: the autopilot is saved, its trigger is not. Keep
+          // the dialog and the draft so the user can fix the reason and retry.
+          toast.error(formatSchedulePartialFailureToast(t, "create", triggerErrMessage));
+          return;
+        }
+        savedRef.current = true;
+        clearDraft();
         if (triggerKind === "webhook" && webhookTrigger) {
           // Stay in the dialog and surface the URL inline so the user
           // can copy it without first navigating to the detail page.
@@ -355,19 +460,12 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           return;
         }
         onOpenChange(false);
-        if (triggerOk) {
-          toast.success(t(($) => $.dialog.toast_created));
-        } else {
-          // Partial success: autopilot saved, schedule failed. Show the
-          // server-provided reason so the user can act on it (cron syntax
-          // error, conflict, etc.) instead of seeing a generic message.
-          toast.error(formatSchedulePartialFailureToast(t, "create", triggerErrMessage));
-        }
+        toast.success(t(($) => $.dialog.toast_created));
       } else {
         await updateAutopilot.mutateAsync({
           id: props.autopilotId,
           title: title.trim(),
-          description: description.trim() || null,
+          description: runbook.trim() || null,
           project_id: projectId,
           assignee_type: assigneeType,
           assignee_id: assigneeId,
@@ -393,12 +491,15 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
                 timezone: schedule.timezone,
               });
             } else {
-              await createTrigger.mutateAsync({
-                autopilotId: props.autopilotId,
-                kind: "schedule",
-                cron_expression: toCron(schedule),
-                timezone: schedule.timezone,
-              });
+              // Remember the row, so a retry after a later failure patches it.
+              scheduleTriggerIdRef.current = (
+                await createTrigger.mutateAsync({
+                  autopilotId: props.autopilotId,
+                  kind: "schedule",
+                  cron_expression: toCron(schedule),
+                  timezone: schedule.timezone,
+                })
+              ).id;
             }
           } catch (err) {
             triggerOk = false;
@@ -428,12 +529,16 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               err instanceof Error && err.message ? err.message : null;
           }
         }
-        onOpenChange(false);
-        if (triggerOk) {
-          toast.success(t(($) => $.dialog.toast_updated));
-        } else {
+        if (!triggerOk) {
+          // The autopilot is saved, its schedule or filters are not: keep the
+          // dialog and the draft so the user can retry.
           toast.error(formatSchedulePartialFailureToast(t, "update", triggerErrMessage));
+          return;
         }
+        savedRef.current = true;
+        clearDraft();
+        onOpenChange(false);
+        toast.success(t(($) => $.dialog.toast_updated));
       }
     } catch (err) {
       toast.error(
@@ -567,7 +672,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               <TitleEditor
                 ref={titleEditorRef}
                 autoFocus={isCreate}
-                defaultValue={initial.title ?? ""}
+                defaultValue={seed.title ?? initial.title ?? ""}
                 placeholder={t(($) => $.dialog.title_placeholder)}
                 className="text-display-sm font-semibold tracking-tight"
                 onChange={setTitle}
@@ -596,10 +701,12 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
             <div className="flex-1 min-h-0 px-6 pb-6 flex flex-col lg:h-full">
               <div className="min-h-[200px] lg:min-h-0 lg:h-full overflow-y-auto rounded-lg border border-border bg-background transition-colors focus-within:border-input px-4 py-3">
                 <ContentEditor
-                  defaultValue={initial.description ?? ""}
+                  ref={descriptionEditorRef}
+                  defaultValue={seed.description ?? initial.description ?? ""}
                   placeholder={t(($) => $.dialog.description_placeholder)}
                   onUpdate={setDescription}
                   debounceMs={300}
+                  flushPendingOnUnmount
                   showBubbleMenu={false}
                 />
               </div>

@@ -47,11 +47,9 @@ func loadCustomWakeup(ctx context.Context, q *db.Queries, issue db.Issue, w db.I
 	b := &builtinWakeup{Eff: r.eff, Authorizer: r.member}
 	c := r.eff.Config
 	switch {
-	case c.Schedule.Set:
-		return nil, nil, heldConfig("schedule is not executed yet")
 	case c.ActiveRun.Set && !validWakeupActiveRun(c.ActiveRun.Value):
 		return nil, nil, heldConfig("unreadable active_run")
-	case r.condition == nil && len(r.events) == 0 && c.Trigger.Set:
+	case r.condition == nil && r.schedule == nil && len(r.events) == 0 && c.Trigger.Set:
 		return nil, nil, heldConfig("unreadable trigger")
 	}
 	for _, cap := range r.eff.AggregateCaps {
@@ -119,7 +117,7 @@ func (s *IssueWakeupService) customGate(ctx context.Context, tx pgx.Tx, q *db.Qu
 		}
 		return nil, target, customOff, b.withdrawn, err
 	}
-	mode, maxFires := scopedInstanceFields(r.eff.Config)
+	mode, maxFires := r.instanceFields()
 	if _, err = b.rebase(ctx, w, r, target, mode, maxFires, time.Now()); err != nil {
 		return nil, target, customHold, nil, err
 	}
@@ -166,9 +164,13 @@ func customPrecheck(ctx context.Context, q *db.Queries, issue db.Issue, w db.Iss
 	return true, err
 }
 
-// scopedInstanceFields are the mode and fire cap an instance takes from its
-// resolved configuration.
-func scopedInstanceFields(c WakeupConfigPatch) (string, pgtype.Int4) {
+// instanceFields are the mode and fire cap an instance takes from its resolved
+// configuration; a one-shot schedule is once, whatever the definition leaves out.
+func (r *scopedRule) instanceFields() (string, pgtype.Int4) {
+	if r.schedule.oneShot() {
+		return "once", pgtype.Int4{}
+	}
+	c := r.eff.Config
 	mode, maxFires := "continuous", pgtype.Int4{}
 	if c.Mode.Set {
 		mode = c.Mode.Value
@@ -259,7 +261,7 @@ func (s *IssueWakeupService) admitCustomStart(ctx context.Context, q *db.Queries
 	if caps := cfg.aggregateCaps(); len(caps) > 0 {
 		admission, err := admitAggregateStart(ctx, q, aggregateStart{WorkspaceID: issue.WorkspaceID, WakeupID: w.ID, TaskID: taskID, RuleKey: w.DefaultRuleKey.String, FactAge: oldestReceiptAge(receipts)}, caps, now)
 		if aggregateCounterBusy(err) {
-			return false, nil // another start holds the counter; this one is retried on a later pass
+			return false, errAggregateCounterBusy // another start holds the counter; retried on a later pass
 		}
 		if err != nil {
 			return false, err

@@ -59,7 +59,7 @@ import { MAX_FILE_SIZE } from "@multica/core/constants/upload";
 import { useT } from "../i18n";
 import type { UploadGate } from "./use-upload-gate";
 import type { ContentEditorRef } from "./content-editor";
-import { pastedTextSource } from "./extensions/file-upload";
+import { pastedTextSource } from "./pasted-text-source";
 
 const EMPTY_ATTACHMENTS: Attachment[] = [];
 

@@ -12,7 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
-import { AutopilotDialog } from "../autopilots/components/autopilot-dialog";
+import { AutopilotDialog } from "../autopilots/components/autopilot-dialog-lazy";
 import { TerminateTaskConfirmDialog } from "../issues/components/terminate-task-confirm-dialog";
 import { useT } from "../i18n";
 import type { PaletteHostDialog } from "./types";
