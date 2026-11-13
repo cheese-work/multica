@@ -36,6 +36,7 @@ type routingAgentSetParams struct {
 func init() {
 	decisionaction.Register(&decisionaction.Definition{
 		Type: routingAgentSetAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Template:  decisionaction.Template{Title: "Change the workspace routing agent", Summary: "Changes the workspace routing-agent setting to the proposed value."},
 		Normalize: normalizeRoutingAgentSet,
 	})
 	registerConfigChange(routingAgentSetAction, configChange{
