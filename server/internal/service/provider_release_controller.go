@@ -228,7 +228,7 @@ func releaseClosed(ctx context.Context, q *db.Queries, row db.GetProviderBreaker
 				return err
 			}
 			if live {
-				save.CanaryTaskID, save.CanaryStarts = r.ID, append(recent, releaseTS(now))
+				save.CanaryTaskID, save.CanaryStarts = r.ID, append(save.CanaryStarts, releaseTS(now))
 				save.NextCanaryAt, dirty = releaseTS(now.Add(time.Duration(save.CanaryCoolOffS)*time.Second)), true
 				break
 			}
