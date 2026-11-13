@@ -211,6 +211,10 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		th := h.onQueries(q)
 		var err error
 		routeLockGapHook()
+		// Lock order: the project first, then the issue row.
+		if err := workflowWrite.lockProject(writeCtx, q); err != nil {
+			return err
+		}
 		// Status is the only field this call owns. Take every other field from
 		// the locked row so an edit that landed after the snapshot survives.
 		locked, err := q.LockIssueForDescriptionUpdate(writeCtx, db.LockIssueForDescriptionUpdateParams{ID: prev.ID, WorkspaceID: prev.WorkspaceID})
