@@ -3355,14 +3355,6 @@ func (d *Daemon) repoBarePathIsLive(barePath string) bool {
 	return false
 }
 
-// workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
-// be installed for the given workspace. Defaults to true when either setting
-// is absent (new workspaces, older servers that don't send settings).
-//
-// The hook is gated by BOTH the GitHub master switch (`github_enabled`) and
-// the dedicated co-author switch (`co_authored_by_enabled`) so flipping the
-// workspace's master GitHub toggle off also stops new trailers from landing
-// in commits, matching the contract documented in RFC MUL-2414 §4.8.
 // workspaceSettings returns the cached workspace settings JSON (nil when the
 // workspace is unknown), kept fresh by refreshWorkspaceRepos.
 func (d *Daemon) workspaceSettings(workspaceID string) []byte {
@@ -3374,6 +3366,14 @@ func (d *Daemon) workspaceSettings(workspaceID string) []byte {
 	return nil
 }
 
+// workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
+// be installed for the given workspace. Defaults to true when either setting
+// is absent (new workspaces, older servers that don't send settings).
+//
+// The hook is gated by BOTH the GitHub master switch (`github_enabled`) and
+// the dedicated co-author switch (`co_authored_by_enabled`) so flipping the
+// workspace's master GitHub toggle off also stops new trailers from landing
+// in commits, matching the contract documented in RFC MUL-2414 §4.8.
 func (d *Daemon) workspaceCoAuthoredByEnabled(workspaceID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
