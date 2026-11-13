@@ -261,7 +261,7 @@ func (l *Labeler) ShadowReport(ctx context.Context, workspaceID string, from, to
 	if r.ProtocolMix, err = l.mix(ctx, `SELECT coalesce(choice_key,''), count(*) FROM system1_observation WHERE `+win+` GROUP BY 1`, workspaceID, from, to); err != nil {
 		return r, err
 	}
-	if err = l.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE predicted_key IS NOT NULL),
+	if err := l.pool.QueryRow(ctx, `SELECT count(*) FILTER (WHERE predicted_key IS NOT NULL),
 		count(*) FILTER (WHERE predicted_key = choice_key), count(*) FILTER (WHERE reversed_at IS NOT NULL)
 		FROM system1_observation WHERE `+win, workspaceID, from, to).Scan(&r.JevPredicted, &r.JevAgreed, &r.Overrides); err != nil {
 		return r, err
