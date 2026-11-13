@@ -51,13 +51,16 @@ const (
 var runBudgetAutoZone = time.FixedZone("ICT", 7*3600)
 
 // RunBudgetAutoConfig is the workspace setting under settings.run_budget_auto.
-// Absent, the auto-approver is off (CHE-5331: it stays off until the
-// check-completeness follow-up lands) with the default envelope. Enabled true
+// Absent, the auto-approver is off with the default envelope and an empty
+// expected check set. Enabled true
 // turns it on; false is the kill switch: every spent window goes to a person's
 // card as before.
 type RunBudgetAutoConfig struct {
 	Enabled       bool `json:"enabled"`
 	DailyEnvelope int  `json:"daily_envelope"`
+	// ExpectedChecks is the check set a pushed head must hold, each finished,
+	// before its CI reads as known. Empty, no head does: the hold stays on.
+	ExpectedChecks []string `json:"expected_checks"`
 }
 
 // RunBudgetAutoConfigFromSettings reads the setting. Malformed settings read as
@@ -119,7 +122,7 @@ func EvaluateRunBudgetAuto(ctx context.Context, q *db.Queries, issue db.Issue, s
 		return RunBudgetAutoVerdict{Reason: "not_budgeted"}, err
 	}
 	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
-	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS})
+	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedChecks: append([]string{}, cfg.ExpectedChecks...)})
 	if err != nil {
 		return RunBudgetAutoVerdict{}, fmt.Errorf("run budget auto: list runs: %w", err)
 	}

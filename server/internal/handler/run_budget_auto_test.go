@@ -21,7 +21,10 @@ type autoRun struct {
 	ci        string   // a ci_failure_event workflow on the head the run pushed (needs prUpdate)
 	prUpdate  bool     // a linked PR's head moved while the run ran
 	noChecks  bool     // the pushed head has no retained check results (an old head, or none reported); a CI failure event does not replace them
+	partial   bool     // the pushed head has only some of the expected checks, all completed and green: the rest have not arrived
 	pending   bool     // the pushed head has a passing check and one still queued or running, so its CI has not finished
+	statusCtx bool     // the other expected check name is reported only by a commit status, a different producer than a check run
+	twin      bool     // two completed check runs carry the other expected name, so the producer of that check is ambiguous
 	prTouch   bool     // a linked PR's updated_at moved (a PR comment) while the run ran
 	commit    bool     // the run's shell committed, with no PR involved
 	move      bool     // the agent moved the issue's status while the run ran
@@ -46,7 +49,7 @@ func newAutoCaseSteps(t *testing.T, installationID int64, steps []map[string]any
 	t.Helper()
 	// The shared test workspace keeps the auto-approver off, so the per-issue
 	// card tests exercise the path the kill switch leaves.
-	setAutoSettings(t, `{"run_budget_auto":{"enabled":true}}`)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":["go-test","web-e2e"]}}`)
 	c := newEdgeCase(t, installationID, steps)
 	agentID := seededReadyAgentID(t)
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=5, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID)
@@ -88,6 +91,15 @@ func (a autoCase) seed(t *testing.T, issueID string, runs ...autoRun) {
 				if len(r.checks) == 0 && r.ci == "" && !r.noChecks {
 					// A head whose results are retained and all passed.
 					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 0, 'go-test', 'completed', 'success')`, prID, head)
+					if !r.partial && !r.pending && !r.statusCtx {
+						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success')`, prID, head)
+					}
+					if r.statusCtx {
+						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion, is_status_context) VALUES ($1, $2, 1, 'web-e2e', 'completed', 'success', TRUE)`, prID, head)
+					}
+					if r.twin {
+						dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 2, 'web-e2e', 'completed', 'success')`, prID, head)
+					}
 				}
 				if r.pending {
 					dbfx.Exec(t, `INSERT INTO github_pull_request_check_run (pr_id, head_sha, ordinal, name, status, conclusion) VALUES ($1, $2, 1, 'web-e2e', 'in_progress', NULL)`, prID, head)
@@ -400,6 +412,18 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 		{"one pushed head still running among finished ones", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, pending: true}, {status: "completed", prUpdate: true},
 		}, false},
+		{"three pushed heads with one completed check and the other expected check not arrived", []autoRun{
+			{status: "completed", prUpdate: true, partial: true}, {status: "completed", prUpdate: true, partial: true}, {status: "completed", prUpdate: true, partial: true},
+		}, false},
+		{"one pushed head missing an expected check among complete ones", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, partial: true}, {status: "completed", prUpdate: true},
+		}, false},
+		{"three pushed heads where a commit status stands in for the missing expected check run", []autoRun{
+			{status: "completed", prUpdate: true, statusCtx: true}, {status: "completed", prUpdate: true, statusCtx: true}, {status: "completed", prUpdate: true, statusCtx: true},
+		}, false},
+		{"one pushed head where two check runs share an expected name", []autoRun{
+			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true, twin: true}, {status: "completed", prUpdate: true},
+		}, false},
 		{"pushed heads whose results are retained and passed", []autoRun{
 			{status: "completed", prUpdate: true}, {status: "completed", prUpdate: true}, {status: "completed", prUpdate: true},
 		}, true},
@@ -419,5 +443,16 @@ func TestRunBudgetAutoHoldsWhenPushedHeadsHaveNoCheckHistory(t *testing.T) {
 				t.Fatalf("verdict = %+v, want reason ci_unknown", v)
 			}
 		})
+	}
+}
+
+// With no expected check set configured there is no completeness evidence, so a
+// pushed head never reads as complete, however many checks it holds.
+func TestRunBudgetAutoHoldsPushedHeadsWithoutAnExpectedCheckSet(t *testing.T) {
+	a := newAutoCase(t, 2226900)
+	setAutoSettings(t, `{"run_budget_auto":{"enabled":true,"expected_checks":[]}}`)
+	a.seed(t, a.c.issueID, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true}, autoRun{status: "completed", prUpdate: true})
+	if v := a.verdict(t); v.Approve || v.Reason != "ci_unknown" {
+		t.Fatalf("verdict = %+v, want hold with reason ci_unknown", v)
 	}
 }
