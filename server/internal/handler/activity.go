@@ -33,6 +33,7 @@ type TimelineEntry struct {
 
 	// Comment-only fields
 	Content     *string `json:"content,omitempty"`
+	Withheld    bool    `json:"withheld,omitempty"`
 	ParentID    *string `json:"parent_id,omitempty"`
 	UpdatedAt   *string `json:"updated_at,omitempty"`
 	Revision    int64   `json:"revision,omitempty"`
@@ -269,8 +270,15 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) mergeTimeline(r *http.Request, comments []db.Comment, activities []db.ActivityLog, ascending bool) []TimelineEntry {
 	out := make([]TimelineEntry, 0, len(comments)+len(activities))
 	out = append(out, h.commentsToEntries(r, comments)...)
+	activityFilter := h.newReadFilter(r)
 	for _, a := range activities {
-		out = append(out, activityToEntry(a))
+		entry := activityToEntry(a)
+		// Details can quote text an external source wrote and carry no mark of
+		// their own, so an elevated reader gets the action and no details.
+		if activityFilter.withholds(true) {
+			entry.Details = nil
+		}
+		out = append(out, entry)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt != out[j].CreatedAt {
@@ -303,9 +311,14 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 	viewer := decisionViewer(r)
 	decisions := h.decisionCommentFields(r.Context(), comments[0].WorkspaceID, comments, viewer)
 
+	readFilter := h.newReadFilter(r)
 	out := make([]TimelineEntry, len(comments))
 	for i, c := range comments {
 		content := c.Content
+		withheld := readFilter.withholdsComment(c)
+		if withheld {
+			content = h.commentStub(r.Context(), c)
+		}
 		commentType := c.Type
 		updatedAt := timestampToString(c.UpdatedAt)
 		cid := uuidToString(c.ID)
@@ -315,6 +328,7 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 			ActorType:      c.AuthorType,
 			ActorID:        uuidToString(c.AuthorID),
 			Content:        &content,
+			Withheld:       withheld,
 			CommentType:    &commentType,
 			QuickActionID:  uuidToPtr(c.QuickActionID),
 			ParentID:       uuidToPtr(c.ParentID),

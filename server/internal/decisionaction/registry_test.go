@@ -40,6 +40,9 @@ func TestNormalizeRefusals(t *testing.T) {
 		{"env duplicate slot", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{slotFor(agentA, "K"), slotFor(agentA, "K")}}, "invalid_params"},
 		{"env slot name differs from env key", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{{Slot: "S", Target: SlotTarget{AgentID: agentA, EnvKey: "K"}}}}, "invalid_params"},
 		{"env bad key", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `"}`), SecretSlots: []SecretSlot{slotFor(agentA, "1 BAD")}}, "invalid_params"},
+		{"top-up missing window", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `"}`)}, "invalid_params"},
+		{"top-up bad refusal id", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `","window_id":"w","refusal_id":"nope"}`)}, "invalid_params"},
+		{"top-up extra field", Request{Type: "issue.run_budget.top_up", Version: 1, Params: json.RawMessage(`{"issue_id":"` + agentA + `","window_id":"w","new_cap":9}`)}, "invalid_params"},
 		{"trailing json", Request{Type: "agent.env.patch", Version: 1, Params: json.RawMessage(`{"agent_id":"` + agentA + `","unset":["A"]} {}`)}, "invalid_params"},
 	}
 	for _, tc := range cases {

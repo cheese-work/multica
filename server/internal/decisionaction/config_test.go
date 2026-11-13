@@ -60,6 +60,7 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"workflow steps", "workflow.steps", nil, false},
 		{"workflow step instructions", "workflow.instructions", nil, false},
 		{"allowed settings keys", "workspace.settings", []string{"compact_prompt", "wakeups_paused", "mermaid_orientation"}, false},
+		{"provider hold deadline", "workspace.settings", []string{"provider_breaker_max_hold_seconds"}, false},
 		{"project description is out of scope", "project.description", nil, true},
 		{"members and roles", "member.role", nil, true},
 		{"unknown field", "", nil, true},
@@ -71,6 +72,14 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"unknown key", "workspace.settings", []string{"never_heard_of_it"}, true},
 		{"one denied key among allowed", "workspace.settings", []string{"compact_prompt", "always_redact_env"}, true},
 		{"keys on a non-settings field", "agent.instructions", []string{"compact_prompt"}, true},
+		{"routing agent identity", "workspace.routing_agent", nil, false},
+		{"delegated writes identity", "workspace.delegated_writes", nil, false},
+		{"agent skills identity", "agent.skills", nil, false},
+		{"keys on the routing agent field", "workspace.routing_agent", []string{"routing_agent"}, true},
+		{"keys on the delegated writes field", "workspace.delegated_writes", []string{"delegated_governed_writes"}, true},
+		{"keys on the agent skills field", "agent.skills", []string{"compact_prompt"}, true},
+		{"settings patch of routing_agent", "workspace.settings", []string{"routing_agent"}, true},
+		{"settings patch of delegated_governed_writes", "workspace.settings", []string{"delegated_governed_writes", "compact_prompt"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := CheckConfigChange(tc.field, tc.keys)

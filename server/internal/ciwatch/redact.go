@@ -7,6 +7,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	sharedredact "github.com/multica-ai/multica/server/pkg/redact"
 )
 
 const (
@@ -18,11 +20,11 @@ const (
 	markerCarry     = 64
 	keyPlaceholder  = "[REDACTED PRIVATE KEY]"
 	tokenPlaceholer = "[REDACTED]"
+	lineOmitted     = "[line over 64 KiB omitted]"
 )
 
 var (
-	keyBegin = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*KEY[A-Z0-9 ]*-----`)
-	keyEnd   = regexp.MustCompile(`-----END [A-Z0-9 ]*KEY[A-Z0-9 ]*-----`)
+	keyMarker = regexp.MustCompile(`-----(BEGIN|END) ([A-Z0-9 ]*KEY[A-Z0-9 ]*)-----`)
 
 	// URL credentials go first so a token inside them is covered as well.
 	urlCreds   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@`)
@@ -31,17 +33,23 @@ var (
 )
 
 func redactTokens(s string) string {
+	// URL credentials first: a provider-shaped username replaced by a
+	// placeholder with spaces would otherwise break this match and leave the password.
 	s = urlCreds.ReplaceAllString(s, "${1}"+tokenPlaceholer+"@")
+	s = sharedredact.Text(s)
 	s = tokenShape.ReplaceAllString(s, tokenPlaceholer)
 	return bearer.ReplaceAllString(s, "${1}"+tokenPlaceholer)
 }
 
 // redactor is the stateful half of RedactTail: it sees every line from byte 0,
-// so inKey is always complete.
+// so the open-key state is always complete.
 type redactor struct {
 	maxLines int
 	lines    []string
 	inKey    bool
+	label    string // label of the open BEGIN; only an END with this label closes it
+	nested   bool   // a BEGIN arrived inside an open key: fail closed, stay open to EOF
+	cred     credMasker
 }
 
 func (r *redactor) emit(s string) {
@@ -51,41 +59,72 @@ func (r *redactor) emit(s string) {
 	}
 }
 
-// line takes one logical line. text is what may be stored; begin and end say
-// whether a key marker appeared anywhere in the full line.
-func (r *redactor) line(text string, begin, end bool) {
-	switch {
-	case r.inKey:
-		if end {
-			r.inKey = false
+// line takes one logical line and the scan of its key markers. A line with a
+// marker is never stored as text. Without a marker, text is stored only when
+// no key is open.
+func (r *redactor) line(text string, sc *lineScan) {
+	if !sc.sawMarker {
+		if !r.inKey {
+			if text != lineOmitted {
+				text = r.cred.line(text)
+			}
+			r.emit(redactTokens(text))
 		}
-	case begin && end:
-		r.emit(keyPlaceholder)
-	case begin:
-		r.inKey = true
-		r.emit(keyPlaceholder)
-	case end:
-		// END without BEGIN: the key started before anything we saw as a key,
-		// so nothing earlier is trustworthy. Drop it all.
+		return
+	}
+	if sc.orphanEnd {
+		// END without a matching BEGIN: the key started before anything we saw
+		// as a key, so nothing earlier is trustworthy. Drop it all.
 		r.lines = r.lines[:0]
 		r.emit(keyPlaceholder)
-	default:
-		r.emit(redactTokens(text))
+	} else if !r.inKey {
+		r.emit(keyPlaceholder)
 	}
+	r.inKey, r.label, r.nested = sc.open, sc.label, sc.nested
 }
 
-// lineScan accumulates one logical line from ReadSlice fragments.
+// lineScan accumulates one logical line from ReadSlice fragments. It walks the
+// key markers in order, starting from the key state before the line, so
+// "END a ... BEGIN b" on one line keeps the next body hidden and a mismatched
+// END never closes an open key.
 type lineScan struct {
-	head       []byte
-	overflow   bool
-	begin, end bool
-	carry      string
+	head      []byte
+	overflow  bool
+	sawMarker bool
+	orphanEnd bool   // an END arrived while no key was open
+	open      bool   // key state after the markers seen so far
+	label     string // label of the open BEGIN
+	nested    bool   // see redactor.nested
+	carry     string
+	seen      int // bytes of the line consumed before carry
+	done      int // offset in the line just past the last marker handled
 }
 
 func (l *lineScan) add(frag []byte) {
 	s := l.carry + string(frag)
-	l.begin = l.begin || keyBegin.MatchString(s)
-	l.end = l.end || keyEnd.MatchString(s)
+	base := l.seen - len(l.carry) // line offset of s[0]
+	for _, m := range keyMarker.FindAllStringSubmatchIndex(s, -1) {
+		if base+m[0] < l.done {
+			continue // already handled while it sat in the carry
+		}
+		l.done = base + m[1]
+		l.sawMarker = true
+		label := s[m[4]:m[5]]
+		switch {
+		case s[m[2]] == 'B':
+			// A BEGIN inside an open key makes the END pairing ambiguous: fail closed to EOF.
+			if l.open {
+				l.nested = true
+			} else {
+				l.open, l.label = true, label
+			}
+		case l.open && !l.nested && label == l.label:
+			l.open = false
+		case !l.open:
+			l.orphanEnd = true
+		}
+	}
+	l.seen += len(frag)
 	if len(s) > markerCarry {
 		s = s[len(s)-markerCarry:]
 	}
@@ -112,22 +151,23 @@ func RedactTail(r io.Reader, maxLines int) (lines []string, err error) {
 	}()
 	red := &redactor{maxLines: maxLines}
 	br := bufio.NewReaderSize(r, 32<<10)
-	var cur lineScan
+	cur := lineScan{}
 	for {
 		frag, rerr := br.ReadSlice('\n')
 		if len(frag) > 0 || rerr == nil {
 			cur.add(frag)
 		}
-		if rerr == bufio.ErrBufferFull {
+		if errors.Is(rerr, bufio.ErrBufferFull) {
 			continue
 		}
 		if rerr == nil || (errors.Is(rerr, io.EOF) && len(cur.head) > 0) {
 			text := strings.TrimRight(string(cur.head), "\r\n")
 			if cur.overflow {
-				text += " [line cut at 64 KiB]"
+				// A cut line can hold half a credential (the "@" lies past the cut), so drop the text.
+				text = lineOmitted
 			}
-			red.line(text, cur.begin, cur.end)
-			cur = lineScan{}
+			red.line(text, &cur)
+			cur = lineScan{open: red.inKey, label: red.label, nested: red.nested}
 		}
 		if rerr != nil {
 			if errors.Is(rerr, io.EOF) {

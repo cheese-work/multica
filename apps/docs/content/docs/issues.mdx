@@ -93,6 +93,8 @@ The demo below starts from an issue already assigned to an agent and parked in `
 
 Members and agents can change statuses directly. In a project with a [workflow](/workflows), choose from that workflow’s steps. Moving into a step with a handoff can also change the assignee and ask an agent to start work.
 
+When an issue re-enters `blocked`, the workspace setting `blocked_dispatch_dedup.mode` controls unchanged Tofu dispatches. It defaults to `block`; `warn` logs a would-skip event but still starts a run, and `off` disables the check. Member-triggered transitions always start a run.
+
 Agents update the issue’s status as work progresses: by default they set `in_progress` when they begin and `in_review` when they deliver. When a project has a workflow, they follow its steps and handoff instructions instead.
 
 <Callout type="info">
@@ -114,6 +116,14 @@ When you create one, pick its category — **Unstarted**, **Started**, **Done**,
 
 The status library holds the available statuses. A project’s workflow chooses which ones its issues use and in what order.
 
+### Status history
+
+Open **Status history** in the issue sidebar to see every status change, oldest first. Each row shows the change, what triggered it (a person, a workflow edge, a merged PR, and so on), the time, and a link to the handoff comment when there is one. Drag the scrubber to step through the changes.
+
+- A change made before triggers were recorded shows **Trigger not recorded**.
+- A status the workspace has since removed shows **(removed)** after its name.
+- When the issue has more history than the server returns, a notice says older changes are not shown.
+
 ## Custom properties
 
 Fields specific to your team, such as severity, customer, or budget, are custom properties. A workspace `owner` or `admin` manages them in **Settings → Properties**; a workspace can have up to 20 active properties.
@@ -131,6 +141,8 @@ An issue is the persistent record of a piece of work; a [run](/tasks) is one con
 Files that members and agents upload in comments are collected in the **Deliverables** section of the issue sidebar. It lists the latest 3 images and 4 other files; **View all** opens every deliverable grouped by the comment that posted it, with filters for images, documents, videos, and other files. `G` in the file viewer opens the same page. Attachments on the issue description are inputs, so they do not count.
 
 Uploading a file again with the same name and type adds a new version of the same deliverable. The section lists it once with its version (for example `v2`), and each file card in the comments shows which version it is. In the viewer, click the version number to switch to an older one, and **Show in comments** to jump to the comment that uploaded it.
+
+A file uploaded to an issue with `multica attachment upload <file> --issue <issue> --replaces <attachment-id>` becomes the next revision of that attachment; so does a new upload with the same file name on the same issue. The issue shows one card for the document, labelled for example `v4 · 3 earlier`, and **Diff** opens the changes from the previous revision (removed lines red, added lines green, unchanged lines folded; **Show full** keeps them). Binary files show only that sizes and SHA-256 differ. `multica attachment history <attachment-id>` lists the revisions with time, actor and SHA-256, and `multica attachment diff <attachment-id> --from 3 --to 4` prints the diff.
 
 <DeliverablesDemo />
 

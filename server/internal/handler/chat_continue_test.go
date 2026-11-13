@@ -245,7 +245,7 @@ func (starter failContinuationSummaryStarter) Begin(ctx context.Context) (pgx.Tx
 type failContinuationSummaryTx struct{ pgx.Tx }
 
 func (transaction failContinuationSummaryTx) QueryRow(ctx context.Context, query string, arguments ...any) pgx.Row {
-	if strings.Contains(query, "-- name: CreateChatMessage") {
+	if strings.Contains(query, "-- name: CreateChatCompactionDivider") {
 		return continuationFailureRow{}
 	}
 	return transaction.Tx.QueryRow(ctx, query, arguments...)

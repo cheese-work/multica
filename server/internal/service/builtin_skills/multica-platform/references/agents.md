@@ -432,6 +432,8 @@ State-changing (require an explicit instruction — do not run speculatively):
 ```bash
 multica agent archive <id>      # take it out of service
 multica agent restore <id>      # bring an archived agent back
+multica agent pause <id>        # stop claims; running tasks finish, queued work is kept
+multica agent resume <id>       # claim queued work again on the next poll
 multica agent avatar <id> --file ./avatar.png
 multica agent tasks <id> --limit 50 --output json   # runs, newest first
 multica agent tasks <id> --before <cursor>          # next page

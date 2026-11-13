@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActionSheetIOS,
   Alert,
@@ -32,6 +32,7 @@ import { useT } from "@/lib/i18n";
 import {
   deduplicateInboxItems,
   getInboxNavigationTarget,
+  isViewerMention,
 } from "@/lib/inbox-display";
 
 export default function Inbox() {
@@ -44,10 +45,12 @@ export default function Inbox() {
   );
   // Dedup + drop archived to match web/desktop. See CLAUDE.md
   // "Behavioral parity" → inbox dedup incident.
-  const data = useMemo(
-    () => deduplicateInboxItems(rawItems ?? []),
-    [rawItems],
-  );
+  const [mentionsOnly, setMentionsOnly] = useState(false);
+  // Same predicate as web's "Mentions me" filter (core/inbox/filter-store.ts).
+  const data = useMemo(() => {
+    const deduped = deduplicateInboxItems(rawItems ?? []);
+    return mentionsOnly ? deduped.filter(isViewerMention) : deduped;
+  }, [rawItems, mentionsOnly]);
   const markRead = useMarkInboxRead();
   const markAllRead = useMarkAllInboxRead();
   const archive = useArchiveInbox();
@@ -114,6 +117,12 @@ export default function Inbox() {
         title={t("title")}
         right={
           <>
+            <IconButton
+              name={mentionsOnly ? "at-circle" : "at-circle-outline"}
+              onPress={() => setMentionsOnly((on) => !on)}
+              accessibilityLabel={t("filters.mentions_me")}
+              accessibilityState={{ selected: mentionsOnly }}
+            />
             <IconButton
               name="ellipsis-horizontal"
               onPress={onPressMenu}

@@ -6,6 +6,17 @@ export type ForkEntry = {
   section: string;
   text: string;
   group?: "week"; // backfilled entries (CHE-2196) group by ISO week instead of by day
+  deploy?: string; // sha of the first C00 deploy containing the entry, or "live" (CHE-4015)
+};
+
+type ForkDeploy = { sha: string; version: string; deployedAt: string; hiddenCount: number; live?: boolean };
+export type DeployGroup = ForkDeploy & {
+  rank: number; // 0 = Live, 1 = Previous, 2 = the one before, ... (across all days)
+  live: boolean;
+  features: string[];
+  improvements: string[];
+  fixes: string[];
+  changeKeys: Record<Category, string[]>;
 };
 
 type Category = "features" | "improvements" | "fixes";
@@ -20,6 +31,7 @@ export type ChangelogRelease = {
   changeKeys?: Partial<Record<Category, string[]>>;
   mergedAt?: string;
   number?: number;
+  deploys?: DeployGroup[];
 };
 
 export type ForkChangelog = {
@@ -57,7 +69,51 @@ function isoWeek(date: string) {
   return { monday: monday.toISOString().slice(0, 10), label: `${thursday.getUTCFullYear()}-W${String(week).padStart(2, "0")}` };
 }
 
-export function forkReleases(entries: ForkEntry[]): ChangelogRelease[] {
+const ictDay = (iso: string) => new Date(Date.parse(iso) + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+// Valid deploys: first is the one Live build, shas are unique, every dated and counted.
+function validDeploys(value: unknown, entries: ForkEntry[]): ForkDeploy[] | null {
+  if (!Array.isArray(value) || !value.length || !entries.length) return null;
+  const shas = new Set<string>();
+  for (const [index, deploy] of value.entries()) {
+    if (!deploy || typeof deploy.sha !== "string" || !deploy.sha || shas.has(deploy.sha) ||
+      typeof deploy.version !== "string" || !deploy.version.trim() ||
+      typeof deploy.deployedAt !== "string" || !Number.isFinite(Date.parse(deploy.deployedAt)) ||
+      !Number.isSafeInteger(deploy.hiddenCount) || deploy.hiddenCount < 0 || Boolean(deploy.live) !== (index === 0)) return null;
+    shas.add(deploy.sha);
+  }
+  const known = new Set([...shas, "live"]);
+  return entries.every((entry) => entry.group === "week" || known.has(entry.deploy ?? "")) ? value : null;
+}
+
+// One release per ICT day of a deploy, holding that day's deploys newest first.
+function deployReleases(entries: ForkEntry[], deploys: ForkDeploy[]): ChangelogRelease[] {
+  const groups = deploys.map((deploy, rank): DeployGroup => ({
+    ...deploy, live: rank === 0, rank, features: [], improvements: [], fixes: [],
+    changeKeys: { features: [], improvements: [], fixes: [] },
+  }));
+  for (const entry of [...entries].sort(entryOrder)) {
+    if (entry.group === "week") continue;
+    const group = groups.find((candidate) => candidate.sha === entry.deploy || (entry.deploy === "live" && candidate.live))!;
+    const category = sectionCategory[entry.section]!;
+    group[category].push(entry.text);
+    group.changeKeys[category].push(entry.id);
+  }
+  const days = new Map<string, ChangelogRelease>();
+  for (const group of groups) {
+    const date = ictDay(group.deployedAt);
+    const release = days.get(date) ?? { version: `fork-${date}`, date, title: "Fork", changes: [], mergedAt: group.deployedAt, number: 0, deploys: [] };
+    release.deploys!.push(group);
+    days.set(date, release);
+  }
+  return [...days.values()];
+}
+
+export function forkReleases(entries: ForkEntry[], deploys?: ForkDeploy[]): ChangelogRelease[] {
+  if (deploys) {
+    const rest = entries.filter((entry) => entry.group === "week");
+    return [...deployReleases(entries, deploys), ...forkReleases(rest)].sort((a, b) => b.date.localeCompare(a.date));
+  }
   const releases = new Map<string, ChangelogRelease>();
   for (const entry of [...entries].sort(entryOrder)) {
     const week = entry.group === "week" ? isoWeek(entry.date) : null;
@@ -86,17 +142,20 @@ export function parseForkChangelog(contents: string): ForkChangelog {
       if (!entry || !Number.isSafeInteger(entry.number) || entry.number <= 0 ||
         entry.id !== `fork-pr-${entry.number}` || ids.has(entry.id) ||
         typeof entry.mergedAt !== "string" || !Number.isFinite(Date.parse(entry.mergedAt)) ||
-        entry.date !== new Date(Date.parse(entry.mergedAt) + 7 * 60 * 60 * 1000).toISOString().slice(0, 10) ||
+        entry.date !== ictDay(entry.mergedAt) ||
         !Object.hasOwn(sectionCategory, entry.section) || typeof entry.text !== "string" || !entry.text.trim()) {
         return unavailableFork;
       }
       ids.add(entry.id);
     }
-    return { status: parsed.entries.length ? "populated" : "empty", releases: forkReleases(parsed.entries) };
+    return { status: parsed.entries.length ? "populated" : "empty", releases: forkReleases(parsed.entries, validDeploys(parsed.deploys, parsed.entries) ?? undefined) };
   } catch {
     return unavailableFork;
   }
 }
+
+// The build stamp shows the same name as the Live divider.
+export const liveVersion = (fork: ForkChangelog) => fork.releases.flatMap((release) => release.deploys ?? []).find((deploy) => deploy.live)?.version;
 
 export function mergeChangelogReleases(upstream: readonly ChangelogRelease[], fork: ForkChangelog) {
   return [...upstream, ...fork.releases].sort((left, right) =>

@@ -160,6 +160,18 @@ func RuntimeBlockedNeedsNotice(code dispatch.ReasonCode) bool {
 // be redundant work, not a correctness gap). CHE-588 shipped this trigger-side
 // gate alone and deliberately deferred retry/claim; CHE-607 closed that gap.
 func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
+	return agentReadiness(ctx, lookup, agent, true)
+}
+
+// ScriptAgentReadiness is AgentReadiness without the model-only checks
+// (workspace provider hold, provider breaker). A script task never calls a
+// model, so those gates say nothing about it (CHE-5092). Archived, runtime and
+// access checks are unchanged.
+func ScriptAgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (AgentVerdict, error) {
+	return agentReadiness(ctx, lookup, agent, false)
+}
+
+func agentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent, modelChecks bool) (AgentVerdict, error) {
 	if agent.ArchivedAt.Valid {
 		return AgentVerdict{
 			Availability: AgentBlocked,
@@ -190,19 +202,21 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	// check fails closed. Blanket fail-closed HERE would instead refuse
 	// every dispatch workspace-wide on one flaky read, which is a worse
 	// outage than the one this feature exists to prevent.
-	verdict, blocked, err := providerHoldVerdict(ctx, lookup, agent)
-	if err != nil {
-		return AgentVerdict{}, err
-	}
-	if blocked {
-		return verdict, nil
-	}
-	breakerVerdict, err := providerBreakerVerdict(ctx, lookup, agent)
-	if err != nil {
-		return AgentVerdict{}, err
-	}
-	if breakerVerdict.Blocked() {
-		return breakerVerdict, nil
+	var verdict, breakerVerdict AgentVerdict
+	if modelChecks {
+		var blocked bool
+		var err error
+		verdict, blocked, err = providerHoldVerdict(ctx, lookup, agent)
+		if err != nil {
+			return AgentVerdict{}, err
+		}
+		if blocked {
+			return verdict, nil
+		}
+		breakerVerdict, err = providerBreakerVerdict(ctx, lookup, agent)
+		if err != nil {
+			return AgentVerdict{}, err
+		}
 	}
 	if !agent.RuntimeID.Valid {
 		return AgentVerdict{
@@ -215,7 +229,12 @@ func AgentReadiness(ctx context.Context, lookup RuntimeLookup, agent db.Agent) (
 	if err != nil {
 		return AgentVerdict{}, err
 	}
-	return runtimeVerdict(rt, agent), nil
+	verdict = runtimeVerdict(rt, agent)
+	// A broken runtime outranks the breaker wait: waiting cannot fix it.
+	if !verdict.Blocked() && !breakerVerdict.Ready() {
+		return breakerVerdict, nil
+	}
+	return verdict, nil
 }
 
 // providerHoldVerdict is the provider-hold half of AgentReadiness, split out
@@ -481,7 +500,7 @@ func RuntimeUnusableNotice(agentName string, verdict AgentVerdict) string {
 	// substitute list right there; rebuilding it here would need both again).
 	// verdict.Detail carries that finished notice verbatim, so this is a
 	// pass-through, not a second renderer to keep in sync with the first.
-	if verdict.Reason == dispatch.ReasonProviderHold {
+	if verdict.Reason == dispatch.ReasonProviderHold || verdict.Reason == dispatch.ReasonProviderBreaker {
 		return verdict.Detail
 	}
 	if verdict.Reason == dispatch.ReasonRuntimeAccessDenied {

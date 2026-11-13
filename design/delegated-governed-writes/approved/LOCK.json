@@ -1,0 +1,26 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "G--GFZSHv9",
+  "page_id": "G--GFZSHv9:page1",
+  "page_note": "Test canvas page1. No per-proposal page was created; the work ran on the test canvas as the issue required.",
+  "screens": [
+    {
+      "screen": "delegated-governed-writes B (read first: one-sentence summary and agent-by-field grid; Edit rule opens the inputs under the grid and the grid redraws with New tags before Save; six states: owner saved value, editing, empty, member read-only, human decision off with confirm checkbox and Save locked, save refused; 1400 px light)",
+      "frame_id": "Ocyo3e9IQD",
+      "updatedAt": "2026-11-08T09:29:28.407Z",
+      "content_sha256": "e88d9ca44d3e1d2df4cfded37556fae7c5dde8168167463ac14ba9dffcc3c5fd"
+    }
+  ],
+  "export_sha256": "606990871c2a3b106ee6a084711f3a0071f561146e03f8af4c1e18550509aab8",
+  "export_sha256_method": "sha256 of the line '<sha256>  <file>' for export_files, sorted by file name",
+  "export_files": {
+    "direction-b.html": "e88d9ca44d3e1d2df4cfded37556fae7c5dde8168167463ac14ba9dffcc3c5fd"
+  },
+  "export_transform": "none: the frame HTML is self-contained (system font stack, inline SVG, no external fetch); written as read from doop with get_frame, without the trailing newline; length 17207 characters equals htmlBytes from get_frame",
+  "exported_at": "2026-11-08 16:46 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-4616",
+  "selection_id": "01a1ba7e-0503-7223-b312-b67987c5089b",
+  "ux_verdict_id": "01a1ba8a-9636-7775-83df-7924195c6a9b"
+}

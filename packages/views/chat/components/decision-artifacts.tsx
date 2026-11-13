@@ -10,6 +10,7 @@ import { formatBytes } from "../../common/format-bytes";
 import { useDownloadAttachment } from "../../editor/use-download-attachment";
 import { useT } from "../../i18n";
 import { RichContent } from "../../rich-content";
+import { HunksRegion } from "./diff-hunks";
 
 type TabKey = "changes" | "preview";
 
@@ -33,9 +34,6 @@ function useBackToClose(open: boolean, close: () => void) {
     };
   }, [open, close]);
 }
-
-// New-side line count of a hunk: context and added lines, not removed ones.
-const newSideLines = (lines: string[]) => lines.filter((line) => !line.startsWith("-")).length;
 
 function RetryBanner({ message, onRetry }: { message: string; onRetry: () => void }) {
   const { t } = useT("chat");
@@ -75,47 +73,7 @@ function DiffView({ diff, artifact }: { artifact: DecisionArtifact; diff: Decisi
       {diff.hunks.length === 0 ? (
         <p className="text-caption text-muted-foreground">{t(($) => $.decision.artifacts.no_changes)}</p>
       ) : (
-        <div
-          role="region"
-          tabIndex={0}
-          aria-label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })}
-          className="min-h-0 flex-1 overflow-auto rounded-lg border border-surface-border bg-surface font-mono text-caption leading-6 focus-visible:outline-2 focus-visible:outline-ring"
-        >
-          {diff.hunks.map((hunk, index) => {
-            const previous = diff.hunks[index - 1];
-            const hidden = previous ? hunk.new_start - (previous.new_start + newSideLines(previous.lines)) : 0;
-            let number = hunk.new_start;
-            return (
-              <div key={`${hunk.old_start}:${hunk.new_start}`}>
-                {hidden > 0 && (
-                  <div className="border-y border-dashed border-surface-border px-2.5 py-0.5 text-center italic text-muted-foreground">
-                    {t(($) => $.decision.artifacts.lines_hidden, { count: hidden })}
-                  </div>
-                )}
-                {hunk.lines.map((line, lineIndex) => {
-                  const kind = line[0];
-                  const shown = kind === "-" ? "" : number++;
-                  return (
-                    <div
-                      key={lineIndex}
-                      className={cn(
-                        "grid grid-cols-[2rem_1.1rem_1fr] whitespace-pre-wrap break-words",
-                        kind === "+" && "bg-success/10",
-                        kind === "-" && "bg-destructive/10",
-                      )}
-                    >
-                      <i className="pr-1.5 text-right not-italic text-muted-foreground">{shown}</i>
-                      <s className={cn("text-center font-bold no-underline", kind === "+" && "text-success", kind === "-" && "text-destructive")}>
-                        {kind === "+" ? "+" : kind === "-" ? "−" : ""}
-                      </s>
-                      <code>{line.slice(1)}</code>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })}
-        </div>
+        <HunksRegion hunks={diff.hunks} label={t(($) => $.decision.artifacts.diff_region, { previous: diff.previous_filename })} />
       )}
     </div>
   );

@@ -15,12 +15,12 @@ import (
 )
 
 type fakeObs struct {
-	got []db.CreateSystem1ObservationParams
+	got []db.CreateSystem1CIObservationParams
 }
 
-func (f *fakeObs) CreateSystem1Observation(_ context.Context, a db.CreateSystem1ObservationParams) error {
+func (f *fakeObs) CreateSystem1CIObservation(_ context.Context, a db.CreateSystem1CIObservationParams) (int64, error) {
 	f.got = append(f.got, a)
-	return nil
+	return 1, nil
 }
 
 func obsRun() Run {
@@ -41,8 +41,8 @@ func TestObserveFailureWritesRuleRowWithoutLogText(t *testing.T) {
 		t.Fatalf("err=%v rows=%d", err, len(w.got))
 	}
 	p := w.got[0]
-	if p.Kind != "ci_event" || p.Class != "infra_rate_limit" || p.DecisionSource.String != "rule" || p.ChoiceKey.String != "P1" {
-		t.Errorf("row = kind %q class %q source %q choice %q", p.Kind, p.Class, p.DecisionSource.String, p.ChoiceKey.String)
+	if p.Class != "infra_rate_limit" || p.ChoiceKey != "P1" {
+		t.Errorf("row = class %q choice %q", p.Class, p.ChoiceKey)
 	}
 	if strings.Contains(string(p.Inputs), planted) || strings.Contains(string(p.Inputs), "API rate limit") {
 		t.Errorf("inputs contain log text: %s", p.Inputs)
@@ -75,7 +75,7 @@ func TestObserveUnknownIsShadowOnly(t *testing.T) {
 	}
 	var in map[string]any
 	json.Unmarshal(w.got[0].Inputs, &in)
-	if w.got[0].Class != "unknown" || w.got[0].ChoiceKey.String != "P2" || in["shadow_only"] != true || in["route"] != "triage" || in["partial_reason"] != "budget" {
+	if w.got[0].Class != "unknown" || w.got[0].ChoiceKey != "P2" || in["shadow_only"] != true || in["route"] != "triage" || in["partial_reason"] != "budget" {
 		t.Errorf("row = %+v inputs=%v", w.got[0], in)
 	}
 }
@@ -88,7 +88,7 @@ func TestObserveP0Rows(t *testing.T) {
 			t.Fatalf("%s: err=%v rows=%d", reason, err, len(w.got))
 		}
 		p := w.got[0]
-		if p.Kind != "ci_event" || p.Class != reason || p.ChoiceKey.String != "P0" || p.DecisionSource.String != "rule" {
+		if p.Class != reason || p.ChoiceKey != "P0" {
 			t.Errorf("%s: row = %+v", reason, p)
 		}
 	}
@@ -121,7 +121,7 @@ func TestJevShadowOnlyWhenEnabledAndNeverActs(t *testing.T) {
 		t.Fatalf("enabled: err=%v calls=%d", err, calls)
 	}
 	p := w.got[0]
-	if p.PredictedKey.String != "P3" || !p.PredictedConfidence.Valid || p.ChoiceKey.String != "P2" || p.Class != "code_or_test" {
+	if p.PredictedKey.String != "P3" || !p.PredictedConfidence.Valid || p.ChoiceKey != "P2" || p.Class != "code_or_test" {
 		t.Errorf("row = %+v", p)
 	}
 	// A failing Jev never fails or changes the rule row.

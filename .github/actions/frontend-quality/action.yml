@@ -15,6 +15,21 @@ runs:
         node --test scripts/check-ui-radius-tokens.test.mjs
         node scripts/check-ui-radius-tokens.mjs
 
+    - name: Check design pattern ledger
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        node --test scripts/design/validate-patterns.test.mjs
+        # frame.state moves compare with the PR base; push and merge_group runs check the file alone.
+        if [ "$EVENT" = pull_request ]; then
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          node scripts/design/validate-patterns.mjs --base FETCH_HEAD
+        else
+          node scripts/design/validate-patterns.mjs
+        fi
+
     # Keep existing knip findings advisory in either caller.
     - name: Check for dead code and phantom dependencies (knip)
       continue-on-error: true

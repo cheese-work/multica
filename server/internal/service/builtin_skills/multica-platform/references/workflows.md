@@ -19,6 +19,17 @@ multica workflow get <workflow-id> --output json      # steps, instructions, rul
 (guarded exits: `[{"to","guard","timeout","on_timeout"}]`; PR guards need a
 `timeout`).
 
+## Lint a workflow
+
+```bash
+multica workflow lint <workflow-id> --output json
+multica workflow lint --all
+```
+
+Prints findings per rule (`WF###`, level, step, message, hint). Exit status is
+non-zero when any unwaived error exists; warnings and infos do not fail it.
+Give a workflow id or `--all`, not both.
+
 ## Change one step's instructions
 
 ```bash
@@ -65,12 +76,15 @@ multica issue budget get <issue-id> --output json
 
 - `get` shows the runs used in the issue's budget window, the limit in force,
   its state and what a suggested raise would leave.
-- `multica issue budget raise` and `multica issue budget top-up` only print a
-  pointer to the web app and send nothing: the server takes a raise or top-up
-  only from an interactive web or desktop session. Approve in the web app; until
-  then, a person moves the status in the web app, which opens a new run window.
-  An agent that hit the cap reports the blocker and asks a person; it never
-  raises its own budget.
+- `multica issue budget raise [--runs N]` and `multica issue budget top-up`
+  open a spend decision request and print its approve URL. They change nothing
+  themselves: an owner approves with a passkey in the web app, which a CLI
+  credential cannot do.
+- With a PAT, a person runs them and the request is the A1d spend request.
+- With a task token, an agent that hit the cap runs the same command (add
+  `--for <user-id>` inside an issue task). It creates an action proposal
+  (`decision propose`, see `decisions.md`) and prints the card link. The agent
+  never raises its own budget: the proposal waits for a person's approval.
 
 ## Inbound webhook endpoints
 
