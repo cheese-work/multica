@@ -326,13 +326,10 @@ var errRefusalLifted = fmt.Errorf("run budget: the refusal no longer applies: %w
 // recordBudgetBlock logs the exhaustion block with the cap a raise would set.
 // It runs after the recovery run is enqueued, so the target counts that run.
 func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) {
-	details := map[string]any{
-		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused, "raise_target": 0,
-	}
-	if !e.TokensSpent {
-		details["raise_target"] = runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target
-	}
-	body, _ := json.Marshal(details)
+	body, _ := json.Marshal(map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused,
+		"raise_target": runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target,
+	})
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
 		Action: "run_budget_exhausted", Details: body,
@@ -368,11 +365,6 @@ func exhaustedNoticeText(refused string, raise, leaves int, e service.RunBudgetE
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
-	}
-	if e.TokensSpent {
-		return fmt.Sprintf(
-			"%s: %s was refused because the issue's token allowance is spent (balance %d). No command raises it. A person moves the issue's status to open a new window with a new allowance.",
-			lead, refused, e.Tokens)
 	}
 	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise, leaves)
 }
