@@ -20,7 +20,7 @@ import { RunBudgetMeter } from "../../../packages/views/issues/components/run-bu
 import { AttachmentList } from "../../../packages/views/issues/components/attachment-list";
 import { WakeupInstructionEditor } from "../../../packages/views/issues/components/wakeup-instruction-editor";
 import { AutoCompactTokensRow } from "../../../packages/views/settings/components/auto-compact-tokens-row";
-import { setApiInstance } from "@multica/core/api";
+import { getApi, setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { useT } from "../../../packages/views/i18n";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -51,6 +51,11 @@ import {
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
+import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
+import { NavigationProvider } from "../../../packages/views/navigation/context";
+import {
+  seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
+} from "./raw-elements";
 import "./globals.css";
 
 const WS = "ws-harness";
@@ -67,7 +72,13 @@ const ISSUES = [
   issue("i5", 5001, "todo", "Short"),
 ];
 
+// staleTime Infinity: seeded data must not refetch (no server here) and flip to the error state.
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: Infinity } } });
+seedRawElements(qc);
+const nav = {
+  push: () => {}, replace: () => {}, back: () => {}, pathname: "/", searchParams: new URLSearchParams(), hash: "",
+  getShareableUrl: (path: string) => path,
+};
 // The chip reads the issue list cache; seed one bucket (flattenIssueBuckets walks every category).
 qc.setQueryData(issueListOptions(WS).queryKey, {
   byStatus: { [STATUS_ORDER[0]!]: { issues: ISSUES, total: ISSUES.length } },
@@ -250,6 +261,7 @@ const OUTCOMES: Record<string, unknown> = {
   "act-rejected": { id: "act-rejected", state: "rejected" },
 };
 setApiInstance({
+  ...getApi(),
   getDecisionActionOutcome: async (id: string) => {
     const outcome = OUTCOMES[id];
     if (!outcome) throw new Error("outcome unavailable");
@@ -890,6 +902,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "status-pill": StatusPillDemo,
   "header-chip-popover": HeaderChipPopoverDemo,
   "form-dialog": FormDialogDemo,
+  "decision-banner": DecisionBanner,
+  "hierarchy-minimap": HierarchyMinimap,
+  "hierarchy-dialog": HierarchyDialogPage,
+  "wakeup-event-row": WakeupEventRowPage,
+  "wakeup-condition-params": ConditionParamsPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,
@@ -917,7 +934,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en" resources={{ en: RESOURCES.en }}>
-        <TooltipProvider>{View ? <View /> : <p className="p-6">unknown pattern: {id}</p>}</TooltipProvider>
+        <WorkspaceSlugProvider slug="harness">
+          <NavigationProvider value={nav as never}>
+            <TooltipProvider>{View ? <View /> : <p className="p-6">unknown pattern: {id}</p>}</TooltipProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
       </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
