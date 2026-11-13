@@ -453,6 +453,18 @@
     "empty": "No scheduled issues yet — set a start or due date on any issue to see it on the timeline.",
     "inverted_dates_warning": "Start date is after due date — bar shown from min to max."
   },
+  "swimlane2": {
+    "edge_wakeup": "Wakeup",
+    "edge_dependency": "Dependency",
+    "edge_parent": "Parent / child",
+    "edge_mention": "Mention",
+    "edge_types": "Edge types",
+    "relations_incomplete": "Relations incomplete: some links did not load.",
+    "more_issues": "More issues not loaded.",
+    "retry": "Retry",
+    "load_more": "Load more",
+    "no_lane": "No value"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

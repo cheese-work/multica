@@ -1665,6 +1665,9 @@ func printDaemonStatusReport(w io.Writer, label string, health map[string]any) {
 	if reason, ok := health["reload_pending_reason"].(string); ok && reason != "" {
 		rows = append(rows, row{"Restart pending", reason})
 	}
+	if draining, _ := health["draining_for_reload"].(bool); draining {
+		rows = append(rows, row{"Draining", "draining_for_reload — claiming nothing new; reloads when running tasks finish"})
+	}
 	if held, _ := health["maintenance_held"].(bool); held {
 		rows = append(rows, row{"Maintenance", fmt.Sprintf("window held until %v (claims paused)", health["maintenance_expires_at"])})
 	}

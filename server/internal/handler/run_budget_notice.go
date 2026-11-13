@@ -35,26 +35,10 @@ var (
 // onRunBudgetEvent writes the 80% warning once the admission that raised it
 // committed (CHE-2297 L1a).
 func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent) {
-	if e.Kind == service.RunBudgetKindWarn80Tokens {
-		h.warnTokensAtEighty(ctx, e)
-		return
-	}
 	if e.Kind != service.RunBudgetKindWarn80 || !h.admissionCommitted(ctx, e) {
 		return
 	}
 	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue used %d of %d runs of its run budget. When the budget is spent, nothing derived from this issue runs until a member moves its status.", e.Runs, e.Max))
-}
-
-// warnTokensAtEighty writes the token warning once the usage report that
-// crossed 80% committed (CHE-2297 L2e). The report is the only event that
-// spends tokens, so nothing else raises it; a report that rolled back, or that
-// carries no transaction to follow, writes nothing and leaves the window's
-// claim free for the real crossing.
-func (h *Handler) warnTokensAtEighty(ctx context.Context, e service.RunBudgetEvent) {
-	if e.Xid == 0 || !h.admissionTxFinished(ctx, e) {
-		return
-	}
-	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue has %d of %d tokens left of its token allowance. When the allowance is spent, nothing derived from this issue runs until a member moves its status.", e.Tokens, e.TokenBase))
 }
 
 // admissionCommitted reports whether the admission that raised a warning has
@@ -132,6 +116,15 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 	if err != nil {
 		slog.Warn("run budget: load issue for notice failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return err
+	}
+	// An anomalous window goes to the day's batch card, not a per-issue one.
+	if e.Kind == service.RunBudgetKindExhausted && h.escalateRunBudgetWindow(ctx, issue, e, recovery) {
+		// The escalation claimed the window's notice, so a replay lands here
+		// again and finds it claimed: retiring the hook once is enough.
+		if hook.id.Valid {
+			return h.Queries.RetireRunBudgetRefusalHook(ctx, db.RetireRunBudgetRefusalHookParams{ID: hook.id, Generation: hook.generation, Reason: "escalated"})
+		}
+		return nil
 	}
 	usage := h.runBudgetUsageNote(ctx, issue)
 	recent := ""
@@ -391,8 +384,6 @@ func runBudgetNoticeText(tokens, recentRuns string, e service.RunBudgetEvent, te
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:
 		return content, "Run budget at 80%"
-	case service.RunBudgetKindWarn80Tokens:
-		return content, "Token allowance at 80%"
 	}
 	return content, "Run budget used up"
 }

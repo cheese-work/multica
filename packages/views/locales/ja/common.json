@@ -142,8 +142,8 @@
     "reject_error": "却下できませんでした。もう一度お試しください。",
     "waiting": "パスキーを待っています…",
     "state": {
-      "executed": "実行済み",
-      "failed": "失敗",
+      "executed": "適用済み",
+      "failed": "未適用",
       "rejected": "却下",
       "expired": "期限切れ",
       "cancelled": "キャンセル済み"

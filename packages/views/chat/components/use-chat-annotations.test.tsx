@@ -88,19 +88,19 @@ describe("comment on an agent reply in a DM", () => {
       fireEvent.pointerUp(region);
     };
     select("decision-request:request-2");
-    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
     fireEvent.change(await screen.findByRole("textbox", { name: "Comment 1" }), { target: { value: "1" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add annotation" }));
     expect(useCommentDraftStore.getState().getAnnotations(key)).toMatchObject([
       { sourceCommentId: "decision-request:request-2", quote: "C. CHE-2162", note: "1" },
     ]);
     select("decision-request:request-1");
-    expect(screen.queryByRole("button", { name: "Add comment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to reply" })).not.toBeInTheDocument();
     select("m1");
-    expect(screen.queryByRole("button", { name: "Add comment" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add to reply" })).not.toBeInTheDocument();
     act(() => { useCommentDraftStore.getState().removeAnnotation(key, useCommentDraftStore.getState().getAnnotations(key)[0]!.id); });
     select("decision-request:request-1");
-    expect(await screen.findByRole("button", { name: "Add comment" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
   });
 
   it.each(["answered", "withdrawn"] as const)("drops a saved comment on a decision card once it is %s, so later sends stay normal", async (state) => {
@@ -125,9 +125,9 @@ describe("comment on an agent reply in a DM", () => {
     const user = userEvent.setup();
     renderHarness();
     selectReply();
-    fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
     fireEvent.change(await screen.findByRole("textbox", { name: "Comment 1" }), { target: { value: "Why 5 s?" } });
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add annotation" }));
 
     expect(useCommentDraftStore.getState().getAnnotations(key)).toMatchObject([
       { sourceCommentId: "m1", quote: "The delay is fixed at 5 seconds.", note: "Why 5 s?" },

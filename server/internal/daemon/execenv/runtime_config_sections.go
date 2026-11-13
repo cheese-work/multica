@@ -905,6 +905,9 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 // Workflow, Always Use CLI, Output — are shared by every kind and emitted
 // unconditionally (or gated by their own data preconditions).
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
+	if ctx.BackgroundJob != "" {
+		return buildBackgroundBrief(ctx)
+	}
 	var b strings.Builder
 	kind := classifyTask(ctx)
 
@@ -970,5 +973,16 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeAlwaysUseCLI(&b)
 	writeOutput(&b, kind, ctx)
 
+	return b.String()
+}
+
+// buildBackgroundBrief is the whole runtime brief of an output_only background
+// task (CHE-4100): read-only, no multica CLI, no issue workflow. The result is
+// the reply text; the daemon returns it as the task output.
+func buildBackgroundBrief(ctx TaskContextForEnv) string {
+	var b strings.Builder
+	b.WriteString("# Multica Background Job\n\n")
+	fmt.Fprintf(&b, "You are %s, running a read-only background job (%s).\n\n", ctx.AgentName, ctx.BackgroundJob)
+	b.WriteString("Use no tools. Change no files. Run no commands. Reach no network. The prompt holds the whole input. Reply with the job output only.\n")
 	return b.String()
 }

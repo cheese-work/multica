@@ -41,9 +41,9 @@ const MAX_ITEMS = 20;
 export type BuiltinCommandKey = "note" | "preset" | ChatCommandId;
 
 /** DM commands a surface switches on one by one; compact is gated separately. */
-export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive" | "unseen";
+export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive" | "unseen" | "later";
 const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = CHAT_COMMANDS
-  .filter((cmd): cmd is typeof cmd & { id: DmClientCommand } => cmd.args === "none")
+  .filter((cmd): cmd is typeof cmd & { id: DmClientCommand } => cmd.args === "none" || cmd.id === "later")
   .map((cmd) => cmd.id);
 
 export interface SlashCommandItem {

@@ -97,9 +97,9 @@ function select(text: string) {
 
 async function addComment(text: string, note: string) {
   select(text);
-  fireEvent.click(await screen.findByRole("button", { name: "Add comment" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
   fireEvent.change(await screen.findByRole("textbox", { name: "Comment 1" }), { target: { value: note } });
-  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  fireEvent.click(screen.getByRole("button", { name: "Add annotation" }));
 }
 
 beforeEach(() => {

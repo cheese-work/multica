@@ -41,6 +41,8 @@ export type {
   AgentInvocationTargetInput,
   AgentTask,
   AgentPreset,
+  TaskInitContext,
+  TaskInitContextPart,
   TaskPresetRun,
   TaskPresetSettings,
   TaskPresetSkip,
@@ -196,6 +198,8 @@ export {
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatStaleLevel,
   ChatAttentionSource,
   ChatContinueResponse,

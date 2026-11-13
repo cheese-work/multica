@@ -40,6 +40,16 @@
     "unclassified": {
       "title": "미분류",
       "replies_other": "답장 {{count}}개"
+    },
+    "actions": {
+      "done": "완료",
+      "later": "나중에",
+      "done_all": "모두 완료",
+      "undo": "실행 취소",
+      "toast_other": "DM {{count}}개를 완료로 표시했습니다",
+      "failed": "업데이트하지 못했습니다. 다시 시도하세요.",
+      "done_aria": "완료로 표시: {{title}}",
+      "later_aria": "나중에 알림: {{title}}"
     }
   },
   "page": {
@@ -70,6 +80,7 @@
     "queue_send_tooltip": "대기열에 추가",
     "stop_tooltip": "중지",
     "send_failed_toast": "메시지를 보내지 못했습니다",
+    "send_unconfirmed_toast": "전송을 확인하지 못했습니다. 초안은 보관되며, 다시 보내도 중복되지 않습니다.",
     "compacting_toast": "이 DM을 압축하는 중입니다. 끝난 뒤 다시 보내세요.",
     "rename_failed_toast": "채팅 이름을 바꾸지 못했습니다",
     "fork_unconfirmed": "분기를 확인하지 못했습니다. 다시 시도하기 전에 '분기된 대화' 링크를 확인하세요.",
@@ -88,7 +99,10 @@
     "project_context_unsupported": "프로젝트 설명이 적용되지 않습니다 — 이 에이전트의 데몬 업그레이드가 필요합니다",
     "placeholder_archived_send": "이 DM은 보관되어 있습니다. 전송하면 먼저 보관을 해제합니다…",
     "command_no_arguments": "/{{command}} 명령어는 인수를 받지 않습니다. 단독으로 보내거나 앞의 /를 제거하세요.",
-    "command_no_attachments": "/{{command}} 명령어는 첨부 파일과 함께 보낼 수 없습니다. /{{command}} 실행 전에 첨부 파일을 제거하세요."
+    "command_no_attachments": "/{{command}} 명령어는 첨부 파일과 함께 보낼 수 없습니다. /{{command}} 실행 전에 첨부 파일을 제거하세요.",
+    "later_set_toast": "{{time}} ICT까지 보류했습니다",
+    "later_bad_duration": "1s~7d 범위로 입력하세요(예: /later 2h)",
+    "later_failed_toast": "보류하지 못했습니다. 다시 시도하세요."
   },
   "queue": {
     "title_other": "대기 중인 메시지 {{count}}개",
@@ -378,8 +392,6 @@
   "annotations": {
     "one_request": "한 번에 하나의 결정 요청에 대한 댓글만 보내세요.",
     "source_label": "{{name}}의 메시지",
-    "add": "댓글 추가",
-    "confirm_add": "추가",
     "save": "저장",
     "note_label": "댓글 {{number}}",
     "note_placeholder": "댓글 추가…",
@@ -491,7 +503,12 @@
       "field_workflow_steps": "워크플로 단계",
       "field_workflow_instructions": "워크플로 단계 지침",
       "field_workspace_settings": "워크스페이스 설정",
-      "field_workflow_budget": "워크플로 실행 예산"
+      "field_workflow_budget": "워크플로 실행 예산",
+      "field_workspace_routing_agent": "라우팅 에이전트",
+      "field_workspace_delegated_writes": "위임된 거버넌스 쓰기",
+      "field_agent_skills": "에이전트 스킬",
+      "counts": "글자 수: {{before}} → {{after}}",
+      "counts_cap": "글자 수: {{before}} → {{after}} (상한 {{cap}})"
     },
     "agent_note": "에이전트 메모(확인되지 않음)",
     "answer_send_passkey": "패스키로 보내기",

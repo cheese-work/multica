@@ -5021,6 +5021,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
 	}
+	if (statusChanged || assigneeChanged) && actorType == "member" && !isMachineCredentialActor(r) {
+		h.ciWatchHumanOverride(r.Context(), issue.WorkspaceID, issue.ID)
+	}
 	releaseMove()
 	if attachmentsChanged {
 		// The full owner snapshot must be admitted before an auxiliary event at

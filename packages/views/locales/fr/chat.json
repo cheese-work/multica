@@ -45,6 +45,17 @@
       "title": "Non classé",
       "replies_one": "{{count}} réponse",
       "replies_other": "{{count}} réponses"
+    },
+    "actions": {
+      "done": "Fait",
+      "later": "Plus tard",
+      "done_all": "Tout marquer fait",
+      "undo": "Annuler",
+      "toast_one": "{{count}} DM marqué fait",
+      "toast_other": "{{count}} DM marqués faits",
+      "failed": "Échec de la mise à jour. Réessayez.",
+      "done_aria": "Marquer fait : {{title}}",
+      "later_aria": "Me rappeler plus tard : {{title}}"
     }
   },
   "page": {
@@ -76,6 +87,7 @@
     "queue_send_tooltip": "Mettre le message en file d'attente",
     "stop_tooltip": "Arrêter",
     "send_failed_toast": "Échec de l'envoi du message",
+    "send_unconfirmed_toast": "Envoi non confirmé. Votre brouillon est conservé ; renvoyez pour réessayer sans doublon.",
     "compacting_toast": "Ce message privé est en cours de compactage. Renvoyez-le une fois terminé.",
     "rename_failed_toast": "Impossible de renommer la conversation",
     "fork_unconfirmed": "La dérivation n’a pas pu être confirmée. Vérifiez les liens « Dérivée vers » avant de réessayer.",
@@ -94,7 +106,10 @@
     "project_context_unsupported": "La description du projet ne s'appliquera pas — le daemon de cet agent doit être mis à jour",
     "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
     "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
-    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}."
+    "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}.",
+    "later_set_toast": "Reporté jusqu'à {{time}} ICT",
+    "later_bad_duration": "Utilisez une durée de 1s à 7d, par exemple /later 2h",
+    "later_failed_toast": "Échec du report. Réessayez."
   },
   "queue": {
     "title_one": "{{count}} message en file d'attente",
@@ -389,8 +404,6 @@
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
-    "add": "Ajouter un commentaire",
-    "confirm_add": "Ajouter",
     "save": "Enregistrer",
     "note_label": "Commentaire {{number}}",
     "note_placeholder": "Ajouter un commentaire…",
@@ -505,7 +518,12 @@
       "field_workflow_steps": "Étapes du workflow",
       "field_workflow_instructions": "Instructions d’étape du workflow",
       "field_workspace_settings": "Paramètres de l’espace de travail",
-      "field_workflow_budget": "Budget d’exécutions du workflow"
+      "field_workflow_budget": "Budget d’exécutions du workflow",
+      "field_workspace_routing_agent": "Agent de routage",
+      "field_workspace_delegated_writes": "Écritures gouvernées déléguées",
+      "field_agent_skills": "Compétences de l’agent",
+      "counts": "Caractères : {{before}} → {{after}}",
+      "counts_cap": "Caractères : {{before}} → {{after}} sur {{cap}} autorisés"
     },
     "agent_note": "Note de l’agent (non vérifiée)",
     "answer_send_passkey": "Envoyer avec une clé d'accès",

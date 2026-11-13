@@ -362,3 +362,7 @@ UPDATE member
 SET pinned_at = CASE WHEN @pinned::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
 WHERE workspace_id = @workspace_id AND user_id = @user_id
 RETURNING pinned_at;
+
+-- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
+-- CHE-4116: workspaces still holding the routing setting under its old key.
+SELECT id FROM workspace WHERE settings ? 'routing_agent';

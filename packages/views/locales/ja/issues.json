@@ -443,6 +443,18 @@
     "empty": "スケジュールされたタスクがまだありません。いずれかのタスクに開始日または期限を設定すると、タイムラインに表示されます。",
     "inverted_dates_warning": "開始日が期限より後になっています。バーは早い日付から遅い日付まで表示されます。"
   },
+  "swimlane2": {
+    "edge_wakeup": "ウェイクアップ",
+    "edge_dependency": "依存",
+    "edge_parent": "親 / 子",
+    "edge_mention": "メンション",
+    "edge_types": "リンクの種類",
+    "relations_incomplete": "関係が不完全です：一部のリンクを読み込めませんでした。",
+    "more_issues": "未読み込みの課題があります。",
+    "retry": "再試行",
+    "load_more": "さらに読み込む",
+    "no_lane": "値なし"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

@@ -760,10 +760,14 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
+	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
-	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset.
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
+	// external heartbeat and the probe credential are opt-in via MULTICA_PROVIDER_*
+	// env (CHE-4580).
 	if taskSvc.ProviderFailureProbe != nil {
-		go service.NewProbeHeartbeatMonitor(taskSvc.ProviderFailureProbe, service.SlogProbeAlertSink{}, time.Now, 10*time.Minute).Run(sweepCtx)
+		service.StartProviderProbeMonitor(sweepCtx, os.Getenv, taskSvc.ProviderFailureProbe)
 	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
@@ -803,6 +807,14 @@ func main() {
 	if err := h.ConfigureGitHubAllowlistFromEnv(); err != nil {
 		slog.Error("invalid GitHub allowlist", "error", err)
 		os.Exit(1)
+	}
+	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
+	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
+	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
+		slog.Error("routing agent setting copy failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).

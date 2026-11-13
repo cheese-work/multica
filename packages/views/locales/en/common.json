@@ -142,8 +142,8 @@
     "reject_error": "Rejecting did not complete. Try again.",
     "waiting": "Waiting for your passkey…",
     "state": {
-      "executed": "Executed",
-      "failed": "Failed",
+      "executed": "Applied",
+      "failed": "Not applied",
       "rejected": "Rejected",
       "expired": "Expired",
       "cancelled": "Cancelled"

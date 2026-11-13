@@ -11,6 +11,7 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
+import { invalidateIssueGraph } from "../issues/graph-queries";
 import { isSidebarTableRequest, type SidebarIssuesRequest } from "../issues/sidebar-list";
 import { refreshIssueUnread } from "../issues/unread";
 import { refreshSubscribedIssues, subscribedIssueKeys } from "../issues/subscribed";
@@ -1235,10 +1236,17 @@ export function useRealtimeSync(
     // Filtering by actor_id would block other tabs of the same user.
     // Instead, both mutations and WS handlers use dedup checks to be idempotent.
 
+    // Timeline and relations views refetch on any issue or activity change.
+    const refreshIssueGraph = () => {
+      const wsId = getCurrentWsId();
+      if (wsId) debouncedRefresh("issue_graph", () => void invalidateIssueGraph(qc, wsId));
+    };
+
     const unsubIssueUpdated = ws.on("issue:updated", (p) => {
       const payload = p as IssueUpdatedPayload;
       const { issue } = payload;
       if (!issue?.id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueUpdated(qc, wsId, issue, {
@@ -1262,6 +1270,7 @@ export function useRealtimeSync(
     const unsubIssueCreated = ws.on("issue:created", (p) => {
       const { issue } = p as IssueCreatedPayload;
       if (!issue) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) onIssueCreated(qc, wsId, issue);
     });
@@ -1269,6 +1278,7 @@ export function useRealtimeSync(
     const unsubIssueDeleted = ws.on("issue:deleted", (p) => {
       const { issue_id } = p as IssueDeletedPayload;
       if (!issue_id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueDeleted(qc, wsId, issue_id);
@@ -1441,7 +1451,10 @@ export function useRealtimeSync(
 
     const unsubActivityCreated = ws.on("activity:created", (p) => {
       const { issue_id } = p as ActivityCreatedPayload;
-      if (issue_id) invalidateTimeline(issue_id);
+      if (issue_id) {
+        invalidateTimeline(issue_id);
+        refreshIssueGraph();
+      }
     });
 
     const unsubReactionAdded = ws.on("reaction:added", (p) => {

@@ -2334,6 +2334,30 @@ describe("ApiClient", () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
     });
 
+    it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+    });
+
+    it("CHE-4153 attention actions post the exact displayed keys", async () => {
+      const ok = () => Promise.resolve(new Response(JSON.stringify({ attention: [], batch_id: "b1" }), { status: 200 }));
+      const fetchMock = vi.fn().mockImplementation(ok);
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new ApiClient("https://api.example.test");
+      await client.chatAttentionXong("s1", ["item:1"]);
+      await client.chatAttentionLater("s1", ["item:1"], { durationSeconds: 7200, requestId: "r1" });
+      await client.chatAttentionXongAll(["item:1", "turn:2"]);
+      await client.chatAttentionUndoXongAll("b1");
+      const calls = fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method, init?.body ? JSON.parse(init.body as string) : undefined]);
+      expect(calls[0]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/xong", "POST", { subject_keys: ["item:1"] }]);
+      expect(calls[1]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/later", "POST", { subject_keys: ["item:1"], duration_seconds: 7200, request_id: "r1" }]);
+      expect(calls[2]).toEqual(["https://api.example.test/api/chat/attention/xong-all", "POST", { subject_keys: ["item:1", "turn:2"] }]);
+      expect(calls[3]![0]).toBe("https://api.example.test/api/chat/attention/xong-all/b1/undo");
+      expect(calls[3]![1]).toBe("POST");
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {

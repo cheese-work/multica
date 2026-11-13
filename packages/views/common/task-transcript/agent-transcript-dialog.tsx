@@ -106,6 +106,7 @@ import {
   summarizeTaskUsage,
 } from "../../runtimes/utils";
 import { formatBytes } from "../format-bytes";
+import { RunInitContextDetails, initContextOf } from "./run-init-context-details";
 import { RunPresetDetails } from "./run-preset-details";
 import "../../editor/styles/code.css";
 import "./task-transcript.css";
@@ -1055,6 +1056,7 @@ export function AgentTranscriptDialog({
                         </>
                       )}
                       {task.preset_run && <RunPresetDetails run={task.preset_run} />}
+                      <RunInitContextDetails report={initContextOf(task.result)} />
                       {usage && (
                         <>
                           <div className="my-2 h-px bg-border" />

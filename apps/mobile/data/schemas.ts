@@ -278,6 +278,15 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   continued_into_session_id: z.string().nullable().optional().catch(null),
   forked_from_session_id: z.string().nullable().optional().catch(null),
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
+  // DM attention projection (list-only; absent on older servers). Enum drift
+  // downgrades: an unknown level reads as "none" and the row stays hidden.
+  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
+  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
+  attention_since: z.string().nullable().optional().catch(null),
+  next_change_at: z.string().nullable().optional().catch(null),
+  attention_keys: z.array(z.string()).optional().catch(undefined),
+  attention_ask_ids: z.array(z.string()).optional().catch(undefined),
+  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();

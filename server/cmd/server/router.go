@@ -1863,6 +1863,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/vcs/connections", h.ListVCSConnections)
 					r.Get("/background-agents", h.GetBackgroundAgents)
 					r.Get("/me/background-agents", h.GetMyBackgroundAgents)
+					// CHE-4113: a member writes only their own row, so these are member
+					// routes. The handler refuses a machine actor itself (stable code;
+					// unchanged writes stay accepted) and, until CHE-4114, every
+					// effective human write (409).
+					r.Put("/me/background-agents", h.UpdateMyBackgroundAgents)
+					r.Delete("/me/background-agents/{job}", h.ResetMyBackgroundAgent)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -2435,6 +2441,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Put("/", h.UpdateProject)
 					r.With(denyRunToken).Delete("/", h.DeleteProject)
 					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
+					r.With(denyRunToken).Put("/workflow-split", h.SetProjectWorkflowSplit)
+					r.With(denyRunToken).Delete("/workflow-split", h.ClearProjectWorkflowSplit)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -2867,8 +2875,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 			r.Post("/api/decision-actions/proposals", h.ProposeDecisionAction)
+			r.Post("/api/decision-actions/proposals/batch", h.ProposeDecisionActionBatch)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/batches/{id}/challenge", h.ChallengeDecisionActionBatch)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/batches/{id}/approve", h.ApproveDecisionActionBatch)
 			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
@@ -2880,6 +2891,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}", h.GetDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/discuss", h.DiscussDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke", h.RevokeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke/challenge", h.ChallengeDecisionRevoke)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences

@@ -621,11 +621,10 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left
-// (CHE-2297 L1b): the runs and, once token accounting is active, the tokens the
-// admission ledger still holds. Before that it reports the tokens used and the
-// runs that reported no usage. Tokens are input plus output; the server cannot
-// see tokens during a run, so the figure lags by the runs still in flight. It
-// is empty for a workflow with no budget start, matching guardRunBudget.
+// (CHE-2297 L1b): the runs left, then the tokens used and the runs that
+// reported no usage (information only; the budget counts runs). Tokens are
+// input plus output; the server cannot see tokens during a run, so the figure
+// lags by the runs still in flight. It is empty for a workflow with no budget start, matching guardRunBudget.
 func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issueworkflow.Definition) string {
 	if def.RunBudgetSince.IsZero() {
 		return ""
@@ -638,9 +637,6 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 		return ""
 	}
 	runs := fmt.Sprintf("Run budget: %d runs left of %d", max(0, snap.RunsLeft), snap.RunsLimit)
-	if snap.TokensActive {
-		return fmt.Sprintf("%s; %d tokens left.\n", runs, max(0, snap.TokensBalance))
-	}
 	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)
