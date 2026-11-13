@@ -11,6 +11,11 @@ import { TooltipProvider } from "@multica/ui/components/ui/tooltip";
 import { PropertyPicker } from "../../../packages/views/issues/components/pickers/property-picker";
 import { IssueChip } from "../../../packages/views/issues/components/issue-chip";
 import { Archive, Copy, Download, Maximize2, RotateCcw, Trash2 } from "@multica/ui/icons";
+import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
+import { NavigationProvider } from "../../../packages/views/navigation/context";
+import {
+  seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
+} from "./raw-elements";
 import "./globals.css";
 
 const WS = "ws-harness";
@@ -27,7 +32,13 @@ const ISSUES = [
   issue("i5", 5001, "todo", "Short"),
 ];
 
-const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
+// staleTime Infinity: seeded data must not refetch (no server here) and flip to the error state.
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false, staleTime: Infinity } } });
+seedRawElements(qc);
+const nav = {
+  push: () => {}, replace: () => {}, back: () => {}, pathname: "/", searchParams: new URLSearchParams(), hash: "",
+  getShareableUrl: (path: string) => path,
+};
 // The chip reads the issue list cache; seed one bucket (flattenIssueBuckets walks every category).
 qc.setQueryData(issueListOptions(WS).queryKey, {
   byStatus: { [STATUS_ORDER[0]!]: { issues: ISSUES, total: ISSUES.length } },
@@ -107,6 +118,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "icon-button-action": IconButtonAction,
   "property-picker": PropertyPickerDemo,
   "issue-mention-chip": IssueMentionChip,
+  "decision-banner": DecisionBanner,
+  "hierarchy-minimap": HierarchyMinimap,
+  "hierarchy-dialog": HierarchyDialogPage,
+  "wakeup-event-row": WakeupEventRowPage,
+  "wakeup-condition-params": ConditionParamsPage,
 };
 const id = new URLSearchParams(location.search).get("pattern") ?? "";
 const View = PATTERNS[id];
@@ -115,7 +131,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en" resources={{ en: RESOURCES.en }}>
-        <TooltipProvider>{View ? <View /> : <p className="p-6">unknown pattern: {id}</p>}</TooltipProvider>
+        <WorkspaceSlugProvider slug="harness">
+          <NavigationProvider value={nav as never}>
+            <TooltipProvider>{View ? <View /> : <p className="p-6">unknown pattern: {id}</p>}</TooltipProvider>
+          </NavigationProvider>
+        </WorkspaceSlugProvider>
       </I18nProvider>
     </QueryClientProvider>
   </StrictMode>,
