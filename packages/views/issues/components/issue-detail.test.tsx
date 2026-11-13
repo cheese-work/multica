@@ -2423,6 +2423,24 @@ describe("IssueDetail (shared)", () => {
       expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
     });
 
+    it("CHE-5437: withholds Show less while reply text forces the length open, so the button is never a dead click", async () => {
+      const root = mockTimeline[0]!;
+      const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `dead-reply-${i}`,
+        parent_id: root.id,
+        content: `Dead reply ${i}`,
+        created_at: `2026-01-16T00:0${i}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetail();
+      await screen.findByText("Dead reply 3");
+
+      act(() => mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "typing a reply...", attachments: [], updatedAt: 1 }));
+      await screen.findByText("Dead reply 0");
+      expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
+    });
+
     it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
       mockApiObj.getIssue.mockResolvedValue({
         ...mockIssue,

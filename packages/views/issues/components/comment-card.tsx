@@ -195,7 +195,7 @@ interface CommentCardProps {
    */
   forceThreadExpanded?: boolean;
   /**
-   * CHE-554: a strict SUBSET of `forceThreadExpanded`'s reasons — every
+   * CHE-554: a SUBSET of `forceThreadExpanded`'s reasons (see CHE-5437 below) — every
    * reason that pin has EXCEPT a bare focus/selection pin with no other
    * reason active. `forceThreadExpanded` alone cannot gate the Show-more
    * button's render guard below, because focus/selection is itself the
@@ -212,6 +212,10 @@ interface CommentCardProps {
    * active run, highlighted reply) still fully expands the length exactly
    * as `forceThreadExpanded` does. Defaults to `forceThreadExpanded` so
    * callers that don't pass it keep identical behavior.
+   *
+   * CHE-5437: NOT a strict subset any more. Reply-draft TEXT pins the length
+   * but no longer pins `forceThreadExpanded`, so manual Collapse works while
+   * the composer holds unsent text. Show less is withheld on either pin.
    */
   forceThreadLengthExpanded?: boolean;
   /**
@@ -1758,15 +1762,18 @@ function CommentCardImpl({
               })}
               {/* Show less — remembers the compact length choice per root for
                   the rest of the session. `forceThreadExpanded` (set by
-                  issue-detail.tsx's forceThreadOpen) refuses it while this
-                  thread has: a pending agent run with no reply yet; an
-                  in-progress reply draft/upload on this thread's own
-                  composer; or an active inline edit session (with unsaved
-                  content or a pending upload) on the root or any reply. It
+                  issue-detail.tsx's forceThreadOpen) and `forceThreadLengthExpanded`
+                  refuse it while this thread has: a pending agent run with no
+                  reply yet; an in-progress reply draft/upload on this thread's
+                  own composer; or an active inline edit session (with unsaved
+                  content or a pending upload) on the root or any reply. The
+                  length pin must be checked too: reply TEXT no longer pins
+                  `forceThreadExpanded` (CHE-5437) but still pins the length,
+                  so a Show less click would be a dead press. It
                   does NOT detect bare focus/selection with no unsaved change
                   yet — that produces no signal issue-detail.tsx can read
                   today (see its rootIdsWithActiveReplyDraft comment). */}
-              {renderFooter && lengthExpanded && canShowLess && !forceThreadExpanded && (
+              {renderFooter && lengthExpanded && canShowLess && !forceThreadExpanded && !forceThreadLengthExpanded && (
                 <button
                   type="button"
                   onClick={() => onThreadLengthExpandChange?.(entry.id, false)}
