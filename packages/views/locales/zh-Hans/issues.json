@@ -160,6 +160,9 @@
     "breadcrumb_title": "任务",
     "breadcrumb_workspace_fallback": "工作区",
     "empty_title": "还没有任务",
+    "empty_description": "任务是交给成员或智能体的一件具体工作。分配给智能体后，它会在你的运行时上自己开始。",
+    "break_down_with_chat": "用聊天拆解需求",
+    "break_down_prompt": "我想完成下面这件事。先问清楚你需要了解的，然后在这个工作区里把它拆成任务：\n\n",
     "move_failed": "移动任务失败"
   },
   "status": {
@@ -462,7 +465,7 @@
       }
     },
     "search_placeholder": "搜索任务...",
-    "search_empty": "没有匹配的任务。"
+    "search_empty": "没有匹配的任务"
   },
   "list": {
     "empty_status": "无任务",
@@ -507,6 +510,7 @@
     "card_load_failed": "无法加载这个任务。",
     "data_error": "这个任务包含应用无法读取的数据。",
     "retry": "重试",
+    "not_found_title": "未找到该任务",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",
     "title_placeholder": "任务标题",
@@ -958,6 +962,7 @@
     "col_tokens": "Token",
     "col_cost": "费用",
     "tokens_count": "{{tokens}} Token",
+    "credits_count": "{{credits}} {{provider}} 积分",
     "details_toggle": "运行详情",
     "detail_breakdown": "费用明细",
     "detail_total": "合计",
@@ -2003,7 +2008,8 @@
       "star": "将{{name}}添加到侧栏",
       "unstar": "将{{name}}从侧栏移除",
       "row_actions": "{{name}} 的操作",
-      "no_matches": "没有匹配的视图"
+      "empty_title": "还没有保存的视图",
+      "empty_description": "在任务列表里调好筛选和显示方式，然后另存为视图。"
     }
   },
   "status_history": {

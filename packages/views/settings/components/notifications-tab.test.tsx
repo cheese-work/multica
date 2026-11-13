@@ -21,7 +21,10 @@ vi.mock("@multica/core/notification-preferences/mutations", () => ({
 vi.mock("../../i18n", () => ({
   useT: () => ({ t: (select: (messages: typeof enSettings) => string) => select(enSettings) }),
 }));
-vi.mock("./browser-notification-setting", () => ({ BrowserNotificationSetting: () => null }));
+vi.mock("./browser-notification-setting", () => ({
+  BrowserNotificationSetting: () => null,
+  browserNotificationSettingAvailable: () => false,
+}));
 vi.mock("./settings-layout", () => ({
   SettingsTab: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   SettingsSection: ({ children }: { children: ReactNode }) => <section>{children}</section>,
