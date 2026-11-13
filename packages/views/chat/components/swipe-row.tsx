@@ -63,7 +63,14 @@ export function SwipeRow({
   onLongPress?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const [offset, setOffset] = useState(0);
+  const [offset, setOffsetState] = useState(0);
+  // The live offset, readable by the pointerup that follows a fast flick
+  // before React has re-rendered.
+  const offsetRef = useRef(0);
+  const setOffset = (next: number) => {
+    offsetRef.current = next;
+    setOffsetState(next);
+  };
   const [dragging, setDragging] = useState(false);
   const [open, setOpen] = useState<Side>(null);
 
@@ -157,6 +164,7 @@ export function SwipeRow({
     }
     const width = rootRef.current?.offsetWidth || FALLBACK_WIDTH;
     const full = Math.max(width * 0.6, leftWidth + 40);
+    const offset = offsetRef.current;
     if (onFullSwipeLeft && offset <= -full) {
       close();
       onFullSwipeLeft();
@@ -237,6 +245,7 @@ function ActionButton({
   onRun: (action: SwipeAction) => void;
 }) {
   return (
+    // ui-pattern-ref: allow full-height tray cell sized by the swipe distance; Button has no edge-to-edge tinted variant
     <button
       type="button"
       aria-label={action.label}
