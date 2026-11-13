@@ -127,3 +127,21 @@ FROM decision_wake_receipt receipt
 JOIN decision_wake_event event ON event.id = receipt.event_id
 WHERE event.answer_id = sqlc.arg('answer_id') AND event.type = 'answered' AND receipt.status = 'delivered'
 ORDER BY receipt.role DESC, receipt.id;
+
+-- The issue-closed lifecycle cancel settles the request's pending receipts in
+-- its own transaction. Callers hold the issue and request locks.
+-- name: SuppressPendingRequestWakeReceipts :execrows
+UPDATE decision_wake_receipt receipt
+SET status = 'suppressed_issue_closed'
+FROM decision_wake_event event
+WHERE event.id = receipt.event_id AND event.request_id = sqlc.arg('request_id') AND receipt.status = 'pending';
+
+-- The answer's wake outcome once its answered event is settled: the first
+-- delivered receipt's outcome (requester before assignee), else skipped. An
+-- answer with no receipts (kind=decision) is skipped.
+-- name: SummarizeDecisionAnswerWake :one
+SELECT coalesce((array_agg(receipt.outcome ORDER BY CASE receipt.role WHEN 'requester' THEN 0 ELSE 1 END)
+                 FILTER (WHERE receipt.status = 'delivered' AND receipt.outcome IS NOT NULL))[1], 'skipped_ineligible')::text AS outcome
+FROM decision_wake_event event
+JOIN decision_wake_receipt receipt ON receipt.event_id = event.id
+WHERE event.answer_id = sqlc.arg('answer_id') AND event.type = 'answered';
