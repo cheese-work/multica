@@ -72,10 +72,14 @@
     "supplement_failure_provider_rejected": "l’agent a refusé le message",
     "supplement_failure_timeout": "la livraison a expiré",
     "supplement_failure_unknown": "raison inconnue",
+    "supplement_failure_replay_exhausted": "les nouvelles tentatives sont épuisées",
+    "supplement_failure_run_budget_exhausted": "le budget d'exécutions est épuisé",
+    "supplement_failure_agent_paused": "l'agent est en pause",
     "supplement_retry": "Réessayer",
     "supplement_retry_failed": "Impossible de réessayer la livraison.",
     "steer_badge": "Ajouté à l'exécution de {{names}}",
     "steer_waiting": "En attente de lecture par {{name}}",
+    "steer_replay_queued": "{{name}} le lira à la prochaine exécution",
     "steer_read": "Lu par {{name}}",
     "steer_not_received": "{{name}} ne l'a pas reçu · {{reason}}",
     "steer_resend": "Envoyer comme nouvelle exécution",
@@ -454,6 +458,12 @@
     "retry": "Réessayer",
     "load_more": "Charger plus",
     "no_lane": "Aucune valeur"
+  },
+  "gantt2": {
+    "clipped_start": "Commencé avant cette fenêtre",
+    "now": "Maintenant",
+    "collapse": "Réduire",
+    "expand": "Développer"
   },
   "actor_issues": {
     "scope": {

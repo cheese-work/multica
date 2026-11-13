@@ -401,6 +401,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
 
+워크스페이스 멤버는 누구나 스코프와 예측기 버전별 System 1 자격 상태를 읽을 수 있습니다:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope`는 `test_first_waiver` 또는 `ci:<repo>:<protocol>`입니다. 각 행은 예측기 버전 하나의 최신 에포크를 다룹니다. 에포크 시작 이후에 만들어진 관측만 세고, 새 예측기 버전은 자체 에포크를 엽니다. 케이스는 기준 라벨(교체되지 않은 가장 최근 라벨)이 있는 예측 하나입니다. `denominator`는 기권이 아닌 예측과 매핑된 라벨이 있는 케이스, `agreed`는 둘이 일치한 케이스, `abstained`는 예측기가 기권한 라벨 케이스, `unmapped`는 자유 텍스트 답변 수입니다. `status`는 7일 이상, `denominator` 20 이상, 일치율 90% 이상이면 `qualified`입니다. 4주 뒤에도 센 케이스가 20 미만이면 `insufficient_data`, 강등된 에포크는 `demoted`, 그 외는 `collecting`입니다.
+
 ## ID와 출력 형식
 
 태스크에는 `MUL-123` 같은 key 또는 전체 UUID를 사용하며 UUID 짧은 접두사는 허용하지 않습니다.
@@ -527,6 +535,8 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `update` | — | CLI를 최신 버전으로 업데이트 | |
 | `version` | — | 버전 정보 확인 | `--output`(`text` 또는 `json`) |
 | `guard` | `exec <tool> -- <args>` | 가드를 거쳐 도구 실행: `gh pr create`·`edit`·`ready`는 드래프트 강제, 태그 부여, 재조회 확인을 거치고 `gh api`로 풀 리퀘스트에 쓰는 호출은 거부 | 종료 코드: 도구 자체의 코드, 가드가 거부하면 2. 환경 변수: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | 풀 리퀘스트를 정책과 저장소의 `.github/agent-rules.yml`에 비추어 변경 없이 검사합니다. 파일은 PR의 보호된 기본 브랜치의 현재 끝에서 데이터로 읽으며 PR 브랜치에서는 읽지 않습니다. 파일이 없으면 규칙이 추가되지 않고, 형식이 잘못된 파일이나 읽을 수 없는 기본 브랜치는 검사를 실패시킵니다. CI 검사로 사용합니다 | 종료 코드: 0 통과, 1 규칙 위반, 2 거부. `-R owner/name`으로 저장소 지정 |
+| `guard` | `plugin list\|get\|set` | 저장된 가드 정책을 읽거나(`list`, `get <name>`) 이를 대체하는 결정 액션 파일을 작성(`set --file <policy.json> --out <action.json>` 또는 `--dry-run`). 정책에는 워크스페이스 플러그인과 리뷰 규칙, 그리고 org·저장소·경로 레이어가 들어 있다. 더 깊은 레이어가 얕은 레이어를 키 단위로 덮어쓰며, `locked`가 붙은 레이어 또는 워크스페이스는 그 키를 더 깊은 레이어로부터 고정한다. `set`은 아무것도 전송하지 않으며, 사람이 passkey로 `workspace.settings.patch`를 승인한다. 데몬은 승인된 정책을 작업 트리 밖의 파일 `MULTICA_GUARD_POLICY`와 `MULTICA_GUARD_POLICY_SHA256`로 각 실행에 전달한다 | 출력: JSON 행(`--output table`은 표). `set`은 `before_sha256`과 `after_sha256`을 출력 |
 
 ### 결정 제안
 
@@ -539,6 +549,8 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 실행 예산 액션의 링크는 이슈에서 승인을 열고, 다른 액션의 링크는 채팅의 카드로 연결되어 그곳에서 승인합니다. 일반 선택지 카드(`--action-file` 없는 `multica decision request`)는 변경을 적용할 수 없습니다. 승인해도 답변만 기록됩니다. 서버는 의도를 읽을 수 없어 그런 카드를 거부하지 않고, 결정이나 선택지가 워크플로·에이전트·스쿼드·워크스페이스·예산 변경처럼 보일 때(또는 허용 목록의 액션 유형을 담을 때) 참고용 힌트를 붙입니다. 그 변경은 `multica decision propose`로 보내세요. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다. 두 명령 모두 하나 이상의 issue ID를 받습니다: `multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<목표>"`. ID가 하나면 기존 단일 제안 그대로입니다. 작업 토큰에서 여러 ID를 주면 배치 경로를 한 번만 호출하고 카드 링크를 하나 출력합니다. `--goal`은 배치 이름이며(기본값: 작업과 issue 수) `--output json`은 배치 id와 issue별 제안 id를 반환합니다. 개인 액세스 토큰에서는 ID마다 별도 요청을 엽니다. 배치 경로는 채팅 작업이 필요하고 issue는 최대 25개입니다. 서버는 raise 배치를 패스키 하나로 승인하지만 top-up 배치는 승인 시 거부하므로 top-up은 하나씩 승인하세요.
+
+실행 예산 다음 단계: issue의 80 % 알림에는 수치와 바로 실행할 수 있는 명령이 함께 나옵니다. 예: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`. 예산이 거부한 실행은 오류 코드 `run_budget_exhausted`와 `runs_used`, `runs_limit`, `workflow_id`, `window_id`, `open_card`, `next_command`를 반환합니다. `multica issue budget get <issue> --output json`도 `open_card`와 `next_command`를 반환합니다. issue의 현재 윈도우에 상향 또는 추가 윈도우 카드가 열려 있는 동안 `next_command`는 그 카드를 기다리라고 알려 주고, `multica issue budget raise`를 다시 실행해도 새 카드를 열지 않고 같은 카드를 반환합니다. 작업 토큰에서는 issue 작업의 `--for` 기본값이 워크스페이스 소유자이며, 도움말에는 `raise`만 표시됩니다. `top-up`은 멤버가 계속 사용할 수 있습니다. 서버, 멤버, 에이전트가 카드를 열 때마다 행위자 유형, 행위자, 액션 유형을 기록하는 `run_budget_ask` 활동 행이 하나 추가됩니다.
 
 적용된 작업은 되돌릴 수 있는 동안 요청 대상자가 되돌릴 수 있습니다. `multica decision revoke <request-id> --why "<사유>"`를 실행하세요. 작업이 되돌릴 수 있는 경우는 적용되었고, 해당 유형에 정확한 역작업이 있으며, 아직 되돌려지지 않았을 때뿐입니다. 이번 릴리스에서 역작업이 있는 유형은 `agent.pause`(역작업은 `agent.resume`)뿐이며, 승인으로 에이전트가 일시 중지되었고 그 뒤 아무도 일시 중지 상태를 바꾸지 않은 경우에만 해당합니다. 다른 모든 작업 유형은 되돌릴 수 없습니다. 요청 대상자만 되돌릴 수 있고 승인과 같은 역할 규칙이 적용됩니다. passkey가 필요한 작업은 앱에서 되돌립니다. 서버는 누가, 언제, 왜 되돌렸는지 기록하고 역작업을 실행한 뒤 요청한 에이전트를 결과 `revoked`로 깨웁니다. 거절됨, 만료됨, 적용되지 않음, 논의만 있음, 이미 되돌려진 결정은 거부됩니다. `multica decision get <request-id>`는 `revocable`을 보여 주고, 되돌린 뒤에는 `revoke` 기록(`at`, `by`, `reason`)도 보여 줍니다.
 

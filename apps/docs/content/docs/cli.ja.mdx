@@ -401,6 +401,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
 
+ワークスペースのメンバーは誰でも、スコープと予測器バージョンごとの System 1 資格状態を読めます:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` は `test_first_waiver` または `ci:<repo>:<protocol>` です。各行は 1 つの予測器バージョンの最新のエポックを対象にします。エポック開始以降に作成された観測だけが数えられ、新しい予測器バージョンは独自のエポックを開きます。1 ケースは、正式ラベル (置き換えられていない最新のラベル) を持つ 1 件の予測です。`denominator` は棄権でない予測と対応済みラベルを持つケース、`agreed` は両者が一致したもの、`abstained` は予測器が棄権したラベル付きケース、`unmapped` は自由記述の回答の数です。`status` は、7 日以上、`denominator` が 20 以上、一致率 90% 以上で `qualified` になります。4 週間経っても数えたケースが 20 未満なら `insufficient_data`、降格されたエポックは `demoted`、それ以外は `collecting` です。
+
 ## ID と出力形式
 
 タスクには `MUL-123` のようなキーまたは完全な UUID を使います。UUID の短いプレフィックスは受け付けません。
@@ -527,6 +535,8 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `update` | — | CLI を最新バージョンに更新 | |
 | `version` | — | バージョン情報を表示 | `--output`（`text` または `json`） |
 | `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込みは拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
+| `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
 
 ### 判断の提案
 
@@ -539,6 +549,8 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` と `--issue` は必須です。`--param k=v` は文字列、`--param k:=<json>` は生の JSON を送ります。`--params-file` は JSON オブジェクト 1 つを受け取り、`--param` とは併用できません。コマンドは承認カードのリンクを表示します。実行予算のアクションでは、このリンクは課題上の承認を開きます。それ以外のアクションでは、チャット内のカードへのリンクになり、そこで承認します。通常の選択肢カード（`--action-file` なしの `multica decision request`）では変更を適用できません。承認しても回答が記録されるだけです。サーバーは意図を読み取れないため、そのようなカードを拒否せず、決定や選択肢がワークフロー・エージェント・スクワッド・ワークスペース・予算の変更に見える場合（または許可リストのアクション種別を含む場合）に助言ヒントを付けます。その変更は `multica decision propose` で送ってください。拒否された場合はサーバーのステータスとエラーコードを表示します。`multica issue budget raise` と `multica issue budget top-up` は、タスクトークンでは同じ経路を使います（`--for <user-id>` を追加）。個人アクセストークンでは従来どおり支出リクエストを開きます。どちらのコマンドも 1 つ以上の issue ID を受け取ります：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目的>"`。ID が 1 つなら従来の単一提案のままです。タスクトークンで複数の ID を渡すと、バッチ経路を 1 回だけ呼び、カードのリンクを 1 つ表示します。`--goal` でバッチに名前を付けられ（既定：操作と issue 数）、`--output json` はバッチ ID と issue ごとの提案 ID を返します。個人アクセストークンでは ID ごとに個別のリクエストを開きます。バッチ経路にはチャットタスクが必要で、issue は 25 件までです。サーバーは raise のバッチを 1 つのパスキーで承認しますが、top-up のバッチは承認時に拒否するため、top-up は 1 件ずつ承認してください。
+
+実行予算の次の一手: issue の 80 % 通知には、数値とそのまま実行できるコマンドが付きます。例: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。予算が拒否した実行は、エラーコード `run_budget_exhausted` と `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card`、`next_command` を返します。`multica issue budget get <issue> --output json` も `open_card` と `next_command` を返します。issue の現在のウィンドウに引き上げまたは追加ウィンドウのカードが開いている間、`next_command` はそのカードを待つよう伝え、`multica issue budget raise` を再度実行しても新しいカードは開かず同じカードを返します。タスクトークンでは、issue タスクの `--for` は既定でワークスペースのオーナーになり、ヘルプには `raise` だけが表示されます。`top-up` はメンバーが引き続き使えます。サーバー、メンバー、エージェントがカードを開くたびに、アクターの種別、アクター、アクション種別を記録する `run_budget_ask` アクティビティ行が 1 件追加されます。
 
 適用済みのアクションは、取り消し可能な間、本人が取り消せます。`multica decision revoke <request-id> --why "<理由>"` を実行します。アクションが取り消し可能なのは、適用済みで、その種類に正確な逆操作があり、まだ取り消されていない場合だけです。このリリースで逆操作を持つのは `agent.pause`（逆操作は `agent.resume`）のみで、承認によってエージェントが一時停止され、その後に誰も一時停止状態を変更していない場合に限ります。それ以外のアクション種別は取り消せないままです。取り消せるのは依頼の宛先の本人だけで、承認と同じロール規則が適用されます。passkey が必要なアクションはアプリで取り消します。サーバーは取り消した人、日時、理由を記録し、逆操作を実行して、依頼したエージェントを結果 `revoked` で起こします。却下、期限切れ、未適用、議論のみ、または取り消し済みの判断は取り消せません。`multica decision get <request-id>` は `revocable` を表示し、取り消し後は `revoke` レコード（`at`、`by`、`reason`）も表示します。
 

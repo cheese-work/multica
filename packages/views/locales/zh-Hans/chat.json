@@ -336,6 +336,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "筛选对话",
+      "all": "全部",
+      "main": "主收件箱",
+      "decisions": "决策",
+      "waiting": "等你处理",
+      "unseen": "未读",
+      "pinned": "已置顶",
+      "unpinned": "未置顶",
+      "archived": "已归档",
+      "count_aria": "{{label}}，{{count}} 个"
+    },
+    "states": {
+      "loading": "正在加载对话…",
+      "empty_title": "还没有对话",
+      "empty_body": "给智能体发条消息即可开始。需要你处理的问题和决策会显示在这里。",
+      "empty_view": "此视图下没有对话",
+      "empty_waiting": "没有等你处理的事项",
+      "empty_waiting_body": "所有问题和决策都已回复。",
+      "error_title": "无法加载对话",
+      "error_body": "服务器返回了错误。你的消息没有丢失。请重试，或几分钟后再来。",
+      "retry": "重试",
+      "offline_title": "你已离线",
+      "offline_body": "正在显示已保存的列表，会自动重新连接。"
+    },
     "typing": "正在输入…",
     "failed": "发送失败",
     "you_prefix": "你：",
@@ -359,7 +384,16 @@
     "pin_failed": "无法更新置顶状态",
     "unseen": "标记为未读",
     "unseen_failed": "无法将此对话标记为未读",
-    "undo": "撤销"
+    "undo": "撤销",
+    "group": {
+      "pinned": "已置顶",
+      "today": "今天",
+      "yesterday": "昨天",
+      "this_week": "本周",
+      "older": "更早"
+    },
+    "unseen_dot": "未查看",
+    "tag_decision": "决定"
   },
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",

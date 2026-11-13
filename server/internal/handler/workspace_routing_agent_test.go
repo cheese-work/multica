@@ -20,8 +20,11 @@ func routingFixture(t *testing.T, slug string) (wsID, primary, fallback, other s
 	t.Helper()
 	wsID = pauseWorkspaceFixture(t, slug)
 	runtime := dbfx.Runtime(t, slug, testutil.Cols{"workspace_id": wsID})
+	// Routing skips an unreachable agent (CHE-4117): the fixture runtime is live
+	// and its agents are workspace-visible, as the generic rule requires.
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id=$1`, runtime)
 	agent := func(name string) string {
-		return dbfx.Agent(t, slug+"-"+name, runtime, testutil.Cols{"workspace_id": wsID})
+		return dbfx.Agent(t, slug+"-"+name, runtime, testutil.Cols{"workspace_id": wsID, "visibility": "workspace"})
 	}
 	return wsID, agent("primary"), agent("fallback"), agent("other")
 }
@@ -90,6 +93,25 @@ func TestRoutingAgentFallsBackWhenPrimaryArchived(t *testing.T) {
 	}
 }
 
+// An unreachable routing agent at enqueue (no live heartbeat on its runtime)
+// moves the step to the next slot, as every background job does (CHE-4117).
+func TestRoutingAgentFallsBackWhenPrimaryRuntimeIsUnreachable(t *testing.T) {
+	wsID, primary, fallback, _ := routingFixture(t, "ra-unreachable")
+	putRoutingAgent(t, wsID, map[string]any{"agent_id": primary, "fallback_agent_id": fallback}, nil).Want(http.StatusOK)
+	dbfx.Exec(t, `UPDATE agent_runtime SET last_seen_at = now() - interval '1 hour' WHERE id = (SELECT runtime_id FROM agent WHERE id=$1)`, primary)
+	// The fixture's agents share one runtime: give the fallback its own, live one.
+	live := dbfx.Runtime(t, "ra-unreachable-live", testutil.Cols{"workspace_id": wsID})
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id=$1`, live)
+	dbfx.Exec(t, `UPDATE agent SET runtime_id=$2 WHERE id=$1`, fallback, live)
+	if got := routedAgent(t, wsID, "todo"); got != fallback {
+		t.Fatalf("unreachable primary routed to %q, want fallback %q", got, fallback)
+	}
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'offline' WHERE id=$1`, live)
+	if got := routedAgent(t, wsID, "todo"); got != "" {
+		t.Fatalf("both unreachable: routed to %q, want the step's own handler", got)
+	}
+}
+
 func TestRoutingAgentCustomStatuses(t *testing.T) {
 	wsID, primary, _, _ := routingFixture(t, "ra-statuses")
 	putRoutingAgent(t, wsID, map[string]any{"agent_id": primary, "statuses": []string{"backlog"}}, nil).Want(http.StatusOK)
@@ -153,7 +175,8 @@ func TestRoutingAgentTakesTheHandoffOfARoutingStep(t *testing.T) {
 	resetDefaultWorkflow(t)
 	stepAgent := seededReadyAgentID(t)
 	runtime := dbfx.Runtime(t, "ra-handoff", testutil.Cols{"workspace_id": testWorkspaceID})
-	routing := dbfx.Agent(t, "ra-handoff-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id=$1`, runtime)
+	routing := dbfx.Agent(t, "ra-handoff-routing", runtime, testutil.Cols{"workspace_id": testWorkspaceID, "visibility": "workspace"})
 	t.Cleanup(func() {
 		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})
@@ -181,8 +204,9 @@ func TestRoutingAgentOverrideIsPerWorkflowStep(t *testing.T) {
 	resetDefaultWorkflow(t)
 	stepAgent := seededReadyAgentID(t)
 	runtime := dbfx.Runtime(t, "ra-scoped", testutil.Cols{"workspace_id": testWorkspaceID})
-	primary := dbfx.Agent(t, "ra-scoped-primary", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
-	scoped := dbfx.Agent(t, "ra-scoped-scoped", runtime, testutil.Cols{"workspace_id": testWorkspaceID})
+	dbfx.Exec(t, `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id=$1`, runtime)
+	primary := dbfx.Agent(t, "ra-scoped-primary", runtime, testutil.Cols{"workspace_id": testWorkspaceID, "visibility": "workspace"})
+	scoped := dbfx.Agent(t, "ra-scoped-scoped", runtime, testutil.Cols{"workspace_id": testWorkspaceID, "visibility": "workspace"})
 	t.Cleanup(func() {
 		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'routing_agent' - 'background_agents' WHERE id=$1`, testWorkspaceID)
 	})

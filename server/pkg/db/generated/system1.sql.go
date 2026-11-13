@@ -231,6 +231,92 @@ func (q *Queries) MarkSystem1RoutingOverridden(ctx context.Context, issueID pgty
 	return err
 }
 
+const system1QualificationReport = `-- name: System1QualificationReport :many
+WITH latest AS (
+    SELECT DISTINCT ON (s.scope, s.predictor_id, s.predictor_version) s.id, s.workspace_id, s.scope, s.predictor_id, s.predictor_version, s.started_at, s.demoted_at
+    FROM system1_epoch s
+    WHERE s.workspace_id = $1
+      AND ($2::text IS NULL OR s.scope = $2)
+    ORDER BY s.scope, s.predictor_id, s.predictor_version, s.started_at DESC, s.id DESC
+), cases AS (
+    SELECT e.id AS epoch_id, p.predicted_key, o.reversed_at, l.label
+    FROM latest e
+    JOIN system1_prediction p ON p.workspace_id = e.workspace_id AND p.scope = e.scope
+        AND p.predictor_id = e.predictor_id AND p.predictor_version = e.predictor_version
+    JOIN system1_observation o ON o.id = p.observation_id AND o.created_at >= e.started_at
+    JOIN LATERAL (
+        SELECT sl.label FROM system1_label sl
+        WHERE sl.observation_id = o.id AND sl.kind = 'burn_in' AND sl.superseded_at IS NULL
+        ORDER BY sl.created_at DESC, sl.id DESC LIMIT 1
+    ) l ON true
+)
+SELECT e.scope::text AS scope, e.predictor_id::text AS predictor_id, e.predictor_version::text AS predictor_version,
+    e.started_at::timestamptz AS started_at, (e.demoted_at IS NOT NULL)::boolean AS demoted,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL)::bigint AS denominator,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key = c.label)::bigint AS agreed,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NULL)::bigint AS abstained,
+    count(c.epoch_id) FILTER (WHERE c.label = 'unmapped')::bigint AS unmapped,
+    count(c.epoch_id) FILTER (WHERE c.label <> 'unmapped' AND c.predicted_key IS NOT NULL AND c.reversed_at IS NOT NULL)::bigint AS reversed
+FROM latest e
+LEFT JOIN cases c ON c.epoch_id = e.id
+GROUP BY e.id, e.scope, e.predictor_id, e.predictor_version, e.started_at, e.demoted_at
+ORDER BY e.scope, e.predictor_id, e.predictor_version
+`
+
+type System1QualificationReportParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Scope       pgtype.Text `json:"scope"`
+}
+
+type System1QualificationReportRow struct {
+	Scope            string             `json:"scope"`
+	PredictorID      string             `json:"predictor_id"`
+	PredictorVersion string             `json:"predictor_version"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	Demoted          bool               `json:"demoted"`
+	Denominator      int64              `json:"denominator"`
+	Agreed           int64              `json:"agreed"`
+	Abstained        int64              `json:"abstained"`
+	Unmapped         int64              `json:"unmapped"`
+	Reversed         int64              `json:"reversed"`
+}
+
+// Qualification counts per (scope, predictor, version), over the latest epoch of each (CHE-4383 B5).
+// A case is one prediction row whose observation was created at or after the epoch start and has a
+// label of record: the newest label row that is not superseded. `unmapped` and abstentions are
+// counted apart; the denominator is every non-abstaining prediction with a mapped label, so a
+// label of another protocol or `unknown` is a disagreement, never an exclusion.
+func (q *Queries) System1QualificationReport(ctx context.Context, arg System1QualificationReportParams) ([]System1QualificationReportRow, error) {
+	rows, err := q.db.Query(ctx, system1QualificationReport, arg.WorkspaceID, arg.Scope)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []System1QualificationReportRow{}
+	for rows.Next() {
+		var i System1QualificationReportRow
+		if err := rows.Scan(
+			&i.Scope,
+			&i.PredictorID,
+			&i.PredictorVersion,
+			&i.StartedAt,
+			&i.Demoted,
+			&i.Denominator,
+			&i.Agreed,
+			&i.Abstained,
+			&i.Unmapped,
+			&i.Reversed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const system1ReportByClass = `-- name: System1ReportByClass :many
 SELECT class::text AS class,
     count(*) FILTER (WHERE choice_key IS NOT NULL)::bigint AS decided,

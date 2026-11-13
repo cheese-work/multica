@@ -14,11 +14,80 @@ import (
 // the caller's stdout and stderr; Log, when set, receives one JSON line per
 // guarded call.
 type Engine struct {
+	// Policy may carry org, repo and path layers; Exec resolves it for the
+	// call's target. Read it through pol().
 	Policy *Policy
 	Runner Runner
 	Log    io.Writer
 	Out    io.Writer
 	Err    io.Writer
+
+	eff  *Policy // Policy resolved for the current call
+	path string  // the call's directory inside its repository
+
+	rulesNote string // what the last repo-rules read saw, for the decision log
+	noRepair  bool   // CheckPR: read only, never edit a PR
+}
+
+func (e *Engine) pol() *Policy {
+	if e.eff != nil {
+		return e.eff
+	}
+	return e.Policy
+}
+
+// target tells which repository a call acts on and, when a path layer needs it,
+// the directory inside it. The repository is the -R/--repo flag, else the repo
+// of a PR URL given to `gh pr <verb>`, else the working directory's. ok is
+// false when a required fact cannot be learned; the caller refuses the call.
+func (e *Engine) target(ctx context.Context, args []string) (t Target, ok bool, why string) {
+	cwdRepo := ""
+	cwd := func() bool {
+		if cwdRepo != "" {
+			return true
+		}
+		var rv struct {
+			NameWithOwner string `json:"nameWithOwner"`
+		}
+		if err := e.ghJSON(ctx, &rv, "repo", "view", "--json", "nameWithOwner"); err != nil || rv.NameWithOwner == "" {
+			return false
+		}
+		cwdRepo = rv.NameWithOwner
+		return true
+	}
+	for i, a := range args {
+		switch {
+		case (a == "-R" || a == "--repo") && i+1 < len(args):
+			t.Repo = args[i+1]
+		case strings.HasPrefix(a, "--repo="):
+			t.Repo = strings.TrimPrefix(a, "--repo=")
+		}
+	}
+	if t.Repo == "" && len(args) > 0 && args[0] == "pr" {
+		if _, pos := prSpec.scan(args); len(pos) > 2 {
+			if m := prRepoRe.FindStringSubmatch(pos[2]); m != nil {
+				t.Repo = m[1]
+			}
+		}
+	}
+	if t.Repo == "" {
+		if !cwd() {
+			return t, false, "cannot tell which repository this call targets; run it inside a clone or pass -R owner/name"
+		}
+		t.Repo = cwdRepo
+	}
+	if !e.Policy.hasPathLayer(t.Repo) {
+		return t, true, ""
+	}
+	if !cwd() || !strings.EqualFold(cwdRepo, t.Repo) {
+		return t, false, "the policy has path layers for " + t.Repo + " and this call runs outside it, so the directory cannot be checked; run it from a clone of " + t.Repo
+	}
+	prefix, ok := e.git(ctx, "rev-parse", "--show-prefix")
+	if !ok {
+		return t, false, "the policy has path layers for " + t.Repo + " and git cannot tell the working directory inside it"
+	}
+	t.Path = strings.TrimSuffix(prefix, "/")
+	return t, true, ""
 }
 
 // decision is what a plugin concluded about one call.
@@ -53,7 +122,23 @@ type logRecord struct {
 // Exec runs tool with args under the policy and returns the exit code the
 // caller should use.
 func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, error) {
+	if e.Policy.lockdown {
+		fmt.Fprintf(e.Err, "guard: refused: %s\n", lockdownMessage)
+		return 2, nil
+	}
 	args = e.expandAlias(ctx, tool, args)
+	t := Target{}
+	// ponytail: one extra gh repo view and git call per guarded call when the
+	// policy has layers; cache per run if that shows up.
+	if len(e.Policy.Layers) > 0 {
+		var ok bool
+		var why string
+		if t, ok, why = e.target(ctx, args); !ok {
+			fmt.Fprintln(e.Err, "guard: refused: "+why)
+			return 2, nil
+		}
+	}
+	e.eff, e.path = e.Policy.Resolve(t), t.Path
 	pl := e.match(tool, args)
 	if pl == nil {
 		return e.Runner.Stream(ctx, tool, args...)
@@ -71,6 +156,9 @@ func (e *Engine) Exec(ctx context.Context, tool string, args []string) (int, err
 		if code, err = e.Runner.Stream(ctx, tool, d.args...); err != nil {
 			return 0, err
 		}
+	}
+	if d.note == "" {
+		d.note = e.rulesNote
 	}
 	e.log(pl, tool, args, d)
 	return code, nil
@@ -107,8 +195,8 @@ func (e *Engine) decide(ctx context.Context, pl *Plugin, args []string) (decisio
 // match returns the first plugin whose tool and leading words fit the call.
 func (e *Engine) match(tool string, args []string) *Plugin {
 	lead := leadingWords(args)
-	for i := range e.Policy.Plugins {
-		pl := &e.Policy.Plugins[i]
+	for i := range e.pol().Plugins {
+		pl := &e.pol().Plugins[i]
 		sub := pl.Match.Subcommand
 		if pl.Match.Tool != tool || len(sub) > len(lead) {
 			continue

@@ -310,8 +310,10 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// path from this service to a row in a foreign workspace. A forged parent or
 	// project ID is rejected before we touch the issue counter.
 	projectID := p.ProjectID
+	var parent db.Issue
 	if p.ParentIssueID.Valid {
-		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		var err error
+		parent, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
 			ID:          p.ParentIssueID,
 			WorkspaceID: p.WorkspaceID,
 		})
@@ -403,6 +405,34 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	// inside it too, and the project switches that commit after that check.
 	// Resolved before the custom-status guard below so that guard checks the
 	// status actually written.
+	// The project's A/B split picks the workflow here, under the project lock
+	// and before the workflow is read, so everything after it (status, handler,
+	// entry gate) runs on the selected workflow. The number is drawn first
+	// because a root's parity decides: project lock, then counter. A refused
+	// create rolls the number back with the transaction. (CHE-5264)
+	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
+	if err != nil {
+		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
+	}
+	var split splitChoice
+	if projectID.Valid {
+		project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: p.WorkspaceID})
+		if err != nil {
+			return IssueCreateResult{}, err
+		}
+		named := p.AssigneeType
+		namedID := p.AssigneeID
+		if p.HandoffResolver != nil && !p.AssigneeNamed {
+			named, namedID = pgtype.Text{}, pgtype.UUID{}
+		}
+		split = chooseSplit(DecodeWorkflowSplit(project.WorkflowSplit), time.Now(), p.WorkflowID.Valid, named, namedID, p.ParentIssueID.Valid, parent.WorkflowID, issueNumber)
+	}
+	// A split-picked override needs no caller right and may leave the status
+	// the caller asked for out of arm B; only a caller's override is an error.
+	callerOverride := p.WorkflowID.Valid
+	if split.WorkflowID.Valid {
+		p.WorkflowID = split.WorkflowID
+	}
 	def, workflowProject, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, p.WorkflowID, projectID)
 	if err != nil {
 		return IssueCreateResult{}, err
@@ -418,7 +448,7 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if def != nil && def.Limits() && (p.StatusOmitted || !def.Has(p.Status)) {
 		// An override is the caller's explicit choice: a status it does not
 		// list is an error, never a silent restart.
-		if p.WorkflowID.Valid && !p.StatusOmitted {
+		if callerOverride && !p.StatusOmitted {
 			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
 		}
 		p.Status = def.Start()
@@ -483,11 +513,6 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	if found {
 		dup := duplicate
 		return IssueCreateResult{DuplicateIssue: &dup}, ErrActiveDuplicate
-	}
-
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
-	if err != nil {
-		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
 	}
 
 	// New issues sort to the top of their (workspace, status) column for
@@ -561,6 +586,14 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 			return IssueCreateResult{}, ErrIssuePropertiesTooLarge
 		}
 		return IssueCreateResult{}, fmt.Errorf("create issue: %w", err)
+	}
+	if split.Action != "" {
+		details, _ := json.Marshal(map[string]string{"rule": split.Rule})
+		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Action: split.Action, Details: details,
+		}); err != nil {
+			return IssueCreateResult{}, fmt.Errorf("record workflow split: %w", err)
+		}
 	}
 	if recordEntry != nil {
 		if err := recordEntry(ctx, qtx, issue); err != nil {
