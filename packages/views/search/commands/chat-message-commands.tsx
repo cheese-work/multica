@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Button } from "@multica/ui/components/ui/button";
 import { Loader2, MessageSquare } from "@multica/ui/icons";
 import { chatSessionsOptions } from "@multica/core/chat/queries";
 import { chatSearchFailure, chatSearchInfiniteOptions, type ChatSearchFailure } from "@multica/core/chat/search";
@@ -106,13 +107,10 @@ export function ChatMessageStatus({ search }: { search: ChatMessageSearch }) {
     <div role="alert" className="flex flex-col items-start gap-1.5 px-4 py-2 text-caption text-muted-foreground">
       <p className="font-medium text-foreground">{t(($) => $.messages.error_title)}</p>
       <p>{search.failure === "timed_out" ? t(($) => $.messages.error_timed_out) : t(($) => $.messages.error_failed)}</p>
-      <button
-        type="button"
-        onClick={search.retry}
-        className="rounded-xs px-1.5 py-0.5 font-medium text-foreground hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
+      {/* The design lock draws a 2px ring on Retry; Button's default is 3px. */}
+      <Button variant="ghost" size="xs" onClick={search.retry} className="focus-visible:ring-2">
         {t(($) => $.messages.retry)}
-      </button>
+      </Button>
     </div>
   );
 }
