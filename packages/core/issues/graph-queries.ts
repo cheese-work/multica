@@ -45,6 +45,7 @@ async function fetchChunk(
   opts: RelationsOptions,
   sinks: { nodes: Map<string, RelationsNode>; edges: Map<string, RelationsEdge> },
   signal?: AbortSignal,
+  onPage?: () => void,
 ) {
   let cursor: string | null = null;
   do {
@@ -64,6 +65,7 @@ async function fetchChunk(
     }
     for (const e of res.edges) sinks.edges.set(`${e.type}|${e.source}|${e.target}`, e);
     cursor = res.next_cursor;
+    onPage?.();
   } while (cursor);
 }
 
@@ -72,25 +74,28 @@ async function fetchChunk(
  * Edges dedupe by (type, source, target). A node is `context` only if every
  * response saw it as context. A failed chunk keeps the pages that loaded and
  * lists its ids in `notLoaded`; a retry refetches everything. Aborts rethrow.
+ * `onProgress` gets the merged result so far after each page, so a caller can show a partial count while paging.
  */
 export async function fetchRelationsBatched(
   wsId: string,
   ids: readonly string[],
   opts: RelationsOptions,
   signal?: AbortSignal,
+  onProgress?: (partial: RelationsResult) => void,
 ): Promise<RelationsResult> {
   const sinks = { nodes: new Map<string, RelationsNode>(), edges: new Map<string, RelationsEdge>() };
   const notLoaded: string[] = [];
+  const snapshot = (): RelationsResult => ({ nodes: [...sinks.nodes.values()], edges: [...sinks.edges.values()], incomplete: notLoaded.length > 0, notLoaded: [...notLoaded] });
   for (let i = 0; i < ids.length; i += RELATIONS_BATCH_CHUNK) {
     const chunk = ids.slice(i, i + RELATIONS_BATCH_CHUNK);
     try {
-      await fetchChunk(wsId, chunk, opts, sinks, signal);
+      await fetchChunk(wsId, chunk, opts, sinks, signal, onProgress && (() => onProgress(snapshot())));
     } catch (e) {
       if (isAbort(e) || signal?.aborted) throw e;
       notLoaded.push(...chunk);
     }
   }
-  return { nodes: [...sinks.nodes.values()], edges: [...sinks.edges.values()], incomplete: notLoaded.length > 0, notLoaded };
+  return snapshot();
 }
 
 export function issueRelationsOptions(wsId: string, ids: readonly string[], opts: RelationsOptions) {
