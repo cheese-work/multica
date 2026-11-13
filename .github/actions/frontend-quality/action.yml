@@ -43,6 +43,24 @@ runs:
           node scripts/design/check-copy.mjs --base FETCH_HEAD
         fi
 
+    - name: Check UI pattern reference (ui-pattern-ref)
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        BASE_REF: ${{ github.base_ref }}
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        EVENT_PR_BODY: ${{ github.event.pull_request.body }}
+      run: |
+        node --test scripts/design/check-ui-pattern-ref.test.mjs
+        # Only a pull_request has a description and a base diff. HEAD is the merge ref, so base tip..HEAD is the PR change.
+        if [ "$EVENT" = pull_request ]; then
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          # Read the live description so a rerun sees an edited body; fall back to the event payload.
+          PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" -q .body 2>/dev/null || printf '%s' "$EVENT_PR_BODY")" \
+            node scripts/design/check-ui-pattern-ref.mjs --base FETCH_HEAD
+        fi
+
     # Keep existing knip findings advisory in either caller.
     - name: Check for dead code and phantom dependencies (knip)
       continue-on-error: true

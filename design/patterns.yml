@@ -39,7 +39,7 @@
   status: active
   components: ["packages/views/issues/components/pickers/property-picker.tsx", "packages/views/common/pill-button.tsx"]
   surfaces: ["concurrency-picker", "visibility-picker", "batch-workflow-picker", "wakeup-pickers", "resource-label-picker"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=eYa0Zk4VLF"}
 - id: ict-timestamp
   intent: "One formatter for ICT times with the ICT suffix."
   origin: fork
@@ -55,14 +55,14 @@
   components: []
   surfaces: ["autopilot-dialog-lazy", "deferred-content-editor", "lazy-content-editor", "issue-detail-lazy", "lazy-search-command"]
   build: "One wrapper (3 near-copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Y1a5G3La2l"}
 - id: issue-mention-chip
   intent: "Chip that links an issue."
   origin: fork
   status: active
   components: ["packages/views/issues/components/issue-chip.tsx"]
   surfaces: ["chat-session-mention-card", "wakeup-event-row", "compact-issue-chips-context", "comment-mention-card"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Lg3vxcesyO"}
 - id: decision-receipt-card
   intent: "Card that records a decision ask, answer or withdrawal."
   origin: fork
@@ -70,21 +70,21 @@
   components: []
   surfaces: ["decision-answer-content", "decision-dm-card", "decision-withdrawal-card", "decision-quote-card"]
   build: "One shared card frame (3 copies of one recipe)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=MzyQik65fF"}
 - id: icon-button-action
   intent: "Icon-only action button."
   origin: fork
   status: active
   components: ["packages/ui/components/common/icon-button.tsx", "packages/ui/components/ui/button.tsx"]
   surfaces: ["chat-preset-picker", "html-viewer", "issue-inbox-restore-button", "media-context"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=_u8tSKVqwz"}
 - id: collapsible-section
   intent: "Toggle that folds a section."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/collapsible.tsx"]
   surfaces: ["continuation-block", "predecessor-dms", "project-wakeups-section", "workspace-wakeup-rules"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=oWmmYrlE7R"}
 - id: settings-select-row
   intent: "Settings row with a select."
   origin: fork
@@ -92,7 +92,7 @@
   components: ["packages/views/settings/components/settings-layout.tsx", "packages/ui/components/ui/select.tsx"]
   surfaces: ["runtime-profile-field", "idle-guard-rows", "routing-agent-rows", "runtime-profile-row"]
   open: "runtime-profile-field omits SettingsRow."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=XcnDkQZ9_Q"}
 - id: pill-menu
   intent: "Pill-shaped menu trigger."
   origin: fork
@@ -100,7 +100,7 @@
   components: ["packages/ui/components/ui/select.tsx", "packages/views/issues/components/pickers/property-picker.tsx"]
   surfaces: ["wakeup-condition-params", "wakeup-fields", "wakeup-pickers", "workflow-choice-pill"]
   open: "pillClass in wakeup-pickers is the local source; fold it into the shared pill."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=2g_6AmC_vS"}
 - id: decision-action-approval
   intent: "Approve or reject a decision action."
   origin: fork

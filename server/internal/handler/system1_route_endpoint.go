@@ -22,12 +22,15 @@ import (
 
 // CHE-4551 (S3 of CHE-4439): POST /api/issues/{id}/route moves an issue's
 // status, records why, and writes the System 1 route label in one transaction.
-// Status only; an explicit owner is S4.
+// CHE-4552 (S4): an explicit owner (owner_type + owner_id) replaces the
+// workflow's handler, and a route may keep the status and change only the owner.
 
 const routeReasonMaxChars = 500
 
 type routeIssueRequest struct {
 	Status           string   `json:"status"`
+	OwnerType        string   `json:"owner_type"`
+	OwnerID          string   `json:"owner_id"`
 	Reason           string   `json:"reason"`
 	Confidence       *float64 `json:"confidence"`
 	ExpectedRevision *int64   `json:"expected_revision"`
@@ -99,6 +102,14 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ownerGiven := req.OwnerType != "" || req.OwnerID != ""
+	owner := pgtype.UUID{}
+	if ownerGiven {
+		var ok bool
+		if owner, ok = parseRouteOwner(w, req); !ok {
+			return
+		}
+	}
 	params := db.UpdateIssueParams{
 		SourceTaskID:  h.wakeupSourceTaskID(r),
 		ID:            prev.ID,
@@ -110,6 +121,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		ParentIssueID: prev.ParentIssueID,
 		ProjectID:     prev.ProjectID,
 		Stage:         prev.Stage,
+	}
+	if ownerGiven {
+		params.AssigneeType, params.AssigneeID = pgtype.Text{String: req.OwnerType, Valid: true}, owner
 	}
 	if req.ExpectedRevision != nil {
 		if *req.ExpectedRevision < 1 {
@@ -131,7 +145,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 	callerRun := h.agentRunOnIssue(r, actorType, prev)
 	caller := workflowCaller{run: callerRun, agent: actorType == "agent"}
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prev, &params, true, false, false, caller)
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prev, &params, true, ownerGiven, false, caller)
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
 			return
@@ -142,14 +156,15 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	// A project move can remap the status; the write below is what happened.
 	statusKey = params.Status.String
-	if statusKey == prev.Status {
-		writeErrorCode(w, http.StatusConflict, "status_unchanged", "the issue is already in "+statusKey)
+	statusMoved := statusKey != prev.Status
+	if !statusMoved && !routeOwnerChanges(prev, params) {
+		writeErrorCode(w, http.StatusConflict, "status_unchanged", "the issue is already in "+statusKey+" with this owner")
 		return
 	}
 	if workflowWrite != nil {
 		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
 	}
-	if handoff != nil {
+	if ownerGiven || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 			writeError(w, status, msg)
 			return
@@ -157,16 +172,19 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	suppress := req.SuppressRun
-	writeCtx, handed := withWakeupHandedTo(h.actingTaskContext(r), h.handedToAgentIfRun(r, actorType, actorID, prev, params, false, handoff != nil, suppress))
+	writeCtx, handed := withWakeupHandedTo(h.actingTaskContext(r), h.handedToAgentIfRun(r, actorType, actorID, prev, params, ownerGiven, handoff != nil, suppress))
 	writeCtx = withBudgetActor(writeCtx, r)
-	if handoff != nil {
+	if ownerGiven || handoff != nil {
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
 			return
 		}
 	}
-	release, ok := h.beginRunBudgetMove(w, r, actorType, prev, statusKey)
-	if !ok {
-		return
+	release := func() {}
+	if statusMoved {
+		var ok bool
+		if release, ok = h.beginRunBudgetMove(w, r, actorType, prev, statusKey); !ok {
+			return
+		}
 	}
 	defer release()
 
@@ -176,7 +194,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
-	hook := &routeCapture{Via: "route", DecisionSource: "human", Caller: caller, Confidence: pgtype.Float4{Float32: float32(*req.Confidence), Valid: true}}
+	hook := &routeCapture{Via: "route", DecisionSource: "human", Caller: caller, OwnerExplicit: ownerGiven, Confidence: pgtype.Float4{Float32: float32(*req.Confidence), Valid: true}}
 	if callerRun != nil {
 		hook.RunStep = callerRun.WorkflowStep.String
 	}
@@ -191,7 +209,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	next := prev
 	next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
 	var overlay *service.PreparedRuntimeMCPOverlay
-	if !suppress && handoff != nil && params.AssigneeType.String == "agent" {
+	if !suppress && (handoff != nil || ownerGiven) && params.AssigneeType.String == "agent" {
 		next.Status = statusKey
 		overlay = h.TaskService.PrepareIssueRunOverlay(writeCtx, next, memberActorUserID(actorType, actorID))
 	}
@@ -221,16 +239,19 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		keepLockedFields(&params, locked, handoff != nil)
+		keepLockedFields(&params, locked, handoff != nil || ownerGiven)
 		if updated, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite); err != nil {
 			return err
 		}
 		// The record spends its pre-assigned id; the status_changed row carries it.
-		if rec.activity == nil {
-			return errors.New("route: the status write recorded no change")
+		// An owner-only route moves no status, so it has no event.
+		if statusMoved {
+			if rec.activity == nil {
+				return errors.New("route: the status write recorded no change")
+			}
+			eventID = rec.activity.ID
 		}
-		eventID = rec.activity.ID
-		if actorType != "member" {
+		if statusMoved && actorType != "member" {
 			if err := service.GrantRunBudgetStep(writeCtx, q, updated, prev.Status, dispatch.BudgetRecoveryCaller(writeCtx)); err != nil {
 				return err
 			}
@@ -238,7 +259,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		assigneeChanged := prev.AssigneeType.String != updated.AssigneeType.String || uuidToString(prev.AssigneeID) != uuidToString(updated.AssigneeID)
 		var willRun bool
 		runTrigger, willRun = th.IssueService.WillEnqueueRun(writeCtx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: prev.Status, AssigneeChanged: assigneeChanged || handoff != nil, StatusChanged: true, EnteredHandoffStep: handoff != nil, RecordCoalesced: true,
+			Issue: updated, PrevStatus: prev.Status, AssigneeChanged: assigneeChanged || handoff != nil, StatusChanged: statusMoved, EnteredHandoffStep: handoff != nil, RecordCoalesced: true,
 		}, h.issueTriggerWriteProbe(r, actorType, actorID, updated))
 		if willRun && !suppress {
 			var notConfirmed *service.StopNotConfirmedError
@@ -262,11 +283,15 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 		}
-		details, err := json.Marshal(map[string]any{
+		detail := map[string]any{
 			"from_status": prev.Status, "to_status": updated.Status,
 			"reason": req.Reason, "confidence": *req.Confidence,
 			"event_id": uuidToString(eventID),
-		})
+		}
+		if ownerGiven {
+			detail["owner_type"], detail["owner_id"] = req.OwnerType, req.OwnerID
+		}
+		details, err := json.Marshal(detail)
 		if err != nil {
 			return err
 		}
@@ -304,7 +329,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]any{
 		"issue":            h.issueResponseWithCategory(r.Context(), updated),
 		"assignee_changed": prev.AssigneeType.String != updated.AssigneeType.String || uuidToString(prev.AssigneeID) != uuidToString(updated.AssigneeID),
-		"status_changed":   true,
+		"status_changed":   statusMoved,
 		"prev_status":      prev.Status,
 		"creator_type":     prev.CreatorType,
 		"creator_id":       uuidToString(prev.CreatorID),
@@ -350,9 +375,10 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 // keepLockedFields copies the fields a status route does not change from the
-// locked row. A handoff sets the assignee, so it keeps the workflow's choice.
-func keepLockedFields(params *db.UpdateIssueParams, locked db.Issue, handoff bool) {
-	if !handoff {
+// locked row. A handoff or an explicit owner sets the assignee, so it keeps
+// that choice.
+func keepLockedFields(params *db.UpdateIssueParams, locked db.Issue, ownerSet bool) {
+	if !ownerSet {
 		params.AssigneeType, params.AssigneeID = locked.AssigneeType, locked.AssigneeID
 	}
 	params.StartDate, params.DueDate = locked.StartDate, locked.DueDate
@@ -378,4 +404,30 @@ func (h *Handler) canInvokeAssignedAgent(ctx context.Context, r *http.Request, i
 		return false
 	}
 	return h.canInvokeAgent(ctx, agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), uuidToString(issue.WorkspaceID))
+}
+
+// parseRouteOwner reads the explicit owner: a type and an id, always together.
+// Whether the caller may assign to it is validateAssigneePair's call.
+func parseRouteOwner(w http.ResponseWriter, req routeIssueRequest) (pgtype.UUID, bool) {
+	if req.OwnerType == "" || req.OwnerID == "" {
+		writeError(w, http.StatusBadRequest, "owner_type and owner_id must be provided together")
+		return pgtype.UUID{}, false
+	}
+	switch req.OwnerType {
+	case "agent", "squad", "member":
+	default:
+		writeError(w, http.StatusBadRequest, "owner_type must be agent, squad or member")
+		return pgtype.UUID{}, false
+	}
+	id, err := util.ParseUUID(req.OwnerID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "owner_id must be a UUID")
+		return pgtype.UUID{}, false
+	}
+	return id, true
+}
+
+// routeOwnerChanges reports whether the write's owner differs from the issue's.
+func routeOwnerChanges(prev db.Issue, params db.UpdateIssueParams) bool {
+	return prev.AssigneeType.String != params.AssigneeType.String || prev.AssigneeID != params.AssigneeID
 }

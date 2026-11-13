@@ -60,7 +60,7 @@ func (p Pipeline) Process(ctx context.Context, in Input, h History) (Result, err
 	if err := ws.Scan(in.Run.WorkspaceID); err != nil {
 		return res, fmt.Errorf("ciwatch: workspace id: %w", err)
 	}
-	return res, p.Tx(ctx, func(w Writers) error {
+	if err := p.Tx(ctx, func(w Writers) error {
 		// Neither table has a foreign key to workspace. The KEY SHARE lock holds
 		// the row until commit, so a delete that wins the race makes this fail
 		// before any insert, and one that comes later waits for the commit.
@@ -80,5 +80,9 @@ func (p Pipeline) Process(ctx context.Context, in Input, h History) (Result, err
 		}
 		_, err := w.Observations.CreateSystem1CIObservation(ctx, *obs)
 		return err
-	})
+	}); err != nil {
+		return res, err
+	}
+	// The label needs the committed row.
+	return res, p.Observer.applyLabel(ctx, in.Run, res)
 }

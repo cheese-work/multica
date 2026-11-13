@@ -457,6 +457,9 @@ deleted_ci_watch_actions AS (
 deleted_ci_signature_owners AS (
     DELETE FROM ci_signature_owner WHERE workspace_id = $1
 ),
+deleted_ci_flake_increments AS (
+    DELETE FROM ci_flake_increment WHERE workspace_id = $1
+),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),

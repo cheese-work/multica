@@ -35,6 +35,7 @@ func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 		Wakeup:               s.Wakeup,
 		PRSnapshotsEnabled:   s.PRSnapshotsEnabled,
 		WorkflowEdges:        s.WorkflowEdges,
+		PRMergeOwed:          s.PRMergeOwed,
 		Entitlements:         s.Entitlements,
 		SourceContextStorage: s.SourceContextStorage,
 		FeatureFlags:         s.FeatureFlags,

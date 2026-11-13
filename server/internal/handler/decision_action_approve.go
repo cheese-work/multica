@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -74,6 +75,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	issueProjectSetType:      executeIssueProjectSetAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -108,6 +110,7 @@ type approveBody struct {
 	Assertion     json.RawMessage   `json:"assertion"`
 	Secrets       map[string]string `json:"secrets"`
 	PreviewSHA256 string            `json:"preview_sha256"`
+	Note          string            `json:"note"`
 }
 
 // ApproveDecisionAction runs a pending action after its human approves it.
@@ -121,6 +124,10 @@ func (handler *Handler) ApproveDecisionAction(writer http.ResponseWriter, reques
 	var body approveBody
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, maxApproveBody)).Decode(&body); err != nil {
 		writeError(writer, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if caller.note = strings.TrimSpace(body.Note); len(caller.note) > maxDecisionNote {
+		writeDecisionActionError(writer, errNoteTooLong)
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
@@ -466,7 +473,7 @@ func recordApproved(ctx context.Context, queries *db.Queries, caller decisionAct
 	if err != nil {
 		return db.DecisionAction{}, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, locked.current, finished, "approved", decisionActionSummary(finished)); err != nil {
+	if err := finishCardDecision(ctx, queries, caller, locked.current, finished, "approved", withDecisionNote(decisionActionSummary(finished), "Note", caller.note)); err != nil {
 		return db.DecisionAction{}, err
 	}
 	return finished, nil
@@ -770,6 +777,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 			return nil
 		}
 		return change.Publish(ctx, handler, action)
+	}
+	if action.ActionType == issueProjectSetType {
+		return handler.publishIssueProjectSet(ctx, action)
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)

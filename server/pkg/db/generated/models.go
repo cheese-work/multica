@@ -838,6 +838,17 @@ type CiFailureEvent struct {
 	Excerpts       []byte             `json:"excerpts"`
 }
 
+type CiFlakeIncrement struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RepoOwner     string             `json:"repo_owner"`
+	RepoName      string             `json:"repo_name"`
+	SignatureHash string             `json:"signature_hash"`
+	Reason        string             `json:"reason"`
+	Ref           string             `json:"ref"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
 type CiSignatureOwner struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -873,6 +884,8 @@ type CiWatchAction struct {
 	DestinationID     pgtype.Text        `json:"destination_id"`
 	Reason            string             `json:"reason"`
 	Diagnostic        string             `json:"diagnostic"`
+	PostOutcome       string             `json:"post_outcome"`
+	FollowupAt        pgtype.Timestamptz `json:"followup_at"`
 }
 
 type CiWatchConfig struct {
@@ -1058,29 +1071,33 @@ type DaemonToken struct {
 }
 
 type DecisionAction struct {
-	ID                   pgtype.UUID        `json:"id"`
-	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
-	DecisionRequestID    pgtype.UUID        `json:"decision_request_id"`
-	ActionType           string             `json:"action_type"`
-	ActionVersion        int32              `json:"action_version"`
-	Params               []byte             `json:"params"`
-	Preconditions        []byte             `json:"preconditions"`
-	SecretSlots          []byte             `json:"secret_slots"`
-	PayloadSha256        string             `json:"payload_sha256"`
-	ExpiresAt            pgtype.Timestamptz `json:"expires_at"`
-	State                string             `json:"state"`
-	RequestedByAgentID   pgtype.UUID        `json:"requested_by_agent_id"`
-	RequestedByTaskID    pgtype.UUID        `json:"requested_by_task_id"`
-	ApprovedByUserID     pgtype.UUID        `json:"approved_by_user_id"`
-	ApprovedAt           pgtype.Timestamptz `json:"approved_at"`
-	ExecutedAt           pgtype.Timestamptz `json:"executed_at"`
-	WebauthnCredentialID pgtype.UUID        `json:"webauthn_credential_id"`
-	Result               []byte             `json:"result"`
-	ErrorCode            pgtype.Text        `json:"error_code"`
-	ErrorMessage         pgtype.Text        `json:"error_message"`
-	PostCommitDoneAt     pgtype.Timestamptz `json:"post_commit_done_at"`
-	CreatedAt            pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	ID                         pgtype.UUID        `json:"id"`
+	WorkspaceID                pgtype.UUID        `json:"workspace_id"`
+	DecisionRequestID          pgtype.UUID        `json:"decision_request_id"`
+	ActionType                 string             `json:"action_type"`
+	ActionVersion              int32              `json:"action_version"`
+	Params                     []byte             `json:"params"`
+	Preconditions              []byte             `json:"preconditions"`
+	SecretSlots                []byte             `json:"secret_slots"`
+	PayloadSha256              string             `json:"payload_sha256"`
+	ExpiresAt                  pgtype.Timestamptz `json:"expires_at"`
+	State                      string             `json:"state"`
+	RequestedByAgentID         pgtype.UUID        `json:"requested_by_agent_id"`
+	RequestedByTaskID          pgtype.UUID        `json:"requested_by_task_id"`
+	ApprovedByUserID           pgtype.UUID        `json:"approved_by_user_id"`
+	ApprovedAt                 pgtype.Timestamptz `json:"approved_at"`
+	ExecutedAt                 pgtype.Timestamptz `json:"executed_at"`
+	WebauthnCredentialID       pgtype.UUID        `json:"webauthn_credential_id"`
+	Result                     []byte             `json:"result"`
+	ErrorCode                  pgtype.Text        `json:"error_code"`
+	ErrorMessage               pgtype.Text        `json:"error_message"`
+	PostCommitDoneAt           pgtype.Timestamptz `json:"post_commit_done_at"`
+	CreatedAt                  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                  pgtype.Timestamptz `json:"updated_at"`
+	RevokedAt                  pgtype.Timestamptz `json:"revoked_at"`
+	RevokedByUserID            pgtype.UUID        `json:"revoked_by_user_id"`
+	RevokeReason               pgtype.Text        `json:"revoke_reason"`
+	RevokeWebauthnCredentialID pgtype.UUID        `json:"revoke_webauthn_credential_id"`
 }
 
 type DecisionAgentNotice struct {
@@ -2899,6 +2916,7 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	WorkflowSplit     []byte             `json:"workflow_split"`
 	Settings          []byte             `json:"settings"`
 }
 
@@ -2947,17 +2965,22 @@ type ProvenanceExportLog struct {
 }
 
 type ProviderBreaker struct {
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	Provider      string             `json:"provider"`
-	State         string             `json:"state"`
-	OpenedAt      pgtype.Timestamptz `json:"opened_at"`
-	NextProbeAt   pgtype.Timestamptz `json:"next_probe_at"`
-	CoolOffS      int32              `json:"cool_off_s"`
-	CanaryTaskID  pgtype.UUID        `json:"canary_task_id"`
-	TripEvidence  []pgtype.UUID      `json:"trip_evidence"`
-	Last5xxAt     pgtype.Timestamptz `json:"last_5xx_at"`
-	LastSuccessAt pgtype.Timestamptz `json:"last_success_at"`
-	Version       int64              `json:"version"`
+	WorkspaceID    pgtype.UUID          `json:"workspace_id"`
+	Provider       string               `json:"provider"`
+	State          string               `json:"state"`
+	OpenedAt       pgtype.Timestamptz   `json:"opened_at"`
+	NextProbeAt    pgtype.Timestamptz   `json:"next_probe_at"`
+	CoolOffS       int32                `json:"cool_off_s"`
+	CanaryTaskID   pgtype.UUID          `json:"canary_task_id"`
+	TripEvidence   []pgtype.UUID        `json:"trip_evidence"`
+	Last5xxAt      pgtype.Timestamptz   `json:"last_5xx_at"`
+	LastSuccessAt  pgtype.Timestamptz   `json:"last_success_at"`
+	Version        int64                `json:"version"`
+	CanaryCoolOffS int32                `json:"canary_cool_off_s"`
+	NextCanaryAt   pgtype.Timestamptz   `json:"next_canary_at"`
+	CanaryStarts   []pgtype.Timestamptz `json:"canary_starts"`
+	LastReleaseAt  pgtype.Timestamptz   `json:"last_release_at"`
+	DrainCutoffAt  pgtype.Timestamptz   `json:"drain_cutoff_at"`
 }
 
 type ProviderBreakerAudit struct {
@@ -3374,6 +3397,9 @@ type System1Observation struct {
 	ReversedAt          pgtype.Timestamptz `json:"reversed_at"`
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	EventID             pgtype.UUID        `json:"event_id"`
+	OutcomeLabel        pgtype.Text        `json:"outcome_label"`
+	TimeToGreenMs       pgtype.Int8        `json:"time_to_green_ms"`
+	LabeledAt           pgtype.Timestamptz `json:"labeled_at"`
 }
 
 type System1Prediction struct {

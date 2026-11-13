@@ -1159,7 +1159,7 @@ SET settings = CASE WHEN $1::int IS NULL THEN settings - 'wip_limit'
                     ELSE jsonb_set(settings, '{wip_limit}', to_jsonb($1::int)) END,
     updated_at = now()
 WHERE id = $2 AND workspace_id = $3
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, settings
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, settings
 `
 
 type SetProjectWIPLimitParams struct {
@@ -1188,6 +1188,7 @@ func (q *Queries) SetProjectWIPLimit(ctx context.Context, arg SetProjectWIPLimit
 		&i.DueDate,
 		&i.WorkflowID,
 		&i.DecisionDelegates,
+		&i.WorkflowSplit,
 		&i.Settings,
 	)
 	return i, err
