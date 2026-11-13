@@ -1569,6 +1569,7 @@ type GithubPullRequest struct {
 	ReviewHeadSha       string             `json:"review_head_sha"`
 	ReviewID            int64              `json:"review_id"`
 	ReviewAt            pgtype.Timestamptz `json:"review_at"`
+	MergeCommitSha      string             `json:"merge_commit_sha"`
 }
 
 type GithubPullRequestCheckRun struct {
