@@ -396,6 +396,22 @@
     "empty": "Aún no hay tareas planificadas. Establece una fecha de inicio o de entrega en cualquier tarea para verla en la línea temporal.",
     "inverted_dates_warning": "La fecha de inicio es posterior a la de entrega; la barra se muestra de mínimo a máximo."
   },
+  "swimlane2": {
+    "edge_wakeup": "Reactivación",
+    "edge_dependency": "Dependencia",
+    "edge_parent": "Padre / hijo",
+    "edge_mention": "Mención",
+    "edge_types": "Tipos de vínculo",
+    "relations_incomplete": "Relaciones incompletas: algunos vínculos no se cargaron.",
+    "more_issues": "Hay más incidencias sin cargar.",
+    "retry": "Reintentar",
+    "load_more": "Cargar más",
+    "no_lane": "Sin valor"
+  },
+  "gantt2": {
+    "clipped_start": "Comenzó antes de esta ventana",
+    "now": "Ahora"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {

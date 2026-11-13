@@ -27,6 +27,7 @@
     "queue_send_tooltip": "Encolar mensaje",
     "stop_tooltip": "Detener",
     "send_failed_toast": "No se ha podido enviar el mensaje",
+    "send_unconfirmed_toast": "No se pudo confirmar el envío. Tu borrador se conserva; vuelve a enviarlo para reintentar sin duplicados.",
     "send_blocked_toast": "Mensaje no enviado: ya no tienes permiso para usar este agente",
     "runtime_required_toast": "Mensaje no enviado: vincula primero un runtime a este agente",
     "runtime_access_denied_toast": "Mensaje no enviado: este agente no puede ejecutarse en su runtime privado. Haz el runtime público, o reenvía o copia el agente a un runtime que su propietario pueda usar",
@@ -46,7 +47,10 @@
     "rename_session_required_toast": "Start a chat before renaming it",
     "placeholder_archived_send": "This DM is archived. Send to unarchive it first…",
     "command_no_arguments": "/{{command}} takes no arguments. Send it on its own or remove the leading /.",
-    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}."
+    "command_no_attachments": "/{{command}} cannot be sent with attachments. Remove attachments before running /{{command}}.",
+    "later_set_toast": "Pospuesto hasta {{time}} ICT",
+    "later_bad_duration": "Usa una duración de 1s a 7d, por ejemplo /later 2h",
+    "later_failed_toast": "No se pudo posponer. Inténtalo de nuevo."
   },
   "queue": {
     "title_one": "{{count}} mensaje en cola",
@@ -363,6 +367,17 @@
       "title": "Unclassified",
       "replies_one": "{{count}} reply",
       "replies_other": "{{count}} replies"
+    },
+    "actions": {
+      "done": "Hecho",
+      "later": "Más tarde",
+      "done_all": "Marcar todo como hecho",
+      "undo": "Deshacer",
+      "toast_one": "{{count}} DM marcado como hecho",
+      "toast_other": "{{count}} DM marcados como hechos",
+      "failed": "No se pudo actualizar. Inténtalo de nuevo.",
+      "done_aria": "Marcar como hecho: {{title}}",
+      "later_aria": "Recordármelo más tarde: {{title}}"
     }
   },
   "supplement": {
@@ -393,8 +408,6 @@
   "annotations": {
     "one_request": "Send comments on one decision request at a time.",
     "source_label": "Message from {{name}}",
-    "add": "Add comment",
-    "confirm_add": "Add",
     "save": "Save",
     "note_label": "Comment {{number}}",
     "note_placeholder": "Add a comment…",
@@ -516,7 +529,12 @@
       "field_workflow_steps": "Workflow steps",
       "field_workflow_instructions": "Workflow step instructions",
       "field_workspace_settings": "Workspace settings",
-      "field_workflow_budget": "Workflow run budget"
+      "field_workflow_budget": "Workflow run budget",
+      "field_workspace_routing_agent": "Agente de enrutamiento",
+      "field_workspace_delegated_writes": "Escrituras gobernadas delegadas",
+      "field_agent_skills": "Habilidades del agente",
+      "counts": "Caracteres: {{before}} → {{after}}",
+      "counts_cap": "Caracteres: {{before}} → {{after}} de {{cap}} permitidos"
     },
     "agent_note": "Agent's note (not verified)",
     "answer_send_passkey": "Send with passkey",
