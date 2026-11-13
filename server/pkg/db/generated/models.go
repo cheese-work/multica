@@ -2656,6 +2656,24 @@ type MemberSetting struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type MergePauseState struct {
+	RepoOwner    string             `json:"repo_owner"`
+	RepoName     string             `json:"repo_name"`
+	VariableName string             `json:"variable_name"`
+	IsSet        pgtype.Bool        `json:"is_set"`
+	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
+	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeVetoDeadline struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	LastPassAt  pgtype.Timestamptz `json:"last_pass_at"`
+	DueAt       pgtype.Timestamptz `json:"due_at"`
+}
+
 type NotificationChannelPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
