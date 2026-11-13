@@ -398,7 +398,16 @@
     "unseen_failed": "Couldn't mark this chat as unseen",
     "mark_seen": "Mark as seen",
     "more": "More",
-    "undo": "Undo"
+    "undo": "Undo",
+    "group": {
+      "pinned": "Pinned",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "this_week": "This week",
+      "older": "Older"
+    },
+    "unseen_dot": "Unseen",
+    "tag_decision": "Decision"
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",

@@ -386,7 +386,16 @@
     "unseen_failed": "无法将此对话标记为未读",
     "mark_seen": "标记为已读",
     "more": "更多",
-    "undo": "撤销"
+    "undo": "撤销",
+    "group": {
+      "pinned": "已置顶",
+      "today": "今天",
+      "yesterday": "昨天",
+      "this_week": "本周",
+      "older": "更早"
+    },
+    "unseen_dot": "未查看",
+    "tag_decision": "决定"
   },
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",

@@ -401,6 +401,14 @@ Les blocs `decision` et `routing` couvrent toute la période. Le bloc `route` co
 
 Le bloc `route` compte une seule population d'événements : les changements de statut d'un agent marqués comme sortie d'une étape de routage (`eligible_exits`) et les étiquettes de route qui portent le même identifiant d'événement (`matched_labels`). `label_coverage` vaut `matched_labels / eligible_exits` et ne dépasse jamais 1. `via_route_share` est la part des événements appariés dont la première étiquette vient de `issue route`, et non du repli sur le statut. `duplicate_labels` compte les étiquettes qui partagent un événement avec une étiquette plus ancienne (cible 0). `labels_total`, `owner_only_labels` (une route qui a gardé le statut, donc sans événement) et `non_routing_labels` (une route depuis une étape sans agent de routage) restent hors de la couverture. `overridden` compte les étiquettes d'agent qu'une personne a inversées en moins d'une heure, et `override_rate` vaut `overridden / labels_total`. Le bloc contient aussi `decided`, `predicted`, `agreed`, `coverage` et `precision` par classe.
 
+Tout membre de l'espace de travail lit l'état de qualification System 1 de chaque périmètre et version de prédicteur :
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` vaut `test_first_waiver` ou `ci:<repo>:<protocol>`. Chaque ligne couvre la dernière époque d'une version de prédicteur. Seules comptent les observations créées à partir du début de l'époque, et une nouvelle version ouvre sa propre époque. Un cas est une prédiction avec une étiquette de référence (la plus récente non remplacée). `denominator` compte les cas avec une prédiction non abstentionniste et une étiquette reconnue, `agreed` ceux où elles concordent, `abstained` les cas étiquetés que le prédicteur a laissés de côté, et `unmapped` les réponses en texte libre. `status` vaut `qualified` à 7 jours, avec au moins 20 cas et 90 % d'accord. Il vaut `insufficient_data` après 4 semaines avec moins de 20 cas comptés, `demoted` pour une époque rétrogradée, et `collecting` sinon.
+
 ## ID et formats de sortie
 
 Les tâches utilisent des clés comme `MUL-123` ou des UUID complets ; les préfixes courts d'UUID ne sont pas acceptés.

@@ -386,7 +386,16 @@
     "unseen_failed": "無法將此對話標記為未讀",
     "mark_seen": "標記為已讀",
     "more": "更多",
-    "undo": "復原"
+    "undo": "復原",
+    "group": {
+      "pinned": "已置頂",
+      "today": "今天",
+      "yesterday": "昨天",
+      "this_week": "本週",
+      "older": "更早"
+    },
+    "unseen_dot": "未查看",
+    "tag_decision": "決定"
   },
   "header": {
     "agent_settings": "AI 代理設定",
