@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -422,5 +423,73 @@ func TestListEvents_WouldDoIsRoutedProtocolUnlessActed(t *testing.T) {
 		if ev.WouldDo != want[ev.RunID] {
 			t.Errorf("run %d would_do = %q, want %q", ev.RunID, ev.WouldDo, want[ev.RunID])
 		}
+	}
+}
+
+func (e *adminEnv) principal(t *testing.T) (string, error) {
+	t.Helper()
+	c, err := loadConfig(context.Background(), e.pool, Action{WorkspaceID: e.ws, RepoOwner: e.owner, RepoName: e.name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c.actor()
+}
+
+func TestApplyConfig_SelfNotifyAuthorizesTheWatcher(t *testing.T) {
+	e := newAdminEnv(t)
+	e.apply(t, `{"notify_member_id":"`+e.actor+`"}`)
+	got, err := e.principal(t)
+	if err != nil || got != e.actor {
+		t.Fatalf("actor() = %q, %v; want %q", got, err, e.actor)
+	}
+	fields := map[string]bool{}
+	for _, r := range e.audit(t) {
+		fields[r.Field] = true
+	}
+	if !fields["authorized_by_member_id"] || !fields["authorized_at"] {
+		t.Fatalf("audit rows %v: want authorized_by_member_id and authorized_at", fields)
+	}
+}
+
+func TestApplyConfig_NamingAnotherMemberStaysUnauthorized(t *testing.T) {
+	e := newAdminEnv(t)
+	other := uuid.NewString()
+	e.apply(t, `{"notify_member_id":"`+other+`"}`)
+	if got, err := e.principal(t); err == nil {
+		t.Fatalf("actor() = %q; want no_principal", got)
+	}
+}
+
+func TestApplyConfig_ChangingNotifyMemberClearsAuthorization(t *testing.T) {
+	e := newAdminEnv(t)
+	e.apply(t, `{"notify_member_id":"`+e.actor+`"}`)
+	e.apply(t, `{"notify_member_id":"`+uuid.NewString()+`"}`)
+	if got, err := e.principal(t); err == nil {
+		t.Fatalf("actor() = %q; want no_principal after the recipient changed", got)
+	}
+	var by *string
+	var at *time.Time
+	if err := e.pool.QueryRow(context.Background(), `SELECT authorized_by_member_id::text, authorized_at FROM ci_watch_config
+		WHERE workspace_id=$1::uuid AND repo_owner=$2 AND repo_name=$3`, e.ws, e.owner, e.name).Scan(&by, &at); err != nil {
+		t.Fatal(err)
+	}
+	if by != nil || at != nil {
+		t.Fatalf("authorization not cleared: by=%v at=%v", by, at)
+	}
+	e.apply(t, `{"notify_member_id":null}`)
+	if _, err := e.principal(t); err == nil {
+		t.Fatal("actor() succeeded with no notify member")
+	}
+}
+
+func TestApplyConfig_ResavingSelfNotifyAuthorizesAnUnauthorizedRow(t *testing.T) {
+	e := newAdminEnv(t)
+	if _, err := e.pool.Exec(context.Background(), `INSERT INTO ci_watch_config (workspace_id, repo_owner, repo_name, notify_member_id)
+		VALUES ($1::uuid,$2,$3,$4::uuid)`, e.ws, e.owner, e.name, e.actor); err != nil {
+		t.Fatal(err)
+	}
+	e.apply(t, `{"notify_member_id":"`+e.actor+`"}`)
+	if got, err := e.principal(t); err != nil || got != e.actor {
+		t.Fatalf("actor() = %q, %v; want %q", got, err, e.actor)
 	}
 }
