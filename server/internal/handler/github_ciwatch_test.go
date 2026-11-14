@@ -217,7 +217,7 @@ func TestWorkflowWebhookLaterGreenRunLabelsTheFailureSelfHealed(t *testing.T) {
 
 func TestWorkflowWebhookPlantedSecretReachesNoRowAndNoLog(t *testing.T) {
 	const (
-		token  = "ghp_PLANTEDsecretTOKEN0123456789abcdefABCD"
+		token  = "ghp_PLANTEDsecretTOKEN0123456789abcdefABCD" // gitleaks:allow
 		bearer = "plantedBEARERvalue12345"
 	)
 	var logs bytes.Buffer
