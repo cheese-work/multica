@@ -1702,7 +1702,7 @@ describe("useIssueSurfaceController", () => {
     act(() => store.getState().toggleAgentRunningFilter());
     expect(result.current.isLoading).toBe(true);
     expect(result.current.isEmpty).toBe(false);
-    expect(result.current.isWorkingFilterError).toBe(false);
+    expect(result.current.filterDependencyError).toBeNull();
     expect(result.current.tableQuerySpec.filters.working_issue_ids).toBeUndefined();
     expect(listIssueTableRows).not.toHaveBeenCalled();
     expect(submenuFacetCalls(listIssueTableFacets)).toHaveLength(0);
@@ -1764,15 +1764,15 @@ describe("useIssueSurfaceController", () => {
       () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["list"] }),
       { wrapper: makeWrapper(qc) },
     );
-    await waitFor(() => expect(result.current.isWorkingFilterError).toBe(true));
+    await waitFor(() => expect(result.current.filterDependencyError?.kind).toBe("working"));
     expect(result.current.isEmpty).toBe(false);
     expect(result.current.tableQuerySpec.filters.working_issue_ids).toBeUndefined();
     expect(listIssueTableRows).not.toHaveBeenCalled();
     mockWorkingAgents([makeWorkingAgent("agent-1", ["todo-1"])]);
-    act(() => result.current.retryWorkingFilter());
+    act(() => result.current.filterDependencyError!.retry());
     await waitFor(() => expect(result.current.issues.map((issue) => issue.id)).toEqual(["todo-1"]));
     expect(result.current.isLoading).toBe(false);
-    expect(result.current.isWorkingFilterError).toBe(false);
+    expect(result.current.filterDependencyError).toBeNull();
   });
 
   const unreadMark = (issueId: string) => ({
@@ -1780,6 +1780,37 @@ describe("useIssueSurfaceController", () => {
     outcome: "manual",
     agent_id: null,
     created_at: "2026-01-01T00:00:00Z",
+  });
+
+  it("holds loading while the unread list loads, then filters by it", async () => {
+    mockListByStatus({ todo: [makeIssue({ id: "todo-1", status: "todo" })] });
+    let finish!: (marks: ReturnType<typeof unreadMark>[]) => void;
+    listIssueUnread.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const store = getIssueSurfaceViewStore("project:p1");
+    store.getState().toggleUnreadFilter();
+    const { result } = renderHook(
+      () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["list"] }),
+      { wrapper: makeWrapper(qc) },
+    );
+    // Only the unread list is outstanding, so it alone holds the loading state.
+    await waitFor(() =>
+      expect(qc.getQueryState(["issue-statuses", "ws-1", "list"])?.status).toBe("success"),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(listIssueUnread).toHaveBeenCalled();
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isEmpty).toBe(false);
+    expect(result.current.filterDependencyError).toBeNull();
+    expect(result.current.tableQuerySpec.filters.unread_issue_ids).toBeUndefined();
+    expect(listIssueTableRows).not.toHaveBeenCalled();
+
+    await act(async () => finish([unreadMark("todo-1")]));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(listIssueTableRows).toHaveBeenCalledWith(expect.objectContaining({
+      query: expect.objectContaining({ filters: expect.objectContaining({ unread_issue_ids: ["todo-1"] }) }),
+    }));
   });
 
   it("offers a retry when the unread filter cannot load the unread list", async () => {
@@ -1791,15 +1822,15 @@ describe("useIssueSurfaceController", () => {
       () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["list"] }),
       { wrapper: makeWrapper(qc) },
     );
-    await waitFor(() => expect(result.current.isUnreadFilterError).toBe(true));
+    await waitFor(() => expect(result.current.filterDependencyError?.kind).toBe("unread"));
     expect(result.current.isLoading).toBe(false);
     expect(result.current.isEmpty).toBe(false);
     expect(result.current.tableQuerySpec.filters.unread_issue_ids).toBeUndefined();
     expect(listIssueTableRows).not.toHaveBeenCalled();
     listIssueUnread.mockResolvedValue([unreadMark("todo-1")]);
-    act(() => result.current.retryUnreadFilter());
+    act(() => result.current.filterDependencyError!.retry());
     await waitFor(() => expect(result.current.issues.map((issue) => issue.id)).toEqual(["todo-1"]));
-    expect(result.current.isUnreadFilterError).toBe(false);
+    expect(result.current.filterDependencyError).toBeNull();
     expect(result.current.tableQuerySpec.filters.unread_issue_ids).toEqual(["todo-1"]);
   });
 
