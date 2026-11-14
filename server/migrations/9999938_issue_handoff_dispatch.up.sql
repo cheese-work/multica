@@ -25,5 +25,5 @@ CREATE TABLE IF NOT EXISTS issue_handoff_dispatch (
 );
 
 -- The run an intent started, in every task state. The unique index is its own
--- migration (9999916).
+-- migration (9999939).
 ALTER TABLE agent_task_queue ADD COLUMN IF NOT EXISTS handoff_dispatch_id uuid;
