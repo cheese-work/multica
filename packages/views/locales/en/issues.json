@@ -547,6 +547,7 @@
     "card_load_failed": "Couldn't load this issue.",
     "data_error": "This issue has data the app cannot read.",
     "retry": "Retry",
+    "load_retry": "Retry",
     "not_found_title": "Issue not found",
     "breadcrumb_project_unknown": "Unknown project",
     "back": "Back",

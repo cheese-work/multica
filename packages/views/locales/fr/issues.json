@@ -547,6 +547,7 @@
     "card_load_failed": "Impossible de charger cette tâche.",
     "data_error": "Cette tâche contient des données que l'application ne peut pas lire.",
     "retry": "Réessayer",
+    "load_retry": "Réessayer",
     "not_found_title": "Tâche introuvable",
     "breadcrumb_project_unknown": "Projet inconnu",
     "back": "Retour",

@@ -537,6 +537,7 @@
     "card_load_failed": "无法加载这个任务。",
     "data_error": "这个任务包含应用无法读取的数据。",
     "retry": "重试",
+    "load_retry": "重试",
     "not_found_title": "未找到该任务",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",

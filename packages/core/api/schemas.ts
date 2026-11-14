@@ -4800,3 +4800,17 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
 export const ProviderBreakerListSchema = z.lazy(() => z.object({
   breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
 }));
+
+// Only `pinned_at` is new here; every other field keeps its pre-schema
+// leniency so one odd workspace can never empty the whole switcher.
+export const WorkspaceListItemSchema = z.lazy(() => z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  created_at: z.string(),
+  pinned_at: z.iso.datetime({ offset: true }).nullable().optional().catch(null).default(null),
+}).loose());
+
+export const WorkspacePinnedSchema = z.lazy(() => z.object({
+  pinned_at: z.iso.datetime({ offset: true }).nullable().catch(null),
+}));

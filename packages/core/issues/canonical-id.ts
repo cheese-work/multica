@@ -33,6 +33,8 @@ export interface CanonicalIssue {
    * it resolved to nothing.
    */
   canonicalId: string | null;
+  /** A request made during this mount succeeded; cached data from an earlier visit does not count. */
+  hasLoaded: boolean;
   /** The issue itself, read from the UUID-keyed entry. */
   issue: Issue | undefined;
   isResolving: boolean;
@@ -138,6 +140,9 @@ export function useCanonicalIssue(
 
   return {
     canonicalId,
+    hasLoaded:
+      (resolve.isSuccess && resolve.isFetchedAfterMount) ||
+      (detail.isSuccess && detail.isFetchedAfterMount),
     issue: detail.data,
     isResolving: resolveEnabled && !failed && resolve.data === undefined,
     authoritative:
