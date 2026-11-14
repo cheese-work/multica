@@ -4446,6 +4446,15 @@ export class ApiClient {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }
 
+  /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
+  challengeDecisionRevoke(requestId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokeDecision(requestId: string, input: { reason: string; assertion: PasskeyAssertionEnvelope }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke`, { method: "POST", body: JSON.stringify(input) });
+  }
+
   /** Ends a pending action as rejected. No passkey: declining changes nothing. */
   rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);

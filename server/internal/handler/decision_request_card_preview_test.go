@@ -324,3 +324,20 @@ func TestCardOwnerOnlyIsFalseForAnAgentAction(test *testing.T) {
 		test.Fatalf("env patch is not owner-only: %+v", card)
 	}
 }
+
+// A decided action carries its readback on the card (B v9 S9): effect, decided time,
+// and no Revoke for a rejected, expired or pending action.
+func TestCardActionReadbackOfDecidedStates(test *testing.T) {
+	action := newPendingAction(test)
+	if card := action.cardAction(test); card.Effect != "" || card.Revocable || card.DecidedAt != "" {
+		test.Fatalf("pending action has a readback: %+v", card)
+	}
+	dbfx.Exec(test, `UPDATE decision_action SET state = 'rejected', approved_at = now() WHERE id = $1`, action.actionID)
+	if card := action.cardAction(test); card.Effect != "not_applied" || card.EffectReason != "rejected" || card.Revocable || card.DecidedAt == "" {
+		test.Fatalf("rejected readback: %+v", card)
+	}
+	dbfx.Exec(test, `UPDATE decision_action SET state = 'expired' WHERE id = $1`, action.actionID)
+	if card := action.cardAction(test); card.Effect != "expired" || card.Revocable || card.DecidedBy != "" {
+		test.Fatalf("expired readback: %+v", card)
+	}
+}

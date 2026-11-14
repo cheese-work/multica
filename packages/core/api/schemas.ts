@@ -1106,6 +1106,13 @@ const DecisionActionSchema = z.lazy(() => z.object({
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
   owner_only: z.boolean().optional().catch(undefined),
+  effect: z.string().optional().catch(undefined),
+  effect_reason: z.string().optional().catch(undefined),
+  decided_at: z.string().optional().catch(undefined),
+  decided_by_name: z.string().optional().catch(undefined),
+  on_behalf_of_name: z.string().optional().catch(undefined),
+  revocable: z.boolean().optional().catch(undefined),
+  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
 }).loose().transform((action) =>
   action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
 
