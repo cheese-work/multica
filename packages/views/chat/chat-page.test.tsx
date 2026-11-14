@@ -113,9 +113,6 @@ vi.mock("./components/no-agent-banner", () => ({
 vi.mock("../common/app-requests", () => ({
   ChatAppRequests: () => null,
 }));
-vi.mock("../common/app-requests", () => ({
-  ChatAppRequests: () => null,
-}));
 vi.mock("./components/archived-agent-banner", () => ({
   ArchivedAgentBanner: () => null,
 }));
