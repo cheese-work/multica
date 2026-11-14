@@ -3865,6 +3865,11 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
 
 	if req.ProjectID != nil {
 		id, ok := parseUUIDOrBadRequest(w, *req.ProjectID, "project_id")
@@ -4814,6 +4819,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			writeError(w, status, msg)
 			return
 		}
+		if handoff == nil && (touchedType || touchedID) {
+			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
+		}
 	}
 
 	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
@@ -5126,6 +5137,37 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		effectiveInvoker := h.invokeOriginatorFromRequest(r, actorType, actorID)
 		return h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID)
 	})
+}
+
+// errAgentAssignsMember refuses an agent's attempt to hand an issue to a
+// member (CHE-5516). A member-owned issue starts no run, so the work stops
+// unseen; the human step goes on a decision card instead.
+const errAgentAssignsMember = "agent_assign_member: an agent never assigns an issue to a member. Assign an agent, and open a decision request (multica decision request) for the human-only step; assigning to the member is allowed while that request is open on this issue"
+
+// refuseAgentAssignToMember returns a non-zero status when an agent actor
+// assigns to a member that is not already the assignee and the issue has no open
+// human decision request. issueID is invalid on create: no card can exist yet.
+func (h *Handler) refuseAgentAssignToMember(ctx context.Context, actorType, workspaceID string, issueID pgtype.UUID, current db.Issue, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+	if actorType != "agent" || assigneeType.String != "member" || !assigneeType.Valid {
+		return 0, ""
+	}
+	if current.AssigneeType.String == "member" && current.AssigneeID == assigneeID {
+		return 0, ""
+	}
+	if issueID.Valid {
+		wsUUID, err := util.ParseUUID(workspaceID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid workspace_id"
+		}
+		open, err := h.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: wsUUID, IssueID: issueID})
+		if err != nil {
+			return http.StatusInternalServerError, "failed to check open decision requests"
+		}
+		if open {
+			return 0, ""
+		}
+	}
+	return http.StatusForbidden, errAgentAssignsMember
 }
 
 // errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
@@ -5839,6 +5881,11 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		if batchTouchedType || batchTouchedID || handoff != nil {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 				continue
+			}
+			if handoff == nil {
+				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
 			}
 		}
 
