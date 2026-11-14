@@ -475,7 +475,8 @@
       "channels": "メッセージング",
       "apps": "接続済みアプリ",
       "workflows": "ワークフロー",
-      "provider_breakers": "プロバイダーのブレーカー"
+      "provider_breakers": "プロバイダーのブレーカー",
+      "background_agents": "バックグラウンドエージェント"
     },
     "groups": {
       "personal": "個人",
@@ -901,12 +902,6 @@
     "idle_guard_hours_label": "経過時間（時間）",
     "idle_guard_hours_invalid": "1 から 72 の整数を入力してください。",
     "idle_guard_readonly": "{{mode}}、{{hours}} 時間後",
-    "routing_agent_label": "ルーティングエージェント",
-    "routing_agent_hint": "ルーティングのみのワークフローステップ（todo、blocked、merged、need decision）を処理します。未設定の場合は各ステップ自身のエージェントを使います。",
-    "routing_fallback_label": "フォールバックエージェント",
-    "routing_fallback_hint": "ルーティングエージェントがプロバイダーエラーで失敗したとき、そのルーティングステップを引き継ぎます。",
-    "routing_agent_none": "なし",
-    "routing_agent_unknown": "不明なエージェント",
     "slug_hint": "ワークスペースの URL に使われます。作成後は変更できません。",
     "copy_slug": "slug をコピー",
     "copy_failed": "コピーできませんでした",
@@ -1723,5 +1718,39 @@
     "not_saved": "保存されませんでした。何も変更されていません。",
     "load_failed": "ルールを読み込めませんでした。",
     "save_failed": "ルールを保存できませんでした。"
+  },
+  "background_agents": {
+    "title": "バックグラウンドエージェント",
+    "description": "このワークスペース全員のために、エージェントが裏側で行う小さなジョブです。エージェントを設定しないジョブは、単純な代替動作になります。モデルを直接呼び出すことはありません。",
+    "personal_note_before": "メンバーは、DM タイトルとクイックアクションについて、",
+    "personal_link": "個人 → バックグラウンドエージェント",
+    "personal_note_after": "で自分のエージェントを選べます。そのメンバーでは個人設定がこのタブより優先されます。ルーティングはここでのみ設定します。",
+    "agent_label": "エージェント",
+    "fallback_label": "フォールバックエージェント",
+    "fallback_hint": "エージェントがプロバイダーエラーで失敗したときに引き継ぎます。",
+    "pick_agent_first": "先にエージェントを選んでください。",
+    "none": "エージェントなし",
+    "unknown_agent": "不明なエージェント",
+    "access_narrowed": "アクセス: 全員ではありません",
+    "toast_save_failed": "バックグラウンドエージェントを保存できませんでした。",
+    "load_error": "バックグラウンドエージェントを読み込めませんでした。",
+    "retry": "再試行",
+    "jobs": {
+      "dm_title": {
+        "label": "DM タイトル",
+        "hint": "最初のメッセージから DM に名前を付けます。",
+        "no_agent": "エージェントなし: タイトルは先頭 60 文字で切り取ります。"
+      },
+      "quick_actions": {
+        "label": "クイックアクション",
+        "hint": "返信の下にフォローアップボタンを提案します。",
+        "no_agent": "エージェントなし: ボタンは表示されません。"
+      },
+      "routing": {
+        "label": "ルーティング",
+        "hint": "ルーティングのみのワークフローステップを処理します: todo、blocked、merged、need decision。",
+        "no_agent": "エージェントなし: 各ステップは自分のエージェントのままです。"
+      }
+    }
   }
 }

@@ -475,7 +475,8 @@
       "channels": "메신저",
       "apps": "연결된 앱",
       "workflows": "워크플로",
-      "provider_breakers": "공급자 차단기"
+      "provider_breakers": "공급자 차단기",
+      "background_agents": "백그라운드 에이전트"
     },
     "groups": {
       "personal": "개인",
@@ -901,12 +902,6 @@
     "idle_guard_hours_label": "경과 시간(시간)",
     "idle_guard_hours_invalid": "1에서 72 사이의 정수를 입력하세요.",
     "idle_guard_readonly": "{{mode}}, {{hours}}시간 후",
-    "routing_agent_label": "라우팅 에이전트",
-    "routing_agent_hint": "라우팅만 하는 워크플로 단계(할 일, 차단됨, 병합됨, 결정 필요)를 처리합니다. 설정하지 않으면 각 단계의 에이전트를 그대로 씁니다.",
-    "routing_fallback_label": "대체 에이전트",
-    "routing_fallback_hint": "라우팅 에이전트가 제공자 오류로 실패하면 해당 라우팅 단계를 이어받습니다.",
-    "routing_agent_none": "없음",
-    "routing_agent_unknown": "알 수 없는 에이전트",
     "slug_hint": "모든 워크스페이스 URL에 쓰이며 생성 후에는 변경할 수 없습니다.",
     "copy_slug": "slug 복사",
     "copy_failed": "복사하지 못했습니다",
@@ -1723,5 +1718,39 @@
     "not_saved": "저장되지 않았습니다. 변경된 것은 없습니다.",
     "load_failed": "규칙을 불러오지 못했습니다.",
     "save_failed": "규칙을 저장하지 못했습니다."
+  },
+  "background_agents": {
+    "title": "백그라운드 에이전트",
+    "description": "이 워크스페이스 모두를 위해 에이전트가 뒤에서 처리하는 작은 작업입니다. 에이전트가 없는 작업은 기본 대체 동작을 사용합니다. 모델을 직접 호출하지 않습니다.",
+    "personal_note_before": "멤버는 DM 제목과 빠른 작업에 쓸 자신의 에이전트를",
+    "personal_link": "개인 → 백그라운드 에이전트",
+    "personal_note_after": "에서 고를 수 있습니다. 해당 멤버에게는 개인 선택이 이 탭보다 우선합니다. 라우팅은 여기에서만 설정합니다.",
+    "agent_label": "에이전트",
+    "fallback_label": "대체 에이전트",
+    "fallback_hint": "에이전트가 공급자 오류로 실패하면 이어서 처리합니다.",
+    "pick_agent_first": "먼저 에이전트를 선택하세요.",
+    "none": "에이전트 없음",
+    "unknown_agent": "알 수 없는 에이전트",
+    "access_narrowed": "접근: 모두는 아님",
+    "toast_save_failed": "백그라운드 에이전트를 저장하지 못했습니다.",
+    "load_error": "백그라운드 에이전트를 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "jobs": {
+      "dm_title": {
+        "label": "DM 제목",
+        "hint": "첫 메시지로 DM 이름을 정합니다.",
+        "no_agent": "에이전트 없음: 제목은 처음 60자를 잘라 사용합니다."
+      },
+      "quick_actions": {
+        "label": "빠른 작업",
+        "hint": "답변 아래에 후속 버튼을 제안합니다.",
+        "no_agent": "에이전트 없음: 버튼이 없습니다."
+      },
+      "routing": {
+        "label": "라우팅",
+        "hint": "라우팅 전용 워크플로 단계를 처리합니다: todo, blocked, merged, need decision.",
+        "no_agent": "에이전트 없음: 각 단계가 자체 에이전트를 유지합니다."
+      }
+    }
   }
 }

@@ -467,7 +467,8 @@
       "apps": "已連線應用",
       "workflows": "工作流",
       "export_privacy": "導出隱私",
-      "provider_breakers": "服務商熔斷器"
+      "provider_breakers": "服務商熔斷器",
+      "background_agents": "背景智慧體"
     },
     "groups": {
       "personal": "個人",
@@ -903,12 +904,6 @@
     "idle_guard_hours_label": "超過（小時）",
     "idle_guard_hours_invalid": "請輸入 1 到 72 的整數。",
     "idle_guard_readonly": "{{mode}}，{{hours}} 小時後",
-    "routing_agent_label": "路由智慧體",
-    "routing_agent_hint": "處理僅路由的工作流程步驟：待辦、受阻、已合併和待決策。未設定則沿用各步驟自己的智慧體。",
-    "routing_fallback_label": "備用智慧體",
-    "routing_fallback_hint": "路由智慧體因服務商錯誤失敗時，接手該路由步驟。",
-    "routing_agent_none": "無",
-    "routing_agent_unknown": "未知智慧體",
     "scheduling_label": "排程",
     "scheduling_hint": "暫停後，所有代理都不會領取新的執行。執行中的任務會完成，排隊的工作會等待。",
     "scheduling_pause_action": "暫停工作區",
@@ -1723,5 +1718,39 @@
     "not_saved": "未儲存。沒有任何變更。",
     "load_failed": "無法載入規則。",
     "save_failed": "無法儲存規則。"
+  },
+  "background_agents": {
+    "title": "背景智慧體",
+    "description": "智慧體在背景為此工作區所有人執行的小任務。未設定智慧體的任務使用其簡單的備援方式，絕不會直接呼叫模型。",
+    "personal_note_before": "成員可以在",
+    "personal_link": "個人 → 背景智慧體",
+    "personal_note_after": "中為 DM 標題和快速操作選擇自己的智慧體。對該成員而言，個人選擇優先於此分頁。路由只能在這裡設定。",
+    "agent_label": "智慧體",
+    "fallback_label": "備用智慧體",
+    "fallback_hint": "當智慧體因供應商錯誤失敗時接手。",
+    "pick_agent_first": "請先選擇智慧體。",
+    "none": "無智慧體",
+    "unknown_agent": "未知智慧體",
+    "access_narrowed": "存取：並非所有人",
+    "toast_save_failed": "無法儲存背景智慧體。",
+    "load_error": "無法載入背景智慧體。",
+    "retry": "重試",
+    "jobs": {
+      "dm_title": {
+        "label": "DM 標題",
+        "hint": "依第一則訊息為 DM 命名。",
+        "no_agent": "無智慧體：使用截取的標題（前 60 個字元）。"
+      },
+      "quick_actions": {
+        "label": "快速操作",
+        "hint": "在回覆下方建議後續按鈕。",
+        "no_agent": "無智慧體：不顯示按鈕。"
+      },
+      "routing": {
+        "label": "路由",
+        "hint": "處理僅路由的工作流程步驟：todo、blocked、merged 和 need decision。",
+        "no_agent": "無智慧體：每個步驟保持自己的智慧體。"
+      }
+    }
   }
 }

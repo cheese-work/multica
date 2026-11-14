@@ -475,7 +475,8 @@
       "channels": "消息渠道",
       "apps": "已连接应用",
       "workflows": "工作流",
-      "provider_breakers": "服务商熔断器"
+      "provider_breakers": "服务商熔断器",
+      "background_agents": "后台智能体"
     },
     "groups": {
       "personal": "个人",
@@ -901,12 +902,6 @@
     "idle_guard_hours_label": "超过（小时）",
     "idle_guard_hours_invalid": "请输入 1 到 72 的整数。",
     "idle_guard_readonly": "{{mode}}，{{hours}} 小时后",
-    "routing_agent_label": "路由智能体",
-    "routing_agent_hint": "处理仅路由的工作流步骤：待办、受阻、已合并和待决策。未设置则沿用各步骤自己的智能体。",
-    "routing_fallback_label": "备用智能体",
-    "routing_fallback_hint": "路由智能体因服务商错误失败时，接手该路由步骤。",
-    "routing_agent_none": "无",
-    "routing_agent_unknown": "未知智能体",
     "slug_hint": "用于所有工作区链接，创建后不能修改。",
     "copy_slug": "复制 slug",
     "copy_failed": "复制失败",
@@ -1723,5 +1718,39 @@
     "not_saved": "未保存。没有任何更改。",
     "load_failed": "无法加载规则。",
     "save_failed": "无法保存规则。"
+  },
+  "background_agents": {
+    "title": "后台智能体",
+    "description": "智能体在后台为此工作区所有人执行的小任务。未设置智能体的任务使用其简单的兜底方式，绝不会直接调用模型。",
+    "personal_note_before": "成员可以在",
+    "personal_link": "个人 → 后台智能体",
+    "personal_note_after": "中为 DM 标题和快捷操作选择自己的智能体。对该成员而言，个人选择优先于此标签页。路由只能在这里设置。",
+    "agent_label": "智能体",
+    "fallback_label": "备用智能体",
+    "fallback_hint": "当智能体因提供方错误失败时接手。",
+    "pick_agent_first": "请先选择智能体。",
+    "none": "无智能体",
+    "unknown_agent": "未知智能体",
+    "access_narrowed": "访问：并非所有人",
+    "toast_save_failed": "无法保存后台智能体。",
+    "load_error": "无法加载后台智能体。",
+    "retry": "重试",
+    "jobs": {
+      "dm_title": {
+        "label": "DM 标题",
+        "hint": "根据第一条消息为 DM 命名。",
+        "no_agent": "无智能体：使用截取的标题（前 60 个字符）。"
+      },
+      "quick_actions": {
+        "label": "快捷操作",
+        "hint": "在回复下方建议后续按钮。",
+        "no_agent": "无智能体：不显示按钮。"
+      },
+      "routing": {
+        "label": "路由",
+        "hint": "处理仅路由的工作流步骤：todo、blocked、merged 和 need decision。",
+        "no_agent": "无智能体：每个步骤保持自己的智能体。"
+      }
+    }
   }
 }

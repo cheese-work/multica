@@ -4744,15 +4744,19 @@ export const AgentDecisionSettingSchema = z.lazy(() => z.object({
 }).loose());
 export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
 
-// CHE-3627: GET/PUT /api/workspaces/{id}/routing-agent. The server sends null
-// for an empty list or map, so both default to empty here.
-export const RoutingAgentSettingSchema = z.lazy(() => z.object({
-  agent_id: z.string().catch(""),
-  fallback_agent_id: z.string().catch(""),
-  statuses: z.array(z.string()).nullish().transform((v) => v ?? []),
-  overrides: z.record(z.string(), z.string()).nullish().transform((v) => v ?? {}),
+// CHE-4123: GET/PUT /api/workspaces/{id}/background-agents. One object keyed
+// by job (dm_title, quick_actions, compact, routing); a job is a two-slot chain.
+// An unset slot is absent or null and reads as "". `routing` also carries
+// statuses and overrides, and an unknown field passes through, so a save that
+// echoes the whole value keeps what this form does not edit.
+export const BackgroundAgentChainSchema = z.lazy(() => z.object({
+  agent_id: z.string().nullish().transform((v) => v ?? ""),
+  fallback_agent_id: z.string().nullish().transform((v) => v ?? ""),
 }).loose());
-export type RoutingAgentSetting = z.infer<typeof RoutingAgentSettingSchema>;
+export type BackgroundAgentChain = z.infer<typeof BackgroundAgentChainSchema>;
+
+export const BackgroundAgentsSchema = z.lazy(() => z.record(z.string(), BackgroundAgentChainSchema));
+export type BackgroundAgents = z.infer<typeof BackgroundAgentsSchema>;
 
 // CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
 // empty; a malformed requires_human_decision reads as true, the fail-closed
