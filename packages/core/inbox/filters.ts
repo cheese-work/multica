@@ -6,7 +6,9 @@ import {
   type DueDateFilter,
 } from "../issues/stores/filter-tree";
 import type { InboxItem, InboxItemType, IssuePriority, IssueStatus } from "../types";
-import { groupInboxRows, sortInboxNewestFirst, withCommentAnchor } from "./group";
+import { groupInboxRows, isViewerMention, sortInboxNewestFirst, withCommentAnchor } from "./group";
+
+export { isViewerMention };
 
 /**
  * Notification kinds, grouped the way a reader thinks about them. Mirrored by
@@ -110,6 +112,11 @@ export interface InboxFilters {
   readonly actors: readonly string[];
   readonly received: InboxReceivedFilter | null;
   readonly unreadOnly: boolean;
+  /**
+   * Only notifications where the viewer was mentioned, by name or by `@all`
+   * (fork, CHE-2117). Active inbox only; see `isViewerMention`.
+   */
+  readonly mentionsOnly: boolean;
   // About its issue. Values use the issue filter's condition form: project
   // and label ids, `member:<id>` style assignees, and "none" for unset.
   readonly statuses: readonly IssueStatus[];
@@ -137,17 +144,17 @@ export const INBOX_DIMENSION_FIELD: Record<InboxListDimension, ListField> = {
 };
 
 /** One chip / one "active" row: a list dimension or a single-choice one. */
-export type InboxFilterKey = InboxListDimension | "received" | "unread" | "agent";
+export type InboxFilterKey = InboxListDimension | "received" | "unread" | "mentions" | "agent";
 
 export function inboxFilterValues(filters: InboxFilters, dimension: InboxListDimension): readonly string[] {
   return filters[INBOX_DIMENSION_FIELD[dimension]];
 }
 
 /**
- * The server-filtered archive has no agent dimension, so `agent` never
- * reaches its endpoints or query keys.
+ * The server-filtered archive has no agent or mention dimension, so `agent`
+ * and `mentionsOnly` never reach its endpoints or query keys.
  */
-export type ArchivedInboxFilters = Omit<InboxFilters, "agent">;
+export type ArchivedInboxFilters = Omit<InboxFilters, "agent" | "mentionsOnly">;
 
 /**
  * Stable identity for "who this notification came from", used as the value of
@@ -186,6 +193,7 @@ export const EMPTY_INBOX_FILTERS: InboxFilters = Object.freeze({
   actors: Object.freeze([]),
   received: null,
   unreadOnly: false,
+  mentionsOnly: false,
   statuses: Object.freeze([]),
   priorities: Object.freeze([]),
   projects: Object.freeze([]),
@@ -200,6 +208,7 @@ export const EMPTY_INBOX_FILTERS: InboxFilters = Object.freeze({
 export function activeInboxFilterKeys(filters: InboxFilters): InboxFilterKey[] {
   const keys: InboxFilterKey[] = [];
   if (filters.unreadOnly) keys.push("unread");
+  if (filters.mentionsOnly) keys.push("mentions");
   if (filters.types.length > 0) keys.push("type");
   if (filters.actors.length > 0) keys.push("actor");
   if (filters.received) keys.push("received");
@@ -234,6 +243,8 @@ export function withoutInboxFilter(filters: InboxFilters, key: InboxFilterKey): 
   switch (key) {
     case "unread":
       return { ...filters, unreadOnly: false };
+    case "mentions":
+      return { ...filters, mentionsOnly: false };
     case "received":
       return { ...filters, received: null };
     case "agent":
@@ -273,6 +284,7 @@ export function sanitizeInboxFilters(raw: unknown): InboxFilters {
       ? (value.received as InboxReceivedFilter)
       : null,
     unreadOnly: value.unreadOnly === true,
+    mentionsOnly: value.mentionsOnly === true,
     statuses: stringList(value.statuses) as IssueStatus[],
     priorities: stringList(value.priorities) as IssuePriority[],
     projects: stringList(value.projects),
@@ -359,12 +371,14 @@ export function effectiveInboxFilters(
     next = dormant.reduce(withoutInboxFilter, next);
   }
   if (archived && next.agent) next = withoutInboxFilter(next, "agent");
+  if (archived && next.mentionsOnly) next = withoutInboxFilter(next, "mentions");
   return next;
 }
 
 /** @deprecated Use `effectiveInboxFilters` with `archived: true`. */
 export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
-  return filters.agent ? withoutInboxFilter(filters, "agent") : filters;
+  const withoutAgent = filters.agent ? withoutInboxFilter(filters, "agent") : filters;
+  return withoutAgent.mentionsOnly ? withoutInboxFilter(withoutAgent, "mentions") : withoutAgent;
 }
 
 /** Start of the received window, at a local midnight so it holds all day. */
@@ -485,13 +499,13 @@ const ISSUE_DIMENSIONS: readonly InboxListDimension[] = [
 
 interface CompiledInboxFilters {
   /** Per-notification tests, keyed so a facet can leave its own out. */
-  notification: Map<InboxListDimension | "received", RowTest>;
+  notification: Map<InboxListDimension | "received" | "mentions", RowTest>;
   issue: Map<InboxListDimension, RowTest>;
 }
 
 function compile(filters: InboxFilters, now: Date): CompiledInboxFilters {
   const today = toDateOnly(now);
-  const notification = new Map<InboxListDimension | "received", RowTest>();
+  const notification = new Map<InboxListDimension | "received" | "mentions", RowTest>();
   for (const dimension of NOTIFICATION_DIMENSIONS) {
     const test = dimensionTest(filters, dimension, today);
     if (test) notification.set(dimension, test);
@@ -500,6 +514,7 @@ function compile(filters: InboxFilters, now: Date): CompiledInboxFilters {
     const after = inboxReceivedAfter(filters.received, now).getTime();
     notification.set("received", (item) => new Date(item.created_at).getTime() >= after);
   }
+  if (filters.mentionsOnly) notification.set("mentions", isViewerMention);
   const issue = new Map<InboxListDimension, RowTest>();
   for (const dimension of ISSUE_DIMENSIONS) {
     const test = dimensionTest(filters, dimension, today);
@@ -594,6 +609,8 @@ export interface InboxFacetCounts {
   labels: Map<string, number>;
   /** Rows "only unread" would leave. */
   unread: number;
+  /** Rows "Mentions me" would leave (fork, CHE-2117). */
+  mentions: number;
 }
 
 function bump(counts: Map<string, number>, key: string) {
@@ -625,6 +642,7 @@ export function inboxFacetCounts(
     assignees: new Map(),
     labels: new Map(),
     unread: 0,
+    mentions: 0,
   };
   const issueFacets: [InboxListDimension, Map<string, number>][] = [
     ["status", counts.statuses],
@@ -648,6 +666,9 @@ export function inboxFacetCounts(
       if (issueOk && row.read !== true) counts.unread++;
     }
     if (!issueOk) continue;
+    if (group.some((item) => isViewerMention(item) && passes(tests.notification, item, "mentions") && readMatches(item))) {
+      counts.mentions++;
+    }
     for (const [dimension, target] of [["type", counts.types], ["actor", counts.actors]] as const) {
       const seen = new Set<string>();
       for (const item of group) {

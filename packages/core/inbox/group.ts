@@ -19,6 +19,29 @@ export function groupInboxRows(items: readonly InboxItem[]): InboxItem[][] {
 }
 
 /**
+ * True when the viewer was named directly or by `@all`. The server writes
+ * `mentioned` for `@squad` too and records which source it was in
+ * `details.mention_source`. A row from before that was recorded has no source,
+ * so its origin is unknown and it does not match.
+ */
+export function isViewerMention(item: InboxItem): boolean {
+  const source = item.details?.mention_source;
+  return source === "direct" || source === "all";
+}
+
+/**
+ * Copies the group's viewer mention onto the row it renders as, so a later
+ * comment cannot hide a mention from "Mentions me" on a deduplicated list
+ * (mobile filters that list directly).
+ */
+export function withMentionSource(row: InboxItem, group: readonly InboxItem[]): InboxItem {
+  if (isViewerMention(row)) return row;
+  const mention = group.find(isViewerMention);
+  if (!mention) return row;
+  return { ...row, details: { ...(row.details ?? {}), ...(mention.details?.mention_source ? { mention_source: mention.details.mention_source } : {}) } };
+}
+
+/**
  * The row a group renders as. It keeps the group's newest comment anchor when
  * it has none of its own, so opening it still scrolls to the comment.
  */
@@ -32,7 +55,7 @@ export function withCommentAnchor(row: InboxItem, group: readonly InboxItem[]): 
 /** One row per issue: its newest notification. Newest group first. */
 export function groupInboxItemsByIssue(items: readonly InboxItem[]): InboxItem[] {
   return groupInboxRows(items)
-    .flatMap((group) => (group[0] ? [withCommentAnchor(group[0], group)] : []))
+    .flatMap((group) => (group[0] ? [withMentionSource(withCommentAnchor(group[0], group), group)] : []))
     .sort(byNewest);
 }
 
