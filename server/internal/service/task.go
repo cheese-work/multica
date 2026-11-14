@@ -9427,6 +9427,12 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 	s.Wakeup.NotifyTaskAvailable(runtimeKey, taskID)
 }
 
+// backgroundDispatchKeys are the task-context keys safe to fan out workspace-wide.
+var backgroundDispatchKeys = []string{
+	"type", "job", "workspace_id", "chain_source", "member_id", "slot",
+	"fallback_agent_id", "claim_deadline_seconds", "run_deadline_seconds",
+}
+
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
 	var payload map[string]any
 	if task.Context != nil {
@@ -9434,6 +9440,18 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	}
 	if payload == nil {
 		payload = map[string]any{}
+	}
+	// This event fans out to the whole workspace. A background task's input and
+	// guard carry the DM owner's text, so only an allowlist of workload
+	// metadata goes out.
+	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
+		safe := map[string]any{}
+		for _, k := range backgroundDispatchKeys {
+			if v, ok := payload[k]; ok {
+				safe[k] = v
+			}
+		}
+		payload = safe
 	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
@@ -9632,6 +9650,26 @@ func (s *TaskService) ResolveTaskScopeChecked(ctx context.Context, task db.Agent
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return TaskScope{WorkspaceID: qc.WorkspaceID}, nil
+	}
+	// Background tasks: a DM-derived one belongs to its source session's
+	// creator (spec §Privacy of DM-derived tasks), so its message events reach
+	// only that member. A bg task with no source session keeps an empty owner;
+	// callers treat that as "no private room", never as "workspace-wide".
+	if strings.HasPrefix(task.Purpose.String, "bg:") {
+		if task.SourceChatSessionID.Valid {
+			cs, err := s.Queries.GetChatSession(ctx, task.SourceChatSessionID)
+			if err == nil {
+				return TaskScope{
+					WorkspaceID:        util.UUIDToString(cs.WorkspaceID),
+					ChatSessionOwnerID: util.UUIDToString(cs.CreatorID),
+				}, nil
+			}
+			note(err)
+		}
+		var c BackgroundTaskContext
+		if json.Unmarshal(task.Context, &c) == nil && c.Type == BackgroundTaskContextType && c.WorkspaceID != "" {
+			return TaskScope{WorkspaceID: c.WorkspaceID}, nil
+		}
 	}
 	if lookupErr != nil {
 		return TaskScope{}, fmt.Errorf("resolve task workspace: %w", lookupErr)
