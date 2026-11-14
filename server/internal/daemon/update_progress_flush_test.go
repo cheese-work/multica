@@ -101,7 +101,8 @@ func TestReporter_NoTwoReportsCloserThanIntervalNorConcurrent(t *testing.T) {
 		g.mu.Unlock()
 	})
 	g.r.report("downloading", 1, 100)
-	<-started // first send is in flight and has stamped its time before the clock moves
+	// first send is in flight and has stamped its time before the clock moves
+	<-started
 	for i := int64(2); i <= 20; i++ { // dropped/pending while the first is in flight
 		g.r.report("downloading", i, 100)
 	}
