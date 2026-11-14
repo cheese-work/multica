@@ -37,9 +37,21 @@ var (
 	// An arrow between two words, or a spaced ">" ("Settings > API Tokens").
 	uiPath = regexp.MustCompile(`[\p{L}\p{N}]\s*(?:→|›|»|->)\s*[\p{L}\p{N}]|[\p{L}\p{N}] > [\p{L}\p{N}]`)
 
-	urlText   = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S+`)
-	repoPath  = regexp.MustCompile(`(?:^|[\s'"(=])((?:\.{1,2}/)?(?:[\w.-]+/)+[\w-]+\.[A-Za-z][A-Za-z0-9]{0,7})\b`)
-	hostFirst = regexp.MustCompile(`(?i)\.(?:com|io|net|org|dev|app)$`)
+	urlText  = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://\S+`)
+	repoPath = regexp.MustCompile("(?:^|[\\s'\"(=`])((?:\\.{1,2}/)?(?:[\\w.-]+/)+[\\w-]+\\.[A-Za-z][A-Za-z0-9]{0,7})\\b")
+	// A file in the repo root: setup.sh, ./Makefile.mk. Only known file extensions, so a domain is not a file.
+	rootFile = regexp.MustCompile("(?:^|[\\s'\"(=`])((?:\\.{1,2}/)?[\\w-][\\w.-]*\\.(?:sh|bash|zsh|md|json|ya?ml|toml|go|py|ts|tsx|jsx?|mjs|sql|kts?|gradle|xml|txt|env|properties|conf|cfg|ini|mod|sum|lock))\\b")
+	// "from feature/foo.bar", "into release/1.2": a branch, not a file.
+	gitRefBefore = regexp.MustCompile("(?i)\\b(?:from|into|onto|branch|base)\\s+[`'\"]?$")
+	productJS    = regexp.MustCompile(`^[A-Z][a-z]+\.js$`)
+
+	// A command written inside action text: a fenced block, a code span with a
+	// space in it, a "$ " shell line, or "run/execute/invoke ...".
+	fencedBlock = regexp.MustCompile("(?s)```(.*?)```")
+	codeSpan    = regexp.MustCompile("`([^`\\n]*\\s[^`\\n]*)`")
+	shellLine   = regexp.MustCompile(`(?m)^\s*\$ (.+)$`)
+	runVerb     = regexp.MustCompile(`(?i)\b(?:run|execute|invoke)\s+(\S(?:[^\n;.]|\.\S)*)`)
+	hostFirst   = regexp.MustCompile(`(?i)\.(?:com|io|net|org|dev|app)$`)
 
 	commitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	repoSlug  = regexp.MustCompile(`^[\w.-]+/[\w.-]+$`)
@@ -105,59 +117,103 @@ func decodeDryRun(field string, raw json.RawMessage, into **StepDryRun) error {
 	return nil
 }
 
-// validateAskEvidence runs the human-ask guard checks for one step.
-func (step HumanStep) validateAskEvidence(prefix string) error {
-	for _, check := range []func(string) error{step.checkPlaceholders, step.checkFiles, step.checkObserved, step.checkDryRun} {
-		if err := check(prefix); err != nil {
-			return err
-		}
-	}
-	return nil
+// askEvidence is what a card says it checked: where a control was seen, which
+// commit a file is from, and where a command was dry-run.
+type askEvidence struct {
+	Observed string
+	Files    []StepFile
+	DryRun   *StepDryRun
 }
 
-func (step HumanStep) checkPlaceholders(prefix string) error {
-	for _, found := range []string{
-		firstMatch(placeholder, step.Command), firstMatch(placeholderWord, step.Command),
-		strings.TrimSpace(firstMatch(ellipsisText, step.Command)),
-	} {
-		if found != "" {
-			return &AskError{prefix + ".command", "has a placeholder (" + found + "); write the literal the human runs"}
-		}
-	}
-	return nil
+// askText is one piece of text the guard reads. A command is a command in
+// full; prose may hold commands (commandsIn); uiOnly text is read for UI paths
+// alone.
+type askText struct {
+	field   string
+	text    string
+	command bool
+	uiOnly  bool
 }
 
-func firstMatch(re *regexp.Regexp, text string) string { return re.FindString(text) }
-
-func (step HumanStep) checkObserved(prefix string) error {
-	text := step.Action
-	for _, value := range step.Values {
-		text += "\n" + value.Source
-	}
-	if uiPath.MatchString(text) && blank(step.Observed) {
-		return &AskError{prefix, "cites a UI path with no observed; say where and when you saw the control"}
-	}
-	return nil
-}
-
-// repoFiles lists the relative file paths a step names, outside URLs. Absolute
-// and home paths belong to the human's own host and stay free.
-func (step HumanStep) repoFiles() []string {
-	text := urlText.ReplaceAllString(step.Action+"\n"+step.Command, " ")
+// commandsIn lists the commands written inside prose.
+func commandsIn(text string) []string {
 	var out []string
-	for _, m := range repoPath.FindAllStringSubmatch(text, -1) {
-		first, _, _ := strings.Cut(strings.TrimPrefix(m[1], "./"), "/")
-		if hostFirst.MatchString(first) {
-			continue
+	for _, re := range []*regexp.Regexp{fencedBlock, codeSpan, shellLine, runVerb} {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			if !blank(m[1]) {
+				out = append(out, m[1])
+			}
 		}
-		out = append(out, m[1])
 	}
 	return out
 }
 
-func (step HumanStep) checkFiles(prefix string) error {
-	for index, file := range step.Files {
-		at := fmt.Sprintf("%s.files[%d]", prefix, index)
+// check runs the human-ask guard for one card or step. subject names the text
+// in UI and file errors; home is where observed, files and dry_run live.
+func (ev askEvidence) check(subject, home string, texts []askText) error {
+	var hasCommand bool
+	for _, t := range texts {
+		if t.uiOnly {
+			continue
+		}
+		commands := commandsIn(t.text)
+		if t.command && !blank(t.text) {
+			commands = append(commands, t.text)
+		}
+		hasCommand = hasCommand || len(commands) > 0
+		for _, command := range commands {
+			if found := placeholderIn(command); found != "" {
+				return &AskError{t.field, "has a placeholder (" + found + "); write the literal the human runs"}
+			}
+		}
+	}
+	if err := ev.checkFiles(subject, home, texts); err != nil {
+		return err
+	}
+	for _, t := range texts {
+		if uiPath.MatchString(t.text) && blank(ev.Observed) {
+			return &AskError{subject, "cites a UI path with no observed; say where and when you saw the control"}
+		}
+	}
+	if hasCommand {
+		return ev.checkDryRun(home)
+	}
+	return nil
+}
+
+func placeholderIn(command string) string {
+	for _, re := range []*regexp.Regexp{placeholder, placeholderWord} {
+		if found := re.FindString(command); found != "" {
+			return found
+		}
+	}
+	return strings.TrimSpace(ellipsisText.FindString(command))
+}
+
+// repoFiles lists the relative file paths a text names, outside URLs. Absolute
+// and home paths belong to the human's own host and stay free.
+func repoFiles(text string) []string {
+	text = urlText.ReplaceAllString(text, " ")
+	var out []string
+	for _, m := range repoPath.FindAllStringSubmatchIndex(text, -1) {
+		name := text[m[2]:m[3]]
+		first, _, _ := strings.Cut(strings.TrimPrefix(name, "./"), "/")
+		if hostFirst.MatchString(first) || gitRefBefore.MatchString(text[:m[2]]) {
+			continue
+		}
+		out = append(out, name)
+	}
+	for _, m := range rootFile.FindAllStringSubmatch(text, -1) {
+		if !productJS.MatchString(m[1]) {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+func (ev askEvidence) checkFiles(subject, home string, texts []askText) error {
+	for index, file := range ev.Files {
+		at := fmt.Sprintf("%s.files[%d]", home, index)
 		switch {
 		case blank(file.Path):
 			return &AskError{at + ".path", "is required"}
@@ -170,17 +226,22 @@ func (step HumanStep) checkFiles(prefix string) error {
 			return &AskError{at + ".sha", "must be a 40-character commit SHA"}
 		}
 	}
-	for _, name := range step.repoFiles() {
-		if !step.pins(name) {
-			return &AskError{prefix, "names the file " + name + " without a files entry with repo and a 40-character commit SHA"}
+	for _, t := range texts {
+		if t.uiOnly {
+			continue
+		}
+		for _, name := range repoFiles(t.text) {
+			if !ev.pins(name) {
+				return &AskError{subject, "names the file " + name + " without a files entry with repo and a 40-character commit SHA"}
+			}
 		}
 	}
 	return nil
 }
 
-func (step HumanStep) pins(name string) bool {
+func (ev askEvidence) pins(name string) bool {
 	name = strings.TrimPrefix(name, "./")
-	for _, file := range step.Files {
+	for _, file := range ev.Files {
 		if strings.TrimPrefix(file.Path, "./") == name {
 			return true
 		}
@@ -188,12 +249,9 @@ func (step HumanStep) pins(name string) bool {
 	return false
 }
 
-func (step HumanStep) checkDryRun(prefix string) error {
-	if blank(step.Command) {
-		return nil
-	}
-	at := prefix + ".dry_run"
-	switch run := step.DryRun; {
+func (ev askEvidence) checkDryRun(home string) error {
+	at := home + ".dry_run"
+	switch run := ev.DryRun; {
 	case run == nil:
 		return &AskError{at, "is required for a command; say the host shape you ran it on and what it printed"}
 	case blank(run.Host):
@@ -206,21 +264,43 @@ func (step HumanStep) checkDryRun(prefix string) error {
 	return nil
 }
 
-// askEvidenceLines renders what a step proved, placed before "Done when".
-func (step HumanStep) askEvidenceLines() string {
-	var out strings.Builder
-	if !blank(step.Observed) {
-		fmt.Fprintf(&out, "   - Seen at: %s\n", step.Observed)
+// validateAskEvidence runs the human-ask guard checks for one step.
+func (step HumanStep) validateAskEvidence(prefix string) error {
+	texts := []askText{{field: prefix + ".action", text: step.Action}, {field: prefix + ".command", text: step.Command, command: true}}
+	for _, value := range step.Values {
+		texts = append(texts, askText{text: value.Source, uiOnly: true})
 	}
-	for _, file := range step.Files {
+	return askEvidence{step.Observed, step.Files, step.DryRun}.check(prefix, prefix, texts)
+}
+
+// validateActionEvidence runs the same guard over an action card's steps.
+func (ask Ask) validateActionEvidence() error {
+	texts := make([]askText, len(ask.Steps))
+	for index, step := range ask.Steps {
+		texts[index] = askText{field: "ask.steps", text: step}
+	}
+	return askEvidence{ask.Observed, ask.Files, ask.DryRun}.check("ask.steps", "ask", texts)
+}
+
+// askEvidenceLines renders what a step proved, placed before "Done when".
+func (ev askEvidence) lines() string {
+	var out strings.Builder
+	if !blank(ev.Observed) {
+		fmt.Fprintf(&out, "   - Seen at: %s\n", ev.Observed)
+	}
+	for _, file := range ev.Files {
 		if blank(file.AttachmentID) {
 			fmt.Fprintf(&out, "   - File: %s in %s at %s\n", file.Path, file.Repo, file.SHA)
 		} else {
 			fmt.Fprintf(&out, "   - File: %s from attachment %s\n", file.Path, file.AttachmentID)
 		}
 	}
-	if step.DryRun != nil {
-		fmt.Fprintf(&out, "   - Dry run on %s: %s\n", step.DryRun.Host, step.DryRun.Result)
+	if ev.DryRun != nil {
+		fmt.Fprintf(&out, "   - Dry run on %s: %s\n", ev.DryRun.Host, ev.DryRun.Result)
 	}
 	return out.String()
+}
+
+func (step HumanStep) askEvidenceLines() string {
+	return askEvidence{step.Observed, step.Files, step.DryRun}.lines()
 }

@@ -656,6 +656,7 @@ func (fixture requestCoreFixture) actionBody() map[string]any {
 			"why_human": "Owner-only: property create needs the workspace owner.", "steps": []string{"Run `multica property create --name Readiness`."},
 			"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
 			"source_issue_id": fixture.issueID, "source_comment_id": fixture.tagID,
+			"dry_run": map[string]any{"host": "x99 linux bash, multica 0.9", "result": "exit 0, property listed"},
 		},
 	}
 }

@@ -45,6 +45,10 @@ type Ask struct {
 	WhyHuman string   `json:"why_human,omitempty"`
 	Steps    []string `json:"steps,omitempty"`
 	DoneWhen string   `json:"done_when,omitempty"`
+	// Observed, Files and DryRun are the human-ask guard evidence of an action card (CHE-5753).
+	Observed string      `json:"observed,omitempty"`
+	Files    []StepFile  `json:"files,omitempty"`
+	DryRun   *StepDryRun `json:"dry_run,omitempty"`
 	// Topic and Waiver are the closed waiver-ask contract (CHE-4383 B2a); both are empty on every other ask.
 	Topic  string  `json:"topic,omitempty"`
 	Waiver *Waiver `json:"waiver,omitempty"`
@@ -86,7 +90,7 @@ var (
 	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "after_done", "subject", "artifacts", "topic", "waiver"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
-	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id"}
+	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
 )
 
@@ -125,12 +129,19 @@ func decodeActionAsk(raw []byte) (Ask, error) {
 	}{
 		{"context_eli10", &ask.ContextELI10}, {"agent_did", &ask.AgentDid}, {"why_human", &ask.WhyHuman}, {"done_when", &ask.DoneWhen},
 		{"default_if_no_reply", &ask.DefaultIfNoReply}, {"source_issue_id", &ask.SourceIssueID}, {"source_comment_id", &ask.SourceCommentID},
+		{"observed", &ask.Observed},
 	} {
 		if err := decodeString("ask."+field.name, fields[field.name], field.into); err != nil {
 			return ask, err
 		}
 	}
 	if err := decodeStrings("ask.steps", fields["steps"], &ask.Steps); err != nil {
+		return ask, err
+	}
+	if err := decodeStepFiles("ask.files", fields["files"], &ask.Files); err != nil {
+		return ask, err
+	}
+	if err := decodeDryRun("ask.dry_run", fields["dry_run"], &ask.DryRun); err != nil {
 		return ask, err
 	}
 	return ask, ask.validateAction()
@@ -159,6 +170,9 @@ func (ask Ask) validateAction() error {
 		if _, err := util.ParseUUID(field.value); err != nil {
 			return &AskError{"ask." + field.name, "must be a UUID"}
 		}
+	}
+	if err := ask.validateActionEvidence(); err != nil {
+		return err
 	}
 	return ask.validateReadable()
 }
@@ -426,6 +440,6 @@ func (ask Ask) actionContent(workspaceSlug string) string {
 	for index, step := range ask.Steps {
 		fmt.Fprintf(&steps, "%d. %s\n", index+1, step)
 	}
-	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
-		ask.ContextELI10, ask.WhyHuman, steps.String(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
+		ask.ContextELI10, ask.WhyHuman, steps.String(), askEvidence{ask.Observed, ask.Files, ask.DryRun}.lines(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
 }
