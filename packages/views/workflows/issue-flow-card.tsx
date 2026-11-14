@@ -9,7 +9,8 @@ import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useProjectWithWorkflow, useSetIssueWorkflow } from "@multica/core/issue-workflows";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { derivePRMergeStatus } from "@multica/core/github";
+import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { Button } from "@multica/ui/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
@@ -54,6 +55,7 @@ export function IssueFlowCard({
   const wsId = useWorkspaceId();
   const navigation = useNavigation();
   const paths = useWorkspacePaths();
+  const prMergeStatus = derivePRMergeStatus(useCurrentWorkspace());
   const enabled = useFeatureEnabled(PROJECT_WORKFLOWS_V1_FLAG, false);
   const catalog = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
@@ -174,7 +176,7 @@ export function IssueFlowCard({
           <DialogHeader>
             <DialogTitle>{workflow.name}</DialogTitle>
           </DialogHeader>
-          <WorkflowGraph workflow={workflow} currentStatus={currentStatus} project={project} />
+          <WorkflowGraph workflow={workflow} currentStatus={currentStatus} project={project} prMergeStatus={prMergeStatus} />
         </DialogContent>
       </Dialog>
     )}

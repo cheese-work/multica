@@ -15,9 +15,11 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { PR_MERGE_STATUS_NONE } from "@multica/core/github";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import {
+  ANY_STEP,
   addStepEdge,
   workflowEdges,
 } from "@multica/core/issue-workflows";
@@ -44,11 +46,24 @@ type StepNodeData = {
   current: boolean;
   editable: boolean;
   project: Pick<Project, "lead_type" | "lead_id"> | null;
+  /** The workspace PR merge rule moves issues here (Settings → Code). */
+  prMergeTarget: boolean;
 };
+
+/** Where the read-only PR merge edge starts: "the rule applies from any step". */
+function AnyStepNode({ data }: NodeProps<Node<{ label: string }>>) {
+  return (
+    <div className="rounded-full border border-dashed border-surface-border bg-card px-3 py-1 text-caption text-muted-foreground">
+      {data.label}
+      <Handle type="source" position={Position.Right} isConnectable={false} />
+    </div>
+  );
+}
 
 function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
   const catalog = useIssueStatuses(useWorkspaceId());
-  const { step, label, handler, current, editable, project } = data;
+  const { step, label, handler, current, editable, project, prMergeTarget } = data;
+  const { t } = useT("issues");
   const actor = stepHandlerActor(step, project);
   return (
     <div
@@ -92,12 +107,17 @@ function StepNode({ data }: NodeProps<Node<StepNodeData>>) {
           <span className="truncate">{handler}</span>
         </div>
       )}
+      {prMergeTarget && (
+        <div className="mt-1 text-caption text-muted-foreground">
+          {t(($) => $.workflows.flow.set_in_settings)}
+        </div>
+      )}
       <Handle type="source" position={Position.Right} isConnectable={editable} />
     </div>
   );
 }
 
-const nodeTypes = { step: StepNode };
+const nodeTypes = { step: StepNode, any: AnyStepNode };
 
 /**
  * A flowchart of a workflow (CHE-2150): a node per step, an arrow per exit
@@ -117,6 +137,7 @@ export function WorkflowGraph({
   onChange,
   onSelectStep,
   highlightEdge,
+  prMergeStatus,
 }: {
   workflow: Pick<IssueWorkflow, "steps">;
   /** The status the issue sits on, or the step being edited; highlighted. */
@@ -128,11 +149,32 @@ export function WorkflowGraph({
   onSelectStep?: (statusKey: string) => void;
   /** Emphasises the listed exits from `from` to `to`; nothing is drawn if none matches. */
   highlightEdge?: { from: string; to: string } | null;
+  /** The workspace `pr_merge_status`; draws the read-only PR merge rule. */
+  prMergeStatus?: string;
 }) {
   const { t } = useT("issues");
   const labelOf = useStatusLabel(useWorkspaceId());
   const handlerLabel = useStepHandlerLabel(project);
-  const edges = useMemo(() => workflowEdges(workflow), [workflow]);
+  const edges = useMemo(
+    () => workflowEdges(workflow, prMergeStatus),
+    [workflow, prMergeStatus],
+  );
+  const prMergeTarget = edges.find((e) => e.readOnly)?.to;
+  const anyStepLabel = t(($) => $.workflows.flow.any_step);
+  // The virtual edge starts at the "Any step" marker.
+  const endLabel = (key: string) => (key === ANY_STEP ? anyStepLabel : labelOf(key));
+  const prMergeChosen = !!prMergeStatus && prMergeStatus !== PR_MERGE_STATUS_NONE;
+  const prMergedLabel = t(($) => $.workflows.flow.pr_merged);
+  const deprecatedLabel = t(($) => $.workflows.flow.deprecated);
+  const guardLabel = useCallback(
+    (e: { guard: string; readOnly?: boolean }) =>
+      e.readOnly
+        ? prMergedLabel
+        : prMergeChosen && e.guard === "pr.merged"
+          ? `${e.guard} (${deprecatedLabel})`
+          : e.guard,
+    [prMergedLabel, prMergeChosen, deprecatedLabel],
+  );
 
   const isHighlighted = useCallback(
     (e: { from: string; to: string }) => e.from === highlightEdge?.from && e.to === highlightEdge.to,
@@ -161,9 +203,24 @@ export function WorkflowGraph({
     });
   }, []);
 
-  const nodes = useMemo<Node<StepNodeData>[]>(
-    () =>
-      workflow.steps.map((step, i) => ({
+  const nodes = useMemo<Node<StepNodeData | { label: string }>[]>(
+    () => [
+      ...(prMergeTarget
+        ? [
+            {
+              id: ANY_STEP,
+              type: "any",
+              position: moved[ANY_STEP] ?? { x: 0, y: -ROW_GAP },
+              data: { label: anyStepLabel },
+              draggable: false,
+              selectable: false,
+              connectable: false,
+              focusable: false,
+              measured: measured[ANY_STEP],
+            },
+          ]
+        : []),
+      ...workflow.steps.map((step, i) => ({
         id: step.status_key,
         type: "step",
         position: moved[step.status_key] ?? {
@@ -177,11 +234,13 @@ export function WorkflowGraph({
           current: step.status_key === currentStatus,
           editable,
           project,
+          prMergeTarget: step.status_key === prMergeTarget,
         },
         measured: measured[step.status_key],
         draggable: editable,
       })),
-    [workflow.steps, labelOf, handlerLabel, currentStatus, project, editable, moved, measured],
+    ],
+    [workflow.steps, labelOf, handlerLabel, currentStatus, project, editable, moved, measured, prMergeTarget, anyStepLabel],
   );
 
   const flowEdges = useMemo<Edge[]>(
@@ -195,13 +254,20 @@ export function WorkflowGraph({
         }),
         source: e.from,
         target: e.to,
-        label: e.timeout ? `${e.guard} · ${e.timeout}` : e.guard,
+        label: e.timeout ? `${guardLabel(e)} · ${e.timeout}` : guardLabel(e),
         type: "default",
+        ...(e.readOnly && {
+          style: { strokeDasharray: "6 4" },
+          selectable: false,
+          focusable: false,
+          deletable: false,
+          reconnectable: false,
+        }),
         markerEnd: { type: MarkerType.ArrowClosed },
         labelStyle: { fill: "var(--color-foreground)", fontSize: 11 },
         labelBgStyle: { fill: "var(--color-card)" },
       })),
-    [edges, isHighlighted],
+    [edges, isHighlighted, guardLabel],
   );
 
   return (
@@ -217,14 +283,15 @@ export function WorkflowGraph({
           edges={flowEdges}
           nodeTypes={nodeTypes}
           fitView
+          minZoom={0.2}
           nodesDraggable={editable}
           nodesConnectable={editable}
           elementsSelectable={editable}
           onNodesChange={onNodesChange}
-          onNodeClick={(_, node) => onSelectStep?.(node.id)}
-          onEdgeClick={(_, edge) => onSelectStep?.(edge.source)}
+          onNodeClick={(_, node) => node.id !== ANY_STEP && onSelectStep?.(node.id)}
+          onEdgeClick={(_, edge) => edge.source !== ANY_STEP && onSelectStep?.(edge.source)}
           onConnect={({ source, target }) => {
-            if (onChange && source && target && source !== target) {
+            if (onChange && source && target && source !== target && source !== ANY_STEP) {
               onChange(addStepEdge(workflow.steps, source, target));
             }
           }}
@@ -240,9 +307,9 @@ export function WorkflowGraph({
         {edges.map((e) => (
           <li key={e.id} aria-current={isHighlighted(e) ? "true" : undefined}>
             {t(($) => $.workflows.flow.exit_item, {
-              from: labelOf(e.from),
+              from: endLabel(e.from),
               to: labelOf(e.to),
-              guard: e.timeout ? `${e.guard} (${e.timeout})` : e.guard,
+              guard: e.timeout ? `${guardLabel(e)} (${e.timeout})` : guardLabel(e),
             })}
           </li>
         ))}

@@ -1882,6 +1882,11 @@
       "graph_label": "ワークフロー図",
       "exits_label": "ワークフローの出口",
       "exit_item": "{{guard}} のとき {{from}} から {{to}} へ",
+      "any_step": "任意のステップ",
+      "pr_merged": "PR マージ時",
+      "set_in_settings": "設定 → Code で設定",
+      "deprecated": "非推奨",
+      "pr_merge_unlisted": "このワークフローでは PR のマージでステータスは変わりません（設定 → Code の移動先: {{status}}）。",
       "edit": {
         "title": "{{step}} からの遷移",
         "pick": "ステップを選ぶと遷移を編集できます。",

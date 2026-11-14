@@ -28,7 +28,7 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/paths")>()),
-  useCurrentWorkspace: () => ({ id: "ws-1", slug: "acme" }),
+  useCurrentWorkspace: () => ({ id: "ws-1", slug: "acme", settings: { pr_merge_status: "none" } }),
 }));
 vi.mock("@multica/core/workspace/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/workspace/hooks")>()),

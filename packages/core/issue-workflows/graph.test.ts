@@ -77,3 +77,32 @@ describe("workflowEdges", () => {
     expect(workflowEdges({ steps })).toEqual([]);
   });
 });
+
+describe("workflowEdges: PR merge rule", () => {
+  const listed = [step("todo"), step("in_review"), step("done")];
+  const virtual = (edges: ReturnType<typeof workflowEdges>) =>
+    edges.filter((e) => e.from === "*");
+
+  it("adds one read-only edge from any step to the status the workflow lists", () => {
+    expect(virtual(workflowEdges({ steps: listed }, "done"))).toEqual([
+      expect.objectContaining({
+        from: "*",
+        to: "done",
+        guard: "pr_merge_status",
+        readOnly: true,
+      }),
+    ]);
+  });
+
+  it("adds none for `none`, an unlisted status, or no setting", () => {
+    expect(virtual(workflowEdges({ steps: listed }, "none"))).toEqual([]);
+    expect(virtual(workflowEdges({ steps: listed }, "merged"))).toEqual([]);
+    expect(virtual(workflowEdges({ steps: listed }))).toEqual([]);
+  });
+
+  it("leaves the step edges unchanged", () => {
+    expect(
+      workflowEdges({ steps: listed }, "done").filter((e) => e.from !== "*"),
+    ).toEqual(workflowEdges({ steps: listed }));
+  });
+});

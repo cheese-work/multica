@@ -1882,6 +1882,11 @@
       "graph_label": "워크플로 그래프",
       "exits_label": "워크플로 출구",
       "exit_item": "{{guard}} 일 때 {{from}}에서 {{to}}로",
+      "any_step": "모든 단계",
+      "pr_merged": "PR 병합됨",
+      "set_in_settings": "설정 → Code에서 지정",
+      "deprecated": "사용 중단",
+      "pr_merge_unlisted": "이 워크플로에서는 PR 병합이 상태를 바꾸지 않습니다(설정 → Code의 이동 대상: {{status}}).",
       "edit": {
         "title": "{{step}}의 전이",
         "pick": "단계를 선택하면 전이를 편집할 수 있습니다.",

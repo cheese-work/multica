@@ -24,7 +24,7 @@ export {
   workflowHandoffPreviewOptions,
   handoffStepCount,
 } from "./queries";
-export { workflowEdges, type WorkflowGraphEdge } from "./graph";
+export { ANY_STEP, workflowEdges, type WorkflowGraphEdge } from "./graph";
 export {
   EDITABLE_GUARDS,
   MAX_EDGES_PER_STEP,
