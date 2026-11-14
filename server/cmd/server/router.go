@@ -1914,6 +1914,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-5644: admin audit trail, read side. Human owner/admin only; the
+					// handler re-checks role and refuses machine credentials as a backstop.
+					r.With(handler.RequireHumanActor).Get("/audit-events", h.ListWorkspaceAuditEvents)
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
