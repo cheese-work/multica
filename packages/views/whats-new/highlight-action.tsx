@@ -41,6 +41,7 @@ export function HighlightActionButton({ action, onDone }: { action: HighlightAct
   };
   if (action.kind === "command-palette") {
     return (
+      // ui-pattern-ref: allow upstream What's new action, merged unchanged (v0.9.0 sync)
       <button
         type="button"
         onClick={run}

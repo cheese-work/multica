@@ -109,8 +109,8 @@ type AttachmentResponse struct {
 	SizeBytes  int64   `json:"size_bytes"`
 	CreatedAt  string  `json:"created_at"`
 	// Displayed image dimensions, absent for non-images and older uploads.
-	Width      *int32  `json:"width,omitempty"`
-	Height     *int32  `json:"height,omitempty"`
+	Width  *int32 `json:"width,omitempty"`
+	Height *int32 `json:"height,omitempty"`
 }
 
 // attachmentURLMode selects how DownloadURL is rendered on a response.
