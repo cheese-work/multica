@@ -8070,8 +8070,10 @@ func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtim
 //
 // After commit, cancellation side effects are captured before chat tasks emit
 // task:cancelled so existing consumers can clear processing indicators, release
-// streams, and refresh chat state. The caller still publishes agent:archived;
-// non-chat tasks keep their existing behavior.
+// streams, and refresh chat state. Autopilot run_only tasks also publish it:
+// the autopilot listener settles their run from that event, and without it the
+// run stays `running` forever (CHE-5667). The caller still publishes
+// agent:archived; other non-chat tasks keep their existing behavior.
 func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
 	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.CancelAgentTasksByAgent(ctx, agentID)
@@ -8081,7 +8083,7 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 	}
 	s.CaptureCancelledTasks(ctx, cancelled)
 	for _, task := range cancelled {
-		if task.ChatSessionID.Valid {
+		if task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
 			s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
 		}
 	}
