@@ -49,7 +49,6 @@ import { PillMenu } from "../../../packages/views/issues/components/wakeup-picke
 import {
   Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2, TriangleAlert,
 } from "@multica/ui/icons";
-import { memberListOptions } from "@multica/core/workspace/queries";
 import {
   SettingsCard, SettingsReadOnlyNotice, SettingsRow, SettingsSaveState, SettingsSection, SettingsTab,
 } from "../../../packages/views/settings/components/settings-layout";
@@ -63,6 +62,7 @@ import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
 import { NavigationProvider } from "../../../packages/views/navigation/context";
 import {
   seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
+  WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ChatSearchPage, ConfigChangeViewerPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1132,6 +1132,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "hierarchy-dialog": HierarchyDialogPage,
   "wakeup-event-row": WakeupEventRowPage,
   "wakeup-condition-params": ConditionParamsPage,
+  "wakeup-fields": WakeupFieldsPage,
+  "wakeup-pickers": WakeupPickersPage,
+  "workspace-wakeup-rules": WorkspaceWakeupRulesPage,
+  "chat-search": ChatSearchPage,
+  "config-change-viewer": ConfigChangeViewerPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,
