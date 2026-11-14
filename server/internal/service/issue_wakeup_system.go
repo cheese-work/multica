@@ -34,7 +34,12 @@ const (
 	// read stored facts (CHE-2152). A trigger on issue.status owns its life and
 	// TaskService.WorkflowEdges evaluates it; it wakes no agent, so it has no
 	// target, receipts or settings.
-	SystemRuleWorkflowEdges  = "workflow_edges"
+	SystemRuleWorkflowEdges = "workflow_edges"
+	// SystemRulePRMergeOwed is the write-ahead intent that an issue's PR merge
+	// still owes a completion decision (CHE-5243). Unlike a rule that wakes an
+	// agent it has no target or receipts; TaskService.PRMergeOwed settles it,
+	// fenced by the row's (id, revision).
+	SystemRulePRMergeOwed    = "pr_merge_owed"
 	SystemRuleChildDone      = "child_done"
 	SystemRulePRMerged       = "pr_merged"
 	SystemRulePRChecksFailed = "pr_checks_failed"
@@ -149,9 +154,107 @@ func PRWakeupEnabled(settings []byte, rule string) (bool, error) {
 }
 
 func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issueID pgtype.UUID, in PullRequestWakeupInput) error {
+	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	c, err := s.capturePRWakeupTx(ctx, tx, issueID, in)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	c.announce(ctx, s)
+	if c.dispatch == nil {
+		return nil
+	}
+	err = s.dispatchSystem(ctx, *c.dispatch)
+	if errors.Is(err, errAggregateCounterBusy) {
+		s.noteAggregateBusy(ctx, *c.dispatch)
+		return nil
+	}
+	return err
+}
+
+// SettlePRMergedReceiptsTx reserves the pr_merged receipts of prs to taskID, the
+// run the merge handoff just inserted on tx. A PR with no receipt yet is
+// captured first, so every check of the wake still applies and a dropped event
+// leaves nothing to reserve. Receipts of other PRs, other rules, or already
+// reserved to another run stay as they are. The returned func announces what the
+// captures withdrew; call it after tx commits. No dispatch follows: the reserved
+// receipt holds the rule until that run starts or ends (CHE-5241).
+func (s *IssueWakeupService) SettlePRMergedReceiptsTx(ctx context.Context, tx pgx.Tx, issueID, taskID pgtype.UUID, prs []PullRequestWakeupInput) (func(context.Context), error) {
+	keys := make(map[string]bool, len(prs))
+	var captures []prWakeupCapture
+	for _, in := range prs {
+		in.Rule = SystemRulePRMerged
+		c, err := s.capturePRWakeupTx(ctx, tx, issueID, in)
+		if err != nil {
+			return nil, err
+		}
+		captures = append(captures, c)
+		keys[fmt.Sprintf("github:%s/%s#%d", strings.ToLower(in.RepoOwner), strings.ToLower(in.RepoName), in.Number)] = true
+	}
+	announce := func(ctx context.Context) {
+		for _, c := range captures {
+			c.announce(ctx, s)
+		}
+	}
+	q := s.Tasks.Queries.WithTx(tx)
+	w, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issueID, SystemRule: systemRuleText(SystemRulePRMerged)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return announce, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
+	if err != nil {
+		return nil, err
+	}
+	var ids []pgtype.UUID
+	for _, r := range pending {
+		if keys[r.EventKey] && !r.TaskID.Valid {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) > 0 {
+		if err := q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: taskID, Ids: ids}); err != nil {
+			return nil, err
+		}
+	}
+	return announce, nil
+}
+
+// prWakeupCapture is what a capture leaves for after its transaction commits:
+// runs the rebase withdrew, a timeline entry, and the rule to dispatch when the
+// capture recorded a new receipt.
+type prWakeupCapture struct {
+	withdrawn []db.AgentTaskQueue
+	activity  *wakeupActivity
+	dispatch  *db.IssueWakeup
+}
+
+func (c prWakeupCapture) announce(ctx context.Context, s *IssueWakeupService) {
+	for _, task := range c.withdrawn {
+		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+	}
+	if c.activity != nil {
+		s.publishWakeupActivities(*c.activity)
+	}
+}
+
+// capturePRWakeupTx records one pull request input on tx: every check of the
+// wake (dispatch halt, issue active, rule enabled, held or expired
+// configuration, filter), the identity row and the receipt. It never commits;
+// the caller commits and then runs announce and dispatch.
+func (s *IssueWakeupService) capturePRWakeupTx(ctx context.Context, tx pgx.Tx, issueID pgtype.UUID, in PullRequestWakeupInput) (prWakeupCapture, error) {
+	var c prWakeupCapture
 	_, ok := prWakeupSetting(in.Rule)
 	if !ok || in.Number < 1 || in.RepoOwner == "" || in.RepoName == "" {
-		return fmt.Errorf("invalid pull request wakeup input")
+		return c, fmt.Errorf("invalid pull request wakeup input")
 	}
 	eventType := "pr.merged"
 	eventKey := fmt.Sprintf("github:%s/%s#%d", strings.ToLower(in.RepoOwner), strings.ToLower(in.RepoName), in.Number)
@@ -168,13 +271,13 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		}
 	case SystemRulePRChecksFailed:
 		if in.Conclusion != "FAILURE" && in.Conclusion != "ERROR" || in.HeadSHA == "" {
-			return fmt.Errorf("invalid failing pull request checks input")
+			return c, fmt.Errorf("invalid failing pull request checks input")
 		}
 		eventType = "pr.checks_failed"
 		eventKey += ":" + in.HeadSHA
 	case SystemRulePRChecksPassed:
 		if in.Conclusion != "SUCCESS" || in.HeadSHA == "" {
-			return fmt.Errorf("invalid passing pull request checks input")
+			return c, fmt.Errorf("invalid passing pull request checks input")
 		}
 		eventType = "pr.checks_passed"
 		failedKey = eventKey + ":" + in.HeadSHA
@@ -184,7 +287,7 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		// updated_at. The delivery header is unsigned, so a resend under a new
 		// delivery ID is the same event; a later dequeue has a later updated_at.
 		if in.HeadSHA == "" || in.EventAt == "" {
-			return fmt.Errorf("invalid dequeued pull request input")
+			return c, fmt.Errorf("invalid dequeued pull request input")
 		}
 		eventType = "pr.dequeued"
 		eventKey += ":dequeued:" + in.HeadSHA + ":" + in.Reason + ":" + in.EventAt
@@ -201,15 +304,10 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			eventType = "pr.returned_to_draft"
 			eventKey += ":draft:" + in.HeadSHA + ":" + in.EventAt
 		default:
-			return fmt.Errorf("invalid pull request attention input")
+			return c, fmt.Errorf("invalid pull request attention input")
 		}
 	}
 
-	tx, err := s.Tasks.TxStarter.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
 	// The workspace row comes first, as in dispatch and in the pause and resume
 	// writers. Its KEY SHARE lock lasts to the commit, so a resume (FOR UPDATE)
@@ -217,59 +315,59 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	// arrives after the resume (CHE-1727).
 	var workspace pgtype.UUID
 	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); errors.Is(err, pgx.ErrNoRows) {
-		return tx.Commit(ctx)
+		return c, nil
 	} else if err != nil {
-		return err
+		return c, err
 	}
 	// The kill switch (CHE-2220) drops the event rather than queueing it. The
 	// shared lock holds to the commit, so a switch change either waits for this
 	// admission and sweeps it, or commits first and this read sees it (CHE-2223).
 	// A read that fails returns the error, so the delivery fails and GitHub redelivers.
 	if err := q.LockGitHubDispatchHaltShared(ctx, workspace); err != nil {
-		return err
+		return c, err
 	}
 	if halted, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspace, RepoOwner: in.RepoOwner, RepoName: in.RepoName}); err != nil {
-		return err
+		return c, err
 	} else if halted {
 		slog.Warn("github dispatch halted: pull request wakeup dropped", "issue_id", util.UUIDToString(issueID), "repo", in.RepoOwner+"/"+in.RepoName, "rule", in.Rule)
-		return tx.Commit(ctx)
+		return c, nil
 	}
 	issue, err := q.LockWakeupIssue(ctx, issueID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tx.Commit(ctx)
+		return c, nil
 	}
 	if err != nil {
-		return err
+		return c, err
 	}
 	active, err := systemWakeupIssueActive(ctx, q, issue, true)
 	if err != nil {
-		return err
+		return c, err
 	}
 	if !active {
-		return tx.Commit(ctx)
+		return c, nil
 	}
 	if in.Reason == PRAttentionDraft {
 		// Only a draft after an accepted verdict asks for an answer: a draft
 		// while the issue is still worked on, or after a rejection, is rework.
 		if !prAcceptedStatuses[issue.Status] {
-			return tx.Commit(ctx)
+			return c, nil
 		}
 		category, err := issuestatus.CategoryWithError(ctx, q, issue.WorkspaceID, issue.Status)
 		if err != nil {
-			return err
+			return c, err
 		}
 		if category != issuestatus.CategoryDone {
-			return tx.Commit(ctx)
+			return c, nil
 		}
 	}
 	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
-		return err
+		return c, err
 	}
 	w, err := q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(in.Rule)})
 	exists := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return err
+		return c, err
 	}
 	var legacy *db.IssueWakeup
 	if exists {
@@ -288,28 +386,28 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		config, err = nil, nil
 	}
 	if err != nil {
-		return err
+		return c, err
 	}
 	enabled, err := prRuleEnabled(ws.Settings, in.Rule, config != nil)
 	if err != nil {
 		if errors.Is(err, errMalformedPRWakeupSettings) {
 			slog.WarnContext(ctx, "PR wakeup skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "rule", in.Rule, "error", err)
-			return nil
+			return c, nil
 		}
-		return err
+		return c, err
 	}
 	if config != nil {
 		enabled = enabled && config.enabled()
 	}
 	if !enabled {
-		return tx.Commit(ctx)
+		return c, nil
 	}
 	created := time.Now()
 	if exists {
 		created = w.CreatedAt.Time
 	}
 	if config.expired(created, time.Now()) {
-		return tx.Commit(ctx)
+		return c, nil
 	}
 	if !exists {
 		w, err = q.CreateSystemWakeup(ctx, db.CreateSystemWakeupParams{
@@ -320,22 +418,21 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			w, err = q.GetSystemWakeup(ctx, db.GetSystemWakeupParams{IssueID: issue.ID, SystemRule: systemRuleText(in.Rule)})
 		}
 		if err != nil {
-			return err
+			return c, err
 		}
 	}
 	// What this input is captured under: a configuration that changed since the
 	// instance last ran retires its older inputs and unstarted runs first.
-	var withdrawn []db.AgentTaskQueue
 	if !held {
-		if w, withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
-			return err
+		if w, c.withdrawn, err = rebaseBuiltinConfig(ctx, tx, q, issue, w, config); err != nil {
+			return c, err
 		}
 	}
 	if failedKey != "" {
 		var rerun bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_wakeup_pr_event e JOIN issue_wakeup x ON x.id=e.wakeup_id
 			WHERE x.issue_id=$1 AND e.event_key=$2)`, issue.ID, failedKey).Scan(&rerun); err != nil {
-			return err
+			return c, err
 		}
 		// ponytail: one extra green per head. A second red on the head is deduped
 		// like the first, so a second re-run does not wake again.
@@ -357,34 +454,21 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 		END
 		ON CONFLICT DO NOTHING`, w.ID, eventKey, pairKey, in.MergeState == "BEHIND")
 	if err != nil {
-		return err
-	}
-	announceWithdrawn := func() {
-		for _, task := range withdrawn {
-			s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
-		}
+		return c, err
 	}
 	if tag.RowsAffected() == 0 {
 		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		announceWithdrawn()
-		return nil
+		return c, nil
 	}
 	baseSHA, covered, err := s.prEventCarries(ctx, q, issue.ID, in)
 	if err != nil {
-		return err
+		return c, err
 	}
 	if covered {
 		// The pr.event fallback already carries this cause (CHE-2540); its
 		// identity is spent here so a later snapshot never wakes it again.
 		s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, pgtype.UUID{})
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		announceWithdrawn()
-		return nil
+		return c, nil
 	}
 	if !config.matchesPR(in) {
 		// The event's identity is spent: a redelivery never fires once the
@@ -393,14 +477,10 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 			"rule": in.Rule, "repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number, "outcome": wakeupOutcomeFiltered,
 		})
 		if err != nil {
-			return err
+			return c, err
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return err
-		}
-		announceWithdrawn()
-		s.publishWakeupActivities(a)
-		return nil
+		c.activity = &a
+		return c, nil
 	}
 	payload := map[string]any{
 		"repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number,
@@ -440,25 +520,17 @@ func (s *IssueWakeupService) TriggerPullRequestWakeup(ctx context.Context, issue
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return c, err
 	}
 	receipt, err := q.RecordWakeupReceipt(ctx, db.RecordWakeupReceiptParams{
 		ID: dbid.NewV7(), WakeupID: w.ID, Revision: w.Revision, EventKey: eventKey, EventType: eventType, Payload: encoded,
 	})
 	if err != nil {
-		return err
+		return c, err
 	}
 	s.captureRunGatePR(ctx, tx, q, issue, w, config, in, eventKey, receipt.ID)
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	announceWithdrawn()
-	err = s.dispatchSystem(ctx, w)
-	if errors.Is(err, errAggregateCounterBusy) {
-		s.noteAggregateBusy(ctx, w)
-		return nil
-	}
-	return err
+	c.dispatch = &w
+	return c, nil
 }
 
 // prEventCarries reports whether the pr.event fallback already carries the
@@ -690,6 +762,15 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	if !active {
 		return finish()
 	}
+	// A sub-issue reaching a terminal state can complete its parent through the
+	// PR-merge path. The intent commits with the claim: if it fails, the claim
+	// rolls back and the event stays unclaimed for the next pass (CHE-5244).
+	owePRMerge := kinds["closed"] && s.Tasks.PRMergeOwe != nil
+	if owePRMerge {
+		if err := s.Tasks.PRMergeOwe(ctx, q, parent.WorkspaceID, parent.ID); err != nil {
+			return err
+		}
+	}
 	ensured, err := EnsureChildDoneRule(ctx, tx, q, parent)
 	if err != nil {
 		return err
@@ -722,6 +803,13 @@ func (s *IssueWakeupService) processChildEvents(ctx context.Context, parentID pg
 	}
 	if err := finish(); err != nil {
 		return err
+	}
+	if owePRMerge && s.Tasks.PRMergeOwed != nil {
+		// The inline attempt runs under the row's (id, revision) fence; a
+		// failure leaves the row for the scheduler.
+		if err := s.Tasks.PRMergeOwed(ctx, db.IssueWakeup{WorkspaceID: parent.WorkspaceID, IssueID: parent.ID}); err != nil {
+			slog.Warn("sub-issue wakeups: pr merge attempt failed; scheduler will retry", "error", err, "parent_id", util.UUIDToString(parent.ID))
+		}
 	}
 	for _, task := range withdrawn {
 		s.Tasks.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)

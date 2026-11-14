@@ -26,6 +26,11 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
+	// OutputOnly (CHE-4101) launches the provider in its no-tool mode for an
+	// output_only background job: no tools, no MCP, no skills, no resume, and
+	// no custom args. Only a provider that passes OutputOnlyIneligibleReason
+	// honours it.
+	OutputOnly bool
 	// EnableTaskSupplement installs provider hooks only for runs whose daemon/server
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
@@ -460,6 +465,7 @@ var SupportedTypes = []string{
 	"dim",
 	"devin",
 	"zeroclaw",
+	"zcode",
 }
 
 // IsSupportedType reports whether agentType is in the SupportedTypes whitelist.
@@ -582,6 +588,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
 		return &zeroclawBackend{cfg: cfg}, nil
+	case "zcode":
+		return &zcodeBackend{cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q (supported: %s)", agentType, strings.Join(SupportedTypes, ", "))
 	}
@@ -631,6 +639,7 @@ var launchHeaders = map[string]string{
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",
+	"zcode":       "zcode app-server",
 }
 
 // LaunchHeader returns the user-visible launch skeleton for agentType, or an
@@ -646,4 +655,24 @@ func LaunchHeader(agentType string) string {
 		return desc.LaunchHeader
 	}
 	return ""
+}
+
+// outputOnlyProviders are the providers with a verified no-tool launch mode
+// (CHE-4101). Anything not listed is ineligible: a new provider must be proven
+// to have no file or workspace access before it is added here.
+var outputOnlyProviders = map[string]bool{
+	// Claude Code 2.1.318: `--tools ""` removes every built-in tool,
+	// `--strict-mcp-config` with no `--mcp-config` loads no MCP server, and
+	// `--disable-slash-commands` loads no skill.
+	"claude": true,
+}
+
+// OutputOnlyIneligibleReason returns why provider cannot run an output_only
+// background job, or "" when it can. A provider that can read files or
+// workspace content outside the task context is ineligible.
+func OutputOnlyIneligibleReason(provider string) string {
+	if outputOnlyProviders[provider] {
+		return ""
+	}
+	return fmt.Sprintf("provider %q has no verified no-tool mode and can read files or workspace content outside the task context", provider)
 }

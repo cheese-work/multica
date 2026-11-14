@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +113,19 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 		return h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: next, Valid: true}})
 	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge {
+		bridged, err := h.bridgePRMergedEdge(ctx, issue)
+		if err != nil {
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+		if bridged {
+			// The decision moved the issue, which removes this watch, or left
+			// it where it is; look again later either way.
+			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
+			return nil
+		}
+	}
 	moved, _ := h.moveIssueOnEdge(ctx, issue, decision.To, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": decision.Reason}, true)
 	if !moved {
 		if claimed != "" {
@@ -122,6 +136,54 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		h.watchAgainIn(ctx, w, edgeRetryDelay)
 	}
 	return nil
+}
+
+// bridgePRMergedEdge hands a holding pr.merged edge to the PR merge decision
+// while the workspace has chosen a status in Settings → Code (CHE-5245). The
+// decision is then the one writer of a merge move, so the edge never moves the
+// issue itself. It reports false when the setting is none and the edge moves
+// the issue as before.
+func (h *Handler) bridgePRMergedEdge(ctx context.Context, issue db.Issue) (bool, error) {
+	ws, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	if prMergeStatusSetting(ws) == prMergeStatusNone {
+		return false, nil
+	}
+	return true, h.autoCompleteIssue(ctx, issue.WorkspaceID, issue.ID, nil)
+}
+
+// refuseNewPRMergedEdge returns the refusal for a save that adds a pr.merged
+// edge while the workspace has chosen a status in Settings → Code. An edge the
+// stored workflow already has stays, so a stored workflow keeps loading and
+// saving. stored is nil for a new workflow.
+func (h *Handler) refuseNewPRMergedEdge(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, stored, steps []issueworkflow.Step) (string, error) {
+	added := false
+	for _, step := range steps {
+		for _, e := range step.Edges {
+			if g, err := issueworkflow.ParseGuard(e.Guard); err != nil || g.Kind != issueworkflow.GuardPRMerged {
+				continue
+			}
+			had := slices.ContainsFunc(stored, func(old issueworkflow.Step) bool {
+				return old.StatusKey == step.StatusKey && slices.ContainsFunc(old.Edges, func(oe issueworkflow.Edge) bool {
+					return oe.Guard == e.Guard && oe.To == e.To
+				})
+			})
+			added = added || !had
+		}
+	}
+	if !added {
+		return "", nil
+	}
+	ws, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if prMergeStatusSetting(ws) == prMergeStatusNone {
+		return "", nil
+	}
+	return `a new "pr.merged" edge is not allowed while a merge status is chosen: PR merges move issues through the "After PRs merge, move the issue to" setting in Settings → Code. Set it to none to add the edge.`, nil
 }
 
 func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Duration) {
@@ -326,13 +388,10 @@ var errRefusalLifted = fmt.Errorf("run budget: the refusal no longer applies: %w
 // recordBudgetBlock logs the exhaustion block with the cap a raise would set.
 // It runs after the recovery run is enqueued, so the target counts that run.
 func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) {
-	details := map[string]any{
-		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused, "raise_target": 0,
-	}
-	if !e.TokensSpent {
-		details["raise_target"] = runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target
-	}
-	body, _ := json.Marshal(details)
+	body, _ := json.Marshal(map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused,
+		"raise_target": runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target,
+	})
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
 		Action: "run_budget_exhausted", Details: body,
@@ -368,11 +427,6 @@ func exhaustedNoticeText(refused string, raise, leaves int, e service.RunBudgetE
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
-	}
-	if e.TokensSpent {
-		return fmt.Sprintf(
-			"%s: %s was refused because the issue's token allowance is spent (balance %d). No command raises it. A person moves the issue's status to open a new window with a new allowance.",
-			lead, refused, e.Tokens)
 	}
 	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise, leaves)
 }

@@ -716,6 +716,13 @@ type Daemon struct {
 	claimMu        sync.Mutex
 	pauseClaims    bool // when true, the batch poller skips claiming
 	claimsInFlight int  // pollers that have decided to claim but haven't yet handed the task off to handleTask
+	// Reload drain (CHE-5453), also guarded by claimMu. While draining, pollers
+	// claim nothing new so the running tasks can finish; reloadKick then wakes
+	// autoUpdateLoop the moment the daemon goes idle. See startReloadDrain.
+	draining     bool
+	drainRetryAt time.Time // no new drain before this (backoff after a timeout)
+	drainTimer   *time.Timer
+	reloadKick   chan struct{} // cap 1; created in New
 
 	// pause is the server-reported machine pause, refreshed by every heartbeat
 	// ack (see pause.go). nil when the machine is not paused.
@@ -824,6 +831,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		logger:                      logger,
 		terminalReports:             newTerminalReportStore(cfg),
 		terminalReportWakeup:        make(chan struct{}, 1),
+		reloadKick:                  make(chan struct{}, 1),
 		terminalReportNow:           time.Now,
 		terminalReportFlight:        make(map[string]struct{}),
 		workspaces:                  make(map[string]*workspaceState),
@@ -2158,6 +2166,12 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 		logFields = append(logFields, "profile", d.cfg.Profile)
 	}
 	d.logger.Info("starting daemon", logFields...)
+	// Sweep orphaned ZCode provider credential snapshots left by a prior
+	// crash/SIGKILL (prepareZcodeRuntimeEnv writes 0600 files under
+	// $TMPDIR/multica-zcode-providers-*; normal exits remove them in defer).
+	if n := agent.CleanupStaleZcodeProviderSnapshots(); n > 0 {
+		d.logger.Info("removed stale ZCode provider credential snapshots", "count", n)
+	}
 	d.logger.Debug("daemon config resolved",
 		"daemon_id", d.cfg.DaemonID,
 		"device_name", d.cfg.DeviceName,
@@ -3345,6 +3359,17 @@ func (d *Daemon) repoBarePathIsLive(barePath string) bool {
 		}
 	}
 	return false
+}
+
+// workspaceSettings returns the cached workspace settings JSON (nil when the
+// workspace is unknown), kept fresh by refreshWorkspaceRepos.
+func (d *Daemon) workspaceSettings(workspaceID string) []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ws, ok := d.workspaces[workspaceID]; ok {
+		return ws.settings
+	}
+	return nil
 }
 
 // workspaceCoAuthoredByEnabled returns whether the Co-authored-by hook should
@@ -5269,7 +5294,7 @@ func (d *Daemon) reportUpdateResultWithRetry(ctx context.Context, runtimeID, upd
 func (d *Daemon) tryEnterClaim() bool {
 	d.claimMu.Lock()
 	defer d.claimMu.Unlock()
-	if d.pauseClaims || d.heldPauseNow() != nil {
+	if d.pauseClaims || d.draining || d.heldPauseNow() != nil {
 		return false
 	}
 	d.claimsInFlight++
@@ -5279,8 +5304,9 @@ func (d *Daemon) tryEnterClaim() bool {
 // exitClaim releases the in-flight claim recorded by tryEnterClaim.
 func (d *Daemon) exitClaim() {
 	d.claimMu.Lock()
-	defer d.claimMu.Unlock()
 	d.claimsInFlight--
+	d.claimMu.Unlock()
+	d.kickReloadIfIdle()
 }
 
 // trySetClaimBarrier atomically pauses new ClaimTask calls if the daemon is
@@ -5552,7 +5578,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			go func(t Task, slot int, claim *inflightClaim) {
 				defer taskWG.Done()
-				defer d.activeTasks.Add(-1)
+				defer d.taskDone()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
@@ -6588,6 +6614,11 @@ func (d *Daemon) sendTerminalTaskReport(ctx context.Context, report terminalTask
 func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 	meta := execenv.GCMeta{WorkspaceID: task.WorkspaceID, TaskID: task.ID}
 	switch {
+	case task.BackgroundJob != "":
+		// No issue, chat or autopilot parent: the task row alone says when
+		// the dir is done, as for quick-create.
+		meta.Kind = execenv.GCKindBackground
+		meta.TaskID = task.ID
 	case task.ChatSessionID != "":
 		meta.Kind = execenv.GCKindChat
 		meta.ChatSessionID = task.ChatSessionID
@@ -6636,6 +6667,7 @@ var runtimeDisplayNameOverrides = map[string]string{
 	"qwenpaw":    "QwenPaw",
 	"mcode":      "MiniMax Code",
 	"muse":       "Muse Code",
+	"zcode":      "ZCode",
 	"zeroclaw":   "ZeroClaw",
 }
 
@@ -7975,6 +8007,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// CHE-4101: an output_only background task never enters the full pipeline.
+	if task.BackgroundJob != "" {
+		return d.runBackgroundTask(ctx, task, provider, taskLog)
+	}
 
 	// Script mode (CHE-4678 S9 P4): no model session, no execution env.
 	if task.Script != nil {
@@ -8107,6 +8143,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		BackgroundJob:                    task.BackgroundJob,
 		IsSquadLeader:                    taskIsSquadLeader(task),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
@@ -8849,6 +8886,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// the daemon cannot record either (#9404).
 	if env.LocalWorktree != nil {
 		promptOptions = append(promptOptions, WithWorktreeBranch(env.LocalWorktree.Branch, env.LocalWorktree.BaseCommit))
+		// The branch block's rule for uncommitted files has one exception,
+		// decided by the same predicate Finalize uses (#9788 review).
+		if env.LocalWorktree.CommitsAllLeftovers() {
+			promptOptions = append(promptOptions, WithWorktreeCommitsAllLeftovers())
+		}
 	}
 	prompt := BuildPrompt(task, provider, promptOptions...)
 
@@ -8893,14 +8935,22 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
 	// inherit the daemon's PATH. Prepend the directory of the running
 	// multica binary so that `multica` commands in the agent always resolve.
-	if selfBin, err := resolveSelfExecutable(); err == nil {
+	selfBin, selfErr := resolveSelfExecutable()
+	if selfErr == nil {
 		binDir := filepath.Dir(selfBin)
 		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
+	} else {
+		selfBin = ""
 	}
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir); err != nil {
+	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
+	}
+	// Hand the guard the workspace's stored policy (CHE-5204); without one it
+	// keeps the compiled default.
+	if err := writeGuardPolicy(agentEnv, taskTempDir, d.workspaceSettings(task.WorkspaceID)); err != nil {
+		taskLog.Warn("guard policy not delivered; guard refuses every git and gh call for this run", "error", err)
 	}
 	// Point Codex to the per-task CODEX_HOME so it discovers skills natively
 	// without polluting the system ~/.codex/skills/.
@@ -9139,7 +9189,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		PiSkillPaths:               env.PiSkillPaths,
 		Model:                      model,
 		ThreadName:                 deriveTaskThreadName(task),
-		Timeout:                    d.cfg.agentTimeoutFor(provider),
+		Timeout:                    taskRunTimeout(d.cfg.agentTimeoutFor(provider), task),
 		SemanticInactivityTimeout:  d.cfg.CodexSemanticInactivityTimeout,
 		FirstTurnNoProgressTimeout: d.cfg.CodexFirstTurnNoProgressTimeout,
 		IdleWatchdogTimeout:        idleWatchdogTimeout,

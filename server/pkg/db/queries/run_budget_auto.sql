@@ -7,11 +7,15 @@
 -- its tool output, so no PR is needed). failures are the run's loop keys beyond
 -- its own error: the failed check names and the CI failure workflows recorded
 -- for the heads it pushed, so a loop shows across completed runs. ci_unknown
--- fails closed: it is set unless every check on each head the run pushed has
--- finished. A head with no retained check results (they are kept only for a
--- PR's current head, and CI failure events only while the ci_watcher flag is
--- on) or with any check still queued or running says nothing final about
--- whether it failed.
+-- fails closed: it is set unless each head the run pushed holds a finished row
+-- for every name in the expected check set (expected_checks, the workspace
+-- setting) and no row still queued or running. The snapshot keeps no producer
+-- identity, so a name counts only as exactly one Checks API run: a commit status
+-- of that name, or a second run of it, is ambiguous and fails closed. A stored snapshot alone is not
+-- complete: a check that has not arrived yet has no row. An empty expected set
+-- is no evidence, so every pushed head reads as unknown. A head with no retained
+-- check results (they are kept only for a PR's current head, and CI failure
+-- events only while the ci_watcher flag is on) says nothing final either.
 SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text AS error, COALESCE(a.model, '')::text AS model,
        (t.status = 'completed' AND (
            EXISTS (
@@ -53,7 +57,16 @@ SELECT t.id, t.status, COALESCE(NULLIF(t.error, ''), t.failure_reason, '')::text
            WHERE e.issue_id = t.issue_id AND e.kind = 'head_changed'
              AND e.observed_at >= COALESCE(t.started_at, t.created_at) AND e.observed_at <= (COALESCE(t.completed_at, now()) + interval '1 minute')
              AND (
-                 NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha)
+                 cardinality(sqlc.arg('expected_checks')::text[]) = 0
+                 OR EXISTS (
+                     SELECT 1 FROM unnest(sqlc.arg('expected_checks')::text[]) x(name)
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM github_pull_request_check_run cr
+                         WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND cr.name = x.name
+                           AND NOT cr.is_status_context
+                         HAVING count(*) = 1 AND bool_and(cr.status = 'completed' AND cr.conclusion IS NOT NULL)
+                     )
+                 )
                  OR EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id = e.pull_request_id AND cr.head_sha = e.head_sha AND (cr.status <> 'completed' OR cr.conclusion IS NULL))
              )
        )::boolean AS ci_unknown,

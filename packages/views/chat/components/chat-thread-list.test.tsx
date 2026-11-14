@@ -1,10 +1,11 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
 import enIssues from "../../locales/en/issues.json";
 import { NavigationProvider } from "../../navigation";
+import { useChatStore } from "@multica/core/chat";
 
 // --- Mocks ------------------------------------------------------------------
 // The list no longer owns the archive-advance behavior — the parent (ChatPage)
@@ -16,10 +17,11 @@ import { NavigationProvider } from "../../navigation";
 // kept as negative assertions: the list must not touch them for a history
 // archive anymore.
 
-const setActiveSession = vi.fn();
 const archiveMutate = vi.fn();
-const retryNeedsYou = vi.fn();
-const needsYou = { rows: [] as Record<string, unknown>[], isPending: false, isError: false };
+const pinMutate = vi.fn();
+const markUnreadAsync = vi.fn().mockResolvedValue(undefined);
+const updateMutate = vi.fn();
+const needsYou = { rows: [] as Record<string, unknown>[] };
 const navigate = vi.fn();
 
 vi.mock("@multica/core/paths", async (importOriginal) => ({
@@ -45,16 +47,29 @@ vi.mock("@multica/core/api", () => ({
   api: { cancelTaskById: vi.fn() },
 }));
 
-vi.mock("@multica/core/chat", () => ({
-  useChatStore: (selector: (s: { setActiveSession: typeof setActiveSession }) => unknown) =>
-    selector({ setActiveSession }),
-}));
+vi.mock("@multica/core/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@multica/core/chat")>();
+  const data = new Map<string, string>();
+  actual.registerChatStore(
+    actual.createChatStore({
+      storage: {
+        getItem: (k) => data.get(k) ?? null,
+        setItem: (k, v) => void data.set(k, v),
+        removeItem: (k) => void data.delete(k),
+      },
+    }),
+  );
+  return actual;
+});
 
 vi.mock("@multica/core/chat/mutations", () => ({
   useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
-  useSetChatSessionPinned: () => ({ mutate: vi.fn(), isPending: false }),
-  useMarkChatSessionUnread: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useSetChatSessionPinned: () => ({ mutate: pinMutate, isPending: false }),
+  useMarkChatSessionUnread: () => ({ mutate: vi.fn(), mutateAsync: markUnreadAsync, isPending: false }),
+  useMarkChatSessionRead: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+  useUpdateChatSession: () => ({ mutate: updateMutate, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: archiveMutate, isPending: false }),
+  useBatchChatSessions: () => ({ mutateAsync: vi.fn().mockResolvedValue({ failed: [] }), isPending: false }),
 }));
 
 vi.mock("@multica/core/chat/attention-mutations", () => {
@@ -73,7 +88,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     ...actual,
     useQuery: (options: { queryKey: readonly unknown[] }) =>
       options.queryKey.includes("open-decisions")
-        ? { data: needsYou.rows, isPending: needsYou.isPending, isError: needsYou.isError, refetch: retryNeedsYou }
+        ? { data: needsYou.rows, isPending: false, isError: false, refetch: vi.fn() }
         : { data: { tasks: [] } },
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
@@ -117,9 +132,12 @@ function renderList(
     onSelectSession = vi.fn(),
     renderedSessions = sessions,
     renderedAgents = [agent],
+    loadState = undefined as "loading" | "error" | undefined,
+    onRetry = undefined as (() => void) | undefined,
+    onEnterSelectMode = undefined as ((session: ChatSession) => void) | undefined,
   } = {},
 ) {
-  render(
+  const { container } = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <NavigationProvider value={{ push: navigate, replace: vi.fn(), back: vi.fn(), pathname: "/test-ws/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
       <ChatThreadList
@@ -128,96 +146,61 @@ function renderList(
         activeSessionId={activeSessionId}
         onSelectSession={onSelectSession}
         onArchive={onArchive}
+        loadState={loadState}
+        onRetry={onRetry}
+        onEnterSelectMode={onEnterSelectMode}
       />
       </NavigationProvider>
     </I18nProvider>,
   );
-  return { onArchive, onSelectSession };
+  return { onArchive, onSelectSession, container };
 }
 
 const ARCHIVE_LABEL = enChat.list.archive;
+const ARCHIVE_LABEL_RE = new RegExp(`^${ARCHIVE_LABEL}`);
+
+beforeEach(() => {
+  useChatStore.setState({ listView: "main" });
+});
 
 describe("ChatThreadList archive delegation", () => {
   beforeEach(() => {
     needsYou.rows = [];
-    needsYou.isPending = false;
-    needsYou.isError = false;
     navigate.mockClear();
-    retryNeedsYou.mockClear();
-    setActiveSession.mockClear();
+    useChatStore.setState({ activeSessionId: null, listView: "main" });
     archiveMutate.mockClear();
   });
 
-  it("keeps a read-but-unanswered ask above history with a count and its card jump", () => {
-    needsYou.rows = [{
-      id: "request-1", issue_id: "issue-1", issue_identifier: "CHE-2405",
-      asking_agent_id: "agent-1", asking_agent_name: "Alpha", escalation_class: "spend",
-      ask: "**Agent did**\nChecks passed.\n\n**Decision**\nApprove the build?\n\n**Stakes if wrong**\nA slow build.", created_at: "2026-10-28T04:00:00Z",
-      chat_session_id: "s1", message_id: "ask-message",
-    }];
-    renderList("s1");
-    expect(screen.getByRole("heading", { name: /Needs you/ })).toBeInTheDocument();
-    expect(screen.getByText("Approve the build?")).toBeInTheDocument();
-    expect(screen.getByText("CHE-2405")).toBeInTheDocument();
-    expect(screen.getByText("spend")).toBeInTheDocument();
-    expect(screen.queryByText("Checks passed.")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Approve the build/ })).toHaveAttribute(
-      "href", expect.stringContaining("session=s1&message=ask-message"),
-    );
-    expect(needsYou.rows).toHaveLength(1);
-    fireEvent.click(screen.getByRole("link", { name: /Approve the build/ }));
-    expect(navigate).toHaveBeenCalledWith("/test-ws/chat?session=s1&message=ask-message");
-  });
+  // The row's ⋯ menu is the one action surface; open it for row `index`.
+  const archiveViaMenu = async (index: number) => {
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[index]!);
+    fireEvent.click(await screen.findByRole("menuitem", { name: ARCHIVE_LABEL_RE }));
+  };
 
-  it("shows the Needs you count even when chat history is empty", () => {
-    renderList(null, { renderedSessions: [] });
-    expect(screen.getByRole("heading", { name: "Needs you 0" })).toBeInTheDocument();
-    expect(screen.getByText("No open asks.")).toBeInTheDocument();
-  });
-
-  it("distinguishes loading and query errors from no open asks", () => {
-    needsYou.isPending = true;
-    renderList(null);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading open asks");
-    expect(screen.queryByText("No open asks.")).not.toBeInTheDocument();
-  });
-
-  it("offers retry when the open-ask query fails", () => {
-    needsYou.isError = true;
-    renderList(null);
-    expect(screen.getByRole("alert")).toHaveTextContent("Could not load open asks.");
-    expect(screen.queryByText("No open asks.")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(retryNeedsYou).toHaveBeenCalledOnce();
-  });
-
-  it("delegates the history-row Archive action to onArchive with that session", () => {
+  it("delegates the history-row Archive action to onArchive with that session", async () => {
     const { onArchive } = renderList("s2");
-    // Rows render in order s1, s2, s3 → the second archive button is s2's.
-    const archiveButtons = screen.getAllByRole("button", { name: ARCHIVE_LABEL });
-    fireEvent.click(archiveButtons[1]!);
+    // Rows render in order s1, s2, s3.
+    await archiveViaMenu(1);
 
     expect(onArchive).toHaveBeenCalledTimes(1);
     expect(onArchive.mock.calls[0]![0]).toMatchObject({ id: "s2" });
   });
 
-  it("passes the archived row's session even when it isn't the open one", () => {
+  it("passes the archived row's session even when it isn't the open one", async () => {
     const { onArchive } = renderList("s1");
-    const archiveButtons = screen.getAllByRole("button", { name: ARCHIVE_LABEL });
     // Archive s3 while s1 is the open one — the parent decides what to do.
-    fireEvent.click(archiveButtons[2]!);
+    await archiveViaMenu(2);
 
     expect(onArchive).toHaveBeenCalledTimes(1);
     expect(onArchive.mock.calls[0]![0]).toMatchObject({ id: "s3" });
   });
 
-  it("does not flip archive status or move selection itself", () => {
+  it("does not flip archive status or move selection itself", async () => {
     renderList("s2");
-    const archiveButtons = screen.getAllByRole("button", { name: ARCHIVE_LABEL });
-    fireEvent.click(archiveButtons[1]!);
+    await archiveViaMenu(1);
 
     // Advance + mutation are the parent/controller's job now; the list stays out.
-    expect(setActiveSession).not.toHaveBeenCalled();
+    expect(useChatStore.getState().activeSessionId).toBeNull();
     expect(archiveMutate).not.toHaveBeenCalled();
   });
 });
@@ -236,7 +219,7 @@ describe("ChatThreadList continuation chains", () => {
     expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
     expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
     // The Archived entry counts only the unrelated archived DM.
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    fireEvent.click(screen.getByRole("button", { name: /^Archived/ }));
     expect(screen.getByText("Archived alone")).toBeInTheDocument();
     expect(screen.queryByText("Chain first")).not.toBeInTheDocument();
     expect(screen.queryByText("Chain second")).not.toBeInTheDocument();
@@ -245,7 +228,7 @@ describe("ChatThreadList continuation chains", () => {
   it("keeps an archived DM whose successor is not in the list", () => {
     const orphan = makeSession({ id: "o1", title: "Orphan source", status: "archived", continued_into_session_id: "gone" });
     renderList(null, { renderedSessions: [orphan] });
-    fireEvent.click(screen.getByRole("button", { name: new RegExp(enChat.list.archived_title) }));
+    fireEvent.click(screen.getByRole("button", { name: /^Archived/ }));
     expect(screen.getByText("Orphan source")).toBeInTheDocument();
   });
 });
@@ -325,7 +308,7 @@ describe("ChatThreadList agent identity", () => {
 // Touch has no hover, so the hover strip's actions also live in a per-row menu.
 describe("ChatThreadList compact row menu", () => {
   beforeEach(() => {
-    setActiveSession.mockClear();
+    useChatStore.setState({ activeSessionId: null, listView: "main" });
     archiveMutate.mockClear();
   });
 
@@ -338,18 +321,18 @@ describe("ChatThreadList compact row menu", () => {
     const { onArchive } = renderList("s1");
 
     openRowMenu(1);
-    fireEvent.click(await screen.findByRole("menuitem", { name: ARCHIVE_LABEL }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: ARCHIVE_LABEL_RE }));
 
     expect(onArchive).toHaveBeenCalledTimes(1);
     expect(onArchive.mock.calls[0]![0]).toMatchObject({ id: "s2" });
   });
 
-  it("offers the same pin toggle the hover strip does", async () => {
+  it("offers the pin toggle", async () => {
     renderList(null);
 
     openRowMenu(0);
 
-    expect(await screen.findByRole("menuitem", { name: enChat.list.pin })).toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: /^Pin/ })).toBeInTheDocument();
   });
 
   it("does not select the row when the menu opens", () => {
@@ -361,22 +344,19 @@ describe("ChatThreadList compact row menu", () => {
   });
 
   it("stays reachable on a wide viewport that cannot hover", () => {
-    // The menu and the hover strip must both switch on hover capability. Gating
-    // either on width strands a landscape phone: past `md` the menu would be
-    // hidden and the strip would wait for a hover that never arrives.
+    // Visibility switches on hover capability, never width: gating on width
+    // strands a landscape phone, where the trigger would wait for a hover that
+    // never arrives.
     renderList(null);
 
     const trigger = screen.getAllByRole("button", {
       name: enChat.list.row_actions_aria,
     })[0]!;
-    const strip = trigger.parentElement!.querySelector(
-      "[class*='group-hover/row']",
-    )!;
 
-    expect(trigger.className).toContain("[@media(hover:hover)]:hidden");
-    expect(trigger.className).not.toMatch(/(^|\s)(sm|md|lg|xl|2xl):hidden/);
-    expect(strip.className).toContain("[@media(hover:hover)]:group-hover/row:flex");
-    expect(strip.className).not.toMatch(/(^|\s)(sm|md|lg|xl|2xl):group-/);
+    expect(trigger.className).toContain("[@media(hover:hover)]:invisible");
+    expect(trigger.className).toContain("[@media(hover:hover)]:group-hover/row:visible");
+    expect(trigger.className).toContain("[@media(hover:hover)]:group-focus-within/row:visible");
+    expect(trigger.className).not.toMatch(/(^|\s)(sm|md|lg|xl|2xl):/);
   });
 });
 
@@ -400,5 +380,295 @@ describe("ChatThreadList row keyboard semantics", () => {
     );
 
     expect(onSelectSession).not.toHaveBeenCalled();
+  });
+});
+
+// CHE-5511 slice 1: filter chips replace the sticky Needs-you block.
+describe("ChatThreadList filter chips", () => {
+  const set: ChatSession[] = [
+    makeSession({ id: "active", title: "Active", updated_at: "2026-07-08T09:00:00Z" }),
+    makeSession({ id: "arch", title: "Archived one", status: "archived", updated_at: "2026-07-08T08:00:00Z" }),
+    makeSession({ id: "pin", title: "Pinned one", pinned: true, updated_at: "2026-07-08T07:00:00Z" }),
+    makeSession({ id: "unseen", title: "Unseen one", has_unread: true, unread_count: 1, updated_at: "2026-07-08T06:00:00Z" }),
+    makeSession({ id: "needs", title: "Needs one", stale_level: "red", attention_source: "ask", attention_since: "2026-07-08T01:00:00Z", updated_at: "2026-07-08T05:00:00Z" }),
+    makeSession({ id: "dec", title: "Decision one", updated_at: "2026-07-08T04:00:00Z" }),
+  ];
+  const titles = () =>
+    screen.queryAllByTestId("chat-thread-row").map((r) => r.querySelector("[title]")?.textContent);
+  const chip = (name: string | RegExp) => screen.getByRole("button", { name });
+
+  beforeEach(() => {
+    useChatStore.setState({ listView: "main" });
+    needsYou.rows = [{ id: "d1", chat_session_id: "dec", issue_identifier: "CHE-1", ask: "x", created_at: "2026-07-08T00:00:00Z", escalation_class: "spend" }];
+  });
+
+  it("defaults to Main: every DM that is not archived", () => {
+    renderList(null, { renderedSessions: set });
+    expect(chip(/^Main/)).toHaveAttribute("aria-pressed", "true");
+    expect(titles()).toEqual(["Pinned one", "Active", "Unseen one", "Needs one", "Decision one"]);
+  });
+
+  it("All = Main + Archived; Archived = archived only", () => {
+    renderList(null, { renderedSessions: set });
+    fireEvent.click(chip(/^All/));
+    expect(titles()).toHaveLength(6);
+    expect(titles()).toContain("Archived one");
+    fireEvent.click(chip(/^Archived/));
+    expect(titles()).toEqual(["Archived one"]);
+  });
+
+  it("Decisions, Unseen and Pinned each show exactly their set", () => {
+    renderList(null, { renderedSessions: set });
+    fireEvent.click(chip(/^Decisions/));
+    expect(titles()).toEqual(["Decision one"]);
+    fireEvent.click(chip(/^Unseen/));
+    expect(titles()).toEqual(["Unseen one"]);
+    fireEvent.click(chip(/^Pinned/));
+    expect(titles()).toEqual(["Pinned one"]);
+    fireEvent.click(chip(/^Pinned/));
+    expect(titles()).toEqual(["Active", "Unseen one", "Needs one", "Decision one"]);
+  });
+
+  it("Waiting on you shows the attention rows, not a sticky block", () => {
+    renderList(null, { renderedSessions: set });
+    expect(screen.queryByRole("heading", { name: /Needs you/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("Open decisions")).not.toBeInTheDocument();
+    fireEvent.click(chip(/^Waiting on you/));
+    expect(screen.getAllByTestId("attention-row").map((r) => r.getAttribute("data-session-id"))).toEqual(["needs"]);
+    const block = screen.getByRole("region", { name: "Needs you" });
+    expect(block.className).not.toContain("sticky");
+    expect(block.querySelector(".max-h-64, .overflow-y-auto")).toBeNull();
+  });
+
+  it("chips carry counts once known", () => {
+    renderList(null, { renderedSessions: set });
+    expect(chip("Decisions, 1")).toBeInTheDocument();
+    expect(chip("Waiting on you, 1")).toBeInTheDocument();
+    expect(chip("Unseen, 1")).toBeInTheDocument();
+    expect(chip("Archived, 1")).toBeInTheDocument();
+  });
+
+  it("keeps the chip between list and a DM, and the list view after remount", () => {
+    const first = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatThreadList sessions={set} agents={[agent]} activeSessionId={null} onSelectSession={vi.fn()} onArchive={vi.fn()} />
+      </I18nProvider>,
+    );
+    fireEvent.click(chip(/^Unseen/));
+    first.unmount(); // list → DM (list unmounts on mobile)
+    renderList(null, { renderedSessions: set });
+    expect(chip(/^Unseen/)).toHaveAttribute("aria-pressed", "true");
+    expect(titles()).toEqual(["Unseen one"]);
+  });
+
+  it("shows an empty state instead of a blank list", () => {
+    renderList(null, { renderedSessions: [] });
+    expect(screen.getByText("No chats yet")).toBeInTheDocument();
+    cleanup();
+    renderList(null, { renderedSessions: [set[0]!] });
+    fireEvent.click(chip(/^Decisions/));
+    expect(screen.getByText("No chats in this view")).toBeInTheDocument();
+  });
+
+  it("shows skeleton rows while loading, hiding unknown counts", () => {
+    renderList(null, { renderedSessions: [], loadState: "loading" });
+    expect(screen.getByRole("status", { name: "Loading chats…" })).toBeInTheDocument();
+    expect(chip("Decisions")).toBeInTheDocument();
+    expect(screen.queryByText("No chats yet")).not.toBeInTheDocument();
+  });
+
+  it("shows the error with Retry that calls onRetry", () => {
+    const onRetry = vi.fn();
+    renderList(null, { renderedSessions: [], loadState: "error", onRetry });
+    expect(screen.getByRole("alert")).toHaveTextContent("Couldn't load chats");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it("says so when offline and keeps the saved list", () => {
+    const online = vi.spyOn(window.navigator, "onLine", "get").mockReturnValue(false);
+    renderList(null, { renderedSessions: set });
+    expect(screen.getByRole("status", { name: "You're offline" })).toBeInTheDocument();
+    expect(titles()).toHaveLength(5);
+    online.mockRestore();
+  });
+});
+
+// CHE-5511 slice 3: desktop row actions.
+describe("ChatThreadList row shortcuts and context menu", () => {
+  beforeEach(() => {
+    useChatStore.setState({ activeSessionId: null, listView: "main" });
+    pinMutate.mockClear();
+    markUnreadAsync.mockClear();
+    updateMutate.mockClear();
+  });
+
+  const rowOf = (title: string) => screen.getByText(title).closest("[tabindex]") as HTMLElement;
+
+  it("U marks the focused row unseen once", async () => {
+    renderList(null);
+    fireEvent.keyDown(rowOf("Chat s2"), { key: "u" });
+
+    await waitFor(() => expect(markUnreadAsync).toHaveBeenCalledTimes(1));
+    expect(markUnreadAsync).toHaveBeenCalledWith("s2");
+  });
+
+  it("P pins the focused row once", () => {
+    renderList(null);
+    fireEvent.keyDown(rowOf("Chat s2"), { key: "p" });
+
+    expect(pinMutate).toHaveBeenCalledTimes(1);
+    expect(pinMutate).toHaveBeenCalledWith({ sessionId: "s2", pinned: true });
+  });
+
+  it("E archives the focused row once", () => {
+    const { onArchive } = renderList(null);
+    fireEvent.keyDown(rowOf("Chat s3"), { key: "e" });
+
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onArchive.mock.calls[0]![0]).toMatchObject({ id: "s3" });
+  });
+
+  it("R opens an inline rename that saves the new title", () => {
+    renderList(null);
+    fireEvent.keyDown(rowOf("Chat s1"), { key: "r" });
+
+    const input = screen.getByRole("textbox", { name: enChat.session_history.row_rename_aria });
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(updateMutate).toHaveBeenCalledTimes(1);
+    expect(updateMutate.mock.calls[0]![0]).toEqual({ sessionId: "s1", title: "Renamed" });
+  });
+
+  it("X raises the select event with the row's session", () => {
+    const onEnterSelectMode = vi.fn();
+    renderList(null, { onEnterSelectMode });
+    fireEvent.keyDown(rowOf("Chat s2"), { key: "x" });
+
+    expect(onEnterSelectMode).toHaveBeenCalledTimes(1);
+    expect(onEnterSelectMode.mock.calls[0]![0]).toMatchObject({ id: "s2" });
+  });
+
+  it("always offers the select item and enters select mode from it", async () => {
+    renderList(null);
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
+
+    fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${enChat.list.select}`) }));
+    expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
+  });
+
+  it("does not fire while typing in an input or with a modifier held", () => {
+    const { onArchive } = renderList(null);
+    const row = rowOf("Chat s1");
+    const field = document.createElement("input");
+    row.appendChild(field);
+
+    fireEvent.keyDown(field, { key: "e" });
+    fireEvent.keyDown(row, { key: "e", metaKey: true });
+    fireEvent.keyDown(row, { key: "p", ctrlKey: true });
+
+    expect(onArchive).not.toHaveBeenCalled();
+    expect(pinMutate).not.toHaveBeenCalled();
+  });
+
+  it("ignores shortcut keys pressed inside the open ⋯ menu", async () => {
+    const { onArchive } = renderList(null);
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
+    const item = await screen.findByRole("menuitem", { name: ARCHIVE_LABEL_RE });
+
+    fireEvent.keyDown(item, { key: "e" });
+
+    expect(onArchive).not.toHaveBeenCalled();
+  });
+
+  it("right-click opens the same items the ⋯ menu lists", async () => {
+    renderList(null, { onEnterSelectMode: vi.fn() });
+
+    fireEvent.click(screen.getAllByRole("button", { name: enChat.list.row_actions_aria })[0]!);
+    const viaButton = (await screen.findAllByRole("menuitem")).map((i) => i.textContent);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryAllByRole("menuitem")).toHaveLength(0));
+
+    fireEvent.contextMenu(rowOf("Chat s1"));
+    const viaRightClick = (await screen.findAllByRole("menuitem")).map((i) => i.textContent);
+
+    expect(viaRightClick).toEqual(viaButton);
+    expect(viaRightClick.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("has no hover strip: the ⋯ trigger is the only row control", () => {
+    renderList(null);
+
+    expect(screen.queryByTestId("chat-thread-row-archive-item")).toBeNull();
+  });
+});
+
+// CHE-5511 slice 2: sticky day headers replace the per-row date; unseen style.
+describe("ChatThreadList day headers and unseen style", () => {
+  const local = (m: number, d: number, h = 12, min = 0) => new Date(2026, m - 1, d, h, min).toISOString();
+  const lastMsg = (iso: string) => ({ content: "hello", role: "assistant" as const, created_at: iso });
+  const dated = (id: string, iso: string, extra: Partial<ChatSession> = {}) =>
+    makeSession({ id, title: id, created_at: iso, updated_at: iso, last_message: lastMsg(iso), ...extra });
+  const set: ChatSession[] = [
+    dated("t1", local(11, 13, 9, 5)),
+    dated("y1", local(11, 12, 21, 40)),
+    dated("w1", local(11, 10, 8, 0)),
+    dated("o1", local(10, 2, 8, 0)),
+  ];
+  const headers = () => screen.queryAllByTestId("chat-day-header");
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 10, 13, 15, 30)); // Fri 13 Nov 2026, local
+    needsYou.rows = [];
+    useChatStore.setState({ listView: "main", activeSessionId: null });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("groups rows under sticky headers Today / Yesterday / This week / Older", () => {
+    renderList(null, { renderedSessions: set });
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["today", "yesterday", "thisWeek", "older"]);
+    expect(headers()[0]).toHaveTextContent("Today");
+    expect(headers()[1]).toHaveTextContent("Yesterday");
+    expect(headers()[2]).toHaveTextContent("This week");
+    expect(headers()[3]).toHaveTextContent("Older");
+    for (const h of headers()) expect(h.style.position).toBe("sticky");
+  });
+
+  it("skips empty groups and pins rows under their own header in Main/All only", () => {
+    renderList(null, { renderedSessions: [dated("p1", local(10, 2), { pinned: true }), set[0]!] });
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["pinned", "today"]);
+    fireEvent.click(screen.getByRole("button", { name: /^Pinned/ }));
+    expect(headers().map((h) => h.getAttribute("data-group"))).toEqual(["older"]);
+  });
+
+  it("shows no date on a row, only a clock time", () => {
+    renderList(null, { renderedSessions: set });
+    for (const row of screen.getAllByTestId("chat-thread-row")) {
+      expect(row.textContent).not.toMatch(/2026|Nov|\d{1,2}\/\d{1,2}/);
+    }
+    expect(screen.getAllByTestId("chat-thread-row")[1]).toHaveTextContent(/9:40/);
+  });
+
+  it("styles an unseen row bold with a labelled dot", () => {
+    renderList(null, { renderedSessions: [dated("u1", local(11, 13, 9, 5), { has_unread: true, unread_count: 2 }), dated("r1", local(11, 13, 8, 5))] });
+    const [unseen, seen] = screen.getAllByTestId("chat-thread-row");
+    expect(unseen!.querySelector("[title]")!.className).toContain("font-bold");
+    expect(unseen!.querySelector("[data-testid='chat-unseen-dot']")).toHaveAttribute("aria-label", "Unseen");
+    expect(seen!.querySelector("[data-testid='chat-unseen-dot']")).toBeNull();
+    expect(seen!.querySelector("[title]")!.className).not.toContain("font-bold");
+  });
+
+  it("tags a decision row in day-grouped views and drops the tag under the Decisions / Unseen chips", () => {
+    needsYou.rows = [{ id: "d1", chat_session_id: "u1", issue_identifier: "CHE-1", ask: "x", created_at: local(11, 13), escalation_class: "spend" }];
+    renderList(null, { renderedSessions: [dated("u1", local(11, 13, 9, 5), { has_unread: true, unread_count: 1 }), dated("r1", local(11, 13, 8, 5))] });
+    expect(screen.getAllByTestId("chat-decision-tag")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Decisions/ }));
+    expect(screen.queryByTestId("chat-decision-tag")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^Unseen/ }));
+    expect(screen.queryByTestId("chat-decision-tag")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^All/ }));
+    expect(screen.getAllByTestId("chat-decision-tag")).toHaveLength(1);
   });
 });

@@ -26,7 +26,10 @@ var guardExecCmd = &cobra.Command{
 	Long: `Run <tool> with <args> after the guard has checked, fixed or refused the call.
 
 Today the guard covers "gh pr create|edit|ready" and writes to pull requests
-and issues through "gh api". Every other call runs unchanged.
+and issues through "gh api". Shadow check: "multica issue wakeup create|update"
+with --filter-actor-type member logs a hit when the issue has no open decision
+request for that member after the last answered one; the call always runs and
+nothing is printed. Every other call runs unchanged.
 
 Environment:
   MULTICA_GUARD_POLICY, MULTICA_GUARD_POLICY_SHA256  signed policy file and its digest
@@ -38,8 +41,59 @@ Exit code: the tool's own, 2 when the guard refuses the call.`,
 	RunE: runGuardExec,
 }
 
+var guardCheckPRCmd = &cobra.Command{
+	Use:   "check-pr <pr-url|number|branch>",
+	Short: "Check one pull request against the guard rules without changing it",
+	Long: `Read a pull request back and check it against the workspace policy and the
+repository's own rules in .github/agent-rules.yml, read from the current tip of
+the PR's protected base branch (never from the PR branch). Nothing is edited.
+Use it as a CI check; it reads the rules again on every run.
+
+Exit code: 0 when the PR passes, 1 when it breaks a rule, 2 when the guard
+refuses (a malformed rules file, an unreadable base branch, a locked-down
+policy).`,
+	Args: cobra.ExactArgs(1),
+	RunE: runGuardCheckPR,
+}
+
 func init() {
-	guardCmd.AddCommand(guardExecCmd)
+	guardCheckPRCmd.Flags().StringP("repo", "R", "", "Repository of the pull request, owner/name")
+	guardCmd.AddCommand(guardExecCmd, guardCheckPRCmd)
+}
+
+func runGuardCheckPR(cmd *cobra.Command, args []string) error {
+	pol, warn := guard.PolicyFromEnv(os.Getenv)
+	if warn != "" {
+		fmt.Fprintln(cmd.ErrOrStderr(), warn)
+	}
+	sel := args
+	if r, _ := cmd.Flags().GetString("repo"); r != "" {
+		sel = append(sel, "--repo", r)
+	}
+	e := &guard.Engine{
+		Policy: pol,
+		Out:    cmd.OutOrStdout(),
+		Err:    cmd.ErrOrStderr(),
+		Runner: guard.ExecRunner{
+			Real:   func(string) string { return os.Getenv("MULTICA_GUARD_REAL_GH") },
+			Stdin:  cmd.InOrStdin(),
+			Stdout: cmd.OutOrStdout(),
+			Stderr: cmd.ErrOrStderr(),
+		},
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	code, err := e.CheckPR(ctx, sel)
+	if err != nil {
+		return fmt.Errorf("guard: check-pr: %w", err)
+	}
+	if code != 0 {
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		guardExit(code)
+	}
+	return nil
 }
 
 func runGuardExec(cmd *cobra.Command, args []string) error {

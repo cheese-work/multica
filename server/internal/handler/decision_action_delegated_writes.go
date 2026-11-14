@@ -41,7 +41,7 @@ type delegatedWritesSetParams struct {
 
 func init() {
 	decisionaction.Register(&decisionaction.Definition{
-		Type: delegatedWritesSetAction, Version: 1, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
+		Type: delegatedWritesSetAction, Version: 1, Passkey: decisionaction.PasskeyRequired, MinClass: "spend", Target: decisionaction.TargetWorkspace, RequiresPreview: true,
 		Template:  decisionaction.Template{Title: "Change delegated governed writes", Summary: "Sets which agents may propose which governed workspace fields."},
 		Normalize: normalizeDelegatedWritesSet,
 	})

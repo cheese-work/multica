@@ -282,6 +282,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
+import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -473,6 +474,8 @@ import {
   EMPTY_INBOX_UNREAD_SUMMARY,
   IssueUnreadPageSchema,
   EMPTY_ISSUE_UNREAD_PAGE,
+  SubscribedIssueIdsSchema,
+  IssueInboxReadSchema,
   InboxItemListSchema,
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
@@ -719,7 +722,7 @@ export function clientErrorMessage(err: unknown): string | undefined {
 }
 
 // Thrown by getAttachmentTextContent when the server refuses to inline a
-// file because it exceeds the 2 MB cap. UI maps to a "too large, please
+// file because it exceeds the server-configured preview limit. UI maps to a "too large, please
 // download" affordance with the Download CTA still available.
 export class PreviewTooLargeError extends Error {
   constructor() {
@@ -1155,6 +1158,16 @@ export class ApiClient {
     });
     return parseWithFallback(raw, UserSchema, EMPTY_USER, {
       endpoint: "PATCH /api/me/onboarding",
+    });
+  }
+
+  async markWhatsNewSeen(version: string): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me/whats-new/seen", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "POST /api/me/whats-new/seen",
     });
   }
 
@@ -1751,6 +1764,28 @@ export class ApiClient {
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
     return graph;
+  }
+
+  /** One keyset page of POST /api/issues/timeline. A malformed body throws. */
+  async getIssueActualTimeline(workspaceId: string, body: IssueTimelineRequest, signal?: AbortSignal): Promise<IssueTimelineResponse> {
+    const { IssueTimelineResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/timeline?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, IssueTimelineResponseSchema, { endpoint: "POST /api/issues/timeline" });
+  }
+
+  /** One keyset page of POST /api/issues/relations/batch. A malformed body throws. */
+  async getIssueRelationsBatch(workspaceId: string, body: RelationsBatchRequest, signal?: AbortSignal): Promise<RelationsBatchResponse> {
+    const { RelationsBatchResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/relations/batch?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, RelationsBatchResponseSchema, { endpoint: "POST /api/issues/relations/batch" });
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
@@ -3189,6 +3224,15 @@ export class ApiClient {
     return items;
   }
 
+  async listSubscribedIssueIds(): Promise<string[]> {
+    const raw = await this.fetch<unknown>("/api/issues/subscribed");
+    const parsed = parseWithFallback<{ issue_ids: string[] } | null>(raw, SubscribedIssueIdsSchema, null, {
+      endpoint: "GET /api/issues/subscribed",
+    });
+    if (!parsed) throw new Error("GET /api/issues/subscribed returned a malformed body");
+    return parsed.issue_ids;
+  }
+
   async markIssueRead(issueId: string): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/read`, { method: "POST" });
   }
@@ -3287,6 +3331,19 @@ export class ApiClient {
 
   async markAllInboxRead(): Promise<{ count: number }> {
     return this.fetch("/api/inbox/mark-all-read", { method: "POST" });
+  }
+
+  /**
+   * Reads every unread notification the caller has on one issue. `count` is
+   * how many rows the server read, or `null` when the response did not say:
+   * the write itself succeeded, so callers must not read `null` as "nothing
+   * changed".
+   */
+  async markIssueInboxRead(issueId: string): Promise<{ count: number | null }> {
+    const raw = await this.fetch<unknown>(`/api/inbox/issues/${issueId}/read`, { method: "POST" });
+    return parseWithFallback<{ count: number | null }>(raw, IssueInboxReadSchema, { count: null }, {
+      endpoint: "POST /api/inbox/issues/{id}/read",
+    });
   }
 
   async archiveAllInbox(): Promise<{ count: number }> {

@@ -70,11 +70,17 @@ func ModeFromSettings(raw []byte) (Mode, error) {
 // WarnOnly records the event as warn even when the workspace is in block mode,
 // for operations that must never be refused or recovered (a chat-lane task, or
 // an agent call with no task).
+//
+// MemberID is the one member the operation asks, when it names exactly one. A
+// request created with --recovers clears the event only for that member.
 type Op struct {
-	IssueID, TaskID pgtype.UUID
-	Kind            string
-	Payload         []byte
-	WarnOnly        bool
+	IssueID, TaskID, MemberID pgtype.UUID
+	Kind                      string
+	Payload                   []byte
+	WarnOnly                  bool
+	// Source is the text a recovery notice quotes verbatim. Empty when the
+	// operation has no ask text (a wakeup), which sends the event to repair.
+	Source string
 }
 
 // Guard writes events through Queries. Queries must not be bound to the
@@ -124,7 +130,8 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 	digest := hex.EncodeToString(sum[:])
 	ev, err := g.Queries.InsertAskGuardEvent(ctx, db.InsertAskGuardEventParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: op.IssueID, TaskID: op.TaskID,
-		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode),
+		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode), MemberID: op.MemberID,
+		SourceText: pgtype.Text{String: op.Source, Valid: op.Source != ""},
 	})
 	if err == nil {
 		return ev, "created", nil

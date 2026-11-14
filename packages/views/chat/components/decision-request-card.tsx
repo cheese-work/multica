@@ -11,7 +11,7 @@ import {
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
-import { approvableConfigChange, approvablePreview, isConfigChangeActionType } from "@multica/core/issues/decision-action-preview";
+import { approvableConfigChange, approvablePreview, isConfigChangeActionType, isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
@@ -279,7 +279,7 @@ function ActionPreview({ action, issueId }: { action: CardAction; issueId: strin
     <div className="space-y-2">
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && <ConfigChangeViewer change={configChange} />}
-      {pending && action.action_type.startsWith("issue.run_budget.") && <DecisionRecentRuns issueId={issueId} />}
+      {pending && isRunBudgetActionType(action.action_type) && <DecisionRecentRuns issueId={issueId} />}
       {fields && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
@@ -508,11 +508,11 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         data-folded={folded}
         inert={folded}
         className={cn(
-          "grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+          "grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
           folded ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
         )}
       >
-      <div className={cn("min-h-0", FOLDS.has(shown) && "overflow-hidden")}>
+      <div className={cn("min-h-0 min-w-0", FOLDS.has(shown) && "overflow-hidden")}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
         <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="font-medium">{t(($) => $.decision.request_title)}</span>

@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -177,6 +179,72 @@ func bindBudgetWrite(cmd *cobra.Command, ctx context.Context, client *cli.APICli
 	}
 	_, err = workflowBinding{mustGetString(cmd, "decision-id"), p.BaseSHA256, p.AfterSHA256}.apply(cmd, body)
 	return err
+}
+
+// proposesWorkflowBudget is true for a task token that names a budget flag
+// without a decision to bind: the call opens the card (CHE-5504).
+func proposesWorkflowBudget(cmd *cobra.Command) bool {
+	return strings.HasPrefix(resolveToken(cmd), cli.TaskTokenPrefix) && !workflowBindingRequested(cmd) &&
+		(cmd.Flags().Changed("max-runs-per-issue") || cmd.Flags().Changed("include-child-prs"))
+}
+
+// proposeWorkflowBudget opens one workflow.budget.set card and writes nothing.
+// workflowBudgetProposal is the read and recipe "config propose workflow.budget"
+// uses; an equal call replays the open card on the server.
+func proposeWorkflowBudget(cmd *cobra.Command, workflow string) error {
+	for _, flag := range []string{"name", "description", "steps-file", "start-status", "map", "dry-run"} {
+		if cmd.Flags().Changed(flag) {
+			return fmt.Errorf("--%s cannot go with the budget flags: a budget change is approved on its own card. Run two commands: "+
+				"`multica workflow update <workflow> --%s ...` and `multica workflow update <workflow> --max-runs-per-issue N --include-child-prs=BOOL --issue <issue>`", flag, flag)
+		}
+	}
+	issueArg, _ := cmd.Flags().GetString("issue")
+	if strings.TrimSpace(issueArg) == "" {
+		return errors.New("--issue is required: the approval card sits on that issue")
+	}
+	var maxRuns *int
+	var includeChildPRs *bool
+	if cmd.Flags().Changed("max-runs-per-issue") {
+		n, _ := cmd.Flags().GetInt("max-runs-per-issue")
+		maxRuns = &n
+	}
+	if cmd.Flags().Changed("include-child-prs") {
+		b, _ := cmd.Flags().GetBool("include-child-prs")
+		includeChildPRs = &b
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	id, err := workflowRefID(ctx, client, workflow)
+	if err != nil {
+		return fmt.Errorf("resolve workflow: %w", err)
+	}
+	issue, err := resolveIssueRef(ctx, client, issueArg)
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+	p, err := workflowBudgetProposal(ctx, client, id, maxRuns, includeChildPRs)
+	if err != nil {
+		return err
+	}
+	params := make(map[string]json.RawMessage, len(p.Params))
+	for key, value := range p.Params {
+		params[key], _ = json.Marshal(value)
+	}
+	forUser, _ := cmd.Flags().GetString("for")
+	raw, err := postActionProposal(ctx, client, p.Type, 1, issue.ID, forUser, "", params)
+	if err != nil {
+		return err
+	}
+	// The URL is the point of this call; keep the update default of json only
+	// when the caller asks for it.
+	if !cmd.Flags().Changed("output") {
+		_ = cmd.Flags().Set("output", "table")
+	}
+	return printActionProposal(ctx, cmd, client, p.Type, issue, raw)
 }
 
 // CHE-5228: an agent widens an issue's run budget (a workflow override on an

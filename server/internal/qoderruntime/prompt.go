@@ -38,8 +38,7 @@ func (b *Bridge) prepare(ctx context.Context, t *claimedTask) (*run, error) {
 	}
 	r.AgentID = binding.AgentID
 	if quickCreate {
-		// The created issue would carry the attachments, and the run on it
-		// would then fail below; refuse before creating anything.
+		// Quick-create attachments stay blocked, matching the modal and API guards.
 		if len(t.QuickCreateAttachmentIDs) > 0 {
 			return nil, fmt.Errorf("attachments are not supported by the Qoder bridge; create the issue without them")
 		}
@@ -47,16 +46,26 @@ func (b *Bridge) prepare(ctx context.Context, t *claimedTask) (*run, error) {
 	}
 	var p strings.Builder
 	if chat {
-		if len(t.ChatAttachments) > 0 {
-			return nil, fmt.Errorf("chat attachments are not supported by the Qoder bridge")
-		}
 		p.WriteString("You are chatting with a user of a Multica workspace. Reply directly to their message; your final message is shown to them as your reply. This bridge does not expose a local Multica daemon.\n")
 		p.WriteString(chatAudience(t.ChatChannelType, t.ChatType))
+		r.Reply = &replyFiles{Locale: t.ChatNoticeLocale, token: t.AuthToken}
+		fmt.Fprintf(&p, "Multica attempts to attach files you deliver with DeliverArtifacts to your reply and adds a delivery notice if a transfer fails or cannot be confirmed. A file over %d MB is not attached; tell the user so instead of saying it was sent.\n", maxReplyFileBytes>>20)
 		if t.PriorSessionID != "" {
 			r.PriorSessionID = t.PriorSessionID
 			p.WriteString("This continues an earlier conversation. If it is not in your context, answer from the message below.\n")
 		}
 		fmt.Fprintf(&p, "\nRun: %s\n\nUser message:\n%s\n", t.ID, t.ChatMessage)
+		if len(t.ChatAttachments) > 0 {
+			taskAPI := *b.multica
+			taskAPI.token = t.AuthToken
+			attachments := chatAttachments(t.ChatAttachments)
+			// Each message mounts under its own run, so files with the same
+			// name from earlier turns of a continued session stay intact.
+			r.MountFiles = true
+			if err := b.attachFiles(ctx, &taskAPI, "Message attachments", attachmentMountDir+t.ID+"/", attachments, r, &p); err != nil {
+				return nil, err
+			}
+		}
 	} else if err := b.issuePrompt(ctx, t, r, &p); err != nil {
 		return nil, err
 	}
@@ -134,15 +143,12 @@ func (b *Bridge) issuePrompt(ctx context.Context, t *claimedTask, r *run, p *str
 	taskAPI := *b.multica
 	taskAPI.token = t.AuthToken
 	var issue struct {
-		Title       string            `json:"title"`
-		Description string            `json:"description"`
-		Attachments []json.RawMessage `json:"attachments"`
+		Title       string       `json:"title"`
+		Description string       `json:"description"`
+		Attachments []attachment `json:"attachments"`
 	}
 	if err := taskAPI.call(ctx, http.MethodGet, "/api/issues/"+url.PathEscape(t.IssueID), nil, &issue); err != nil {
 		return fmt.Errorf("read issue: %w", err)
-	}
-	if len(issue.Attachments) > 0 {
-		return fmt.Errorf("issue attachments are not supported by the Qoder bridge")
 	}
 	p.WriteString("Complete the following Multica issue in your Qoder environment. Return a final summary including code changes, tests and branch/PR/MR links when available. This bridge does not expose a local Multica daemon.\n")
 	if t.PriorSessionID != "" {
@@ -153,7 +159,7 @@ func (b *Bridge) issuePrompt(ctx context.Context, t *claimedTask, r *run, p *str
 	if t.IssueIdentifier != "" {
 		fmt.Fprintf(p, "\nWhen you change code, push a new branch named %s (never the default branch), open a pull request whose title starts with \"%s: \", and put the pull request link in your final summary. Multica links the pull request to this issue through that identifier.\n", BranchName(t.IssueIdentifier, issue.Title), t.IssueIdentifier)
 	}
-	return nil
+	return b.attachFiles(ctx, &taskAPI, "Issue attachments", attachmentMountDir, issue.Attachments, r, p)
 }
 
 // Repository is a GitHub repository and optional branch mounted into a session.

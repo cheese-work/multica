@@ -218,6 +218,8 @@ interface CommentCardProps {
    * the composer holds unsent text. Show less is withheld on either pin.
    */
   forceThreadLengthExpanded?: boolean;
+  /** CHE-5437: the user pressed the thread's collapse/expand button. */
+  onManualCollapseChange?: (rootId: string, collapsed: boolean) => void;
   /**
    * True while in-page find owns this thread's forced-open reveal
    * specifically (never for a target/draft/run pin — those aren't "would
@@ -1059,7 +1061,7 @@ export function AgentRunComment({ run, standalone = false, commentProps, enterin
   return (
     <div ref={motionRef} data-run-slot-id={run.task.id}
       data-run-comment-id={!reply ? run.task.id : undefined}
-      id={!standalone && slotEntry ? `comment-${slotEntry.id}` : undefined}
+      id={!standalone ? `comment-${slotEntry?.id ?? run.task.id}` : undefined}
       className={cn("transition-colors duration-700", standalone ? !reply && "rounded-xl border" : "border-t border-border/50", !reply && "py-1.5",
         highlighted ? highlightedCommentBackgroundClass : standalone && !reply && "bg-card")}>
       {commentProps && reply ? standalone ? (
@@ -1117,6 +1119,7 @@ function CommentCardImpl({
   onThreadLengthExpandChange,
   forceThreadExpanded = false,
   forceThreadLengthExpanded = forceThreadExpanded,
+  onManualCollapseChange,
   findManualCollapseDisabled = false,
   findManualCollapseDisabledReason,
 }: CommentCardProps) {
@@ -1156,10 +1159,18 @@ function CommentCardImpl({
   // useCommentCollapseStore, so ending the pin's reason simply stops passing
   // `true` here without mutating the persisted manual-collapse preference.
   const open = !isCollapsed || forceThreadExpanded;
-  const handleToggle = useCallback(
-    () => toggleCollapse(issueId, entry.id),
-    [toggleCollapse, issueId, entry.id],
-  );
+  // CHE-5437: the button acts on what the user SEES. While open, it collapses
+  // (even if a pin keeps a stale stored "collapsed" flag open); the caller is
+  // told so a click outranks its soft pins (target, highlight, focus/selection).
+  const handleToggle = useCallback(() => {
+    if (open) {
+      if (!isCollapsed) toggleCollapse(issueId, entry.id);
+      onManualCollapseChange?.(entry.id, true);
+    } else {
+      toggleCollapse(issueId, entry.id);
+      onManualCollapseChange?.(entry.id, false);
+    }
+  }, [open, isCollapsed, toggleCollapse, issueId, entry.id, onManualCollapseChange]);
 
   const edit = useEditAttachmentState(issueId, entry, onEdit);
 
@@ -1331,30 +1342,6 @@ function CommentCardImpl({
               )}
 
               <div data-comment-actions className="ml-auto flex shrink-0 items-center gap-0.5">
-                <DeferredTooltip
-                  content={toggleLabel}
-                  trigger={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={toggleLabel}
-                      aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
-                      title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
-                      aria-expanded={open}
-                      aria-controls={open ? `comment-body-${entry.id}` : undefined}
-                      data-thread-toggle
-                      // Only collapsing (from `open`) can hide a match — expanding
-                      // never does, so the control stays live in that direction
-                      // even while find owns this thread's reveal.
-                      disabled={open && findManualCollapseDisabled}
-                      onClick={handleToggle}
-                      className={commentActionClassName}
-                    >
-                      <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
-                    </Button>
-                  }
-                />
                 {open && !deleted && <>
                   {!edit.editing && <QuickEmojiPicker
                     onSelect={(emoji) => onToggleReaction(entry.id, emoji)}
@@ -1442,6 +1429,31 @@ function CommentCardImpl({
                     hasReplies={replyCount > 0}
                   />
                 </>}
+                {/* Last, so it stays put when the other actions drop out on collapse. */}
+                <DeferredTooltip
+                  content={toggleLabel}
+                  trigger={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={toggleLabel}
+                      aria-description={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                      title={open && findManualCollapseDisabled ? findManualCollapseDisabledReason : undefined}
+                      aria-expanded={open}
+                      aria-controls={open ? `comment-body-${entry.id}` : undefined}
+                      data-thread-toggle
+                      // Only collapsing (from `open`) can hide a match — expanding
+                      // never does, so the control stays live in that direction
+                      // even while find owns this thread's reveal.
+                      disabled={open && findManualCollapseDisabled}
+                      onClick={handleToggle}
+                      className={commentActionClassName}
+                    >
+                      <ChevronRight aria-hidden className={cn("h-3.5 w-3.5 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
+                    </Button>
+                  }
+                />
               </div>
             </div>
           </StickyHeaderShell>

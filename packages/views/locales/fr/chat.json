@@ -62,6 +62,9 @@
     "interactive_login_required": "Reconnectez-vous pour utiliser la discussion",
     "interactive_login_action": "Se connecter",
     "title": "Discussion",
+    "no_agent_title": "Aucun agent avec qui discuter pour l'instant",
+    "no_agent_description": "Créez un agent, puis décrivez-lui une demande ici pour qu'il la transforme en tâches.",
+    "no_agent_action": "Nouvel agent",
     "select_prompt": "Choisissez une conversation, ou démarrez-en une nouvelle avec +",
     "agent_link_no_access": "Vous n'avez pas accès à la discussion avec cet agent."
   },
@@ -104,8 +107,6 @@
     "placeholder_archived_send": "Cette conversation est archivée. Envoyez pour la désarchiver d’abord…",
     "command_no_arguments": "/{{command}} ne prend aucun argument. Envoyez-la seule ou retirez le / initial.",
     "command_no_attachments": "/{{command}} ne peut pas être envoyée avec des pièces jointes. Retirez les pièces jointes avant d'exécuter /{{command}}.",
-    "reply_ask_one": "Ce message répond à la question ouverte",
-    "reply_ask_other": "Ce message répond aux {{count}} questions ouvertes",
     "later_set_toast": "Reporté jusqu'à {{time}} ICT",
     "later_bad_duration": "Utilisez une durée de 1s à 7d, par exemple /later 2h",
     "later_failed_toast": "Échec du report. Réessayez."
@@ -347,6 +348,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "Filtrer les discussions",
+      "all": "Toutes",
+      "main": "Boîte principale",
+      "decisions": "Décisions",
+      "waiting": "En attente de vous",
+      "unseen": "Non vues",
+      "pinned": "Épinglées",
+      "unpinned": "Non épinglées",
+      "archived": "Archivées",
+      "count_aria": "{{label}}, {{count}}"
+    },
+    "states": {
+      "loading": "Chargement des discussions…",
+      "empty_title": "Aucune discussion",
+      "empty_body": "Écrivez à un agent pour commencer. Les questions et décisions qui vous attendent apparaissent ici.",
+      "empty_view": "Aucune discussion dans cette vue",
+      "empty_waiting": "Rien n'attend votre réponse",
+      "empty_waiting_body": "Chaque question et décision a une réponse.",
+      "error_title": "Impossible de charger les discussions",
+      "error_body": "Le serveur a renvoyé une erreur. Vos messages ne sont pas perdus. Réessayez, ou revenez dans quelques minutes.",
+      "retry": "Réessayer",
+      "offline_title": "Vous êtes hors ligne",
+      "offline_body": "Affichage de la liste enregistrée. La reconnexion est automatique."
+    },
     "typing": "Rédaction…",
     "failed": "Échec de l'envoi",
     "you_prefix": "Vous : ",
@@ -370,7 +396,42 @@
     "pin_failed": "Impossible de mettre à jour l’épingle",
     "unseen": "Marquer comme non vu",
     "unseen_failed": "Impossible de marquer cette discussion comme non vue",
-    "undo": "Annuler"
+    "mark_seen": "Marquer comme vu",
+    "more": "Plus",
+    "rename": "Renommer",
+    "select": "Sélectionner plusieurs",
+    "undo": "Annuler",
+    "group": {
+      "pinned": "Épinglés",
+      "today": "Aujourd’hui",
+      "yesterday": "Hier",
+      "this_week": "Cette semaine",
+      "older": "Plus ancien"
+    },
+    "unseen_dot": "Non vu",
+    "tag_decision": "Décision",
+    "bulk": {
+      "toolbar_aria_one": "Actions pour {{count}} discussion sélectionnée",
+      "toolbar_aria_other": "Actions pour {{count}} discussions sélectionnées",
+      "selected": "{{count}} sélectionnée(s)",
+      "select_all": "Tout sélectionner",
+      "cancel": "Annuler la sélection",
+      "more_aria": "Plus : {{action}}",
+      "group_aria": "Sélectionner le groupe {{label}}",
+      "row_aria": "Sélectionner {{title}}",
+      "failed_one": "Impossible de mettre à jour {{count}} discussion",
+      "failed_other": "Impossible de mettre à jour {{count}} discussions",
+      "archived_toast_one": "{{count}} discussion archivée",
+      "archived_toast_other": "{{count}} discussions archivées",
+      "action": {
+        "seen": "Marquer comme vu",
+        "unseen": "Marquer comme non vu",
+        "pin": "Épingler",
+        "unpin": "Désépingler",
+        "archive": "Archiver",
+        "unarchive": "Désarchiver"
+      }
+    }
   },
   "header": {
     "context_meter": "{{pct}} % de {{window}}",
@@ -379,6 +440,7 @@
     "compact_now": "Compacter maintenant",
     "more_actions": "Plus d'actions",
     "view_profile": "Voir le profil de l'agent",
+    "agent_settings": "Paramètres de l'agent",
     "rename": "Renommer la discussion",
     "archive": "Archiver la discussion",
     "unarchive": "Désarchiver la discussion",
@@ -402,8 +464,6 @@
   "annotations": {
     "one_request": "Envoyez les commentaires sur une seule demande de décision à la fois.",
     "source_label": "Message de {{name}}",
-    "add": "Ajouter un commentaire",
-    "confirm_add": "Ajouter",
     "save": "Enregistrer",
     "note_label": "Commentaire {{number}}",
     "note_placeholder": "Ajouter un commentaire…",

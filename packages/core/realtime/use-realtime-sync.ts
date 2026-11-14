@@ -11,8 +11,10 @@ import { clearWorkspaceStorage } from "../platform/storage-cleanup";
 import { defaultStorage } from "../platform/storage";
 import { getCurrentWsId, getCurrentSlug } from "../platform/workspace-storage";
 import { issueKeys } from "../issues/queries";
+import { invalidateIssueGraph } from "../issues/graph-queries";
 import { isSidebarTableRequest, type SidebarIssuesRequest } from "../issues/sidebar-list";
 import { refreshIssueUnread } from "../issues/unread";
+import { refreshSubscribedIssues, subscribedIssueKeys } from "../issues/subscribed";
 import { projectKeys } from "../projects/queries";
 import { isDecisionLifecycleMessage } from "../chat/unread";
 import { pinKeys } from "../pins/queries";
@@ -729,6 +731,7 @@ function invalidateWorkspaceScopedQueries(qc: QueryClient): void {
   if (wsId) {
     qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
     void refreshIssueUnread(qc, wsId);
+    qc.invalidateQueries({ queryKey: subscribedIssueKeys.all(wsId) });
     // Through the inbox's own entry point, not a plain invalidate: a reconnect
     // can land during the list's first load, and a plain invalidate would be
     // answered by the request already on the wire (see refreshInboxQuery).
@@ -1224,10 +1227,17 @@ export function useRealtimeSync(
     // Filtering by actor_id would block other tabs of the same user.
     // Instead, both mutations and WS handlers use dedup checks to be idempotent.
 
+    // Timeline and relations views refetch on any issue or activity change.
+    const refreshIssueGraph = () => {
+      const wsId = getCurrentWsId();
+      if (wsId) debouncedRefresh("issue_graph", () => void invalidateIssueGraph(qc, wsId));
+    };
+
     const unsubIssueUpdated = ws.on("issue:updated", (p) => {
       const payload = p as IssueUpdatedPayload;
       const { issue } = payload;
       if (!issue?.id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueUpdated(qc, wsId, issue, {
@@ -1251,6 +1261,7 @@ export function useRealtimeSync(
     const unsubIssueCreated = ws.on("issue:created", (p) => {
       const { issue } = p as IssueCreatedPayload;
       if (!issue) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) onIssueCreated(qc, wsId, issue);
     });
@@ -1258,6 +1269,7 @@ export function useRealtimeSync(
     const unsubIssueDeleted = ws.on("issue:deleted", (p) => {
       const { issue_id } = p as IssueDeletedPayload;
       if (!issue_id) return;
+      refreshIssueGraph();
       const wsId = getCurrentWsId();
       if (wsId) {
         onIssueDeleted(qc, wsId, issue_id);
@@ -1430,7 +1442,10 @@ export function useRealtimeSync(
 
     const unsubActivityCreated = ws.on("activity:created", (p) => {
       const { issue_id } = p as ActivityCreatedPayload;
-      if (issue_id) invalidateTimeline(issue_id);
+      if (issue_id) {
+        invalidateTimeline(issue_id);
+        refreshIssueGraph();
+      }
     });
 
     const unsubReactionAdded = ws.on("reaction:added", (p) => {
@@ -1463,15 +1478,22 @@ export function useRealtimeSync(
       }
     });
 
-    const unsubSubscriberAdded = ws.on("subscriber:added", (p) => {
-      const { issue_id } = p as SubscriberAddedPayload;
-      if (issue_id) qc.invalidateQueries({ queryKey: issueKeys.subscribers(issue_id) });
-    });
-
-    const unsubSubscriberRemoved = ws.on("subscriber:removed", (p) => {
-      const { issue_id } = p as SubscriberRemovedPayload;
-      if (issue_id) qc.invalidateQueries({ queryKey: issueKeys.subscribers(issue_id) });
-    });
+    // The viewer's own subscription changing also moves issues in and out of
+    // views filtered by the "subscribed" relation.
+    const onSubscriberChanged = (p: SubscriberAddedPayload | SubscriberRemovedPayload) => {
+      if (!p.issue_id) return;
+      qc.invalidateQueries({ queryKey: issueKeys.subscribers(p.issue_id) });
+      const wsId = getCurrentWsId();
+      if (wsId && p.user_type === "member" && p.user_id === authStore.getState().user?.id) {
+        void refreshSubscribedIssues(qc, wsId);
+      }
+    };
+    const unsubSubscriberAdded = ws.on("subscriber:added", (p) =>
+      onSubscriberChanged(p as SubscriberAddedPayload),
+    );
+    const unsubSubscriberRemoved = ws.on("subscriber:removed", (p) =>
+      onSubscriberChanged(p as SubscriberRemovedPayload),
+    );
 
     // --- Side-effect handlers (toast, navigation) ---
 

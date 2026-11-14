@@ -35,26 +35,29 @@ var (
 // onRunBudgetEvent writes the 80% warning once the admission that raised it
 // committed (CHE-2297 L1a).
 func (h *Handler) onRunBudgetEvent(ctx context.Context, e service.RunBudgetEvent) {
-	if e.Kind == service.RunBudgetKindWarn80Tokens {
-		h.warnTokensAtEighty(ctx, e)
-		return
-	}
 	if e.Kind != service.RunBudgetKindWarn80 || !h.admissionCommitted(ctx, e) {
 		return
 	}
-	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue used %d of %d runs of its run budget. When the budget is spent, nothing derived from this issue runs until a member moves its status.", e.Runs, e.Max))
+	_ = h.writeRunBudgetNoticeFrom(ctx, e, hookRef{}, nil, func(ctx context.Context, q *db.Queries) string { return h.warn80Text(ctx, q, e) })
 }
 
-// warnTokensAtEighty writes the token warning once the usage report that
-// crossed 80% committed (CHE-2297 L2e). The report is the only event that
-// spends tokens, so nothing else raises it; a report that rolled back, or that
-// carries no transaction to follow, writes nothing and leaves the window's
-// claim free for the real crossing.
-func (h *Handler) warnTokensAtEighty(ctx context.Context, e service.RunBudgetEvent) {
-	if e.Xid == 0 || !h.admissionTxFinished(ctx, e) {
-		return
+// warn80Text words the 80% warning with the numbers and the one command that
+// asks for more (CHE-5503). Without a readable budget it states the numbers only.
+func (h *Handler) warn80Text(ctx context.Context, q *db.Queries, e service.RunBudgetEvent) string {
+	plain := fmt.Sprintf("Run budget: %d of %d runs used.", e.Runs, e.Max)
+	issue, err := q.GetIssue(ctx, e.IssueID)
+	if err != nil {
+		return plain
 	}
-	h.writeRunBudgetNotice(ctx, e, fmt.Sprintf("This issue has %d of %d tokens left of its token allowance. When the allowance is spent, nothing derived from this issue runs until a member moves its status.", e.Tokens, e.TokenBase))
+	snap, err := service.LoadRunBudgetSnapshot(ctx, q, issue)
+	if err != nil {
+		return plain
+	}
+	next, err := h.loadRunBudgetNextStep(ctx, q, issue, snap)
+	if err != nil || next.NextCommand == "" {
+		return plain
+	}
+	return fmt.Sprintf("Run budget: %d of %d runs used on %s (workflow %s, cap %d). Ask for more: %s", e.Runs, e.Max, next.Identifier, next.WorkflowName, e.Max, next.NextCommand)
 }
 
 // admissionCommitted reports whether the admission that raised a warning has
@@ -247,6 +250,11 @@ func (h *Handler) writeRunBudgetNoticeFrom(ctx context.Context, e service.RunBud
 				return fmt.Errorf("open top-up card: %w", err)
 			}
 			decisions = opened
+			if len(opened) > 0 {
+				if err := recordRunBudgetAsk(ctx, qtx, issue, "system", pgtype.UUID{}, runBudgetTopUpType, e.Since.UTC().Format(time.RFC3339Nano)); err != nil {
+					return fmt.Errorf("record ask: %w", err)
+				}
+			}
 			content += "\n\n[Approve the top-up](" + links[0].ApproveURL + ")"
 		}
 		created, err := qtx.CreateComment(ctx, db.CreateCommentParams{
@@ -396,12 +404,14 @@ func (h *Handler) runBudgetRecentRunsNote(ctx context.Context, issue db.Issue) s
 // runBudgetNoticeText appends the token figure and the recent runs to the
 // notice text.
 func runBudgetNoticeText(tokens, recentRuns string, e service.RunBudgetEvent, text string) (content, title string) {
-	content = fmt.Sprintf("%s Tokens used so far (input and output): %s.%s", text, tokens, recentRuns)
+	sep := " "
+	if e.Kind == service.RunBudgetKindWarn80 {
+		sep = "\n\n" // the text ends in a command
+	}
+	content = fmt.Sprintf("%s%sTokens used so far (input and output): %s.%s", text, sep, tokens, recentRuns)
 	switch e.Kind {
 	case service.RunBudgetKindWarn80:
 		return content, "Run budget at 80%"
-	case service.RunBudgetKindWarn80Tokens:
-		return content, "Token allowance at 80%"
 	}
 	return content, "Run budget used up"
 }

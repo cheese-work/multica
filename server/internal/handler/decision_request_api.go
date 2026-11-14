@@ -39,6 +39,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
 		// CoversRequestIDs names open cards this batch card answers for (CHE-4453).
+		Recovers         string   `json:"recovers"`
 		CoversRequestIDs []string `json:"covers_request_ids"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes)).Decode(&input); err != nil {
@@ -109,11 +110,12 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		return
 	}
 	var sessionID, humanID, parentID pgtype.UUID
+	var recovers pgtype.UUID
 	for _, field := range []struct {
 		value string
 		name  string
 		into  *pgtype.UUID
-	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}} {
+	}{{input.SessionID, "session_id", &sessionID}, {input.For, "for", &humanID}, {input.ParentID, "parent_id", &parentID}, {input.Recovers, "recovers", &recovers}} {
 		if field.value == "" {
 			continue
 		}
@@ -134,7 +136,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 				writeError(writer, http.StatusBadRequest, "a request from a chat takes no new_dm, session_id or parent_id")
 				return
 			}
-			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For); !ok {
+			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For, pgtype.UUID{}); !ok {
 				return
 			}
 		}
@@ -145,18 +147,23 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	var draft *decisionActionDraft
 	if input.Action != nil {
-		if draft, err = draftDecisionAction(input.Action); err != nil {
+		if err = withIssueTarget(input.Action, issue.ID); err == nil {
+			draft, err = draftDecisionAction(input.Action)
+		}
+		if err == nil {
+			input.EscalationClass, err = handler.requestClassFor(request.Context(), issue, input.EscalationClass, draft)
+		}
+		if err != nil {
 			writeDecisionError(writer, err, "decision request")
 			return
 		}
-		input.EscalationClass = actionRequestClass(input.EscalationClass, draft.Definition.MinClass)
 	}
 	askJSON, err := json.Marshal(parsed)
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -202,6 +209,18 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusOK, decisionRequestResponse{result.Request, hints, action})
 		return
 	}
+	handler.publishDecisionResult(request, issue, &result)
+	var action *decisionActionResponse
+	if result.Action != nil {
+		action = newDecisionActionResponse(*result.Action)
+	}
+	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
+}
+
+// publishDecisionResult announces the rows of a new request. It records a ping
+// that the transaction did not, and refreshes result.Request. A batch request
+// that does not lead its card has no message to announce.
+func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
 	if result.CreatedSession != nil {
 		session := result.CreatedSession
@@ -242,16 +261,13 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
-		MessageKind:   result.Message.MessageKind,
-		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
-		Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
-	})
-	var action *decisionActionResponse
-	if result.Action != nil {
-		action = newDecisionActionResponse(*result.Action)
+	if result.Message.ID.Valid {
+		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
+			MessageKind:   result.Message.MessageKind,
+			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
+			Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),
+		})
 	}
-	writeJSON(writer, http.StatusCreated, decisionRequestResponse{result.Request, hints, action})
 }
 
 // decisionRequestResponse adds advisory ask-lint hints to the stored request.
@@ -270,6 +286,22 @@ type decisionReadResponse struct {
 	AppliedAt     *string `json:"applied_at,omitempty"`
 	Outcome       string  `json:"outcome,omitempty"`
 	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	// The effect readback (B v9 S5, CHE-5415): what the approval did, who decided,
+	// for whom. Revocable is true while a revoke would be accepted (S6, CHE-5416);
+	// Revoke is the record of one that happened.
+	Effect       string              `json:"effect,omitempty"`
+	EffectReason *string             `json:"effect_reason,omitempty"`
+	DecidedBy    *string             `json:"decided_by,omitempty"`
+	OnBehalfOf   *string             `json:"on_behalf_of,omitempty"`
+	Revocable    bool                `json:"revocable"`
+	Revoke       *decisionRevokeRead `json:"revoke,omitempty"`
+}
+
+// decisionRevokeRead is who revoked an applied action, when, and why.
+type decisionRevokeRead struct {
+	At     *string `json:"at"`
+	By     *string `json:"by"`
+	Reason string  `json:"reason"`
 }
 
 type decisionAnswerRead struct {
@@ -293,6 +325,12 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 	case err == nil:
 		response.Outcome, response.OutcomeReason = decisionActionOutcomeOf(action)
 		response.AppliedAt = appliedAtOf(action)
+		response.Effect, response.EffectReason = decisionEffectOf(action)
+		response.OnBehalfOf = uuidToPtr(stored.HumanUserID)
+		response.Revocable = handler.revocableNow(request.Context(), action)
+		if action.RevokedAt.Valid {
+			response.Revoke = &decisionRevokeRead{At: timestampToPtr(action.RevokedAt), By: uuidToPtr(action.RevokedByUserID), Reason: action.RevokeReason.String}
+		}
 	case !errors.Is(err, pgx.ErrNoRows):
 		writeError(writer, http.StatusInternalServerError, "failed to read decision action")
 		return
@@ -300,6 +338,9 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 	answer, err := handler.Queries.GetLatestDecisionAnswer(request.Context(), db.GetLatestDecisionAnswerParams{WorkspaceID: stored.WorkspaceID, ID: stored.ID})
 	switch {
 	case err == nil:
+		if response.Effect == "applied" || response.Effect == "not_applied" {
+			response.DecidedBy = uuidToPtr(answer.AnsweredByUserID)
+		}
 		response.Answer = &decisionAnswerRead{
 			ID: uuidToString(answer.ID), AnsweredByUserID: uuidToPtr(answer.AnsweredByUserID), AnswerSource: answer.AnswerSource,
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
