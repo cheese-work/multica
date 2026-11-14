@@ -404,6 +404,9 @@ export interface TaskInitContext {
 }
 
 export interface AgentTask {
+  /** Owning issue labels supplied by subtree execution-history reads. */
+  issue_identifier?: string;
+  issue_title?: string;
   wakeup_id?: string;
   id: string;
   agent_id: string;

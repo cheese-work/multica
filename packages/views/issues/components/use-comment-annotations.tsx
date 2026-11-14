@@ -11,6 +11,8 @@ import { MAX_ANNOTATION_QUOTE_LENGTH, MAX_REPLY_ANNOTATIONS, type ReplyAnnotatio
 import { useT } from "../../i18n";
 import { annotationRange, captureCommentSelection, findAnnotationSource } from "./comment-annotation-selection";
 import { CommentSelectionBubble } from "./comment-selection-bubble";
+import { AnnotationComposer, type AnnotationReplyOptions } from "./annotation-composer";
+import type { ContentEditorRef } from "../../editor/content-editor";
 
 /** Text overrides for a surface that is not an issue thread (the DM). */
 export interface AnnotationLabels {
@@ -84,7 +86,9 @@ function AnnotationNoteEditor({ inputRef, initialNote, label, showLabel, placeho
 type CapturedSelection = NonNullable<ReturnType<typeof captureCommentSelection>>;
 type SourceAnchor = { id: string; range: Range; root: HTMLElement };
 
-export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onRevealSource, editable = false, surface = "issue", labels }: {
+export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onAdded, onRevealSource, editable = false, surface = "issue", labels, reply }: {
+  /** Issue threads post replies through the composer; the DM has no issue and keeps the plain note. */
+  issueId?: string;
   draftKey: CommentDraftKey;
   sources: { id: string; name: string; revision?: number }[];
   enabled: boolean;
@@ -95,6 +99,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   /** `chat` renders markers inside the message (reading order) and returns focus to them. */
   surface?: "issue" | "chat";
   labels?: AnnotationLabels;
+  reply?: AnnotationReplyOptions;
 }) {
   const { t } = useT("issues");
   const chat = surface === "chat";
@@ -115,7 +120,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   const [activeId, setActiveId] = useState<string | null>(null);
   const pendingMarkerFocus = useRef<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<ContentEditorRef>(null);
+  const noteInputRef = useRef<HTMLTextAreaElement>(null);
+  const submittingRef = useRef(false);
   const pendingFocusId = useRef<string | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
@@ -171,6 +178,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   const markerFor = (id: string) =>
     cardRef.current?.querySelector<HTMLElement>(`[data-annotation-marker="${id}"]`) ?? null;
   const close = (restoreFocus = false) => {
+    if (submittingRef.current) return;
     const marker = restoreFocus && chat && editingId ? markerFor(editingId) : null;
     if (marker) marker.focus({ preventScroll: true });
     else if (restoreFocus && selection?.root.isConnected) {
@@ -180,7 +188,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     setSelection(null); setEditor(null); setError(false);
   };
   const readSelection = useCallback(() => {
-    if (!enabled || !cardRef.current) return null;
+    if (!enabled || submittingRef.current || !cardRef.current) return null;
     const captured = captureCommentSelection(cardRef.current, window.getSelection(), editable);
     return captured && sourcesRef.current.some((source) => source.id === captured.sourceCommentId) ? captured : null;
   }, [enabled, editable]);
@@ -189,7 +197,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
   };
 
-  useEffect(() => { setSelection(null); setEditor(null); setError(false); }, [draftKey, enabled]);
+  useEffect(() => { setSelection(null); setEditor(null); setError(false); submittingRef.current = false; }, [draftKey, enabled]);
 
   // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
   // a document-level pointerup; captureCommentSelection then decides from the selection alone.
@@ -213,8 +221,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       setSelection(null); setEditor(null); setError(false);
     };
     const onPointerDown = (event: PointerEvent) => {
+      if (submittingRef.current) return;
       if (event.target instanceof Element &&
-        event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
+        event.target.closest("[data-editor-overlay-owner]")?.getAttribute("data-editor-overlay-owner") === draftKey) return;
       if (event.pointerType === "touch") {
         touch = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
         return;
@@ -233,7 +242,11 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     };
     const onPointerCancel = () => { touch = null; };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || isImeComposing(event)) return;
+      if (event.key !== "Escape" || isImeComposing(event) || submittingRef.current) return;
+      // A nested menu owns its first Escape; its portal is outside this DOM tree.
+      if (event.target instanceof Element &&
+        event.target.closest("[data-editor-overlay-owner]")?.getAttribute("data-editor-overlay-owner") === draftKey &&
+        !event.target.closest("[data-reply-annotation-overlay]")) return;
       if (editingRef.current) useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editingRef.current));
       if (selection.root.isConnected) {
         const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
@@ -242,9 +255,17 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
       setSelection(null); setEditor(null); setError(false);
     };
     const onFocusIn = (event: FocusEvent) => {
-      if (touch || !(event.target instanceof Element) || selection.root.contains(event.target) ||
-        event.target.closest("[data-reply-annotation-overlay]")?.getAttribute("data-reply-annotation-overlay") === draftKey) return;
-      setSelection(null); setEditor(null); setError(false);
+      if (touch || submittingRef.current) return;
+      if (!(event.target instanceof Element) || selection.root.contains(event.target) ||
+        event.target.closest("[data-editor-overlay-owner]")?.getAttribute("data-editor-overlay-owner") === draftKey) return;
+      // Clipboard fallback briefly focuses a hidden textarea, then restores
+      // the owned control synchronously. Only dismiss if focus stays outside.
+      queueMicrotask(() => {
+        const target = document.activeElement;
+        if (submittingRef.current || selection.root.contains(target) ||
+          target?.closest("[data-editor-overlay-owner]")?.getAttribute("data-editor-overlay-owner") === draftKey) return;
+        setSelection(null); setEditor(null); setError(false);
+      });
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("pointermove", onPointerMove);
@@ -267,7 +288,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   const focusNote = useCallback(() => {
     if (!editingId || pendingFocusId.current !== editingId) return;
     pendingFocusId.current = null;
-    if (window.matchMedia("(pointer: fine)").matches) inputRef.current?.focus({ preventScroll: true });
+    if (window.matchMedia("(pointer: fine)").matches) (inputRef.current ?? noteInputRef.current)?.focus();
   }, [editingId]);
 
   useEffect(() => {
@@ -297,9 +318,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
         if (pending?.sourceCommentId === current.sourceCommentId) {
           const root = findSource(pending.sourceCommentId);
           const range = root && annotationRange(root, pending, editable);
-          return root && range ? { ...current, root, range } : null;
+          return root && range ? { ...current, root, range } : current;
         }
-        if (saved) return null;
+        if (saved) return editingRef.current?.id === saved.id ? current : null;
         return current.root.isConnected && current.range.startContainer.isConnected ? current : null;
       });
       if (canHighlight) CSS.highlights.set(highlightName, new Highlight(...next.map((a) => a.range)));
@@ -326,6 +347,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   }, [annotations, editor?.existing, editingId, selection]);
 
   const editAnnotation = (id: string, scrollToSource = false): boolean => {
+    if (submittingRef.current) return false;
     const annotation = annotationsRef.current.find((a) => a.id === id);
     const root = annotation && findSource(annotation.sourceCommentId);
     if (annotation && !root) return onRevealSource?.(annotation) ?? false;
@@ -343,6 +365,7 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
   };
 
   const add = useCallback((captured: CapturedSelection | null) => {
+    if (submittingRef.current) return false;
     const source = captured && sourcesRef.current.find((e) => e.id === captured.sourceCommentId);
     if (!captured || !source) {
       toast.error(Lref.current.selectionFailed);
@@ -351,11 +374,9 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
     const { quote, start, prefix, suffix, sourceCommentId } = captured;
     const duplicate = annotationsRef.current.find((a) => a.sourceCommentId === sourceCommentId &&
       a.start === start && a.quote === quote && a.prefix === prefix && a.suffix === suffix);
-    if (quote.length > MAX_ANNOTATION_QUOTE_LENGTH || (!duplicate && annotationsRef.current.length >= MAX_REPLY_ANNOTATIONS)) {
+    if (quote.length > MAX_ANNOTATION_QUOTE_LENGTH) {
       setError(true);
-      toast.error(quote.length > MAX_ANNOTATION_QUOTE_LENGTH
-        ? Lref.current.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH)
-        : Lref.current.countLimit(MAX_REPLY_ANNOTATIONS));
+      toast.error(Lref.current.quoteLimit(MAX_ANNOTATION_QUOTE_LENGTH));
       return false;
     }
     pendingMarkerFocus.current = null;
@@ -457,9 +478,27 @@ export function useCommentAnnotations({ draftKey, sources, enabled, onAdded, onR
             onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
         </CommentSelectionBubble>;
       })}
-      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing}>
+      {enabled && selection && <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={focusNote} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
         <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
-          {editing ? <AnnotationNoteEditor key={editing.id} inputRef={inputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
+          {editing && issueId && !chat ? <AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey}
+            annotation={editing} existing={editingExisting}
+            number={annotations.findIndex((a) => a.id === editing.id) + 1}
+            editorRef={inputRef} parentId={editable ? undefined : editing.sourceCommentId} reply={reply}
+            sourceMissing={!sources.some((source) => source.id === editing.sourceCommentId)}
+            sourceChanged={sources.some((source) => source.id === editing.sourceCommentId &&
+              source.revision !== undefined && editing.sourceRevision !== undefined && source.revision !== editing.sourceRevision)}
+            canSave={editingExisting || annotations.length < MAX_REPLY_ANNOTATIONS}
+            isSourceAvailable={() => sourcesRef.current.some((source) => source.id === editing.sourceCommentId) &&
+              !!cardRef.current && !!findAnnotationSource(cardRef.current, editing.sourceCommentId)}
+            onChange={(note) => { setEditor({ annotation: { ...editing, note }, existing: editingExisting }); setError(false); }}
+            onSave={confirmNote} onBusyChange={(busy) => {
+              if (editingRef.current?.id === editing.id) submittingRef.current = busy;
+            }}
+            onAccepted={() => { if (editingRef.current?.id === editing.id) close(); }}
+            onRemove={editingExisting ? () => {
+              useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
+              close(true);
+            } : undefined} /> : editing ? <AnnotationNoteEditor key={editing.id} inputRef={noteInputRef} initialNote={noteDraft?.base === editing.note && noteDraft.value !== null ? noteDraft.value : editing.note}
               label={L.noteLabel(editingNumber)} showLabel={chat && editingExisting} placeholder={L.notePlaceholder}
               confirmLabel={confirmLabel} removeLabel={editingExisting ? L.remove(editingNumber) : undefined}
               onEdit={(note) => { useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: editing.note }); if (error) setError(false); }} onConfirm={confirmNote}

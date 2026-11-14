@@ -2504,6 +2504,8 @@ export const AgentTaskSchema = z.lazy(() => z.object({
   agent_id: z.string().default(""),
   runtime_id: z.string().default(""),
   issue_id: z.string().default(""),
+  issue_identifier: z.string().optional().catch(undefined),
+  issue_title: z.string().optional().catch(undefined),
   status: z.string().default("cancelled"),
   priority: z.number().default(0),
   dispatched_at: z.string().nullable().default(null),
@@ -4337,6 +4339,8 @@ export const EMPTY_SKILL: Skill = {
 };
 
 export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
+/** Same list without the empty-array default, for callers that must fail closed on a malformed response. */
+export const SkillSummaryStrictListSchema = z.lazy(() => z.array(SkillSummarySchema));
 
 const SKILL_VERSION_SOURCES = [
   "baseline",

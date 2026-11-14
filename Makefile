@@ -152,6 +152,7 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack
 #   make up                     api + web
 #   make up C=api,web,daemon    add the agent daemon
 #   make up C=desktop           Electron against this environment's backend
+#   make up C=desktop ARGS=--cdp  ...signed in, with a DevTools port for Playwright
 #   make up ARGS=--ephemeral    agent-owned, expires, collected by `make gc`
 #   make up ARGS=--gc           also collect stale environments (never the default)
 
