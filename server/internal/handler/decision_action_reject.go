@@ -380,22 +380,11 @@ func (handler *Handler) rejectDecisionActionOnce(ctx context.Context, caller dec
 	if err != nil {
 		return empty, atStep("action", err)
 	}
-	if _, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID}); errors.Is(err, pgx.ErrNoRows) {
-		return empty, errNotTheHuman
-	} else if err != nil {
-		return empty, atStep("member", err)
-	}
-	if current.HumanUserID != caller.userID {
-		return empty, errNotTheHuman
-	}
-	if current.Status != "open" || action.State != "pending" {
-		return empty, errNotPending
-	}
-	rejected, err := queries.RejectDecisionActionRow(ctx, db.RejectDecisionActionRowParams{ID: action.ID, WorkspaceID: caller.workspaceID})
-	if err != nil {
+	if err := checkRejectable(ctx, queries, caller, current, action); err != nil {
 		return empty, err
 	}
-	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", withDecisionNote(decisionActionSummary(rejected), "Reason", caller.note)); err != nil {
+	rejected, err := rejectLockedAction(ctx, queries, caller, current, action)
+	if err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -479,4 +468,34 @@ func refuseGatedAnswerWhileRecovering(ctx context.Context, queries *db.Queries, 
 		return nil
 	}
 	return refuseWhileRecovering(ctx, queries, userID)
+}
+
+// checkRejectable refuses, under the locks, a reject by anyone but the
+// request's human, or of an action that is no longer pending.
+func checkRejectable(ctx context.Context, queries *db.Queries, caller decisionActionCaller, current db.DecisionRequest, action db.DecisionAction) error {
+	if _, err := queries.LockDecisionActionMemberNowait(ctx, db.LockDecisionActionMemberNowaitParams{WorkspaceID: caller.workspaceID, UserID: caller.userID}); errors.Is(err, pgx.ErrNoRows) {
+		return errNotTheHuman
+	} else if err != nil {
+		return atStep("member", err)
+	}
+	if current.HumanUserID != caller.userID {
+		return errNotTheHuman
+	}
+	if current.Status != "open" || action.State != "pending" {
+		return errNotPending
+	}
+	return nil
+}
+
+// rejectLockedAction ends a locked, checked action as rejected and records the
+// click as the card's answer.
+func rejectLockedAction(ctx context.Context, queries *db.Queries, caller decisionActionCaller, current db.DecisionRequest, action db.DecisionAction) (db.DecisionAction, error) {
+	rejected, err := queries.RejectDecisionActionRow(ctx, db.RejectDecisionActionRowParams{ID: action.ID, WorkspaceID: caller.workspaceID})
+	if err != nil {
+		return db.DecisionAction{}, err
+	}
+	if err := finishCardDecision(ctx, queries, caller, current, rejected, "rejected", withDecisionNote(decisionActionSummary(rejected), "Reason", caller.note)); err != nil {
+		return db.DecisionAction{}, err
+	}
+	return rejected, nil
 }
