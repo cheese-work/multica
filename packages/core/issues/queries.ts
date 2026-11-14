@@ -624,10 +624,12 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
         // instead of firing a second `getIssue(uuid)` and painting a label-only
         // chip until it lands. Never overwrite an existing entry: it may be
         // newer than this lookup, and WS updates keep it current afterwards.
-        client.setQueryData<Issue>(
-          issueKeys.detail(wsId, issue.id),
-          (existing) => existing ?? issue,
-        );
+        // Skip `setQueryData` entirely when data exists: even a no-op updater
+        // clears the entry's invalidation flag, dropping its refresh obligation.
+        const detailKey = issueKeys.detail(wsId, issue.id);
+        if (client.getQueryData<Issue>(detailKey) === undefined) {
+          client.setQueryData<Issue>(detailKey, issue);
+        }
         return issue;
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
