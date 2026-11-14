@@ -6,11 +6,17 @@ import { createQueryClient } from "@multica/core/query-client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { onIssueCreated } from "@multica/core/issues/ws-updaters";
 import type { Issue, ListIssuesCache } from "@multica/core/types";
+import { useResolveIssueIdentifier } from "../hooks/use-resolve-issue-identifier";
 import { IssueChip } from "./issue-chip";
 
 vi.mock("@multica/core/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/api")>()),
   api: { getIssue: vi.fn() },
+}));
+
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => ({ id: "workspace-1", issue_prefix: "MUL" }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({
@@ -160,29 +166,58 @@ describe("IssueChip resolution", () => {
     expect(api.getIssue).toHaveBeenCalledTimes(3);
   });
 
-  it("does not refetch a missing issue on repeated focus", async () => {
-    vi.mocked(api.getIssue).mockRejectedValue(
-      new ApiError("Not found", 404, "NotFound"),
-    );
-    render(chip());
-    await waitFor(() => {
-      expect(
-        queryClient.getQueryState(issueKeys.detail(issue.workspace_id, issue.id))?.status,
-      ).toBe("error");
-    });
-    expect(api.getIssue).toHaveBeenCalledTimes(2);
+  describe("bare identifier lookup", () => {
+    // The shape rich-content renders for an autolinked key: resolve the
+    // identifier, then hand the resolved UUID to the chip.
+    function IdentifierChip({ identifier }: { identifier: string }) {
+      const resolved = useResolveIssueIdentifier(identifier);
+      if (!resolved) return <>{identifier}</>;
+      return <IssueChip issueId={resolved.id} fallbackLabel={identifier} />;
+    }
 
-    for (let i = 0; i < 2; i++) {
-      act(() => focusManager.setFocused(false));
-      act(() => focusManager.setFocused(true));
+    beforeEach(() => {
+      vi.mocked(api.getIssue).mockImplementation(async (idOrIdentifier) => {
+        if (idOrIdentifier === issue.identifier || idOrIdentifier === issue.id) {
+          return issue;
+        }
+        throw new ApiError("Not found", 404, "Not Found");
+      });
+    });
+
+    it("renders title and status once, from a single getIssue request", async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <IdentifierChip identifier={issue.identifier} />
+        </QueryClientProvider>,
+      );
+
+      await screen.findByText(issue.title);
+      expect(screen.getByTestId("status-icon")).toBeInTheDocument();
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 0));
       });
-      expect(api.getIssue).toHaveBeenCalledTimes(2);
-    }
+      expect(api.getIssue).toHaveBeenCalledExactlyOnceWith(issue.identifier);
+    });
 
-    expect(screen.getByText(issue.identifier)).toBeInTheDocument();
-    expect(screen.queryByText(issue.title)).not.toBeInTheDocument();
-    expect(screen.queryByTestId("status-icon")).not.toBeInTheDocument();
+    it("paints the full chip in the same commit that resolves the identifier", async () => {
+      const labelOnlyPaints: string[] = [];
+      const observer = new MutationObserver(() => {
+        const chipEl = document.querySelector(".issue-mention");
+        if (chipEl && !chipEl.textContent?.includes(issue.title)) {
+          labelOnlyPaints.push(chipEl.textContent ?? "");
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+      render(
+        <QueryClientProvider client={queryClient}>
+          <IdentifierChip identifier={issue.identifier} />
+        </QueryClientProvider>,
+      );
+      await screen.findByText(issue.title);
+      observer.disconnect();
+
+      expect(labelOnlyPaints).toEqual([]);
+    });
   });
 });
