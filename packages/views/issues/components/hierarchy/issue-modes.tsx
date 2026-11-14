@@ -5,6 +5,7 @@
 import type { ComponentType, RefObject } from "react";
 import { useIssueViewStore } from "@multica/core/issues/stores/view-store";
 import type { Issue } from "@multica/core/types";
+import { Button } from "@multica/ui/components/ui/button";
 import { Network, Rows3 } from "@multica/ui/icons";
 import { useT } from "../../../i18n";
 import { Swimlane2IssueTree } from "../swimlane2/swimlane2-issue-tree";
@@ -45,15 +46,9 @@ export function ModeSwitch({ modes, activeId, onChange }: { modes: readonly Issu
   return (
     <div role="group" aria-label={t(($) => $.view.section)} className="flex flex-wrap items-center gap-1">
       {modes.map(({ id, label, icon: Icon }) => (
-        <button
-          key={id}
-          type="button"
-          aria-pressed={id === activeId}
-          onClick={() => onChange(id)}
-          className="inline-flex h-7 items-center gap-1 rounded-full border border-surface-border px-2 text-caption font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring aria-pressed:border-info aria-pressed:bg-info/10"
-        >
+        <Button key={id} type="button" variant="outline" size="xs" aria-pressed={id === activeId} onClick={() => onChange(id)} className="rounded-full aria-pressed:border-info aria-pressed:bg-info/10">
           <Icon className="size-3.5" />{label(t)}
-        </button>
+        </Button>
       ))}
     </div>
   );
