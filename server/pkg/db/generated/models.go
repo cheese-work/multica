@@ -2709,6 +2709,38 @@ type MergePauseState struct {
 	Error        pgtype.Text        `json:"error"`
 }
 
+type MergeReceiptFact struct {
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	RepoOwner         string             `json:"repo_owner"`
+	RepoName          string             `json:"repo_name"`
+	PrNumber          int32              `json:"pr_number"`
+	HeadSha           string             `json:"head_sha"`
+	BaseRef           string             `json:"base_ref"`
+	Tier              pgtype.Int4        `json:"tier"`
+	ClassifierTrusted pgtype.Bool        `json:"classifier_trusted"`
+	CoverageComplete  pgtype.Bool        `json:"coverage_complete"`
+	PrBound           pgtype.Bool        `json:"pr_bound"`
+	SecurityGate      string             `json:"security_gate"`
+	CrossLabPass      pgtype.Bool        `json:"cross_lab_pass"`
+	ScopeClassified   pgtype.Bool        `json:"scope_classified"`
+	GateVetoed        pgtype.Bool        `json:"gate_vetoed"`
+	Paths             []string           `json:"paths"`
+	Labels            []string           `json:"labels"`
+	LastPassAt        pgtype.Timestamptz `json:"last_pass_at"`
+	Evidence          string             `json:"evidence"`
+	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
+}
+
+type MergeVeto struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	VetoedBy    pgtype.UUID        `json:"vetoed_by"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type MergeVetoDeadline struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	RepoOwner   string             `json:"repo_owner"`

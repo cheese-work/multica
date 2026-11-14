@@ -392,7 +392,12 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 	if len(wakeups) > 0 {
 		wakeup = wakeups[0]
 	}
-	return &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	svc := &TaskService{Queries: q, TxStarter: tx, Hub: hub, Bus: bus, Wakeup: wakeup}
+	// CHE-5594: without a facts source every merge_eligibility rule stays pending.
+	if tx != nil {
+		svc.MergeFacts = &StoredMergeFacts{Tx: tx, Queries: q}
+	}
+	return svc
 }
 
 var trivialDoneMarkers = []string{

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/cibroker"
 	"log/slog"
 	"math"
 	"net/http"
@@ -230,6 +231,11 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
+	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
+	// that writes merge receipts (CHE-5594). Nil leaves the route off.
+	MergeReceiptBroker *cibroker.Broker
+	// MergeReceiptWorkspaceID is the one workspace that route writes to.
+	MergeReceiptWorkspaceID string
 	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
 	githubAllowlist githubAllowlist
 	// workflowWriter overrides how workflow deliveries are stored; nil means the

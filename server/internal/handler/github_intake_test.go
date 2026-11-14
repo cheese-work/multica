@@ -288,3 +288,42 @@ INSERT INTO github_webhook_revision (
 		test.Fatalf("shared signed deliveries = %d, want 1", remaining)
 	}
 }
+
+// A comment or review on a PR may carry a veto or revoke a PASS, so the stored
+// merge receipt of that PR is deleted; another PR's receipt stays (CHE-5594).
+func TestGitHubIntakeDropsTheMergeReceiptOfThePRItNames(t *testing.T) {
+	for _, event := range []string{"issue_comment", "pull_request_review_comment", "pull_request_review"} {
+		t.Run(event, func(t *testing.T) {
+			fixture := newGitHubIntakeFixture(t)
+			seed := func(number int) {
+				if _, err := testPool.Exec(context.Background(), `INSERT INTO merge_receipt_fact(workspace_id,repo_owner,repo_name,pr_number,head_sha,base_ref,evidence,observed_at)
+					VALUES($1,'acme','widget',$2,'review-head','main','receipt-1',now())`, testWorkspaceID, number); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() {
+				_, _ = testPool.Exec(context.Background(), `DELETE FROM merge_receipt_fact WHERE workspace_id=$1`, testWorkspaceID)
+			})
+			seed(2019)
+			seed(2020)
+			if event != "pull_request_review" {
+				fixture.payload["action"] = "created"
+				fixture.payload["comment"] = fixture.payload["review"]
+				delete(fixture.payload, "review")
+			}
+			if event == "issue_comment" {
+				fixture.payload["issue"] = map[string]any{"number": 2019, "pull_request": map[string]any{"url": "https://api.github.com/repos/acme/widget/pulls/2019"}}
+				delete(fixture.payload, "pull_request")
+			}
+			if response := fixture.post(event, fixture.secret, fixture.issueID+"-receipt"); response.Code != http.StatusAccepted {
+				t.Fatalf("intake = %d %s", response.Code, response.Body.String())
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM merge_receipt_fact WHERE workspace_id=$1 AND pr_number=2019`, testWorkspaceID); n != 0 {
+				t.Fatalf("%d receipts kept for the PR the delivery named, want 0", n)
+			}
+			if n := dbfx.Count(t, `SELECT count(*) FROM merge_receipt_fact WHERE workspace_id=$1 AND pr_number=2020`, testWorkspaceID); n != 1 {
+				t.Fatalf("%d receipts kept for another PR, want 1", n)
+			}
+		})
+	}
+}

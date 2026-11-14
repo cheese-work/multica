@@ -485,6 +485,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	invitationRateLimits.Recipient.Limit = envNonNegativeInt("RATE_LIMIT_INVITATION_RECIPIENT_24H", invitationRateLimits.Recipient.Limit)
 	h.InvitationRateLimiters = handler.NewMemoryInvitationRateLimiters(invitationRateLimits)
 	h.Metrics = opts.BusinessMetrics
+	configureMergeReceiptOIDC(h)
 	h.FeatureFlags = opts.FeatureFlags
 	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
@@ -1618,6 +1619,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
+	// Merge receipts from the pinned CI workflow (CHE-5594). No Multica auth: the
+	// GitHub Actions OIDC token is the credential and the policy pins the workflow.
+	r.Put("/api/github/merge-receipts/ci", h.PutMergeReceiptCI)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 	// Slack OAuth callback (no Multica auth in the path — it is hit by Slack's
 	// browser redirect; the workspace/agent/initiator are recovered from the
@@ -2207,6 +2211,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// GitHub dispatch kill switch (CHE-2220): any member reads; owner/admin writes.
 			r.Get("/api/github/dispatch-halt", h.GetGitHubDispatchHalt)
 			r.With(middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/dispatch-halt", h.SetGitHubDispatchHalt)
+			// Receipt facts for merge_eligibility dispatch (CHE-5594): a person who is owner/admin only.
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-receipts", h.PutMergeReceipt)
+			// A Multica-only veto holds the PR and drops its receipt (CHE-5594): same gates.
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Put("/api/github/merge-vetoes", h.PutMergeVeto)
+			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Delete("/api/github/merge-vetoes", h.DeleteMergeVeto)
 			// GitHub intake delivery metadata (CHE-2669): read-only, any member.
 			r.Get("/api/github/intake", h.ListGitHubIntake)
 
