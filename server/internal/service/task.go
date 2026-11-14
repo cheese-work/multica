@@ -5761,11 +5761,10 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
-					// Match the CLI's --content / --description behavior: agents that
-					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
-					// decoded into real newlines before the comment hits the DB. See
-					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
+					// An agent that emitted its whole answer as one escaped blob gets
+					// its literal `\n` decoded; formatted output is stored verbatim.
+					// See util.DecodeEscapedAgentOutput for the exact contract.
+					body := util.DecodeEscapedAgentOutput(payload.Output)
 					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
 						slog.Warn("suppressing trivial comment-trigger fallback output",
 							"task_id", util.UUIDToString(task.ID),
@@ -5872,9 +5871,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	// valid JSON; an empty Output is the only case this branch cares about.
 	var payload protocol.TaskCompletedPayload
 	_ = json.Unmarshal(result, &payload)
-	// Same unescape as the issue-comment path: literal `\n` from agent stdout
-	// becomes a real newline so the chat panel renders paragraph breaks.
-	body := util.UnescapeBackslashEscapes(payload.Output)
+	// Same decoding as the issue-comment path: an escaped blob gets its
+	// paragraph breaks back, while LaTeX and paths in formatted replies survive.
+	body := util.DecodeEscapedAgentOutput(payload.Output)
 	// Strip any in-band quick-actions footer from EVERY chat completion — the
 	// reserved syntax must never reach a stored transcript. This includes the
 	// agent-initiated intro turn (chat_input_task_id NULL), which previously
@@ -9428,6 +9427,12 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 	s.Wakeup.NotifyTaskAvailable(runtimeKey, taskID)
 }
 
+// backgroundDispatchKeys are the task-context keys safe to fan out workspace-wide.
+var backgroundDispatchKeys = []string{
+	"type", "job", "workspace_id", "chain_source", "member_id", "slot",
+	"fallback_agent_id", "claim_deadline_seconds", "run_deadline_seconds",
+}
+
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
 	var payload map[string]any
 	if task.Context != nil {
@@ -9435,6 +9440,18 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	}
 	if payload == nil {
 		payload = map[string]any{}
+	}
+	// This event fans out to the whole workspace. A background task's input and
+	// guard carry the DM owner's text, so only an allowlist of workload
+	// metadata goes out.
+	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
+		safe := map[string]any{}
+		for _, k := range backgroundDispatchKeys {
+			if v, ok := payload[k]; ok {
+				safe[k] = v
+			}
+		}
+		payload = safe
 	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
@@ -9633,6 +9650,26 @@ func (s *TaskService) ResolveTaskScopeChecked(ctx context.Context, task db.Agent
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return TaskScope{WorkspaceID: qc.WorkspaceID}, nil
+	}
+	// Background tasks: a DM-derived one belongs to its source session's
+	// creator (spec §Privacy of DM-derived tasks), so its message events reach
+	// only that member. A bg task with no source session keeps an empty owner;
+	// callers treat that as "no private room", never as "workspace-wide".
+	if strings.HasPrefix(task.Purpose.String, "bg:") {
+		if task.SourceChatSessionID.Valid {
+			cs, err := s.Queries.GetChatSession(ctx, task.SourceChatSessionID)
+			if err == nil {
+				return TaskScope{
+					WorkspaceID:        util.UUIDToString(cs.WorkspaceID),
+					ChatSessionOwnerID: util.UUIDToString(cs.CreatorID),
+				}, nil
+			}
+			note(err)
+		}
+		var c BackgroundTaskContext
+		if json.Unmarshal(task.Context, &c) == nil && c.Type == BackgroundTaskContextType && c.WorkspaceID != "" {
+			return TaskScope{WorkspaceID: c.WorkspaceID}, nil
+		}
 	}
 	if lookupErr != nil {
 		return TaskScope{}, fmt.Errorf("resolve task workspace: %w", lookupErr)
@@ -10107,9 +10144,9 @@ func quickCreateFailureDetail(result []byte) string {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		return ""
 	}
-	// Same unescape as the comment-fallback path: literal `\n` sequences from
-	// agent stdout become real newlines before the reason reaches the user.
-	body := strings.TrimSpace(util.UnescapeBackslashEscapes(payload.Output))
+	// Same decoding as the comment-fallback path: an escaped blob's literal
+	// `\n` sequences become real newlines before the reason reaches the user.
+	body := strings.TrimSpace(util.DecodeEscapedAgentOutput(payload.Output))
 	if body == "" {
 		return ""
 	}

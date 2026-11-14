@@ -146,12 +146,12 @@ describe("useRealtimeSync — ws instance change", () => {
 
     // Should invalidate workspace-scoped and event-fed account-level keys,
     // plus the cross-workspace inbox summary.
-    // Plus the issue unread marks.
+    // Plus the issue unread marks, plus the skill version history.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(48));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(49));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -832,6 +832,29 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: issueKeys.tableAll("ws-1"),
     });
+  });
+
+  it("refreshes subscribed-filtered queries only for the viewer's own subscription", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const handler = (event: string) =>
+      vi.mocked(ws.on).mock.calls.find(([name]) => name === event)?.[1] as (payload: unknown) => void;
+    const rows = [...issueKeys.tableAll("ws-1"), "rows", { filters: { relations: ["subscribed"] } }];
+    const isStale = () => qc.getQueryState(rows)?.isInvalidated;
+
+    qc.setQueryData(rows, {});
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "member", user_id: "someone-else", reason: "manual" });
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "agent", user_id: "u1", reason: "manual" });
+    expect(isStale()).toBe(false);
+
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "member", user_id: "u1", reason: "manual" });
+    await waitFor(() => expect(isStale()).toBe(true));
+
+    qc.setQueryData(rows, {});
+    handler("subscriber:removed")({ issue_id: "i-1", user_type: "member", user_id: "u1" });
+    await waitFor(() => expect(isStale()).toBe(true));
   });
 });
 

@@ -2,24 +2,29 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
+	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
-// chatTitleGenTimeout bounds the whole best-effort title generation (LLM call
-// + CAS write). It runs on a detached background context — decoupled from the
-// originating HTTP request, which returns immediately — so this is the only
-// thing keeping the goroutine from lingering if the upstream hangs. Kept short:
-// a chat title is a nicety, not worth pinning a goroutine for a minute.
+// chatTitleGenTimeout bounds queueing the dm_title job (workspace read, chain
+// reachability, task insert). Kept short: a chat title is a nicety.
 const chatTitleGenTimeout = 20 * time.Second
+
+// chatTitleJobInputMaxRunes caps the user message folded into the dm_title job input.
+const chatTitleJobInputMaxRunes = 2000
 
 // ChannelChatStarted publishes list invalidation metadata without changing any
 // client's current navigation. The explicit empty Chat is already committed.
@@ -44,10 +49,25 @@ func (h *Handler) ChannelChatTitleInitialized(workspaceID, creatorID, sessionID 
 	})
 }
 
-// GenerateChannelChatTitle reuses the existing LLM + CAS title path after the
+// GenerateChannelChatTitle queues the dm_title job after the
 // shared engine has persisted its deterministic first-message fallback.
 func (h *Handler) GenerateChannelChatTitle(workspaceID, creatorID, sessionID pgtype.UUID, currentTitle, sourceText string) {
 	h.maybeGenerateChatTitleAsync(uuidToString(workspaceID), uuidToString(creatorID), sessionID, currentTitle, sourceText)
+}
+
+// maybeGenerateChatTitleAsync runs queueChatTitleJob off the caller's path: the
+// workspace read and the enqueue can take up to chatTitleGenTimeout, which must
+// not delay the first-message response or the channel inbound turn. A panic is
+// logged and dropped; the fallback title stands.
+func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("dm title job panicked", "session_id", uuidToString(sessionID), "panic", r)
+			}
+		}()
+		h.queueChatTitleJob(workspaceID, userID, sessionID, currentTitle, sourceText)
+	}()
 }
 
 // chatTitleSystemPrompt instructs the model to condense the opening of a
@@ -72,122 +92,106 @@ Rules:
 - Do NOT prefix it with a label such as "Title:", in any language.
 - Do NOT end with a period or any trailing punctuation.`
 
-// maybeGenerateChatTitleAsync kicks off best-effort LLM title generation for a
-// chat session and returns immediately. It is the entry point wired into the
-// first-user-message path of SendChatMessage.
+// queueChatTitleJob queues the dm_title background job for a chat session's
+// opening message and returns once the task is queued. maybeGenerateChatTitleAsync
+// calls it from the first-user-message path of SendChatMessage and the channel hook.
 //
-// Design constraints from MUL-4295:
-//   - Non-blocking: never delays the user's send / first response. The work
-//     runs in a detached goroutine on context.Background() (the request context
-//     is cancelled the moment SendChatMessage returns).
-//   - Silent fallback: when the LLM layer is not configured (self-hosted with
-//     no key) or the call fails, we do nothing and leave the original
-//     first-message-derived title untouched — no error surfaces to the user.
-//   - No clobber: the update is a compare-and-swap against currentTitle, so a
-//     manual rename that lands during generation is never overwritten.
-//
-// currentTitle is the session's title as observed at trigger time (the
-// default/original title). sourceText is the user's first message, which the
-// model condenses into a title.
-func (h *Handler) maybeGenerateChatTitleAsync(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
-	// Short-circuit before spawning a goroutine when the LLM layer is disabled
-	// (self-hosted without MULTICA_LLM_API_KEY / MULTICA_LLM_BASE_URL): the
-	// original title is kept as-is, exactly matching pre-feature behavior.
-	if h.LLM == nil || !h.LLM.Enabled() {
-		return
-	}
+//   - Non-blocking for users: the title is written later, when the daemon
+//     completes the task. No LLM call runs in this process.
+//   - Silent fallback: with no dm_title agent configured or reachable, nothing is
+//     queued and the deterministic first-message title stays.
+//   - No clobber: the task carries currentTitle as its guard, and writeDMTitle
+//     writes by compare-and-swap, so a rename during the run wins.
+func (h *Handler) queueChatTitleJob(workspaceID, userID string, sessionID pgtype.UUID, currentTitle, sourceText string) {
 	if strings.TrimSpace(sourceText) == "" {
 		return
 	}
+	ws, err := util.ParseUUID(workspaceID)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), chatTitleGenTimeout)
+	defer cancel()
 
-	go func() {
-		// Panic containment: this goroutine is detached from the HTTP request,
-		// so chi's Recoverer middleware is NOT in the call stack. A panic
-		// anywhere below (GenerateText, sanitizing, the DB write, publish)
-		// would otherwise crash the whole server process. This is a
-		// best-effort nicety — swallow the panic, log it, and leave the
-		// original title in place.
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("chat title generation panicked; keeping original title",
-					"session_id", uuidToString(sessionID),
-					"panic", rec,
-				)
-			}
-		}()
-
-		ctx, cancel := context.WithTimeout(context.Background(), chatTitleGenTimeout)
-		defer cancel()
-
-		updated, applied, err := h.generateChatSessionTitle(ctx, sessionID, currentTitle, sourceText)
-		if err != nil {
-			// Timeout, upstream 4xx/5xx, empty choices, etc. Log-and-forget:
-			// the send already succeeded and the original title stands.
-			slog.Warn("chat title generation failed; keeping original title",
-				"session_id", uuidToString(sessionID),
-				"error", err,
-			)
-			return
-		}
-		if !applied {
-			// Either the model produced nothing usable, or the title changed
-			// under us (manual rename / already auto-titled). Nothing to push.
-			return
-		}
-
-		// Reuse the existing chat:session_updated realtime channel so the
-		// frontend refreshes the title in place, identical to a manual rename.
-		resolvedSessionID := uuidToString(updated.ID)
-		h.publishChat(protocol.EventChatSessionUpdated, workspaceID, "member", userID, resolvedSessionID, protocol.ChatSessionUpdatedPayload{
-			ChatSessionID: resolvedSessionID,
-			Title:         updated.Title,
-			UpdatedAt:     timestampToString(updated.UpdatedAt),
-		})
-	}()
+	chain, source := h.dmTitleChain(ctx, ws)
+	if len(chain) == 0 {
+		return
+	}
+	member, _ := util.ParseUUID(userID)
+	// The cap bounds the whole queued input; the message gets what the prompt leaves.
+	prefix := chatTitleSystemPrompt + "\n\nThe user's opening message:\n"
+	message := []rune(sourceText)
+	if room := chatTitleJobInputMaxRunes - len([]rune(prefix)); len(message) > room {
+		message = message[:max(room, 0)]
+	}
+	input := prefix + string(message)
+	_, err = h.TaskService.EnqueueBackgroundChain(ctx, service.BackgroundTaskInput{
+		Job: bgagents.DMTitle, WorkspaceID: ws, MemberID: member, SourceChatSessionID: sessionID,
+		Source: source, Input: input, Guard: currentTitle,
+	}, chain)
+	if err != nil {
+		// ErrNoReachableBackgroundAgent included: the fallback title stands.
+		slog.Warn("dm title job not queued; keeping original title",
+			"session_id", uuidToString(sessionID), "error", err)
+	}
 }
 
-// generateChatSessionTitle performs the synchronous core of title generation:
-// call the LLM, sanitize the output, and compare-and-swap it onto the session.
-// It is separated from the goroutine wrapper so it can be unit-tested directly.
-//
-// Return contract:
-//   - (session, true, nil):  a new title was generated and written.
-//   - (zero, false, nil):    generation produced nothing usable, OR the title
-//     had changed since currentTitle was observed (CAS miss / manual rename) —
-//     both are non-error "leave it alone" outcomes.
-//   - (zero, false, err):    the LLM layer is disabled or the call failed, OR
-//     the CAS write hit a real DB error. Callers treat this as best-effort and
-//     keep the original title.
-func (h *Handler) generateChatSessionTitle(ctx context.Context, sessionID pgtype.UUID, currentTitle, sourceText string) (db.ChatSession, bool, error) {
-	// DefaultModel() is used implicitly by GenerateText when model == "": a
-	// deployment configures MULTICA_LLM_DEFAULT_MODEL (or the built-in
-	// gpt-6-luna fallback) — no model is threaded through from the frontend.
-	raw, err := h.LLM.GenerateText(ctx, "", chatTitleSystemPrompt, sourceText)
+// dmTitleChain resolves the dm_title chain from the workspace setting. There is
+// no personal config yet, so the user config is empty. Reachability is checked
+// by EnqueueBackgroundChain.
+func (h *Handler) dmTitleChain(ctx context.Context, ws pgtype.UUID) ([]bgagents.Candidate, bgagents.Source) {
+	row, err := h.Queries.GetWorkspace(ctx, ws)
 	if err != nil {
-		return db.ChatSession{}, false, err
+		return nil, bgagents.NoAgent
 	}
-
-	title := sanitizeChatTitle(raw)
-	if title == "" {
-		// Model returned only quotes/punctuation/whitespace — treat as "no
-		// usable title" and fall back silently to the original.
-		return db.ChatSession{}, false, nil
+	var settings map[string]json.RawMessage
+	if json.Unmarshal(row.Settings, &settings) != nil || len(settings[backgroundAgentsKey]) == 0 {
+		return nil, bgagents.NoAgent
 	}
+	cfg, err := bgagents.Parse(settings[backgroundAgentsKey], bgagents.WorkspaceScope)
+	if err != nil {
+		return nil, bgagents.NoAgent
+	}
+	res := bgagents.Resolve(bgagents.DMTitle, nil, cfg, func(bgagents.Source, string) bool { return true })
+	return res.Chain, res.Source
+}
 
-	updated, err := h.Queries.UpdateChatSessionTitleIfCurrent(ctx, db.UpdateChatSessionTitleIfCurrentParams{
-		ID:            sessionID,
-		ExpectedTitle: currentTitle,
-		NewTitle:      title,
+// writeDMTitle is the dm_title BackgroundWriter. It runs in the completion
+// transaction: sanitize the output, then compare-and-swap it onto the DM against
+// the title observed at enqueue (the task guard). An output that sanitizes to
+// nothing is rejected; a lost CAS (rename won) writes nothing.
+func (h *Handler) writeDMTitle(ctx context.Context, q *db.Queries, task db.AgentTaskQueue, result []byte) error {
+	var res TaskCompleteRequest
+	if err := json.Unmarshal(result, &res); err != nil {
+		return fmt.Errorf("%w: %w", service.ErrInvalidBackgroundOutput, err)
+	}
+	title := sanitizeChatTitle(res.Output)
+	if title == "" || !task.SourceChatSessionID.Valid {
+		return service.ErrInvalidBackgroundOutput
+	}
+	var tc service.BackgroundTaskContext
+	if err := json.Unmarshal(task.Context, &tc); err != nil {
+		return fmt.Errorf("%w: %w", service.ErrInvalidBackgroundOutput, err)
+	}
+	updated, err := q.UpdateChatSessionTitleIfCurrent(ctx, db.UpdateChatSessionTitleIfCurrentParams{
+		ID: task.SourceChatSessionID, ExpectedTitle: tc.Guard, NewTitle: title,
 	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Title changed since we observed currentTitle — a manual rename or
-			// a competing writer won. Do not clobber it.
-			return db.ChatSession{}, false, nil
-		}
-		return db.ChatSession{}, false, err
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
 	}
-	return updated, true, nil
+	if err != nil {
+		return err
+	}
+	// ponytail: published before the completion transaction commits; the
+	// payload carries the title, so clients patch from it. A rollback here
+	// would leave a stale title until the next refetch.
+	sessionID := uuidToString(updated.ID)
+	h.publishChat(protocol.EventChatSessionUpdated, tc.WorkspaceID, "member", uuidToString(task.OriginatorUserID), sessionID, protocol.ChatSessionUpdatedPayload{
+		ChatSessionID: sessionID,
+		Title:         updated.Title,
+		UpdatedAt:     timestampToString(updated.UpdatedAt),
+	})
+	return nil
 }
 
 // chatTitleLabelPrefixes are leading labels a model sometimes prepends despite
