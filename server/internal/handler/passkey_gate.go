@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/passkey"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 type gateChangeRequest struct {
@@ -82,7 +83,20 @@ func (handler *Handler) SetDecisionGate(writer http.ResponseWriter, request *htt
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), decisionActionDeadline)
 	defer cancel()
-	if err := handler.Passkeys.SetDecisionGate(ctx, userID, workspaceID, body.State, body.Assertion); err != nil {
+	audit := func(ctx context.Context, queries *db.Queries, previous string, changed db.SetWorkspaceDecisionGateRow) error {
+		if err := handler.writeAudit(ctx, queries, request, auditInput{
+			Kind: "workspace.decision_gate.update", WorkspaceID: workspaceID, TargetID: workspaceID,
+			Before: map[string]any{"decision_passkey_gate": previous},
+			After:  map[string]any{"decision_passkey_gate": changed.DecisionPasskeyGate, "policy_revision": changed.PolicyRevision},
+		}); err != nil {
+			return auditWriteError{err}
+		}
+		return nil
+	}
+	if err := handler.Passkeys.SetDecisionGate(ctx, userID, workspaceID, body.State, body.Assertion, audit); err != nil {
+		if failedAudit(writer, request, err, "workspace.decision_gate.update") {
+			return
+		}
 		writeRevokeError(writer, err)
 		return
 	}

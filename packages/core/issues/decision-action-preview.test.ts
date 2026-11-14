@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approvableConfigChange, CONFIG_CHANGE_FIELDS } from "./decision-action-preview";
+import { approvableConfigChange, approvablePreview, CONFIG_CHANGE_FIELDS, isRunBudgetActionType } from "./decision-action-preview";
 import type { DecisionConfigChange, DecisionRequestAction } from "../types/decision";
 
 const digest = "a".repeat(64);
@@ -86,5 +86,27 @@ describe("approvableConfigChange", () => {
   it("fails closed for a malformed diff", () => {
     expect(approvableConfigChange(action({ config_change: { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["x"] }] } }))).toBeUndefined();
     expect(approvableConfigChange(action({ config_change: { ...change, diff_kind: "other" as never } }))).toBeUndefined();
+  });
+});
+
+describe("issue.workflow.set (CHE-5629)", () => {
+  const preview = {
+    sha256: "d".repeat(64),
+    fields: [
+      { label: "Workflow", current: "Default", proposed: "Production flow" },
+      { label: "Run cap", current: "10", proposed: "40" },
+    ],
+  };
+  const wfAction = { action_type: "issue.workflow.set", preview };
+
+  it("approves against the server preview like the other run-budget actions", () => {
+    expect(approvablePreview(wfAction)).toEqual(preview);
+  });
+
+  it("belongs to the Run budget group", () => {
+    expect(isRunBudgetActionType("issue.workflow.set")).toBe(true);
+    expect(isRunBudgetActionType("issue.run_budget.raise")).toBe(true);
+    expect(isRunBudgetActionType("issue.run_budget.top_up")).toBe(true);
+    expect(isRunBudgetActionType("issue.project.set")).toBe(false);
   });
 });

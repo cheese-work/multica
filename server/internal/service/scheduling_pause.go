@@ -77,15 +77,20 @@ func (s *TaskService) setAgentScheduling(ctx context.Context, workspaceID, agent
 	return updated, prev.SchedulingPausedAt.Valid != pause, nil
 }
 
-func (s *TaskService) PauseWorkspaceScheduling(ctx context.Context, workspaceID, actorID pgtype.UUID) (db.Workspace, bool, error) {
+// WorkspaceSchedulingAuditFn writes the audit row for a workspace pause or
+// resume inside the transaction that applies it, with the row before and after.
+// It runs only when the call changes the state; an error rolls the change back.
+type WorkspaceSchedulingAuditFn func(ctx context.Context, q *db.Queries, prev, updated db.Workspace) error
+
+func (s *TaskService) PauseWorkspaceScheduling(ctx context.Context, workspaceID, actorID pgtype.UUID, audit WorkspaceSchedulingAuditFn) (db.Workspace, bool, error) {
 	return s.setWorkspaceScheduling(ctx, workspaceID, func(q *db.Queries) (db.Workspace, error) {
 		return q.PauseWorkspaceScheduling(ctx, db.PauseWorkspaceSchedulingParams{
 			ID: workspaceID, ActorID: actorID,
 		})
-	}, true)
+	}, true, audit)
 }
 
-func (s *TaskService) ResumeWorkspaceScheduling(ctx context.Context, workspaceID pgtype.UUID) (db.Workspace, bool, error) {
+func (s *TaskService) ResumeWorkspaceScheduling(ctx context.Context, workspaceID pgtype.UUID, audit WorkspaceSchedulingAuditFn) (db.Workspace, bool, error) {
 	// List before resuming: a failure here leaves the workspace paused instead
 	// of resumed with no runtime woken.
 	runtimeIDs, err := s.Queries.ListAgentRuntimeIDsByWorkspace(ctx, workspaceID)
@@ -94,7 +99,7 @@ func (s *TaskService) ResumeWorkspaceScheduling(ctx context.Context, workspaceID
 	}
 	ws, changed, err := s.setWorkspaceScheduling(ctx, workspaceID, func(q *db.Queries) (db.Workspace, error) {
 		return q.ResumeWorkspaceScheduling(ctx, workspaceID)
-	}, false)
+	}, false, audit)
 	if err != nil {
 		return db.Workspace{}, false, err
 	}
@@ -104,7 +109,7 @@ func (s *TaskService) ResumeWorkspaceScheduling(ctx context.Context, workspaceID
 	return ws, changed, nil
 }
 
-func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pgtype.UUID, write func(*db.Queries) (db.Workspace, error), pause bool) (db.Workspace, bool, error) {
+func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pgtype.UUID, write func(*db.Queries) (db.Workspace, error), pause bool, audit WorkspaceSchedulingAuditFn) (db.Workspace, bool, error) {
 	tx, q, err := s.beginScheduling(ctx)
 	if err != nil {
 		return db.Workspace{}, false, err
@@ -118,10 +123,16 @@ func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pg
 	if err != nil {
 		return db.Workspace{}, false, err
 	}
+	changed := prev.SchedulingPausedAt.Valid != pause
+	if changed && audit != nil {
+		if err := audit(ctx, q, prev, updated); err != nil {
+			return db.Workspace{}, false, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.Workspace{}, false, fmt.Errorf("commit scheduling change: %w", err)
 	}
-	return updated, prev.SchedulingPausedAt.Valid != pause, nil
+	return updated, changed, nil
 }
 
 // NotifyRuntimeMayHaveWork is ResumeAgentScheduling's wake-up for a caller that

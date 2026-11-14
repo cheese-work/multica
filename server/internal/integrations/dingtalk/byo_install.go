@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -35,6 +36,9 @@ type RegisterBYOParams struct {
 	InitiatorID pgtype.UUID
 	AppKey      string // client id — robotCode + access-token mint
 	AppSecret   string // client secret — access-token mint (encrypted at rest)
+	// Audit, when set, runs inside the install transaction before commit; an
+	// error rolls the install back and is returned unchanged.
+	Audit func(pgx.Tx, db.ChannelInstallation) error
 }
 
 // RegisterBYO installs a user-supplied ("bring your own") DingTalk robot for an
@@ -96,5 +100,6 @@ func (s *InstallService) RegisterBYO(ctx context.Context, p RegisterBYOParams) (
 		installerID: p.InitiatorID,
 		appIDKey:    appKey,
 		configJSON:  cfgJSON,
+		audit:       p.Audit,
 	})
 }

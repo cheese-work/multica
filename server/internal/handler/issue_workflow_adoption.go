@@ -168,7 +168,10 @@ func crossCheckHit(registry []string, text string) string {
 // close with adoption_linked in block mode when Setup change is unset. In warn
 // mode the create passes; the close gate warns and the owner sees the gap.
 func (h *Handler) createPropertyGate(workspaceID pgtype.UUID) service.CreatePropertyGate {
-	return func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte) error {
+	return func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte, projectID pgtype.UUID, title string) error {
+		if err := h.upstreamCreateGate(ctx, q, workspaceID, def, properties, projectID, title); err != nil {
+			return err
+		}
 		if adoptionGateMode(def) != issueworkflow.EntryModeBlock {
 			return nil
 		}

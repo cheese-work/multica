@@ -253,12 +253,22 @@ func (h *Handler) InitiateUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	update, err := h.UpdateStore.Create(
-		r.Context(),
-		uuidToString(rt.ID),
-		req.TargetVersion,
-		uuidToString(member.UserID),
-	)
+	var update *UpdateRequest
+	err := h.auditThenEnqueue(r.Context(), r, auditInput{
+		Kind: "runtime.update", WorkspaceID: rt.WorkspaceID, TargetID: rt.ID,
+		After: map[string]any{"target_version": req.TargetVersion},
+	}, func() (err error) {
+		update, err = h.UpdateStore.Create(
+			r.Context(),
+			uuidToString(rt.ID),
+			req.TargetVersion,
+			uuidToString(member.UserID),
+		)
+		return err
+	})
+	if failedAudit(w, r, err, "runtime.update") {
+		return
+	}
 	if err != nil {
 		// Only the in-progress rejection is a conflict the caller can act on.
 		// Every other Create failure is infrastructure — the Redis store wraps

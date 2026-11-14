@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
@@ -79,6 +80,14 @@ type RegistrationServiceConfig struct {
 	// Logger is used for protocol-level warnings (Lark error codes,
 	// post-success bot info failures). Nil uses slog.Default().
 	Logger *slog.Logger
+
+	// AuditInstall, when set, runs in the install transaction after the
+	// installation and installer binding are written and before commit. The
+	// install finishes on a background goroutine, after the request that began
+	// it has returned, so the hook cannot read the request: the installer is
+	// inst.InstallerUserID. An error rolls the install back and ends the
+	// session in an error state.
+	AuditInstall func(ctx context.Context, tx pgx.Tx, inst Installation) error
 }
 
 func (c RegistrationServiceConfig) withDefaults() RegistrationServiceConfig {
@@ -763,6 +772,15 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 			"session_id", sess.id, "err", err)
 		s.markError(sess, RegistrationReasonInstallerBindFailed, err.Error())
 		return
+	}
+
+	if s.cfg.AuditInstall != nil {
+		if err := s.cfg.AuditInstall(ctx, tx, inst); err != nil {
+			s.cfg.Logger.Error("lark registration: audit install",
+				"session_id", sess.id, "err", err)
+			s.markError(sess, RegistrationReasonInternalError, "audit record could not be written; nothing was installed")
+			return
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

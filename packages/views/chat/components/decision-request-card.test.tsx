@@ -702,7 +702,7 @@ describe("DecisionRequestCard answering", () => {
       expect(region).toHaveTextContent("10");
       expect(region).toHaveTextContent("30");
       expect(region).toHaveTextContent("Runs left");
-      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
+      expect(await screen.findByRole("radio", { name: "Approve" })).toBeEnabled();
       expect(screen.queryByText("Details unavailable")).toBeNull();
     });
 
@@ -715,16 +715,16 @@ describe("DecisionRequestCard answering", () => {
     ])("says details are unavailable, keeps Approve disabled and keeps Reject when the preview is %s", async (_name, bad) => {
       show({ ...action, preview: bad });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
     });
 
     it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
       show({ ...action, action_type: "future.thing" });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
       expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
-      expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
     });
 
     describe("config change", () => {
@@ -740,7 +740,7 @@ describe("DecisionRequestCard answering", () => {
         sha256: "e".repeat(64),
       };
       const configAction = { id: "action", action_type: "workspace.context.set", payload_sha256: "payload", config_change: change, owner_only: true };
-      const approve = () => screen.findByRole("button", { name: "Approve with passkey" });
+      const approve = () => screen.findByRole("radio", { name: "Approve" });
       // An approve that left this tab is remembered per action id for the session; every test starts clean.
       beforeEach(() => {
         sessionStorage.clear();
@@ -755,9 +755,13 @@ describe("DecisionRequestCard answering", () => {
 
       it("shows the server preview in the viewer and enables Approve for the owner", async () => {
         show(configAction);
+        // The raw change sits behind the Details control (direction B v9).
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: /Details/ }));
         const viewer = await screen.findByTestId("config-change-viewer");
         expect(viewer).toHaveTextContent("Workspace context");
-        await userEvent.setup().click(screen.getByTestId("config-change-tab-changes"));
+        await user.click(screen.getByTestId("config-change-tab-changes"));
         expect(screen.getByRole("region", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
         expect(await approve()).toBeEnabled();
         expect(screen.queryByText("Details unavailable")).toBeNull();
@@ -765,7 +769,9 @@ describe("DecisionRequestCard answering", () => {
 
       it("approves with the digest of the preview that was shown", async () => {
         show(configAction);
-        await userEvent.setup().click(await approve());
+        const user = userEvent.setup();
+        await user.click(await approve());
+        await user.click(screen.getByRole("button", { name: /^Approve with passkey/ }));
         await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledOnce());
         expect(approveDecisionAction).toHaveBeenCalledWith("action", { payload_sha256: "payload", assertion: { id: "cred" }, preview_sha256: change.sha256 });
       });
@@ -777,23 +783,24 @@ describe("DecisionRequestCard answering", () => {
       ])("hides Approve for %s and keeps Reject", async (_name, role) => {
         member.role = role;
         show(configAction);
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        await userEvent.setup().click(screen.getByRole("button", { name: /Details/ }));
         expect(screen.getByTestId("config-change-viewer")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("hides Approve when there is no current workspace to read the role from", async () => {
         member.workspace = null;
         show(configAction);
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("treats a config-change action as owner-only even when the server flag is missing", async () => {
         member.role = "member";
         show({ ...configAction, owner_only: undefined });
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it.each([
@@ -805,8 +812,8 @@ describe("DecisionRequestCard answering", () => {
         show({ ...configAction, config_change: bad });
         expect(screen.getByText("Details unavailable")).toBeInTheDocument();
         expect(screen.queryByTestId("config-change-viewer")).toBeNull();
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
       });
 
       it.each([
@@ -818,20 +825,21 @@ describe("DecisionRequestCard answering", () => {
         member.role = "member";
         show({ ...configAction, config_change: bad });
         expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("shows no Approve and keeps Reject when there is no current workspace and the change is missing", async () => {
         member.workspace = null;
         show({ ...configAction, config_change: undefined });
         expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-        expect(await screen.findByRole("button", { name: "Reject" })).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("shows the viewer for a settings change with its keys", async () => {
         show({ ...configAction, action_type: "workspace.settings.patch", config_change: { ...change, field: "workspace.settings", keys: ["compact_prompt"] } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
         expect(await screen.findByTestId("config-change-keys")).toHaveTextContent("compact_prompt");
       });
 
@@ -841,6 +849,7 @@ describe("DecisionRequestCard answering", () => {
         ["agent.skills.set", "agent.skills", "lines"],
       ] as const)("shows the %s preview and enables Approve for the owner (CHE-4490)", async (action_type, field, diff_kind) => {
         show({ ...configAction, action_type, config_change: { ...change, field, diff_kind } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
         expect(await screen.findByTestId("config-change-viewer")).toBeInTheDocument();
         expect(screen.queryByText("Details unavailable")).toBeNull();
         expect(await approve()).toBeEnabled();
@@ -882,7 +891,7 @@ describe("DecisionRequestCard answering", () => {
         getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
         renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
         expect(await screen.findByText("Cap applied")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("goes from Approve to the outcome when the server announces the change", async () => {
@@ -895,21 +904,21 @@ describe("DecisionRequestCard answering", () => {
           return data ? <DecisionRequestCard card={data} /> : null;
         };
         renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
-        await screen.findByRole("button", { name: "Approve with passkey" });
-        expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+        await screen.findByRole("radio", { name: "Approve" });
+        expect(screen.getByRole("radio", { name: "Reject" })).toBeInTheDocument();
         served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
         getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
         act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
         expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
-        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Reject" })).toBeNull();
       });
     });
 
     it("shows nothing when the card has no action", () => {
       renderCard();
       expect(screen.queryByText("Details unavailable")).toBeNull();
-      expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
     });
   });
 });

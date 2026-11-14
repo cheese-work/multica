@@ -481,6 +481,8 @@ import {
   EMPTY_INBOX_UNREAD_SUMMARY,
   IssueUnreadPageSchema,
   EMPTY_ISSUE_UNREAD_PAGE,
+  SubscribedIssueIdsSchema,
+  IssueInboxReadSchema,
   InboxItemListSchema,
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
@@ -727,7 +729,7 @@ export function clientErrorMessage(err: unknown): string | undefined {
 }
 
 // Thrown by getAttachmentTextContent when the server refuses to inline a
-// file because it exceeds the 2 MB cap. UI maps to a "too large, please
+// file because it exceeds the server-configured preview limit. UI maps to a "too large, please
 // download" affordance with the Download CTA still available.
 export class PreviewTooLargeError extends Error {
   constructor() {
@@ -3229,6 +3231,15 @@ export class ApiClient {
     return items;
   }
 
+  async listSubscribedIssueIds(): Promise<string[]> {
+    const raw = await this.fetch<unknown>("/api/issues/subscribed");
+    const parsed = parseWithFallback<{ issue_ids: string[] } | null>(raw, SubscribedIssueIdsSchema, null, {
+      endpoint: "GET /api/issues/subscribed",
+    });
+    if (!parsed) throw new Error("GET /api/issues/subscribed returned a malformed body");
+    return parsed.issue_ids;
+  }
+
   async markIssueRead(issueId: string): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/read`, { method: "POST" });
   }
@@ -3327,6 +3338,19 @@ export class ApiClient {
 
   async markAllInboxRead(): Promise<{ count: number }> {
     return this.fetch("/api/inbox/mark-all-read", { method: "POST" });
+  }
+
+  /**
+   * Reads every unread notification the caller has on one issue. `count` is
+   * how many rows the server read, or `null` when the response did not say:
+   * the write itself succeeded, so callers must not read `null` as "nothing
+   * changed".
+   */
+  async markIssueInboxRead(issueId: string): Promise<{ count: number | null }> {
+    const raw = await this.fetch<unknown>(`/api/inbox/issues/${issueId}/read`, { method: "POST" });
+    return parseWithFallback<{ count: number | null }>(raw, IssueInboxReadSchema, { count: null }, {
+      endpoint: "POST /api/inbox/issues/{id}/read",
+    });
   }
 
   async archiveAllInbox(): Promise<{ count: number }> {

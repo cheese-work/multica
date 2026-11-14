@@ -40,9 +40,19 @@ WHERE id = @id::uuid AND NOT taint_ids @> @taint::text[];
 -- name: GetRunBudgetRefusalByWindow :one
 SELECT * FROM run_budget_refusal WHERE issue_id = $1 AND window_id = $2;
 
--- name: GetRunBudgetRefusalByAction :one
--- The refusal a budget approval linked (CHE-2860): the post-commit notify finds it by action.
-SELECT * FROM run_budget_refusal WHERE action_id = $1;
+-- name: ListRunBudgetRefusalIDsByAction :many
+-- The refusals a budget approval linked (CHE-2860, CHE-5508): the post-commit notify finds them by action.
+SELECT id FROM run_budget_refusal WHERE action_id = $1 ORDER BY created_at, id;
+
+-- name: ListWaitingRunBudgetRefusals :many
+-- Refusals still waiting for a budget (CHE-5508): a workflow budget change or a
+-- rebinding looks here for the issues it may give runs again. A NULL issue lists
+-- the whole workspace.
+SELECT id, issue_id FROM run_budget_refusal
+WHERE workspace_id = @workspace_id::uuid
+  AND (sqlc.narg('issue_id')::uuid IS NULL OR issue_id = sqlc.narg('issue_id')::uuid)
+  AND state IN ('open', 'still_blocked', 'resume_pending')
+ORDER BY created_at, id;
 
 -- name: LockRunBudgetRefusal :one
 SELECT * FROM run_budget_refusal WHERE id = $1 FOR UPDATE;

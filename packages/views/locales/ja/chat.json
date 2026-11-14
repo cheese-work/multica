@@ -397,7 +397,26 @@
       "older": "それ以前"
     },
     "unseen_dot": "未確認",
-    "tag_decision": "決定"
+    "tag_decision": "決定",
+    "bulk": {
+      "toolbar_aria_other": "選択した{{count}}件のチャットの操作",
+      "selected": "{{count}}件を選択",
+      "select_all": "すべて選択",
+      "cancel": "選択をキャンセル",
+      "more_aria": "その他: {{action}}",
+      "group_aria": "グループ「{{label}}」を選択",
+      "row_aria": "{{title}}を選択",
+      "failed_other": "{{count}}件のチャットを更新できませんでした",
+      "archived_toast_other": "{{count}}件のチャットをアーカイブしました",
+      "action": {
+        "seen": "既読にする",
+        "unseen": "未読にする",
+        "pin": "ピン留め",
+        "unpin": "ピン留め解除",
+        "archive": "アーカイブ",
+        "unarchive": "アーカイブ解除"
+      }
+    }
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",
@@ -495,7 +514,7 @@
     "covers_batch": "この回答で閉じるカード: {{count}}",
     "covers_unavailable": "この回答で閉じる決定を読み込めません。再読み込みしてから回答してください。",
     "request_label": "判断の依頼：{{state}}",
-    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み" },
+    "request_state": { "open": "回答待ち", "answered": "回答済み", "withdrawn": "取り下げ済み", "recorded": "記録済み", "delivered": "配信済み", "picked_up": "着手済み", "not_picked_up": "未着手", "disclaimed": "撤回済み", "approved": "承認済み", "rejected": "却下済み" },
     "picked_up_by": "{{agent}} が着手",
     "not_picked_up": "回答の記録後に実行が開始されていません。",
     "open_issue": "{{issue}} を開く",
@@ -513,6 +532,21 @@
     "answer_helper": "送信すると回答が {{issue}} に投稿されます。DM エージェントへの質問は下のメッセージ欄に入力してください。",
     "answer_helper_issue": "送信すると回答が {{issue}} に投稿されます。",
     "answer_hint": "{{shortcut}} で送信",
+    "choice_label": "あなたの判断",
+    "choice_approve": "承認",
+    "choice_reject": "却下",
+    "composer_message": "メッセージ",
+    "composer_note": "メモ（任意）",
+    "composer_reason": "理由（任意）",
+    "send_discuss": "さらに相談（{{shortcut}}）",
+    "send_approve": "パスキーで承認（{{shortcut}}）",
+    "send_reject": "却下を確定（{{shortcut}}）",
+    "details": "詳細",
+    "effect_applied": "適用済み。",
+    "effect_not_applied": "未適用。承認されましたが、変更は適用されませんでした。",
+    "effect_rejected": "未適用。却下されたため、何も実行されていません。",
+    "meta_from": "依頼元",
+    "meta_asked": "依頼日時",
     "answer_too_long": "回答が 8 KB を超えています。短くすると送信できます。",
     "answer_upload_cancelled": "このカードを離れたため、アップロードをキャンセルしました。ファイルをもう一度添付してください。",
     "answer_offline": "オフラインです。回答は保持されます。再接続すると送信できます。",

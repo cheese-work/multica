@@ -114,6 +114,8 @@ Conversations can be renamed, pinned, archived, and deleted:
 
 Open these from the **⋯** on a row (it shows when you hover the row or tab to it) or by right-clicking the row. With a row focused, press `U` to mark it unseen, `P` to pin, `E` to archive, and `R` to rename; the keys do nothing while you type in a field or hold `⌘`, `Ctrl`, or `Alt`.
 
+To act on several conversations at once, press `X` on a focused row, choose **Select multiple**, or long-press a row on a phone. Tick rows, or tick a day header to select its whole group, then use the bar at the bottom: **Mark seen**, **Pin** and **Archive**. Each button follows your selection (for example **Unpin** when most selected rows are pinned), and its **▾** offers the opposite action with the number of conversations it applies to. Bulk delete does not exist.
+
 If a conversation is bound to an external channel (such as Slack), archiving breaks the binding; unarchiving does not restore it — bind again.
 
 <Callout type="warning">
@@ -141,6 +143,8 @@ Client commands (`/statistic`, `/archive`, `/pin`, `/unseen`, `/unarchive`, `/re
 ## Open decisions
 
 While an agent waits for your decision, a chip on every page reads "N decisions need you". On the chat page the same count sits in the chat header as a button: click it to list every open decision and open one without moving the message list. Elsewhere, click the chip to open the oldest one: the issue at the decision card, or the issue when the card has no comment. The same decision also shows in your Inbox and in the "Needs you" list. An answer with free text and no option still closes the card, and the agent reads your words.
+
+A decision that asks you to approve a change shows the plain-language ask first. The raw change sits behind **Details**. Choose **Approve** or **Reject**, add an optional note, and press the one button below. Its label names what the send key does: **Discuss more**, **Approve with passkey** or **Confirm Reject**. Plain Enter only adds a new line. Once decided, the card collapses to a row with the state (Approved, Rejected), what happened (applied, not applied, nothing ran) and when it was asked. Click the row to open the full card.
 
 ### Clear your "Needs you" list
 

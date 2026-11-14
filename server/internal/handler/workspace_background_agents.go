@@ -107,7 +107,7 @@ func (h *Handler) UpdateBackgroundAgents(w http.ResponseWriter, r *http.Request)
 		writeErrorCode(w, http.StatusBadRequest, bad.Code, bad.Msg)
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), next)
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), next, "workspace.background_agents.update")
 }
 
 // ResetBackgroundAgents clears every job.
@@ -116,7 +116,7 @@ func (h *Handler) ResetBackgroundAgents(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
-	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), map[string]any{})
+	h.saveBackgroundAgents(w, r, member, h.backgroundAgentsMachine(r, member), map[string]any{}, "workspace.background_agents.reset")
 }
 
 func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) bool {
@@ -124,9 +124,12 @@ func (h *Handler) backgroundAgentsMachine(r *http.Request, member db.Member) boo
 	return isGovernedFieldMachineActor(r, actorType)
 }
 
-func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any) {
+func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, member db.Member, machine bool, next map[string]any, auditKind string) {
 	id := uuidToString(member.WorkspaceID)
-	changes, cancelled, err := h.writeBackgroundAgents(r.Context(), member, machine, next)
+	changes, cancelled, err := h.writeBackgroundAgents(r, member, machine, next, auditKind)
+	if failedAudit(w, r, err, auditKind) {
+		return
+	}
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
 		return
@@ -163,7 +166,8 @@ func (h *Handler) saveBackgroundAgents(w http.ResponseWriter, r *http.Request, m
 // the post-commit broadcast. Lock order is workspace, every chat_session of the
 // workspace, then agents (FOR SHARE), then agent_task_queue: the order of a chat
 // enqueue. An enqueue's uncommitted task is therefore visible to the sweep.
-func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, machine bool, next map[string]any) ([]bgChange, []db.AgentTaskQueue, error) {
+func (h *Handler) writeBackgroundAgents(r *http.Request, member db.Member, machine bool, next map[string]any, auditKind string) ([]bgChange, []db.AgentTaskQueue, error) {
+	ctx := r.Context()
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -239,6 +243,20 @@ func (h *Handler) writeBackgroundAgents(ctx context.Context, member db.Member, m
 		}); err != nil {
 			return nil, nil, err
 		}
+	}
+	before, after := map[string]any{}, map[string]any{}
+	for _, c := range changes {
+		if c.From != nil {
+			before[c.Job] = c.From
+		}
+		if c.To != nil {
+			after[c.Job] = c.To
+		}
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: auditKind, WorkspaceID: member.WorkspaceID, TargetID: member.WorkspaceID, Before: before, After: after,
+	}); err != nil {
+		return nil, nil, auditWriteError{err}
 	}
 	// A changed job drops the queued work its old workspace chain produced; a
 	// user-sourced task keeps running. Same transaction, so a failed cancel

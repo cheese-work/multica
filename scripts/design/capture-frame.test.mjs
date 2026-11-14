@@ -63,3 +63,21 @@ test("rejects an id that is not a plain pattern id", async () => {
   );
   assert.equal(existsSync(join(dir, "evil.html")), false);
 });
+
+test("launches Chrome with the keyring bypass flags (a page with an input otherwise hangs headless Chrome)", async () => {
+  const argsFile = join(dir, "chrome-args.txt");
+  const fake = join(dir, "fake-chrome.sh");
+  writeFileSync(fake, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`, { mode: 0o755 });
+  const prev = process.env.CHROME_BIN;
+  process.env.CHROME_BIN = fake;
+  try {
+    // The fake writes no PNG, so the capture itself fails; only the launch flags matter here.
+    await assert.rejects(captureFrame({ url: "file:///x.html", outDir: join(dir, "out-args"), notes, widths: [1440] }));
+  } finally {
+    if (prev === undefined) delete process.env.CHROME_BIN;
+    else process.env.CHROME_BIN = prev;
+  }
+  const args = readFileSync(argsFile, "utf8").split("\n");
+  assert.ok(args.includes("--password-store=basic"), "missing --password-store=basic");
+  assert.ok(args.includes("--use-mock-keychain"), "missing --use-mock-keychain");
+});
