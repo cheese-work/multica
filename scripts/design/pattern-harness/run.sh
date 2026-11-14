@@ -40,6 +40,37 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap pause-banner \
+  --component packages/views/layout/machine-pause-banner.tsx \
+  --component packages/views/runtimes/components/machine-pause-state.ts \
+  --token text-caption --token border-warning/60 --token bg-warning/15 --token bg-success/10 \
+  --copy "banner title=runtimes:machine_pause.banner.paused" \
+  --copy "resume=runtimes:machine_pause.resume"
+
+cap run-budget \
+  --component packages/views/issues/components/run-budget-meter.tsx \
+  --token text-caption --token text-warning --token text-destructive --token text-muted-foreground \
+  --copy "runs=issues:run_budget.runs" \
+  --copy "near=issues:run_budget.near" \
+  --copy "exhausted=issues:run_budget.exhausted"
+
+cap attachment-card-list \
+  --component packages/views/issues/components/attachment-list.tsx \
+  --component packages/views/issues/components/deliverables/version-badge.tsx \
+  --token text-micro --token bg-muted --token text-muted-foreground \
+  --copy "revision badge=issues:attachment_revision.badge"
+
+cap wakeup-rule-form \
+  --component packages/views/issues/components/wakeup-instruction-editor.tsx \
+  --token text-caption --token text-destructive \
+  --copy "invalid=issues:wakeups.instruction_invalid" \
+  --copy "conflict=issues:wakeups.conflict_error"
+
+cap settings-number-row \
+  --component packages/views/settings/components/auto-compact-tokens-row.tsx \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-caption --token text-destructive
+
 cap decision-action-approval \
   --component packages/views/common/decision-action-approval.tsx \
   --component packages/ui/components/ui/button.tsx \
@@ -108,6 +139,33 @@ cap pill-menu \
   --component packages/views/issues/components/wakeup-pickers.tsx \
   --component packages/ui/components/ui/dropdown-menu.tsx \
   --token pillClass --token text-label --token border-surface-border --token bg-accent
+
+cap inline-retry \
+  --component packages/ui/components/ui/button.tsx \
+  --token text-caption --token text-destructive \
+  --copy "error=chat:needs_you.error" --copy "action=chat:needs_you.retry"
+
+cap inline-notice \
+  --component packages/ui/components/ui/alert.tsx \
+  --token text-body --token text-destructive --token bg-card
+
+cap integration-tab \
+  --component packages/ui/components/ui/card.tsx \
+  --component packages/ui/components/ui/alert-dialog.tsx \
+  --token text-body --token text-caption --token text-micro \
+  --copy "revoked=settings:slack.revoked_badge" --copy "installed=settings:slack.installed_at_label" \
+  --copy "not enabled=settings:slack.not_enabled_title" --copy "empty=settings:slack.empty_title" \
+  --copy "disconnected=settings:slack.toast_disconnected"
+
+cap diff-dialog \
+  --component packages/views/chat/components/diff-hunks.tsx \
+  --component packages/ui/components/ui/tabs.tsx \
+  --component packages/ui/components/ui/collapsible.tsx \
+  --token bg-success/10 --token bg-destructive/10 --token text-caption \
+  --copy "hidden lines=chat:decision.artifacts.lines_hidden"
+
+cap ict-timestamp \
+  --token text-body --token text-destructive
 
 cap section-eyebrow \
   --token text-micro --token uppercase --token tracking-wide --token text-muted-foreground

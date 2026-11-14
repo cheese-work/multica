@@ -63,6 +63,9 @@ type decisionActionExecution struct {
 	// Tx is the approval transaction Queries runs in, for a write that needs
 	// the transaction itself.
 	Tx pgx.Tx
+	// ProjectID is the project the approval locked: the one the issue was in
+	// when the plan read it. Set for issue.workflow.set only.
+	ProjectID pgtype.UUID
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -75,6 +78,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	agentResumeAction:        executeAgentResumeAction,
 	"issue.run_budget.raise": executeRunBudgetRaiseAction,
 	runBudgetTopUpType:       executeRunBudgetTopUpAction,
+	issueWorkflowSetType:     executeIssueWorkflowSetAction,
 	issueProjectSetType:      executeIssueProjectSetAction,
 }
 
@@ -149,6 +153,10 @@ type approvePlan struct {
 	target, runtimeID, boundaryIssue pgtype.UUID
 	queueKey                         string
 	catalogLock                      bool
+	// workflowSet takes the status catalog (shared) and project locks of an
+	// issue workflow move; project is the project the issue was in when read.
+	workflowSet bool
+	project     pgtype.UUID
 }
 
 // planApprove runs the pre-transaction refusals of one action's approval.
@@ -185,6 +193,15 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 	// that holds the issue's boundary.
 	if preview.ActionType == runBudgetTopUpType {
 		plan.boundaryIssue = located.IssueID
+	}
+	// A workflow move rebinds the budget, so it queues behind the boundary too,
+	// and locks the project the issue is in now (checked again under the issue lock).
+	if preview.ActionType == issueWorkflowSetType {
+		issue, err := handler.Queries.GetIssue(ctx, located.IssueID)
+		if err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		plan.boundaryIssue, plan.workflowSet, plan.project = located.IssueID, true, issue.ProjectID
 	}
 	return plan, nil
 }
@@ -290,6 +307,18 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 	if plan.boundaryIssue.Valid {
 		if err := queries.LockIssueRunBudgetBoundary(ctx, plan.boundaryIssue); err != nil {
 			return locked, err
+		}
+	}
+	// A workflow move takes the order every issue writer takes: catalog
+	// (shared), project, then the issue row below.
+	if plan.workflowSet {
+		if err := queries.LockIssueStatusCatalogShared(ctx, caller.workspaceID); err != nil {
+			return locked, err
+		}
+		if plan.project.Valid {
+			if _, err := queries.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: plan.project, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return locked, atStep("project", err)
+			}
 		}
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
@@ -458,7 +487,7 @@ func (handler *Handler) executeApproved(ctx context.Context, transaction pgx.Tx,
 	finish, err := executeInSavepoint(ctx, transaction, queries, plan.executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targets.agent, Runtime: locked.runtime, Secrets: secrets, Workflow: targets.workflow, Squad: targets.squad, Workspace: targets.workspace,
-		CredentialID: credential, IssueID: current.IssueID, Tx: transaction,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction, ProjectID: plan.project,
 	})
 	if err != nil {
 		return empty, err
@@ -783,6 +812,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)
+	}
+	if action.ActionType == issueWorkflowSetType {
+		return handler.publishIssueWorkflowSet(ctx, action)
 	}
 	if isAgentSchedulingAction(action.ActionType) {
 		return handler.publishAgentSchedulingChanged(ctx, action)

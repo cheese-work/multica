@@ -1033,6 +1033,7 @@ export function IssueFilterMenu({
   onTableFacetChange,
   dateFilter = null,
   onDateFilterChange,
+  open,
   onOpenChange,
   freezeAnchor = false,
   viewBaseline,
@@ -1063,6 +1064,9 @@ export function IssueFilterMenu({
   onTableFacetChange?: (facet: IssueTableFacetSpec | null) => void;
   dateFilter?: IssueDateFilter | null;
   onDateFilterChange?: (filter: IssueDateFilter | null) => void;
+  /** Opens the simple menu from the host, e.g. right after a view is named.
+   *  Pair it with `onOpenChange`. */
+  open?: boolean;
   /** Mirrors the menu's open state. */
   onOpenChange?: (open: boolean) => void;
   /** Pin the open menu to the trigger's position AT OPEN TIME (a virtual
@@ -1164,6 +1168,13 @@ export function IssueFilterMenu({
     return keys;
   };
   const [activeAtOpen, setActiveAtOpen] = useState<ReadonlySet<string> | null>(null);
+  // A host opening the menu fires no onOpenChange, so the open-time snapshot
+  // is taken when the prop flips instead.
+  const [openProp, setOpenProp] = useState(open);
+  if (open !== openProp) {
+    setOpenProp(open);
+    if (open && activeAtOpen === null) setActiveAtOpen(currentActiveKeys());
+  }
   const activeKeys = activeAtOpen ?? currentActiveKeys();
   const dateFilterLabel = showDateFilter && dateFilter
     ? `${t(($) => $.filters[DATE_FIELD_LABEL_KEY[dateFilter.field]])}: ${
@@ -1769,21 +1780,22 @@ export function IssueFilterMenu({
 
   return (
     <DropdownMenu
-      onOpenChange={(open) => {
+      open={open}
+      onOpenChange={(next) => {
         if (freezeAnchor) {
-          if (open && triggerRef.current) {
+          if (next && triggerRef.current) {
             const rect = triggerRef.current.getBoundingClientRect();
             setFrozenAnchor({ getBoundingClientRect: () => rect });
-          } else if (!open) {
+          } else if (!next) {
             setFrozenAnchor(null);
           }
         }
-        setActiveAtOpen(open ? currentActiveKeys() : null);
-        if (!open) {
+        setActiveAtOpen(next ? currentActiveKeys() : null);
+        if (!next) {
           setSearch("");
           onTableFacetChange?.(null);
         }
-        onOpenChange?.(open);
+        onOpenChange?.(next);
       }}
     >
       {/* One tree for both bodies: swapping wrappers when the first filter
@@ -1817,6 +1829,7 @@ export function IssueFilterMenu({
 }
 
 const LAYOUTS: { mode: ViewMode; Icon: typeof List }[] = [
+  { mode: "swimlane2", Icon: Workflow },
   { mode: "board", Icon: Columns3 },
   { mode: "list", Icon: List },
   { mode: "table", Icon: Table2 },
@@ -1828,6 +1841,7 @@ export function IssueDisplayControls({
   scopedIssues,
   hideViewToggle = false,
   allowGantt = false,
+  allowSwimlane2 = false,
   dateFilter = null,
   onDateFilterChange,
   facetCountsExact = true,
@@ -1852,6 +1866,7 @@ export function IssueDisplayControls({
   // /my-issues, actor panel) ignore viewMode === "gantt" and would silently
   // fall back to List if the option were exposed there. Keep Gantt opt-in.
   allowGantt?: boolean;
+  allowSwimlane2?: boolean;
   /**
    * Whether `scopedIssues` covers the surface's full window. Table does not
    * use loaded rows for counts; server-paged List, Board, and Swimlane follow
@@ -2030,8 +2045,11 @@ export function IssueDisplayControls({
           ? t(($) => $.table.columns.project)
           : t(($) => $.table.group_none);
   // A Gantt layout persisted on a surface without Gantt renders as List.
-  const layout: ViewMode = viewMode === "gantt" && !allowGantt ? "list" : viewMode;
-  const layouts = LAYOUTS.filter(({ mode }) => mode !== "gantt" || allowGantt);
+  const layout: ViewMode =
+    (viewMode === "gantt" && !allowGantt) || (viewMode === "swimlane2" && !allowSwimlane2) ? "list" : viewMode;
+  const layouts = LAYOUTS.filter(
+    ({ mode }) => (mode !== "gantt" || allowGantt) && (mode !== "swimlane2" || allowSwimlane2),
+  );
   const LayoutIcon = hideViewToggle
     ? SlidersHorizontal
     : LAYOUTS.find(({ mode }) => mode === layout)!.Icon;
@@ -2115,7 +2133,7 @@ export function IssueDisplayControls({
                 aria-label={t(($) => $.view.section)}
                 className={cn(
                   "mb-3 grid gap-0.5 rounded-lg bg-muted p-0.5",
-                  layouts.length === 5 ? "grid-cols-5" : "grid-cols-4",
+                  layouts.length === 6 ? "grid-cols-6" : layouts.length === 5 ? "grid-cols-5" : "grid-cols-4",
                 )}
               >
                 {layouts.map(({ mode, Icon }) => (
@@ -2174,7 +2192,7 @@ export function IssueDisplayControls({
                   </Select>
                 </div>
               )}
-              {viewMode === "swimlane" && (
+              {(viewMode === "swimlane" || viewMode === "swimlane2") && (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-caption font-medium text-muted-foreground">
                     {t(($) => $.display.grouping_section)}

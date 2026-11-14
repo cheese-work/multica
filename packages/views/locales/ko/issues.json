@@ -360,7 +360,8 @@
     "list": "리스트",
     "table": "테이블",
     "gantt": "간트",
-    "swimlane": "스윔레인"
+    "swimlane": "스윔레인",
+    "swimlane2": "스윔레인 2.0"
   },
   "table": {
     "select_all": "표시된 모든 태스크 선택",
@@ -447,11 +448,17 @@
     "more_issues": "불러오지 않은 이슈가 더 있습니다.",
     "retry": "다시 시도",
     "load_more": "더 불러오기",
-    "no_lane": "값 없음"
+    "no_lane": "값 없음",
+    "timeline_failed": "타임라인을 불러오지 못했습니다.",
+    "loading": "타임라인 불러오는 중…"
   },
   "gantt2": {
     "clipped_start": "이 기간 이전에 시작됨",
     "now": "지금",
+    "start_marker": "시작일",
+    "due_marker": "마감일",
+    "no_history": "기록된 이력 없음",
+    "before_records": "기록 이전",
     "collapse": "접기",
     "expand": "펼치기"
   },
@@ -607,7 +614,6 @@
     "agents_group": "에이전트",
     "mark_done_tooltip": "완료로 표시",
     "archive_tooltip": "보관",
-    "restore_to_inbox_tooltip": "인박스로 복원",
     "pin_tooltip": "사이드바에 고정",
     "unpin_tooltip": "사이드바 고정 해제",
     "quick_jump_label": "빠른 탐색",
@@ -1034,6 +1040,7 @@
     "open_in_new_tab": "새 탭에서 열기",
     "pin_to_sidebar": "사이드바에 고정",
     "unpin_from_sidebar": "사이드바 고정 해제",
+    "restore_to_inbox": "인박스로 복원",
     "mark_read": "읽음으로 표시",
     "mark_unread": "읽지 않음으로 표시",
     "copy_link": "링크 복사",
@@ -1572,7 +1579,6 @@
     "not_merged": "{{prs}}이(가) 병합되지 않고 닫혔습니다",
     "not_merged_action": "제거",
     "all_merged_to": "PR이 모두 병합되었습니다. 다음 PR이 병합되면 {{status}}(으)로 변경합니다.",
-    "workflow_owned": "PR이 병합되면 워크플로가 이 태스크를 이동합니다",
     "issue_disabled": "이 태스크는 PR 병합 시 상태를 바꾸지 않음",
     "issue_disabled_action": "다시 켜기"
   },
@@ -1995,6 +2001,9 @@
     "save_as_new": "새 뷰로 저장",
     "save_as_new_hint": "「{{name}}」은(는) 그대로 유지됩니다",
     "save_as_view": "뷰로 저장",
+    "save_view": "뷰 저장",
+    "add_filter": "필터 추가",
+    "setup_hint": "아직 조건이 없어 이 뷰에 모든 태스크가 표시됩니다",
     "set_by_view": "이 뷰에서 설정됨",
     "new_issue": "새 태스크",
     "unavailable": "이 뷰는 더 이상 사용할 수 없습니다",

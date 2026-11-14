@@ -317,7 +317,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特圖",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "選擇所有可見任務",
@@ -404,11 +405,17 @@
     "more_issues": "還有未載入的議題。",
     "retry": "重試",
     "load_more": "載入更多",
-    "no_lane": "無值"
+    "no_lane": "無值",
+    "timeline_failed": "無法載入時間軸。",
+    "loading": "正在載入時間軸…"
   },
   "gantt2": {
     "clipped_start": "在此時間視窗之前開始",
     "now": "現在",
+    "start_marker": "開始日期",
+    "due_marker": "截止日期",
+    "no_history": "無歷史記錄",
+    "before_records": "記錄之前",
     "collapse": "摺疊",
     "expand": "展開"
   },
@@ -555,7 +562,6 @@
     "agents_group": "AI 代理",
     "mark_done_tooltip": "標記為已完成",
     "archive_tooltip": "歸檔",
-    "restore_to_inbox_tooltip": "恢復到收件箱",
     "pin_tooltip": "固定到側邊欄",
     "unpin_tooltip": "從側邊欄取消固定",
     "quick_jump_label": "快捷跳轉",
@@ -991,6 +997,7 @@
     "open_in_new_tab": "在新標籤頁開啟",
     "pin_to_sidebar": "固定到側邊欄",
     "unpin_from_sidebar": "從側邊欄取消固定",
+    "restore_to_inbox": "恢復到收件箱",
     "mark_read": "標為已讀",
     "mark_unread": "標為未讀",
     "copy_link": "複製連結",
@@ -1529,7 +1536,6 @@
     "not_merged": "{{prs}} 已關閉，未合併",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合併。之後有新 PR 合併時會改為 {{status}}。",
-    "workflow_owned": "PR 合併後由工作流程移動此任務",
     "issue_disabled": "此任務合併後不改狀態",
     "issue_disabled_action": "恢復"
   },
@@ -1995,6 +2001,9 @@
     "save_as_new": "另存為新檢視",
     "save_as_new_hint": "「{{name}}」保持不變",
     "save_as_view": "儲存為檢視",
+    "save_view": "儲存檢視",
+    "add_filter": "新增篩選",
+    "setup_hint": "這個檢視還沒有條件，目前顯示全部任務",
     "set_by_view": "由此檢視設定",
     "new_issue": "新增任務",
     "unavailable": "此檢視已無法使用",

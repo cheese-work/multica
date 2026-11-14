@@ -370,7 +370,8 @@
     "list": "List",
     "table": "Table",
     "gantt": "Gantt",
-    "swimlane": "Swimlane"
+    "swimlane": "Swimlane",
+    "swimlane2": "Swimlane 2.0"
   },
   "table": {
     "select_all": "Select all visible issues",
@@ -457,11 +458,17 @@
     "more_issues": "More issues not loaded.",
     "retry": "Retry",
     "load_more": "Load more",
-    "no_lane": "No value"
+    "no_lane": "No value",
+    "timeline_failed": "Could not load the timeline.",
+    "loading": "Loading timeline…"
   },
   "gantt2": {
     "clipped_start": "Started before this window",
     "now": "Now",
+    "start_marker": "Start date",
+    "due_marker": "Due date",
+    "no_history": "No recorded history",
+    "before_records": "Before records",
     "collapse": "Collapse",
     "expand": "Expand"
   },
@@ -619,7 +626,6 @@
     "agents_group": "Agents",
     "mark_done_tooltip": "Mark as done",
     "archive_tooltip": "Archive",
-    "restore_to_inbox_tooltip": "Restore to inbox",
     "pin_tooltip": "Pin to sidebar",
     "unpin_tooltip": "Unpin from sidebar",
     "quick_jump_label": "Quick navigation",
@@ -1088,6 +1094,7 @@
     "open_in_new_tab": "Open in new tab",
     "pin_to_sidebar": "Pin to sidebar",
     "unpin_from_sidebar": "Unpin from sidebar",
+    "restore_to_inbox": "Restore to inbox",
     "mark_read": "Mark as read",
     "mark_unread": "Mark as unread",
     "copy_link": "Copy link",
@@ -1631,7 +1638,6 @@
     "not_merged": "{{prs}} closed without merging",
     "not_merged_action": "Remove",
     "all_merged_to": "All PRs merged. The next merged PR moves this issue to {{status}}.",
-    "workflow_owned": "The workflow moves this issue when its PR merges",
     "issue_disabled": "PR merges won’t change this issue",
     "issue_disabled_action": "Turn on"
   },
@@ -2076,6 +2082,9 @@
     "save_as_new": "Save as new view",
     "save_as_new_hint": "Keeps “{{name}}” unchanged",
     "save_as_view": "Save as view",
+    "save_view": "Save view",
+    "add_filter": "Add filter",
+    "setup_hint": "No conditions yet, so this view shows every issue",
     "set_by_view": "Set by this view",
     "new_issue": "New issue",
     "unavailable": "This view is no longer available",
