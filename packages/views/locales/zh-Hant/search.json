@@ -181,5 +181,10 @@
     "retry": "重試",
     "offline_title": "你已離線",
     "offline_body_other": "僅依標題搜尋已儲存的 {{count}} 個對話，不搜尋訊息內容。"
+  },
+  "chips": {
+    "agent": "智慧體：{{name}}",
+    "active": "已啟用篩選：{{names}}",
+    "none": "未啟用篩選"
   }
 }

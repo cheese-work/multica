@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses/queries";
 import { useCommandBarContextStore, type CommandBarContext } from "@multica/core/command-bar";
+import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { inboxUnreadSummaryOptions } from "@multica/core/inbox/queries";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { issueDetailOptions, issueTimelineOptions } from "@multica/core/issues/queries";
@@ -881,6 +882,100 @@ describe("SearchCommand", () => {
 
       expect(await screen.findByText("No results for “zzzxq”")).toBeInTheDocument();
       expect(screen.getByText("Try a different keyword.")).toBeInTheDocument();
+    });
+  });
+
+  describe("chat filter chips", () => {
+    const chat = (id: string, title: string, over: Record<string, unknown> = {}) => ({
+      id,
+      title,
+      agent_id: "agent-tofu",
+      status: "active",
+      has_unread: false,
+      ...over,
+    });
+    const titles = () => renderedValues().filter((v) => v.startsWith("chat:"));
+
+    beforeEach(() => {
+      seed(agentListOptions("ws-test"), [makeAgent("agent-tofu", "Tofu"), makeAgent("agent-luna", "Luna")]);
+      seed(openDecisionRequestsOptions("ws-test"), []);
+      seed(chatSessionsOptions("ws-test"), [
+        chat("c-wait-tofu", "budget waiting tofu", { stale_level: "red" }),
+        chat("c-wait-luna", "budget waiting luna", { stale_level: "red", agent_id: "agent-luna" }),
+        chat("c-unseen-luna", "budget unseen luna", { has_unread: true, agent_id: "agent-luna" }),
+        chat("c-old", "budget archived", { status: "archived" }),
+      ]);
+    });
+
+    it("Tab turns typed text into a chip and clears the input; ⌫ on an empty input removes it", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "wait{Tab}");
+
+      expect(input().value).toBe("");
+      expect(screen.getByRole("button", { name: "Waiting on you" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("status", { name: "" })).toHaveTextContent("Filters on: Waiting on you");
+
+      await user.keyboard("{Backspace}");
+      expect(screen.getByRole("button", { name: "Waiting on you" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("status", { name: "" })).toHaveTextContent("No filters on");
+    });
+
+    it("a scope chip and an agent chip AND; two scope chips OR", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "wait{Tab}");
+      await user.type(input(), "luna{Tab}");
+      expect(screen.getByRole("button", { name: "Agent: Luna" })).toHaveAttribute("aria-pressed", "true");
+      await user.type(input(), "budget");
+      await waitFor(() => expect(titles()).toEqual(["chat:c-wait-luna"]));
+
+      await user.click(screen.getByRole("button", { name: "Agent: Luna" }));
+      await user.click(screen.getByRole("button", { name: "Unseen" }));
+      await waitFor(() => expect(titles()).toEqual(["chat:c-wait-tofu", "chat:c-wait-luna", "chat:c-unseen-luna"]));
+    });
+
+    it("Lưu trữ reaches archived chats; All clears the others and picking another clears All", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "budget");
+      await waitFor(() => expect(titles()).toHaveLength(3));
+
+      await user.click(screen.getByRole("button", { name: "Archived" }));
+      await waitFor(() => expect(titles()).toEqual(["chat:c-old"]));
+
+      await user.click(screen.getByRole("button", { name: "All" }));
+      expect(screen.getByRole("button", { name: "Archived" })).toHaveAttribute("aria-pressed", "false");
+      await waitFor(() => expect(titles()).toHaveLength(4));
+
+      await user.click(screen.getByRole("button", { name: "Unseen" }));
+      expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("filters message hits by their session", async () => {
+      const user = userEvent.setup();
+      const hit = (session_id: string, agent_id: string) => ({
+        session_id, agent_id, title: session_id, message_id: `m-${session_id}`,
+        snippet: "budget cap", updated_at: "2026-11-13T07:15:00Z", archived: false,
+      });
+      chatSearch.hits = [hit("c-wait-tofu", "agent-tofu"), hit("c-wait-luna", "agent-luna")];
+      renderSearch();
+      await user.type(input(), "budget");
+      await waitFor(() => expect(renderedValues()).toContain("message:c-wait-tofu:m-c-wait-tofu"));
+
+      await user.click(screen.getByRole("button", { name: "Waiting on you" }));
+      await user.type(input(), "{Tab}");
+      expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual([
+        "message:c-wait-tofu:m-c-wait-tofu",
+        "message:c-wait-luna:m-c-wait-luna",
+      ]);
+    });
+
+    it("every chip is a button with the 2px focus ring", () => {
+      renderSearch();
+      const chips = within(screen.getByRole("group", { name: "Filter chats" })).getAllByRole("button");
+      expect(chips.length).toBeGreaterThanOrEqual(7);
+      for (const chip of chips) expect(chip.className).toContain("focus-visible:ring-2");
     });
   });
 

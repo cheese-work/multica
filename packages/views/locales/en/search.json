@@ -185,5 +185,10 @@
     "offline_title": "You're offline",
     "offline_body_one": "Searching only {{count}} saved chat by title, not message content.",
     "offline_body_other": "Searching only {{count}} saved chats by title, not message content."
+  },
+  "chips": {
+    "agent": "Agent: {{name}}",
+    "active": "Filters on: {{names}}",
+    "none": "No filters on"
   }
 }

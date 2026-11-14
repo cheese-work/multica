@@ -181,5 +181,10 @@
     "retry": "再試行",
     "offline_title": "オフラインです",
     "offline_body_other": "保存済みの {{count}} 件のチャットをタイトルでのみ検索します。メッセージ内容は検索しません。"
+  },
+  "chips": {
+    "agent": "エージェント: {{name}}",
+    "active": "適用中のフィルター: {{names}}",
+    "none": "フィルターなし"
   }
 }

@@ -185,5 +185,10 @@
     "offline_title": "Vous êtes hors ligne",
     "offline_body_one": "Recherche uniquement par titre dans {{count}} discussion enregistrée, pas dans les messages.",
     "offline_body_other": "Recherche uniquement par titre dans {{count}} discussions enregistrées, pas dans les messages."
+  },
+  "chips": {
+    "agent": "Agent : {{name}}",
+    "active": "Filtres actifs : {{names}}",
+    "none": "Aucun filtre actif"
   }
 }

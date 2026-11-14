@@ -181,5 +181,10 @@
     "retry": "다시 시도",
     "offline_title": "오프라인입니다",
     "offline_body_other": "저장된 채팅 {{count}}개의 제목만 검색하며 메시지 내용은 검색하지 않습니다."
+  },
+  "chips": {
+    "agent": "에이전트: {{name}}",
+    "active": "적용된 필터: {{names}}",
+    "none": "적용된 필터 없음"
   }
 }
