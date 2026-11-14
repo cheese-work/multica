@@ -1,6 +1,13 @@
 # CHE-5696 — System events for wakeup rules
 
-Status: plan r2 (14 Nov 2026 ICT), author x99-claude-sonnet-200k. Code read at `c21875f6b7`.
+Status: plan r3 (14 Nov 2026 ICT), author x99-claude-sonnet-200k. Code read at `c21875f6b7`.
+
+## r3 changes (answer to Sol CHANGES round 2, comment 01a1da31)
+
+| Sol finding | Where fixed |
+|---|---|
+| Retry needs run uniqueness that does not depend on quota settings, and recovery of an incomplete dispatch before the event is acknowledged | D2 acknowledgement rule, D5 items 5 and 5a (new), slice S8 tests |
+| Deploy-health finding (r1 P1-2) | Confirmed resolved by Sol; unchanged |
 
 ## r2 changes (answer to Terra CHANGES r1, comment 01a1da1f)
 
@@ -55,7 +62,7 @@ Table `wakeup_system_event` (workspace_id, event_type, event_key, payload jsonb,
 - Drain (`wakeup_system_drain.go`, same service package): for each pending row past `deliver_after`, resolve matching definitions, then
   - issue-scope rule (target A): apply `filters.match`, skip closed issues, insert into `issue_wakeup_receipt` with the existing key coalescing. Existing dispatcher, `once`/`continuous` and loop guard run unchanged.
   - workspace rule with autopilot target (target B): D5.
-- Each (row, rule) delivery is recorded in `delivered`, in the same transaction as the receipt or run. A crash replays the row and skips the delivered rules.
+- Each (row, rule) delivery is recorded in `delivered`. For an issue waiter it is the same transaction as the receipt. For an autopilot target it is written only after the run's downstream execution exists (D5 item 5a), so the acknowledgement never runs ahead of the work. A crash replays the row and skips the delivered rules.
 - Outcomes are recorded and visible, as in `scopedOutcome*`: `delivered`, `no_rule`, `no_match`, `rule_disabled`, `issue_closed`, `target_revoked`, `chain_exhausted`, `expired`.
 Check with `EXPLAIN` that the definition lookup is indexed; add one `CREATE INDEX CONCURRENTLY` (own file) only if it is not.
 
@@ -84,8 +91,16 @@ Terra finding: the existing scoped outbox needs an issue, and `wakeup_custom_exe
 1. **Rule.** Workspace rule with `target: {type: "autopilot", id}` and trigger `autopilot.skipped` (or `.failed`). Required at write time: `max_fires` (1 to 5) and the autopilot id. Write keeps the existing member check.
 2. **Capture.** `recordSkippedRun` / `failRun` write the `autopilot_run` row and the outbox row in one transaction (key `run:<autopilot_run_id>`). Where the current code cannot take a transaction, S7 moves the run insert into one; if that proves too large, S7 adds a reconcile pass that scans skipped runs with a missing outbox row. Payload: `autopilot_id`, `run_id`, `trigger_id`, `reason_code`, `retry_after` (cooldown end when the provider-failure state exposes it; verified at S7), `chain_root`, `attempt`.
 3. **Delay.** `deliver_after = retry_after` when present, else rule backoff (`schedule` backoff, floor 15 min). A skip at skip time never re-fires immediately into the same cooldown.
-4. **Restart.** The row and its lease live in the database. After a server restart the drain reclaims pending rows past `deliver_after`. Test: write a row, restart the drain, assert one run.
-5. **Duplicates.** Capture is unique on `(workspace, type, key)`. Dispatch passes idempotency key `sysevent:<rule_id>:<event_id>` to `createAutopilotRunWithQuota`, which already returns the existing run (`reused`). Test: emit the same event twice, replay the drain after a crash between run create and `delivered` write; assert one run.
+4. **Restart.** The row and its lease live in the database. After a server restart the drain reclaims pending rows past `deliver_after`. Test: write a row, restart the drain, assert one run and one downstream issue/task.
+5. **Run uniqueness, independent of quota.** Terra r2/Sol finding: `createAutopilotRunWithQuota` ignores the idempotency key when quota is off (`autopilot_quota.go:121-123`: plain `CreateAutopilotRun`), so the key alone does not dedupe. The existing quota-independent anchor is `autopilot_run.webhook_delivery_id` with the partial unique index `uq_autopilot_run_webhook_delivery` (migration 177; no foreign key, migration 176). The retry run reuses it:
+   - `delivery_id = UUIDv5(fixed namespace, "sysevent:<rule_id>:<event_id>")`, stored in `webhook_delivery_id` on the retry run. The run still has `source = "schedule"` (item 8); the column does not constrain the source.
+   - Create path: look up `GetAutopilotRunByWebhookDelivery(delivery_id)` first; on insert conflict (`23505`) reload the winner through `recoverConcurrentWebhookAdmission`. Same code, same result, quota on or off. The idempotency key `sysevent:<rule_id>:<event_id>` is still passed for quota reservation.
+   - Capture dedup stays `UNIQUE (workspace, type, key)` (D2). Two replicas or a replayed drain therefore cannot create two runs.
+5a. **Recovery of an incomplete dispatch, before acknowledgement.** The existing `reused` branch in `dispatchAutopilot` (`autopilot.go:639-640`) returns a found run without resuming its downstream work. The webhook worker solves this in `DispatchAutopilotForWebhookDelivery` (`autopilot.go:285-326`): admit, then if `isAutopilotRunComplete` is false, repair the task link (`repairAutopilotRunTaskLink`), repair a lost `create_issue` task (`ensureWebhookCreateIssueTask`), and resume with `dispatchAutopilotRun`. S8 reuses that logic, not a copy:
+   - Factor the post-admission block (complete-check, `ensureWebhookCreateIssueTask`, `repairAutopilotRunTaskLink`, `dispatchAutopilotRun`) into one `resumeAutopilotRun(ctx, autopilot, triggerID, source, run)`. The webhook worker and the new `DispatchAutopilotForSystemEvent` both call it. The webhook behaviour does not change (its existing tests stay green).
+   - `DispatchAutopilotForSystemEvent(autopilot, triggerID, payload, deliveryID)` = admit by `delivery_id` (item 5, including the cooldown admission of item 8) then `resumeAutopilotRun`.
+   - **Acknowledgement rule.** The drain writes `delivered` for a (row, rule) only after `resumeAutopilotRun` returns a run for which `isAutopilotRunComplete` is true: a skipped, completed or failed run; an `issue_created` run with an issue AND, for `create_issue`, at least one task on that issue (or a runnable-state check as in `ensureWebhookCreateIssueTask`); a `running` run with a task. Any error or an incomplete run leaves the row pending, releases the lease and retries after the retry delay. A crash anywhere before that write replays the row, finds the same run by `delivery_id` and finishes the missing step.
+   - Crash windows covered: after the run row is created; after the issue is created, before the task; after the task is created, before `task_id` is linked (run_only).
 6. **Re-authorization at drain time.** The drain re-checks before each dispatch: rule enabled and not expired; autopilot exists, in the rule's workspace, not archived, `IsProjectInactive` false; the rule creator is still a workspace member with access to the autopilot. Failure closes the row with `target_revoked` and starts nothing. Test: disable the rule, archive the autopilot, remove the creator, between capture and drain.
 7. **Chain and `max_fires`.** A chain is `chain_root` (the id of the first skipped run) plus `attempt`. A retry run carries `{"system_event": {"rule_id", "event_id", "chain_root", "attempt"}}` in its trigger payload. A skip of a retry run emits `attempt+1` with the same `chain_root`. At `attempt > max_fires` the row closes `chain_exhausted`. A skip of a run that is NOT a retry starts a new chain (`attempt` 1). Test: a later independent skip after an earlier chain reached `max_fires` fires again. Rule `rate_limit` stays as a second bound.
 8. **Provider-recovery admission preserved.** `dispatchAutopilot` applies `prepareProviderFailureRecovery` only when `source == "schedule"` (`autopilot.go:583`). The retry is dispatched with `source = "schedule"`, `planned_at` NULL, and the original skipped run's `trigger_id` and trigger payload (so `providerTriggerConditionKey` and `FindActiveScheduledAutopilotRunForTrigger` see the same scope). No new `source` value, so the `autopilot_run.source` CHECK (migration 042) is unchanged. Cost: retry runs count as `schedule` in reports; the `system_event` payload marker tells them apart. Rejected option: a new `system_event` source needs a CHECK migration and a change at line 583 and in `validAutopilotExecutionSource`. Test: a retry while the cooldown still holds is skipped again with `provider_failure_cooldown` and chains with `attempt+1`; an equivalent active scheduled run supersedes or dedups.
@@ -117,10 +132,10 @@ CLI: `multica issue wakeup create --event runtime.online --match host=MBP`. `mul
 | S5 | `server.deployed` with health contract + deploy-script `MULTICA_IMAGE_DIGEST` (D4) | unhealthy startup emits nothing; readiness that turns healthy emits once; rollback SHA does not wake a waiter on the new SHA; digest absent never matches; two workspaces fan out separately | S2, S3 |
 | S6 | CLI + `wakeup events` + GUI + docs x5 (D6) | CLI golden output; typecheck/lint; docs link check | S2, S3 |
 | S7 | Autopilot events: skip/failed capture in the run transaction, payload, `retry_after` source (D5 items 2-3) | skip emits exactly one row; crash between run and row cannot lose it; `retry_after` carried | S2 |
-| S8 | Autopilot target delivery: drain dispatch, re-authorization, chain, provider admission (D5 items 1, 4-9) | restart; duplicate event; revoked target; independent skip after `max_fires`; cooldown still holds | S3, S7 |
+| S8 | Autopilot target delivery: `delivery_id` run uniqueness, `resumeAutopilotRun` refactor, drain dispatch, re-authorization, chain, provider admission (D5 items 1, 4-9) | run uniqueness and recovery, each with quota enabled AND disabled: duplicate event and concurrent drains give one run; crash after run creation, after issue creation, after task creation each end with one run AND one issue/task execution (count rows, not only runs); event stays pending until execution exists; revoked target; independent skip after `max_fires`; cooldown still holds; webhook worker tests unchanged | S3, S7 |
 | S9 | Consumers + measure: deploy-wait and brief-retry rules on the real workspace; counter for timer wakeups that wait on a deploy or runtime | before/after count over 7 days | S4, S5, S8 |
 
-S3 and S4 run in parallel after S2. S5 waits for S3. If S8 passes 2 h, split drain dispatch from chain logic.
+S3 and S4 run in parallel after S2. S5 waits for S3. S8 is the largest slice. Split it before dispatch if it passes 2 h: S8a `resumeAutopilotRun` refactor + `DispatchAutopilotForSystemEvent` (uniqueness and recovery tests), S8b drain wiring, re-authorization and chain logic.
 
 ## Measure
 
