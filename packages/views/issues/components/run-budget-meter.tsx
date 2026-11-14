@@ -8,6 +8,7 @@ import { openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { runBudgetKeys, runBudgetTone, useRunBudget } from "@multica/core/run-budget";
 import { memberListOptions } from "@multica/core/workspace/queries";
+import { isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { Button } from "@multica/ui/components/ui/button";
 import { DecisionActionApproval } from "../../common/decision-action-approval";
 import { useT } from "../../i18n";
@@ -44,7 +45,7 @@ export function RunBudgetMeter({ issueId }: { issueId: string }) {
   // Other open cards on the issue do not count.
   const { data: openRequests } = useQuery(openDecisionRequestsOptions(wsId));
   const hasOpenRequest = (openRequests ?? []).some(
-    (r) => r.issue_id === issueId && (r.action?.action_type ?? "").startsWith("issue.run_budget."),
+    (r) => r.issue_id === issueId && isRunBudgetActionType(r.action?.action_type ?? ""),
   );
   const userId = useAuthStore((s) => s.user?.id);
   const [asked, setAsked] = useState<Asked>({ kind: "idle" });

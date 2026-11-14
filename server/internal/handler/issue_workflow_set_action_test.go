@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -260,5 +261,27 @@ func TestApproveWorkflowSetRacesProjectWorkflowSwitch(t *testing.T) {
 		default:
 			t.Fatalf("round %d: outcome %+v with override %q (project switch %d) is not an execution or stale_base", i, out, override, switchd)
 		}
+	}
+}
+
+// The card the owner sees names the issue, the workflow and cap before and
+// after, and the delta, rendered by the server from the sealed bindings.
+func TestWorkflowSetCardPreviewShowsBeforeAfterAndDelta(t *testing.T) {
+	f := newRebindFixture(t, 5629100)
+	card := openWorkflowSetCard(t, f)
+	action := testHandler.decisionCardAction(context.Background(), parseUUID(testWorkspaceID), parseUUID(card.RequestID))
+	fields := previewFields(t, action)
+	assertPreviewDigest(t, action.Preview)
+	if got := fields["Run cap"]; got != [2]string{"2", "50"} {
+		t.Fatalf("Run cap = %v; want [2 50]", got)
+	}
+	if got := fields["Workflow"]; got[0] == "" || got[1] == "" || got[0] == got[1] {
+		t.Fatalf("Workflow = %v; want two different names", got)
+	}
+	if got := fields["Run budget"][1]; !strings.Contains(got, "widens by 48") {
+		t.Fatalf("Run budget = %q; want it to say the move widens by 48 runs", got)
+	}
+	if _, found := fields["Issue"]; !found {
+		t.Fatalf("preview lacks the issue: %v", fields)
 	}
 }

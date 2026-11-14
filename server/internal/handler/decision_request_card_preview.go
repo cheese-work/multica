@@ -201,6 +201,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 			return nil, err
 		}
 		return []ActionPreviewField{{"Runs used", strconv.FormatInt(snapshot.RunsUsed, 10), "0"}}, nil
+	case issueWorkflowSetType:
+		return handler.issueWorkflowSetPreview(ctx, action)
 	case issueProjectSetType:
 		return handler.issueProjectSetPreview(ctx, action)
 	case "agent.env.patch":
