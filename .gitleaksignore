@@ -1,0 +1,2 @@
+# Planted fake token in a test fixture (CHE-4293); the commit predates the inline gitleaks:allow.
+36c05a53c20cdfc80587a34d2fa293ef3df5f2b8:server/internal/handler/github_ciwatch_test.go:github-pat:220
