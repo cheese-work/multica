@@ -136,7 +136,9 @@ func (l *lineScan) add(frag []byte) {
 	room := maxLineBytes - len(l.head)
 	switch {
 	case l.overflow:
+		// Keep scanning for credential words, but retain nothing more.
 		l.scanCredWord(frag)
+		return
 	case len(frag) > room:
 		// The line just outgrew the cap. It is never parsed from here on, so
 		// look for a credential word in everything seen so far.

@@ -365,14 +365,14 @@ func TestRedactUncertainBoundaries(t *testing.T) {
 		{"omitted line opens block", "password: |" + long + "\n  planted1\nafter", []string{"planted1"}, nil},
 		{"omitted line opens quote", "token: \"" + long + "\nplanted1\"\n", []string{"planted1"}, nil},
 		{"omitted line after pending key", "password:\n" + long + "\n  planted1\n", []string{"planted1"}, nil},
-		{"omitted line keeps open object", "password: {\n" + long + "\nplanted1\n}\nafter", []string{"planted1"}, []string{"after"}},
+		{"omitted line inside open object masks to EOF", "password: {\n" + long + "\nplanted1\n}\nafter", []string{"planted1", "after"}, nil},
+		{"omitted line opens array inside active object", "{\"password\": {\n \"items\": [" + strings.Repeat(" ", maxLineBytes) + "\n\"x\"\n],\n\"user\": \"planted1\"\n}\n}\nafter", []string{"planted1"}, nil},
+		{"omitted line inside active quote", "password: \"" + long + "\nplanted1\"\n", []string{"planted1"}, nil},
+		{"omitted line inside block", "password: |\n  planted1\n" + long + "\n  planted2\n", []string{"planted1", "planted2"}, nil},
 		{"omitted line without credential word", long + "\nafter", nil, []string{"after"}},
 	}
 	for _, tc := range cases {
 		for _, oneByte := range []bool{false, true} {
-			if oneByte && len(tc.in) > 1<<16 {
-				continue // 64 KiB one-byte reads add nothing: fragment paths are covered by the whole read and the split test below
-			}
 			t.Run(fmt.Sprintf("%s/oneByte=%v", tc.name, oneByte), func(t *testing.T) {
 				got := redact(t, "before\n"+tc.in+"\n", oneByte)
 				noLeak(t, got, tc.planted...)
@@ -394,4 +394,29 @@ func TestRedactOmittedLineCredentialWordSplitAcrossFragments(t *testing.T) {
 		in := strings.Repeat("x", 3*frag-cut) + "password\nplanted1\nplanted2\n"
 		noLeak(t, redact(t, in, false), "planted1", "planted2")
 	}
+}
+
+// A line over the cap keeps at most maxLineBytes, however many fragments follow.
+func TestLineScanHeadStaysBoundedAfterOverflow(t *testing.T) {
+	frag := []byte(strings.Repeat("x", 32<<10))
+	sc := lineScan{}
+	for i := 0; i < 32; i++ {
+		sc.add(frag)
+	}
+	if !sc.overflow {
+		t.Fatal("overflow not flagged")
+	}
+	if len(sc.head) > maxLineBytes {
+		t.Errorf("retained %d bytes; cap %d", len(sc.head), maxLineBytes)
+	}
+}
+
+// After overflow the line is still scanned for key markers and credential words.
+func TestLineScanOverflowStillScansMarkersAndWords(t *testing.T) {
+	long := strings.Repeat("x", maxLineBytes+(32<<10))
+	in := long + "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\nafter-key\n"
+	got := redact(t, in, false)
+	noLeak(t, got, pemBody)
+	got = redact(t, long+"password\nplanted1\n", false)
+	noLeak(t, got, "planted1")
 }

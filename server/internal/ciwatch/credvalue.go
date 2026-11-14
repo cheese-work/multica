@@ -92,10 +92,12 @@ func (m *credMasker) consume(s string, i int) int {
 
 func (m *credMasker) active() bool { return m.depth > 0 || m.quote != 0 }
 
-// omitted records a line too long to parse. If it names a credential, or a
-// key before it waits for its value, the value boundary is unknown.
+// omitted records a line too long to parse. Its text can open or close any
+// bracket, quote or block, so the tracked state is stale if a value is active
+// or a key waits for its value, and the line may itself name a credential. In
+// all three cases the value boundary is unknown: mask to EOF.
 func (m *credMasker) omitted(sawCredWord bool) {
-	if sawCredWord || m.pending {
+	if sawCredWord || m.pending || m.active() || m.block {
 		m.eof, m.pending = true, false
 	}
 }
