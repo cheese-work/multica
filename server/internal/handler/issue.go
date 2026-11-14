@@ -5110,7 +5110,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// handler already owns the issue: entering the step is the handler's cue
 	// to work on it, with the step's brief as the handoff note. (MUL-7420)
 	if willRun {
-		if handoff != nil {
+		if handoff != nil && !trigger.WorkflowHandoff {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
 		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
@@ -6025,7 +6025,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		// copy of the enqueue rule (the historical source of four-entry-point
 		// drift, MUL-3375). suppress_run applies batch-wide.
 		if willRun {
-			if handoff != nil {
+			if handoff != nil && !trigger.WorkflowHandoff {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
 			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
