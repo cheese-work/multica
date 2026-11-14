@@ -89,9 +89,9 @@ func pluginTokenState(i *db.PluginInstallation) string {
 	return "unset"
 }
 
-// pluginConfigAudit lists the submitted keys only. Secret keys carry the word
-// submitted or cleared, never the value; plain values are default-denied to the
-// changed marker by the kind's spec.
+// pluginConfigAudit lists the submitted keys only. Values are passed through
+// raw; the kind has an empty Allow list, so redaction stores every changed key
+// as the changed marker and no value, secret or plain, reaches the row.
 func pluginConfigAudit(values map[string]any) func(service.PluginChange) (map[string]any, map[string]any) {
 	return func(c service.PluginChange) (map[string]any, map[string]any) {
 		stored := map[string]any{}
