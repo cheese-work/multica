@@ -5116,7 +5116,7 @@ func (d *Daemon) handleUpdate(ctx context.Context, runtimeID string, update *Pen
 	d.updateProgress.Store(rep)
 	output, err := d.runUpdateFn(update.TargetVersion)
 	d.updateProgress.Store(nil)
-	rep.wait() // a late progress report must not land after the terminal one
+	rep.flush() // the last bytes_done and phase land before the terminal report, and no late one after
 	if errors.Is(err, cli.ErrForkUpToDate) {
 		// Already on the server's build: nothing was installed, so report
 		// success and keep the healthy daemon running.
