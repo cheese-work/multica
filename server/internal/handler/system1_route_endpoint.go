@@ -35,6 +35,9 @@ type routeIssueRequest struct {
 	Confidence       *float64 `json:"confidence"`
 	ExpectedRevision *int64   `json:"expected_revision"`
 	SuppressRun      bool     `json:"suppress_run"`
+	// HandoffAssignee hands this move to the named assignee instead of the
+	// step's handler. Not with owner_type and owner_id. (CHE-5487)
+	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
 }
 
 type routeRunOutcome struct {
@@ -144,7 +147,11 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	workspaceID := uuidToString(prev.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 	callerRun := h.agentRunOnIssue(r, actorType, prev)
-	caller := workflowCaller{run: callerRun, agent: actorType == "agent"}
+	handoffAssignee, ok := parseHandoffAssignee(w, req.HandoffAssignee)
+	if !ok {
+		return
+	}
+	caller := workflowCaller{run: callerRun, agent: actorType == "agent", handoffAssignee: handoffAssignee}
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prev, &params, true, ownerGiven, false, caller)
 	if err != nil {
 		if writeIssueWorkflowError(w, err) {
@@ -166,7 +173,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if ownerGiven || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
-			writeError(w, status, msg)
+			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
 		}
 	}
@@ -192,7 +199,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	trigger.Version = service.StatusTriggerVersion
 	rec := &statusRecord{workspaceID: prev.WorkspaceID, trigger: trigger}
 	if handoff != nil {
-		rec.handoffWorkflow = handoff.def.Name
+		rec.enterHandoff(handoff)
 	}
 	hook := &routeCapture{Via: "route", DecisionSource: "human", Caller: caller, OwnerExplicit: ownerGiven, Confidence: pgtype.Float4{Float32: float32(*req.Confidence), Valid: true}}
 	if callerRun != nil {

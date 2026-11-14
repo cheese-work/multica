@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,7 +24,11 @@ type statusRecord struct {
 	// handoffWorkflow names the workflow whose handoff step this write enters;
 	// the writer adds who the issue went to from the row it writes.
 	handoffWorkflow string
-	activity        *db.ActivityLog
+	// override and stepHandler record a handoff move that named its own
+	// assignee, and who the step alone would have handed the issue to.
+	override    bool
+	stepHandler issueworkflow.StepAssignee
+	activity    *db.ActivityLog
 	// eventID is the pre-assigned id of the status_changed row (CHE-4439); the
 	// route label shares it. routingExit marks the row as a routing agent leaving its step.
 	eventID     pgtype.UUID
@@ -74,11 +79,22 @@ func (rec *statusRecord) recordedHandoff(issue db.Issue) map[string]string {
 	if rec.handoffWorkflow == "" {
 		return nil
 	}
-	return map[string]string{
+	out := map[string]string{
 		"workflow": rec.handoffWorkflow,
 		"to_type":  issue.AssigneeType.String,
 		"to_id":    uuidToString(issue.AssigneeID),
 	}
+	if rec.override {
+		out["override"] = "true"
+		out["step_handler"] = rec.stepHandler.Type + ":" + uuidToString(rec.stepHandler.ID)
+	}
+	return out
+}
+
+// enterHandoff records the handoff this write makes.
+func (rec *statusRecord) enterHandoff(hand *workflowHandoff) {
+	rec.handoffWorkflow = hand.def.Name
+	rec.override, rec.stepHandler = hand.override, hand.stepHandler
 }
 
 // finishRecordedHandoff adds what only the commit settles, whether the handoff
