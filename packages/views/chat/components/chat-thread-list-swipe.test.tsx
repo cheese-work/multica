@@ -46,6 +46,7 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useUpdateChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useMarkChatSessionUnread: () => ({ mutate: markUnread, mutateAsync: markUnread, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: setArchived, mutateAsync: setArchived, isPending: false }),
+  useBatchChatSessions: () => ({ mutateAsync: vi.fn().mockResolvedValue({ failed: [] }), isPending: false }),
 }));
 vi.mock("@multica/core/chat/attention-mutations", () => {
   const idle = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
@@ -220,6 +221,16 @@ describe("DM list long press", () => {
     act(() => void vi.advanceTimersByTime(2000));
     expect(seam).toHaveBeenCalledTimes(1);
     expect(seam.mock.calls[0]![0]).toMatchObject({ id: "s1" });
+  });
+
+  it("long press selects that DM and shows the bulk bar, even with no seam", () => {
+    renderList([makeSession("s1"), makeSession("s2")]);
+    fireEvent.pointerDown(row("s1"), { ...touch, clientX: 300, clientY: 20 });
+    act(() => void vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(row("s1"), { ...touch, clientX: 300, clientY: 20 });
+    act(() => void vi.advanceTimersByTime(2000));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Actions for 1 selected chat" })).toBeInTheDocument();
   });
 
   it("movement cancels it", () => {
