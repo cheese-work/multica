@@ -923,6 +923,10 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
 		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
 	}
+	// CHE-4937: settle stored release receipts GitHub will not redeliver.
+	if err := schedulerMgr.Register(scheduler.ReleaseReceiptSweepJob(h)); err != nil {
+		slog.Warn("scheduler: failed to register github_release_receipt_sweep job", "error", err)
+	}
 	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
 	for _, job := range []scheduler.JobSpec{
 		scheduler.OpsSnapshotSamplerJob(queries),

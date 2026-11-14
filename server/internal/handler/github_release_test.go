@@ -2,11 +2,14 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/integrations/ghrun"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -309,10 +312,111 @@ func TestReleaseIntakeDiscardsAReceiptWhoseRunIsAnotherWorkflow(t *testing.T) {
 func TestReleaseAuthorizationTransientErrorIsNotARefusal(t *testing.T) {
 	const inst = 880109
 	ws := releaseIntakeFixture(t, inst)
+	w, err := testHandler.Queries.GetWorkspace(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := testHandler.checkRelease(ctx, ws, ghrun.ReleaseReceipt{RepoOwner: "cheese-work", RepoName: "multica", RunID: 880001})
+	_, err = testHandler.checkRelease(ctx, w, ghrun.ReleaseReceipt{RepoOwner: "cheese-work", RepoName: "multica", RunID: 880001})
 	if err == nil {
 		t.Fatal("a failed lookup was reported as a verdict")
 	}
+}
+
+// failRunLookup is a DBTX whose workflow-run read fails, as a dropped
+// connection would, while every other statement goes through.
+type failRunLookup struct{ db.DBTX }
+
+type failedRow struct{}
+
+func (failedRow) Scan(...any) error { return errors.New("connection reset") }
+
+func (f failRunLookup) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if strings.Contains(sql, "FROM github_workflow_run") {
+		return failedRow{}
+	}
+	return f.DBTX.QueryRow(ctx, sql, args...)
+}
+
+func (f failRunLookup) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return f.DBTX.Exec(ctx, sql, args...)
+}
+
+func pendingReceipts(t *testing.T, ws pgtype.UUID) int {
+	t.Helper()
+	var n int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM github_release_pending WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A lookup that fails after the receipt was read must not lose it: the receipt
+// is stored before the lookup, so a later sweep (no manual redelivery) opens the
+// issue. The same stored receipt recovers the interleaving where the run
+// handler listed pending receipts before the job handler stored this one.
+func TestReleaseReceiptSurvivesAFailedLookupAndTheSweepOpensTheIssue(t *testing.T) {
+	const inst = 880110
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	w, err := testHandler.Queries.GetWorkspace(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	flaky := *testHandler
+	flaky.Queries = db.New(failRunLookup{testPool})
+	r := ghrun.ReleaseReceipt{RepoOwner: "cheese-work", RepoName: "multica", RunID: 880001, OldSHA: relOld, NewSHA: relNew, Digest: relDigest}
+	if err := flaky.openRelease(context.Background(), w, r); err == nil {
+		t.Fatal("a failed lookup was swallowed")
+	}
+	if n := pendingReceipts(t, ws); n != 1 {
+		t.Fatalf("pending receipts after the failed lookup = %d, want 1", n)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+
+	if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantReleaseIssues(t, ws, before, 1)
+	if n := pendingReceipts(t, ws); n != 0 {
+		t.Fatalf("pending receipts after the sweep = %d, want 0", n)
+	}
+	// A second sweep creates nothing more.
+	if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantReleaseIssues(t, ws, before, 1)
+}
+
+// The sweep keeps a receipt whose run has still not arrived, and drops one that
+// no run claimed within a week.
+func TestReleaseSweepKeepsAWaitingReceiptAndExpiresAStaleOne(t *testing.T) {
+	const inst = 880111
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	w, err := testHandler.Queries.GetWorkspace(context.Background(), ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := ghrun.ReleaseReceipt{RepoOwner: "cheese-work", RepoName: "multica", RunID: 880010, OldSHA: relOld, NewSHA: relNew, Digest: relDigest}
+	if err := testHandler.openRelease(context.Background(), w, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := pendingReceipts(t, ws); n != 1 {
+		t.Fatalf("waiting receipt after the sweep = %d, want 1", n)
+	}
+	if _, err := testPool.Exec(context.Background(), `UPDATE github_release_pending SET created_at = now() - interval '8 days' WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew); err != nil {
+		t.Fatal(err)
+	}
+	if err := testHandler.SweepReleaseReceipts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := pendingReceipts(t, ws); n != 0 {
+		t.Fatalf("stale receipt after the sweep = %d, want 0", n)
+	}
+	wantReleaseIssues(t, ws, before, 0)
 }

@@ -144,6 +144,40 @@ func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubRel
 	return err
 }
 
+const listGitHubReleasePending = `-- name: ListGitHubReleasePending :many
+SELECT workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest, created_at FROM github_release_pending ORDER BY created_at LIMIT 100
+`
+
+// Oldest first; the sweep settles a bounded batch per tick.
+func (q *Queries) ListGitHubReleasePending(ctx context.Context) ([]GithubReleasePending, error) {
+	rows, err := q.db.Query(ctx, listGitHubReleasePending)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubReleasePending{}
+	for rows.Next() {
+		var i GithubReleasePending
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.RunID,
+			&i.OldSha,
+			&i.SourceSha,
+			&i.ImageDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubReleasePendingForRun = `-- name: ListGitHubReleasePendingForRun :many
 SELECT workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest, created_at FROM github_release_pending
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4

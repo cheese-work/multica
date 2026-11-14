@@ -51,3 +51,7 @@ WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;
 -- name: DeleteGitHubReleasePending :exec
 DELETE FROM github_release_pending
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;
+
+-- name: ListGitHubReleasePending :many
+-- Oldest first; the sweep settles a bounded batch per tick.
+SELECT * FROM github_release_pending ORDER BY created_at LIMIT 100;
