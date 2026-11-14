@@ -65,7 +65,9 @@ func (r *redactor) emit(s string) {
 func (r *redactor) line(text string, sc *lineScan) {
 	if !sc.sawMarker {
 		if !r.inKey {
-			if text != lineOmitted {
+			if sc.overflow {
+				r.cred.omitted(sc.credWord)
+			} else {
 				text = r.cred.line(text)
 			}
 			r.emit(redactTokens(text))
@@ -96,8 +98,10 @@ type lineScan struct {
 	label     string // label of the open BEGIN
 	nested    bool   // see redactor.nested
 	carry     string
-	seen      int // bytes of the line consumed before carry
-	done      int // offset in the line just past the last marker handled
+	credWord  bool   // the line names a credential word anywhere, also past the cap
+	wordCarry string // tail of the line, so a split credential word is still seen
+	seen      int    // bytes of the line consumed before carry
+	done      int    // offset in the line just past the last marker handled
 }
 
 func (l *lineScan) add(frag []byte) {
@@ -129,14 +133,29 @@ func (l *lineScan) add(frag []byte) {
 		s = s[len(s)-markerCarry:]
 	}
 	l.carry = s
-	if room := maxLineBytes - len(l.head); room > 0 {
-		if len(frag) > room {
-			frag, l.overflow = frag[:room], true
-		}
-		l.head = append(l.head, frag...)
-	} else {
+	room := maxLineBytes - len(l.head)
+	switch {
+	case l.overflow:
+		l.scanCredWord(frag)
+	case len(frag) > room:
+		// The line just outgrew the cap. It is never parsed from here on, so
+		// look for a credential word in everything seen so far.
 		l.overflow = true
+		l.scanCredWord(append(append([]byte(nil), l.head...), frag...))
+		frag = frag[:room]
 	}
+	l.head = append(l.head, frag...)
+}
+
+// scanCredWord looks for a credential word in a line that does not fit the cap:
+// credMasker never parses such a line, so this is the only place it is seen.
+func (l *lineScan) scanCredWord(frag []byte) {
+	if l.credWord {
+		return
+	}
+	w := l.wordCarry + string(frag)
+	l.credWord = credWord.MatchString(w)
+	l.wordCarry = w[max(0, len(w)-credWordCarry):]
 }
 
 // RedactTail streams r through the redactor and returns the last maxLines
