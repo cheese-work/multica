@@ -335,7 +335,29 @@
     "unseen_dot": "Sin ver",
     "tag_decision": "Decisión",
     "mark_seen": "Marcar como visto",
-    "more": "Más"
+    "more": "Más",
+    "bulk": {
+      "toolbar_aria_one": "Acciones para {{count}} chat seleccionado",
+      "toolbar_aria_other": "Acciones para {{count}} chats seleccionados",
+      "selected": "{{count}} seleccionado(s)",
+      "select_all": "Seleccionar todo",
+      "cancel": "Cancelar selección",
+      "more_aria": "Más: {{action}}",
+      "group_aria": "Seleccionar grupo {{label}}",
+      "row_aria": "Seleccionar {{title}}",
+      "failed_one": "No se pudo actualizar {{count}} chat",
+      "failed_other": "No se pudo actualizar {{count}} chats",
+      "archived_toast_one": "{{count}} chat archivado",
+      "archived_toast_other": "{{count}} chats archivados",
+      "action": {
+        "seen": "Marcar como visto",
+        "unseen": "Marcar como no visto",
+        "pin": "Fijar",
+        "unpin": "Desfijar",
+        "archive": "Archivar",
+        "unarchive": "Desarchivar"
+      }
+    }
   },
   "header": {
     "rename": "Renombrar chat",
