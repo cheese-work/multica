@@ -22,6 +22,10 @@ type HumanStep struct {
 	Command    string      `json:"command"`
 	Values     []StepValue `json:"values"`
 	VerifyDone string      `json:"verify_done"`
+	// Evidence the human-ask guard asks for (CHE-5753).
+	Observed string      `json:"observed,omitempty"`
+	Files    []StepFile  `json:"files,omitempty"`
+	DryRun   *StepDryRun `json:"dry_run,omitempty"`
 }
 
 const (
@@ -30,7 +34,7 @@ const (
 )
 
 var (
-	stepFields   = []string{"action", "command", "values", "verify_done"}
+	stepFields   = []string{"action", "command", "values", "verify_done", "observed", "files", "dry_run"}
 	valueFields  = []string{"name", "value", "source"}
 	upperName    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b`)
 	placeholder  = regexp.MustCompile(`<[^<>\s]+>`)
@@ -70,6 +74,15 @@ func decodeSteps(raw json.RawMessage, into *[]HumanStep) error {
 			}
 		}
 		if err := decodeValues(prefix+".values", fields["values"], &step.Values); err != nil {
+			return err
+		}
+		if err := decodeString(prefix+".observed", fields["observed"], &step.Observed); err != nil {
+			return err
+		}
+		if err := decodeStepFiles(prefix+".files", fields["files"], &step.Files); err != nil {
+			return err
+		}
+		if err := decodeDryRun(prefix+".dry_run", fields["dry_run"], &step.DryRun); err != nil {
 			return err
 		}
 		*into = append(*into, step)
@@ -168,7 +181,7 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{prefix + "." + field.name, "has a bare UUID; use a name or a mention link"}
 		}
 	}
-	return nil
+	return step.validateAskEvidence(prefix)
 }
 
 // declares reports whether a values name carries the identifier as a whole
@@ -255,6 +268,7 @@ func (ask Ask) humanStepSections() string {
 			for _, value := range step.Values {
 				fmt.Fprintf(&out, "   - %s: %s\n", value.Name, valueText(value))
 			}
+			out.WriteString(step.askEvidenceLines())
 			fmt.Fprintf(&out, "   - Done when: %s\n", step.VerifyDone)
 		}
 		out.WriteString("\n")

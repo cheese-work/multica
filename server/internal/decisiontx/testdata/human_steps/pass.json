@@ -10,7 +10,11 @@
           "source": "agent env MULTICA_SERVER_URL"
         }
       ],
-      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_SERVER_URL"
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_SERVER_URL",
+      "dry_run": {
+        "host": "x99 linux bash, gh 2.x",
+        "result": "ran with --help and against a scratch repo, exit 0; the human's shell differs only in quoting, which the single quotes cover"
+      }
     },
     {
       "action": "Set the workspace secret",
@@ -21,7 +25,11 @@
           "value": "f2b734e0-b6de-4414-8a27-a2f69b0ef843"
         }
       ],
-      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_WORKSPACE_ID"
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_WORKSPACE_ID",
+      "dry_run": {
+        "host": "x99 linux bash, gh 2.x",
+        "result": "ran with --help and against a scratch repo, exit 0; the human's shell differs only in quoting, which the single quotes cover"
+      }
     },
     {
       "action": "Set the token secret. Paste the token at the prompt, never in chat",
@@ -32,7 +40,12 @@
           "source": "web app Settings > API Tokens: https://congvc-c00.taila6fa8a.ts.net:19443/cheese-work/settings"
         }
       ],
-      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_TOKEN"
+      "verify_done": "gh secret list -R cheese-work/multica-dotfiles shows MULTICA_TOKEN",
+      "dry_run": {
+        "host": "x99 linux bash, gh 2.x",
+        "result": "ran with --help and against a scratch repo, exit 0; the human's shell differs only in quoting, which the single quotes cover"
+      },
+      "observed": "web app on port 19443, Settings page, seen 14 Nov 2026 20:10 ICT"
     }
   ],
   "probes": [
