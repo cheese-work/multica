@@ -24,6 +24,7 @@ import (
 )
 
 var ErrWakeupInput = errors.New("invalid wakeup")
+
 // ErrWakeupWatchInput marks a watch_inputs value or placement the API refuses
 // with 422 (CHE-5455).
 var ErrWakeupWatchInput = errors.New("invalid watch_inputs")
@@ -152,6 +153,9 @@ func (s *IssueWakeupService) Expiry(in *WakeupInput, now time.Time) (pgtype.Time
 
 type IssueWakeupService struct {
 	Tasks *TaskService
+	// AuditDefinition, when set, runs inside the definition write's transaction
+	// just before it commits; an error rolls the write back (CHE-5647).
+	AuditDefinition WakeupDefinitionAuditFn
 	// AskGuard is set when an agent registers the rule (see WakeupAskGuard).
 	AskGuard *WakeupAskGuard
 	// RefuseTimerOpenPR is set when an agent registers the rule: an at, every or

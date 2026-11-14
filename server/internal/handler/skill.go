@@ -2562,6 +2562,11 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
+	beforeFiles, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
 	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
@@ -2575,6 +2580,9 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	resp, err := skillWithFilesInTx(r.Context(), qtx, skill)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
+	if !h.auditSkillFileChange(w, r, qtx, skill, beforeFiles, resp) {
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -2615,6 +2623,11 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
+	beforeFiles, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
 	if err := qtx.DeleteSkillFile(r.Context(), file.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
@@ -2624,6 +2637,9 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to list skill files")
 		return
 	}
+	if !h.auditSkillFileChange(w, r, qtx, skill, beforeFiles, resp) {
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
 		return
@@ -2631,6 +2647,22 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 
 	h.publishSkillFilesChanged(r, resp)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// auditSkillFileChange records a supporting-file write as skill.update in the
+// writing transaction. On false it has already answered 500.
+func (h *Handler) auditSkillFileChange(w http.ResponseWriter, r *http.Request, qtx *db.Queries, skill db.Skill, before []db.SkillFile, after SkillWithFilesResponse) bool {
+	err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "skill.update", WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: skillRowAuditFields(skill, before),
+		After: skillAuditFields(skill.Name, skill.Description, skill.Content, skill.Config,
+			skillAuditFilesFromResponses(after.Files)),
+	})
+	if err != nil {
+		writeAuditFailure(w, r, err, "skill.update")
+		return false
+	}
+	return true
 }
 
 // skillWithFilesInTx builds the skill:updated payload from reads inside the
