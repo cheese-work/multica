@@ -60,20 +60,21 @@ const daemonReconcileGrace = 2 * time.Minute
 // run it did not start can outlive it (independent process groups). The boot
 // time is derived from the uptime on the server clock; transit delay can only
 // move it later, which keeps more runs unattested.
+// CHE-5745: when hostScanOK (the daemon read every same-uid process's
+// environ), a run from before the boot is attested too if no process carries
+// its task id (hostTaskIDs). The uptime rule stays the fallback otherwise.
 // An id that does not parse is dropped, which can only keep the gate closed.
-func ReleaseStopsAttestedByDaemon(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, liveTaskIDs []string, daemonUptime time.Duration) ([]pgtype.UUID, error) {
-	live := make([]pgtype.UUID, 0, len(liveTaskIDs))
-	for _, id := range liveTaskIDs {
-		if u, err := util.ParseUUID(id); err == nil {
-			live = append(live, u)
-		}
-	}
+func ReleaseStopsAttestedByDaemon(ctx context.Context, q *db.Queries, runtimeID pgtype.UUID, liveTaskIDs []string, daemonUptime time.Duration, hostTaskIDs []string, hostScanOK bool) ([]pgtype.UUID, error) {
+	live := parseTaskIDs(liveTaskIDs)
+	host := parseTaskIDs(hostTaskIDs)
 	now := time.Now()
 	rows, err := q.ReleaseStopsAttestedByDaemon(ctx, db.ReleaseStopsAttestedByDaemonParams{
 		RuntimeID:        runtimeID,
 		DispatchedBefore: pgtype.Timestamptz{Time: now.Add(-daemonReconcileGrace), Valid: true},
 		DispatchedAfter:  pgtype.Timestamptz{Time: now.Add(-daemonUptime), Valid: true},
 		LiveTaskIds:      live,
+		HostScanOk:       hostScanOK,
+		HostTaskIds:      host,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("daemon stop reconcile: %w", err)
@@ -85,4 +86,14 @@ func ReleaseStopsAttestedByDaemon(ctx context.Context, q *db.Queries, runtimeID 
 		}
 	}
 	return issues, nil
+}
+
+func parseTaskIDs(ids []string) []pgtype.UUID {
+	out := make([]pgtype.UUID, 0, len(ids))
+	for _, id := range ids {
+		if u, err := util.ParseUUID(id); err == nil {
+			out = append(out, u)
+		}
+	}
+	return out
 }
