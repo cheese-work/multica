@@ -1,0 +1,25 @@
+name: pr-guard-rules-edit
+
+# CHE-5208: re-runs the PR guard rules check when a PR changes without a new commit: a title, body or base edit, or a
+# removed reviewer. pr-guards.yml has no such trigger (CHE-4385 run budget: the full guard set re-ran on every body edit,
+# about 37 sample runs); this workflow runs only the one check, so a green `PR guard rules` never outlives a bypass edit.
+# The job id and name match the call in pr-guards.yml, so GitHub shows one required context.
+# SECURITY: `pull_request_target` runs this definition from the base branch; the reusable check builds trusted code only.
+
+on:
+  pull_request_target:
+    types: [edited, review_request_removed]
+
+permissions: {}
+
+concurrency:
+  group: pr-guard-rules-edit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  guard-check:
+    if: github.event.pull_request.state != 'closed'
+    uses: ./.github/workflows/pr-guard-rules.yml
+    permissions:
+      contents: read
+      pull-requests: read
