@@ -49,6 +49,14 @@ func (d *Daemon) runBackgroundTask(ctx context.Context, task Task, provider stri
 	}
 	defer env.ReleaseLock()
 
+	// Acknowledge the start before the provider launches. The server sweep
+	// fails a claimed but unstarted background task with bg_claim_timeout, so
+	// without this call every output_only run is discarded. A rejected claim
+	// is discarded by handleTask; other errors take its FailTask path.
+	if _, err := d.startTaskWithCurrentClaim(ctx, task); err != nil {
+		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
+	}
+
 	model := entry.Model
 	var customEnv map[string]string
 	if task.Agent != nil {
