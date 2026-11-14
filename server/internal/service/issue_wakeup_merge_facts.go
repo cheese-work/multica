@@ -14,8 +14,10 @@ import (
 // StoredMergeFacts is the production MergeFactsSource (CHE-5594). It reads only
 // stored state, in one short read-only transaction: the PR snapshot row, the
 // pause variables the refresher keeps, and the receipt facts recorded for the
-// exact PR head in merge_receipt_fact. It calls no network and runs no PR code.
-// A fact it cannot read stays absent, which the evaluator refuses.
+// exact PR head in merge_receipt_fact. The database invalidates a receipt on
+// every PR event that could revoke it, so no person refreshes it by hand. It
+// calls no network and runs no PR code. A fact it cannot read stays absent,
+// which the evaluator refuses.
 type StoredMergeFacts struct {
 	Tx      TxStarter
 	Queries *db.Queries
@@ -36,9 +38,10 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	var f MergeFacts
 	var checks pgtype.Text
 	var head, snapshotHead string
-	err = tx.QueryRow(ctx, `SELECT checks_rollup_state, head_sha, snapshot_head_sha FROM github_pull_request
+	var snapshotAt pgtype.Timestamptz
+	err = tx.QueryRow(ctx, `SELECT checks_rollup_state, head_sha, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
 		WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4`,
-		c.WorkspaceID, c.Owner, c.Repo, c.Number).Scan(&checks, &head, &snapshotHead)
+		c.WorkspaceID, c.Owner, c.Repo, c.Number).Scan(&checks, &head, &snapshotHead, &snapshotAt)
 	if err != nil {
 		return MergeFacts{}, fmt.Errorf("read PR snapshot: %w", err)
 	}
@@ -84,9 +87,17 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	if labels != nil {
 		f.Labels = &labels
 	}
-	// The facts are only as fresh as the oldest input.
-	if pausesObserved.Before(f.ObservedAt) {
-		f.ObservedAt = pausesObserved
+	// A receipt does not age out: the database deletes it on any head, base,
+	// state, review, label or comment change of the PR (migration 999g and GitHub
+	// intake), so what is left was true when it was last read. The facts are
+	// only as fresh as the inputs the refreshers keep current, which are the PR
+	// snapshot and the pause reads. That lets a veto deadline that passes long
+	// after the receipt was recorded dispatch with no new receipt.
+	f.ObservedAt = pausesObserved
+	if !snapshotAt.Valid {
+		f.ObservedAt = time.Time{}
+	} else if snapshotAt.Time.Before(f.ObservedAt) {
+		f.ObservedAt = snapshotAt.Time
 	}
 	return f, nil
 }

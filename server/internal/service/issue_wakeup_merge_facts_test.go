@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -88,9 +89,13 @@ func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
 		{"gate-path PR inside the veto window", func(t *testing.T, m *mergeFix) {
 			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],last_pass_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, m.clock.Add(-time.Hour))
 		}},
-		{"stale facts", func(t *testing.T, m *mergeFix) {
-			m.f.Exec(t, "UPDATE merge_receipt_fact SET observed_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, m.clock.Add(-301*time.Second))
+		{"stale PR snapshot", func(t *testing.T, m *mergeFix) {
+			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at=$2 WHERE id=$1", m.pr, m.clock.Add(-301*time.Second))
 		}},
+		{"stale pause read", func(t *testing.T, m *mergeFix) {
+			m.f.Exec(t, "UPDATE merge_pause_state SET fetched_at=$1 WHERE repo_owner='fixture'", m.clock.Add(-301*time.Second))
+		}},
+		{"review revoked after the receipt", func(t *testing.T, m *mergeFix) { m.revoke(t) }},
 		{"no facts for the current head", func(t *testing.T, m *mergeFix) {
 			m.f.Exec(t, "UPDATE github_pull_request SET head_sha='b', snapshot_head_sha='b' WHERE id=$1", m.pr)
 		}},
@@ -167,5 +172,93 @@ func TestRecordMergeReceiptStoresOnlyTheCurrentHeadAndBase(t *testing.T) {
 	}
 	if n := m.f.Count(t, "SELECT count(*) FROM merge_receipt_fact WHERE workspace_id=$1 AND head_sha='a'", m.f.WorkspaceID); n != 0 {
 		t.Fatalf("%d rows kept for the old head, want 0", n)
+	}
+}
+
+// revoke stores what GitHub intake stores when a reviewer requests changes or
+// dismisses a review after the receipt was recorded.
+func (m *mergeFix) revoke(t *testing.T) {
+	t.Helper()
+	m.f.Exec(t, "UPDATE github_pull_request SET review_state='changes_requested',review_head_sha='a',review_id=7,review_at=$2 WHERE id=$1", m.pr, m.clock)
+}
+
+// refresh moves the clock and re-reads the inputs the refreshers keep current:
+// the PR snapshot and the pause variables.
+func (m *mergeFix) refresh(t *testing.T, d time.Duration) {
+	t.Helper()
+	m.clock = m.clock.Add(d)
+	m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at=$2 WHERE id=$1", m.pr, m.clock.Add(-time.Minute))
+	m.s.PauseVars = &fakePauseVars{}
+	if err := m.s.RefreshMergePauses(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A revoked review withdraws the queued run and stops the claim, with no
+// person recording a new receipt.
+func TestStoredMergeFactsRevocationWithdrawsQueuedWorkAndStopsClaim(t *testing.T) {
+	m := newMergeFix(t, nil, "")
+	mainStyle(t, m)
+	m.stored(t, "")
+	m.tick(t)
+	if n := m.live(t); n != 1 {
+		t.Fatalf("%d live runs before the revocation, want 1", n)
+	}
+	task := m.lastTask(t)
+	m.revoke(t)
+	if err := m.s.CheckClaim(context.Background(), task); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("CheckClaim after the revocation = %v, want ErrWakeupForbidden", err)
+	}
+	m.tick(t)
+	if live, cancelled := m.live(t), m.cancelled(t); live != 0 || cancelled != 1 {
+		t.Fatalf("live=%d cancelled=%d after the revocation, want 0 and 1", live, cancelled)
+	}
+}
+
+// A PR retargeted main -> release -> main on one head gets no old receipt back.
+func TestStoredMergeFactsRetargetRoundTripDoesNotReviveTheReceipt(t *testing.T) {
+	m := newMergeFix(t, nil, "")
+	mainStyle(t, m)
+	m.stored(t, "")
+	m.tick(t)
+	task := m.lastTask(t)
+	for _, base := range []string{"release", "main"} {
+		m.f.Exec(t, "UPDATE github_pull_request SET snapshot_base_ref=$2 WHERE id=$1", m.pr, base)
+	}
+	if err := m.s.CheckClaim(context.Background(), task); !errors.Is(err, ErrWakeupForbidden) {
+		t.Fatalf("CheckClaim after the round trip = %v, want ErrWakeupForbidden", err)
+	}
+	m.tick(t)
+	if live := m.live(t); live != 0 {
+		t.Fatalf("%d live runs after the round trip, want 0", live)
+	}
+	m.finishRuns(t)
+	m.tick(t)
+	if n := m.runs(t); n != 1 {
+		t.Fatalf("%d runs in total after the round trip, want the 1 from before", n)
+	}
+}
+
+// The 24 h veto deadline passes long after the receipt was written. The
+// receipt does not age out; the refreshed snapshot and pause reads carry the
+// freshness, so the deadline dispatches with no new receipt.
+func TestStoredMergeFactsVetoDeadlineDispatchesAfterTheReceiptAge(t *testing.T) {
+	m := newMergeFix(t, nil, "")
+	mainStyle(t, m)
+	m.stored(t, "")
+	m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],last_pass_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, m.clock.Add(-time.Hour))
+	m.tick(t)
+	if n := m.runs(t); n != 0 {
+		t.Fatalf("%d runs inside the veto window, want 0", n)
+	}
+	m.refresh(t, 22*time.Hour)
+	m.tick(t)
+	if n := m.runs(t); n != 0 {
+		t.Fatalf("%d runs one hour before the deadline, want 0", n)
+	}
+	m.refresh(t, 2*time.Hour)
+	m.tick(t)
+	if n := m.runs(t); n != 1 {
+		t.Fatalf("%d runs after the deadline with refreshed inputs and no new receipt, want 1", n)
 	}
 }
