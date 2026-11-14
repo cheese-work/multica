@@ -360,7 +360,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特图",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "选择所有可见任务",
@@ -447,7 +448,9 @@
     "more_issues": "还有未加载的议题。",
     "retry": "重试",
     "load_more": "加载更多",
-    "no_lane": "无值"
+    "no_lane": "无值",
+    "timeline_failed": "无法加载时间线。",
+    "loading": "正在加载时间线…"
   },
   "gantt2": {
     "clipped_start": "在此时间窗口之前开始",
@@ -1572,7 +1575,6 @@
     "not_merged": "{{prs}} 已关闭，未合并",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合并。之后有新 PR 合并时会改为 {{status}}。",
-    "workflow_owned": "PR 合并后由工作流移动此任务",
     "issue_disabled": "此任务合并后不改状态",
     "issue_disabled_action": "恢复"
   },

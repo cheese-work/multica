@@ -386,6 +386,8 @@
     "unseen_failed": "無法將此對話標記為未讀",
     "mark_seen": "標記為已讀",
     "more": "更多",
+    "rename": "重新命名",
+    "select": "多選",
     "undo": "復原",
     "group": {
       "pinned": "已置頂",

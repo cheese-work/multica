@@ -43,6 +43,7 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useSetChatSessionPinned: () => ({ mutate: setPinned, mutateAsync: setPinned, isPending: false }),
   useMarkChatSessionRead: () => ({ mutate: markRead, mutateAsync: markRead, isPending: false }),
+  useUpdateChatSession: () => ({ mutate: vi.fn(), isPending: false }),
   useMarkChatSessionUnread: () => ({ mutate: markUnread, mutateAsync: markUnread, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: setArchived, mutateAsync: setArchived, isPending: false }),
 }));
@@ -177,7 +178,7 @@ describe("DM list swipe", () => {
     renderList([makeSession("s1")]);
     drag(row("s1"), -120);
     fireEvent.click(trayButton("s1", "More"));
-    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /^Archive/ })).toBeInTheDocument();
   });
 
   it("a full left swipe archives and shows an Undo toast that restores the DM", async () => {
@@ -236,6 +237,6 @@ describe("DM list ⋯ trigger", () => {
     renderList([makeSession("s1")]);
     const trigger = within(row("s1") as HTMLElement).getByRole("button", { name: "Chat actions" });
     expect(trigger.className).toMatch(/\bsize-11\b/);
-    expect(trigger.className).toMatch(/hover:hover\)\]:hidden/);
+    expect(trigger.className).toMatch(/hover:hover\)\]:invisible/);
   });
 });

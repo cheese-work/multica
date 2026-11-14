@@ -15,30 +15,31 @@ import type { ApiClient } from "@multica/core/api/client";
 import { useT } from "../../../packages/views/i18n";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
+import { Card, CardContent } from "@multica/ui/components/ui/card";
+import { Spinner } from "@multica/ui/components/ui/spinner";
+import { Input } from "@multica/ui/components/ui/input";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@multica/ui/components/ui/field";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { DecisionActionApproval } from "../../../packages/views/common/decision-action-approval";
 import { DescriptionDisclosure } from "../../../packages/views/issues/components/description-disclosure";
 import { RunBudgetChip } from "../../../packages/views/issues/components/run-budget-chip";
-import { Spinner } from "@multica/ui/components/ui/spinner";
 import { Label } from "@multica/ui/components/ui/label";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
+import { HunksRegion } from "../../../packages/views/chat/components/diff-hunks";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { cn } from "@multica/ui/lib/utils";
 import { SettingsCard, SettingsRow, SettingsSection } from "../../../packages/views/settings/components/settings-layout";
 import { PillMenu } from "../../../packages/views/issues/components/wakeup-pickers";
 import {
-  Archive, TriangleAlert, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2,
+  Archive, ChevronDown, ChevronRight, Copy, Download, Maximize2, MessageSquareQuote, Plus, RotateCcw, Trash2, TriangleAlert,
 } from "@multica/ui/icons";
-import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@multica/ui/components/ui/table";
 import { AgentCreateShell, AgentCreateChip } from "../../../packages/views/agents/create/create-shell";
 import { WorkspaceSlugProvider } from "../../../packages/core/paths/hooks";
@@ -551,6 +552,105 @@ function PillMenuDemo() {
   );
 }
 
+function InlineRetry() {
+  const { t } = useT("chat");
+  return (
+    <div className="p-6 max-w-[560px]">
+      <Row label="needs-you list error">
+        <p className="text-caption text-destructive">{t(($) => $.needs_you.error)}</p>
+        <Button variant="outline" size="sm">{t(($) => $.needs_you.retry)}</Button>
+      </Row>
+      <Row label="stats dialog error">
+        <p className="text-caption text-destructive">{t(($) => $.stats.error)}</p>
+        <Button variant="outline" size="sm">{t(($) => $.stats.retry)}</Button>
+      </Row>
+      <Row label="narrow parent (240px)">
+        <div className="w-[240px] rounded-md border p-2 space-y-2">
+          <p className="text-caption text-destructive">{t(($) => $.needs_you.error)}</p>
+          <Button variant="outline" size="sm">{t(($) => $.needs_you.retry)}</Button>
+        </div>
+      </Row>
+      <Row label="retry disabled"><Button variant="outline" size="sm" disabled>{t(($) => $.needs_you.retry)}</Button></Row>
+    </div>
+  );
+}
+
+function InlineNotice() {
+  return (
+    <div className="p-6 max-w-[620px] space-y-3">
+      <p className="text-caption text-muted-foreground">Alert tones today: default and destructive. Warning, muted and success are ad-hoc classes at the call sites (open decision, see ledger).</p>
+      <Alert>
+        <AlertTitle>Wakeups paused</AlertTitle>
+        <AlertDescription>No wakeup rule fires until an owner resumes them.</AlertDescription>
+      </Alert>
+      <Alert variant="destructive">
+        <TriangleAlert />
+        <AlertTitle>Interactive login failed</AlertTitle>
+        <AlertDescription>The runtime could not sign in. Re-run login on the machine.</AlertDescription>
+      </Alert>
+      <div className="rounded-lg border border-warning/40 bg-warning/10 px-2.5 py-2 text-body text-warning">Warning box (call-site classes, not an Alert variant)</div>
+      <div className="rounded-lg border bg-muted px-2.5 py-2 text-body text-muted-foreground">Muted box (call-site classes)</div>
+      <div className="rounded-lg border border-success/40 bg-success/10 px-2.5 py-2 text-body text-success">Success box (call-site classes)</div>
+    </div>
+  );
+}
+
+// The real SlackTab reads the auth store and api (the auth store hangs headless Chrome), so this view
+// composes the same Card and AlertDialog primitives and the same locale keys, states side by side.
+function IntegrationTab() {
+  const { t } = useT("settings");
+  const Block = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <section className="space-y-2"><p className="text-micro uppercase tracking-wide text-muted-foreground">{label}</p>{children}</section>
+  );
+  return (
+    <div className="p-6 max-w-[680px] space-y-5">
+      {/* Frame only: drop the scrim so the page stays legible and park the dialog beside the rows. */}
+      <style>{`[data-slot="alert-dialog-overlay"]{background:transparent!important;backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+@media (min-width:1024px){[data-slot="alert-dialog-content"]{top:420px!important;left:calc(50% + 140px)!important;transform:none!important}}`}</style>
+      <Block label="not enabled">
+        <Card><CardContent className="space-y-2">
+          <p className="text-body font-medium">{t(($) => $.slack.not_enabled_title)}</p>
+          <p className="text-caption text-muted-foreground">{t(($) => $.slack.not_enabled_description_prefix)} <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">MULTICA_SLACK_SECRET_KEY</code> {t(($) => $.slack.not_enabled_description_suffix)}</p>
+        </CardContent></Card>
+      </Block>
+      <Block label="loading">
+        <Card><CardContent><p className="text-body text-muted-foreground">{t(($) => $.slack.loading)}</p></CardContent></Card>
+      </Block>
+      <Block label="empty">
+        <Card><CardContent className="space-y-2">
+          <p className="text-body font-medium">{t(($) => $.slack.empty_title)}</p>
+          <p className="text-caption text-muted-foreground">{t(($) => $.slack.empty_description_prefix)} <strong>{t(($) => $.slack.empty_description_cta)}</strong> {t(($) => $.slack.empty_description_suffix)}</p>
+        </CardContent></Card>
+      </Block>
+      <Block label="installation rows (active, revoked)">
+        <Card><CardContent className="divide-y">
+          {[["Release bot", false], ["Docs bot", true]].map(([name, revoked]) => (
+            <div key={String(name)} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+              <div className="space-y-1">
+                <p className="text-body font-medium">{name}{revoked && <span className="ml-2 rounded-xs bg-muted px-1.5 py-0.5 text-micro text-muted-foreground">{t(($) => $.slack.revoked_badge)}</span>}</p>
+                <p className="text-micro text-muted-foreground">{t(($) => $.slack.installed_at_label, { when: "13/11/2026, 09:30" })}</p>
+              </div>
+              {!revoked && <Button variant="outline" size="sm"><Trash2 className="h-3 w-3" />{t(($) => $.slack.disconnect)}</Button>}
+            </div>
+          ))}
+        </CardContent></Card>
+      </Block>
+      <AlertDialog open onOpenChange={() => {}}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t(($) => $.slack.disconnect_confirm_title)}</AlertDialogTitle>
+            <AlertDialogDescription>{t(($) => $.slack.disconnect_confirm_description)}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t(($) => $.slack.disconnect_confirm_cancel)}</AlertDialogCancel>
+            <AlertDialogAction>{t(($) => $.slack.disconnect)}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
 const APPS: [string, string, "default" | "secondary" | "outline", string][] = [
   ["GitHub", "Pull requests, issues and checks for cheese-work repos.", "default", "Connected"],
   ["Linear", "Read and write issues from agent runs.", "secondary", "Needs reauth"],
@@ -655,6 +755,32 @@ function ConfirmDialog() {
   );
 }
 
+const HUNKS = [
+  { old_start: 3, new_start: 3, lines: [" ## Goal", "-Capture 3 pilot frames.", "+Capture the remaining Patterns frames.", " ", "+Each batch has 5 items at most."] },
+  { old_start: 20, new_start: 21, lines: [" ## Done when", "-Three entries link a frame.", "+No active entry is pending."] },
+];
+function DiffDialog() {
+  const { t } = useT("chat");
+  return (
+    <div className="p-6 max-w-[640px] space-y-4">
+      <Tabs defaultValue="diff">
+        <TabsList>
+          <TabsTrigger value="diff">Diff</TabsTrigger>
+          <TabsTrigger value="after">After</TabsTrigger>
+        </TabsList>
+        <TabsContent value="diff" className="mt-3">
+          <HunksRegion hunks={HUNKS} label="Plan revision 18 to 19, changed lines" />
+        </TabsContent>
+        <TabsContent value="after" />
+      </Tabs>
+      <Collapsible defaultOpen>
+        <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground"><ChevronRight className="size-3" />{t(($) => $.decision.artifacts.lines_hidden, { count: 14 })}</CollapsibleTrigger>
+        <CollapsibleContent className="mt-2 text-caption text-muted-foreground">Folded unchanged lines open here.</CollapsibleContent>
+      </Collapsible>
+    </div>
+  );
+}
+
 // Raw-class views: these ledger entries list no shared component yet (build: "one shared ..."),
 // so each view renders the classes the fork uses today, copied from the cited files.
 function SectionEyebrow() {
@@ -721,6 +847,21 @@ function TypeRoleTokens() {
           <p className="text-body">text-xs, text-sm, text-body-sm (not a token)</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Each local copy formats with Intl.DateTimeFormat; 5 use Asia/Bangkok, 1 uses Asia/Ho_Chi_Minh, one appends " ICT" by literal.
+function IctTimestamp() {
+  const d = new Date("2026-11-13T07:30:00Z");
+  const fmt = (timeZone: string) => new Intl.DateTimeFormat("en-GB", { timeZone, day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(d);
+  return (
+    <div className="p-6 max-w-[620px]">
+      <Row label="recent runs (literal suffix)"><span className="text-body"><time dateTime={d.toISOString()}>{fmt("Asia/Bangkok")} ICT</time></span></Row>
+      <Row label="Asia/Bangkok"><span className="text-body">{fmt("Asia/Bangkok")} ICT</span></Row>
+      <Row label="Asia/Ho_Chi_Minh"><span className="text-body">{fmt("Asia/Ho_Chi_Minh")} ICT</span></Row>
+      <Row label="no suffix (the defect)"><span className="text-body text-destructive">{fmt("Asia/Bangkok")}</span></Row>
+      <p className="mt-3 text-caption text-muted-foreground">Rule: every time a person reads is ICT with the ICT suffix. Both zones are UTC+7, so the output matches.</p>
     </div>
   );
 }
@@ -804,6 +945,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "collapsible-section": CollapsibleSection,
   "settings-select-row": SettingsSelectRow,
   "pill-menu": PillMenuDemo,
+  "inline-retry": InlineRetry,
+  "inline-notice": InlineNotice,
+  "integration-tab": IntegrationTab,
+  "diff-dialog": DiffDialog,
+  "ict-timestamp": IctTimestamp,
   "integration-card-grid": IntegrationCardGrid,
   "settings-table-section": SettingsTableSection,
   "settings-action-row": SettingsActionRow,

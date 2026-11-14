@@ -8,8 +8,17 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuShortcut,
+  ContextMenuTrigger,
+} from "@multica/ui/components/ui/context-menu";
 
 export interface RowActionItem {
   key: string;
@@ -17,6 +26,8 @@ export interface RowActionItem {
   label: string;
   onSelect: () => void;
   danger?: boolean;
+  /** Single-key hint shown in the menu; the row binds the key (see `handleRowShortcut`). */
+  shortcut?: string;
 }
 
 /**
@@ -55,15 +66,22 @@ export function RowActionsMenu({
   large,
   open,
   onOpenChange,
+  revealOnHover = false,
 }: {
   /** Accessible name of the trigger, e.g. "Chat actions". */
   label: string;
   groups: RowActionItem[][];
-  /** 44×44 hit area on touch (coarse-pointer) surfaces. */
+  /** 44×44 hit area where the pointer cannot hover (touch). */
   large?: boolean;
   /** Controlled open state, e.g. for a swipe tray's "More". */
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * Where the pointer can hover, show the trigger only while the enclosing
+   * `group/row` is hovered or has focus, instead of replacing it with the
+   * caller's own hover controls. Without hover it stays always visible.
+   */
+  revealOnHover?: boolean;
 }) {
   const filled = groups.filter((group) => group.length > 0);
   if (filled.length === 0) return null;
@@ -79,8 +97,11 @@ export function RowActionsMenu({
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "inline-flex shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground [@media(hover:hover)]:hidden",
-              large ? "size-11" : "size-8",
+              "inline-flex shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground",
+              large ? "size-11 [@media(hover:hover)]:size-8" : "size-8",
+              revealOnHover
+                ? "[@media(hover:hover)]:invisible [@media(hover:hover)]:group-hover/row:visible [@media(hover:hover)]:group-focus-within/row:visible data-popup-open:visible"
+                : "[@media(hover:hover)]:hidden",
             )}
           >
             <MoreHorizontal className="size-4" />
@@ -99,11 +120,52 @@ export function RowActionsMenu({
               >
                 {item.icon}
                 {item.label}
+                {item.shortcut && <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>}
               </DropdownMenuItem>
             ))}
           </Fragment>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * Right-click opens the same groups `RowActionsMenu` offers. Wraps the row, so
+ * the row's own handlers stay on `children`.
+ */
+export function RowContextMenu({
+  groups,
+  children,
+  ...rowProps
+}: {
+  groups: RowActionItem[][];
+  children: ReactNode;
+} & Omit<React.ComponentProps<"div">, "children">) {
+  const filled = groups.filter((group) => group.length > 0);
+  if (filled.length === 0) return <div {...rowProps}>{children}</div>;
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<div {...rowProps} />}>{children}</ContextMenuTrigger>
+      <ContextMenuContent className="w-auto" side="bottom" align="start">
+        {filled.map((group, index) => (
+          <Fragment key={group[0]!.key}>
+            {index > 0 && <ContextMenuSeparator />}
+            {group.map((item) => (
+              <ContextMenuItem
+                key={item.key}
+                variant={item.danger ? "destructive" : "default"}
+                onClick={item.onSelect}
+              >
+                {item.icon}
+                {item.label}
+                {item.shortcut && <ContextMenuShortcut>{item.shortcut}</ContextMenuShortcut>}
+              </ContextMenuItem>
+            ))}
+          </Fragment>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }

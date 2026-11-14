@@ -386,6 +386,8 @@
     "unseen_failed": "このチャットを未読にできませんでした",
     "mark_seen": "既読にする",
     "more": "その他",
+    "rename": "名前を変更",
+    "select": "複数選択",
     "undo": "元に戻す",
     "group": {
       "pinned": "ピン留め",

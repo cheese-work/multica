@@ -398,6 +398,8 @@
     "unseen_failed": "Impossible de marquer cette discussion comme non vue",
     "mark_seen": "Marquer comme vu",
     "more": "Plus",
+    "rename": "Renommer",
+    "select": "Sélectionner plusieurs",
     "undo": "Annuler",
     "group": {
       "pinned": "Épinglés",
