@@ -19,6 +19,7 @@ const read = (name) => {
 const rules = read("pr-guard-rules.yml");
 const guards = read("pr-guards.yml");
 const edits = read("pr-guard-rules-edit.yml");
+const queue = read("pr-guard-rules-queue.yml");
 
 test("pr-guard-rules.yml is a reusable workflow with one job named PR guard rules", () => {
   assert.match(rules, /^on:\n {2}workflow_call:/m);
@@ -26,7 +27,7 @@ test("pr-guard-rules.yml is a reusable workflow with one job named PR guard rule
 });
 
 test("the check builds the CLI from the trusted workflow commit and never runs the PR head", () => {
-  assert.match(rules, /ref: \$\{\{ github\.workflow_sha \}\}/);
+  assert.match(rules, /ref: \$\{\{ github\.event\.merge_group\.base_sha \|\| github\.workflow_sha \}\}/);
   assert.match(rules, /persist-credentials: false/);
   assert.match(rules, /go build -o "\$RUNNER_TEMP\/multica" \.\/cmd\/multica/);
   assert.doesNotMatch(rules, /pull_request\.head\.(sha|ref)|refs\/pull/);
@@ -55,12 +56,12 @@ const callerJob = (wf) => {
   return m[1];
 };
 
-for (const [label, wf] of [["pr-guards.yml", guards], ["pr-guard-rules-edit.yml", edits]]) {
+for (const [label, wf] of [["pr-guards.yml", guards], ["pr-guard-rules-edit.yml", edits], ["pr-guard-rules-queue.yml", queue]]) {
   test(`${label} calls the reusable check as job guard-check with read-only permissions, skipping closed PRs`, () => {
     const job = callerJob(wf);
     assert.match(job, /uses: \.\/\.github\/workflows\/pr-guard-rules\.yml/);
     assert.match(job, /permissions:\n {6}contents: read\n {6}pull-requests: read/);
-    assert.match(job, /if: github\.event\.pull_request\.state != 'closed'/);
+    if (wf !== queue) assert.match(job, /if: github\.event\.pull_request\.state != 'closed'/);
     assert.doesNotMatch(job, /secrets:/);
   });
 }
@@ -70,6 +71,21 @@ test("a title, body or base edit and a removed reviewer re-run the check, in the
   assert.match(edits, /group: pr-guard-rules-edit-\$\{\{ github\.event\.pull_request\.number \}\}/);
   assert.match(edits, /cancel-in-progress: true/);
   assert.match(guards, /types: \[opened, synchronize, reopened, ready_for_review\]/);
+});
+
+// A merge-queue build re-judges the PR at merge time, so a stored-policy, variable or base-rule change since
+// the last green PR run cannot let a stale success merge. The queue event runs the merged tree, so the CLI is
+// built from the queue's base commit, never from the PR code in it.
+test("a merge-queue build runs the same check as job guard-check, with no concurrency cancel", () => {
+  assert.match(queue, /^on:\n {2}merge_group:\n {4}types: \[checks_requested\]$/m);
+  assert.doesNotMatch(queue, /pull_request/);
+  assert.doesNotMatch(queue, /cancel-in-progress/);
+});
+
+test("the check builds from the queue's base commit on a merge-queue build", () => {
+  assert.match(rules, /ref: \$\{\{ github\.event\.merge_group\.base_sha \|\| github\.workflow_sha \}\}/);
+  assert.match(rules, /MERGE_GROUP_HEAD_REF: \$\{\{ github\.event\.merge_group\.head_ref \}\}/);
+  assert.doesNotMatch(rules, /merge_group\.head_sha/);
 });
 
 // The step logic lives in scripts/pr-guard-rules.sh so it can be run against a fake CLI.
@@ -116,4 +132,32 @@ test("the CLI's exit code (1 broken rule, 2 refused) fails the check", () => {
     const r = run({ GUARD_POLICY_JSON: '{"version":1}', GUARD_POLICY_SHA256: "x", FAKE_EXIT: code });
     assert.equal(r.status, Number(code));
   }
+});
+
+const POLICY = { GUARD_POLICY_JSON: '{"version":1,"plugins":[]}', GUARD_POLICY_SHA256: "abc123" };
+
+test("merge-queue build: the PR number comes from the queue branch name", () => {
+  for (const ref of [
+    "refs/heads/gh-readonly-queue/main/pr-1560-0123456789abcdef0123456789abcdef01234567",
+    "refs/heads/gh-readonly-queue/release/2026/pr-7-0123456789abcdef0123456789abcdef01234567",
+  ]) {
+    const n = ref.match(/pr-(\d+)-/)[1];
+    const r = run({ ...POLICY, PR_URL: "", MERGE_GROUP_HEAD_REF: ref });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.calls, new RegExp(`args=guard check-pr https://github\\.com/o/r/pull/${n} -R o/r `));
+  }
+});
+
+test("merge-queue build: an unreadable queue branch name fails closed with exit 2", () => {
+  for (const ref of ["", "refs/heads/main", "refs/heads/gh-readonly-queue/main/pr-x-abc", "refs/heads/gh-readonly-queue/main/pr-12-abc;id"]) {
+    const r = run({ ...POLICY, PR_URL: "", MERGE_GROUP_HEAD_REF: ref });
+    assert.equal(r.status, 2, ref);
+    assert.match(r.stdout + r.stderr, /::error::/);
+    assert.equal(r.calls, "", ref);
+  }
+});
+
+test("a PR event keeps using its own PR URL, whatever the queue variable holds", () => {
+  const r = run({ ...POLICY, MERGE_GROUP_HEAD_REF: "refs/heads/gh-readonly-queue/main/pr-9-0123456789abcdef0123456789abcdef01234567" });
+  assert.match(r.calls, /pull\/7 -R o\/r /);
 });
