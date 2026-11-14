@@ -1,0 +1,66 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+:root{--shell:oklch(0.964 0.001 286);--canvas:oklch(0.988 0 0);--surface:#fff;--hover:oklch(0.967 0.001 286);--sel:oklch(0.95 0.002 286);--border:oklch(0.92 0.004 286);--ctl:oklch(0.78 0.006 286);--fg:oklch(0.141 0.005 286);--muted:oklch(0.505 0.016 286);--primary:oklch(0.21 0.006 286);--pfg:oklch(0.985 0 0);--brand:oklch(0.56 0.194 256);--brandbg:oklch(0.96 0.03 256);--ok:oklch(0.42 0.12 145);--okbg:oklch(0.96 0.04 145);--warnbg:oklch(0.97 0.05 85);--warnbd:oklch(0.82 0.11 85);--warnfg:oklch(0.38 0.08 70);--errbg:oklch(0.97 0.025 27);--errbd:oklch(0.8 0.1 27);--errfg:oklch(0.45 0.18 27)}
+*{box-sizing:border-box;margin:0}body{background:var(--shell);font:14px/20px Inter,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg);display:flex;height:840px}
+a{color:inherit;text-decoration:none}button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}.it:focus-visible,.nav a:focus-visible{outline-offset:-2px}
+.skip{position:absolute;left:8px;top:-48px;z-index:2;background:var(--primary);color:var(--pfg);padding:8px 12px;border-radius:6px}.skip:focus{top:8px}
+.nav{width:232px;padding:16px 8px;font-size:13px;border-right:1px solid var(--border);flex:none}.nav h6{font-size:11px;line-height:15px;color:var(--muted);font-weight:600;padding:10px 10px 4px;text-transform:uppercase;letter-spacing:.04em}.nav a{display:block;height:32px;line-height:32px;padding:0 10px;border-radius:6px;color:var(--fg)}.nav a.on{background:var(--sel);font-weight:600}
+main{flex:1;background:var(--canvas);padding:28px 40px;overflow:hidden}.wrap{max-width:1120px}
+.mnav,.back{display:none}
+.top{display:flex;gap:12px;align-items:center}h1{font-size:20px;line-height:28px;font-weight:650}.badge{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:10px;background:var(--hover);color:var(--muted);font-size:12px;font-weight:500}
+.lede{color:var(--muted);font-size:13px;margin:4px 0 20px}.sync{margin-left:auto;font-size:12px;color:var(--muted)}code{font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--sel);padding:1px 5px;border-radius:4px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:8px 16px;border-bottom:1px solid var(--border)}td{padding:12px 16px;border-bottom:1px solid var(--border);vertical-align:middle}tr:last-child td{border:0}
+td code{white-space:nowrap}.nm{font-weight:600}.sub{color:var(--muted);font-size:12px}.pill{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:4px;font-size:12px;font-weight:600}.fix{background:var(--brandbg);color:oklch(0.4 0.15 256)}.deny{background:var(--errbg);color:var(--errfg)}.lock{background:var(--sel);color:var(--fg)}
+.sw{width:36px;height:20px;border-radius:10px;border:0;padding:0;background:var(--primary);position:relative;display:inline-block;vertical-align:middle}.sw:after{content:"";position:absolute;right:2px;top:2px;width:16px;height:16px;border-radius:50%;background:#fff}.sw[aria-checked=false]{background:var(--ctl)}.sw[aria-checked=false]:after{right:auto;left:2px}
+.btn{display:inline-flex;align-items:center;height:32px;padding:0 12px;border-radius:6px;border:1px solid var(--border);background:var(--surface);font-size:13px;font-weight:550}
+.foot{margin-top:20px;font-size:12px;color:var(--muted);display:flex;gap:16px;align-items:center}
+.split{display:grid;grid-template-columns:340px 1fr;gap:16px;align-items:start}
+.list{padding:6px}.list h5{font-size:11px;line-height:15px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;padding:10px 10px 4px}
+.it{display:block;padding:10px;border-radius:6px;border:1px solid transparent}.it.sel{background:var(--sel);border-color:var(--border)}.it .r1{display:flex;align-items:center;gap:8px}.it .nm{flex:1}.it .r2{display:flex;gap:10px;margin-top:4px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}.it .r2 b{color:var(--fg);font-weight:600}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);display:inline-block}.dot.off{background:var(--ctl)}.dot.w{background:oklch(0.7 0.15 75)}
+.det-h{padding:16px 20px;display:flex;gap:12px;align-items:flex-start;border-bottom:1px solid var(--border)}.det-h h2{font-size:16px;line-height:24px;font-weight:600}
+.kv{display:grid;grid-template-columns:140px 1fr;gap:10px 16px;padding:16px 20px;font-size:13px;border-bottom:1px solid var(--border)}.kv dt{color:var(--muted)}.kv dd{margin:0}
+.ch{padding:16px 20px;border-bottom:1px solid var(--border)}.ch h3,.lg h3{font-size:13px;font-weight:600;margin-bottom:10px}.cols{display:flex;gap:6px;align-items:flex-end;height:84px}.cols div{flex:1;display:flex;flex-direction:column;justify-content:flex-end;gap:1px;font-size:11px;color:var(--muted);text-align:center}.cols i{display:block;border-radius:2px 2px 0 0}.cols .f{background:oklch(0.56 0.194 256)}.cols .d{background:oklch(0.55 0.18 27)}
+.lg{padding:16px 20px 8px}.lg table td{padding:8px 0;font-size:12px}.lg table th{padding:6px 0}.leg{display:flex;gap:14px;font-size:12px;color:var(--muted);margin-top:8px}.leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+.scroll{overflow-x:auto}.dh{flex:1}
+@media (max-width:900px){
+body{display:block;height:auto}.nav{display:none}
+.mnav{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border-bottom:1px solid var(--border);font-size:13px;color:var(--muted)}.mnav a{display:inline-flex;align-items:center;min-height:44px;color:var(--fg);font-weight:550}
+main{padding:16px}.top{flex-wrap:wrap;gap:8px}.sync{margin-left:0;width:100%}
+.split{grid-template-columns:1fr}.split[data-view=list] .detail{display:none}.split[data-view=detail] .list{display:none}
+.back{display:inline-flex;align-items:center;min-height:44px;margin-bottom:4px;font-size:13px;font-weight:550;color:var(--brand)}
+.it,.btn{min-height:44px}.it{display:flex;flex-direction:column;justify-content:center}
+.sw:before{content:"";position:absolute;inset:-12px -4px}
+.det-h{flex-wrap:wrap}.kv{grid-template-columns:1fr;gap:2px 0}.kv dd{margin-bottom:10px}
+.split>*{min-width:0}.dh{flex:1 1 100%}.kv dd{overflow-wrap:anywhere}.scroll table{min-width:520px}.foot{flex-wrap:wrap}}
+</style></head><body>
+<a class="skip" href="#main">Skip to Guard settings</a>
+<nav class="nav" aria-label="Settings"><h6>Account</h6><a href="#">Profile</a><a href="#">Notifications</a><h6>Workspace · Cheese Work</h6><a href="#">General</a><a href="#">Members</a><a href="#">Agents</a><a href="#">Jev / Governance</a><a class="on" href="#" aria-current="page">Guard</a><a href="#">Billing</a></nav>
+<main id="main"><div class="mnav"><a href="#">‹ Settings</a><span>/ Guard</span></div><div class="wrap">
+<div class="top"><h1>Guard</h1><span class="badge">Workspace · Cheese Work</span><span class="sync">Policy v42 · digest <code>9fa8c0f1</code> · synced 2 min ago</span></div>
+<p class="lede">Rules that check tool calls inside agent runs. Pick a rule to see its settings and what it did. Edits need a passkey.</p>
+<div class="split" data-view="detail">
+<div class="card detail" id="pr-title-tag">
+<div class="det-h"><div class="dh"><a class="back" href="#list">‹ All plugins</a><h2>PR title tag</h2><div class="sub">Adds <code>[merge]</code> or <code>[squash]</code> to the PR title and fixes it before <code>gh pr ready</code>.</div></div><span class="badge">Workspace</span><button type="button" class="btn">Edit with passkey</button></div>
+<dl class="kv">
+<dt>Matches</dt><dd><code>gh pr create</code> <code>gh pr edit --title</code> <code>gh pr ready</code></dd>
+<dt>Action</dt><dd><span class="pill fix">Fix</span> Appends the tag. Never removes a flag the agent passed.</dd>
+<dt>Message to agent</dt><dd><code>guard: title tag [merge] added (branch sync/*)</code></dd>
+<dt>If the plugin errors</dt><dd>Fails open with one warning line, and logs it.</dd>
+<dt>Status</dt><dd><button type="button" class="sw" role="switch" aria-checked="true" aria-label="PR title tag"></button> On since 11 Nov 2026, 21:05 ICT</dd>
+</dl>
+<div class="ch"><h3>Hits per day · 7–13 Nov 2026 ICT</h3>
+<div class="cols" role="img" aria-label="Fixed per day 5, 8, 4, 11, 6, 2, 6; refused per day 0, 1, 0, 1, 1, 0, 0">
+<div><i class="f" style="height:30px"></i>Sat</div><div><i class="d" style="height:6px"></i><i class="f" style="height:48px"></i>Sun</div><div><i class="f" style="height:24px"></i>Mon</div><div><i class="d" style="height:6px"></i><i class="f" style="height:66px"></i>Tue</div><div><i class="d" style="height:6px"></i><i class="f" style="height:36px"></i>Wed</div><div><i class="f" style="height:12px"></i>Thu</div><div><i class="f" style="height:36px"></i>Fri</div></div>
+<div class="leg"><span><i style="background:oklch(0.56 0.194 256)"></i>Fixed 42</span><span><i style="background:oklch(0.55 0.18 27)"></i>Refused 3</span></div></div>
+<div class="lg"><h3>Recent decisions</h3><div class="scroll" role="region" aria-label="Recent decisions" tabindex="0"><table><thead><tr><th>Time (ICT)</th><th>Runtime</th><th>Issue</th><th>Outcome</th><th>Line shown to the agent</th></tr></thead><tbody>
+<tr><td>13 Nov, 22:41</td><td>Claude</td><td>CHE-5189</td><td><span class="pill fix">Fixed</span></td><td>title tag [squash] added</td></tr>
+<tr><td>13 Nov, 21:17</td><td>Codex</td><td>CHE-5201</td><td><span class="pill fix">Fixed</span></td><td>title tag [merge] added (branch sync/*)</td></tr>
+<tr><td>13 Nov, 19:02</td><td>Hermes</td><td>CHE-5166</td><td><span class="pill deny">Refused</span></td><td>pass --title explicitly; --fill is refused in runs</td></tr>
+<tr><td>13 Nov, 16:48</td><td>Gemini</td><td>CHE-5174</td><td><span class="pill fix">Fixed</span></td><td>title tag [squash] added</td></tr>
+</tbody></table></div></div>
+</div>
+</div>
+<div class="foot"><span>Same data in the CLI:</span><code>multica guard plugin get pr-title-tag</code><code>multica guard log --plugin pr-title-tag --since 7d</code></div>
+</div></main></body></html>
