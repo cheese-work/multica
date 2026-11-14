@@ -3,6 +3,8 @@
 -- head or a retarget has no row, so the PR is held until fresh facts are
 -- recorded for it. A NULL
 -- boolean means the fact is absent, which the evaluator treats as a refusal.
+-- The cross-lab PASS and its time are not stored here: the server derives them
+-- from signed verdict comments and agent records when it reads the facts.
 -- A receipt does not expire by age. The trigger below deletes it on every
 -- change that can revoke it, in the same transaction as that change, so a
 -- retarget round trip (main -> release -> main on one head) or a review
@@ -19,12 +21,10 @@ CREATE TABLE merge_receipt_fact (
     coverage_complete boolean,
     pr_bound boolean,
     security_gate text NOT NULL DEFAULT '',
-    cross_lab_pass boolean,
     scope_classified boolean,
     gate_vetoed boolean,
     paths text[],
     labels text[],
-    last_pass_at timestamptz,
     evidence text NOT NULL,
     observed_at timestamptz NOT NULL,
     PRIMARY KEY (workspace_id, repo_owner, repo_name, pr_number, head_sha, base_ref)

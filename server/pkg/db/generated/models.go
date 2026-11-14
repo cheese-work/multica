@@ -2704,12 +2704,10 @@ type MergeReceiptFact struct {
 	CoverageComplete  pgtype.Bool        `json:"coverage_complete"`
 	PrBound           pgtype.Bool        `json:"pr_bound"`
 	SecurityGate      string             `json:"security_gate"`
-	CrossLabPass      pgtype.Bool        `json:"cross_lab_pass"`
 	ScopeClassified   pgtype.Bool        `json:"scope_classified"`
 	GateVetoed        pgtype.Bool        `json:"gate_vetoed"`
 	Paths             []string           `json:"paths"`
 	Labels            []string           `json:"labels"`
-	LastPassAt        pgtype.Timestamptz `json:"last_pass_at"`
 	Evidence          string             `json:"evidence"`
 	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
 }

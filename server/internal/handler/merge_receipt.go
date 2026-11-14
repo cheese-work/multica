@@ -25,23 +25,21 @@ func (h *Handler) PutMergeReceipt(w http.ResponseWriter, r *http.Request) {
 // pinRepo fix the repository: a body naming another one is refused.
 func (h *Handler) recordMergeReceipt(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, pinOwner, pinRepo string) {
 	var req struct {
-		Owner             string     `json:"repo_owner"`
-		Repo              string     `json:"repo_name"`
-		Number            int32      `json:"pr_number"`
-		HeadSHA           string     `json:"head_sha"`
-		BaseRef           string     `json:"base_ref"`
-		Tier              *int       `json:"tier"`
-		ClassifierTrusted *bool      `json:"classifier_trusted"`
-		CoverageComplete  *bool      `json:"coverage_complete"`
-		PRBound           *bool      `json:"pr_bound"`
-		SecurityGate      string     `json:"security_gate"`
-		CrossLabPass      *bool      `json:"cross_lab_pass"`
-		ScopeClassified   *bool      `json:"scope_classified"`
-		GateVetoed        *bool      `json:"gate_vetoed"`
-		Paths             []string   `json:"paths"`
-		Labels            []string   `json:"labels"`
-		LastPassAt        *time.Time `json:"last_pass_at"`
-		Evidence          string     `json:"evidence"`
+		Owner             string   `json:"repo_owner"`
+		Repo              string   `json:"repo_name"`
+		Number            int32    `json:"pr_number"`
+		HeadSHA           string   `json:"head_sha"`
+		BaseRef           string   `json:"base_ref"`
+		Tier              *int     `json:"tier"`
+		ClassifierTrusted *bool    `json:"classifier_trusted"`
+		CoverageComplete  *bool    `json:"coverage_complete"`
+		PRBound           *bool    `json:"pr_bound"`
+		SecurityGate      string   `json:"security_gate"`
+		ScopeClassified   *bool    `json:"scope_classified"`
+		GateVetoed        *bool    `json:"gate_vetoed"`
+		Paths             []string `json:"paths"`
+		Labels            []string `json:"labels"`
+		Evidence          string   `json:"evidence"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -57,8 +55,8 @@ func (h *Handler) recordMergeReceipt(w http.ResponseWriter, r *http.Request, wor
 	err := service.RecordMergeReceipt(r.Context(), h.TxStarter, workspaceID, service.MergeReceiptInput{
 		Owner: req.Owner, Repo: req.Repo, Number: req.Number, HeadSHA: req.HeadSHA, BaseRef: req.BaseRef,
 		Tier: req.Tier, ClassifierTrusted: req.ClassifierTrusted, CoverageComplete: req.CoverageComplete, PRBound: req.PRBound,
-		SecurityGate: req.SecurityGate, CrossLabPass: req.CrossLabPass, ScopeClassified: req.ScopeClassified, GateVetoed: req.GateVetoed,
-		Paths: req.Paths, Labels: req.Labels, LastPassAt: req.LastPassAt, Evidence: req.Evidence,
+		SecurityGate: req.SecurityGate, ScopeClassified: req.ScopeClassified, GateVetoed: req.GateVetoed,
+		Paths: req.Paths, Labels: req.Labels, Evidence: req.Evidence,
 	}, time.Now())
 	switch {
 	case service.IsMergeReceiptInvalid(err):

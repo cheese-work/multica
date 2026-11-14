@@ -36,24 +36,41 @@ func (m *mergeFix) record(t *testing.T, evidence string) {
 	if err := RecordMergeReceipt(context.Background(), m.f.Pool, parseTestUUID(t, m.f.WorkspaceID), MergeReceiptInput{
 		Owner: "fixture", Repo: "merge", Number: 9, HeadSHA: "a", BaseRef: "main",
 		Tier: ptr(1), ClassifierTrusted: ptr(true), CoverageComplete: ptr(true), PRBound: ptr(true), SecurityGate: "success",
-		CrossLabPass: ptr(true), ScopeClassified: ptr(true), GateVetoed: ptr(false),
+		ScopeClassified: ptr(true), GateVetoed: ptr(false),
 		Paths: []string{"server/internal/service/foo.go"}, Labels: []string{}, Evidence: evidence,
 	}, m.clock.Add(-10*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// stored records the receipt facts of an eligible PR through the producer, and
-// names an author other than the merger. mutate adjusts the stored row.
-func (m *mergeFix) stored(t *testing.T, mutate string) {
+// storedNoPass records the receipt facts of an eligible PR through the
+// producer, and names an Anthropic author other than the merger. No PASS exists
+// yet. mutate adjusts the stored row.
+func (m *mergeFix) storedNoPass(t *testing.T, mutate string) {
 	t.Helper()
-	m.bindAuthor(t, m.f.privateAgentOwnedBy(t, m.f.UserID, "author"))
+	m.author = m.f.privateAgentOwnedBy(t, m.f.UserID, "author")
+	m.f.Exec(t, "UPDATE agent SET model='claude-sonnet-5-5' WHERE id=$1", m.author)
+	m.bindAuthor(t, m.author)
 	m.f.Cleanup(t, "DELETE FROM merge_receipt_fact WHERE workspace_id=$1", m.f.WorkspaceID)
 	m.f.Cleanup(t, "DELETE FROM merge_veto WHERE workspace_id=$1", m.f.WorkspaceID)
 	m.record(t, "receipt-1")
 	if mutate != "" {
 		m.f.Exec(t, "UPDATE merge_receipt_fact SET "+mutate+" WHERE workspace_id=$1", m.f.WorkspaceID)
 	}
+}
+
+// stored is storedNoPass plus an OpenAI reviewer's signed PASS on the exact
+// head, an hour before the fixture clock.
+func (m *mergeFix) stored(t *testing.T, mutate string) {
+	t.Helper()
+	m.storedNoPass(t, mutate)
+	m.pass = m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+}
+
+// passAt moves the signed PASS, which is where the veto window starts.
+func (m *mergeFix) passAt(t *testing.T, at time.Time) {
+	t.Helper()
+	m.f.Exec(t, "UPDATE comment SET created_at=$2 WHERE id=$1", m.pass, at)
 }
 
 func TestStoredMergeFactsDispatchesOneEligiblePR(t *testing.T) {
@@ -92,10 +109,11 @@ func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
 			m.f.Exec(t, "UPDATE merge_pause_state SET is_set=NULL,error='boom' WHERE repo_owner='fixture'")
 		}},
 		{"vetoed gate-path PR", func(t *testing.T, m *mergeFix) {
-			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],gate_vetoed=true,last_pass_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, m.clock.Add(-48*time.Hour))
+			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],gate_vetoed=true WHERE workspace_id=$1", m.f.WorkspaceID)
+			m.passAt(t, m.clock.Add(-48*time.Hour))
 		}},
 		{"gate-path PR inside the veto window", func(t *testing.T, m *mergeFix) {
-			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],last_pass_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, m.clock.Add(-time.Hour))
+			m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'] WHERE workspace_id=$1", m.f.WorkspaceID)
 		}},
 		{"stale PR snapshot", func(t *testing.T, m *mergeFix) {
 			m.f.Exec(t, "UPDATE github_pull_request SET snapshot_fetched_at=$2 WHERE id=$1", m.pr, m.clock.Add(-301*time.Second))
@@ -108,7 +126,7 @@ func TestStoredMergeFactsHoldsEveryIneligiblePR(t *testing.T) {
 			m.f.Exec(t, "UPDATE github_pull_request SET head_sha='b', snapshot_head_sha='b' WHERE id=$1", m.pr)
 		}},
 		{"missing cross-lab PASS", func(t *testing.T, m *mergeFix) {
-			m.f.Exec(t, "UPDATE merge_receipt_fact SET cross_lab_pass=NULL WHERE workspace_id=$1", m.f.WorkspaceID)
+			m.f.Exec(t, "UPDATE comment SET deleted_at=now() WHERE id=$1", m.pass)
 		}},
 		{"security verdict missing", func(t *testing.T, m *mergeFix) {
 			m.f.Exec(t, "UPDATE merge_receipt_fact SET security_gate='' WHERE workspace_id=$1", m.f.WorkspaceID)
@@ -273,10 +291,9 @@ func TestStoredMergeFactsProducerRefreshRecoversAndDeadlineDispatches(t *testing
 	m := newMergeFix(t, nil, "")
 	mainStyle(t, m)
 	m.stored(t, "")
-	pass := m.clock.Add(-time.Hour)
 	gate := func(evidence string) {
 		m.record(t, evidence)
-		m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'],last_pass_at=$2 WHERE workspace_id=$1", m.f.WorkspaceID, pass)
+		m.f.Exec(t, "UPDATE merge_receipt_fact SET paths=ARRAY['.github/workflows/ci.yml'] WHERE workspace_id=$1", m.f.WorkspaceID)
 	}
 	gate("receipt-1")
 	m.tick(t)

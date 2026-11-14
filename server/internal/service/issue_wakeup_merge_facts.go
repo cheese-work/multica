@@ -53,9 +53,11 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	f.ChecksGreen = &green
 	// The author comes from the workspace binding or the task that opened the PR,
 	// never from the branch name alone. An unknown author stays absent and refuses.
+	var authorID pgtype.UUID
 	if s.Queries != nil {
 		if pull, err := s.Queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{WorkspaceID: c.WorkspaceID, RepoOwner: c.Owner, RepoName: c.Repo, PrNumber: c.Number}); err == nil {
 			if author, err := GitHubPullRequestAuthor(ctx, s.Queries, pull); err == nil {
+				authorID = author.ID
 				same := author.ID == c.MergerAgentID
 				f.MergerIsAuthor = &same
 			}
@@ -82,11 +84,11 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 	}
 
 	var paths, labels []string
-	err = tx.QueryRow(ctx, `SELECT tier,classifier_trusted,coverage_complete,pr_bound,security_gate,cross_lab_pass,scope_classified,
-			gate_vetoed,paths,labels,last_pass_at,evidence,observed_at
+	err = tx.QueryRow(ctx, `SELECT tier,classifier_trusted,coverage_complete,pr_bound,security_gate,scope_classified,
+			gate_vetoed,paths,labels,evidence,observed_at
 		FROM merge_receipt_fact WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4 AND head_sha=$5 AND base_ref=$6`,
 		c.WorkspaceID, c.Owner, c.Repo, c.Number, c.HeadSHA, c.BaseRef).Scan(&f.Tier, &f.ClassifierTrusted, &f.CoverageComplete, &f.PRBound,
-		&f.SecurityGate, &f.CrossLabPass, &f.ScopeClassified, &f.GateVetoed, &paths, &labels, &f.LastPassAt, &f.Evidence, &f.ObservedAt)
+		&f.SecurityGate, &f.ScopeClassified, &f.GateVetoed, &paths, &labels, &f.Evidence, &f.ObservedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MergeFacts{}, errMergeReceiptMissing
 	}
@@ -94,6 +96,11 @@ func (s *StoredMergeFacts) MergeFacts(ctx context.Context, c MergeCandidate) (Me
 		return MergeFacts{}, fmt.Errorf("read receipt facts: %w", err)
 	}
 	f.Paths = paths
+	// The PASS and its time are Multica's, never a producer's: a receipt cannot
+	// assert them.
+	if f.CrossLabPass, f.LastPassAt, err = storedCrossLabPass(ctx, tx, c, authorID); err != nil {
+		return MergeFacts{}, fmt.Errorf("read PASS verdicts: %w", err)
+	}
 	if labels != nil {
 		f.Labels = &labels
 	}
@@ -156,11 +163,9 @@ type MergeReceiptInput struct {
 	CoverageComplete              *bool
 	PRBound                       *bool
 	SecurityGate                  string
-	CrossLabPass                  *bool
 	ScopeClassified               *bool
 	GateVetoed                    *bool
 	Paths, Labels                 []string
-	LastPassAt                    *time.Time
 	Evidence                      string
 }
 
@@ -219,10 +224,10 @@ func RecordMergeReceipt(ctx context.Context, txs TxStarter, workspaceID pgtype.U
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO merge_receipt_fact(workspace_id,repo_owner,repo_name,pr_number,head_sha,base_ref,tier,classifier_trusted,
-			coverage_complete,pr_bound,security_gate,cross_lab_pass,scope_classified,gate_vetoed,paths,labels,last_pass_at,evidence,observed_at)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+			coverage_complete,pr_bound,security_gate,scope_classified,gate_vetoed,paths,labels,evidence,observed_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		workspaceID, in.Owner, in.Repo, in.Number, in.HeadSHA, in.BaseRef, in.Tier, in.ClassifierTrusted, in.CoverageComplete, in.PRBound,
-		in.SecurityGate, in.CrossLabPass, in.ScopeClassified, in.GateVetoed, in.Paths, in.Labels, in.LastPassAt, in.Evidence, now); err != nil {
+		in.SecurityGate, in.ScopeClassified, in.GateVetoed, in.Paths, in.Labels, in.Evidence, now); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
