@@ -39,7 +39,7 @@ import type { Issue } from "@multica/core/types";
 import { BoardView } from "../components/board-view";
 import { BOARD_COL_WIDTH } from "../components/board-column";
 import { BatchActionToolbar } from "../components/batch-action-toolbar";
-import { GanttView } from "../components/gantt-view";
+import { Gantt2View } from "../components/gantt2/gantt2-view";
 import { ListView } from "../components/list-view";
 import { SwimLaneView } from "../components/swimlane-view";
 import { Swimlane2View } from "../components/swimlane2/swimlane2-view";
@@ -385,7 +385,7 @@ function IssueSurfaceContent({
               />
             )}
             {controller.viewMode === "gantt" && (
-              <GanttView issues={controller.filteredGanttIssues} />
+              <Gantt2View query={controller.tableQuerySpec} />
             )}
             {controller.viewMode === "swimlane2" && (
               <Swimlane2View query={controller.tableQuerySpec} grouping={swimlaneGrouping} />
