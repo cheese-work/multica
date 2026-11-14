@@ -409,7 +409,29 @@
       "older": "Older"
     },
     "unseen_dot": "Unseen",
-    "tag_decision": "Decision"
+    "tag_decision": "Decision",
+    "bulk": {
+      "toolbar_aria_one": "Actions for {{count}} selected chat",
+      "toolbar_aria_other": "Actions for {{count}} selected chats",
+      "selected": "{{count}} selected",
+      "select_all": "Select all",
+      "cancel": "Cancel selection",
+      "more_aria": "More: {{action}}",
+      "group_aria": "Select group {{label}}",
+      "row_aria": "Select {{title}}",
+      "failed_one": "Couldn't update {{count}} chat",
+      "failed_other": "Couldn't update {{count}} chats",
+      "archived_toast_one": "Archived {{count}} chat",
+      "archived_toast_other": "Archived {{count}} chats",
+      "action": {
+        "seen": "Mark seen",
+        "unseen": "Mark unseen",
+        "pin": "Pin",
+        "unpin": "Unpin",
+        "archive": "Archive",
+        "unarchive": "Unarchive"
+      }
+    }
   },
   "header": {
     "context_meter": "{{pct}}% of {{window}}",
