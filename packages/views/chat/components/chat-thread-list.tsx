@@ -794,7 +794,7 @@ export function ChatThreadList({
           customScrollParent={scrollEl}
           groupCounts={sections.map((g) => g.sessions.length)}
           groupContent={(i) => renderGroupHeader(sections[i]!)}
-          itemContent={(i) => renderRow(visibleInOrder[i]!)}
+          itemContent={(i) => <MemoRow render={renderRow} session={visibleInOrder[i]!} />}
           computeItemKey={(i) => flatKeys[i] ?? i}
           initialItemCount={Math.min(visibleInOrder.length, VIRTUOSO_SEED_COUNT)}
           defaultItemHeight={ROW_HEIGHT_PX}
@@ -812,7 +812,9 @@ export function ChatThreadList({
           return shown.length === 0 ? null : (
             <section key={g.key}>
               {renderGroupHeader(g)}
-              {shown.map(renderRow)}
+              {shown.map((s) => (
+                <MemoRow key={s.id} render={renderRow} session={s} />
+              ))}
             </section>
           );
         })}
@@ -858,6 +860,23 @@ export function ChatThreadList({
 }
 
 /** Round checkbox look at 22 px inside a 44×44 hit area. `mixed` = some of a group. */
+/**
+ * Virtuoso re-calls `itemContent` on every scroll step, and `renderRow` is a
+ * closure over the whole list's state. `renderRow` changes identity only when
+ * the list itself re-renders, so keying on it keeps mounted rows untouched
+ * while scrolling (the cost was re-rendering ~25 rows per wheel step) and
+ * still refreshes every row whenever any list state changes.
+ */
+function MemoRow({
+  render,
+  session,
+}: {
+  render: (session: ChatSession) => React.ReactNode;
+  session: ChatSession;
+}) {
+  return useMemo(() => render(session), [render, session]);
+}
+
 function SelectCheckbox({
   state,
   label,

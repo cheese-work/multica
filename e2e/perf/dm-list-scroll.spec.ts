@@ -77,7 +77,7 @@ test("DM list scroll: 300 DMs, top to bottom, 4x CPU", async ({ page, baseURL })
   page.off("request", touch);
 
   const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: Number(process.env.DM_LIST_CPU ?? 4) });
   await page.evaluate(() => {
     const w = window as unknown as { __perf: { long: number[]; frames: number[] } };
     w.__perf.long.length = 0;

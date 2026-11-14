@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
@@ -10,11 +11,20 @@ import { useChatStore } from "@multica/core/chat";
 // The DM list mounts a bounded window of rows, not one per session
 // (CHE-5773). jsdom has no layout, so react-virtuoso is replaced by a probe
 // that records the props the list hands it.
-const virtuoso = vi.hoisted(() => ({ props: null as null | Record<string, unknown> }));
+const virtuoso = vi.hoisted(() => ({
+  props: null as null | Record<string, unknown>,
+  // Set to render item 0 the way Virtuoso does, and re-render on demand.
+  renderFirst: false,
+  bump: () => {},
+  avatarRenders: 0,
+}));
 vi.mock("react-virtuoso", () => ({
   GroupedVirtuoso: (props: Record<string, unknown>) => {
+    const [, setN] = useState(0);
     virtuoso.props = props;
-    return <div data-testid="grouped-virtuoso" />;
+    virtuoso.bump = () => setN((n) => n + 1);
+    const itemContent = props.itemContent as (i: number) => React.ReactNode;
+    return <div data-testid="grouped-virtuoso">{virtuoso.renderFirst ? itemContent(0) : null}</div>;
   },
 }));
 
@@ -22,7 +32,12 @@ vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/paths")>()),
   useWorkspaceSlug: () => "test-ws",
 }));
-vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => <span /> }));
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: () => {
+    virtuoso.avatarRenders += 1;
+    return <span />;
+  },
+}));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/agents", () => ({ useWorkspacePresenceMap: () => ({ byAgent: new Map() }) }));
 vi.mock("@multica/core/api", () => ({ api: { cancelTaskById: vi.fn() } }));
@@ -113,6 +128,8 @@ function renderList(scrollable: boolean) {
 
 beforeEach(() => {
   virtuoso.props = null;
+  virtuoso.renderFirst = false;
+  virtuoso.avatarRenders = 0;
   useChatStore.setState({ listView: "main" });
 });
 afterEach(cleanup);
@@ -143,5 +160,17 @@ describe("ChatThreadList virtualization", () => {
     expect(new Set(keys).size).toBe(flatLength);
     expect(keys.filter((k) => typeof k === "string" && k.startsWith("group:"))).toHaveLength(counts.length);
     expect(keys[1]).toMatch(/^s\d+$/);
+  });
+
+  // Virtuoso re-calls itemContent on every scroll step; a mounted row must not
+  // re-render when only Virtuoso did.
+  it("keeps a mounted row untouched when only Virtuoso re-renders", () => {
+    virtuoso.renderFirst = true;
+    renderList(true);
+    expect(screen.getAllByTestId("chat-thread-row")).toHaveLength(1);
+    const before = virtuoso.avatarRenders;
+    act(() => virtuoso.bump());
+    act(() => virtuoso.bump());
+    expect(virtuoso.avatarRenders).toBe(before);
   });
 });
