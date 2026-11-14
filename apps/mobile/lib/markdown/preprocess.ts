@@ -22,6 +22,7 @@
  * hyperlinks — same tap behavior, just no 📎 prefix. Acceptable degradation.
  */
 import { preprocessMentionShortcodes } from "@multica/core/markdown";
+import { encodeDetailsMarker } from "./split-markdown";
 
 // File-card line matcher, kept in sync with web's parser in
 // `packages/ui/markdown/file-cards.ts` (NEW_FILE_CARD_RE + FILE_CARD_URL_PATTERN):
@@ -119,9 +120,31 @@ function stripHtml(input: string): string {
     .replace(/<\/?[a-z][^>]*>/gi, "");
 }
 
-export function preprocessMobileMarkdown(input: string): string {
-  if (!input) return "";
+function preprocessPlain(input: string): string {
   return preprocessTaskListStrikethrough(
     preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
   );
+}
+
+// `<details><summary>S</summary>BODY</details>`. Non-nested: the first
+// `</details>` closes the block, any inner `<details>` tag is stripped.
+const DETAILS_RE = /<details[^>]*>\s*(?:<summary[^>]*>([\s\S]*?)<\/summary>)?([\s\S]*?)<\/details>/gi;
+
+/**
+ * Details blocks become one marker line (see `encodeDetailsMarker`) so
+ * `splitMarkdown` can render them as a collapsible segment. Every other
+ * piece, and each body, goes through the plain pipeline; a forged marker in
+ * the input is an HTML comment and is stripped there.
+ */
+export function preprocessMobileMarkdown(input: string): string {
+  if (!input) return "";
+  let out = "";
+  let last = 0;
+  for (const m of input.matchAll(DETAILS_RE)) {
+    const summary = stripHtml(m[1] ?? "").trim() || "Details";
+    out += preprocessPlain(input.slice(last, m.index));
+    out += `\n\n${encodeDetailsMarker(summary, preprocessPlain(m[2] ?? "").trim())}\n\n`;
+    last = m.index + m[0].length;
+  }
+  return out + preprocessPlain(input.slice(last));
 }
