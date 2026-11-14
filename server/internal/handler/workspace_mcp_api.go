@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -543,17 +544,20 @@ func (h *Handler) SetAgentMcpServerEnabled(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	rows, err := h.Queries.SetAgentMcpServerEnabled(r.Context(), db.SetAgentMcpServerEnabledParams{
-		AgentID:  agent.ID,
-		ServerID: serverUUID,
-		Enabled:  *req.Enabled,
-	})
+	err := h.applyAgentChange(r, agent, "agent.mcp_server.enable", agentMcpServersAuditSnapshot(agent, true),
+		func(ctx context.Context, q *db.Queries) error {
+			rows, err := q.SetAgentMcpServerEnabled(ctx, db.SetAgentMcpServerEnabledParams{
+				AgentID:  agent.ID,
+				ServerID: serverUUID,
+				Enabled:  *req.Enabled,
+			})
+			if err == nil && rows == 0 {
+				return errAgentChangeNotFound
+			}
+			return err
+		})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update the MCP server")
-		return
-	}
-	if rows == 0 {
-		writeError(w, http.StatusNotFound, "this MCP server is not assigned to the agent")
+		writeAgentChangeError(w, r, err, "agent.mcp_server.enable", "this MCP server is not assigned to the agent", "failed to update the MCP server")
 		return
 	}
 	slog.Info("agent mcp server toggled", append(logger.RequestAttrs(r),
@@ -572,16 +576,19 @@ func (h *Handler) RemoveAgentMcpServer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := h.Queries.RemoveAgentMcpServer(r.Context(), db.RemoveAgentMcpServerParams{
-		AgentID:  agent.ID,
-		ServerID: serverUUID,
-	})
+	err := h.applyAgentChange(r, agent, "agent.mcp_server.remove", agentMcpServersAuditSnapshot(agent, false),
+		func(ctx context.Context, q *db.Queries) error {
+			rows, err := q.RemoveAgentMcpServer(ctx, db.RemoveAgentMcpServerParams{
+				AgentID:  agent.ID,
+				ServerID: serverUUID,
+			})
+			if err == nil && rows == 0 {
+				return errAgentChangeNotFound
+			}
+			return err
+		})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to remove the MCP server")
-		return
-	}
-	if rows == 0 {
-		writeError(w, http.StatusNotFound, "this MCP server is not assigned to the agent")
+		writeAgentChangeError(w, r, err, "agent.mcp_server.remove", "this MCP server is not assigned to the agent", "failed to remove the MCP server")
 		return
 	}
 	slog.Info("agent mcp server removed", append(logger.RequestAttrs(r),

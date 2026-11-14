@@ -2950,6 +2950,12 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	snapshot := agentSkillStatesAuditSnapshot(agent)
+	before, err := snapshot(r.Context(), qtx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update agent skill")
+		return
+	}
 	rows, err := qtx.SetAgentSkillEnabled(r.Context(), db.SetAgentSkillEnabledParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
@@ -2961,6 +2967,17 @@ func (h *Handler) SetAgentSkillEnabled(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows == 0 {
 		writeError(w, http.StatusNotFound, "agent skill not found")
+		return
+	}
+	after, err := snapshot(r.Context(), qtx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update agent skill")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.skill.enable", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID, Before: before, After: after,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.skill.enable")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -2986,11 +3003,28 @@ func (h *Handler) RemoveAgentSkill(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	snapshot := agentSkillsAuditSnapshot(agent)
+	before, err := snapshot(r.Context(), qtx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove agent skill")
+		return
+	}
 	if err := qtx.RemoveAgentSkill(r.Context(), db.RemoveAgentSkillParams{
 		AgentID: agent.ID,
 		SkillID: skillID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove agent skill")
+		return
+	}
+	after, err := snapshot(r.Context(), qtx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove agent skill")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.skills.update", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID, Before: before, After: after,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.skills.update")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

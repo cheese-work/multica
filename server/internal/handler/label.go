@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -599,10 +600,13 @@ func (h *Handler) AttachLabelToAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent label not found")
 		return
 	}
-	if err := h.Queries.AttachLabelToAgent(r.Context(), db.AttachLabelToAgentParams{
-		AgentID: agent.ID, LabelID: labelID, WorkspaceID: agent.WorkspaceID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to attach agent label")
+	if err := h.applyAgentChange(r, agent, "agent.label.attach", agentLabelsAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) error {
+			return q.AttachLabelToAgent(ctx, db.AttachLabelToAgentParams{
+				AgentID: agent.ID, LabelID: labelID, WorkspaceID: agent.WorkspaceID,
+			})
+		}); err != nil {
+		writeAgentChangeError(w, r, err, "agent.label.attach", "agent label not found", "failed to attach agent label")
 		return
 	}
 	h.publish(protocol.EventLabelUpdated, uuidToString(agent.WorkspaceID), "member", requestUserID(r), map[string]any{"label": labelToResponse(label)})
@@ -618,10 +622,13 @@ func (h *Handler) DetachLabelFromAgent(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Queries.DetachLabelFromAgent(r.Context(), db.DetachLabelFromAgentParams{
-		AgentID: agent.ID, LabelID: labelID, WorkspaceID: agent.WorkspaceID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to detach agent label")
+	if err := h.applyAgentChange(r, agent, "agent.label.detach", agentLabelsAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) error {
+			return q.DetachLabelFromAgent(ctx, db.DetachLabelFromAgentParams{
+				AgentID: agent.ID, LabelID: labelID, WorkspaceID: agent.WorkspaceID,
+			})
+		}); err != nil {
+		writeAgentChangeError(w, r, err, "agent.label.detach", "agent label not found", "failed to detach agent label")
 		return
 	}
 	h.publish(protocol.EventLabelUpdated, uuidToString(agent.WorkspaceID), "member", requestUserID(r), map[string]any{"label_id": uuidToString(labelID), "resource_type": "agent"})
