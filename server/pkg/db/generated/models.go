@@ -2714,6 +2714,16 @@ type MergeReceiptFact struct {
 	ObservedAt        pgtype.Timestamptz `json:"observed_at"`
 }
 
+type MergeVeto struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	VetoedBy    pgtype.UUID        `json:"vetoed_by"`
+	Reason      string             `json:"reason"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type MergeVetoDeadline struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	RepoOwner   string             `json:"repo_owner"`
