@@ -1,0 +1,48 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "-tt0wuFf9G",
+  "page_id": "-tt0wuFf9G:page1",
+  "page_note": "Test canvas 'CHE-5207 · guard settings (test)', page 1. Direction B only (Cheese's pick 'B', 14 Nov 2026 20:45 ICT). Directions A and C stay on the canvas as history and are not locked.",
+  "screens": [
+    {
+      "screen": "Guard settings B populated 1440 (master-detail: plugin list with 7-day counts and review policy on the left, selected plugin settings, hits-per-day chart and recent decisions on the right; native switch buttons, skip link, :focus-visible; narrow rules at max-width 900px)",
+      "frame_id": "-CvWcUKPBL",
+      "updatedAt": "2026-11-14T14:14:19.025Z",
+      "content_sha256": "d251613753520fb7a74cf3e287eb4869261045e2d0074e1f68b143c2a4d76cb6"
+    },
+    {
+      "screen": "Guard settings B states 1440 (loading, empty, error 502, disconnected daemon, read-only member, save conflict 409)",
+      "frame_id": "wiM6JcN7p-",
+      "updatedAt": "2026-11-14T14:15:46.895Z",
+      "content_sha256": "8f00502a1c93380aba6f8b8ffd5f2199f66d4a0bf69acbbfef3afa89273b1519"
+    },
+    {
+      "screen": "Guard settings B narrow list 390 (list step of the drill-in)",
+      "frame_id": "dh42ccKjU3",
+      "updatedAt": "2026-11-14T14:20:08.628Z",
+      "content_sha256": "bf9f8102aef35f7b2f9b5705f8cdaf221f174344ce7ae50d89b04be2255ecfb1"
+    },
+    {
+      "screen": "Guard settings B narrow detail 390 (detail step of the drill-in, with the back link)",
+      "frame_id": "58qKMeIbQ5",
+      "updatedAt": "2026-11-14T14:18:57.500Z",
+      "content_sha256": "59e74add4c8746016d4a5b05da25cb210644d9ce2c00973771d7db050b40402c"
+    }
+  ],
+  "export_sha256": "b3d9c7bfd042b21727f637025942b78d7a4b06755dbb1ae7c54a680d4793a42d",
+  "export_sha256_method": "sha256 of the output of sha256sum for export_files, sorted by file name (one line '<sha256>  <file>' plus newline)",
+  "export_files": {
+    "guard-settings-main.html": "d251613753520fb7a74cf3e287eb4869261045e2d0074e1f68b143c2a4d76cb6",
+    "narrow-detail-390.html": "59e74add4c8746016d4a5b05da25cb210644d9ce2c00973771d7db050b40402c",
+    "narrow-list-390.html": "bf9f8102aef35f7b2f9b5705f8cdaf221f174344ce7ae50d89b04be2255ecfb1",
+    "states.html": "8f00502a1c93380aba6f8b8ffd5f2199f66d4a0bf69acbbfef3afa89273b1519"
+  },
+  "export_transform": "none: HTML is the exact source pushed to the frames. guard-settings-main, narrow-list-390 and narrow-detail-390 were pushed from local files with those hashes; states.html was written by hand from the get_frame read-back. Each file's character count equals the read-back htmlBytes (12694, 11147, 10013, 10230), which includes the trailing newline. Self-contained (system font stack, inline SVG, no external fetch).",
+  "exported_at": "2026-11-14 21:35 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / x99",
+  "issue": "CHE-5207",
+  "selection_id": "01a1da60-cace-7909-a031-6c2f860cad44",
+  "selection_source": "Cheese replied 'B' (CHE-5207 comment 01a1da4e-007e-71f9-b98f-ae5d91db310b, 14 Nov 2026 20:45 ICT) to decision request 8a6390b6-d020-4be9-a74d-216e68969cfb. Tofu recorded the pick in comment 01a1da60-cace-7909-a031-6c2f860cad44.",
+  "ux_verdict_id": "01a1da73-145c-7a26-b623-5f86d2fff496"
+}
