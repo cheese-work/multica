@@ -651,7 +651,7 @@ func (l *Ledger) CancelScheduled(ctx context.Context, f CancelFilter, reason str
 	return n, tx.Commit(ctx)
 }
 
-// cancelScheduled runs in the caller's tx. skipLocked leaves rows a worker is
+// cancelScheduled runs in the caller's tx. The protocol filter ignores case: S7 stores "p1", S5 follow-ups "P2". skipLocked leaves rows a worker is
 // running alone: Admit holds the signature lock, and a worker holding a row
 // may be waiting for that lock, so blocking on the row would deadlock.
 func (l *Ledger) cancelScheduled(ctx context.Context, tx pgx.Tx, f CancelFilter, reason string, skipLocked bool) (int, error) {
@@ -661,7 +661,7 @@ func (l *Ledger) cancelScheduled(ctx context.Context, tx pgx.Tx, f CancelFilter,
 	}
 	rows, err := tx.Query(ctx, `UPDATE ci_watch_action SET state='cancelled', reason=$5, updated_at=$6
 		WHERE id IN (SELECT id FROM ci_watch_action WHERE state='scheduled' AND workspace_id=$1::uuid
-			AND repo_owner=$2 AND repo_name=$3 AND ($4 = '' OR protocol=$4) AND ($7 = '' OR signature_hash=$7)`+lock+`)
+			AND repo_owner=$2 AND repo_name=$3 AND ($4 = '' OR upper(protocol)=upper($4)) AND ($7 = '' OR signature_hash=$7)`+lock+`)
 		RETURNING `+actionCols, f.WorkspaceID, f.RepoOwner, f.RepoName, f.Protocol, reason, l.now(), f.SignatureHash)
 	if err != nil {
 		return 0, err

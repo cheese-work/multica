@@ -306,6 +306,34 @@ func TestApplyConfig_ProtocolToShadowCancelsOnlyThatProtocol(t *testing.T) {
 	}
 }
 
+// S7 stores its scheduled rows with lowercase protocols ("p1", "p4"); S5 follow-ups store "P2"/"P4".
+// A Shadow switch must cancel both spellings, and a later Act switch must not revive them.
+func TestApplyConfig_ProtocolToShadowCancelsLowercaseStormRows(t *testing.T) {
+	e := newAdminEnv(t)
+	e.apply(t, `{"mode":"act","p1_mode":"act","p2_mode":"act"}`)
+	e.action(t, 1, "p1")
+	e.action(t, 2, "P1")
+	e.action(t, 3, "p2")
+	res := e.apply(t, `{"p1_mode":"shadow"}`)
+	if res.Cancelled != 2 {
+		t.Fatalf("Cancelled = %d, want 2 (p1 and P1)", res.Cancelled)
+	}
+	e.apply(t, `{"p1_mode":"act"}`)
+	var scheduled int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM ci_watch_action WHERE workspace_id=$1 AND state='scheduled' AND upper(protocol)='P1'`, e.ws).Scan(&scheduled); err != nil {
+		t.Fatal(err)
+	}
+	if scheduled != 0 {
+		t.Fatalf("%d P1 rows scheduled again after Shadow then Act, want 0", scheduled)
+	}
+	var p2 string
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT state FROM ci_watch_action WHERE workspace_id=$1 AND protocol='p2'`, e.ws).Scan(&p2); err != nil || p2 != "scheduled" {
+		t.Fatalf("p2 row state = %q, %v; want scheduled", p2, err)
+	}
+}
+
 func TestDefaultConfig_MatchesColumnDefaults(t *testing.T) {
 	e := newAdminEnv(t)
 	if _, err := e.pool.Exec(context.Background(),
