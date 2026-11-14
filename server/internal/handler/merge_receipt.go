@@ -2,9 +2,13 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/cibroker"
 	"github.com/multica-ai/multica/server/internal/service"
 )
 
@@ -14,6 +18,12 @@ import (
 // agent cannot assert its own PASS. The server stamps the observation time and
 // stores the facts only for the PR's current head and base.
 func (h *Handler) PutMergeReceipt(w http.ResponseWriter, r *http.Request) {
+	h.recordMergeReceipt(w, r, parseUUID(h.resolveWorkspaceID(r)), "", "")
+}
+
+// recordMergeReceipt decodes and stores one receipt. A non-empty pinOwner and
+// pinRepo fix the repository: a body naming another one is refused.
+func (h *Handler) recordMergeReceipt(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, pinOwner, pinRepo string) {
 	var req struct {
 		Owner             string     `json:"repo_owner"`
 		Repo              string     `json:"repo_name"`
@@ -37,7 +47,14 @@ func (h *Handler) PutMergeReceipt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	err := service.RecordMergeReceipt(r.Context(), h.TxStarter, parseUUID(h.resolveWorkspaceID(r)), service.MergeReceiptInput{
+	if pinOwner != "" {
+		if (req.Owner != "" && !strings.EqualFold(req.Owner, pinOwner)) || (req.Repo != "" && !strings.EqualFold(req.Repo, pinRepo)) {
+			writeError(w, http.StatusForbidden, "this identity writes receipts for "+pinOwner+"/"+pinRepo+" only")
+			return
+		}
+		req.Owner, req.Repo = pinOwner, pinRepo
+	}
+	err := service.RecordMergeReceipt(r.Context(), h.TxStarter, workspaceID, service.MergeReceiptInput{
 		Owner: req.Owner, Repo: req.Repo, Number: req.Number, HeadSHA: req.HeadSHA, BaseRef: req.BaseRef,
 		Tier: req.Tier, ClassifierTrusted: req.ClassifierTrusted, CoverageComplete: req.CoverageComplete, PRBound: req.PRBound,
 		SecurityGate: req.SecurityGate, CrossLabPass: req.CrossLabPass, ScopeClassified: req.ScopeClassified, GateVetoed: req.GateVetoed,
@@ -98,4 +115,38 @@ func (h *Handler) DeleteMergeVeto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// MergeReceiptAudience is the OIDC audience a workflow asks for when it writes
+// a receipt. It differs from the CI broker audience, so a token minted for one
+// surface is refused by the other.
+const MergeReceiptAudience = "multica-merge-receipt"
+
+// PutMergeReceiptCI records a receipt for a workflow identity (CHE-5594). The
+// bearer is a GitHub Actions OIDC token. The policy entry that admits it fixes
+// the repository, so the body cannot name another one, and the route writes to
+// the one workspace the server is configured with. Replayed, wrong-audience,
+// wrong-workflow and pull_request tokens are refused by the broker.
+func (h *Handler) PutMergeReceiptCI(w http.ResponseWriter, r *http.Request) {
+	if h.MergeReceiptBroker == nil || h.MergeReceiptWorkspaceID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok || token == "" {
+		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	entry, _, err := h.MergeReceiptBroker.Authorize(r.Context(), token)
+	if err != nil {
+		var refusal *cibroker.Refusal
+		if errors.As(err, &refusal) {
+			writeError(w, refusal.Status, refusal.Reason)
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to verify the token")
+		return
+	}
+	owner, repo, _ := strings.Cut(entry.Repository, "/")
+	h.recordMergeReceipt(w, r, parseUUID(h.MergeReceiptWorkspaceID), owner, repo)
 }
