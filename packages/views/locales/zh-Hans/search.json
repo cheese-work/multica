@@ -167,7 +167,9 @@
     "back": "返回",
     "prefix_commands": "命令",
     "prefix_issues": "任务",
-    "prefix_people": "人和智能体"
+    "prefix_people": "人和智能体",
+    "add_filter": "添加筛选",
+    "remove_filter": "移除筛选"
   },
   "trigger": {
     "label": "搜索..."
@@ -181,5 +183,10 @@
     "retry": "重试",
     "offline_title": "你已离线",
     "offline_body_other": "仅按标题搜索已保存的 {{count}} 个对话，不搜索消息内容。"
+  },
+  "chips": {
+    "agent": "智能体：{{name}}",
+    "active": "已启用筛选：{{names}}",
+    "none": "未启用筛选"
   }
 }

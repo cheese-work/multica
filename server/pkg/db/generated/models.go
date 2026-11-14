@@ -3397,6 +3397,18 @@ type System1Label struct {
 	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
+type System1LabelSample struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	Kind           string             `json:"kind"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	Seed           int64              `json:"seed"`
+	ObservationIds []pgtype.UUID      `json:"observation_ids"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type System1Observation struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
@@ -3604,9 +3616,10 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone          pgtype.Text `json:"timezone"`
-	SessionGeneration int32       `json:"session_generation"`
-	PasskeyState      string      `json:"passkey_state"`
+	Timezone            pgtype.Text `json:"timezone"`
+	SessionGeneration   int32       `json:"session_generation"`
+	PasskeyState        string      `json:"passkey_state"`
+	WhatsNewSeenVersion pgtype.Text `json:"whats_new_seen_version"`
 }
 
 type UserComposioConnection struct {

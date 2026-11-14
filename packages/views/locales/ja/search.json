@@ -167,7 +167,9 @@
     "back": "戻る",
     "prefix_commands": "コマンド",
     "prefix_issues": "タスク",
-    "prefix_people": "メンバーとエージェント"
+    "prefix_people": "メンバーとエージェント",
+    "add_filter": "フィルターを追加",
+    "remove_filter": "フィルターを外す"
   },
   "trigger": {
     "label": "検索..."
@@ -181,5 +183,10 @@
     "retry": "再試行",
     "offline_title": "オフラインです",
     "offline_body_other": "保存済みの {{count}} 件のチャットをタイトルでのみ検索します。メッセージ内容は検索しません。"
+  },
+  "chips": {
+    "agent": "エージェント: {{name}}",
+    "active": "適用中のフィルター: {{names}}",
+    "none": "フィルターなし"
   }
 }
