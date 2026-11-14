@@ -40,6 +40,37 @@ cap issue-mention-chip \
   --component packages/views/issues/components/issue-chip.tsx \
   --token ISSUE_CHIP_CLASS --token text-caption --token text-muted-foreground --token text-foreground
 
+cap pause-banner \
+  --component packages/views/layout/machine-pause-banner.tsx \
+  --component packages/views/runtimes/components/machine-pause-state.ts \
+  --token text-caption --token border-warning/60 --token bg-warning/15 --token bg-success/10 \
+  --copy "banner title=runtimes:machine_pause.banner.paused" \
+  --copy "resume=runtimes:machine_pause.resume"
+
+cap run-budget \
+  --component packages/views/issues/components/run-budget-meter.tsx \
+  --token text-caption --token text-warning --token text-destructive --token text-muted-foreground \
+  --copy "runs=issues:run_budget.runs" \
+  --copy "near=issues:run_budget.near" \
+  --copy "exhausted=issues:run_budget.exhausted"
+
+cap attachment-card-list \
+  --component packages/views/issues/components/attachment-list.tsx \
+  --component packages/views/issues/components/deliverables/version-badge.tsx \
+  --token text-micro --token bg-muted --token text-muted-foreground \
+  --copy "revision badge=issues:attachment_revision.badge"
+
+cap wakeup-rule-form \
+  --component packages/views/issues/components/wakeup-instruction-editor.tsx \
+  --token text-caption --token text-destructive \
+  --copy "invalid=issues:wakeups.instruction_invalid" \
+  --copy "conflict=issues:wakeups.conflict_error"
+
+cap settings-number-row \
+  --component packages/views/settings/components/auto-compact-tokens-row.tsx \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-caption --token text-destructive
+
 cap decision-action-approval \
   --component packages/views/common/decision-action-approval.tsx \
   --component packages/ui/components/ui/button.tsx \

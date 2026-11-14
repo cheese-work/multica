@@ -1099,12 +1099,6 @@
     "selected_other": "{{count}} sélectionnés",
     "clear_selection": "Effacer la sélection"
   },
-  "auto_compact": {
-    "title": "Compactage automatique",
-    "hint": "Laissez un champ vide pour utiliser la valeur de l’espace de travail.",
-    "inherit_placeholder": "Valeur de l’espace de travail",
-    "save_failed": "Impossible d’enregistrer le réglage de compactage automatique."
-  },
   "intro": {
     "title": "Recrutez votre premier coéquipier IA",
     "description": "Les agents prennent des tâches comme un membre de l'équipe : ils travaillent sur votre runtime avec Claude Code, Codex et d'autres outils, puis livrent dans les commentaires.",
@@ -1128,6 +1122,12 @@
       "comment": "Corrigé : sous 375px, les cartes tarifs passent sur une colonne. PR ouverte, tests au vert.",
       "step_read": "Lecture de {{file}}"
     }
+  },
+  "auto_compact": {
+    "title": "Compactage automatique",
+    "hint": "Laissez un champ vide pour utiliser la valeur de l’espace de travail.",
+    "inherit_placeholder": "Valeur de l’espace de travail",
+    "save_failed": "Impossible d’enregistrer le réglage de compactage automatique."
   },
   "scheduling": {
     "paused_badge": "En pause",

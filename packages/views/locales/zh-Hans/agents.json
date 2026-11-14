@@ -1072,12 +1072,6 @@
     "selected_other": "已选 {{count}} 项",
     "clear_selection": "清除选择"
   },
-  "auto_compact": {
-    "title": "自动压缩",
-    "hint": "留空则使用工作区的值。",
-    "inherit_placeholder": "工作区默认值",
-    "save_failed": "无法保存自动压缩设置。"
-  },
   "intro": {
     "title": "招第一位 AI 队友",
     "description": "智能体像团队成员一样接任务：在你的运行时上用 Claude Code、Codex 等工具动手做，做完在评论里交付。",
@@ -1101,6 +1095,12 @@
       "comment": "修好了：价格卡片在 375px 下改为单列。已开 PR，测试通过。",
       "step_read": "读取 {{file}}"
     }
+  },
+  "auto_compact": {
+    "title": "自动压缩",
+    "hint": "留空则使用工作区的值。",
+    "inherit_placeholder": "工作区默认值",
+    "save_failed": "无法保存自动压缩设置。"
   },
   "scheduling": {
     "paused_badge": "已暂停",

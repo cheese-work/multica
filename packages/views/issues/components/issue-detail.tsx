@@ -1896,6 +1896,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return map;
   }, [timelineView.threadReplies]);
 
+  // Thread root of a deep-link target. A run that left no comment is addressed
+  // by its task id and sits in a slot inside the thread it answers, so it
+  // unfolds and scrolls with that thread exactly like a reply does.
+  const highlightRootId = useMemo(() => {
+    if (!highlightCommentId) return undefined;
+    const replyRoot = replyToRoot.get(highlightCommentId);
+    if (replyRoot) return replyRoot;
+    for (const [rootId, runs] of commentRuns) {
+      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
+    }
+    // A run with no thread is its own top-level row.
+    if (standaloneRuns.some((run) => run.task.id === highlightCommentId)) return highlightCommentId;
+    return undefined;
+  }, [highlightCommentId, replyToRoot, commentRuns, standaloneRuns]);
+
   // The root whose thread contains the current deep-link/highlight request,
   // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
   // `highlightedId` (only set once the target DOM node is actually found,
@@ -1907,18 +1922,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const targetRootId = useMemo(() => {
     if (!highlightCommentId) return null;
     if (timelineView.threadReplies.has(highlightCommentId)) return highlightCommentId;
-    const replyRoot = replyToRoot.get(highlightCommentId);
-    if (replyRoot) return replyRoot;
-    // A run that left no comment is addressed by its task id and sits in a
-    // slot inside the thread it answers, so it unfolds and scrolls with that
-    // thread exactly like a reply does.
-    for (const [rootId, runs] of commentRuns) {
-      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
-    }
-    // A run with no thread is its own top-level row.
-    if (standaloneRuns.some((run) => run.task.id === highlightCommentId)) return highlightCommentId;
-    return null;
-  }, [highlightCommentId, replyToRoot, timelineView.threadReplies, commentRuns, standaloneRuns]);
+    return highlightRootId ?? null;
+  }, [highlightCommentId, highlightRootId, timelineView.threadReplies]);
 
   // Readiness predicate handed to `useInPageFind` below (01-DESIGN "no query
   // effect or MutationObserver callback can walk pre-reveal DOM"). Declared
@@ -2409,8 +2414,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const landingId = commentLandingTarget(highlightCommentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES);
     const direct = items.findIndex((it) => it.id === landingId);
     if (direct >= 0) return direct;
-    return items.findIndex((it) => it.id === rootId);
-  }, [items, highlightCommentId, replyToRoot, targetRootId, timelineView.threadReplies]);
+    if (!highlightRootId) return -1;
+    return items.findIndex((it) => it.id === highlightRootId);
+  }, [items, highlightCommentId, highlightRootId, replyToRoot, timelineView.threadReplies]);
 
   // One entry per comment thread (folded resolved bars included), activity
   // groups skipped. Derived from the same flat `items` array Virtuoso renders
@@ -3019,11 +3025,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Deep-link landing. Semantically equivalent to navigating to
   // `#comment-${id}`: find the element with that id, scrollIntoView it.
-  // For a reply inside a folded resolved thread, the reply is not in items
-  // (only the resolved-bar root is). Auto-expand the thread first; the
-  // effect re-runs once items re-flatten.
-  // A target that is a threaded run (addressed by its task id) resolves to its
-  // thread root through `targetRootId`.
+  // For a reply or threaded run inside a folded resolved thread, the target
+  // is not in items (only the resolved-bar root is). Auto-expand the thread
+  // first; the effect re-runs once items re-flatten.
   //
   // `scrollContainerEl` is in deps because the component early-returns a
   // loading skeleton while the issue query is pending. The scroll-container
@@ -3094,7 +3098,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // committed. A resolved-thread expand just requested above hasn't
     // committed by definition, so this also naturally waits out that case
     // without a separate branch.
-    if (!isDisclosureRevealCommitted(id, revealKey)) return;
+    // A standalone run has no thread to open: nothing is pinned, so there is
+    // no reveal generation to wait for.
+    if (targetRootId && !isDisclosureRevealCommitted(id, revealKey)) return;
 
     // A deleted reply renders nothing, so the id a notification or share link
     // carries has no anchor to scroll to and no row to flash. Land on the
@@ -3162,7 +3168,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);

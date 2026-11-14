@@ -440,6 +440,10 @@ deleted_system1_labels AS (
 deleted_system1_predictions AS (
     DELETE FROM system1_prediction WHERE workspace_id = $1
 ),
+-- CHE-4473 System 1 served label samples: workspace-owned leaf, no FK.
+deleted_system1_label_samples AS (
+    DELETE FROM system1_label_sample WHERE workspace_id = $1
+),
 -- CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
 deleted_system1_epochs AS (
     DELETE FROM system1_epoch WHERE workspace_id = $1

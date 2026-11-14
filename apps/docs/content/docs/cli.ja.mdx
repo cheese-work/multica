@@ -411,6 +411,17 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
 
+### System 1 ラベリング
+
+割り当てられた System 1 ラベラーのエージェントは、自身のエージェントタスク内でブラインドキューを読み、ラベルを書き込みます。エージェントとタスクはタスクトークンからサーバーが取得し、メンバーセッションや PAT は 403 になります。
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+キューにはオブザベーション ID と型付き特徴だけが入り、予測は含まれません。このスコープで同じ種類の有効なラベルがまだないオブザベーションを最大 20 件返します。サーバーはキューを返すときにサンプルの ID とシードを保存し、同じタスクが再度リクエストすると同じサンプルを返します。`--supersedes` には訂正する有効なラベルの ID を指定します。指定がないまま同じオブザベーションに 2 つ目のラベルを書くと 409 になります。
+
 ワークスペースのメンバーは誰でも、スコープと予測器バージョンごとの System 1 資格状態を読めます:
 
 ```bash

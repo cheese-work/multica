@@ -1099,12 +1099,6 @@
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
   },
-  "auto_compact": {
-    "title": "Auto-compact",
-    "hint": "Leave a field empty to use the workspace value.",
-    "inherit_placeholder": "Workspace default",
-    "save_failed": "Could not save the auto-compact setting."
-  },
   "intro": {
     "title": "Hire your first AI teammate",
     "description": "Agents take on issues like teammates do: they work on your runtime with tools like Claude Code and Codex, then deliver in the comments.",
@@ -1128,6 +1122,12 @@
       "comment": "Fixed: pricing cards stack into one column under 375px. PR is open and tests pass.",
       "step_read": "Read {{file}}"
     }
+  },
+  "auto_compact": {
+    "title": "Auto-compact",
+    "hint": "Leave a field empty to use the workspace value.",
+    "inherit_placeholder": "Workspace default",
+    "save_failed": "Could not save the auto-compact setting."
   },
   "scheduling": {
     "paused_badge": "Paused",

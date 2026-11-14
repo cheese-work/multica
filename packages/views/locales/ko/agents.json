@@ -1072,12 +1072,6 @@
     "selected_other": "{{count}}개 선택됨",
     "clear_selection": "선택 해제"
   },
-  "auto_compact": {
-    "title": "자동 압축",
-    "hint": "비워 두면 워크스페이스 값을 사용합니다.",
-    "inherit_placeholder": "워크스페이스 기본값",
-    "save_failed": "자동 압축 설정을 저장하지 못했습니다."
-  },
   "intro": {
     "title": "첫 AI 팀원을 맞이하세요",
     "description": "에이전트는 팀원처럼 태스크를 맡습니다. 런타임에서 Claude Code, Codex 같은 도구로 작업하고, 끝나면 댓글로 결과를 전달합니다.",
@@ -1101,6 +1095,12 @@
       "comment": "수정했습니다. 375px 이하에서 요금 카드가 한 열로 바뀝니다. PR을 열었고 테스트도 통과했습니다.",
       "step_read": "{{file}} 읽기"
     }
+  },
+  "auto_compact": {
+    "title": "자동 압축",
+    "hint": "비워 두면 워크스페이스 값을 사용합니다.",
+    "inherit_placeholder": "워크스페이스 기본값",
+    "save_failed": "자동 압축 설정을 저장하지 못했습니다."
   },
   "scheduling": {
     "paused_badge": "일시 중지됨",

@@ -422,6 +422,10 @@
   "gantt2": {
     "clipped_start": "在此時間視窗之前開始",
     "now": "現在",
+    "start_marker": "開始日期",
+    "due_marker": "截止日期",
+    "no_history": "無歷史記錄",
+    "before_records": "記錄之前",
     "collapse": "摺疊",
     "expand": "展開"
   },

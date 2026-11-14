@@ -173,7 +173,9 @@
     "back": "Atrás",
     "prefix_commands": "Comandos",
     "prefix_issues": "Tareas",
-    "prefix_people": "Personas y agentes"
+    "prefix_people": "Personas y agentes",
+    "add_filter": "Añadir filtro",
+    "remove_filter": "Quitar filtro"
   },
   "messages": {
     "untitled": "Chat sin título",
@@ -185,5 +187,10 @@
     "offline_title": "Sin conexión",
     "offline_body_one": "Buscando solo por título en {{count}} chat guardado, no en el contenido de los mensajes.",
     "offline_body_other": "Buscando solo por título en {{count}} chats guardados, no en el contenido de los mensajes."
+  },
+  "chips": {
+    "agent": "Agente: {{name}}",
+    "active": "Filtros activos: {{names}}",
+    "none": "Sin filtros activos"
   }
 }

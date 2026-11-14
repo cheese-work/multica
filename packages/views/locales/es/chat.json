@@ -333,7 +333,9 @@
       "older": "Anteriores"
     },
     "unseen_dot": "Sin ver",
-    "tag_decision": "Decisión"
+    "tag_decision": "Decisión",
+    "mark_seen": "Marcar como visto",
+    "more": "Más"
   },
   "header": {
     "rename": "Renombrar chat",

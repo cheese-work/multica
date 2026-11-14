@@ -419,7 +419,11 @@
     "clipped_start": "Comenzó antes de esta ventana",
     "now": "Ahora",
     "collapse": "Contraer",
-    "expand": "Expandir"
+    "expand": "Expandir",
+    "start_marker": "Fecha de inicio",
+    "due_marker": "Fecha límite",
+    "no_history": "Sin historial registrado",
+    "before_records": "Antes de los registros"
   },
   "actor_issues": {
     "scope": {

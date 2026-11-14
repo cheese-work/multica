@@ -146,7 +146,7 @@
   copy: {title: "runtimes:machine_pause.title"}
   surfaces: ["machine-pause-banner", "workspace-pause-banner", "machine-pause-card"]
   build: "One shared banner (2 opacity sets today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=leNqyjL3on"}
 - id: run-budget
   intent: "Meter for a budget or a context window."
   origin: fork
@@ -154,7 +154,7 @@
   components: ["packages/ui/components/ui/progress.tsx", "packages/views/issues/components/progress-ring.tsx"]
   surfaces: ["chat-context-meter", "decision-recent-runs", "run-budget-meter"]
   open: "Use role=meter."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=RVrN9fCE-8"}
 - id: attachment-card-list
   intent: "Attachment cards with a revision badge."
   origin: fork
@@ -163,7 +163,7 @@
   copy: {badge: "issues:deliverables.version_short"}
   surfaces: ["decision-artifacts", "attachment-list"]
   open: "S3 item 9: retire attachment_revision.badge."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1mMP-9owTU"}
 - id: wakeup-rule-form
   intent: "Instruction, enable switch, 4000-byte limit and 409 message for a wakeup rule."
   origin: fork
@@ -172,7 +172,7 @@
   copy: {invalid: "issues:wakeups.instruction_invalid", conflict: "issues:wakeups.conflict_error"}
   surfaces: ["issue-wakeup-defaults", "workspace-wakeup-rules"]
   build: "One form shared by issue and settings (2 copies, 2 namespaces)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=_wRWCO-9QT"}
 - id: settings-number-row
   intent: "Number input with inline error."
   origin: fork
@@ -180,7 +180,7 @@
   components: ["packages/views/settings/components/auto-compact-tokens-row.tsx"]
   surfaces: ["agent-auto-compact-section", "auto-compact-tokens-row"]
   open: "3 copies today."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=aOAZfkP9LP"}
 - id: integration-card-grid
   intent: "Card for a connectable app with a status."
   origin: fork

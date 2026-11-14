@@ -246,6 +246,18 @@ The `effective` response is what the apps show. `sources` names the scope that s
 - A rule's target must be an agent or squad that the person writing the rule may invoke. A viewer who cannot see the target agent sees the rule without its target or instruction.
 - A new custom rule starts with a limit of 12 wakeups per hour. The editor's **Preview** shows how many open issues already match before you save.
 
+## PR merged wakeups [#pr-merged]
+
+The `pr_merged` rule wakes the agent that handles an issue when a linked GitHub PR merges (see [Default wakeups](#defaults)). It only wakes the agent. It never changes the issue's status: that is the workspace setting **Settings → Code → After PRs merge, move the issue to**, described in [GitHub integration](/github-integration).
+
+When the same merge also moves the issue into a workflow step with a handler, that move already starts the handler's run. The move reserves the merge's pending wakeup to that run, so one merge starts one run, not two:
+
+- The handler's run starts: the wakeup counts as handled and starts no second run.
+- The run ends before it starts (cancelled or failed): the wakeup starts one run of its own.
+- The run is refused (for example by the run budget or a full stage queue): the status still moves, nothing is reserved, and the wakeup follows its usual limits.
+
+When a PR event may owe an issue a status move, Multica also keeps one internal retry wakeup for that issue, `pr_merge_owed`. It starts no agent run. It repeats the status check until the check completes, then removes itself. See [When a check can't finish](/github-integration).
+
 ## Wakeups and autopilots [#vs-autopilots]
 
 An [autopilot](/autopilots) starts new work again and again from a schedule or webhook, and can create a new issue each time. A wakeup belongs to one existing issue: it brings an agent back to that issue after a set time or event, and ends when the issue does.

@@ -1,11 +1,15 @@
 "use client";
 
 import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { CommandBarContext } from "@multica/core/command-bar";
 import { WORKSPACE_PAGES, type WorkspacePageKey } from "@multica/core/paths";
+import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { partitionAggregatedSearchResults } from "@multica/core/search/cancelled-rank";
-import type { SearchIssueResult, SearchProjectResult } from "@multica/core/types";
+import type { ChatSession, SearchIssueResult, SearchProjectResult } from "@multica/core/types";
 import { useT } from "../i18n";
+import { matchesChips, type ChatChip } from "./chat-chips";
 import { useChatMessageSearch, type ChatMessageSearch } from "./commands/chat-message-commands";
 import { useAgentCommandGroup, useAutopilotCommandGroup, useChatCommandGroup, useInboxCommandGroup, useProjectCommandGroup } from "./commands/context-commands";
 import { useGlobalCommands } from "./commands/global-commands";
@@ -114,10 +118,41 @@ function maxScore(entries: readonly { score: number }[]) {
   return entries.reduce((max, entry) => Math.max(max, entry.score), 0);
 }
 
+const NO_CHIPS: readonly ChatChip[] = [];
+const NO_SESSIONS: ChatSession[] = [];
+
+/**
+ * Filter chips applied to chat results. Title hits are filtered by session;
+ * a content hit whose session is not cached still carries its agent and
+ * archived flag, so only the chips that need more than those drop it.
+ */
+function useChatChipFilter(chips: readonly ChatChip[], active: boolean) {
+  const wsId = useWorkspaceId();
+  const on = active && chips.length > 0;
+  const { data: sessions = NO_SESSIONS } = useQuery({ ...chatSessionsOptions(wsId), enabled: on });
+  const { data: decisions } = useQuery({ ...openDecisionRequestsOptions(wsId), enabled: on });
+  return useMemo(() => {
+    if (!on) return { chatFilter: undefined, filterMessages: (search: ChatMessageSearch) => search };
+    const decisionIds = new Set((Array.isArray(decisions) ? decisions : []).map((r) => r.chat_session_id));
+    const chatFilter = (session: ChatSession) => matchesChips(chips, session, decisionIds);
+    const byId = new Map(sessions.map((s) => [s.id, s]));
+    const filterMessages = (search: ChatMessageSearch): ChatMessageSearch => ({
+      ...search,
+      hits: search.hits.filter((hit) =>
+        chatFilter(
+          byId.get(hit.session_id) ??
+            ({ id: hit.session_id, agent_id: hit.agent_id, status: hit.archived ? "archived" : "active", has_unread: false } as ChatSession),
+        ),
+      ),
+    });
+    return { chatFilter, filterMessages };
+  }, [chips, decisions, on, sessions]);
+}
+
 export function useRootModel(
   rawQuery: string,
   contexts: readonly CommandBarContext[],
-  options: { active: boolean; dismissedDelegateFor: string | null },
+  options: { active: boolean; dismissedDelegateFor: string | null; chips?: readonly ChatChip[] },
 ): RootModel {
   const { t: tNav } = useT("layout");
   const { scope, text } = parseScope(rawQuery);
@@ -152,8 +187,10 @@ export function useRootModel(
 
   const searching = active && scope !== "commands" && scope !== "people" ? text : "";
   const server = useServerSearch(searching, { projects: scope === "all" });
-  const messages = useChatMessageSearch(text, active && scope === "all");
-  const objects = useObjectSearch(scope === "issues" || scope === "commands" ? "" : q, active);
+  const rawMessages = useChatMessageSearch(text, active && scope === "all");
+  const { chatFilter, filterMessages } = useChatChipFilter(options.chips ?? NO_CHIPS, active);
+  const messages = useMemo(() => filterMessages(rawMessages), [filterMessages, rawMessages]);
+  const objects = useObjectSearch(scope === "issues" || scope === "commands" ? "" : q, active, chatFilter);
   const recent = useRecentItems(active && !rawQuery.trim());
   const delegateCandidates = useDelegateCandidates(active);
   const attachments = useDelegateAttachments(contexts);
