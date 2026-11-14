@@ -71,6 +71,30 @@ cap settings-number-row \
   --component packages/views/settings/components/settings-layout.tsx \
   --token text-caption --token text-destructive
 
+cap settings-page \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-title-lg --token text-body --token text-caption --token divide-surface-border --token min-h-16 \
+  --copy "scope badge=settings:layout.scope.device" \
+  --copy "scope badge, workspace=settings:layout.scope.workspace"
+
+cap settings-navigation \
+  --component packages/views/settings/components/settings-page.tsx \
+  --token h-10 --token text-body --token bg-surface-selected --token border-input \
+  --copy "select label=settings:page.navigate" \
+  --copy "search placeholder=settings:page.search" \
+  --copy "page title=settings:page.title"
+
+cap read-only-member-view \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token bg-surface --token border-surface-border --token text-caption --token text-muted-foreground \
+  --copy "title=settings:layout.read_only.title" \
+  --copy "with names=settings:layout.read_only.contact" \
+  --copy "no names=settings:layout.read_only.description"
+
+cap save-state \
+  --component packages/views/settings/components/settings-layout.tsx \
+  --token text-caption --token text-muted-foreground --token text-success --token text-destructive
+
 cap decision-action-approval \
   --component packages/views/common/decision-action-approval.tsx \
   --component packages/ui/components/ui/button.tsx \
@@ -231,5 +255,47 @@ cap wakeup-event-row \
 cap wakeup-condition-params \
   --component packages/views/issues/components/wakeup-condition-params.tsx \
   --token pillClass --token text-muted-foreground
+
+# SS2 (CHE-5535)
+cap wakeup-fields \
+  --component packages/views/issues/components/wakeup-fields.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap wakeup-pickers \
+  --component packages/views/issues/components/wakeup-pickers.tsx \
+  --token pillClass --token text-muted-foreground
+
+cap workspace-wakeup-rules \
+  --component packages/views/settings/components/workspace-wakeup-rules.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap chat-search \
+  --component packages/views/chat/components/chat-search.tsx \
+  --token text-caption --token text-muted-foreground
+
+cap config-change-viewer \
+  --component packages/views/chat/components/config-change-viewer.tsx \
+  --token text-caption --token text-muted-foreground
+
+# SS3 (CHE-5536)
+cap decision-artifacts \
+  --component packages/views/chat/components/decision-artifacts.tsx \
+  --token text-micro --token text-caption --token bg-muted/40
+
+cap decision-request-card \
+  --component packages/views/chat/components/decision-request-card.tsx \
+  --token text-body --token text-label --token text-micro
+
+cap needs-you-list \
+  --component packages/views/chat/components/needs-you-list.tsx \
+  --token text-caption --token text-warning --token text-destructive
+
+cap quick-agent-bar \
+  --component packages/views/chat/components/quick-agent-bar.tsx \
+  --token AVATAR_RING --token MAX_PINNED
+
+cap delegated-writes-section --height 1200 \
+  --component packages/views/settings/components/delegated-writes-section.tsx \
+  --token GOVERNED_FIELDS --token text-caption --token text-muted-foreground
 
 rm -rf "$build"

@@ -427,7 +427,10 @@
     "no_history": "無歷史記錄",
     "before_records": "記錄之前",
     "collapse": "摺疊",
-    "expand": "展開"
+    "expand": "展開",
+    "wakeup_cross": "喚醒",
+    "wakeup_children_done": "子項已完成",
+    "target_inside": "目標在內部（已摺疊隱藏）"
   },
   "actor_issues": {
     "scope": {
@@ -1908,7 +1911,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "階層畫布（已縮小）",
     "canvas_cards": "階層畫布（已放大）",
-    "dialog_description": "平移和縮放階層。開啟事項即可跳轉。",
+    "dialog_description": "逐層瀏覽階層。開啟事項即可跳轉。",
+    "step_in": "進入下一層",
+    "step_out": "返回上一層",
+    "depth": "第 {{depth}} / {{max}} 層",
+    "depth_announce": "第 {{depth}} 層，共 {{max}} 層，{{count}} 張卡片，其中 {{withChildren}} 張有子項",
+    "more_cards": "另有 {{count}} 個",
+    "more_cards_pending": "另有 {{count}}+ 個，仍在載入",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − 切換層級 · 方向鍵移動 · Enter 開啟 · 空白鍵進入或返回 · Esc 返回上一層",
+    "canvas_focus": "階層畫布，第 {{depth}} 層",
     "zoom_in": "放大",
     "zoom_out": "縮小",
     "zoom_level": "縮放 {{percent}}%",

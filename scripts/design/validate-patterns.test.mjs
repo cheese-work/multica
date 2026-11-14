@@ -68,8 +68,13 @@ test("rejects a malformed frame link on state patterns", () => {
   }
 });
 
-test("pending warns and does not fail; other frame fields are rejected", () => {
-  const r = run([entry({ frame: { state: "pending" } })]);
+test("pending fails an active entry (CHE-5430 S4b flip)", () => {
+  assert.match(errorsOf([entry({ frame: { state: "pending" } })]), /button.*pending/);
+  assert.match(errorsOf([entry({ status: "active", frame: { state: "pending" } })]), /active/);
+});
+
+test("pending still only warns on a deprecated entry; other frame fields are rejected", () => {
+  const r = run([entry({ status: "deprecated", frame: { state: "pending" } })]);
   assert.deepEqual(r.errors, []);
   assert.equal(r.warnings.length, 1);
   assert.match(r.warnings[0], /button.*pending/);
@@ -92,7 +97,7 @@ test("locked fails for an unknown topic, an unknown version or missing frames", 
 
 test("allowed moves: pending→patterns, locked→patterns, no change", () => {
   const locked = { state: "locked", topic: "decision-card", doop_version: "Z3bizs5RyO", frames: ["F1"] };
-  const base = [entry({ id: "a", frame: { state: "pending" } }), entry({ id: "b", frame: locked }), entry({ id: "c", frame: { state: "patterns", url: URL_OK } })];
+  const base = [entry({ id: "a", status: "deprecated", frame: { state: "pending" } }), entry({ id: "b", frame: locked }), entry({ id: "c", frame: { state: "patterns", url: URL_OK } })];
   const next = [entry({ id: "a" }), entry({ id: "b" }), entry({ id: "c" })];
   assert.deepEqual(run(next, base).errors, []);
   assert.deepEqual(run(base, base).errors, []);
@@ -109,7 +114,7 @@ test("forbidden moves: patterns→locked, locked→pending, pending→locked", (
 
 test("a new entry may not start as pending once a base ledger exists, but may seed with no base", () => {
   assert.match(errorsOf([entry({ id: "new" })].map((e) => ({ ...e, frame: { state: "pending" } })), [entry({ id: "other" })]), /new.*pending/);
-  assert.deepEqual(run([entry({ frame: { state: "pending" } })], null).errors, []);
+  assert.deepEqual(run([entry({ status: "deprecated", frame: { state: "pending" } })], null).errors, []);
 });
 
 test("rejects duplicate ids, bad enums, missing fields and unknown fields", () => {
@@ -146,7 +151,10 @@ test("CLI output adds no line the CI warning budget counts as a warning", () => 
   const counted = /##\[(warning|notice)\]|::(?:warning|notice)::|\b(?:DeprecationWarning|ExperimentalWarning|[Ww]arning[:!]|WARN(?:ING)?\b)|\bnpm warn\b|⚠|╭ Warning |Found \d+ warnings|\d+:\d+\s+warning\b/;
   const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((l) => counted.test(l));
   assert.deepEqual(lines, []);
-  assert.match(run.stdout, /pending/);
+  // The pending line appears only while some entry is still pending; once every batch has landed it must be absent.
+  const yml = readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8");
+  const hasPending = parsePatterns(yml).some((e) => e.frame?.state === "pending");
+  assert.equal(/pending/.test(run.stdout), hasPending);
 });
 
 test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", () => {

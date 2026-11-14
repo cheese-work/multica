@@ -23,7 +23,16 @@
     "more": "+{{count}} {{label}}",
     "canvas_groups": "Canevas de la hiérarchie, vue éloignée",
     "canvas_cards": "Canevas de la hiérarchie, vue rapprochée",
-    "dialog_description": "Déplacez et zoomez la hiérarchie. Ouvrez une tâche pour y accéder.",
+    "dialog_description": "Parcourez la hiérarchie niveau par niveau. Ouvrez une tâche pour y accéder.",
+    "step_in": "Descendre",
+    "step_out": "Remonter",
+    "depth": "Niveau {{depth}} / {{max}}",
+    "depth_announce": "Niveau {{depth}} sur {{max}}, {{count}} cartes, dont {{withChildren}} avec des sous-tâches",
+    "more_cards": "+{{count}} de plus",
+    "more_cards_pending": "+{{count}}… de plus en cours de chargement",
+    "chain_folded": "… {{count}}",
+    "focus_hint": "+ / − change de niveau · flèches pour se déplacer · Entrée ouvre · Espace descend ou remonte · Échap remonte",
+    "canvas_focus": "Canevas de la hiérarchie, niveau {{depth}}",
     "zoom_in": "Zoom avant",
     "zoom_out": "Zoom arrière",
     "zoom_level": "Zoom {{percent}} %",
@@ -480,7 +489,10 @@
     "no_history": "Aucun historique enregistré",
     "before_records": "Avant les enregistrements",
     "collapse": "Réduire",
-    "expand": "Développer"
+    "expand": "Développer",
+    "wakeup_cross": "Réveil",
+    "wakeup_children_done": "Enfants terminés",
+    "target_inside": "Cible à l'intérieur (masquée par le repli)"
   },
   "actor_issues": {
     "scope": {

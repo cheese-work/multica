@@ -404,11 +404,22 @@ func (h *Handler) handedToAgent(ctx context.Context, prev db.Issue, params db.Up
 // the issue as the write will leave it.
 func (h *Handler) handedToAgentIfRun(r *http.Request, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, assigneeSupplied, handoff, suppressRun bool) string {
 	agent := h.handedToAgent(r.Context(), prev, params, handoff)
-	if agent == "" || suppressRun {
+	if agent == "" || !h.writeWillRun(r, actorType, actorID, prev, params, assigneeSupplied, handoff, suppressRun) {
 		return ""
 	}
+	return agent
+}
+
+// writeWillRun decides before the write whether it starts a run, on the issue
+// as the write will leave it.
+func (h *Handler) writeWillRun(r *http.Request, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, assigneeSupplied, handoff, suppressRun bool) bool {
+	if suppressRun {
+		return false
+	}
 	next := prev
-	next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
+	if params.AssigneeID.Valid {
+		next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
+	}
 	if params.Status.Valid {
 		next.Status = params.Status.String
 	}
@@ -424,10 +435,7 @@ func (h *Handler) handedToAgentIfRun(r *http.Request, actorType, actorID string,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, next),
 	)
-	if !willRun {
-		return ""
-	}
-	return agent
+	return willRun
 }
 
 // advanceRunStep moves a run's workflow step along with a status change the

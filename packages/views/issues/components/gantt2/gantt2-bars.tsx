@@ -5,12 +5,13 @@
 // status segments. Every segment carries its status icon and a text label, so colour is never the only signal.
 // Parent/child rows (CHE-4355 G3): row order and collapse come from K1 `buildGraph`; the collapse set is owned by the caller
 // (view store `collapsedIssues.gantt`). G2 adds start_date/due_date markers and the incomplete-history rows (`history: none`
-// and `partial`). Wakeups are a later slice (G4). Not registered in the view-mode popup yet (G5).
-import { useMemo } from "react";
-import { buildGraph } from "@multica/core/issues/graph-core";
+// and `partial`). Wakeup arrows (G4): observed firings only, `cross` and `aggregate_children`; the other classes draw nothing here.
+// Retarget to the visible parent is K1 `buildGraph` (no Gantt-private code); each firing keeps its own arrow via the edge `id`. Not registered in the view-mode popup yet (G5).
+import { useId, useMemo } from "react";
+import { buildGraph, type TimelineEdge } from "@multica/core/issues/graph-core";
 import { Button } from "@multica/ui/components/ui/button";
 import { ChevronRight } from "@multica/ui/icons";
-import type { IssueTimelineResponse } from "@multica/core/api/issue-graph-schema";
+import type { IssueTimelineResponse, TimelineWakeupEvent } from "@multica/core/api/issue-graph-schema";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { useT } from "../../../i18n";
@@ -37,6 +38,8 @@ export interface Gantt2BarsProps {
   collapsed?: ReadonlySet<string>;
   /** Without it rows show no toggle. */
   onToggleCollapse?: (issueId: string) => void;
+  /** Observed wakeup firings (server `wakeup_events`). Only `cross` and `aggregate_children` draw arrows. */
+  wakeupEvents?: readonly TimelineWakeupEvent[];
 }
 
 const LABEL_W = 220;
@@ -53,8 +56,9 @@ const pct = (n: number) => `${+(n * 100).toFixed(4)}%`;
 
 const NO_COLLAPSE: ReadonlySet<string> = new Set();
 const INDENT_PX = 12;
+const NO_EVENTS: readonly TimelineWakeupEvent[] = [];
 
-export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onToggleCollapse }: Gantt2BarsProps) {
+export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onToggleCollapse, wakeupEvents = NO_EVENTS }: Gantt2BarsProps) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
   const statusLabel = useStatusLabel(wsId);
@@ -74,9 +78,19 @@ export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onTogg
 
   const tree = useMemo(() => {
     const byId = new Map(rows.map((r) => [r.timeline.issue_id, r]));
+    const eventOf = new Map(wakeupEvents.map((e) => [e.id, e]));
+    const lastChild = new Map<string, string>();
+    for (const r of rows) if (r.parentId && byId.has(r.parentId)) lastChild.set(r.parentId, r.timeline.issue_id);
+    // `aggregate_children` records counts, not child ids: the arrow starts at the target's child group (its last child row), never one per child.
+    const edges: TimelineEdge[] = wakeupEvents.flatMap((e) => {
+      const source = e.class === "cross" ? e.source_issue_id : e.class === "aggregate_children" ? lastChild.get(e.target_issue_id) : null;
+      return source && byId.has(source) && byId.has(e.target_issue_id) && axis.inWindow(e.at)
+        ? [{ type: "wakeup" as const, source, target: e.target_issue_id, id: e.id }]
+        : [];
+    });
     const view = buildGraph({
       nodes: rows.map((r) => ({ id: r.timeline.issue_id, identifier: r.identifier, title: r.title, status: r.timeline.status, parentId: r.parentId ?? null })),
-      edges: [],
+      edges,
       collapsed,
     });
     const depthOf = (id: string) => {
@@ -84,8 +98,14 @@ export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onTogg
       for (let p = byId.get(id)?.parentId; p && byId.has(p) && depth < byId.size; p = byId.get(p)?.parentId) depth++;
       return depth;
     };
-    return { view, ordered: view.visible.map((id) => ({ row: byId.get(id)!, depth: depthOf(id) })) };
-  }, [rows, collapsed]);
+    const rowIndex = new Map(view.visible.map((id, i) => [id, i]));
+    const arrows = view.edges.flatMap((edge) => {
+      const event = eventOf.get(edge.id ?? "");
+      return event ? [{ edge, event, from: rowIndex.get(edge.source)!, to: rowIndex.get(edge.target)! }] : [];
+    });
+    return { view, arrows, ordered: view.visible.map((id) => ({ row: byId.get(id)!, depth: depthOf(id) })) };
+  }, [rows, collapsed, wakeupEvents, axis]);
+  const arrowhead = useId();
 
   const icon = (status: string, category: Segment["category"]) => (
     <StatusIcon
@@ -218,6 +238,60 @@ export function Gantt2Bars({ rows, window, asOf, collapsed = NO_COLLAPSE, onTogg
             </div>
           );
         })}
+        {tree.arrows.length > 0 && (
+          <>
+            <svg className="pointer-events-none absolute left-0 top-0" width={LABEL_W + TRACK_W} height={tree.ordered.length * ROW_H}>
+              <defs>
+                <marker id={arrowhead} markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                  <path d="M0,0 L6,3 L0,6 Z" className="fill-foreground" />
+                </marker>
+              </defs>
+              {tree.arrows.map(({ edge, event, from, to }) => {
+                const x = LABEL_W + axis.at(event.at, axis.now) * TRACK_W;
+                const name = event.class === "aggregate_children" ? t(($) => $.gantt2.wakeup_children_done) : t(($) => $.gantt2.wakeup_cross);
+                const label = `${name}: ${tree.ordered[from]!.row.identifier} → ${tree.ordered[to]!.row.identifier}`;
+                return (
+                  <line
+                    key={event.id}
+                    data-testid="gantt-arrow"
+                    data-class={event.class}
+                    data-source={edge.source}
+                    data-target={edge.target}
+                    role="img"
+                    aria-label={label}
+                    x1={x}
+                    x2={x}
+                    y1={from * ROW_H + ROW_H / 2}
+                    y2={to * ROW_H + ROW_H / 2 + (to > from ? -6 : 6)}
+                    className="stroke-foreground"
+                    strokeWidth={1.5}
+                    strokeDasharray={event.class === "aggregate_children" ? "4 2" : undefined}
+                    markerEnd={`url(#${arrowhead})`}
+                  >
+                    <title>{label}</title>
+                  </line>
+                );
+              })}
+            </svg>
+            {tree.arrows.flatMap(({ edge, event, from, to }) =>
+              (["source", "target"] as const)
+                .filter((end) => (end === "source" ? edge.sourceInside : edge.targetInside))
+                .map((end) => (
+                  <span
+                    key={`${event.id}-${end}`}
+                    data-testid="gantt-target-inside"
+                    role="img"
+                    aria-label={t(($) => $.gantt2.target_inside)}
+                    title={t(($) => $.gantt2.target_inside)}
+                    className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border bg-background px-1 text-caption leading-4"
+                    style={{ left: LABEL_W + axis.at(event.at, axis.now) * TRACK_W, top: (end === "source" ? from : to) * ROW_H + ROW_H / 2 }}
+                  >
+                    ⊕
+                  </span>
+                )),
+            )}
+          </>
+        )}
         <div
           aria-label={t(($) => $.gantt2.now)}
           className="pointer-events-none absolute top-0 h-full border-l border-destructive"

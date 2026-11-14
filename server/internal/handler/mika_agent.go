@@ -223,6 +223,18 @@ func (h *Handler) resolveMikaAgent(w http.ResponseWriter, r *http.Request, works
 		writeError(w, http.StatusInternalServerError, "failed to save agent access")
 		return db.Agent{}, false, false
 	}
+	createdTargets, err := qtx.ListAgentInvocationTargets(r.Context(), created.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read invocation targets")
+		return db.Agent{}, false, false
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "agent.create", WorkspaceID: wsUUID, TargetID: created.ID,
+		After: agentAuditFields(created, createdTargets),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "agent.create")
+		return db.Agent{}, false, false
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit agent create")
 		return db.Agent{}, false, false
