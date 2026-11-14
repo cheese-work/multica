@@ -275,7 +275,7 @@ UPDATE issue_wakeup_receipt r SET processed_at=now()
 FROM issue_wakeup w
 WHERE w.id=r.wakeup_id AND w.issue_id= $1 AND w.agent_id= $2
   AND r.processed_at IS NULL AND r.task_id IS NULL
-  AND r.event_type LIKE 'issue.%'
+  AND (r.event_type LIKE 'issue.%' OR r.event_type = 'comment.created')
   AND r.payload->>'handoff_write'= $3::text
   AND COALESCE((r.payload->>'coalesced_count')::bigint,1)=1
 `
@@ -287,8 +287,8 @@ type ConsumeHandoffWakeupReceiptsParams struct {
 }
 
 // A write that handed the issue to an agent starts that agent's run after it
-// commits. Once the run exists, the agent's issue-event receipts from the same
-// write are handled. A receipt that merged with earlier pending events keeps
+// commits. Once the run exists, the agent's issue-event and comment receipts
+// from the same write are handled. A receipt that merged with earlier pending events keeps
 // its place, and a receipt already reserved by a run is left to that run.
 func (q *Queries) ConsumeHandoffWakeupReceipts(ctx context.Context, arg ConsumeHandoffWakeupReceiptsParams) error {
 	_, err := q.db.Exec(ctx, consumeHandoffWakeupReceipts, arg.IssueID, arg.AgentID, arg.Write)

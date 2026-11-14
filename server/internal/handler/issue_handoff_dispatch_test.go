@@ -8,8 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // CHE-5486 (S1b): a workflow handoff to an agent writes an intent row in the
@@ -162,6 +164,114 @@ func TestDispatchHandoffIntent_EventWakeupRuleGivesOneRunAndSettlesReceipt(t *te
 	}
 	if n := pendingEventReceipts(t, wakeupID); n != 0 {
 		t.Fatalf("pending receipts = %d, want 0: the change would reach the agent twice", n)
+	}
+}
+
+// Acceptance 3, comment form: the destination agent subscribed to comments. The
+// handoff write's own comment receipt (tagged with the intent's write id) is
+// the agent's copy until the run exists; once it does, the receipt is settled
+// and a comment of an earlier write stays pending.
+func TestDispatchHandoffIntent_CommentWakeupRuleGivesOneRunAndSettlesReceipt(t *testing.T) {
+	issueID, agentID := handoffDispatchFixture(t)
+	wakeupID := subscribeToIssueEvent(t, issueID, agentID, "comment.created")
+	moveIntoHandoffStep(t, issueID, nil)
+	intent := wantOneIntent(t, issueID)
+	var write string
+	dbfx.QueryRow(t, `SELECT handoff_write FROM issue_handoff_dispatch WHERE id = $1`, intent.ID).Scan(&write)
+
+	// The handoff write's comment, captured under its write id; and a comment
+	// from a different write, which the run does not carry.
+	insertComment := func(write string) {
+		tx, err := testPool.Begin(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(context.Background())
+		if write != "" {
+			if _, err := tx.Exec(context.Background(), `SELECT set_config('multica.handoff_write', $1, true)`, write); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := tx.Exec(context.Background(), `INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content)
+			SELECT workspace_id, id, 'member', $2, 'handoff context' FROM issue WHERE id = $1`, issueID, testUserID); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertComment(write)
+	if n := pendingEventReceipts(t, wakeupID); n != 1 {
+		t.Fatalf("setup: pending comment receipts = %d, want 1", n)
+	}
+
+	pendingAgain(t, intent.ID)
+	got, err := testHandler.dispatchHandoffIntent(context.Background(), parseUUID(intent.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := pendingStepRuns(t, issueID, agentID)
+	if len(runs) != 1 || got.State != handoffDispatched {
+		t.Fatalf("runs = %d, intent = %s, want one run on a dispatched intent", len(runs), got.State)
+	}
+	if n := pendingEventReceipts(t, wakeupID); n != 0 {
+		t.Fatalf("pending comment receipts = %d, want 0: the comment would reach the agent twice", n)
+	}
+
+	insertComment("")
+	if n := pendingEventReceipts(t, wakeupID); n != 1 {
+		t.Fatalf("pending comment receipts after an untagged comment = %d, want 1", n)
+	}
+}
+
+// A handoff without a comment is attributed to the issue's own provenance, not
+// to the acting task. The connected-app overlay is built before the
+// transaction, so it must be built for that same originator or the insert
+// discards it.
+func TestDispatchHandoffIntent_ConnectedAppOverlaySurvivesAHandoffWithoutAComment(t *testing.T) {
+	for _, target := range []string{"agent", "squad"} {
+		t.Run(target, func(t *testing.T) {
+			issueID, agentID := handoffDispatchFixture(t)
+			targetID := agentID
+			if target == "squad" {
+				targetID = dbfx.Squad(t, "overlay squad", agentID)
+			}
+			setIssueAssigneeDirect(t, issueID, target, targetID)
+			// The acting task serves a human other than the issue's creator.
+			other := dbfx.User(t, "Overlay Originator", "overlay-originator-"+strings.ReplaceAll(workflowTestSuffix(), "-", "")+"@example.test")
+			var runtimeID string
+			dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
+			sourceTask := dbfx.Task(t, agentID, testutil.Cols{
+				"runtime_id": runtimeID, "issue_id": issueID, "status": "running",
+				"originator_user_id": other, "accountable_user_id": other,
+			})
+			dbfx.Insert(t, "issue_handoff_dispatch", testutil.Cols{
+				"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID, "issue_id": issueID, "target_type": target, "target_id": targetID,
+				"actor_type": "agent", "actor_id": agentID, "source_task_id": sourceTask,
+				"handoff_write": "overlay-" + target,
+			})
+
+			intentID := wantOneIntent(t, issueID).ID
+
+			provider := featureflag.NewStaticProvider()
+			provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: true})
+			priorFlags, priorComposio := testHandler.TaskService.FeatureFlags, testHandler.TaskService.Composio
+			testHandler.TaskService.FeatureFlags = featureflag.NewService(provider)
+			testHandler.TaskService.Composio = &overlayComposio{overlay: `{"mcpServers":{"composio":{"url":"https://example.test/mcp"}}}`}
+			t.Cleanup(func() {
+				testHandler.TaskService.FeatureFlags, testHandler.TaskService.Composio = priorFlags, priorComposio
+			})
+
+			got, err := testHandler.dispatchHandoffIntent(context.Background(), parseUUID(intentID))
+			if err != nil || got.State != handoffDispatched {
+				t.Fatalf("dispatch = %+v, err %v, want a dispatched intent", got, err)
+			}
+			var overlay []byte
+			dbfx.QueryRow(t, `SELECT runtime_mcp_overlay FROM agent_task_queue WHERE handoff_dispatch_id = $1`, intentID).Scan(&overlay)
+			if len(overlay) == 0 {
+				t.Fatal("the run has no connected-app overlay: it was built for another originator than the insert used")
+			}
+		})
 	}
 }
 

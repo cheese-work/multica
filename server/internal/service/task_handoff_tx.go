@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -133,9 +134,10 @@ func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, is
 // PrepareStatusHandoffRunOverlay builds, outside any transaction, the Composio
 // overlay of the run a status handoff to agentID inserts: the agent is the
 // issue's assignee, or the leader of the squad it is assigned to. The
-// attribution is the one the insert will compute for a handoff (the acting
-// task in ctx, else the actor), so the insert accepts the overlay. Nil means
-// there is nothing to prepare, or that the insert will refuse and report why.
+// attribution is the one the insert will compute: the status handoff rule when
+// ctx carries a handoff comment, else the issue's provenance, so the insert
+// accepts the overlay. Nil means there is nothing to prepare, or that the
+// insert will refuse and report why.
 func (s *TaskService) PrepareStatusHandoffRunOverlay(ctx context.Context, issue db.Issue, agentID, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
 	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !agentID.Valid {
 		return nil
@@ -144,9 +146,16 @@ func (s *TaskService) PrepareStatusHandoffRunOverlay(ctx context.Context, issue 
 	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
 		return nil
 	}
-	attr, err := s.statusHandoffAttribution(ctx, s.Queries, issue, actorUserID)
-	if err != nil {
-		return nil
+	// The insert attributes by the handoff comment: with one, the status
+	// handoff rule; without, the issue's own provenance. Match it, or the
+	// insert finds an overlay built for another originator and drops it.
+	var attr attribution.Result
+	if statusHandoffFor(ctx, pgtype.UUID{}).Valid {
+		if attr, err = s.statusHandoffAttribution(ctx, s.Queries, issue, actorUserID); err != nil {
+			return nil
+		}
+	} else {
+		attr = s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID)
 	}
 	if attr, err = s.applyAttributionFallback(ctx, attr, agent); err != nil {
 		return nil
