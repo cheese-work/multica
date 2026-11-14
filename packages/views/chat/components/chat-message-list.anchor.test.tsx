@@ -64,10 +64,12 @@ const messagesFor = (sessionId: string, ids = IDS) =>
   ids.map((id, i) => message(id, i, sessionId));
 
 let store: Map<string, string>;
+let writes: number;
 const adapter: ScrollRestorationAdapter = {
   get: () => undefined,
   getViewState: (key) => store.get(key),
   setViewState: (key, value) => {
+    writes += 1;
     if (value === undefined) store.delete(key);
     else store.set(key, value);
   },
@@ -101,6 +103,7 @@ const savedAnchor = (sessionId: string) => {
 
 beforeEach(() => {
   store = new Map();
+  writes = 0;
   virtuosoProps = {};
   vi.stubGlobal(
     "ResizeObserver",
@@ -180,6 +183,7 @@ describe("ChatMessageList reading-position restore", () => {
   });
 
   it("keeps the offset current while the reader scrolls inside a tall reply", () => {
+    vi.useFakeTimers();
     saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
     const view = mount("s1", messagesFor("s1"));
     const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
@@ -194,6 +198,7 @@ describe("ChatMessageList reading-position restore", () => {
     row.getBoundingClientRect = () => ({ top: -620, bottom: 800 }) as DOMRect;
     act(() => {
       root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(600);
     });
 
     expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 720, atLiveEnd: false });
@@ -219,5 +224,63 @@ describe("ChatMessageList reading-position restore", () => {
     act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 0, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 1 }));
 
     expect(savedAnchor("s3")).toBeUndefined();
+  });
+});
+
+describe("ChatMessageList anchor persistence under scroll (CHE-3234)", () => {
+  function mountScrolling() {
+    vi.useFakeTimers();
+    saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
+    const view = mount("s1", messagesFor("s1"));
+    const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    root.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let rowTop = 80;
+    row.getBoundingClientRect = () => ({ top: rowTop, bottom: rowTop + 1400 }) as DOMRect;
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 4, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 5 }));
+    writes = 0;
+    return { view, root, scrollTo: (top: number) => (rowTop = top) };
+  }
+
+  it("persists at most 3 times for 100 scroll events in 1 s", () => {
+    const { root, scrollTo } = mountScrolling();
+
+    act(() => {
+      for (let i = 0; i < 100; i++) {
+        scrollTo(80 - i * 5);
+        root.dispatchEvent(new Event("scroll"));
+        vi.advanceTimersByTime(10);
+      }
+    });
+
+    expect(writes).toBeLessThanOrEqual(3);
+  });
+
+  it("persists the last anchor when the list unmounts mid-throttle", () => {
+    const { view, root, scrollTo } = mountScrolling();
+
+    act(() => {
+      scrollTo(-900);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20); // one frame: measured, not yet persisted
+    });
+    view.unmount();
+
+    expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 1000, atLiveEnd: false });
+  });
+
+  it("persists the pending anchor on pagehide", () => {
+    const { root, scrollTo } = mountScrolling();
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+      scrollTo(-400);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    expect(savedAnchor("s1")?.offsetInItemPx).toBe(500);
   });
 });

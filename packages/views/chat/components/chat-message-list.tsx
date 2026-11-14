@@ -151,6 +151,8 @@ const FLASH_MS = 1500;
 const JUMP_AIM_MS = 1000;
 /** How long a restored list keeps its saved position as the target while Virtuoso lands it. */
 const RESTORE_SETTLE_MS = 1000;
+/** Min gap between persisted scroll-anchor writes; the in-memory anchor stays per-frame (CHE-3234). */
+const ANCHOR_PERSIST_MS = 500;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -857,13 +859,42 @@ export function ChatMessageList({
   const anchorReady = restoring || jumped || hasReachedLiveEnd;
   const atBottomRef = useRef(!restoring);
   const lastAnchorRef = useRef<ChatAnchor | null>(null);
+  // The in-memory anchor is current on every call; the persisted copy goes to the
+  // platform (desktop: tab store → JSON of all tabs) at most once per
+  // ANCHOR_PERSIST_MS — leading edge, then a trailing write — and is flushed on
+  // unmount and pagehide so the last position is never lost (CHE-3234).
+  const pendingAnchorWrite = useRef<{ key: string; value: string } | null>(null);
+  const lastAnchorWriteAt = useRef(0);
+  const anchorWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const writeViewStateRef = useRef(writeViewState);
+  writeViewStateRef.current = writeViewState;
+  const flushAnchor = useCallback(() => {
+    if (anchorWriteTimer.current) clearTimeout(anchorWriteTimer.current);
+    anchorWriteTimer.current = null;
+    const pending = pendingAnchorWrite.current;
+    if (!pending) return;
+    pendingAnchorWrite.current = null;
+    lastAnchorWriteAt.current = Date.now();
+    writeViewStateRef.current(pending.key, pending.value);
+  }, []);
   const saveAnchor = useCallback(
     (anchor: ChatAnchor) => {
       lastAnchorRef.current = anchor;
-      if (anchorKey) writeViewState(anchorKey, serializeChatAnchor(anchor));
+      if (!anchorKey) return;
+      pendingAnchorWrite.current = { key: anchorKey, value: serializeChatAnchor(anchor) };
+      const wait = ANCHOR_PERSIST_MS - (Date.now() - lastAnchorWriteAt.current);
+      if (wait <= 0) flushAnchor();
+      else anchorWriteTimer.current ??= setTimeout(flushAnchor, wait);
     },
-    [anchorKey, writeViewState],
+    [anchorKey, flushAnchor],
   );
+  useEffect(() => {
+    window.addEventListener("pagehide", flushAnchor);
+    return () => {
+      window.removeEventListener("pagehide", flushAnchor);
+      flushAnchor();
+    };
+  }, [flushAnchor]);
   const measureOffset = useCallback(
     (messageId: string) => {
       const row = scrollContainerEl?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
@@ -886,19 +917,30 @@ export function ChatMessageList({
   // endpoints, so Virtuoso reports nothing. Re-measure the recorded item.
   useEffect(() => {
     if (!anchorReady || !scrollContainerEl) return;
+    // Measure once per frame, not once per scroll event.
+    let frame = 0;
     const onScroll = () => {
-      const last = lastAnchorRef.current;
-      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const last = lastAnchorRef.current;
+        if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) });
+      });
     };
     scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => scrollContainerEl.removeEventListener("scroll", onScroll);
+    return () => {
+      scrollContainerEl.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(frame);
+    };
   }, [anchorReady, scrollContainerEl, saveAnchor, measureOffset]);
   const onAtBottomStateChange = useCallback(
     (atBottom: boolean) => {
       atBottomRef.current = atBottom;
-      if (anchorReady && lastAnchorRef.current) saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      if (!anchorReady || !lastAnchorRef.current) return;
+      saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
+      flushAnchor(); // a rare transition, not scroll spam: persist now
     },
-    [anchorReady, saveAnchor],
+    [anchorReady, saveAnchor, flushAnchor],
   );
 
   const forkSource = forkedFromSessionId && sessions
