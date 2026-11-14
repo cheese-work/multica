@@ -44,15 +44,16 @@ func TestIsTerminalNULIsNotTerminal(t *testing.T) {
 	}
 }
 
-// openConsole opens the console output buffer. A process without a console
+// openConsole opens the console output buffer read-write: GetConsoleMode needs
+// GENERIC_READ on the handle. A process without a console
 // (a CI runner service) gets a hidden one from AllocConsole first.
 func openConsole(t *testing.T) *os.File {
 	t.Helper()
-	f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+	f, err := os.OpenFile("CONOUT$", os.O_RDWR, 0)
 	if err != nil {
 		// AllocConsole fails harmlessly if a console is already attached.
 		_, _, _ = windows.NewLazySystemDLL("kernel32.dll").NewProc("AllocConsole").Call()
-		f, err = os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+		f, err = os.OpenFile("CONOUT$", os.O_RDWR, 0)
 	}
 	if err != nil {
 		t.Skipf("no console available: %v", err)
