@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"golang.org/x/text/unicode/norm"
@@ -183,7 +184,7 @@ func TestIssueSearch_WorkspaceTeardownRemovesStoredText(t *testing.T) {
 // second pass over raw comment bodies (a lookup by id per matching comment)
 // measured +34% on an accented query (CHE-2943), over the +20% limit.
 func TestBuildSearchQuery_ExactDiacriticsRankIsOnePassOverComments(t *testing.T) {
-	sql, _ := buildSearchQuery("đăng nhập", splitSearchTerms("đăng nhập"), 0, false, false, nil)
+	sql, _ := buildSearchQuery("đăng nhập", splitSearchTerms("đăng nhập"), 0, false, false, nil, pgtype.UUID{})
 	for _, forbidden := range []string{"comment_cased", "unnest(", "comment rc"} {
 		if strings.Contains(sql, forbidden) {
 			t.Errorf("accented query still contains %q:\n%s", forbidden, sql)

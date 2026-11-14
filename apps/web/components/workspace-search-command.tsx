@@ -3,7 +3,8 @@
 import { useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
-import { SearchCommand, useSearchStore } from "@multica/views/search";
+import { useSearchStore } from "@multica/core/command-bar";
+import { SearchCommand } from "@multica/views/search";
 
 export function WorkspaceSearchCommand() {
   const pathname = usePathname();
