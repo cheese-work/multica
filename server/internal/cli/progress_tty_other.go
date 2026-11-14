@@ -1,8 +1,8 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package cli
 
 import "os"
 
-// isTerminal: the fork update path runs on linux and darwin only; elsewhere stay silent.
+// isTerminal: no terminal detection on other platforms; stay silent.
 func isTerminal(*os.File) bool { return false }
