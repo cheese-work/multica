@@ -1060,6 +1060,8 @@ export function ChatMessageList({
               "py-2 transition-colors duration-700",
               item.kind === "message" && item.message.id === flashId && "bg-primary/10",
             )}
+            data-mc="chat-message"
+            data-role={item.kind === "live" ? "assistant" : item.message.role}
             {...(item.kind === "message" ? { "data-message-id": item.message.id } : {})}
             {...(item.kind === "message" && item.message.id === flashId ? { "data-flash": "" } : {})}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}

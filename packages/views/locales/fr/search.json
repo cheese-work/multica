@@ -139,14 +139,8 @@
     "no_results_hint": "Essayez un autre mot-clé."
   },
   "delegate": {
-    "heading": "Confier à un agent",
-    "create_and_assign": "Créer une tâche et l'assigner à {{name}}",
-    "squad": "Squad",
-    "context_aria": "Contexte joint",
-    "parent": "Sous {{identifier}}",
-    "pick_crumb": "Choisir",
-    "pick_another": "Confier à un autre agent ou squad...",
-    "detected": "Instruction"
+    "row": "Confier à un agent : « {{prompt}} »",
+    "hint": "Création rapide"
   },
   "best": {
     "assign": "Assigner {{subject}} à {{name}}",
@@ -165,8 +159,6 @@
     "navigate": "Naviguer",
     "select": "Valider",
     "open_in_new_tab": "Ouvrir dans un nouvel onglet",
-    "delegate": "Créer et confier à {{name}}",
-    "search_instead": "Rechercher comme mots-clés",
     "back": "Retour",
     "prefix_commands": "Commandes",
     "prefix_issues": "Tâches",

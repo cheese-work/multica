@@ -377,3 +377,11 @@ recorded them. They take the next free numbers in the sync range (CHE-5612):
 The up and down SQL bytes are unchanged. The runner's concurrent-index name map uses the
 new prefixes for `uq_issue_environment_task_key` and `idx_issue_environment_issue`. A later
 sync must not reintroduce the upstream filenames under their original prefixes.
+
+## Upstream site-counter migration renumbering
+
+Upstream's `636_site_counter` collides with the fork's `636_wakeup_scoped_event_capture`. It is
+new to this fork, so no database has recorded it. It takes the next free number in the sync
+range (CHE-5613): `636_site_counter` is now `9999941_site_counter`. The up and down SQL bytes
+are unchanged. The migration has no concurrent index, so the runner's concurrent-index name map
+has no entry for it. A later sync must not reintroduce the upstream filename under `636`.

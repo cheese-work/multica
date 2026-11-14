@@ -138,6 +138,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/runtimes":                 {7, byWorkspace},
 	"api/search-index":             {1, byHuman},
 	"api/share-links":              {1, byOwnRow},
+	"api/site":                     {1, "public rate-limited counter write for the marketing site footer star; no issue, task or workspace row"},
 	"api/skills":                   {9, byWorkspace},
 	"api/slack":                    {1, byPublic},
 	"api/squads":                   {5, byWorkspace},

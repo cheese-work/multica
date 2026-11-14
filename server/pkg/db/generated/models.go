@@ -3384,6 +3384,12 @@ type SilenceAlertReceipt struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type SiteCounter struct {
+	Name      string             `json:"name"`
+	Value     int64              `json:"value"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Skill struct {
 	ID                   pgtype.UUID        `json:"id"`
 	WorkspaceID          pgtype.UUID        `json:"workspace_id"`

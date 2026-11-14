@@ -13,6 +13,7 @@ import {
   ListPlus,
   Lock,
   MessagesSquare,
+  Palette,
   Plug,
   Search,
   Server,
@@ -40,6 +41,7 @@ import { resolveSettingsLocation, settingsHref } from "./settings-navigation";
 import { AppLink, useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
 import { PreferencesTab } from "./preferences-tab";
+import { AppearanceTab } from "./appearance-tab";
 import { TokensTab } from "./tokens-tab";
 import { PasskeysTab } from "./passkeys-tab";
 import { WorkspaceTab } from "./workspace-tab";
@@ -165,6 +167,12 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
               t(($) => $.page.tabs.preferences),
               SlidersHorizontal,
               <PreferencesTab />,
+            ),
+            entry(
+              "appearance",
+              t(($) => $.page.tabs.appearance),
+              Palette,
+              <AppearanceTab />,
             ),
             entry(
               "notifications",
@@ -470,7 +478,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:flex-row">
+    <div data-mc="settings-page" className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:flex-row">
       <ListColumn
         collapsed={listCollapsed}
         // Below md the navigation stacks above the content as a select.
