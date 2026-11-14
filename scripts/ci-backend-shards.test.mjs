@@ -48,3 +48,13 @@ test("the old single-job layout is gone: only shards run the Go test step", () =
   assert.equal(ci.match(/scripts\/test-go\.sh --race --only regular/g)?.length, 1);
   assert.match(shards, /scripts\/test-go\.sh --race --only regular/);
 });
+
+// CHE-4360: GitHub runs a `run:` step with `bash -e`, no pipefail. `test-go.sh ... | tee` then returned
+// tee's status, so a shard with failing packages still reported success.
+test("the shard test step fails when test-go.sh fails (pipefail before the tee pipe)", () => {
+  const step = shards.match(/      - name: Test\n[\s\S]*?(?=\n      - name:|$)/)?.[0] ?? "";
+  assert.ok(step, "missing Test step in backend-test-shards");
+  const piped = /\| tee /.test(step);
+  const pipefail = /set -o pipefail|set -eo pipefail|set -euo pipefail|shell: bash\n/.test(step);
+  assert.ok(!piped || pipefail, "a `| tee` test step needs pipefail so test-go.sh's exit status is kept");
+});
