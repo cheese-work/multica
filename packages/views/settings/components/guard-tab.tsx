@@ -12,7 +12,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { formatInTimeZone } from "../../common/format-in-time-zone";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { useLocale, useT } from "../../i18n";
-import { type GuardAction, type GuardRow, buildGuardRows, parseGuardPolicy } from "./guard-model";
+import { type GuardAction, type GuardReviewRule, type GuardRow, type GuardScope, buildGuardRows, parseGuardPolicy } from "./guard-model";
 import { SettingsTab } from "./settings-layout";
 
 const DECISION_LIMIT = 20;
@@ -47,10 +47,10 @@ export function GuardTab() {
   const [detailOpen, setDetailOpen] = useState(false);
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
   const detailRef = useRef<HTMLElement>(null);
-  const selected = rows.find((r) => r.name === picked) ?? rows[0] ?? null;
+  const selected = rows.find((r) => r.key === picked) ?? rows[0] ?? null;
 
-  const pick = (name: string) => {
-    setPicked(name);
+  const pick = (key: string) => {
+    setPicked(key);
     setDetailOpen(true);
   };
   const restoreFocus = useRef(false);
@@ -62,7 +62,7 @@ export function GuardTab() {
   useEffect(() => {
     if (detailOpen || !restoreFocus.current) return;
     restoreFocus.current = false;
-    if (selected) rowRefs.current.get(selected.name)?.focus();
+    if (selected) rowRefs.current.get(selected.key)?.focus();
   }, [detailOpen, selected]);
 
   return (
@@ -85,9 +85,12 @@ export function GuardTab() {
       ) : !stats ? (
         <p role="status" className="text-body text-muted-foreground">{t(($) => $.guard.loading)}</p>
       ) : rows.length === 0 ? (
-        <div className="space-y-1">
-          <p className="text-body font-medium">{t(($) => $.guard.empty_title)}</p>
-          <p className="text-caption text-muted-foreground">{t(($) => $.guard.empty_hint)}</p>
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <p className="text-body font-medium">{t(($) => $.guard.empty_title)}</p>
+            <p className="text-caption text-muted-foreground">{t(($) => $.guard.empty_hint)}</p>
+          </div>
+          {policy && policy.review.length > 0 && <ReviewPolicy rules={policy.review} />}
         </div>
       ) : (
         <div className="grid gap-4 md:grid-cols-[minmax(0,340px)_minmax(0,1fr)] md:items-start">
@@ -101,17 +104,17 @@ export function GuardTab() {
             </button>
             <PluginList
               rows={rows}
-              selected={selected?.name ?? null}
+              selected={selected?.key ?? null}
               locked={policy?.locked ?? false}
               days={stats.days}
               onPick={pick}
-              register={(name, el) => (el ? rowRefs.current.set(name, el) : rowRefs.current.delete(name))}
+              register={(key, el) => (el ? rowRefs.current.set(key, el) : rowRefs.current.delete(key))}
             />
             {policy && policy.review.length > 0 && <ReviewPolicy rules={policy.review} />}
           </div>
           {selected && (
             <PluginDetail
-              key={selected.name}
+              key={selected.key}
               row={selected}
               locked={policy?.locked ?? false}
               since={stats.since}
@@ -136,6 +139,17 @@ export function GuardTab() {
 
 function Code({ children }: { children: string }) {
   return <code className="rounded-sm bg-muted px-1.5 py-px font-mono text-caption">{children}</code>;
+}
+
+function useScopeLabel() {
+  const { t } = useT("settings");
+  return (scope: GuardScope, target: string): string =>
+    ({
+      workspace: t(($) => $.guard.scope),
+      org: t(($) => $.guard.scope_org, { target }),
+      repo: t(($) => $.guard.scope_repo, { target }),
+      path: t(($) => $.guard.scope_path, { target }),
+    })[scope];
 }
 
 function ActionPill({ action, locked }: { action: GuardAction; locked: boolean }) {
@@ -167,10 +181,11 @@ function PluginList({
   selected: string | null;
   locked: boolean;
   days: number;
-  onPick: (name: string) => void;
-  register: (name: string, el: HTMLButtonElement | null) => void;
+  onPick: (key: string) => void;
+  register: (key: string, el: HTMLButtonElement | null) => void;
 }) {
   const { t } = useT("settings");
+  const scopeLabel = useScopeLabel();
   return (
     <section className="rounded-lg border border-surface-border bg-card p-1.5">
       <h3 className="px-2.5 pb-1 pt-2.5 text-micro font-semibold uppercase tracking-wide text-muted-foreground">
@@ -178,15 +193,15 @@ function PluginList({
       </h3>
       <ul aria-label={t(($) => $.guard.list_label)} className="space-y-0.5">
         {rows.map((row) => (
-          <li key={row.name}>
+          <li key={row.key}>
             <button
               type="button"
-              ref={(el) => register(row.name, el)}
-              aria-current={row.name === selected ? "true" : undefined}
-              onClick={() => onPick(row.name)}
+              ref={(el) => register(row.key, el)}
+              aria-current={row.key === selected ? "true" : undefined}
+              onClick={() => onPick(row.key)}
               className={cn(
                 "flex min-h-11 w-full flex-col justify-center gap-1 rounded-md border border-transparent p-2.5 text-left hover:bg-surface-hover",
-                row.name === selected && "border-surface-border bg-surface-selected hover:bg-surface-selected",
+                row.key === selected && "border-surface-border bg-surface-selected hover:bg-surface-selected",
                 FOCUS,
                 "focus-visible:-outline-offset-2",
               )}
@@ -194,8 +209,9 @@ function PluginList({
               <span className="flex items-center gap-2">
                 <StatusDot errors={row.errors} />
                 <span className="min-w-0 flex-1 truncate text-body font-semibold">{row.name}</span>
-                <ActionPill action={row.action} locked={locked} />
+                <ActionPill action={row.action} locked={locked || row.layerLocked} />
               </span>
+              {row.inPolicy && <span className="truncate text-caption text-muted-foreground">{scopeLabel(row.scope, row.target)}</span>}
               <span className="flex gap-3 text-caption tabular-nums text-muted-foreground">
                 <Count label={t(($) => $.guard.fixed)} value={row.fixed} />
                 <Count label={t(($) => $.guard.refused)} value={row.refused} />
@@ -228,8 +244,9 @@ function StatusDot({ errors }: { errors: number }) {
   );
 }
 
-function ReviewPolicy({ rules }: { rules: { repo: string; github: string; reviewers: string[] }[] }) {
+function ReviewPolicy({ rules }: { rules: GuardReviewRule[] }) {
   const { t } = useT("settings");
+  const scopeLabel = useScopeLabel();
   const [all, setAll] = useState(false);
   const shown = all ? rules : rules.slice(0, REVIEW_PREVIEW);
   return (
@@ -240,11 +257,12 @@ function ReviewPolicy({ rules }: { rules: { repo: string; github: string; review
       <ul className="space-y-0.5">
         {shown.map((rule) => {
           const parts = [
+            rule.scope === "workspace" ? "" : scopeLabel(rule.scope, rule.target),
             rule.reviewers.length > 0 ? t(($) => $.guard.review_reviewers, { count: rule.reviewers.length }) : "",
             rule.github === "skip" ? t(($) => $.guard.review_skip) : t(($) => $.guard.review_required),
           ].filter(Boolean);
           return (
-            <li key={rule.repo} className="space-y-1 p-2.5">
+            <li key={`${rule.scope}:${rule.target}:${rule.repo}`} className="space-y-1 p-2.5">
               <p className="break-all text-body font-semibold">{rule.repo}</p>
               <p className="text-caption text-muted-foreground">{parts.join(" · ")}</p>
             </li>
@@ -278,6 +296,7 @@ function PluginDetail({
   regionRef: React.Ref<HTMLElement>;
 }) {
   const { t } = useT("settings");
+  const scopeLabel = useScopeLabel();
   const [editing, setEditing] = useState(false);
   const actionText = {
     fix: t(($) => $.guard.fix_desc),
@@ -308,9 +327,11 @@ function PluginDetail({
           </button>
           <h2 className="break-words text-body-lg font-semibold">{row.name}</h2>
         </div>
-        <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-caption font-medium text-muted-foreground">
-          {t(($) => $.guard.scope)}
-        </span>
+        {row.inPolicy && (
+          <span className="inline-flex h-5 items-center rounded-full bg-muted px-2 text-caption font-medium text-muted-foreground">
+            {scopeLabel(row.scope, row.target)}
+          </span>
+        )}
         <Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-0" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
           {t(($) => $.guard.edit)}
         </Button>
@@ -332,7 +353,7 @@ function PluginDetail({
         )}
         <dt className="text-muted-foreground">{t(($) => $.guard.action)}</dt>
         <dd className="mb-2 flex flex-wrap items-center gap-2 md:mb-0">
-          <ActionPill action={row.action} locked={locked} />
+          <ActionPill action={row.action} locked={locked || row.layerLocked} />
           <span>{actionText}</span>
         </dd>
         {row.action !== "unknown" && (
@@ -393,6 +414,7 @@ function HitsChart({ row, since, tz }: { row: GuardRow; since: string; tz: strin
         <span className="flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-brand" />{t(($) => $.guard.fixed)} {row.fixed}</span>
         <span className="flex items-center gap-1.5"><i className="size-2.5 rounded-sm bg-destructive" />{t(($) => $.guard.refused)} {row.refused}</span>
       </p>
+      {row.sharedCounts && <p className="text-caption text-muted-foreground">{t(($) => $.guard.shared_counts)}</p>}
     </div>
   );
 }

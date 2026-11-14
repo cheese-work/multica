@@ -1785,6 +1785,10 @@
     "review_reviewers": "{{count}} 位评审人",
     "show_all": "显示全部 {{count}} 个仓库",
     "show_fewer": "收起",
-    "unnamed_repo": "所有仓库"
+    "unnamed_repo": "所有仓库",
+    "scope_org": "组织 {{target}}",
+    "scope_repo": "仓库 {{target}}",
+    "scope_path": "路径 {{target}}",
+    "shared_counts": "同名插件共用这些计数。"
   }
 }

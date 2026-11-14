@@ -1785,6 +1785,10 @@
     "review_reviewers": "{{count}} 位審查者",
     "show_all": "顯示全部 {{count}} 個儲存庫",
     "show_fewer": "收合",
-    "unnamed_repo": "所有儲存庫"
+    "unnamed_repo": "所有儲存庫",
+    "scope_org": "組織 {{target}}",
+    "scope_repo": "儲存庫 {{target}}",
+    "scope_path": "路徑 {{target}}",
+    "shared_counts": "同名外掛共用這些計數。"
   }
 }

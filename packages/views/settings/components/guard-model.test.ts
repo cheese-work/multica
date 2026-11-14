@@ -31,8 +31,8 @@ it("keeps what the page shows and drops unknown fields", () => {
   expect(policy).toEqual({
     version: 1,
     locked: true,
-    plugins: [{ name: "gh-pr", tool: "gh", subcommand: ["pr"], action: "fix", message: "", failClosed: false, builtin: "gh-pr" }],
-    review: [{ repo: "cheese-work/*", github: "skip", reviewers: ["a"] }],
+    plugins: [{ key: "0:0:gh-pr", scope: "workspace", target: "", layerLocked: false, name: "gh-pr", tool: "gh", subcommand: ["pr"], action: "fix", message: "", failClosed: false, builtin: "gh-pr" }],
+    review: [{ scope: "workspace", target: "", repo: "cheese-work/*", github: "skip", reviewers: ["a"] }],
   });
 });
 
@@ -47,4 +47,39 @@ it("joins counts to policy plugins and lists a plugin that only has hits", () =>
 it("lists plugins that have no hits yet with zero counts", () => {
   const policy = parseGuardPolicy({ guard_policy: { version: 1, plugins: [{ name: "quiet", match: { tool: "gh" }, action: "pass" }] } });
   expect(buildGuardRows(policy, { ...stats, plugins: [] })[0]).toMatchObject({ name: "quiet", fixed: 0, refused: 0, errors: 0 });
+});
+
+const LAYERED = {
+  guard_policy: {
+    version: 3,
+    plugins: [{ name: "gh-pr", match: { tool: "gh" }, action: "fix" }],
+    review: [{ repo: "cheese-work/*", reviewers: ["a"] }],
+    layers: [
+      { scope: "org", org: "cheese-work", locked: true, plugins: [{ name: "gh-pr", match: { tool: "gh" }, action: "deny" }] },
+      { scope: "repo", repo: "cheese-work/multica", review: [{ repo: "cheese-work/multica", github: "skip" }] },
+      { scope: "path", repo: "cheese-work/multica", path: "docs/", plugins: [{ name: "docs-only", match: { tool: "gh" }, action: "pass" }] },
+    ],
+  },
+};
+
+it("reads layer plugins and review rules with their scope, target and lock", () => {
+  const policy = parseGuardPolicy(LAYERED)!;
+  expect(policy.plugins.map((p) => [p.scope, p.target, p.layerLocked, p.name, p.action])).toEqual([
+    ["workspace", "", false, "gh-pr", "fix"],
+    ["org", "cheese-work", true, "gh-pr", "deny"],
+    ["path", "cheese-work/multica/docs", false, "docs-only", "pass"],
+  ]);
+  expect(policy.review.map((r) => [r.scope, r.target, r.repo])).toEqual([
+    ["workspace", "", "cheese-work/*"],
+    ["repo", "cheese-work/multica", "cheese-work/multica"],
+  ]);
+});
+
+it("keeps a plugin name that repeats across scopes as separate rows with unique keys", () => {
+  const rows = buildGuardRows(parseGuardPolicy(LAYERED), stats);
+  const ghPr = rows.filter((r) => r.name === "gh-pr");
+  expect(ghPr.map((r) => r.scope)).toEqual(["workspace", "org"]);
+  expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+  expect(ghPr.every((r) => r.sharedCounts && r.fixed === 42)).toBe(true);
+  expect(rows.find((r) => r.name === "docs-only")!.sharedCounts).toBe(false);
 });

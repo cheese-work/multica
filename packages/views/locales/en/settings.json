@@ -1799,6 +1799,10 @@
     "review_reviewers": "{{count}} reviewers",
     "show_all": "Show all {{count}} repositories",
     "show_fewer": "Show fewer",
-    "unnamed_repo": "All repositories"
+    "unnamed_repo": "All repositories",
+    "scope_org": "Organization {{target}}",
+    "scope_repo": "Repository {{target}}",
+    "scope_path": "Path {{target}}",
+    "shared_counts": "Counts are shared by every plugin with this name."
   }
 }

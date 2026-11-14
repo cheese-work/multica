@@ -1799,6 +1799,10 @@
     "review_reviewers": "{{count}} relecteurs",
     "show_all": "Afficher les {{count}} dépôts",
     "show_fewer": "Afficher moins",
-    "unnamed_repo": "Tous les dépôts"
+    "unnamed_repo": "Tous les dépôts",
+    "scope_org": "Organisation {{target}}",
+    "scope_repo": "Dépôt {{target}}",
+    "scope_path": "Chemin {{target}}",
+    "shared_counts": "Les compteurs sont partagés par tous les plugins de même nom."
   }
 }

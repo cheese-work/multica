@@ -1785,6 +1785,10 @@
     "review_reviewers": "리뷰어 {{count}}명",
     "show_all": "저장소 {{count}}개 모두 보기",
     "show_fewer": "접기",
-    "unnamed_repo": "모든 저장소"
+    "unnamed_repo": "모든 저장소",
+    "scope_org": "조직 {{target}}",
+    "scope_repo": "저장소 {{target}}",
+    "scope_path": "경로 {{target}}",
+    "shared_counts": "같은 이름의 모든 플러그인이 횟수를 공유합니다."
   }
 }

@@ -140,3 +140,43 @@ it("shows an empty table row when a plugin has no decisions", async () => {
   mount();
   expect(await screen.findByText("No decisions in the last 7 days.")).toBeVisible();
 });
+
+it("lists a layer's plugin next to the workspace one with the same name, and picks each on its own", async () => {
+  settings = {
+    guard_policy: {
+      version: 3,
+      plugins: [{ name: "ci-wait", match: { tool: "gh" }, action: "deny" }],
+      layers: [{ scope: "repo", repo: "cheese-work/multica", locked: true, plugins: [{ name: "ci-wait", match: { tool: "gh" }, action: "pass" }] }],
+    },
+  };
+  stats.mockResolvedValue({ days: 7, tz: "Asia/Bangkok", since: "2026-11-08", plugins: [{ plugin: "ci-wait", fixed: 0, refused: 18, errors: 0, shadow_hits: 0, passes: 0, daily: [] }] });
+  mount();
+  const list = await screen.findByRole("list", { name: "Guard plugins" });
+  const items = within(list).getAllByRole("listitem");
+  expect(items).toHaveLength(2);
+  expect(within(items[0]!).getByText("Workspace")).toBeVisible();
+  expect(within(items[1]!).getByText("Repository cheese-work/multica")).toBeVisible();
+  expect(within(items[1]!).getByText("Locked")).toBeVisible();
+  fireEvent.click(within(items[1]!).getByRole("button"));
+  expect(within(items[1]!).getByRole("button")).toHaveAttribute("aria-current", "true");
+  expect(within(items[0]!).getByRole("button")).not.toHaveAttribute("aria-current");
+  expect(screen.getByText("Lets the call through.")).toBeVisible();
+  expect(screen.getAllByText("Counts are shared by every plugin with this name.").length).toBeGreaterThan(0);
+});
+
+it("shows the review policy when the policy has review rules and no plugins", async () => {
+  settings = { guard_policy: { version: 5, review: [{ repo: "cheese-work/multica", reviewers: ["a", "b"] }] } };
+  stats.mockResolvedValue({ days: 7, tz: "Asia/Bangkok", since: "2026-11-08", plugins: [] });
+  mount();
+  expect(await screen.findByText("Review policy · 1 repositories")).toBeVisible();
+  expect(screen.getByText("cheese-work/multica")).toBeVisible();
+  expect(screen.getByText("No guard plugins yet")).toBeVisible();
+});
+
+it("shows review rules from a layer", async () => {
+  settings = { guard_policy: { version: 5, layers: [{ scope: "org", org: "tevo-studio", review: [{ repo: "tevo-studio/*", github: "skip" }] }] } };
+  stats.mockResolvedValue({ days: 7, tz: "Asia/Bangkok", since: "2026-11-08", plugins: [] });
+  mount();
+  expect(await screen.findByText("tevo-studio/*")).toBeVisible();
+  expect(screen.getByText(/^Organization tevo-studio/)).toBeVisible();
+});
