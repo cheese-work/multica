@@ -24,7 +24,6 @@ import (
 )
 
 var ErrWakeupInput = errors.New("invalid wakeup")
-
 // ErrWakeupWatchInput marks a watch_inputs value or placement the API refuses
 // with 422 (CHE-5455).
 var ErrWakeupWatchInput = errors.New("invalid watch_inputs")
