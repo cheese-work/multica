@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -1469,13 +1471,17 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		return squadEnqueueNone
 	}
 
-	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+	carrier, err := h.Queries.PendingCarrierForIssueAndAgent(ctx, db.PendingCarrierForIssueAndAgentParams{
 		IssueID: issue.ID,
 		AgentID: squad.LeaderID,
 		// Key dedup on the reviewed head (TEN-356).
 		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
-	if err != nil || hasPending {
+	if err == nil {
+		h.recordCoalescedTrigger(ctx, issue, squad.LeaderID, pgtype.UUID{}, "squad_leader", carrier)
+		return squadEnqueueNone
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return squadEnqueueNone
 	}
 

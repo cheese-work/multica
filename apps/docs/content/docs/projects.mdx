@@ -56,6 +56,14 @@ See [Project resources](/project-resources) for how to choose and for the safety
 
 Choose the project’s **Workflow** to set its board columns and who takes over at each step. For example, development can go to one agent, review to another, and acceptance to a team member. Projects without another choice use **Default**: every status is available and nothing is handed off automatically. See [Workflows](/workflows) for setup and switching an existing project.
 
+## Pause and limit running work
+
+A run in a `paused` project does not start. It stays queued, and its triggers are held with their event ids. Runs already running keep going. When the project leaves `paused`, held runs start one at a time in focus order: project priority, then issue priority, then issue creation time.
+
+A project can also cap how many runs are dispatched, running or reserved at once. Set it with `multica project wip-limit <project> <n>`; `none` removes the cap (the default). Runs over the cap are held the same way and start as runs end. When a run ends, its freed slot goes to the next held run at once. If that hand-over fails or the server stops first, the server retries it about every 15 seconds until it succeeds.
+
+A run that ends in any way other than `completed` parks its inputs. Nothing starts them again on its own. A member can run `multica issue inputs list <issue>`, then `multica issue inputs resume <issue>` to start a run with the same inputs, or `multica issue inputs discard <issue>` to drop them.
+
 ## Project lead
 
 The lead can be a member or an agent; a member who is the lead can also switch the project’s workflow. Making someone the lead does not assign issues to them or start any work. To hand a step to the lead, set that step's handler to **Project lead** in the workflow.

@@ -340,6 +340,7 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 	if task.BackgroundJob != "" {
 		return body
 	}
+	body += runInputsBlock(task)
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -1076,3 +1077,25 @@ func buildEditedTriggerNote(task Task) string {
 // editedCommentGuidance is the shared instruction for any edited comment a
 // resumed session receives, trigger or folded-in (MUL-8218).
 const editedCommentGuidance = "The text quoted in this prompt is the current version and the only one to act on; treat any earlier wording, and plans that depended on it, as withdrawn. Work already done in this session (file changes, commands, posted comments) still happened and was not rolled back — re-evaluate what remains against the current text instead of repeating it or assuming it was undone."
+
+// runInputsBlock lists the held triggers bound to this run (CHE-5213). Delivery
+// is at-least-once: an event_id seen in an earlier run is a redelivery.
+func runInputsBlock(task Task) string {
+	if len(task.RunInputs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n[HELD INPUTS]\nThese triggers arrived while the project was paused or full. Address each, in order. An input marked redelivery was part of an earlier run that did not complete; check whether its work is already done before repeating it. Pass `--event-id <event>:<step>` (for example `comment:<id>:reply`) on each comment, status change or wakeup you write for an input, so a redelivery writes once.\n")
+	for i, in := range task.RunInputs {
+		fmt.Fprintf(&b, "%d. %s (event %s", i+1, in.Kind, in.EventID)
+		if in.RedeliveryOfTaskID != "" {
+			fmt.Fprintf(&b, ", redelivery of run %s", in.RedeliveryOfTaskID)
+		}
+		b.WriteString(")")
+		if len(in.Payload) > 0 {
+			fmt.Fprintf(&b, ": %s", string(in.Payload))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}

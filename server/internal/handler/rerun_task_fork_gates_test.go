@@ -32,14 +32,14 @@ func rerunTaskRequest(t *testing.T, sourceID string, body map[string]any) *http.
 
 // TestRerunTaskByUserRefusesInactiveProject keeps the fork's project admission
 // gate (RequireActiveIssueProject + writeProjectAdmissionError) on upstream's
-// run-targeted rerun entry: a run in a paused project is refused with the
+// run-targeted rerun entry: a run in a cancelled project is refused with the
 // structured project_inactive reason and no run is created.
 func TestRerunTaskByUserRefusesInactiveProject(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	issueID, sourceID := rerunTaskSource(t, "rerun-task in paused project")
-	dbfx.Exec(t, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, inactiveProject(t, "paused"))
+	issueID, sourceID := rerunTaskSource(t, "rerun-task in cancelled project")
+	dbfx.Exec(t, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, inactiveProject(t, "cancelled"))
 
 	response := testutil.Call(t, testHandler.RerunTaskByUser, rerunTaskRequest(t, sourceID, map[string]any{"fresh": true}))
 	response.Want(http.StatusForbidden)

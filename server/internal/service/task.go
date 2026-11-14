@@ -50,11 +50,14 @@ type TaskService struct {
 
 	Queries   *db.Queries
 	TxStarter TxStarter
-	Hub       *realtime.Hub
-	Bus       *events.Bus
-	Analytics analytics.Client
-	Metrics   *obsmetrics.BusinessMetrics
-	Wakeup    TaskWakeupNotifier
+	// afterReleaseRead is a test hook: it runs in a release transaction after
+	// the obligation rows are read and before they are deleted.
+	afterReleaseRead func()
+	Hub              *realtime.Hub
+	Bus              *events.Bus
+	Analytics        analytics.Client
+	Metrics          *obsmetrics.BusinessMetrics
+	Wakeup           TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
 	// MergeFacts is the facts source every wakeup service built on this task
@@ -1604,7 +1607,7 @@ func (s *TaskService) enqueueIssueTaskWithCommentPlan(ctx context.Context, issue
 			s.PublishTaskEnqueued(ctx, task)
 		}
 	}
-	return task, err
+	return task, s.noteCoalesced(ctx, err, issue, issue.AssigneeID, triggerCommentID, "issue")
 }
 
 func (s *TaskService) enqueueIssueTaskWithQueries(ctx context.Context, queries *db.Queries, issue db.Issue, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, attribution.Result, error) {
@@ -1751,6 +1754,9 @@ func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Q
 		}
 	} else {
 		task, err = createAgentTask(ctx, queries, createParams)
+	}
+	if err == nil {
+		err = recordEnqueuedInput(ctx, queries, issue, task, createParams)
 	}
 	if err == nil {
 		notifyTaskEnqueued(ctx, task)
@@ -1922,9 +1928,9 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 		notifyTaskEnqueued(ctx, task)
 	}
 	if err != nil {
-		if isDuplicatePendingTaskErr(err) {
+		if isDuplicatePendingTaskErr(err) || errors.Is(err, ErrDuplicatePendingTask) {
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
-			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+			return db.AgentTaskQueue{}, s.noteCoalesced(ctx, ErrDuplicatePendingTask, issue, agentID, triggerCommentID, "mention")
 		}
 		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) && !errors.Is(err, ErrAgentPaused) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -4421,7 +4427,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	start := time.Now()
 	outcome := "unknown"
 	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
-	var claimed *db.AgentTaskQueue
+	var claimed, admissionHeld *db.AgentTaskQueue
 	var reclaimCheckAfter time.Time
 	var decisionDetail claimDecisionDetail
 	defer func() {
@@ -4586,6 +4592,19 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			return fmt.Errorf("claim task: %w", err)
 		}
 
+		// Dispatch-time admission (CHE-5213): a paused or full project sends the
+		// run back to the queue as held; no claim is returned.
+		held, err := admitClaimedTask(ctx, qtx, task)
+		if err != nil {
+			outcome = "error_admission"
+			return err
+		}
+		if held {
+			outcome = "admission_held"
+			admissionHeld = &task
+			return nil
+		}
+
 		if breakerCanary {
 			if err := acquireProviderBreakerCanary(ctx, qtx, agent.WorkspaceID, breakerProvider, task.ID); err != nil {
 				if errors.Is(err, errProviderBreakerCanaryTaken) {
@@ -4655,6 +4674,12 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 			outcome = "error_transaction"
 		}
 		return nil, err
+	}
+	if admissionHeld != nil {
+		// The held run stays queued; wake the runtime so the next queued run is
+		// not delayed until the next poll.
+		s.notifyRuntimeMayHaveWork(admissionHeld.RuntimeID, "")
+		return nil, nil
 	}
 	if claimed == nil {
 		return nil, nil
@@ -5834,6 +5859,7 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 
 	// Broadcast
 	s.broadcastTaskEvent(ctx, protocol.EventTaskCompleted, task)
+	s.releaseAfterRun(task)
 
 	// DM auto-compact (CHE-1803): after the completion is final and announced.
 	s.maybeAutoCompact(ctx, task, runContext)
@@ -6693,7 +6719,14 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			}
 			failureMsg = &failure
 		}
-		return SettleTerminalTaskState(ctx, qtx, t)
+		if err := SettleTerminalTaskState(ctx, qtx, t); err != nil {
+			return err
+		}
+		if retried != nil {
+			// Failed-run recovery path: the retry child carries the same batch.
+			return redeliverToRetry(ctx, qtx, t, *retried)
+		}
+		return nil
 	}); err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
@@ -6749,6 +6782,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			s.NotifyTaskEnqueued(ctx, *retried)
 		}
 	}
+
+	s.releaseAfterRun(task)
 
 	// A delegated task that has reached a terminal failure must hand control
 	// back to the task that delegated it. This runs only after the existing
@@ -7358,6 +7393,9 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		if err := clearSquadLeaderFailureMarker(ctx, qtx, child); err != nil {
 			return nil, err
 		}
+	}
+	if err := redeliverToRetry(ctx, qtx, parent, child); err != nil {
+		return nil, err
 	}
 	if parent.IssueID.Valid {
 		if err := bindRefusedRun(ctx, qtx, parent.IssueID, pgtype.UUID{}, parent.ID, child.ID); err != nil {
@@ -8189,6 +8227,12 @@ func SettleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 		}
 	}
 	if err := settleChatTurns(ctx, q, tasks); err != nil {
+		return err
+	}
+	if err := settleRunInputs(ctx, q, tasks...); err != nil {
+		return err
+	}
+	if err := settleAdmissionRelease(ctx, q, tasks...); err != nil {
 		return err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
@@ -9369,6 +9413,7 @@ func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQ
 func (s *TaskService) NotifyTaskFinished(task db.AgentTaskQueue) {
 	s.forgetTaskReclaim(task)
 	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
+	s.releaseAfterRun(task)
 }
 
 // NotifyRuntimeCapacityChanged wakes a runtime's daemon after its
@@ -9395,6 +9440,7 @@ func (s *TaskService) notifyTasksFinished(tasks []db.AgentTaskQueue) {
 		seen[runtimeKey] = struct{}{}
 		s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
 	}
+	s.releaseAfterRun(tasks...)
 }
 
 // notifyTaskAvailable runs after a task has been inserted: bumps the

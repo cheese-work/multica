@@ -2388,3 +2388,18 @@ func TestBuildChatPromptWithoutOpenAsksStillExplainsReplyState(t *testing.T) {
 		t.Errorf("prompt must say there are no open asks:\n%s", out)
 	}
 }
+
+func TestBuildPromptListsHeldInputsInOrderWithRedelivery(t *testing.T) {
+	task := Task{IssueID: "issue-1", RunInputs: []RunInputData{
+		{EventID: "e1", Kind: "comment", Payload: []byte(`{"text":"a"}`)},
+		{EventID: "e2", Kind: "wakeup", RedeliveryOfTaskID: "run-9"},
+	}}
+	got := BuildPrompt(task, "claude")
+	i1, i2 := strings.Index(got, "event e1"), strings.Index(got, "event e2")
+	if i1 < 0 || i2 < i1 || !strings.Contains(got, "redelivery of run run-9") {
+		t.Fatalf("held inputs missing or out of order:\n%s", got)
+	}
+	if strings.Contains(BuildPrompt(Task{IssueID: "issue-1"}, "claude"), "[HELD INPUTS]") {
+		t.Fatal("a run with no held inputs got the block")
+	}
+}

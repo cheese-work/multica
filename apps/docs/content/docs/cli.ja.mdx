@@ -134,6 +134,20 @@ multica issue rerun-task <run-id> --issue MUL-123
 multica issue rerun-task <run-id> --issue MUL-123 --fresh
 ```
 
+保留（parked）の入力を一覧・再開・破棄し（メンバーのみ）、プロジェクトの WIP 上限を設定する:
+
+```bash
+multica issue inputs list MUL-123
+multica issue inputs resume MUL-123 --agent <agent>
+multica issue inputs discard MUL-123 --agent <agent>
+multica project wip-limit <project> 3
+multica project wip-limit <project> none
+```
+
+各入力は 1 つの実行(オーナー)と 1 つのスレッドに属します。実行が取り込むのは自身の入力だけで、同じ Issue と同じエージェントの別の実行の入力は取り込みません。`resume` は各スレッドの保留入力をそのスレッドの実行に戻し、`count` とスキップ数を出力します。スキップ数は `skipped_unknown_thread`(スレッド不明)、`skipped_unresumable_thread`、`skipped_slot_busy`、`skipped_changed` です。スキップされた入力は保留のままです。保留の理由は `legacy_unowned`(オーナー移行前のサーバーが書いたもの)、`legacy_claim_unproven`(実行と結び付けられない取得)、`ambiguous_owner`(オーナーとなる実行を 1 つに特定できない)です。この 3 つは自動では戻らず、メンバーが再開または破棄します。
+
+`--event-id <id>` を付けた書き込み（コメント、Issue の更新、ウェイクアップの作成・更新）は id ごとに 1 回だけ実行されます。同じ id の再配信には最初の応答が返ります。失敗した書き込みは記憶されないため、同じ id で再試行してください。同じ id の未完了の書き込みは 2 分間 409 を返します。id は 7 日間保持されます。
+
 後続の実行をキューに入れる代わりに、進行中の実行にコメントを追加する（追加メッセージを受け付ける実行のみ。コメントで起動できるエージェントに限る）:
 
 ```bash

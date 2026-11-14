@@ -98,7 +98,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	var trigger service.IssueRunTrigger
 	if handoff != nil && startHandler {
 		trigger, willRun = th.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
+			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true, RecordCoalesced: true,
 		}, service.IssueTriggerProbe{})
 	}
 	var handoffDetails map[string]string

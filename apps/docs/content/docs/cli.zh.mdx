@@ -134,6 +134,20 @@ multica issue rerun-task <run-id> --issue MUL-123
 multica issue rerun-task <run-id> --issue MUL-123 --fresh
 ```
 
+列出、恢复或丢弃被搁置（parked）的输入（仅限成员），并设置项目的 WIP 上限：
+
+```bash
+multica issue inputs list MUL-123
+multica issue inputs resume MUL-123 --agent <agent>
+multica issue inputs discard MUL-123 --agent <agent>
+multica project wip-limit <project> 3
+multica project wip-limit <project> none
+```
+
+每个输入属于一个运行(所有者)和一个线程。运行只取走自己的输入,不会取走同一议题、同一智能体的其他运行的输入。`resume` 会把每个线程中挂起的输入重新挂到该线程的运行上,并输出 `count` 以及跳过的数量:`skipped_unknown_thread`(线程未知)、`skipped_unresumable_thread`、`skipped_slot_busy` 和 `skipped_changed`。被跳过的输入保持挂起。挂起原因有:`legacy_unowned`(所有者迁移之前的服务器写入)、`legacy_claim_unproven`(无法关联到其运行的领取)和 `ambiguous_owner`(无法确定唯一的所有者运行)。这三种不会自动重新挂起,需由成员恢复或丢弃。
+
+带 `--event-id <id>` 的写入（评论、Issue 更新、唤醒的创建或更新）每个 id 只执行一次：相同 id 的重新投递会得到第一次的响应。失败的写入不会被记住，请用同一个 id 重试。同一 id 的未完成写入在 2 分钟内返回 409。id 保留 7 天。
+
 把评论插话到仍在进行中的运行，而不是排队一个后续运行（仅限支持插话的运行；你的评论能启动哪个智能体，就能向它插话）：
 
 ```bash

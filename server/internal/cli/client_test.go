@@ -112,6 +112,25 @@ func TestPostJSON(t *testing.T) {
 		}
 	})
 
+	t.Run("event id header", func(t *testing.T) {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Get("X-Event-Id")
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(respBody{ID: "1"})
+		}))
+		defer srv.Close()
+
+		client := NewAPIClient(srv.URL, "ws", "tok")
+		client.EventID = "evt-9"
+		if err := client.PostJSON(context.Background(), "/test", reqBody{}, &respBody{}); err != nil {
+			t.Fatal(err)
+		}
+		if got != "evt-9" {
+			t.Fatalf("X-Event-Id = %q, want evt-9", got)
+		}
+	})
+
 	t.Run("client identity headers", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if got := r.Header.Get("X-Client-Platform"); got != "cli-test" {

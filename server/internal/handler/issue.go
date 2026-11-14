@@ -281,7 +281,7 @@ func assertIssueStatusStillActive(ctx context.Context, qtx *db.Queries, workspac
 // under locks, whatever the status.
 func (h *Handler) runWithIssueStatusGuard(ctx context.Context, workspaceID pgtype.UUID, statusKey string, inTx bool, fn func(q *db.Queries) error) error {
 	_, hasActor := ctx.Value(wakeupActorKey{}).(wakeupActor)
-	if !inTx && !hasActor && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
+	if !inTx && !hasActor && !service.HasWriteEventClaim(ctx) && (statusKey == "" || issuestatus.IsBuiltIn(statusKey)) {
 		return fn(h.Queries)
 	}
 	tx, err := h.beginWakeupWrite(ctx)
@@ -4941,6 +4941,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	statusChanged := (req.Status != nil || params.Status.Valid) && prevIssue.Status != issue.Status
 	priorityChanged := req.Priority != nil && prevIssue.Priority != issue.Priority
+	if priorityChanged && issue.ProjectID.Valid {
+		// A priority change is a release event (CHE-5213): re-run admission in focus order.
+		if err := h.TaskService.ReleaseProjectAdmission(r.Context(), issue.ProjectID); err != nil {
+			slog.Warn("release project admission after priority change failed", "issue_id", uuidToString(issue.ID), "error", err)
+		}
+	}
 	// project_changed gates the client's per-project issue-list refetch the way
 	// status/assignee flags gate theirs. Without it the client must diff
 	// project_id against its own cache, which breaks once an optimistic local
@@ -4974,6 +4980,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			AssigneeChanged:    assigneeChanged || handoff != nil,
 			StatusChanged:      statusChanged,
 			EnteredHandoffStep: handoff != nil,
+			RecordCoalesced:    true,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 	)
@@ -5942,6 +5949,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				AssigneeChanged:    assigneeChanged || handoff != nil,
 				StatusChanged:      statusChanged,
 				EnteredHandoffStep: handoff != nil,
+				RecordCoalesced:    true,
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		)

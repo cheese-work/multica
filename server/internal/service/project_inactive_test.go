@@ -17,7 +17,7 @@ func TestInactiveProjectResumeClearsWakeupError(test *testing.T) {
 	projectID := fixture.Project(test, "Resume wakeup error", testutil.Cols{"status": "in_progress"})
 	fixture.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issue, projectID)
 	rule := wakeCreate(test, fixture, wakeups, issue, WakeupInput{AgentID: agent, Kind: "event", EventTypes: []string{"comment.created"}, Instruction: "Fresh events only"})
-	for _, status := range []string{"paused", "in_progress"} {
+	for _, status := range []string{"cancelled", "in_progress"} {
 		_, err := wakeups.Tasks.UpdateProject(context.Background(), util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
 			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
 		}, false, nil)
@@ -28,7 +28,7 @@ func TestInactiveProjectResumeClearsWakeupError(test *testing.T) {
 		if err != nil {
 			test.Fatal(err)
 		}
-		if status == "paused" && stored.LastError.String != "project_inactive" {
+		if status == "cancelled" && stored.LastError.String != "project_inactive" {
 			test.Errorf("inactive wakeup error = %q", stored.LastError.String)
 		}
 		if status == "in_progress" && stored.LastError.Valid {
@@ -62,7 +62,7 @@ func TestProjectAdmissionHoldsWorkspaceFence(test *testing.T) {
 }
 
 func TestInactiveProjectWakeupKinds(test *testing.T) {
-	for _, status := range []string{"paused", "cancelled", "completed"} {
+	for _, status := range []string{"cancelled", "completed"} {
 		for _, kind := range []string{"event", "at", "every", "cron", "condition", "manual"} {
 			test.Run(status+"/"+kind, func(test *testing.T) {
 				fixture, wakeups, issue, agent := conditionFixture(test)
@@ -119,7 +119,7 @@ func TestInactiveProjectAutopilotModes(test *testing.T) {
 		test.Run(mode, func(test *testing.T) {
 			fixture, owner := newPrincipalFixture(test)
 			agent := fixture.privateAgentOwnedBy(test, owner, "inactive autopilot")
-			projectID := fixture.Project(test, "Inactive autopilot", testutil.Cols{"status": "paused"})
+			projectID := fixture.Project(test, "Inactive autopilot", testutil.Cols{"status": "cancelled"})
 			apID, triggerID := fixture.autopilotWithTrigger(test, agent, owner, owner)
 			fixture.Exec(test, "UPDATE autopilot SET execution_mode=$2, project_id=$3 WHERE id=$1", apID, mode, projectID)
 			ap, err := fixture.q.GetAutopilot(context.Background(), util.MustParseUUID(apID))

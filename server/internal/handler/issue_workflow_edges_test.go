@@ -225,7 +225,7 @@ func TestEdgesStaleWatchIsDropped(t *testing.T) {
 	}
 }
 
-func TestEdgesPausedProjectHoldsIssue(t *testing.T) {
+func TestEdgesInactiveProjectHoldsIssue(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -234,14 +234,14 @@ func TestEdgesPausedProjectHoldsIssue(t *testing.T) {
 	linkedPRForWakeup(t, c.fx, installationID, 215211, "edge-f")
 	setChildPR(t, c.fx.child.ID, "merged")
 	c.enter(t, "in_progress")
-	testPool.Exec(context.Background(), `UPDATE project SET status='paused' WHERE id=(SELECT project_id FROM issue WHERE id=$1)`, c.issueID)
+	testPool.Exec(context.Background(), `UPDATE project SET status='cancelled' WHERE id=(SELECT project_id FROM issue WHERE id=$1)`, c.issueID)
 	testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
 	tickEdges(t)
 	if got := c.status(t); got != "in_progress" {
-		t.Fatalf("paused project moved the issue to %s", got)
+		t.Fatalf("cancelled project moved the issue to %s", got)
 	}
 	if got := c.watches(t); got != 1 {
-		t.Fatalf("paused project left %d watches, want the watch kept", got)
+		t.Fatalf("cancelled project left %d watches, want the watch kept", got)
 	}
 }
 

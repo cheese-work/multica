@@ -56,6 +56,14 @@ Voir [Ressources de projet](/project-resources) pour savoir comment choisir et c
 
 Le **Workflow** du projet définit les colonnes du tableau et qui prend le relais à chaque étape. Le développement peut ainsi aller à un agent, la revue à un autre et la validation à un membre. Sans autre choix, le projet utilise **Default** : tous les statuts sont disponibles et rien n’est confié automatiquement. Voir [Workflows](/workflows) pour la configuration et le changement d’un projet existant.
 
+## Mettre en pause et limiter le travail en cours
+
+Une exécution d’un projet `paused` ne démarre pas. Elle reste en file d’attente et ses déclencheurs sont conservés avec leurs identifiants d’événement. Les exécutions déjà en cours continuent. Quand le projet quitte `paused`, les exécutions retenues démarrent une par une selon l’ordre de priorité : priorité du projet, puis priorité de la tâche, puis date de création de la tâche.
+
+Un projet peut aussi plafonner le nombre d’exécutions envoyées, en cours ou réservées en même temps. Définissez-le avec `multica project wip-limit <projet> <n>` ; `none` supprime le plafond (valeur par défaut). Les exécutions au-delà du plafond sont retenues de la même façon et démarrent à mesure que d’autres se terminent. Quand une exécution se termine, sa place libérée passe aussitôt à l’exécution retenue suivante. Si ce passage échoue ou si le serveur s’arrête avant, le serveur le retente environ toutes les 15 secondes jusqu’à ce qu’il réussisse.
+
+Une exécution qui se termine autrement que par `completed` met ses entrées en attente. Rien ne les relance seul. Un membre peut lancer `multica issue inputs list <tâche>`, puis `multica issue inputs resume <tâche>` pour démarrer une exécution avec les mêmes entrées, ou `multica issue inputs discard <tâche>` pour les abandonner.
+
 ## Responsable du projet
 
 Le responsable peut être un membre ou un agent ; un membre responsable peut aussi changer le workflow du projet. Désigner un responsable ne lui assigne aucune tâche et ne lance aucun travail. Pour lui confier une étape, choisissez **Responsable du projet** pour cette étape dans le workflow.

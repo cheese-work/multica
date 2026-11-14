@@ -3547,6 +3547,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// branch. The missing id itself is not acknowledged in the receipt.
 			resp.TriggerCommentContent = "The newest triggering comment is no longer available. Address every earlier comment included below."
 		}
+		// CHE-5213: the claim bound every held trigger of this (issue, agent) to the run.
+		if inputs, err := h.TaskService.RunInputsForTask(r.Context(), task.ID); err != nil {
+			slog.Warn("load run inputs for claim failed", "task_id", uuidToString(task.ID), "error", err)
+		} else {
+			for _, in := range inputs {
+				resp.RunInputs = append(resp.RunInputs, runInputResponse(in))
+			}
+		}
 
 		// Resolve the prior agent session / workdir to resume.
 		if task.RerunOfTaskID.Valid && !service.IsFreshRerun(*task) {

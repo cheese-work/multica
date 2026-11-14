@@ -143,6 +143,7 @@ type Task struct {
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
 	CoalescedCommentIDs           []string               `json:"coalesced_comment_ids,omitempty"`            // MUL-4195: earlier comments folded into this run while it was still queued; the agent must address these in addition to the (newest) triggering comment. Empty for old servers / non-merged runs
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
+	RunInputs                     []RunInputData         `json:"run_inputs,omitempty"`                       // CHE-5213: every held trigger bound to this run at claim, in arrival order; delivery is at-least-once, so a redelivery repeats event_id
 	TriggerThreadID               string                 `json:"trigger_thread_id,omitempty"`                // root comment ID for the triggering thread; falls back to trigger_comment_id on old servers
 	TriggerCommentContent         string                 `json:"trigger_comment_content,omitempty"`          // content of the triggering comment
 	TriggerThreadContext          string                 `json:"trigger_thread_context,omitempty"`           // CHE-2070: bounded plain-text transcript (root + last replies) of the triggering thread, excluding the trigger itself; empty on old servers
@@ -249,6 +250,15 @@ type ChatAttachmentMeta struct {
 // the full detail of a comment folded into this run while it was still queued
 // (MUL-4195). The prompt embeds each one directly so the agent addresses every
 // folded comment without assuming they all live in the triggering thread.
+// RunInputData is one stored trigger bound to a run at claim.
+type RunInputData struct {
+	EventID            string          `json:"event_id"`
+	Seq                int64           `json:"seq"`
+	Kind               string          `json:"kind"`
+	RedeliveryOfTaskID string          `json:"redelivery_of_task_id,omitempty"`
+	Payload            json.RawMessage `json:"payload,omitempty"`
+}
+
 type CoalescedCommentData struct {
 	ID         string `json:"id"`
 	ThreadID   string `json:"thread_id,omitempty"`

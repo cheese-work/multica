@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,8 +16,10 @@ import (
 
 var ErrProjectInactive = errors.New("project_inactive")
 
+// ProjectInactive reports a project that no longer runs work. A paused project
+// is not inactive: its runs stay queued and are held at claim (CHE-5213).
 func ProjectInactive(status string) bool {
-	return status == "paused" || status == "cancelled" || status == "completed"
+	return status == "cancelled" || status == "completed"
 }
 
 func IsProjectInactive(err error) bool {
@@ -181,6 +184,12 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 	}
 	if len(cancelled) > 0 {
 		service.BroadcastCancelledTasks(ctx, util.UUIDToString(project.WorkspaceID), cancelled)
+	}
+	// Unpause is a release event: held runs get admitted once, in focus order.
+	if previous.Status == "paused" && project.Status != "paused" {
+		if err := service.ReleaseProjectAdmission(ctx, project.ID); err != nil {
+			slog.Warn("release project admission after unpause failed", "project_id", util.UUIDToString(project.ID), "error", err)
+		}
 	}
 	return project, nil
 }

@@ -74,6 +74,11 @@ shortcuts. `project resource update` merges shortcut edits with the existing
 issue dates). On `project update`, pass an empty string (`--start-date ""`) to
 clear a date; an unset flag leaves it untouched.
 
+`multica project wip-limit <project-id> <n|none>` sets how many runs of the
+project may be dispatched, running or reserved at once. `none` removes the
+limit (the default). Runs over the limit are held and released in focus order:
+project priority, issue priority, issue creation time.
+
 ## local_directory execution modes
 
 `--execution-mode` decides how tasks share a `local_directory`.

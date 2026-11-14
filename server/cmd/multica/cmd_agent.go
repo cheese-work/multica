@@ -302,6 +302,9 @@ func newAPIClient(cmd *cobra.Command) (*cli.APIClient, error) {
 	}
 
 	client := cli.NewAPIClient(serverURL, workspaceID, token)
+	if eventID, _ := cmd.Flags().GetString("event-id"); eventID != "" {
+		client.EventID = eventID
+	}
 	// When running inside a daemon task, attribute actions to the agent.
 	if agentID := os.Getenv("MULTICA_AGENT_ID"); agentID != "" {
 		client.AgentID = agentID

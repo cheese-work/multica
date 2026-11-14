@@ -1081,13 +1081,18 @@ func (h *Handler) triggerChildDoneAgent(ctx context.Context, parent db.Issue, tr
 		return
 	}
 
-	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+	carrier, err := h.Queries.PendingCarrierForIssueAndAgent(ctx, db.PendingCarrierForIssueAndAgentParams{
 		IssueID: parent.ID,
 		AgentID: parent.AssigneeID,
 		// Key dedup on the reviewed head (TEN-356).
-		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
+		HeadSha:         h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
+		ThreadCommentID: triggerCommentID,
 	})
-	if err != nil || hasPending {
+	if err == nil {
+		h.recordCoalescedTrigger(ctx, parent, parent.AssigneeID, triggerCommentID, "child_done", carrier)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return
 	}
 
@@ -1140,13 +1145,18 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 		return
 	}
 
-	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+	carrier, err := h.Queries.PendingCarrierForIssueAndAgent(ctx, db.PendingCarrierForIssueAndAgentParams{
 		IssueID: parent.ID,
 		AgentID: squad.LeaderID,
 		// Key dedup on the reviewed head (TEN-356).
-		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
+		HeadSha:         h.TaskService.ResolveIssueReviewSHAParam(ctx, parent.ID),
+		ThreadCommentID: triggerCommentID,
 	})
-	if err != nil || hasPending {
+	if err == nil {
+		h.recordCoalescedTrigger(ctx, parent, squad.LeaderID, triggerCommentID, "child_done", carrier)
+		return
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return
 	}
 
@@ -1155,5 +1165,14 @@ func (h *Handler) triggerChildDoneSquad(ctx context.Context, parent db.Issue, tr
 			"parent_id", uuidToString(parent.ID),
 			"squad_id", uuidToString(squad.ID),
 			"leader_id", uuidToString(squad.LeaderID))
+	}
+}
+
+// recordCoalescedTrigger stores the trigger a queued run of (issue, agent)
+// absorbed in place of a new run; carrier is the run the pre-check read. The wake it follows has already happened, so
+// a failure is logged.
+func (h *Handler) recordCoalescedTrigger(ctx context.Context, issue db.Issue, agentID, commentID pgtype.UUID, source string, carrier pgtype.UUID) {
+	if err := h.TaskService.RecordCoalescedTrigger(ctx, issue, agentID, commentID, source, carrier); err != nil {
+		slog.Error("record coalesced trigger failed", "issue_id", uuidToString(issue.ID), "source", source, "error", err)
 	}
 }

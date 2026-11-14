@@ -975,6 +975,7 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
+    admission_state = NULL, hold_reason = NULL, reservation_lease_id = NULL, reservation_expires_at = NULL,
     preset_name = NULL, preset_source = NULL, preset_skips = NULL,
     claimed_model = NULL, claimed_thinking_level = NULL,
     claimed_service_tier = NULL, claimed_context_args = NULL,
@@ -989,6 +990,9 @@ WHERE id = (
     WHERE atq.agent_id = @agent_id
       AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
+      -- Admission (CHE-5213): a held run waits for a release event; a reserved
+      -- run is claimable only while its lease lasts.
+      AND (atq.admission_state IS NULL OR (atq.admission_state = 'reserved' AND atq.reservation_expires_at > now()))
       -- CHE-4103: an output_only background task past its claim deadline is
       -- never handed out; the deadline sweep cancels it. Same expression as
       -- CancelUnclaimedBackgroundTasks, so a claim and the sweep cannot disagree.
@@ -2337,6 +2341,48 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step IS NOT NULL
     AND workflow_step <> sqlc.arg('step')::text
   );
+
+-- name: PendingCarrierForIssueAndAgent :one
+-- HasPendingTaskForIssueAndAgent returning the pending run, as the carrier a
+-- coalesced trigger is recorded against (CHE-5266). The pre-check and the carrier
+-- are one read. With several matches: the run in the trigger's own thread first
+-- (thread_comment_id NULL selects assignment-level work), a queued run before a
+-- dispatched one, then the oldest. The choice is a hint: InsertCoalescedRunInput
+-- decides ownership.
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+ORDER BY (comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid)) DESC,
+         (status = 'queued') DESC, created_at ASC, id ASC
+LIMIT 1;
+
+-- name: PendingCarrierForIssueAndAgentAtStep :one
+-- PendingCarrierForIssueAndAgent for a workflow handoff: the
+-- HasPendingTaskForIssueAndAgentAtStep predicate, with the pending run returned.
+SELECT id FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> sqlc.arg('step')::text
+  )
+ORDER BY (comment_thread_id IS NULL) DESC, (status = 'queued') DESC, created_at ASC, id ASC
+LIMIT 1;
 
 -- name: LastVerdictHeadSHA :one
 -- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a

@@ -462,6 +462,24 @@ working directory and session when safe, and `--fresh` starts with new ones.
 The deprecated `rerun` re-enqueues the issue's current agent assignment. On
 both, `--reason` goes to the server audit log only; it is not stored on the run.
 
+**Held and parked inputs.** A run of a `paused` project, or of a project at its
+WIP limit, is held at claim; its triggers wait as inputs. A run that ends in any
+way other than `completed` parks its batch. Parked inputs are never admitted
+again on their own:
+
+```bash
+multica issue inputs list <issue-id> [--output json]
+multica issue inputs resume <issue-id> [--agent <agent>]    # queue a run with the same event ids
+multica issue inputs discard <issue-id> [--agent <agent>]   # drop the parked inputs
+```
+
+Each input belongs to one run (its owner) and one thread. A run takes only its own inputs, never those of another run of the same issue and agent. `resume` re-holds each thread's parked inputs on a run of that thread and prints `count` plus the counts it skipped: `skipped_unknown_thread` (no thread is known), `skipped_unresumable_thread`, `skipped_slot_busy` and `skipped_changed`. Skipped inputs stay parked. Park reasons: `legacy_unowned` (written by a server before the owner migration), `legacy_claim_unproven` (a claim that could not be tied to its run) and `ambiguous_owner` (no single run could be named as owner). These three are never re-held automatically; a member resumes or discards them.
+
+A write that carries `--event-id <id>` (issue comment, issue update, wakeup create or update) happens once per id: a redelivery with the same id gets the first response back (`Idempotent-Replay: true`). A failed write is not remembered, so retry with the same id. An unfinished write with that id answers 409 for 2 minutes. Ids are remembered for 7 days.
+
+`--agent` defaults to the issue's agent assignee. Members only; an agent run
+token is refused.
+
 **Runtime-local skills.** `multica agent skills runtime-set <agent-id>` turns one
 skill that lives on the runtime off or back on:
 

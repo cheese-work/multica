@@ -463,6 +463,9 @@ func (s *IssueWakeupService) saveTx(ctx context.Context, issueID, member, source
 	}
 	defer tx.Rollback(ctx)
 	q := s.Tasks.Queries.WithTx(tx)
+	if err := ApplyWriteEvent(ctx, q); err != nil {
+		return out, err
+	}
 	var workspace pgtype.UUID
 	if err := tx.QueryRow(ctx, "SELECT w.id FROM workspace w JOIN issue i ON i.workspace_id=w.id WHERE i.id=$1 FOR KEY SHARE OF w", issueID).Scan(&workspace); err != nil {
 		return out, err

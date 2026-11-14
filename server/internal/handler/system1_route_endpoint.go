@@ -259,7 +259,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 		assigneeChanged := prev.AssigneeType.String != updated.AssigneeType.String || uuidToString(prev.AssigneeID) != uuidToString(updated.AssigneeID)
 		var willRun bool
 		runTrigger, willRun = th.IssueService.WillEnqueueRun(writeCtx, service.IssueTriggerInput{
-			Issue: updated, PrevStatus: prev.Status, AssigneeChanged: assigneeChanged || handoff != nil, StatusChanged: statusMoved, EnteredHandoffStep: handoff != nil,
+			Issue: updated, PrevStatus: prev.Status, AssigneeChanged: assigneeChanged || handoff != nil, StatusChanged: statusMoved, EnteredHandoffStep: handoff != nil, RecordCoalesced: true,
 		}, h.issueTriggerWriteProbe(r, actorType, actorID, updated))
 		if willRun && !suppress {
 			var notConfirmed *service.StopNotConfirmedError

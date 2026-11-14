@@ -22,6 +22,12 @@ type ActivityLog struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AdmissionRelease struct {
+	TaskID    pgtype.UUID        `json:"task_id"`
+	ProjectID pgtype.UUID        `json:"project_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
 type Agent struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -247,6 +253,10 @@ type AgentTaskQueue struct {
 	ExternalRead              bool               `json:"external_read"`
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
+	AdmissionState            pgtype.Text        `json:"admission_state"`
+	HoldReason                pgtype.Text        `json:"hold_reason"`
+	ReservationLeaseID        pgtype.UUID        `json:"reservation_lease_id"`
+	ReservationExpiresAt      pgtype.Timestamptz `json:"reservation_expires_at"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
 }
 
@@ -2948,6 +2958,7 @@ type Project struct {
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
 	WorkflowSplit     []byte             `json:"workflow_split"`
+	Settings          []byte             `json:"settings"`
 }
 
 type ProjectResource struct {
@@ -3211,6 +3222,25 @@ type RunGateEvent struct {
 	SeenCount           int32              `json:"seen_count"`
 	FirstSeenAt         pgtype.Timestamptz `json:"first_seen_at"`
 	LastSeenAt          pgtype.Timestamptz `json:"last_seen_at"`
+}
+
+type RunInput struct {
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	IssueID            pgtype.UUID        `json:"issue_id"`
+	AgentID            pgtype.UUID        `json:"agent_id"`
+	EventID            string             `json:"event_id"`
+	Seq                pgtype.Int8        `json:"seq"`
+	Kind               string             `json:"kind"`
+	Payload            []byte             `json:"payload"`
+	State              string             `json:"state"`
+	TaskID             pgtype.UUID        `json:"task_id"`
+	RedeliveryOfTaskID pgtype.UUID        `json:"redelivery_of_task_id"`
+	ParkReason         pgtype.Text        `json:"park_reason"`
+	FailureClass       pgtype.Text        `json:"failure_class"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	OwnerTaskID        pgtype.UUID        `json:"owner_task_id"`
+	ThreadKey          pgtype.UUID        `json:"thread_key"`
 }
 
 type RuntimeProfile struct {
@@ -3929,4 +3959,14 @@ type WorkspaceShareLink struct {
 	UseCount    int32              `json:"use_count"`
 	IsActive    bool               `json:"is_active"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type WriteEvent struct {
+	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
+	EventKey     string             `json:"event_key"`
+	Owner        pgtype.UUID        `json:"owner"`
+	State        string             `json:"state"`
+	StatusCode   pgtype.Int4        `json:"status_code"`
+	ResponseBody []byte             `json:"response_body"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 }
