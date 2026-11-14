@@ -605,26 +605,6 @@
     "cancel": "取消",
     "open_newer": "開啟較新的私訊"
   },
-  "search": {
-    "label": "搜尋聊天",
-    "placeholder": "搜尋聊天",
-    "shortcut_hint": "/",
-    "clear": "清除搜尋",
-    "results_label": "搜尋結果",
-    "count_other": "{{count}} 筆結果",
-    "searching": "搜尋中…",
-    "empty": "沒有與「{{query}}」相符的聊天",
-    "failed": "搜尋失敗，請重試。",
-    "timed_out": "搜尋耗時過長，請嘗試更短或更具體的關鍵字。",
-    "disconnected": "你已離線，搜尋需要網路連線。",
-    "retry": "重試",
-    "too_long": "搜尋最多 {{max}} 個字元。",
-    "show_more": "顯示更多",
-    "loading_more": "載入中…",
-    "archived_badge": "已封存",
-    "title_match": "標題相符",
-    "actions_aria": "{{title}} 的操作"
-  },
   "wakeup": {
     "node_label": "定時喚醒已觸發",
     "scheduled_at": "定時 {{time}}",
