@@ -402,6 +402,17 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 
 `route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
 
+### System 1 标注
+
+被指派的 System 1 标注 agent 在自己的 agent 任务中读取盲标队列并写入标签。服务器从任务令牌取得 agent 和任务；成员会话或 PAT 会得到 403。
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+队列只含观察 id 和类型化特征，从不含预测。每次最多 20 个该范围内尚无同类有效标签的观察。服务器在提供队列时保存抽样的 id 和种子，同一任务再次请求会得到同一份样本。`--supersedes` 填要更正的有效标签 id；缺少它时，对同一观察再写一个标签会得到 409。
+
 任何工作区成员都可以读取每个范围和预测器版本的 System 1 资格状态：
 
 ```bash

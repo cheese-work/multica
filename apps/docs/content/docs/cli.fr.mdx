@@ -401,6 +401,17 @@ Les blocs `decision` et `routing` couvrent toute la période. Le bloc `route` co
 
 Le bloc `route` compte une seule population d'événements : les changements de statut d'un agent marqués comme sortie d'une étape de routage (`eligible_exits`) et les étiquettes de route qui portent le même identifiant d'événement (`matched_labels`). `label_coverage` vaut `matched_labels / eligible_exits` et ne dépasse jamais 1. `via_route_share` est la part des événements appariés dont la première étiquette vient de `issue route`, et non du repli sur le statut. `duplicate_labels` compte les étiquettes qui partagent un événement avec une étiquette plus ancienne (cible 0). `labels_total`, `owner_only_labels` (une route qui a gardé le statut, donc sans événement) et `non_routing_labels` (une route depuis une étape sans agent de routage) restent hors de la couverture. `overridden` compte les étiquettes d'agent qu'une personne a inversées en moins d'une heure, et `override_rate` vaut `overridden / labels_total`. Le bloc contient aussi `decided`, `predicted`, `agreed`, `coverage` et `precision` par classe.
 
+### Étiquetage System 1
+
+L'agent étiqueteur System 1 désigné lit sa file aveugle et écrit les étiquettes depuis sa propre tâche d'agent. Le serveur tire l'agent et la tâche du jeton de tâche ; une session de membre ou un PAT reçoit 403.
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+La file contient des identifiants d'observation et des caractéristiques typées, jamais de prédiction. Elle contient au plus 20 observations du périmètre sans étiquette valide de ce type. Le serveur enregistre les identifiants échantillonnés et la graine lorsqu'il sert la file, et une tâche qui la redemande reçoit le même échantillon. `--supersedes` prend l'identifiant de l'étiquette valide à corriger ; sans lui, une deuxième étiquette pour la même observation reçoit 409.
+
 Tout membre de l'espace de travail lit l'état de qualification System 1 de chaque périmètre et version de prédicteur :
 
 ```bash
