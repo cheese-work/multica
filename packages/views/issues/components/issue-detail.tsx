@@ -2057,7 +2057,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // need new plumbing (a per-row "focused" callback bubbling to the page);
   // that is out of scope for this fix.
   const draftsByKey = useCommentDraftStore((s) => s.drafts);
-  const rootIdsWithActiveReplyDraft = useMemo(() => {
+  // CHE-1935: `rootIdsWithActiveEditDraft` is the edit-only subset. A bare `reply:` draft is not
+  // a reason to force or latch length expansion: the reply box is already visible in the compact
+  // state, so unfolding the hidden replies only pushes it away from the user. Only an edit can
+  // need a hidden reply mounted.
+  const rootIdsWithActiveEditDraft = useMemo(() => {
     const ids = new Set<string>();
     const hasDraftContentOrUpload = (key: string) => {
       const draft = draftsByKey[key];
@@ -2066,7 +2070,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     };
     for (const [rootId, replies] of timelineView.threadReplies) {
       if (
-        hasDraftContentOrUpload(`reply:${id}:${rootId}`) ||
         hasDraftContentOrUpload(`edit:${id}:${rootId}`) ||
         replies.some((reply) => hasDraftContentOrUpload(`edit:${id}:${reply.id}`))
       ) {
@@ -2095,7 +2098,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // yet, anchored to the root itself or to one of the root's replies. Split
   // out from `forceThreadOpen` below so it can also feed the latch effect
   // after it — the two need the exact same "active run" definition, and
-  // `rootIdsWithActiveReplyDraft` already established the pattern of
+  // `rootIdsWithActiveEditDraft` already established the pattern of
   // precomputing a root-id set for this kind of reason.
   //
   // `commentRuns` is keyed by THREAD ROOT id, not by reply id (see
@@ -2134,7 +2137,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // replies) currently contains either the focused element or a
   // non-collapsed text selection, with NO unsaved draft/edit present. This
   // is CHE-476's restoration of 01-DESIGN line 51's original scope, which
-  // `rootIdsWithActiveReplyDraft` above deliberately does not cover (see its
+  // `rootIdsWithActiveEditDraft` above deliberately does not cover (see its
   // "Genuinely NOT covered" note) — a focused composer with no typed content
   // yet, or a caret/selection with no edit in progress, produces no
   // draft-store entry.
@@ -2196,7 +2199,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   //     reply yet, anchored to one of this thread's replies.
   //   - an in-progress reply draft/upload, or an active inline edit session
   //     on the root or a reply, anywhere in this thread
-  //     (`rootIdsWithActiveReplyDraft` above — see its comment for exactly
+  //     (`rootIdsWithActiveEditDraft` above — see its comment for exactly
   //     what is and is not covered).
   // This does not persist a length or collapse choice by itself — it only
   // lifts the ceiling for the duration of the reason. Two transition-matrix
@@ -2259,14 +2262,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const forceThreadLengthExpand = useCallback((rootId: string): boolean => {
     if (findRootId === rootId) return true;
     if (targetRootId === rootId) return true;
-    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsWithActiveEditDraft.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
     if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [findRootId, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
+  }, [findRootId, targetRootId, rootIdsWithActiveEditDraft, rootIdsWithActiveRun, timelineView.threadReplies, highlightedId]);
 
   const collapsedThreadIds = useCommentCollapseStore(state => state.collapsedByIssue[id]);
   const items = useMemo<TimelineItem[]>(() => rootItems.flatMap((item): TimelineItem[] => {
@@ -2328,7 +2331,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   //       both `suppressedFoldRootsRef` and `voidedFoldRootsRef` from
   //       scratch for the new occurrence, or
   //   (b) this exact root's own latch reason genuinely ENDS (drops out of
-  //       `rootIdsWithActiveReplyDraft` / `rootIdsWithActiveRun`, or stops
+  //       `rootIdsWithActiveEditDraft` / `rootIdsWithActiveRun`, or stops
   //       being `targetRootId`) for at least one render — recorded in
   //       `voidedFoldRootsRef` so the release persists even though
   //       `justFoldedRoots` itself hasn't changed identity, e.g. the user
@@ -2372,12 +2375,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // `justFoldedRoots` itself hasn't changed identity.
     for (const rootId of suppressed) {
       const isActive =
-        rootIdsWithActiveReplyDraft.has(rootId) || rootIdsWithActiveRun.has(rootId) || rootId === targetRootId;
+        rootIdsWithActiveEditDraft.has(rootId) || rootIdsWithActiveRun.has(rootId) || rootId === targetRootId;
       if (!isActive) voided.add(rootId);
     }
     for (const rootId of voided) suppressed.delete(rootId);
 
-    for (const rootId of rootIdsWithActiveReplyDraft) {
+    for (const rootId of rootIdsWithActiveEditDraft) {
       if (suppressed.has(rootId)) continue;
       if (!expandedThreadLengths.has(rootId)) setThreadExpanded(id, rootId, true);
     }
@@ -2389,7 +2392,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       setThreadExpanded(id, targetRootId, true);
     }
   }, [
-    rootIdsWithActiveReplyDraft,
+    rootIdsWithActiveEditDraft,
     rootIdsWithActiveRun,
     targetRootId,
     expandedThreadLengths,
