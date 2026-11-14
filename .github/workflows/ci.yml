@@ -102,6 +102,8 @@ jobs:
           persist-credentials: false
       - name: Test the guard
         run: bash scripts/check-no-upstream-update-source.test.sh
+      - name: Check no tee step hides a failure
+        run: bash scripts/ci-tee-pipefail.test.sh
       - name: Test the upstream-main mirror script
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the merge review pack script
@@ -700,6 +702,9 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
+        # CHE-4873: the default shell has no pipefail, so `| tee` hid every
+        # test failure; `shell: bash` adds -o pipefail.
+        shell: bash
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a

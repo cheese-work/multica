@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,7 +117,8 @@ func ruleEClaimUntil(t *testing.T, svc *service.TaskService, runtimeID, queued s
 		got, err := svc.ClaimTaskForRuntime(c, ruleEUUID(t, runtimeID))
 		cancel()
 		if err != nil {
-			t.Fatalf("claim: %v", err)
+			t.Errorf("claim: %v", err) // Errorf, not Fatalf: callers run this in a goroutine (CHE-4873)
+			return false
 		}
 		if got == nil {
 			return false
@@ -195,8 +197,12 @@ func TestRuleE_BarrierCompletionQueuesBehindCompactClaimDoesNot(t *testing.T) {
 }
 
 // Order 2: a claim parked mid-transaction (it holds the task and a shared DM
-// lock). A compact that arrives meanwhile waits for the claim to commit, then
-// sees the claimed task and answers 409 with the epoch untouched.
+// lock). A compact that arrives meanwhile waits for the claim to finish.
+// CHE-2910 allows one active task per DM, so the compact caller (running) and
+// the parked claim (dispatching) cannot both commit: the claim loses to the
+// unique index, the queued task stays queued, and the compact answers 200.
+// CHE-4873: the claim goroutine used to Fatalf on that index error and never
+// answered, so the test hung until the 10 minute package timeout.
 func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	svc := ruleENewService()
 	fx := newRuleEFixture(t)
@@ -216,8 +222,14 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 
 	key, release := ruleEPause(t, "UPDATE", "agent_task_queue",
 		fmt.Sprintf(`OLD.status = 'queued' AND NEW.status = 'dispatched' AND NEW.chat_session_id = '%s'`, fx.sessionID))
-	claimed := make(chan bool, 1)
-	go func() { claimed <- ruleEClaimUntil(t, svc, runtimeID, queued, 30*time.Second) }()
+	claimed := make(chan error, 1)
+	runtimeUUID := ruleEUUID(t, runtimeID)
+	go func() {
+		c, cancel := context.WithTimeout(ctx(), 30*time.Second)
+		defer cancel()
+		_, err := svc.ClaimTaskForRuntime(c, runtimeUUID)
+		claimed <- err
+	}()
 	ruleEWaitParked(t, key)
 
 	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'running', started_at = now() WHERE id = $1`, callerTask); err != nil {
@@ -236,15 +248,14 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	}
 
 	release()
-	if !<-claimed {
-		t.Fatal("the parked claim did not return the queued task")
+	if err := <-claimed; err == nil || !strings.Contains(err.Error(), "idx_agent_task_queue_one_active_per_chat") {
+		t.Fatalf("parked claim = %v, want the one-active-per-DM unique index to refuse it", err)
 	}
-	if code := <-compactDone; code != http.StatusConflict {
-		t.Fatalf("compact after the claim = %d, want 409", code)
+	if code := <-compactDone; code != http.StatusOK {
+		t.Fatalf("compact after the refused claim = %d, want 200", code)
 	}
-	assertCompactUntouched(t, fx.sessionID)
-	if status, stamp, dm := ruleEQueuedState(t, queued); status != "dispatched" || stamp != 0 || dm != 0 {
-		t.Fatalf("queued task = %q at epoch %d, DM epoch %d, want dispatched at 0/0", status, stamp, dm)
+	if status, _, _ := ruleEQueuedState(t, queued); status != "queued" {
+		t.Fatalf("queued task = %q, want queued after the refused claim", status)
 	}
 }
 

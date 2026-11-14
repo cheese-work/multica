@@ -436,3 +436,12 @@ re-enable a skill for itself.
   }
 }
 ```
+
+## Shadow predictor report
+
+```bash
+multica decision shadow-report [--since <RFC3339>] [--until <RFC3339>]
+```
+
+Reads the System 1 shadow predictor report (JSON only). The window defaults to
+the 24 hours before `--until`; `--until` defaults to now.

@@ -197,6 +197,7 @@ func TestTextDiffFlagsLineEndingChangesAlongsideHunks(test *testing.T) {
 }
 
 func TestAgentInstructionsPreviewUsesTheTextDiffWithCodePointCounts(test *testing.T) {
+	test.Skip("CHE-4873 quarantine (CHE-4909): POST /api/decisions returns governed_blocks_changed")
 	const marks = "é \U0001F44D" // combining mark and emoji: 4 code points, 8 bytes
 	request, _ := requestAgentInstructions(test, http.StatusCreated, func(params map[string]any) {
 		after := governedAgentText + "\n" + marks

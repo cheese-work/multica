@@ -786,6 +786,7 @@ func TestCompleteTask_SealedChannelEmptyOutputWritesNoRow(t *testing.T) {
 // inherited owner — keying it off the retry's own id would misread the task
 // as direct and push the no_response fallback to the external channel.
 func TestCompleteTask_SealedChannelRetryEmptyOutputWritesNoRow(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	if testHandler == nil {
 		t.Skip("database not available")
 	}

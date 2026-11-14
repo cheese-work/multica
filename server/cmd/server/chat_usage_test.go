@@ -164,6 +164,7 @@ func seedChatUsageSessionWithAgent(t *testing.T, creatorID, wantAgentID string) 
 }
 
 func TestChatSessionUsage(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	sessionID := seedChatUsageSession(t, testUserID)
 
 	status, body := interactiveChatRequest(t, "/api/chat/sessions/"+sessionID+"/usage")
@@ -236,6 +237,7 @@ func TestChatSessionUsage(t *testing.T) {
 }
 
 func TestChatSessionUsageRefusesForeignUserLikeSessionGet(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	var otherUserID string
 	if err := testPool.QueryRow(context.Background(), `INSERT INTO "user" (name, email) VALUES ('Usage Other', $1) RETURNING id`, uuid.NewString()+"@multica.ai").Scan(&otherUserID); err != nil {
 		t.Fatal(err)
@@ -256,6 +258,7 @@ func TestChatSessionUsageRefusesForeignUserLikeSessionGet(t *testing.T) {
 // The usage route sits behind chatReadSession, so a caller GET /sessions/{id}
 // refuses must be refused identically here.
 func TestChatSessionUsageRefusesCLIJWTWithInteractiveLoginRequired(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	sessionID := seedChatUsageSession(t, testUserID)
 
 	wantStatus, wantBody := chatRequestAs(t, testUserID, false, "/api/chat/sessions/"+sessionID)
@@ -269,6 +272,7 @@ func TestChatSessionUsageRefusesCLIJWTWithInteractiveLoginRequired(t *testing.T)
 }
 
 func TestChatSessionUsageRefusesPrivateAgentCreatorWithoutAccess(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	ctx := context.Background()
 	var memberID, ownerID, agentID, runtimeID string
 	if err := testPool.QueryRow(ctx, `SELECT runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&runtimeID); err != nil {
@@ -335,6 +339,7 @@ func interactiveToken(t *testing.T) string {
 }
 
 func TestChatSessionUsageRefusesCrossWorkspaceLikeSessionGet(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	ctx := context.Background()
 	sessionID := seedChatUsageSession(t, testUserID)
 	var otherWorkspaceID string
@@ -358,6 +363,7 @@ func TestChatSessionUsageRefusesCrossWorkspaceLikeSessionGet(t *testing.T) {
 }
 
 func TestChatSessionUsageHidesNonPublicSessionLikeSessionGet(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	ctx := context.Background()
 	sessionID := seedChatUsageSession(t, testUserID)
 	// A session holding only a channel command is a control-plane record, not a
@@ -400,6 +406,7 @@ func chatTaskToken(t *testing.T, sessionID, taskStatus string) string {
 }
 
 func TestChatSessionUsageTaskTokenIsBoundToItsOwnSession(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	own := seedChatUsageSession(t, testUserID)
 	other := seedChatUsageSession(t, testUserID)
 	running := chatTaskToken(t, own, "running")

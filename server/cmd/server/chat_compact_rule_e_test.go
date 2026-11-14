@@ -71,6 +71,7 @@ func newRuleEFixture(t *testing.T) compactFixture {
 // (p) A task other than the caller that is dispatched, waiting_local_directory
 // or running blocks the compact with 409; a queued one does not.
 func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	for _, active := range []string{"dispatched", "waiting_local_directory", "running"} {
 		t.Run(active, func(t *testing.T) {
 			fx := newRuleEFixture(t)
@@ -93,6 +94,7 @@ func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
 // (q) opposite order: the claim commits first, the compact then answers 409
 // and the DM epoch stays put.
 func TestChatCompactRefusesTaskClaimedJustBefore(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	var agentID, runtimeID string

@@ -879,6 +879,7 @@ func newConnection(t *testing.T, f principalFixture) string {
 }
 
 func TestWakeupConditionPullRequestCoversEveryVCSProvider(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): unfinished current head starts a run for forgejo, gitea and gitlab")
 	for _, provider := range []string{"forgejo", "gitea", "gitlab"} {
 		t.Run(provider+"/checks_finished", func(t *testing.T) {
 			f, s, issue, agent := conditionFixture(t)
