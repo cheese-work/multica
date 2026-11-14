@@ -8110,10 +8110,15 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		return TaskResult{}, err
 	}
+	// A status handoff comment is context, so the runtime brief gets no reply target.
+	triggerCommentID, triggerThreadID := task.TriggerCommentID, task.TriggerThreadID
+	if task.isStatusHandoff() {
+		triggerCommentID, triggerThreadID = "", ""
+	}
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:             task.IssueID,
-		TriggerCommentID:    task.TriggerCommentID,
-		TriggerThreadID:     task.TriggerThreadID,
+		TriggerCommentID:    triggerCommentID,
+		TriggerThreadID:     triggerThreadID,
 		CommentReplyTargets: commentReplyThreads(task),
 		NewCommentCount:     task.NewCommentCount,
 		NewCommentsSince:    task.NewCommentsSince,

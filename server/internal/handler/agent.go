@@ -567,6 +567,7 @@ type AgentTaskResponse struct {
 	// partial work, and that is when the pointer matters most.
 	BranchName            string                 `json:"branch_name,omitempty"`
 	TriggerCommentID      *string                `json:"trigger_comment_id,omitempty"`    // comment that triggered this task
+	TriggerKind           string                 `json:"trigger_kind,omitempty"`          // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context, not a comment to answer
 	CoalescedCommentIDs   []string               `json:"coalesced_comment_ids,omitempty"` // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
 	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
@@ -1027,6 +1028,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IsLeaderTask:           t.IsLeaderTask,
 		CreatedAt:              timestampToString(t.CreatedAt),
 		TriggerCommentID:       uuidToPtr(t.TriggerCommentID),
+		TriggerKind:            t.TriggerKind.String,
 		CoalescedCommentIDs:    uuidsToStrings(t.CoalescedCommentIds),
 		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:         textToPtr(t.TriggerSummary),
@@ -1222,7 +1224,7 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"
 	}
-	if uuidToString(t.TriggerCommentID) != "" {
+	if uuidToString(t.TriggerCommentID) != "" && t.TriggerKind.String != service.TriggerKindStatusHandoff {
 		return "comment"
 	}
 	return "direct"

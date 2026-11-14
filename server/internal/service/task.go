@@ -953,6 +953,21 @@ func (s *TaskService) OriginatorForIssueTask(ctx context.Context, issue db.Issue
 	return s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
 }
 
+// StatusHandoffOriginator is the human a run started by a status move would be
+// attributed to, for the squad-leader access gate to judge the same principal
+// the enqueue persists (CHE-5485). ok is false when ctx carries no handoff
+// comment. A task that cannot be read yields an empty originator: fail closed.
+func (s *TaskService) StatusHandoffOriginator(ctx context.Context, issue db.Issue) (originator pgtype.UUID, ok bool) {
+	if !statusHandoffComment(ctx).Valid {
+		return pgtype.UUID{}, false
+	}
+	attr, err := s.statusHandoffAttribution(ctx, s.Queries, issue, pgtype.UUID{})
+	if err != nil {
+		return pgtype.UUID{}, true
+	}
+	return attr.UserID, true
+}
+
 func (s *TaskService) captureTaskDispatched(ctx context.Context, task db.AgentTaskQueue) {
 	if s.Metrics != nil {
 		source, runtimeMode, _ := s.taskMetricsContext(ctx, task)
@@ -1529,6 +1544,58 @@ func actingTask(ctx context.Context) pgtype.UUID {
 	return id
 }
 
+// TriggerKindStatusHandoff marks a run whose trigger comment is handoff context
+// from a status move (CHE-5485). The comment informs the run; it never decides
+// who the run is accountable to.
+const TriggerKindStatusHandoff = "status_handoff"
+
+type statusHandoffCommentKey struct{}
+
+// WithStatusHandoffComment names the comment a status move carried as its
+// handoff, so the run that move starts gets it as context.
+func WithStatusHandoffComment(ctx context.Context, commentID pgtype.UUID) context.Context {
+	return context.WithValue(ctx, statusHandoffCommentKey{}, commentID)
+}
+
+func statusHandoffComment(ctx context.Context) pgtype.UUID {
+	id, _ := ctx.Value(statusHandoffCommentKey{}).(pgtype.UUID)
+	return id
+}
+
+// statusHandoffFor is the handoff comment a run with this trigger comment
+// carries: the ctx comment when the run has no trigger yet, or when the trigger
+// is that same comment (a rerun inheriting a status-handoff trigger).
+func statusHandoffFor(ctx context.Context, triggerCommentID pgtype.UUID) pgtype.UUID {
+	id := statusHandoffComment(ctx)
+	if id.Valid && (!triggerCommentID.Valid || triggerCommentID == id) {
+		return id
+	}
+	return pgtype.UUID{}
+}
+
+// statusHandoffAttribution attributes a run started by a status move. A member
+// mover is direct_human. An agent mover delegates from its acting task, so the
+// human is whoever that task serves, never the handoff comment's author. With
+// no acting task it is the issue's own provenance.
+func (s *TaskService) statusHandoffAttribution(ctx context.Context, queries *db.Queries, issue db.Issue, actorUserID pgtype.UUID) (attribution.Result, error) {
+	if !actorUserID.Valid {
+		acting, ok, err := ActingTask(ctx, queries)
+		if err != nil {
+			return attribution.Result{}, err
+		}
+		if ok {
+			return attribution.ClassifyDirect(attribution.DirectFacts{
+				IssueID:           issue.ID,
+				OriginType:        "agent_create",
+				OriginTaskID:      acting.ID,
+				OriginOriginator:  acting.OriginatorUserID,
+				OriginAccountable: acting.AccountableUserID,
+			}), nil
+		}
+	}
+	return s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID), nil
+}
+
 // ActingTaskTaint is the taint of the task WithActingTask names, nil when ctx
 // names none. Fail closed: a task that cannot be read cannot be shown clean.
 func ActingTaskTaint(ctx context.Context, q *db.Queries) ([]string, error) {
@@ -1631,7 +1698,13 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.CreateAgentTaskParams{}, attribution.Result{}, fmt.Errorf("issue has no assignee")
 	}
-	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, actorUserID, fireAt)); err != nil {
+	var triggerKind pgtype.Text
+	handoffComment := statusHandoffFor(ctx, triggerCommentID)
+	if handoffComment.Valid {
+		triggerCommentID = handoffComment
+		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+	}
+	if _, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, triggerCommentID, triggerKind, actorUserID, fireAt)); err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
 
@@ -1654,7 +1727,15 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	// comment or direct member assignment is direct_human. attr.UserID is the
 	// same value the pre-MUL-4302 resolver produced, so overlay/authorization
 	// are unchanged; the extra fields are audit provenance.
-	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceCommentSource, actorUserID)
+	var attr attribution.Result
+	if handoffComment.Valid {
+		// A handoff comment is context only: it never reaches attribution.
+		if attr, err = s.statusHandoffAttribution(ctx, queries, issue, actorUserID); err != nil {
+			return db.CreateAgentTaskParams{}, attribution.Result{}, err
+		}
+	} else {
+		attr = s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceCommentSource, actorUserID)
+	}
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -1672,6 +1753,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		IssueID:              issue.ID,
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
+		TriggerKind:          triggerKind,
 		CoalescedCommentIds:  coalescedCommentIDs,
 		TriggerSummary:       s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID),
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
@@ -1695,9 +1777,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	}, attr, nil
 }
 
-func issueRunTarget(issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
+func issueRunTarget(issue db.Issue, triggerCommentID pgtype.UUID, triggerKind pgtype.Text, actorUserID pgtype.UUID, fireAt pgtype.Timestamptz) RunTarget {
 	trigger := "assignment or status handoff"
-	if triggerCommentID.Valid {
+	if triggerCommentID.Valid && triggerKind.String != TriggerKindStatusHandoff {
 		trigger = "comment"
 	}
 	return RunTarget{AgentID: issue.AssigneeID, Trigger: trigger, ReviewRun: !fireAt.Valid, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID}
@@ -1707,7 +1789,7 @@ func issueRunTarget(issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, f
 // the run and inserts it: the lock lasts until the caller's transaction ends.
 // queries must not need a second connection.
 func (s *TaskService) insertPreparedIssueTask(ctx context.Context, queries *db.Queries, issue db.Issue, createParams db.CreateAgentTaskParams, fireAt pgtype.Timestamptz, origin RunOrigin) (db.AgentTaskQueue, error) {
-	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, createParams.OriginatorUserID, fireAt))
+	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, issueRunTarget(issue, createParams.TriggerCommentID, createParams.TriggerKind, createParams.OriginatorUserID, fireAt))
 	if err != nil {
 		return db.AgentTaskQueue{}, err
 	}
@@ -1953,7 +2035,7 @@ func (s *TaskService) enqueueMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if err != nil {
 		return db.AgentTaskQueue{}, attribution.Result{}, err
 	}
-	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, triggerCommentID)
+	params.TriggerSummary = s.buildCommentTriggerSummary(ctx, queries, issue.WorkspaceID, params.TriggerCommentID)
 	task, err := createAgentTask(ctx, queries, params)
 	if err == nil {
 		notifyTaskEnqueued(ctx, task)
@@ -1979,6 +2061,14 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	if isLeader {
 		trigger = "squad leader callback"
 	}
+	// A status move into a squad-assigned issue starts the leader with the move's
+	// handoff comment as context only (CHE-5485), exactly as the assignee path does.
+	var triggerKind pgtype.Text
+	handoffComment := statusHandoffFor(ctx, triggerCommentID)
+	if handoffComment.Valid {
+		triggerCommentID = handoffComment
+		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
+	}
 	gate, err := guardIssueRunGate(ctx, queries, issue.ID, origin, RunTarget{AgentID: agentID, Trigger: trigger, ReviewRun: true, ActorUserID: actorUserID, TriggerCommentID: triggerCommentID})
 	if err != nil {
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
@@ -2001,7 +2091,15 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	// agent-authored comment is a delegation (the parent task's human is
 	// copied); a member mention is direct_human. attr.UserID matches the
 	// pre-MUL-4302 value, so authorization is unchanged.
-	attr := s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	var attr attribution.Result
+	if handoffComment.Valid {
+		// A handoff comment is context only: it never reaches attribution.
+		if attr, err = s.statusHandoffAttribution(ctx, queries, issue, actorUserID); err != nil {
+			return db.CreateAgentTaskParams{}, attribution.Result{}, err
+		}
+	} else {
+		attr = s.attributionForIssueTask(ctx, issue, triggerCommentID, attribution.SourceDelegation, actorUserID)
+	}
 	// No precise human resolved → owner_fallback (accountable = agent owner), or
 	// refuse the enqueue if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
@@ -2019,6 +2117,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		IssueID:              issue.ID,
 		Priority:             priorityToInt(issue.Priority),
 		TriggerCommentID:     triggerCommentID,
+		TriggerKind:          triggerKind,
 		CoalescedCommentIds:  coalescedCommentIDs,
 		IsLeaderTask:         pgtype.Bool{Bool: isLeader, Valid: isLeader},
 		ForceFreshSession:    pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
@@ -7564,6 +7663,11 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 			}
 			if sourceTriggerLive {
 				triggerCommentID = sourceTask.TriggerCommentID
+				// A rerun of a status-handoff run keeps the handoff framing: the
+				// comment stays context, never a comment to reply to (CHE-5485).
+				if sourceTask.TriggerKind.String == TriggerKindStatusHandoff {
+					ctx = WithStatusHandoffComment(ctx, triggerCommentID)
+				}
 			} else if len(coalescedCommentIDs) > 0 {
 				triggerCommentID, coalescedCommentIDs, err = s.promoteNewestSurvivingComment(ctx, coalescedCommentIDs)
 				if err != nil {
