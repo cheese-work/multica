@@ -643,6 +643,51 @@ func (h *Handler) ListLabelsForSkill(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"labels": labelsToResponse(labels)})
 }
 
+// changeSkillLabels runs a skill label write and its audit row in one
+// transaction. On false it has already answered.
+func (h *Handler) changeSkillLabels(w http.ResponseWriter, r *http.Request, skill db.Skill, kind, failMsg string, mutate func(*db.Queries) error) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	defer tx.Rollback(ctx)
+	q := h.Queries.WithTx(tx)
+	labelIDs := func() (string, error) {
+		labels, err := q.ListLabelsBySkill(ctx, db.ListLabelsBySkillParams{SkillID: skill.ID, WorkspaceID: skill.WorkspaceID})
+		ids := make([]string, len(labels))
+		for i, l := range labels {
+			ids[i] = uuidToString(l.ID)
+		}
+		return idsAuditField(ids), err
+	}
+	before, err := labelIDs()
+	if err == nil {
+		err = mutate(q)
+	}
+	var after string
+	if err == nil {
+		after, err = labelIDs()
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	if err := h.writeAudit(ctx, q, r, auditInput{
+		Kind: kind, WorkspaceID: skill.WorkspaceID, TargetID: skill.ID,
+		Before: map[string]any{"label_ids": before}, After: map[string]any{"label_ids": after},
+	}); err != nil {
+		writeAuditFailure(w, r, err, kind)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, failMsg)
+		return false
+	}
+	return true
+}
+
 func (h *Handler) AttachLabelToSkill(w http.ResponseWriter, r *http.Request) {
 	skill, ok := h.loadSkillForUser(w, r, chi.URLParam(r, "id"))
 	if !ok || !h.canManageSkill(w, r, skill) {
@@ -662,10 +707,11 @@ func (h *Handler) AttachLabelToSkill(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "skill label not found")
 		return
 	}
-	if err := h.Queries.AttachLabelToSkill(r.Context(), db.AttachLabelToSkillParams{
-		SkillID: skill.ID, LabelID: labelID, WorkspaceID: skill.WorkspaceID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to attach skill label")
+	if !h.changeSkillLabels(w, r, skill, "skill.label.attach", "failed to attach skill label", func(q *db.Queries) error {
+		return q.AttachLabelToSkill(r.Context(), db.AttachLabelToSkillParams{
+			SkillID: skill.ID, LabelID: labelID, WorkspaceID: skill.WorkspaceID,
+		})
+	}) {
 		return
 	}
 	h.publish(protocol.EventLabelUpdated, uuidToString(skill.WorkspaceID), "member", requestUserID(r), map[string]any{"label": labelToResponse(label)})
@@ -681,10 +727,11 @@ func (h *Handler) DetachLabelFromSkill(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.Queries.DetachLabelFromSkill(r.Context(), db.DetachLabelFromSkillParams{
-		SkillID: skill.ID, LabelID: labelID, WorkspaceID: skill.WorkspaceID,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to detach skill label")
+	if !h.changeSkillLabels(w, r, skill, "skill.label.detach", "failed to detach skill label", func(q *db.Queries) error {
+		return q.DetachLabelFromSkill(r.Context(), db.DetachLabelFromSkillParams{
+			SkillID: skill.ID, LabelID: labelID, WorkspaceID: skill.WorkspaceID,
+		})
+	}) {
 		return
 	}
 	h.publish(protocol.EventLabelUpdated, uuidToString(skill.WorkspaceID), "member", requestUserID(r), map[string]any{"label_id": uuidToString(labelID), "resource_type": "skill"})
