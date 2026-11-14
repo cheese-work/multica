@@ -15,11 +15,11 @@ import (
 )
 
 // Route guard for the admin audit trail (CHE-2774). Every mutating route under
-// an admin prefix must be audited, on the explicit L5b pending list, or
-// exempt with a reason. Adding an admin route without one of these fails the
+// an admin prefix must be audited, exempt with a reason, or listed as out of
+// scope with a reason. Adding an admin route without one of these fails the
 // test; so does leaving a stale entry behind once a route is renamed or
-// removed. Shrink auditPendingL5b as L5b wires routes; never grow it to make
-// the test pass.
+// removed. Never grow auditPendingOutOfScope to make the test pass: the
+// ratchet in audit_route_guard_scope_test.go fails when it rises.
 
 // auditAdminPrefixes are the first path segments after /api/ whose mutating
 // routes configure the workspace, its agents, runtimes or integrations.
@@ -54,210 +54,155 @@ var auditExemptRoutes = map[string]string{
 	"DELETE /api/workspaces/{id}/": "workspace deletion removes the workspace's audit rows in the same tx (audit_workspace_delete)",
 }
 
-// auditPendingL5b lists admin routes whose audit kind lands in L5b.
+// auditPendingL5b lists in-scope admin routes whose audit kind is not wired
+// yet. It must end empty: TestInScopeAuditRoutesAreWired fails while any entry
+// is left. The wired_*_test.go files delete their routes from it.
 var auditPendingL5b = map[string]bool{}
 
+// auditPendingOutOfScope lists admin routes deliberately left unaudited, with
+// one reason per route. The count may not rise (TestOutOfScopeAuditRatchet) and
+// no entry may match an in-scope matcher (TestOutOfScopeAuditRoutesAreNotInScope).
+var auditPendingOutOfScope = map[string]string{}
+
 func init() {
-	for _, route := range []string{
-		"DELETE /api/agents/{id}/labels/{labelId}",
-		"DELETE /api/agents/{id}/mcp-servers/{serverId}",
-		"DELETE /api/agents/{id}/skills/{skillId}",
-		"DELETE /api/autopilots/{id}/",
-		"DELETE /api/autopilots/{id}/collaborators/{userId}",
-		"DELETE /api/autopilots/{id}/triggers/{triggerId}/",
-		"DELETE /api/cloud-runtime/nodes",
-		"DELETE /api/integrations/composio/connections/{id}",
-		"DELETE /api/issue-statuses/{id}/",
-		"DELETE /api/issue-workflows/{id}/",
-		"DELETE /api/labels/{id}/",
-		"DELETE /api/plugin-bridge/v1/storage/{scope}/{key}",
-		"DELETE /api/projects/{id}/",
-		"DELETE /api/projects/{id}/github-route-grants/{userId}",
-		"DELETE /api/projects/{id}/resources/{resourceId}",
-		"DELETE /api/projects/{id}/wakeup-definitions/{rule}",
-		"DELETE /api/quick-actions/{id}/",
-		"DELETE /api/runtimes/{runtimeId}/pause",
-		"DELETE /api/skills/{id}/",
-		"DELETE /api/skills/{id}/files/{fileId}",
-		"DELETE /api/skills/{id}/labels/{labelId}",
-		"DELETE /api/squads/{id}/",
-		"DELETE /api/squads/{id}/members",
-		"DELETE /api/tokens/{id}",
-		"DELETE /api/wakeup-definitions/{rule}",
-		"DELETE /api/workspaces/{id}/dingtalk/installations/{installationId}",
-		"DELETE /api/workspaces/{id}/dingtalk/installations/{installationId}/groups/{conversationId}",
-		"DELETE /api/workspaces/{id}/github/installations/{installationId}",
-		"DELETE /api/workspaces/{id}/invitations/{invitationId}",
-		"DELETE /api/workspaces/{id}/lark/installations/{installationId}",
-		"DELETE /api/workspaces/{id}/mcp-servers/{serverId}",
-		"DELETE /api/workspaces/{id}/members/{memberId}/",
-		"DELETE /api/workspaces/{id}/plugins/packages/{packageId}",
-		"DELETE /api/workspaces/{id}/plugins/{installationId}",
-		"DELETE /api/workspaces/{id}/plugins/{installationId}/token",
-		"DELETE /api/workspaces/{id}/qoder",
-		"DELETE /api/workspaces/{id}/runtime-profiles/{profileId}",
-		"DELETE /api/workspaces/{id}/share-links/{linkId}",
-		"DELETE /api/workspaces/{id}/slack/installations/{installationId}",
-		"DELETE /api/workspaces/{id}/telegram/installations/{installationId}",
-		"DELETE /api/workspaces/{id}/vcs/connections/{connectionId}",
-		"DELETE /api/workspaces/{id}/wecom/installations/{installationId}",
-		"PATCH /api/agent-builder/sessions/{sessionId}/runtime",
-		"PATCH /api/autopilots/{id}/",
-		"PATCH /api/autopilots/{id}/triggers/{triggerId}/",
-		"PATCH /api/issue-statuses/reorder",
-		"PATCH /api/issue-statuses/{id}/",
-		"PATCH /api/issue-workflows/{id}/",
-		"PATCH /api/notification-channels/",
-		"PATCH /api/plugin-bridge/v1/issues/{issue_ref}",
-		"PATCH /api/properties/{id}/",
-		"PATCH /api/quick-actions/{id}/",
-		"PATCH /api/runtimes/{runtimeId}/",
-		"PATCH /api/squads/{id}/members/role",
-		"PATCH /api/workspaces/{id}/export-privacy",
-		"PATCH /api/workspaces/{id}/members/{memberId}/",
-		"PATCH /api/workspaces/{id}/runtime-profiles/{profileId}",
-		"POST /api/agent-builder/sessions/",
-		"POST /api/agents/",
-		"POST /api/agents/mika",
-		"POST /api/agents/{id}/archive",
-		"POST /api/agents/{id}/cancel-tasks",
-		"POST /api/agents/{id}/labels",
-		"POST /api/agents/{id}/mcp-servers",
-		"POST /api/agents/{id}/pause",
-		"POST /api/agents/{id}/restore",
-		"POST /api/agents/{id}/resume",
-		"POST /api/agents/{id}/skills/add",
-		"POST /api/autopilots/",
-		"POST /api/autopilots/{id}/collaborators",
-		"POST /api/autopilots/{id}/deliveries/{deliveryId}/replay",
-		"POST /api/autopilots/{id}/trigger",
-		"POST /api/autopilots/{id}/triggers",
-		"POST /api/autopilots/{id}/triggers/{triggerId}/rotate-webhook-token",
-		"POST /api/cloud-billing/checkout-sessions",
-		"POST /api/cloud-billing/portal-sessions",
-		"POST /api/cloud-runtime/nodes",
-		"POST /api/cloud-runtime/nodes/exec",
-		"POST /api/cloud-runtime/nodes/reboot",
-		"POST /api/cloud-runtime/nodes/start",
-		"POST /api/cloud-runtime/nodes/status",
-		"POST /api/cloud-runtime/nodes/stop",
-		"POST /api/cloud-subscriptions/checkout-sessions",
-		"POST /api/cloud-subscriptions/portal-sessions",
-		"POST /api/cloud-subscriptions/seats/purchase-preview",
-		"POST /api/cloud-subscriptions/seats/purchases",
-		"POST /api/cloud-subscriptions/seats/reconcile",
-		"POST /api/dingtalk/binding/redeem",
-		"POST /api/integrations/composio/connect/init",
-		"POST /api/invitations/{id}/accept",
-		"POST /api/invitations/{id}/decline",
-		"POST /api/issue-statuses/",
-		"POST /api/issue-workflows/",
-		"POST /api/issue-workflows/{id}/brief",
-		"POST /api/issue-workflows/{id}/webhooks",
-		"POST /api/issue-workflows/{id}/webhooks/{endpointId}/disable",
-		"POST /api/issue-workflows/{id}/webhooks/{endpointId}/rotate",
-		"POST /api/labels/",
-		"POST /api/lark/binding/redeem",
-		"POST /api/plugin-bridge/v1/hooks/{key}",
-		"POST /api/plugin-bridge/v1/issues/{issue_ref}/comments",
-		"POST /api/projects/",
-		"POST /api/projects/{id}/resources",
-		"POST /api/projects/{id}/wakeup-definitions/",
-		"POST /api/projects/{id}/wakeup-definitions/preview",
-		"POST /api/projects/{id}/workflow",
-		"POST /api/properties/",
-		"POST /api/quick-actions/",
-		"POST /api/runtimes/{runtimeId}/local-skills",
-		"POST /api/runtimes/{runtimeId}/local-skills/import",
-		"POST /api/runtimes/{runtimeId}/models",
-		"POST /api/runtimes/{runtimeId}/update",
-		"POST /api/skills/",
-		"POST /api/skills/import",
-		"POST /api/skills/{id}/labels",
-		"POST /api/skills/{id}/refresh",
-		"POST /api/slack/binding/redeem",
-		"POST /api/squads/",
-		"POST /api/squads/{id}/members",
-		"POST /api/telegram/binding/redeem",
-		"POST /api/tokens/",
-		"POST /api/tokens/current/renew",
-		"POST /api/wakeup-definitions/",
-		"POST /api/wakeup-definitions/preview",
-		"POST /api/webhooks/autopilots/{token}",
-		"POST /api/webhooks/github",
-		"POST /api/webhooks/stripe",
-		"POST /api/webhooks/vcs/{connectionId}",
-		"POST /api/webhooks/workflows/{endpoint_id}",
-		"POST /api/wecom/binding/redeem",
-		"POST /api/workspaces/",
-		"POST /api/workspaces/{id}/dingtalk/install/byo",
-		"POST /api/workspaces/{id}/lark/install/begin",
-		"POST /api/workspaces/{id}/leave",
-		"POST /api/workspaces/{id}/mcp-servers",
-		"POST /api/workspaces/{id}/members",
-		"POST /api/workspaces/{id}/pause",
-		"POST /api/workspaces/{id}/plugins",
-		"POST /api/workspaces/{id}/plugins/packages",
-		"POST /api/workspaces/{id}/plugins/packages/local",
-		"POST /api/workspaces/{id}/plugins/preview",
-		"POST /api/workspaces/{id}/plugins/{installationId}/disable",
-		"POST /api/workspaces/{id}/plugins/{installationId}/enable",
-		"POST /api/workspaces/{id}/plugins/{installationId}/token",
-		"POST /api/workspaces/{id}/qoder/check",
-		"POST /api/workspaces/{id}/qoder/environments",
-		"POST /api/workspaces/{id}/qoder/resume",
-		"POST /api/workspaces/{id}/qoder/stop",
-		"POST /api/workspaces/{id}/resume",
-		"POST /api/workspaces/{id}/runtime-profiles",
-		"POST /api/workspaces/{id}/share-links",
-		"POST /api/workspaces/{id}/slack/install/byo",
-		"POST /api/workspaces/{id}/telegram/install",
-		"POST /api/workspaces/{id}/vcs/connections",
-		"POST /api/workspaces/{id}/vcs/connections/{connectionId}/rotate-webhook",
-		"POST /api/workspaces/{id}/wecom/install/byo",
-		"PUT /api/agent-builder/sessions/{sessionId}/draft",
-		"PUT /api/agents/{id}/mcp-servers/{serverId}/enabled",
-		"PUT /api/agents/{id}/runtime-skills/enabled",
-		"PUT /api/agents/{id}/skills",
-		"PUT /api/agents/{id}/skills/{skillId}/enabled",
-		"PUT /api/autopilots/{id}/triggers/{triggerId}/signing-secret",
-		"PUT /api/github/dispatch-halt",
-		"PUT /api/issue-workflows/{id}/handoffs/{status}",
-		"PUT /api/labels/{id}/",
-		"PUT /api/plugin-bridge/v1/storage/{scope}/{key}",
-		"PUT /api/projects/{id}/",
-		"PUT /api/projects/{id}/github-route-grants/{userId}",
-		"PUT /api/projects/{id}/resources/{resourceId}",
-		"PUT /api/projects/{id}/wakeup-definitions/{rule}",
-		"PUT /api/runtimes/{runtimeId}/pause",
-		"PUT /api/skills/{id}/",
-		"PUT /api/skills/{id}/files",
-		"PUT /api/squads/{id}/",
-		"PUT /api/system-wakeups/{rule}",
-		"PUT /api/wakeup-definitions/{rule}",
-		"PUT /api/workspaces/{id}/delegated-writes",
-		"PUT /api/workspaces/{id}/mcp-servers/{serverId}",
-		"PUT /api/workspaces/{id}/plugins/{installationId}/config",
-		"PUT /api/workspaces/{id}/plugins/{installationId}/mcp/{hookKey}/tools",
-		"PUT /api/workspaces/{id}/protected-path-policies/{name}",
-		"PUT /api/workspaces/{id}/qoder",
-		"PUT /api/workspaces/{id}/runtime-profiles/{profileId}",
-		// Routes added on main after the inventory; wired in L5b.
-		"DELETE /api/agents/{id}/presets/{name}",
-		"PATCH /api/agents/{id}/presets/{name}",
-		"POST /api/agents/{id}/presets",
-		"POST /api/github/intake/revisions/{id}/approve",
-		"POST /api/workspaces/{id}/decision-gate/challenge",
-		"PUT /api/agents/{id}/presets/default",
-		"PUT /api/workspaces/{id}/decision-gate",
-		"PUT /api/workspaces/{id}/routing-agent",
-		"PUT /api/workspaces/{id}/background-agents",
-		"DELETE /api/workspaces/{id}/background-agents",
-		"PUT /api/workspaces/{id}/me/background-agents",
-		"DELETE /api/workspaces/{id}/me/background-agents/{job}",
-		"POST /api/workspaces/{id}/provider-breakers/{provider}/reset",
+	for _, g := range []struct {
+		reason string
+		routes []string
+	}{
+		{
+			reason: "cloud runtime node lifecycle: operates a hosted VM for the caller, touches no workspace setting, credential or agent grant; the hosting provider keeps its own log (borderline, flagged in the PR)",
+			routes: []string{
+				"DELETE /api/cloud-runtime/nodes",
+				"POST /api/cloud-runtime/nodes",
+				"POST /api/cloud-runtime/nodes/exec",
+				"POST /api/cloud-runtime/nodes/reboot",
+				"POST /api/cloud-runtime/nodes/start",
+				"POST /api/cloud-runtime/nodes/status",
+				"POST /api/cloud-runtime/nodes/stop",
+			},
+		},
+		{
+			reason: "billing: opens a payment-provider session or previews/reconciles seats; the payment provider holds the ledger and no workspace setting or agent reach changes here",
+			routes: []string{
+				"POST /api/cloud-billing/checkout-sessions",
+				"POST /api/cloud-billing/portal-sessions",
+				"POST /api/cloud-subscriptions/checkout-sessions",
+				"POST /api/cloud-subscriptions/portal-sessions",
+				"POST /api/cloud-subscriptions/seats/purchase-preview",
+				"POST /api/cloud-subscriptions/seats/purchases",
+				"POST /api/cloud-subscriptions/seats/reconcile",
+			},
+		},
+		{
+			reason: "per-user Composio connection: the credential lives at Composio and is scoped to the calling user, not the workspace (borderline, flagged in the PR)",
+			routes: []string{
+				"POST /api/integrations/composio/connect/init",
+				"DELETE /api/integrations/composio/connections/{id}",
+			},
+		},
+		{
+			reason: "issue-tracking catalog (statuses, workflows, labels, properties, quick actions): shapes issue data, grants no agent reach and stores no credential; changes show in issue history",
+			routes: []string{
+				"POST /api/issue-statuses/",
+				"PATCH /api/issue-statuses/{id}/",
+				"DELETE /api/issue-statuses/{id}/",
+				"PATCH /api/issue-statuses/reorder",
+				"POST /api/issue-workflows/",
+				"PATCH /api/issue-workflows/{id}/",
+				"DELETE /api/issue-workflows/{id}/",
+				"POST /api/issue-workflows/{id}/brief",
+				"PUT /api/issue-workflows/{id}/handoffs/{status}",
+				"POST /api/labels/",
+				"PUT /api/labels/{id}/",
+				"DELETE /api/labels/{id}/",
+				"POST /api/properties/",
+				"PATCH /api/properties/{id}/",
+				"POST /api/quick-actions/",
+				"PATCH /api/quick-actions/{id}/",
+				"DELETE /api/quick-actions/{id}/",
+			},
+		},
+		{
+			reason: "workflow webhook endpoint create/rotate/disable: the endpoint only starts a workflow run for that workflow; it does not choose an agent or hold a workspace credential (borderline, flagged in the PR)",
+			routes: []string{
+				"POST /api/issue-workflows/{id}/webhooks",
+				"POST /api/issue-workflows/{id}/webhooks/{endpointId}/disable",
+				"POST /api/issue-workflows/{id}/webhooks/{endpointId}/rotate",
+			},
+		},
+		{
+			reason: "per-user notification preference, not a workspace setting",
+			routes: []string{
+				"PATCH /api/notification-channels/",
+			},
+		},
+		{
+			reason: "agent-builder chat session draft; the agent it produces is created through POST /api/agents/, which is audited",
+			routes: []string{
+				"PATCH /api/agent-builder/sessions/{sessionId}/runtime",
+				"POST /api/agent-builder/sessions/",
+				"PUT /api/agent-builder/sessions/{sessionId}/draft",
+			},
+		},
+		{
+			reason: "plugin data plane: a plugin acts on issues and its own storage with the token an admin granted; the install and token routes are audited",
+			routes: []string{
+				"DELETE /api/plugin-bridge/v1/storage/{scope}/{key}",
+				"PUT /api/plugin-bridge/v1/storage/{scope}/{key}",
+				"PATCH /api/plugin-bridge/v1/issues/{issue_ref}",
+				"POST /api/plugin-bridge/v1/hooks/{key}",
+				"POST /api/plugin-bridge/v1/issues/{issue_ref}/comments",
+			},
+		},
+		{
+			reason: "personal access tokens: scoped to the calling user, not the workspace; listed in the user's own token page (borderline, flagged in the PR)",
+			routes: []string{
+				"POST /api/tokens/",
+				"DELETE /api/tokens/{id}",
+				"POST /api/tokens/current/renew",
+			},
+		},
+		{
+			reason: "wakeup rule definitions: schedule when an existing agent is woken, grant no new reach (borderline, flagged in the PR)",
+			routes: []string{
+				"PUT /api/system-wakeups/{rule}",
+				"POST /api/wakeup-definitions/",
+				"POST /api/wakeup-definitions/preview",
+				"PUT /api/wakeup-definitions/{rule}",
+				"DELETE /api/wakeup-definitions/{rule}",
+			},
+		},
+		{
+			reason: "inbound webhook receiver authenticated by its own token or signature; not an admin action",
+			routes: []string{
+				"POST /api/webhooks/autopilots/{token}",
+				"POST /api/webhooks/github",
+				"POST /api/webhooks/stripe",
+				"POST /api/webhooks/vcs/{connectionId}",
+				"POST /api/webhooks/workflows/{endpoint_id}",
+			},
+		},
+		{
+			reason: "a member redeems a one-time code to bind their own chat id; no credential is stored and the binding reaches only that member's access (judgment call, flagged in the PR)",
+			routes: []string{
+				"POST /api/dingtalk/binding/redeem",
+				"POST /api/lark/binding/redeem",
+				"POST /api/slack/binding/redeem",
+				"POST /api/telegram/binding/redeem",
+				"POST /api/wecom/binding/redeem",
+			},
+		},
+		{
+			reason: "personal background-agent override of the calling member (CHE-1446), not a workspace setting",
+			routes: []string{
+				"PUT /api/workspaces/{id}/me/background-agents",
+				"DELETE /api/workspaces/{id}/me/background-agents/{job}",
+			},
+		},
 	} {
-		auditPendingL5b[route] = true
+		for _, route := range g.routes {
+			auditPendingOutOfScope[route] = g.reason
+		}
 	}
 }
 
@@ -278,7 +223,8 @@ func TestAdminMutatingRoutesHaveAuditKind(t *testing.T) {
 		seen[key] = true
 		_, audited := auditedRoutes[key]
 		_, exempt := auditExemptRoutes[key]
-		if !audited && !exempt && !auditPendingL5b[key] {
+		_, outOfScope := auditPendingOutOfScope[key]
+		if !audited && !exempt && !auditPendingL5b[key] && !outOfScope {
 			unclassified = append(unclassified, key)
 		}
 		return nil
@@ -286,10 +232,10 @@ func TestAdminMutatingRoutesHaveAuditKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("admin mutating routes: %d audited, %d exempt, %d pending L5b", len(auditedRoutes), len(auditExemptRoutes), len(auditPendingL5b))
+	t.Logf("admin mutating routes: %d audited, %d exempt, %d pending in scope, %d out of scope", len(auditedRoutes), len(auditExemptRoutes), len(auditPendingL5b), len(auditPendingOutOfScope))
 	sort.Strings(unclassified)
 	if len(unclassified) > 0 {
-		t.Errorf("mutating admin routes with no audit kind, exempt reason or L5b pending entry:\n  %s", strings.Join(unclassified, "\n  "))
+		t.Errorf("mutating admin routes with no audit kind, exempt reason, pending entry or out-of-scope reason:\n  %s", strings.Join(unclassified, "\n  "))
 	}
 
 	var stale []string
@@ -312,6 +258,14 @@ func TestAdminMutatingRoutesHaveAuditKind(t *testing.T) {
 			stale = append(stale, key+" (pending, route gone)")
 		case auditedRoutes[key] != "" || auditExemptRoutes[key] != "":
 			stale = append(stale, key+" (pending, but already audited or exempt)")
+		}
+	}
+	for key := range auditPendingOutOfScope {
+		switch {
+		case !seen[key]:
+			stale = append(stale, key+" (out of scope, route gone)")
+		case auditedRoutes[key] != "" || auditExemptRoutes[key] != "":
+			stale = append(stale, key+" (out of scope, but already audited or exempt)")
 		}
 	}
 	sort.Strings(stale)
