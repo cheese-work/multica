@@ -192,6 +192,31 @@ describe("canvas dialog: focus-depth levels (CHE-5715)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(state.expand).toHaveBeenCalledWith(0);
   });
+  it("a count card steps into that card only: its children, with it last in the chain", () => {
+    render(ui());
+    openCanvas();
+    press("+");
+    expect(ids()).toEqual(["CHE-100", "CHE-101", "CHE-102"]);
+    fireEvent.click(within(canvas()).getByText("1 child"));
+    expect(ready()).toBe("2");
+    expect(ids()).toEqual(["CHE-302"]);
+    expect(within(canvas()).getByRole("button", { name: /CHE-102/ })).toBeInTheDocument();
+    expect(within(canvas()).queryByRole("button", { name: /CHE-100/ })).not.toBeInTheDocument();
+    press("-");
+    expect(ids()).toEqual(["CHE-100", "CHE-101", "CHE-102"]);
+    expect(within(canvas()).getByText("CHE-102").closest("a")).toHaveFocus();
+  });
+  it("+ steps into the active card, and is off on a leaf", () => {
+    render(ui());
+    openCanvas();
+    press("+");
+    const card = (n: number) => within(canvas()).getByText(`CHE-${n}`).closest("a")!;
+    fireEvent.focus(card(101));
+    expect(screen.getByRole("button", { name: "Step in" })).toBeDisabled();
+    fireEvent.focus(card(102));
+    press("+");
+    expect(ids()).toEqual(["CHE-302"]);
+  });
   it("animates a level change over 240 ms, but not with reduced motion", () => {
     const animate = vi.fn();
     HTMLElement.prototype.animate = animate;

@@ -9,19 +9,19 @@ import { AppLink } from "../../../navigation";
 import { useT } from "../../../i18n";
 import { FocusEdges } from "./hierarchy-focus-edges";
 import { focusKeyAction, nextCard } from "./hierarchy-focus-keys";
-import { layoutFocus, type FocusItem } from "./hierarchy-focus-layout";
+import { FOCUS_CAP, layoutFocus, type FocusItem } from "./hierarchy-focus-layout";
 import { levelMotion } from "./hierarchy-level-motion";
 import { summarizeGroup, type HierarchyIssue } from "./hierarchy-model";
 import { CARD_CLASS, CURRENT_CLASS, GroupTotals, IssueCardBody, type Catalog } from "./hierarchy-parts";
-import { capLevel, useHierarchyLevels } from "./use-hierarchy-levels";
+import { useHierarchyLevels } from "./use-hierarchy-levels";
 
 const PAD = 24;
 const toIssue = ({ id, identifier, title, status }: TimelineNode): HierarchyIssue => ({ id, identifier, title, status });
 const prefersReducedMotion = () => !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * Focus-depth hierarchy (CHE-4312 D4): one depth of the root's tree at a time, the ancestors of the active card
- * as a chain above it, each card's children folded into a count card. Levels load lazily as the focus reaches them.
+ * Focus-depth hierarchy (CHE-4312 D4): the children of one focused card at a time (the root at depth 0), the chain
+ * from the root down to that card above them, each card's children folded into a count card. Levels load lazily as the focus reaches them.
  * The viewport carries `data-level-ready` (the depth) once the focus level and its count level are settled; the
  * `level-start` / `level-ready` performance marks bracket every depth change for the performance gate.
  */
@@ -30,10 +30,11 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
   const paths = useWorkspacePaths();
   const { levels, expand } = useHierarchyLevels(root.id);
   const [depth, setDepth] = useState(0);
+  // The card whose children the focus level shows (depth >= 1); null at depth 0, where the level is the root itself.
+  const [focusId, setFocusId] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const deepest = Math.max(0, ...Object.entries(levels).filter(([, l]) => l.nodes.length > 0).map(([d]) => Number(d)));
-  const canIn = depth < deepest;
   const settled = (d: number) => levels[d]?.status !== undefined && levels[d]!.status !== "loading";
   const ready = (depth === 0 || settled(depth)) && settled(depth + 1);
   const failed = [depth, depth + 1].filter((d) => d >= 1 && levels[d]?.status === "failed");
@@ -42,36 +43,56 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
   const hasNext = !!levels[depth + 1];
   useEffect(() => { if (!hasNext) expand(depth); }, [depth, hasNext, expand]);
 
-  const { layout, path, cards } = useMemo(() => {
+  const { layout, path, cards, canIn, hidden } = useMemo(() => {
     const parentOf = new Map<string, string | null>();
     const byId = new Map<string, HierarchyIssue>([[root.id, root]]);
     Object.values(levels).forEach((l) => l.nodes.forEach((n) => { parentOf.set(n.id, n.parentId); byId.set(n.id, toIssue(n)); }));
     const kids = new Map<string, HierarchyIssue[]>();
     levels[depth + 1]?.nodes.forEach((n) => n.parentId && kids.set(n.parentId, [...(kids.get(n.parentId) ?? []), toIssue(n)]));
-    const atDepth = depth === 0 ? [root] : (levels[depth]?.nodes ?? []).map(toIssue);
-    const cards = atDepth.slice(0, 1000);
+    const siblings = depth === 0 ? [root] : (levels[depth]?.nodes ?? []).filter((n) => n.parentId === focusId).map(toIssue);
+    const cards = siblings.slice(0, 1000);
     const active = cards.find((c) => c.id === activeId) ?? cards[0];
     const path: HierarchyIssue[] = [];
-    for (let cur = active, d = depth; cur && d > 0; d--) {
-      const parent = byId.get(parentOf.get(cur.id) ?? "");
-      if (!parent) break;
-      path.unshift(parent);
-      cur = parent;
+    for (let id = depth === 0 ? null : focusId, n = 0; id && n < depth; n++) {
+      const issue = byId.get(id);
+      if (!issue) break;
+      path.unshift(issue);
+      id = id === root.id ? null : parentOf.get(id) ?? null;
     }
     const level = cards.map((issue) => ({ issue, children: summarizeGroup(kids.get(issue.id) ?? [], catalog.categoryOf) }));
-    return { layout: layoutFocus({ chain: path, level }), path, cards: cards.length };
-  }, [levels, depth, activeId, root, catalog.categoryOf]);
+    const canIn = !!active && (kids.get(active.id)?.length ?? 0) > 0;
+    return { layout: layoutFocus({ chain: path, level }), path, cards: cards.length, canIn, hidden: Math.max(0, cards.length - FOCUS_CAP) };
+  }, [levels, depth, focusId, activeId, root, catalog.categoryOf]);
   const activeCard = layout.items.find((i): i is Extract<FocusItem, { kind: "card" }> => i.kind === "card" && i.issue.id === activeId) ?? layout.items.find((i) => i.kind === "card");
-  const { hidden, pending } = capLevel(depth === 0 ? undefined : levels[depth]);
+  const pending = depth > 0 && levels[depth]?.status !== "ready";
   const withChildren = layout.items.filter((i) => i.kind === "count").length;
 
   const pendingMark = useRef(false);
-  const stepTo = (next: number) => {
-    if (next === depth || next < 0 || next > deepest) return;
-    performance.mark?.("level-start");
-    pendingMark.current = true;
-    setDepth(next);
+  const focusAfter = useRef<string | null>(null);
+  const begin = () => { performance.mark?.("level-start"); pendingMark.current = true; };
+  /** Into `parentId`'s children, one level down. */
+  const stepIn = (parentId: string) => {
+    begin();
+    focusAfter.current = "";
+    setFocusId(parentId);
+    setActiveId(null);
+    setDepth(depth + 1);
   };
+  /** Back to `to` (< depth): the chain card there stays active. */
+  const stepOut = (to: number) => {
+    if (to < 0 || to >= depth) return;
+    begin();
+    focusAfter.current = path[to]?.id ?? "";
+    setFocusId(to === 0 ? null : (path[to - 1]?.id ?? null));
+    setActiveId(path[to]?.id ?? null);
+    setDepth(to);
+  };
+  useEffect(() => {
+    if (focusAfter.current === null) return;
+    const target = focusAfter.current ? viewportRef.current?.querySelector<HTMLElement>(`[data-card-id="${focusAfter.current}"]`) : viewportRef.current;
+    focusAfter.current = null;
+    target?.focus();
+  }, [depth, focusId, viewportRef]);
   useEffect(() => {
     if (!ready || !pendingMark.current) return;
     pendingMark.current = false;
@@ -104,9 +125,10 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
     if ((action.type === "open" || action.type === "toggle") && !onViewport) return;
     event.preventDefault();
     event.stopPropagation();
-    if (action.type === "step-in") stepTo(depth + 1);
-    else if (action.type === "step-out") stepTo(depth - 1);
-    else if (action.type === "toggle") stepTo(canIn ? depth + 1 : depth - 1);
+    const into = () => { if (canIn && activeCard) stepIn(activeCard.issue.id); };
+    if (action.type === "step-in") into();
+    else if (action.type === "step-out") stepOut(depth - 1);
+    else if (action.type === "toggle") { if (canIn) into(); else stepOut(depth - 1); }
     else if (action.type === "open") { if (activeCard && activeCard.issue.id !== root.id) onOpen(activeCard.issue.id); }
     else if (activeCard) {
       const next = layout.items[nextCard(layout.items, layout.items.indexOf(activeCard), action.direction)];
@@ -122,9 +144,9 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
       <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label={t(($) => $.hierarchy.title)}>
-        <Button type="button" variant="outline" size="icon-sm" aria-label={t(($) => $.hierarchy.step_out)} disabled={depth === 0} onClick={() => stepTo(depth - 1)}><Minus /></Button>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={t(($) => $.hierarchy.step_out)} disabled={depth === 0} onClick={() => stepOut(depth - 1)}><Minus /></Button>
         <span aria-hidden="true" className="min-w-24 text-center text-caption tabular-nums">{t(($) => $.hierarchy.depth, { depth, max: deepest })}</span>
-        <Button type="button" variant="outline" size="icon-sm" aria-label={t(($) => $.hierarchy.step_in)} disabled={!canIn} onClick={() => stepTo(depth + 1)}><Plus /></Button>
+        <Button type="button" variant="outline" size="icon-sm" aria-label={t(($) => $.hierarchy.step_in)} disabled={!canIn} onClick={() => activeCard && stepIn(activeCard.issue.id)}><Plus /></Button>
         <span role="status" className="sr-only">{ready ? t(($) => $.hierarchy.depth_announce, { depth, max: deepest, count: cards, withChildren }) : ""}</span>
         {failed.length > 0 && (
           <span role="alert" className="flex items-center gap-2 text-caption">
@@ -148,7 +170,7 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
           <div ref={worldRef} data-testid="hierarchy-world" className="relative" style={shape}>
             <div className="absolute" style={world}>
               <FocusEdges edges={layout.edges} />
-              {layout.items.map((item, index) => <FocusItemView key={itemKey(item, index)} item={item} root={root} catalog={catalog} style={place(item.box)} href={item.kind === "card" ? paths.issueDetail(item.issue.id) : ""} pending={pending} hidden={hidden} path={path} onOpen={onOpen} onActive={setActiveId} onStep={(to) => stepTo(to)} depth={depth} />)}
+              {layout.items.map((item, index) => <FocusItemView key={itemKey(item, index)} item={item} root={root} catalog={catalog} style={place(item.box)} href={item.kind === "card" ? paths.issueDetail(item.issue.id) : ""} pending={pending} hidden={hidden} path={path} onOpen={onOpen} onActive={setActiveId} onStepIn={stepIn} onStepOut={stepOut} />)}
             </div>
           </div>
           {!ready && failed.length === 0 && <div role="status" aria-label={t(($) => $.hierarchy.loading)} className="absolute bottom-2 left-2 h-2 w-32 rounded-full bg-muted motion-safe:animate-pulse" />}
@@ -171,13 +193,13 @@ interface ItemProps {
   pending: boolean;
   hidden: number;
   path: HierarchyIssue[];
-  depth: number;
   onOpen: (id: string) => void;
   onActive: (id: string) => void;
-  onStep: (depth: number) => void;
+  onStepIn: (parentId: string) => void;
+  onStepOut: (depth: number) => void;
 }
 
-function FocusItemView({ item, root, catalog, style, href, pending, hidden, path, depth, onOpen, onActive, onStep }: ItemProps) {
+function FocusItemView({ item, root, catalog, style, href, pending, hidden, path, onOpen, onActive, onStepIn, onStepOut }: ItemProps) {
   const { t } = useT("issues");
   const box = "absolute overflow-hidden";
   if (item.kind === "fold") {
@@ -186,7 +208,8 @@ function FocusItemView({ item, root, catalog, style, href, pending, hidden, path
   if (item.kind === "chain") {
     const target = path.findIndex((p) => p.id === item.issue.id);
     return (
-      <button type="button" className={`${CARD_CLASS} ${box} text-left`} style={style} onClick={() => onStep(target)}>
+      // ui-pattern-ref: allow canvas chain card, positioned like its AppLink card peers; Button has no card variant
+      <button type="button" className={`${CARD_CLASS} ${box} text-left`} style={style} onClick={() => onStepOut(target)}>
         <span className="font-mono text-micro font-bold text-muted-foreground">{item.issue.identifier}</span>
         <span className="line-clamp-1 break-words text-micro">{item.issue.title}</span>
       </button>
@@ -194,7 +217,8 @@ function FocusItemView({ item, root, catalog, style, href, pending, hidden, path
   }
   if (item.kind === "count") {
     return (
-      <button type="button" className={`${box} rounded-xl border border-surface-border bg-card px-2.5 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring`} style={style} onClick={() => { onActive(item.parentId); onStep(depth + 1); }}>
+      // ui-pattern-ref: allow canvas count card, positioned like its AppLink card peers; Button has no card variant
+      <button type="button" className={`${box} rounded-xl border border-surface-border bg-card px-2.5 py-1.5 text-left outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring`} style={style} onClick={() => onStepIn(item.parentId)}>
         <GroupTotals summary={item.summary} label={t(($) => $.hierarchy.children, { count: item.summary.total })} catalog={catalog} />
       </button>
     );
