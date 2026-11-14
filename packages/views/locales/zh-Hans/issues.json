@@ -460,7 +460,10 @@
     "no_history": "无历史记录",
     "before_records": "记录之前",
     "collapse": "折叠",
-    "expand": "展开"
+    "expand": "展开",
+    "wakeup_cross": "唤醒",
+    "wakeup_children_done": "子项已完成",
+    "target_inside": "目标在内部（已折叠隐藏）"
   },
   "actor_issues": {
     "scope": {

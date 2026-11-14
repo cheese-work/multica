@@ -460,7 +460,10 @@
     "no_history": "記録された履歴なし",
     "before_records": "記録前",
     "collapse": "折りたたむ",
-    "expand": "展開"
+    "expand": "展開",
+    "wakeup_cross": "ウェイクアップ",
+    "wakeup_children_done": "子が完了",
+    "target_inside": "対象は内部にあります（折りたたみで非表示）"
   },
   "actor_issues": {
     "scope": {

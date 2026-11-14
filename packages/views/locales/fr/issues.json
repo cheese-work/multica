@@ -470,7 +470,10 @@
     "no_history": "Aucun historique enregistré",
     "before_records": "Avant les enregistrements",
     "collapse": "Réduire",
-    "expand": "Développer"
+    "expand": "Développer",
+    "wakeup_cross": "Réveil",
+    "wakeup_children_done": "Enfants terminés",
+    "target_inside": "Cible à l'intérieur (masquée par le repli)"
   },
   "actor_issues": {
     "scope": {
