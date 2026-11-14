@@ -478,7 +478,8 @@
       "channels": "Messagerie",
       "apps": "Applications connectées",
       "workflows": "Workflows",
-      "provider_breakers": "Disjoncteurs des fournisseurs"
+      "provider_breakers": "Disjoncteurs des fournisseurs",
+      "background_agents": "Agents d'arrière-plan"
     },
     "groups": {
       "personal": "Personnel",
@@ -907,12 +908,6 @@
     "idle_guard_hours_label": "Après (heures)",
     "idle_guard_hours_invalid": "Saisissez un nombre entier de 1 à 72.",
     "idle_guard_readonly": "{{mode}}, après {{hours}} h",
-    "routing_agent_label": "Agent de routage",
-    "routing_agent_hint": "Traite les étapes de workflow de simple routage : todo, blocked, merged et need decision. Non défini, chaque étape garde son propre agent.",
-    "routing_fallback_label": "Agent de secours",
-    "routing_fallback_hint": "Reprend une étape de routage quand l'agent de routage échoue sur une erreur du fournisseur.",
-    "routing_agent_none": "Aucun",
-    "routing_agent_unknown": "Agent inconnu",
     "slug_hint": "Utilisé dans toutes les URL de l'espace de travail. Il ne peut pas être modifié.",
     "copy_slug": "Copier le slug",
     "copy_failed": "Impossible de copier",
@@ -1737,5 +1732,39 @@
     "not_saved": "Non enregistré. Rien n’a changé.",
     "load_failed": "Impossible de charger la règle.",
     "save_failed": "Impossible d’enregistrer la règle."
+  },
+  "background_agents": {
+    "title": "Agents d'arrière-plan",
+    "description": "Petites tâches que les agents exécutent en coulisses pour tout l'espace de travail. Une tâche sans agent utilise son repli simple. Elle n'appelle jamais directement un modèle.",
+    "personal_note_before": "Les membres peuvent choisir leur propre agent pour le titre des DM et les actions rapides dans",
+    "personal_link": "Personnel → Agents d'arrière-plan",
+    "personal_note_after": ". Un choix personnel l'emporte sur cet onglet pour ce membre. Le routage se règle uniquement ici.",
+    "agent_label": "Agent",
+    "fallback_label": "Agent de repli",
+    "fallback_hint": "Prend le relais quand l'agent échoue avec une erreur du fournisseur.",
+    "pick_agent_first": "Choisissez d'abord un agent.",
+    "none": "Aucun agent",
+    "unknown_agent": "Agent inconnu",
+    "access_narrowed": "Accès : pas tout le monde",
+    "toast_save_failed": "Impossible d'enregistrer les agents d'arrière-plan.",
+    "load_error": "Impossible de charger les agents d'arrière-plan.",
+    "retry": "Réessayer",
+    "jobs": {
+      "dm_title": {
+        "label": "Titre des DM",
+        "hint": "Nomme un DM d'après son premier message.",
+        "no_agent": "Aucun agent : le titre est tronqué (60 premiers caractères)."
+      },
+      "quick_actions": {
+        "label": "Actions rapides",
+        "hint": "Propose des boutons de suite sous une réponse.",
+        "no_agent": "Aucun agent : aucun bouton."
+      },
+      "routing": {
+        "label": "Routage",
+        "hint": "Gère les étapes de workflow de routage seul : todo, blocked, merged et need decision.",
+        "no_agent": "Aucun agent : chaque étape garde son propre agent."
+      }
+    }
   }
 }

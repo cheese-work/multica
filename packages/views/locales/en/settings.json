@@ -478,7 +478,8 @@
       "channels": "Messaging",
       "apps": "Connected apps",
       "workflows": "Workflows",
-      "provider_breakers": "Provider breakers"
+      "provider_breakers": "Provider breakers",
+      "background_agents": "Background agents"
     },
     "groups": {
       "personal": "Personal",
@@ -907,12 +908,6 @@
     "idle_guard_hours_label": "After (hours)",
     "idle_guard_hours_invalid": "Enter a whole number from 1 to 72.",
     "idle_guard_readonly": "{{mode}}, after {{hours}} h",
-    "routing_agent_label": "Routing agent",
-    "routing_agent_hint": "Handles routing-only workflow steps: todo, blocked, merged and need decision. Not set keeps each step's own agent.",
-    "routing_fallback_label": "Fallback agent",
-    "routing_fallback_hint": "Takes over a routing step when the routing agent fails with a provider error.",
-    "routing_agent_none": "None",
-    "routing_agent_unknown": "Unknown agent",
     "slug_hint": "Part of every workspace URL. It can't be changed.",
     "copy_slug": "Copy slug",
     "copy_failed": "Couldn't copy to clipboard",
@@ -1737,5 +1732,39 @@
     "not_saved": "Not saved. Nothing changed.",
     "load_failed": "Could not load the rule.",
     "save_failed": "The rule could not be saved."
+  },
+  "background_agents": {
+    "title": "Background agents",
+    "description": "Small jobs agents do behind the scenes for everyone in this workspace. A job with no agent uses its plain fallback. It never calls a model directly.",
+    "personal_note_before": "Members can pick their own agent for DM title and Quick actions in",
+    "personal_link": "Personal → Background agents",
+    "personal_note_after": ". A personal pick wins over this tab for that member. Routing is only set here.",
+    "agent_label": "Agent",
+    "fallback_label": "Fallback agent",
+    "fallback_hint": "Takes over when the agent fails with a provider error.",
+    "pick_agent_first": "Pick an agent first.",
+    "none": "No agent",
+    "unknown_agent": "Unknown agent",
+    "access_narrowed": "Access: not everyone",
+    "toast_save_failed": "Couldn't save background agents.",
+    "load_error": "Couldn't load background agents.",
+    "retry": "Retry",
+    "jobs": {
+      "dm_title": {
+        "label": "DM title",
+        "hint": "Names a DM after its first message.",
+        "no_agent": "No agent: uses the title cut (first 60 characters)."
+      },
+      "quick_actions": {
+        "label": "Quick actions",
+        "hint": "Suggests follow-up buttons under a reply.",
+        "no_agent": "No agent: no buttons."
+      },
+      "routing": {
+        "label": "Routing",
+        "hint": "Handles routing-only workflow steps: todo, blocked, merged and need decision.",
+        "no_agent": "No agent: each step keeps its own agent."
+      }
+    }
   }
 }

@@ -176,17 +176,16 @@ export function useSettingsSearchIndex(
         description: t(($) => $.workspace.idle_guard_hint),
       },
       {
-        tab: "workspace",
-        anchor: "routing-agent",
-        title: t(($) => $.workspace.routing_agent_label),
-        description: t(($) => $.workspace.routing_agent_hint),
+        tab: "background-agents",
+        title: t(($) => $.background_agents.title),
+        description: t(($) => $.background_agents.description),
       },
-      {
-        tab: "workspace",
-        anchor: "routing-fallback-agent",
-        title: t(($) => $.workspace.routing_fallback_label),
-        description: t(($) => $.workspace.routing_fallback_hint),
-      },
+      ...(["dm_title", "quick_actions", "routing"] as const).map((job) => ({
+        tab: "background-agents",
+        anchor: `background-agents-${job}`,
+        title: t(($) => $.background_agents.jobs[job].label),
+        description: t(($) => $.background_agents.jobs[job].hint),
+      })),
       { tab: "workspace", anchor: "slug", title: t(($) => $.workspace.slug_label) },
       {
         tab: "workspace",
