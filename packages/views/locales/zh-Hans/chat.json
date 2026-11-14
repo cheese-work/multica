@@ -395,7 +395,26 @@
       "older": "更早"
     },
     "unseen_dot": "未查看",
-    "tag_decision": "决定"
+    "tag_decision": "决定",
+    "bulk": {
+      "toolbar_aria": "已选 {{count}} 个对话的操作",
+      "selected": "已选 {{count}} 个",
+      "select_all": "全选",
+      "cancel": "取消选择",
+      "more_aria": "更多：{{action}}",
+      "group_aria": "选择分组 {{label}}",
+      "row_aria": "选择 {{title}}",
+      "failed": "无法更新 {{count}} 个对话",
+      "archived_toast": "已归档 {{count}} 个对话",
+      "action": {
+        "seen": "标记为已读",
+        "unseen": "标记为未读",
+        "pin": "置顶",
+        "unpin": "取消置顶",
+        "archive": "归档",
+        "unarchive": "取消归档"
+      }
+    }
   },
   "header": {
     "context_meter": "{{window}} 中的 {{pct}}%",

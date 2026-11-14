@@ -395,7 +395,26 @@
       "older": "이전"
     },
     "unseen_dot": "안 봄",
-    "tag_decision": "결정"
+    "tag_decision": "결정",
+    "bulk": {
+      "toolbar_aria": "선택한 채팅 {{count}}개 작업",
+      "selected": "{{count}}개 선택됨",
+      "select_all": "모두 선택",
+      "cancel": "선택 취소",
+      "more_aria": "더 보기: {{action}}",
+      "group_aria": "{{label}} 그룹 선택",
+      "row_aria": "{{title}} 선택",
+      "failed": "채팅 {{count}}개를 업데이트하지 못했습니다",
+      "archived_toast": "채팅 {{count}}개를 보관했습니다",
+      "action": {
+        "seen": "읽음으로 표시",
+        "unseen": "읽지 않음으로 표시",
+        "pin": "고정",
+        "unpin": "고정 해제",
+        "archive": "보관",
+        "unarchive": "보관 해제"
+      }
+    }
   },
   "header": {
     "context_meter": "{{window}} 중 {{pct}}%",
