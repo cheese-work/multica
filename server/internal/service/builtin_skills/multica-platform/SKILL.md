@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
+description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, saved views, workspace admin, skill import. Not for the product code you are working on."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -20,6 +20,7 @@ Read the invariants below, then open the reference(s) your task actually needs
 | Open | When the task is about |
 |---|---|
 | `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
+| `references/views.md` | Saved views: reading one with `view list` / `view issues` instead of rebuilding its filters from `issue list` flags |
 | `references/issue-turn.md` | The runtime brief's issue Workflow steps: waiver reports, comment catch-up, `--no-start`, how a child closes itself |
 | `references/charts.md` | Rendering a chart or attaching a file in a comment: fenced `html`/`mermaid` blocks, `--attachment`, theme variables |
 | `references/pull-requests.md` | Linked PR state and current GitHub checks |

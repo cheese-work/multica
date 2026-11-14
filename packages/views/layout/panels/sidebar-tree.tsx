@@ -4,6 +4,7 @@ import { forwardRef, memo, useCallback, useLayoutEffect, useState } from "react"
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, ChevronUp } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { ShimmerText } from "@multica/ui/components/common/shimmer-text";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
@@ -135,19 +136,21 @@ export const TreeRow = forwardRef<HTMLAnchorElement, TreeRowProps>(function Tree
       ) : (
         icon
       )}
-      <AppLink
-        ref={linkRef}
-        href={href}
-        newTabTitle={label}
-        draggable={false}
-        aria-current={active ? "page" : undefined}
-        onKeyDown={onKeyDown}
-        onClick={onNavigate}
-        onNavigateInPlace={onNavigateInPlace}
-        className="min-w-0 flex-1 truncate outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:outline-2 focus-visible:after:outline-ring"
-      >
-        {label}
-      </AppLink>
+      <TruncatedTooltip content={label}>
+        <AppLink
+          ref={linkRef}
+          href={href}
+          newTabTitle={label}
+          draggable={false}
+          aria-current={active ? "page" : undefined}
+          onKeyDown={onKeyDown}
+          onClick={onNavigate}
+          onNavigateInPlace={onNavigateInPlace}
+          className="min-w-0 flex-1 truncate outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:outline-2 focus-visible:after:outline-ring"
+        >
+          {label}
+        </AppLink>
+      </TruncatedTooltip>
       {trailing}
     </div>
   );
@@ -193,13 +196,16 @@ export function useKeptActiveItem<T extends { id: string }>(
 /**
  * The issues under an expanded row: the first page, then "Load more" in
  * steps. `params: null` means the row's settings can match nothing;
- * `undefined` that they are still resolving.
+ * `undefined` that they are still resolving, or — with `paramsError` — that
+ * they could not resolve, which `onRetry` tries again.
  */
 export function SidebarIssueList({
   id,
   wsId,
   source,
   params,
+  paramsError = false,
+  onRetry,
   activeIssueId,
   onCollapse,
 }: {
@@ -207,6 +213,8 @@ export function SidebarIssueList({
   wsId: string;
   source: string;
   params: SidebarIssuesRequest | null | undefined;
+  paramsError?: boolean;
+  onRetry?: () => void;
   activeIssueId: string | null;
   onCollapse: () => void;
 }) {
@@ -240,7 +248,21 @@ export function SidebarIssueList({
 
   return (
     <ul id={id} className="mb-2 ml-5 border-l border-surface-border pl-1.5">
-      {params === undefined || (params && query.isPending) ? (
+      {params === undefined && paramsError ? (
+        <li className="flex h-[26px] items-center gap-2 px-2 text-caption text-faint-foreground">
+          <span className="min-w-0 truncate">{t(($) => $.panels.work.project_issues_error)}</span>
+          {onRetry && (
+            <button
+              type="button"
+              className="shrink-0 text-muted-foreground hover:text-foreground"
+              onKeyDown={onKeyDown}
+              onClick={onRetry}
+            >
+              {t(($) => $.panels.work.project_issues_retry)}
+            </button>
+          )}
+        </li>
+      ) : params === undefined || (params && query.isPending) ? (
         <li className="flex h-[26px] items-center gap-2 px-2">
           <div className="size-3 shrink-0 rounded-full bg-muted" />
           <div className="h-3 w-24 rounded-xs bg-muted" />
@@ -475,21 +497,23 @@ const SidebarIssueRow = memo(function SidebarIssueRow({
           label={statusLabel}
           className="size-3"
         />
-        <AppLink
-          href={unreadIssueHref(href, unread)}
-          newTabTitle={issue.title}
-          aria-current={active ? "page" : undefined}
-          onKeyDown={onKeyDown}
-          className={ISSUE_ROW_LINK_CLASS}
-        >
-          <ShimmerText
-            active={!!agents?.running}
-            className={cn("min-w-0 flex-1 truncate", SIDEBAR_SHIMMER_CLASS, !agents && unread && "text-foreground")}
+        <TruncatedTooltip content={issue.title}>
+          <AppLink
+            href={unreadIssueHref(href, unread)}
+            newTabTitle={issue.title}
+            aria-current={active ? "page" : undefined}
+            onKeyDown={onKeyDown}
+            className={ISSUE_ROW_LINK_CLASS}
           >
-            {issue.title}
-          </ShimmerText>
-          {agents ? <IssueAgentBadge agents={agents} /> : unread && <IssueUnreadDot unread={unread} />}
-        </AppLink>
+            <ShimmerText
+              active={!!agents?.running}
+              className={cn("min-w-0 flex-1 truncate", SIDEBAR_SHIMMER_CLASS, !agents && unread && "text-foreground")}
+            >
+              {issue.title}
+            </ShimmerText>
+            {agents ? <IssueAgentBadge agents={agents} /> : unread && <IssueUnreadDot unread={unread} />}
+          </AppLink>
+        </TruncatedTooltip>
       </div>
     </IssueActionsContextMenu>
   );

@@ -34,8 +34,8 @@
 
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs"],
-      "project": ["scripts/*.mjs"]
+      "entry": ["scripts/*.mjs", "scripts/brand/*.mjs"],
+      "project": ["scripts/*.mjs", "scripts/brand/*.mjs"]
     },
 
     "apps/web": {
@@ -97,6 +97,7 @@
     },
 
     "packages/eslint-config": {},
-    "packages/tsconfig": {}
+    "packages/tsconfig": {},
+    "packages/vitest-setup": {}
   }
 }

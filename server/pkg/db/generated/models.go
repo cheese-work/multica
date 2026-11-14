@@ -305,6 +305,8 @@ type Attachment struct {
 	TaskID          pgtype.UUID        `json:"task_id"`
 	SourceContextID pgtype.UUID        `json:"source_context_id"`
 	ExternalRead    bool               `json:"external_read"`
+	Width           pgtype.Int4        `json:"width"`
+	Height          pgtype.Int4        `json:"height"`
 	Revision        int32              `json:"revision"`
 	RevisionOf      pgtype.UUID        `json:"revision_of"`
 	RevisionRoot    pgtype.UUID        `json:"revision_root"`
@@ -2668,6 +2670,7 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	PinnedAt    pgtype.Timestamptz `json:"pinned_at"`
 }
 
 type MemberDelegationDay struct {
@@ -2947,6 +2950,8 @@ type Project struct {
 	DueDate           pgtype.Date        `json:"due_date"`
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
+	CreatorType       pgtype.Text        `json:"creator_type"`
+	CreatorID         pgtype.UUID        `json:"creator_id"`
 	WorkflowSplit     []byte             `json:"workflow_split"`
 }
 
@@ -3294,6 +3299,22 @@ type SkillToLabel struct {
 	SkillID   pgtype.UUID        `json:"skill_id"`
 	LabelID   pgtype.UUID        `json:"label_id"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+type SkillVersion struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SkillID             pgtype.UUID        `json:"skill_id"`
+	Version             int32              `json:"version"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Content             string             `json:"content"`
+	Files               []byte             `json:"files"`
+	ContentHash         string             `json:"content_hash"`
+	Source              string             `json:"source"`
+	RestoredFromVersion pgtype.Int4        `json:"restored_from_version"`
+	CreatedBy           pgtype.UUID        `json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 }
 
 type Squad struct {

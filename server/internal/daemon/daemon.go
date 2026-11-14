@@ -8931,17 +8931,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 		}
 	}
-	// Ensure the multica CLI is on PATH inside the agent's environment.
-	// Some runtimes (e.g. Codex) run in an isolated sandbox that may not
-	// inherit the daemon's PATH. Prepend the directory of the running
-	// multica binary so that `multica` commands in the agent always resolve.
-	selfBin, selfErr := resolveSelfExecutable()
-	if selfErr == nil {
-		binDir := filepath.Dir(selfBin)
-		agentEnv["PATH"] = binDir + string(os.PathListSeparator) + os.Getenv("PATH")
-	} else {
-		selfBin = ""
+	if err := configureTaskCLIEnvironment(agentEnv); err != nil {
+		return TaskResult{}, err
 	}
+	selfBin := agentEnv["MULTICA_CLI_PATH"]
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2). A
 	// failure only costs the guard, never the run.
 	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
@@ -11023,6 +11016,11 @@ func convertSkillsForEnv(skills []SkillData) []execenv.SkillContextForEnv {
 			Name:        s.Name,
 			Description: s.Description,
 			Content:     s.Content,
+		}
+		// Legacy full-skill responses omit Source and give only workspace
+		// skills an ID, matching the server's bundle source classification.
+		if s.Source == skillbundle.SourceBuiltin || (s.Source == "" && s.ID == "") {
+			result[i].BuiltinName = s.Name
 		}
 		for _, f := range s.Files {
 			result[i].Files = append(result[i].Files, execenv.SkillFileContextForEnv{

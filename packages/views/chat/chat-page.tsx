@@ -656,7 +656,7 @@ export function ChatPage() {
   const hasTarget = !!c.activeSessionId || composingNew;
   return (
     <div className="flex min-h-0 flex-1">
-      <ListColumn collapsed={listCollapsed} width="list">
+      <ListColumn collapsed={listCollapsed}>
         {listHeader}
         <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
       </ListColumn>

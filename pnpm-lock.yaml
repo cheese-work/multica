@@ -57,9 +57,15 @@ catalogs:
     katex:
       specifier: ^0.16.45
       version: 0.16.45
+    mdast-util-from-markdown:
+      specifier: ^2.0.3
+      version: 2.0.3
     mermaid:
       specifier: ^11.14.0
       version: 11.14.0
+    micromark-util-sanitize-uri:
+      specifier: ^2.0.1
+      version: 2.0.1
     posthog-js:
       specifier: ^1.176.1
       version: 1.369.3
@@ -266,6 +272,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../../packages/vitest-setup
       '@tailwindcss/vite':
         specifier: ^4
         version: 4.2.2(vite@8.3.8(@types/node@25.5.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.47.1)(yaml@2.9.1))
@@ -504,6 +513,12 @@ importers:
       marked:
         specifier: ^18.0.3
         version: 18.0.3
+      mdast-util-from-markdown:
+        specifier: 2.0.3
+        version: 2.0.3
+      micromark-util-sanitize-uri:
+        specifier: 2.0.1
+        version: 2.0.1
       nativewind:
         specifier: ^4.1.23
         version: 4.2.4(react-native-reanimated@4.5.1(react-native-worklets@0.10.1(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(react-native@0.86.3(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native-safe-area-context@5.7.0(react-native@0.86.3(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native-svg@15.15.4(react-native@0.86.3(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3))(react-native@0.86.3(@babel/core@7.29.0)(@react-native/metro-config@0.86.3(@babel/core@7.29.0))(@types/react@19.2.14)(react@19.2.3))(react@19.2.3)(tailwindcss@3.4.19(yaml@2.9.1))
@@ -647,6 +662,9 @@ importers:
       '@multica/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../../packages/vitest-setup
       '@tailwindcss/postcss':
         specifier: 'catalog:'
         version: 4.2.2
@@ -698,6 +716,12 @@ importers:
       i18next:
         specifier: 'catalog:'
         version: 26.0.8(@typescript/typescript6@6.0.2)
+      mdast-util-from-markdown:
+        specifier: 'catalog:'
+        version: 2.0.3
+      micromark-util-sanitize-uri:
+        specifier: 'catalog:'
+        version: 2.0.1
       posthog-js:
         specifier: 'catalog:'
         version: 1.369.3
@@ -720,6 +744,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -830,6 +857,9 @@ importers:
       linkify-it:
         specifier: ^5.0.2
         version: 5.0.2
+      mdast-util-from-markdown:
+        specifier: ^2.0.3
+        version: 2.0.3
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -888,6 +918,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.9.1
@@ -897,6 +930,9 @@ importers:
       '@types/linkify-it':
         specifier: ^5.0.0
         version: 5.0.0
+      '@types/mdast':
+        specifier: ^4.0.4
+        version: 4.0.4
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
@@ -1132,6 +1168,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.9.1
@@ -1177,6 +1216,8 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@25.5.0)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.14(@types/node@25.5.0)(@typescript/typescript6@6.0.2))(vite@8.3.8(@types/node@25.5.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.47.1)(yaml@2.9.0))
+
+  packages/vitest-setup: {}
 
 packages:
 

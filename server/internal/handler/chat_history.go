@@ -32,10 +32,17 @@ type ChatChannelHistoryReader interface {
 	Thread(ctx context.Context, chatSessionID pgtype.UUID, threadID string, opts channel.HistoryOptions) (channel.HistoryPage, error)
 }
 
+type slackTaskSourceReader interface {
+	TaskSource(context.Context, db.ChannelTaskDelivery, pgtype.UUID) *protocol.ChatSource
+}
+
 // ChatChannelHistoryResponse is the unified payload for both commands — the SAME
 // shape no matter which channel backs the session, the agent never sees a
 // per-platform API.
 type ChatChannelHistoryResponse struct {
+	ChannelID   string `json:"channel_id,omitempty"`
+	ChannelName string `json:"channel_name,omitempty"`
+	Permalink   string `json:"permalink,omitempty"`
 	ChannelType string `json:"channel_type"`
 	// ThreadID is set on a thread read: which thread the messages belong to.
 	ThreadID   string                   `json:"thread_id,omitempty"`
@@ -362,6 +369,9 @@ func (h *Handler) respondChatHistory(w http.ResponseWriter, r *http.Request, ses
 	}
 	writeJSON(w, http.StatusOK, ChatChannelHistoryResponse{
 		ChannelType: page.ChannelType,
+		ChannelID:   page.ChannelID,
+		ChannelName: page.ChannelName,
+		Permalink:   page.Permalink,
 		ThreadID:    page.ThreadID,
 		Messages:    messages,
 		NextCursor:  page.NextCursor,

@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/imagemetadata"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -37,8 +38,6 @@ var extContentTypes = map[string]string{
 	".wasm": "application/wasm",
 }
 
-const maxUploadSize = 100 << 20 // 100 MB
-
 const defaultAttachmentDownloadURLTTL = 30 * time.Minute
 
 type attachmentDownloadMode string
@@ -49,12 +48,6 @@ const (
 	attachmentDownloadModePresign    attachmentDownloadMode = "presign"
 	attachmentDownloadModeProxy      attachmentDownloadMode = "proxy"
 )
-
-// maxPreviewTextSize caps the body the preview proxy will load into memory
-// for text-based types. Anything larger returns 413 and the UI falls back
-// to "please download". Sized so a typical README/source-file fits but a
-// 100 MB log dump can't blow up the renderer.
-const maxPreviewTextSize = 2 << 20 // 2 MB
 
 // Response types
 
@@ -115,6 +108,9 @@ type AttachmentResponse struct {
 	SHA256     string  `json:"sha256,omitempty"`
 	SizeBytes  int64   `json:"size_bytes"`
 	CreatedAt  string  `json:"created_at"`
+	// Displayed image dimensions, absent for non-images and older uploads.
+	Width  *int32 `json:"width,omitempty"`
+	Height *int32 `json:"height,omitempty"`
 }
 
 // attachmentURLMode selects how DownloadURL is rendered on a response.
@@ -192,6 +188,9 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 	// download time, so stable mode is a no-op for them.
 	if h.CFSigner != nil && mode != attachmentURLModeStable {
 		resp.DownloadURL = h.CFSigner.SignedURL(a.Url, time.Now().Add(h.attachmentDownloadURLTTL()))
+	}
+	if a.Width.Valid && a.Height.Valid {
+		resp.Width, resp.Height = &a.Width.Int32, &a.Height.Int32
 	}
 	if a.IssueID.Valid {
 		s := uuidToString(a.IssueID)
@@ -400,13 +399,19 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	workspaceID := h.resolveWorkspaceID(r)
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
-
-	if err := r.ParseMultipartForm(maxUploadSize); err != nil {
-		writeError(w, http.StatusBadRequest, "file too large or invalid multipart form")
+	err := parseUploadForm(w, r)
+	if r.MultipartForm != nil {
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
+	}
+	if err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "file exceeds the 100 MiB upload limit")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid multipart form")
+		}
 		return
 	}
-	defer r.MultipartForm.RemoveAll()
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -576,6 +581,11 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			// Bind the session too so reads (groupChatMessageAttachments) and
 			// GC classify the row consistently before it gains a message id.
 			params.ChatSessionID = task.ChatSessionID
+		}
+
+		if dimensions, ok := imagemetadata.Dimensions(data); ok {
+			params.Width = pgtype.Int4{Int32: dimensions.Width, Valid: true}
+			params.Height = pgtype.Int4{Int32: dimensions.Height, Valid: true}
 		}
 
 		if status, msg := h.chainAttachmentRevision(r.Context(), &params, r.FormValue("replaces"), data); status != 0 {
@@ -1327,8 +1337,8 @@ func normalizeFrameAncestorSource(raw string) (string, bool) {
 // the explicit /download route signs redirects as attachment downloads and
 // proxy mode streams with the same media-type policy as storage uploads.
 //
-// Hard cap: 2 MB. Larger files return 413. Anything outside the text
-// whitelist returns 415.
+// Files above the configured preview limit return 413. Anything outside the
+// text whitelist returns 415.
 
 func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	att, ok := h.loadAttachmentForRequest(w, r)
@@ -1346,6 +1356,11 @@ func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 		writeFeatureDisabled(w, "storage_not_configured", "storage not configured")
 		return
 	}
+	limit := h.maxPreviewSizeBytes()
+	if att.SizeBytes > limit {
+		writeError(w, http.StatusRequestEntityTooLarge, "file too large for inline preview")
+		return
+	}
 	key := h.Storage.KeyFromURL(att.Url)
 	reader, err := h.Storage.GetReader(r.Context(), key)
 	if err != nil {
@@ -1355,15 +1370,15 @@ func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	// LimitReader to maxPreviewTextSize+1 so we can detect "exactly at the
-	// limit" vs "exceeds the limit" by checking the returned length.
-	body, err := io.ReadAll(io.LimitReader(reader, maxPreviewTextSize+1))
+	// Check actual bytes as well as metadata. The hard maximum keeps limit+1
+	// safe, while the extra byte distinguishes the exact boundary from overflow.
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		slog.Error("failed to read attachment body for preview", "id", attachmentID, "error", err)
 		writeError(w, http.StatusBadGateway, "failed to read attachment body")
 		return
 	}
-	if len(body) > maxPreviewTextSize {
+	if int64(len(body)) > limit {
 		writeError(w, http.StatusRequestEntityTooLarge, "file too large for inline preview")
 		return
 	}
@@ -1376,7 +1391,7 @@ func (h *Handler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	// No-store: workspace membership / attachment ACL can change between
 	// requests (member removed, attachment deleted). A cached body would
 	// stay readable past the revocation window. The redundant request is
-	// fine here — bodies are capped at 2 MB and the endpoint is only hit
+	// fine here — bodies are bounded by the preview limit and the endpoint is only hit
 	// when a user explicitly opens a preview.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

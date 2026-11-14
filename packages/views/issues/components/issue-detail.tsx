@@ -1,5 +1,6 @@
 "use client";
 
+import { subIssueCreateDefaults } from "@multica/core/issues";
 import { RunBudgetMeter } from "./run-budget-meter";
 import {
   issueBehavesAs,
@@ -194,6 +195,7 @@ import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
 import { useMarkIssueReadWhileViewing } from "../hooks/use-mark-issue-read-while-viewing";
+import { useMarkIssueInboxReadWhileViewing } from "../hooks/use-mark-issue-inbox-read-while-viewing";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { useLocale, useTimeAgo } from "../../i18n";
 import {
@@ -1229,6 +1231,12 @@ interface IssueDetailProps {
   variant?: "page" | "peek";
   /** Peek only: host controls at the end of the header (open full page, close). */
   trailingActions?: ReactNode;
+  /**
+   * Read the viewer's inbox notifications on this issue while it is on screen
+   * (MUL-8588). The inbox turns this off for the issue it has open: it reads
+   * the notification it selected itself, and keeps one marked unread there.
+   */
+  readsInbox?: boolean;
 }
 
 // Not found
@@ -1380,7 +1388,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions, readsInbox = true }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1655,6 +1663,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
   useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
+  useMarkIssueInboxReadWhileViewing(wsId, issue?.id ?? "", readsInbox);
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -1670,13 +1679,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const openCommentSubIssue = useCallback((commentId: string) => {
     if (!issue) return;
     openModal("quick-create-issue", {
+      ...subIssueCreateDefaults(issue),
       anchor_comment_id: commentId,
-      parent_issue_id: issue.id,
-      parent_issue_identifier: issue.identifier,
-      ...(issue.project_id ? { project_id: issue.project_id } : {}),
-      ...(issue.assignee_type && issue.assignee_id
-        ? { assignee_type: issue.assignee_type, assignee_id: issue.assignee_id }
-        : {}),
     });
   }, [issue, openModal]);
 
@@ -1902,8 +1906,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     for (const [rootId, runs] of commentRuns) {
       if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
     }
+    // A run with no thread is its own top-level row.
+    if (standaloneRuns.some((run) => run.task.id === highlightCommentId)) return highlightCommentId;
     return undefined;
-  }, [highlightCommentId, replyToRoot, commentRuns]);
+  }, [highlightCommentId, replyToRoot, commentRuns, standaloneRuns]);
 
   // The root whose thread contains the current deep-link/highlight request,
   // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
@@ -3052,7 +3058,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
     if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
-    const rootId = highlightRootId;
+    const rootId = targetRootId;
     if (rootId && rootId !== highlightCommentId) {
       // Root resolved → the whole thread is a folded bar.
       const rootItem = items[targetIdx];

@@ -1,14 +1,13 @@
 import type { ReactNode } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configStore } from "@multica/core/config";
 import { Command, Globe, Terminal } from "@multica/ui/icons";
 import type { User } from "@multica/core/types";
 import enLayout from "../locales/en/layout.json";
+import { HelpLauncher } from "../layout/help-launcher";
 import { useSearchStore } from "../search/search-store";
 import type { WhatsNewRelease } from "./releases";
-import { useWhatsNewSessionStore } from "./session-store";
-import { AUTO_OPEN_DELAY_MS, WhatsNewLauncher } from "./whats-new-launcher";
 
 const mocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -16,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 const authStore = vi.hoisted(() => {
-  // A real zustand store so optimistic updates re-render the launcher.
+  // A real zustand store so optimistic updates re-render the menu.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { create } = require("zustand") as typeof import("zustand");
   return create<{ user: Partial<User> | null }>(() => ({ user: null }));
@@ -116,16 +115,29 @@ function signIn(user: Partial<User>) {
   authStore.setState({ user: { id: "u-1", created_at: "2026-01-15T08:00:00Z", ...user } });
 }
 
-function renderLauncher() {
-  const view = render(<WhatsNewLauncher />);
+function openHelpMenu() {
+  fireEvent.click(screen.getByRole("button", { name: "Help" }));
   act(() => {
-    vi.advanceTimersByTime(AUTO_OPEN_DELAY_MS);
+    vi.runAllTimers();
   });
-  return view;
+  return screen.getByRole("menuitem", { name: /What's new/ });
 }
 
-const trigger = () => screen.getByRole("button", { name: "What's new" });
-const dot = () => document.querySelector('[data-slot="whats-new-dot"]');
+function openFromHelpMenu() {
+  fireEvent.click(openHelpMenu());
+  act(() => {
+    vi.runAllTimers();
+  });
+}
+
+function closePanel() {
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  act(() => {
+    vi.runAllTimers();
+  });
+}
+
+const release = (version: string) => screen.getByRole("region", { name: `v${version}` });
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -142,145 +154,133 @@ afterEach(() => {
   authStore.setState({ user: null });
   configStore.getState().setServerVersion("");
   useSearchStore.getState().setOpen(false);
-  useWhatsNewSessionStore.setState({ autoShown: false });
 });
 
-describe("WhatsNewLauncher", () => {
-  it("opens the update card with every highlight released since the last dismissal", () => {
+describe("What's new from the Help menu", () => {
+  it("opens nothing until the user asks", () => {
     signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
+    render(<HelpLauncher />);
+    act(() => {
+      vi.runAllTimers();
+    });
 
-    expect(dot()).toBeInTheDocument();
-    expect(screen.getByText("Multica updated · v0.2.0 → v0.3.0")).toBeInTheDocument();
-    expect(screen.getByText("3 new features since your last visit")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Palette title" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Language title/ })).toBeInTheDocument();
-    expect(screen.queryByText("Old title")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "What's new" })).not.toBeInTheDocument();
+    expect(mocks.markWhatsNewSeen).not.toHaveBeenCalled();
   });
 
-  it("expands a row when it is clicked", () => {
-    signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
+  it("marks only unread releases as new and records the newest as seen", () => {
+    signIn({ whats_new_seen_version: "0.2.0" });
+    render(<HelpLauncher />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Runtimes title/ }));
-    expect(screen.getByRole("heading", { name: "Runtimes title" })).toBeInTheDocument();
-    expect(screen.getByText("Runtimes body")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Palette title/ })).toBeInTheDocument();
-  });
-
-  it("records the newest release as seen when the card is acknowledged", () => {
-    signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
-
-    fireEvent.click(screen.getByRole("button", { name: "Got it" }));
+    openFromHelpMenu();
+    expect(screen.getByRole("heading", { name: "What's new" })).toBeInTheDocument();
     expect(mocks.markWhatsNewSeen).toHaveBeenCalledWith("0.3.0");
-    expect(dot()).not.toBeInTheDocument();
+    expect(release("0.3.0")).toHaveTextContent("New");
+    expect(release("0.2.0")).not.toHaveTextContent("New");
+    expect(screen.getByRole("link", { name: /v0.2.0 release notes/ })).toHaveAttribute(
+      "href",
+      "https://multica.ai/changelog#release-0-2-0",
+    );
   });
 
-  it("runs the highlight's action and dismisses the card", () => {
+  it("tags the menu entry with the newest unread version until the panel is opened", () => {
     signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
+    render(<HelpLauncher />);
 
-    fireEvent.click(screen.getByRole("button", { name: /Try it/ }));
-    expect(useSearchStore.getState().open).toBe(true);
-    expect(mocks.markWhatsNewSeen).toHaveBeenCalledWith("0.3.0");
+    expect(openHelpMenu()).toHaveTextContent("v0.3.0");
+    fireEvent.click(screen.getByRole("menuitem", { name: /What's new/ }));
+    act(() => {
+      vi.runAllTimers();
+    });
+    closePanel();
+
+    expect(openHelpMenu()).not.toHaveTextContent("v0.3.0");
+  });
+
+  it("shows the server version next to the changelog link when it is known", () => {
+    configStore.getState().setServerVersion("v0.3.0");
+    signIn({ whats_new_seen_version: "0.3.0" });
+    render(<HelpLauncher />);
+
+    openFromHelpMenu();
+    expect(screen.getByText("Server version v0.3.0", { selector: "[data-slot=whats-new-panel] span" })).toBeInTheDocument();
+  });
+
+  it("marks nothing as new once everything is read", () => {
+    signIn({ whats_new_seen_version: "0.3.0" });
+    render(<HelpLauncher />);
+
+    expect(openHelpMenu()).not.toHaveTextContent("v0.3.0");
+    fireEvent.click(screen.getByRole("menuitem", { name: /What's new/ }));
+    act(() => {
+      vi.runAllTimers();
+    });
+    expect(release("0.3.0")).not.toHaveTextContent("New");
+    expect(mocks.markWhatsNewSeen).not.toHaveBeenCalled();
   });
 
   it("counts only releases after signup before the first dismissal", () => {
     signIn({ whats_new_seen_version: null, created_at: "2026-02-10T08:00:00Z" });
-    renderLauncher();
+    render(<HelpLauncher />);
 
-    expect(screen.getByText("Multica updated · v0.3.0")).toBeInTheDocument();
-    expect(screen.getByText("2 new features since your last visit")).toBeInTheDocument();
+    openFromHelpMenu();
+    expect(release("0.3.0")).toHaveTextContent("New");
+    expect(release("0.2.0")).not.toHaveTextContent("New");
   });
 
   it("does not announce releases newer than the connected server", () => {
     configStore.getState().setServerVersion("v0.2.0");
     signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
+    render(<HelpLauncher />);
 
-    expect(screen.getByText("1 new feature since your last visit")).toBeInTheDocument();
+    openFromHelpMenu();
     expect(screen.queryByText("Palette title")).not.toBeInTheDocument();
+    expect(mocks.markWhatsNewSeen).toHaveBeenCalledWith("0.2.0");
   });
 
-  it("stays quiet against a server that cannot record dismissals", () => {
+  it("records nothing against a server that cannot store dismissals", () => {
     signIn({});
-    renderLauncher();
+    render(<HelpLauncher />);
 
-    expect(dot()).not.toBeInTheDocument();
-    expect(screen.queryByText(/since your last visit/)).not.toBeInTheDocument();
-
-    fireEvent.click(trigger());
+    openFromHelpMenu();
     expect(screen.getByRole("heading", { name: "What's new" })).toBeInTheDocument();
+    expect(release("0.3.0")).not.toHaveTextContent("New");
     expect(mocks.markWhatsNewSeen).not.toHaveBeenCalled();
   });
 
-  it("opens the full history from the rail and marks only unread releases as new", () => {
-    signIn({ whats_new_seen_version: "0.2.0" });
-    render(<WhatsNewLauncher />);
+  it("runs a highlight's action and closes the panel", () => {
+    signIn({ whats_new_seen_version: "0.3.0" });
+    render(<HelpLauncher />);
 
-    fireEvent.click(trigger());
-    expect(screen.getByRole("heading", { name: "What's new" })).toBeInTheDocument();
-    expect(mocks.markWhatsNewSeen).toHaveBeenCalledWith("0.3.0");
-
-    const newest = screen.getByRole("region", { name: "v0.3.0" });
-    const older = screen.getByRole("region", { name: "v0.2.0" });
-    expect(newest).toHaveTextContent("New");
-    expect(older).not.toHaveTextContent("New");
-    expect(screen.getByRole("link", { name: /v0.2.0 release notes/ })).toHaveAttribute(
-      "href",
-      "https://multica.ai/changelog#release-0-2-0",
-    );
-
+    openFromHelpMenu();
     fireEvent.click(screen.getByRole("button", { name: /Open/ }));
     expect(mocks.push).toHaveBeenCalledWith("/acme/runtimes");
+
+    openFromHelpMenu();
+    fireEvent.click(screen.getByRole("button", { name: /Try it/ }));
+    expect(useSearchStore.getState().open).toBe(true);
   });
 
   it("falls back to English copy for a locale without a translation", () => {
     i18nState.language = "fr";
     signIn({ whats_new_seen_version: "0.1.0" });
-    renderLauncher();
+    render(<HelpLauncher />);
 
+    openFromHelpMenu();
     expect(screen.getByRole("heading", { name: "Palette title" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Titre langue/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Titre langue" })).toBeInTheDocument();
   });
 
-  it("auto-opens from the visible rail only, once per session", () => {
-    signIn({ whats_new_seen_version: "0.1.0" });
-    // Narrow layouts keep a display:none rail mounted next to the nav sheet's.
-    // jsdom has no checkVisibility, so stand one in for this test.
-    const visibility = vi.fn(() => false);
-    Object.defineProperty(HTMLElement.prototype, "checkVisibility", { value: visibility, configurable: true });
-    onTestFinished(() => {
-      delete (HTMLElement.prototype as Partial<HTMLElement>).checkVisibility;
-    });
-    const hidden = renderLauncher();
-    expect(screen.queryByText(/since your last visit/)).not.toBeInTheDocument();
-
-    visibility.mockReturnValue(true);
-    const sheet = renderLauncher();
-    expect(screen.getByText("3 new features since your last visit")).toBeInTheDocument();
-
-    // Clicking away and reopening the sheet remounts the launcher.
-    sheet.unmount();
-    hidden.unmount();
-    renderLauncher();
-    expect(screen.queryByText(/since your last visit/)).not.toBeInTheDocument();
-    expect(dot()).toBeInTheDocument();
-  });
-
-  it("keeps the dot and retries when recording the dismissal fails", async () => {
+  it("retries recording the dismissal on the next open when it fails", async () => {
     signIn({ whats_new_seen_version: "0.1.0" });
     mocks.markWhatsNewSeen.mockRejectedValueOnce(new Error("offline"));
-    renderLauncher();
+    render(<HelpLauncher />);
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Got it" }));
-    });
-    expect(dot()).toBeInTheDocument();
+    openFromHelpMenu();
+    await act(async () => {});
+    closePanel();
 
-    fireEvent.click(trigger());
+    openFromHelpMenu();
     expect(mocks.markWhatsNewSeen).toHaveBeenCalledTimes(2);
-    expect(dot()).not.toBeInTheDocument();
   });
 });

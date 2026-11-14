@@ -51,7 +51,8 @@ function DialogContent({
 }) {
   return (
     <DialogPortal>
-      <DialogOverlay className={overlayClassName} />
+      {/* Nested dialogs need their own backdrop for outside dismissal. */}
+      <DialogOverlay className={overlayClassName} forceRender />
       <DialogPrimitive.Popup
         data-slot="dialog-content"
         className={cn(

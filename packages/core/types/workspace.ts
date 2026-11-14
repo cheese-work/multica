@@ -20,6 +20,7 @@ export interface Workspace {
   scheduling_paused_by?: string | null;
   created_at: string;
   updated_at: string;
+  pinned_at?: string | null;
 }
 
 /**
