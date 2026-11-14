@@ -57,10 +57,22 @@ type TaskService struct {
 	Wakeup    TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
+	// MergeFacts is the facts source every wakeup service built on this task
+	// service reads when it judges a merge_eligibility candidate, so the claim
+	// and start checks in the daemon handler see what the scheduler saw.
+	MergeFacts MergeFactsSource
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.
 	WorkflowEdges func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwed settles a pr_merge_owed row when it falls due (CHE-5243): it
+	// re-runs the PR-merge completion decision and fences the row by its
+	// (id, revision). Nil leaves the rows untouched.
+	PRMergeOwed func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwe writes the pr_merge_owed intent for an issue inside the
+	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
+	// completion decision, and the intent commits with the claim. Nil skips it.
+	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -73,6 +85,9 @@ type TaskService struct {
 	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
 	// that completion dispatches to. Nil: no background output is written.
 	BackgroundWriters map[string]BackgroundWriter
+	// BackgroundNoAgent maps a task purpose to the path that runs when the
+	// job's chain ends without an output. Nil: the job has no such path.
+	BackgroundNoAgent map[string]BackgroundNoAgentPath
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -5374,6 +5389,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			EnableChatSupplement: offered.ChatSupplement,
 			EnableProcessCleanup: offered.ProcessCleanup,
 		})
+		if errors.Is(err, pgx.ErrNoRows) && strings.HasPrefix(candidate.Purpose.String, "bg:") {
+			// The start fence refused it: past its start bound (CHE-4103). A 409
+			// to the daemon; the deadline sweep fails the attempt.
+			return fmt.Errorf("%w: %w", ErrBackgroundAttemptExpired, err)
+		}
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
 		}
@@ -6765,7 +6785,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, s.failureNoticeText(ctx, task.AgentID, notice), "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
-		s.failOverRoutingTask(ctx, task, failureReason)
+		s.failOverTask(ctx, task, failureReason)
 	} else if heldRetry.engaged && s.failOverRoutingTask(ctx, task, failureReason) {
 		// CHE-1736 M1.2: the fallback agent owns the step now; the held retry of
 		// the failed agent must not run beside it.

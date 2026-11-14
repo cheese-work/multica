@@ -67,10 +67,14 @@
     "supplement_failure_provider_rejected": "智能体拒绝了该消息",
     "supplement_failure_timeout": "送达超时",
     "supplement_failure_unknown": "原因未知",
+    "supplement_failure_replay_exhausted": "重试次数已用完",
+    "supplement_failure_run_budget_exhausted": "运行预算已用完",
+    "supplement_failure_agent_paused": "代理已暂停",
     "supplement_retry": "重试",
     "supplement_retry_failed": "无法重试送达。",
     "steer_badge": "插话给 {{names}}",
     "steer_waiting": "等待 {{name}} 读取",
+    "steer_replay_queued": "{{name}} 将在下一次运行中读取",
     "steer_read": "{{name}} 已读取",
     "steer_not_received": "{{name}} 未收到 · {{reason}}",
     "steer_resend": "作为新一轮发送",
@@ -160,6 +164,9 @@
     "breadcrumb_title": "任务",
     "breadcrumb_workspace_fallback": "工作区",
     "empty_title": "还没有任务",
+    "empty_description": "任务是交给成员或智能体的一件具体工作。分配给智能体后，它会在你的运行时上自己开始。",
+    "break_down_with_chat": "用聊天拆解需求",
+    "break_down_prompt": "我想完成下面这件事。先问清楚你需要了解的，然后在这个工作区里把它拆成任务：\n\n",
     "move_failed": "移动任务失败"
   },
   "status": {
@@ -353,7 +360,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特图",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "选择所有可见任务",
@@ -430,6 +438,30 @@
     "empty": "暂无已排期的任务 — 给任意任务设置开始或截止日期，即可显示在时间轴上。",
     "inverted_dates_warning": "开始日期晚于截止日期——已按区间最小/最大端绘制。"
   },
+  "swimlane2": {
+    "edge_wakeup": "唤醒",
+    "edge_dependency": "依赖",
+    "edge_parent": "父 / 子",
+    "edge_mention": "提及",
+    "edge_types": "连线类型",
+    "relations_incomplete": "关系不完整：部分连线未能加载。",
+    "more_issues": "还有未加载的议题。",
+    "retry": "重试",
+    "load_more": "加载更多",
+    "no_lane": "无值",
+    "timeline_failed": "无法加载时间线。",
+    "loading": "正在加载时间线…"
+  },
+  "gantt2": {
+    "clipped_start": "在此时间窗口之前开始",
+    "now": "现在",
+    "start_marker": "开始日期",
+    "due_marker": "截止日期",
+    "no_history": "无历史记录",
+    "before_records": "记录之前",
+    "collapse": "折叠",
+    "expand": "展开"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
@@ -450,7 +482,7 @@
       }
     },
     "search_placeholder": "搜索任务...",
-    "search_empty": "没有匹配的任务。"
+    "search_empty": "没有匹配的任务"
   },
   "list": {
     "empty_status": "无任务",
@@ -495,6 +527,7 @@
     "card_load_failed": "无法加载这个任务。",
     "data_error": "这个任务包含应用无法读取的数据。",
     "retry": "重试",
+    "not_found_title": "未找到该任务",
     "breadcrumb_project_unknown": "未知项目",
     "back": "返回",
     "title_placeholder": "任务标题",
@@ -946,6 +979,7 @@
     "col_tokens": "Token",
     "col_cost": "费用",
     "tokens_count": "{{tokens}} Token",
+    "credits_count": "{{credits}} {{provider}} 积分",
     "details_toggle": "运行详情",
     "detail_breakdown": "费用明细",
     "detail_total": "合计",
@@ -1545,7 +1579,6 @@
     "not_merged": "{{prs}} 已关闭，未合并",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合并。之后有新 PR 合并时会改为 {{status}}。",
-    "workflow_owned": "PR 合并后由工作流移动此任务",
     "issue_disabled": "此任务合并后不改状态",
     "issue_disabled_action": "恢复"
   },
@@ -1991,7 +2024,8 @@
       "star": "将{{name}}添加到侧栏",
       "unstar": "将{{name}}从侧栏移除",
       "row_actions": "{{name}} 的操作",
-      "no_matches": "没有匹配的视图"
+      "empty_title": "还没有保存的视图",
+      "empty_description": "在任务列表里调好筛选和显示方式，然后另存为视图。"
     }
   },
   "status_history": {

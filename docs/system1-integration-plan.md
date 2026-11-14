@@ -133,6 +133,37 @@ Migrations `99969_system1_label_writes` (`source` gains `labeller`; columns
   lab waits for the B3 prediction table. CI scopes (`ci:<repo>:<protocol>`) come
   with B5/B6.
 
+### Blind label queue (CHE-4383 B4b)
+
+`GET /api/system1/label-queue?scope=X&kind=burn_in|eval`. Migration
+`9999915_system1_label_sample` (table `system1_label_sample`, no foreign key,
+unique `(task_id, scope, kind)`: `seed`, `observation_ids`, `task_id`,
+`agent_id`).
+
+- **Who reads:** the assigned labeller's task token only, checked as in B4a
+  (running task, live agent, `system1_labellers`). A member session or an
+  unassigned agent gets 403; an unknown scope or a kind other than `burn_in` or
+  `eval` gets 400.
+- **What it returns:** `{sample_id, scope, kind, seed, items}`. Each item is
+  `observation_id`, `scope`, `created_at` and `features`, a typed whitelist per
+  scope (`waiver` for `test_first_waiver`). It never returns a prediction: not
+  the observation's `predicted_*` columns, not `system1_prediction` rows. It
+  also leaves out `option_keys`, because the stored order puts the asker's
+  recommendation first.
+- **Eligible:** observations of the scope in the workspace with no live
+  labeller row of this kind. More than 20: the first 20 by `md5(id || seed)`, so
+  the seed reproduces the sample.
+- **Stored when served:** `seed` and `observation_ids` go into
+  `system1_label_sample` in the same transaction. The same task asking again
+  gets the stored sample, whatever arrived since. No eligible observation:
+  an empty queue and no row, so a later ask can still sample.
+- **CLI:** `multica system1 label-queue --scope X --kind K --output json` and
+  `multica system1 label submit --observation ID --kind K --label L
+  [--supersedes ID]` (the B4a write route). Both run in the labeller's task; the
+  identity comes from the token.
+- **Not here:** `eval` samples of Act decisions (B7b) and CI scopes (B5/B6)
+  reuse this route; they add scopes and features, not a new route.
+
 ### Waiver predictions (CHE-4383 B3)
 
 Table `system1_prediction` (migration `99968_system1_prediction`, no foreign
@@ -154,8 +185,38 @@ version, never an edit.
   excluded). Fewer than 5 precedents abstain.
 - `jev@<version>` is not written: Jev is shadow only and needs B0's finding
   that it is available.
-- Later slices add the epoch, the case rules and the report over these rows
-  (B5), and `ci_rules@<version>` rows for CI scopes (B6).
+- Later slices add `ci_rules@<version>` rows for CI scopes (B6).
+
+### Qualification and report (CHE-4383 B5)
+
+Table `system1_epoch` (migrations `99971_system1_epoch`,
+`99973_system1_epoch_open_idx`, `99973a_system1_epoch_trigger`, no foreign
+key): one row per `(scope, predictor_id, predictor_version)` with
+`started_at`; `demoted_at` closes it (B7b sets it). A trigger on
+`system1_prediction` opens the epoch at the first prediction of a version, so
+a new predictor version never inherits an old epoch. Predictions that existed
+before the migration start their epoch at their first row. No backfill:
+only observations created at or after `started_at` count.
+
+- **Case:** one prediction row (so one observation per predictor version)
+  whose observation is inside the epoch and has a label of record: the newest
+  `burn_in` label row that is not superseded. Duplicate or corrected label
+  rows never make two cases.
+- **Denominator:** cases with a non-abstaining prediction and a mapped label.
+  This one set is also the 20-case minimum, so 20 labelled observations with
+  19 abstentions and 1 correct prediction have denominator 1 and stay
+  `collecting`. A label of another value (another protocol, `unknown`) is a
+  disagreement and stays in. `abstained` (labelled, predictor skipped) is
+  coverage; `unmapped` (free text) is counted apart; `reversed` counts counted
+  cases whose observation a person reversed. None of them count toward the bar.
+- **Status** (CHE-3239 bar, unchanged): `qualified` at epoch age 7 days or
+  more, denominator 20 or more, agreement 90% or more. `insufficient_data` at
+  4 weeks with fewer than 20 counted cases. `demoted` when the epoch has
+  `demoted_at`. Otherwise `collecting`. The rule is `system1.Status`.
+- **Read:** `GET /api/system1/report[?scope=X]` (workspace members) and
+  `multica system1 report [--scope X]`; one row per scope, predictor and
+  version, over the latest epoch of each. Not in this slice: recall and
+  class confusion (CI scopes, B6), the Act gate and demotion (B7).
 
 ## Recommended option stays first
 

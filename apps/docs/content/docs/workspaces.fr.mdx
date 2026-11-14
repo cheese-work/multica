@@ -50,6 +50,8 @@ Le paramètre d'espace de travail `ask_guard_mode` définit ce qui se passe quan
 
 Chaque événement garde le mode dans lequel il a été créé : passer de `warn` à `block` ne transforme pas les événements antérieurs en travail de reprise. Si l'événement ne peut pas être écrit, l'opération échoue avec `503` et un en-tête `Retry-After`, et rien n'est écrit.
 
+Quand l'exécution qui a produit un événement `block` est terminée, le serveur envoie à la seule personne visée par la demande un avis de reprise automatique : un message de DM, un commentaire sur le ticket et un élément de boîte de réception, écrits dans une seule transaction. L'avis cite la demande enregistrée, renvoie au ticket et n'a ni options, ni recommandation, ni approbation : ce n'est jamais une demande de décision. Il n'est envoyé que si la source enregistrée contient le texte de la demande, désigne exactement un membre et que ce membre est toujours dans l'espace de travail ; sinon l'événement attend une réparation. Répondre dans le fil de commentaires de l'avis le marque `answered`. Un membre qui a quitté l'espace de travail ne peut plus le lire ni y répondre.
+
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
 
 ### Écritures gouvernées déléguées

@@ -310,6 +310,21 @@ var issueAssignCmd = &cobra.Command{
 	RunE:  runIssueAssign,
 }
 
+var issueRouteCmd = &cobra.Command{
+	Use:   "route <id>",
+	Short: "Move an issue's status and record why (System 1 route label)",
+	Long: "Move an issue to --status, optionally hand it to --owner, and record the reason\n" +
+		"and confidence behind the decision, in one call. Use it from a routing step.\n\n" +
+		"Without --owner the project workflow picks the handler, as with `issue status`.\n" +
+		"An explicit --owner (member, agent, or squad) replaces the workflow's handler.\n" +
+		"Keeping the current status and changing only the owner is allowed; the same\n" +
+		"status and owner is refused with 409.\n\n" +
+		"--no-start behaves as it does for `issue update`: no agent run starts, not even\n" +
+		"the run of a workflow step's handler or of an explicit --owner.",
+	Args: exactArgs(1),
+	RunE: runIssueRoute,
+}
+
 var issueStatusCmd = &cobra.Command{
 	Use:   "status <id> <status>",
 	Short: "Change issue status",
@@ -639,6 +654,7 @@ func init() {
 	issueCmd.AddCommand(issueUpdateCmd)
 	issueCmd.AddCommand(issueAssignCmd)
 	issueCmd.AddCommand(issueStatusCmd)
+	issueCmd.AddCommand(issueRouteCmd)
 	issueCmd.AddCommand(issueReorderCmd)
 	issueCmd.AddCommand(issueCommentCmd)
 	issueCmd.AddCommand(issueSubscriberCmd)
@@ -732,7 +748,7 @@ func init() {
 	issueUpdateCmd.Flags().String("assignee", "", "New assignee name (member, agent, or squad; fuzzy match)")
 	issueUpdateCmd.Flags().String("assignee-id", "", "New assignee UUID — member, agent, or squad (mutually exclusive with --assignee)")
 	issueUpdateCmd.Flags().String("project", "", "Project ID")
-	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task)")
+	issueUpdateCmd.Flags().String("workflow", "", "Workflow ID this issue follows instead of its project's; \"none\" returns it to the project's (admins and the project lead; refused while the issue has a live task). From an agent run, a move that widens the run budget opens an owner approval card and prints its action id and URL; the issue is unchanged until an owner approves")
 	issueUpdateCmd.Flags().String("decision-id", "", "CHE-5228 decision path: id of the issue.workflow decision request Cheese answered for this exact --workflow change. Sends decision_id, before_sha256 and after_sha256. Agent task tokens only.")
 	issueUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this --workflow change and exit without writing")
 	issueUpdateCmd.Flags().String("start-date", "", "New start date (calendar day, YYYY-MM-DD; pass empty string to clear)")
@@ -756,6 +772,14 @@ func init() {
 	registerIssueReorderFlags(issueReorderCmd)
 
 	// issue assign
+	issueRouteCmd.Flags().String("status", "", "Target status key (required)")
+	issueRouteCmd.Flags().String("owner", "", "New owner name (member, agent, or squad; fuzzy match)")
+	issueRouteCmd.Flags().String("owner-id", "", "New owner UUID — member, agent, or squad (mutually exclusive with --owner)")
+	issueRouteCmd.Flags().String("reason", "", "Why this route (1-500 characters, required)")
+	issueRouteCmd.Flags().Float64("confidence", 0, "Confidence in the route, 0 to 1 (required)")
+	issueRouteCmd.Flags().Bool("no-start", false, "Route without starting an agent run")
+	issueRouteCmd.Flags().Int64("expected-revision", 0, "Refuse the route if the issue's revision differs")
+	issueRouteCmd.Flags().String("output", "json", "Output format: table or json")
 	issueAssignCmd.Flags().String("to", "", "Assignee name (member, agent, or squad; fuzzy match)")
 	issueAssignCmd.Flags().String("to-id", "", "Assignee UUID — member, agent, or squad (mutually exclusive with --to)")
 	issueAssignCmd.Flags().Bool("unassign", false, "Remove current assignee")
@@ -2317,6 +2341,11 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 			}
 			return fmt.Errorf("set issue workflow: %w", err)
 		}
+		// A widening move from a run opens an owner approval card instead of
+		// changing the issue (202); nothing else in this call is applied.
+		if action, _ := result["action_id"].(string); action != "" && result["id"] == nil {
+			return printWorkflowApprovalCard(cmd, result)
+		}
 		// The switch advanced the revision; the update that follows chains on
 		// it, and a switch with nothing else to write sends no second request.
 		if len(body) == 1 && body["expected_revision"] != nil {
@@ -2387,6 +2416,15 @@ func runIssueUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	return printIssueUpdateResult(cmd, result)
+}
+
+// printWorkflowApprovalCard reports the approval card a workflow move opened.
+func printWorkflowApprovalCard(cmd *cobra.Command, card map[string]any) error {
+	if output, _ := cmd.Flags().GetString("output"); output != "table" {
+		return cli.PrintJSON(os.Stdout, card)
+	}
+	fmt.Fprintf(os.Stdout, "Workflow change needs an owner's approval; the issue is unchanged.\nAction: %s\nApprove: %s\n", strVal(card, "action_id"), strVal(card, "approve_url"))
+	return nil
 }
 
 func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
@@ -4447,4 +4485,65 @@ func compactComments(comments []map[string]any) {
 			}
 		}
 	}
+}
+
+func runIssueRoute(cmd *cobra.Command, args []string) error {
+	status, _ := cmd.Flags().GetString("status")
+	reason, _ := cmd.Flags().GetString("reason")
+	switch {
+	case strings.TrimSpace(status) == "":
+		return fmt.Errorf("--status is required")
+	case strings.TrimSpace(reason) == "":
+		return fmt.Errorf("--reason is required")
+	case !cmd.Flags().Changed("confidence"):
+		return fmt.Errorf("--confidence is required")
+	}
+	if err := validateIssueStatus(status); err != nil {
+		return err
+	}
+	confidence, _ := cmd.Flags().GetFloat64("confidence")
+	if !(confidence >= 0 && confidence <= 1) {
+		return fmt.Errorf("--confidence must be between 0 and 1")
+	}
+
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	body := map[string]any{"status": status, "reason": reason, "confidence": confidence}
+	oType, oID, hasOwner, err := pickAssigneeFromFlags(ctx, client, cmd, "owner", "owner-id", issueAssigneeKinds)
+	if err != nil {
+		return fmt.Errorf("resolve owner: %w", err)
+	}
+	if hasOwner {
+		body["owner_type"], body["owner_id"] = oType, oID
+	}
+	if noStart, _ := cmd.Flags().GetBool("no-start"); noStart {
+		body["suppress_run"] = true
+	}
+	if cmd.Flags().Changed("expected-revision") {
+		rev, _ := cmd.Flags().GetInt64("expected-revision")
+		body["expected_revision"] = rev
+	}
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/issues/"+issueRef.ID+"/route", body, &result); err != nil {
+		return fmt.Errorf("route issue: %w", err)
+	}
+	issue, _ := result["issue"].(map[string]any)
+	fmt.Fprintf(os.Stderr, "Issue %s routed to %s.\n", issueDisplayKey(issue), status)
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "table" {
+		return nil
+	}
+	return cli.PrintJSON(os.Stdout, result)
 }

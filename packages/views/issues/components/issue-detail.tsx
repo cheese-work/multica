@@ -29,6 +29,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  FileQuestion,
   Milestone,
   MoreHorizontal,
   PanelRight,
@@ -204,6 +205,7 @@ import {
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
+import { CollectionPageState } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -1275,21 +1277,29 @@ export function IssueNotFound({
           {trailing && <div className="ml-auto flex shrink-0 items-center gap-1">{trailing}</div>}
         </div>
       )}
-      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
-        <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
-        {onRetry && (
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            {t(($) => $.detail.retry)}
-          </Button>
-        )}
-        {showBackLink && (
-          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-            {t(($) => $.detail.back)}
-          </Button>
-        )}
-      </div>
+      <CollectionPageState
+        icon={FileQuestion}
+        title={t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found_title))}
+        description={dataError ? issueKey : onRetry ? undefined : t(($) => $.detail.not_found)}
+        tone={onRetry || dataError ? "destructive" : "muted"}
+        actions={
+          onRetry || showBackLink ? (
+            <>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  {t(($) => $.detail.retry)}
+                </Button>
+              )}
+              {showBackLink && (
+                <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+                  <ChevronLeft aria-hidden="true" />
+                  {t(($) => $.detail.back)}
+                </Button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
     </div>
   );
 }
@@ -1497,6 +1507,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const consumedHighlightId = useRestoredViewState(issueHighlightMementoKey(id));
   const consumedHighlightRef = useRef(consumedHighlightId);
   consumedHighlightRef.current = consumedHighlightId;
+  // The comment id the list was OPENED at (initialTopMostItemIndex), set once when
+  // the list first renders for this issue. While it matches the landing target,
+  // Virtuoso owns the scroll and the landing effect must not write to it: a
+  // scrollTop write mid-placement makes Virtuoso scroll to NaN, which snaps the
+  // page to the top (CHE-5376).
+  const listOpenedAtRef = useRef<{ listKey: string; commentId: string | null } | null>(null);
   const writeViewState = useViewStateWriter();
   const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const attachScrollContainer = useCallback(
@@ -2171,18 +2187,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // (`targetRootId`, latch its length-expanded choice). "Find open / close"
   // is the one reason here that does NOT latch — row 58 is explicit that
   // find writes no fold preference.
+  // CHE-5437: roots the user collapsed by pressing the button. A press outranks
+  // the soft pins (target, highlight, focus/selection); find, an active run and
+  // unsaved local work still hold the thread open.
+  const [manualCollapsedRoots, setManualCollapsedRoots] = useState<ReadonlySet<string>>(EMPTY_ID_SET);
+  const handleManualCollapseChange = useCallback((rootId: string, collapsed: boolean) => {
+    setManualCollapsedRoots((prev) => {
+      if (prev.has(rootId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(rootId); else next.delete(rootId);
+      return next;
+    });
+  }, []);
+  // A new deep-link request re-targets a thread: the earlier press no longer applies.
+  useEffect(() => {
+    setManualCollapsedRoots(EMPTY_ID_SET);
+  }, [highlightCommentId, highlightRequestToken]);
+
   const forceThreadOpen = useCallback((rootId: string): boolean => {
     if (findRootId === rootId) return true;
-    if (targetRootId === rootId) return true;
     if (rootIdsPinnedByLocalWork.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
+    if (manualCollapsedRoots.has(rootId)) return false;
+    if (targetRootId === rootId) return true;
     if (rootIdsWithActiveFocusOrSelection.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
     if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
+  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, manualCollapsedRoots, timelineView.threadReplies, highlightedId]);
 
   // CHE-554: same reasons as `forceThreadOpen` above, MINUS a bare
   // focus/selection-only pin. `forceThreadOpen` correctly forces `open` (the
@@ -2987,6 +3021,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (lastHighlightRequestTokenRef.current !== highlightRequestToken) {
       lastHighlightRequestTokenRef.current = highlightRequestToken;
       didHighlightRef.current = null;
+      // A replay asks a mounted, measured list to scroll: the page drives it.
+      listOpenedAtRef.current = { listKey: `${wsId}:${id}`, commentId: null };
     }
     if (didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
@@ -3056,7 +3092,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
     const container = scrollContainerEl;
     if (!container || targetIdx < 0) return;
-    if (!document.getElementById(`comment-${landingId}`)) {
+    const listOwnsScroll = listOpenedAtRef.current?.commentId === highlightCommentId;
+    if (!listOwnsScroll && !document.getElementById(`comment-${landingId}`)) {
       virtuosoRef.current?.scrollToIndex({ index: targetIdx, align: "start", offset: -16 });
     }
 
@@ -3089,6 +3126,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
       }
+      if (listOwnsScroll) return;
       const c = container.getBoundingClientRect();
       const e = el.getBoundingClientRect();
       const target = Math.max(
@@ -3108,7 +3146,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -3501,6 +3539,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // list to scroll there instead lands it on a guess and then on NaN, which
   // snaps the page to the top (CHE-5376).
   const openAtLandingIndex = highlightCommentId && consumedHighlightId !== highlightCommentId ? targetIdx : -1;
+  const listKey = `${wsId}:${id}`;
+  if (!loading && !!scrollContainerEl && !(timelineLoading && timelineView.groups.length === 0) && listOpenedAtRef.current?.listKey !== listKey) {
+    listOpenedAtRef.current = { listKey, commentId: openAtLandingIndex >= 0 ? highlightCommentId ?? null : null };
+  }
 
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
@@ -3976,6 +4018,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange: toggleThreadLengthExpand,
             forceThreadExpanded: forceThreadOpen(reply.id),
             forceThreadLengthExpanded: forceThreadLengthExpand(reply.id),
+            onManualCollapseChange: handleManualCollapseChange,
             findManualCollapseDisabled: findRootId === reply?.id,
             findManualCollapseDisabledReason: findCollapseDisabledReason,
           } : undefined} />}
@@ -4027,6 +4070,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange={toggleThreadLengthExpand}
             forceThreadExpanded={forceThreadOpen(rootId)}
             forceThreadLengthExpanded={forceThreadLengthExpand(rootId)}
+            onManualCollapseChange={handleManualCollapseChange}
             findManualCollapseDisabled={findRootId === rootId}
             findManualCollapseDisabledReason={findCollapseDisabledReason}
           />

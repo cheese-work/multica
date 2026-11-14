@@ -18,9 +18,10 @@ import { useIssueTargetWriter } from "./issue-target";
 import { usePalette } from "./palette-context";
 import { CommandGroupView, CommandRow, PaletteGroup, ROW_CLASS, ROW_ICON_CLASS, RowHint } from "./rows";
 import { ActorRow, AgentPresenceText, IssueResultRow, ObjectRow, ProjectResultRow } from "./result-rows";
+import { ChatMessageGroup, ChatMessageStatus } from "./commands/chat-message-commands";
 import { DelegateGroup } from "./delegate/delegate-group";
 import type { DelegateActor, IssueTarget } from "./types";
-import type { BestMatch, RootModel } from "./use-root-model";
+import { SERVER_ONLY_SCORE, type BestMatch, type RootModel } from "./use-root-model";
 
 const EMPTY_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 
@@ -36,6 +37,7 @@ const TYPE_ORDER = [
   "issues",
   "autopilots",
   "chats",
+  "messages",
   "skills",
   "workspaces",
 ] as const;
@@ -299,6 +301,15 @@ export function RootView({
       ),
     });
   }
+  if (model.messages.hits.length > 0) {
+    groups.push({
+      key: "messages",
+      type: "messages",
+      // Content hits are server-ranked guesses: below every client-side title match.
+      score: SERVER_ONLY_SCORE,
+      node: <ChatMessageGroup key="messages" search={model.messages} query={query} />,
+    });
+  }
   if (objects.skills.length > 0) {
     groups.push({
       key: "skills",
@@ -403,9 +414,11 @@ export function RootView({
         gone.
       */}
       {server.isLoading && nothing && <LoadingRow />}
-      {!server.isLoading && nothing && (
-        <CommandPrimitive.Empty className="py-10 text-center text-body text-muted-foreground">
-          {t(($) => $.empty.no_results)}
+      <ChatMessageStatus search={model.messages} />
+      {!server.isLoading && nothing && (model.messages.state === "idle" || model.messages.state === "ready") && (
+        <CommandPrimitive.Empty className="flex flex-col items-center gap-1 py-10 text-center">
+          <span className="text-body text-foreground">{t(($) => $.empty.no_results_for, { query: text })}</span>
+          <span className="text-caption text-muted-foreground">{t(($) => $.empty.no_results_hint)}</span>
         </CommandPrimitive.Empty>
       )}
     </>

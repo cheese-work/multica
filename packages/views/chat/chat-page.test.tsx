@@ -289,6 +289,7 @@ function renderPage(search: string, { strict = false } = {}) {
   return {
     replace,
     qc,
+    unmount: view.unmount,
     rerender: (
       { pathname, search }: { pathname?: string; search?: string } = {},
     ) => {
@@ -1316,5 +1317,13 @@ describe("ChatPage deep link vs workspace rehydration", () => {
 
     expect(activeSession()).toBe("session-5");
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the DM list chip while Chat is open and resets it to Main on leaving Chat", () => {
+    const { unmount } = renderPage("session=session-5");
+    useChatStore.getState().setListView("unseen");
+    expect(useChatStore.getState().listView).toBe("unseen");
+    unmount();
+    expect(useChatStore.getState().listView).toBe("main");
   });
 });

@@ -467,6 +467,7 @@ func (h *Handler) workflowHandoffBrief(ctx context.Context, issue db.Issue, hand
 	}
 	in := h.workflowBriefInput(ctx, issue, hand.def, hand.project)
 	in.StatusKey = hand.step.StatusKey
+	in.Routing = h.routingStep(ctx, issue.WorkspaceID, hand.project, in.StatusKey)
 	return issueworkflow.Brief(in)
 }
 
@@ -478,6 +479,7 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 		Workflow:        def,
 		ProjectName:     project.Title,
 		StatusKey:       issue.Status,
+		Routing:         h.routingStep(ctx, issue.WorkspaceID, project, issue.Status),
 		IssueIdentifier: h.getIssuePrefix(ctx, issue.WorkspaceID) + "-" + strconv.Itoa(int(issue.Number)),
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
@@ -489,6 +491,17 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 			return h.stepHandlerName(ctx, issue, project, step)
 		},
 	}
+}
+
+// routingStep reports whether the workspace's routing agent handles status for
+// the project's workflow (decision 9's AgentFor test). A read error is not a
+// routing step: the brief then keeps the status commands.
+func (h *Handler) routingStep(ctx context.Context, ws pgtype.UUID, project db.Project, status string) bool {
+	cfg, err := loadRoutingAgent(ctx, h.Queries, ws)
+	if err != nil {
+		return false
+	}
+	return cfg.AgentFor(service.WorkflowScope(ctx, h.Queries, project), status) != ""
 }
 
 // actorDisplayName names an agent, squad or member for a brief. It falls back
@@ -607,11 +620,10 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left
-// (CHE-2297 L1b): the runs and, once token accounting is active, the tokens the
-// admission ledger still holds. Before that it reports the tokens used and the
-// runs that reported no usage. Tokens are input plus output; the server cannot
-// see tokens during a run, so the figure lags by the runs still in flight. It
-// is empty for a workflow with no budget start, matching guardRunBudget.
+// (CHE-2297 L1b): the runs left, then the tokens used and the runs that
+// reported no usage (information only; the budget counts runs). Tokens are
+// input plus output; the server cannot see tokens during a run, so the figure
+// lags by the runs still in flight. It is empty for a workflow with no budget start, matching guardRunBudget.
 func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issueworkflow.Definition) string {
 	if def.RunBudgetSince.IsZero() {
 		return ""
@@ -624,9 +636,6 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 		return ""
 	}
 	runs := fmt.Sprintf("Run budget: %d runs left of %d", max(0, snap.RunsLeft), snap.RunsLimit)
-	if snap.TokensActive {
-		return fmt.Sprintf("%s; %d tokens left.\n", runs, max(0, snap.TokensBalance))
-	}
 	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)

@@ -55,42 +55,27 @@ async function typeAndSend(editor: Editor, text: string) {
 }
 
 describe("ChatInput reply-to-ask", () => {
-  it("shows no control without open asks", () => {
-    renderInput();
+  it("no open asks: no checkbox and the send passes no ask ids", async () => {
+    const { editor, onSend } = renderInput();
     expect(screen.queryByRole("checkbox")).toBeNull();
+    await typeAndSend(editor, "hello");
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onSend.mock.calls[0]![5]).toBeUndefined();
   });
 
-  it("one open ask: checked by default and the send targets it", async () => {
+  it("one open ask: no checkbox and the send targets it", async () => {
     const { editor, onSend } = renderInput({ replyAskIds: ["ask-1"] });
-    const box = screen.getByRole("checkbox", { name: "This message answers the open question" });
-    expect(box).toBeChecked();
+    expect(screen.queryByRole("checkbox")).toBeNull();
     await typeAndSend(editor, "yes, go ahead");
     await waitFor(() => expect(onSend).toHaveBeenCalled());
     expect(onSend.mock.calls[0]![5]).toEqual(["ask-1"]);
   });
 
-  it("one open ask: unchecking sends a plain message", async () => {
-    const { editor, onSend } = renderInput({ replyAskIds: ["ask-1"] });
-    fireEvent.click(screen.getByRole("checkbox"));
-    await typeAndSend(editor, "unrelated");
-    await waitFor(() => expect(onSend).toHaveBeenCalled());
-    expect(onSend.mock.calls[0]![5]).toBeUndefined();
-  });
-
-  it("several open asks: unchecked by default, checking targets all of them", async () => {
+  it("several open asks: no checkbox and the send targets all of them", async () => {
     const { editor, onSend } = renderInput({ replyAskIds: ["ask-1", "ask-2"] });
-    const box = screen.getByRole("checkbox", { name: "This message answers the 2 open questions" });
-    expect(box).not.toBeChecked();
-    fireEvent.click(box);
+    expect(screen.queryByRole("checkbox")).toBeNull();
     await typeAndSend(editor, "both answered");
     await waitFor(() => expect(onSend).toHaveBeenCalled());
     expect(onSend.mock.calls[0]![5]).toEqual(["ask-1", "ask-2"]);
-  });
-
-  it("several open asks: left unchecked sends no ask ids", async () => {
-    const { editor, onSend } = renderInput({ replyAskIds: ["ask-1", "ask-2"] });
-    await typeAndSend(editor, "hello");
-    await waitFor(() => expect(onSend).toHaveBeenCalled());
-    expect(onSend.mock.calls[0]![5]).toBeUndefined();
   });
 });

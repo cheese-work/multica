@@ -67,10 +67,14 @@
     "supplement_failure_provider_rejected": "에이전트가 메시지를 거부함",
     "supplement_failure_timeout": "전달 시간 초과",
     "supplement_failure_unknown": "알 수 없는 이유",
+    "supplement_failure_replay_exhausted": "재시도를 모두 사용했습니다",
+    "supplement_failure_run_budget_exhausted": "실행 예산을 모두 사용했습니다",
+    "supplement_failure_agent_paused": "에이전트가 일시 중지됨",
     "supplement_retry": "다시 시도",
     "supplement_retry_failed": "전달을 다시 시도하지 못했습니다.",
     "steer_badge": "{{names}}의 실행에 추가",
     "steer_waiting": "{{name}}이(가) 읽기를 기다리는 중",
+    "steer_replay_queued": "{{name}}이(가) 다음 실행에서 읽습니다",
     "steer_read": "{{name}}이(가) 읽음",
     "steer_not_received": "{{name}}이(가) 받지 못함 · {{reason}}",
     "steer_resend": "새 실행으로 보내기",
@@ -160,6 +164,9 @@
     "breadcrumb_title": "태스크",
     "breadcrumb_workspace_fallback": "워크스페이스",
     "empty_title": "아직 태스크가 없습니다",
+    "empty_description": "태스크는 멤버나 에이전트에게 맡기는 구체적인 작업입니다. 에이전트에게 할당하면 런타임에서 바로 시작됩니다.",
+    "break_down_with_chat": "채팅으로 나누기",
+    "break_down_prompt": "다음 일을 하고 싶습니다. 필요한 것을 먼저 물어본 뒤 이 워크스페이스의 태스크로 나눠 주세요:\n\n",
     "move_failed": "태스크를 이동하지 못했습니다"
   },
   "status": {
@@ -353,7 +360,8 @@
     "list": "리스트",
     "table": "테이블",
     "gantt": "간트",
-    "swimlane": "스윔레인"
+    "swimlane": "스윔레인",
+    "swimlane2": "스윔레인 2.0"
   },
   "table": {
     "select_all": "표시된 모든 태스크 선택",
@@ -430,6 +438,30 @@
     "empty": "일정이 잡힌 태스크가 없습니다. 태스크에 시작일이나 마감일을 설정하면 타임라인에 표시됩니다.",
     "inverted_dates_warning": "시작일이 마감일보다 늦습니다. 막대는 더 이른 날짜부터 더 늦은 날짜까지 표시됩니다."
   },
+  "swimlane2": {
+    "edge_wakeup": "웨이크업",
+    "edge_dependency": "의존성",
+    "edge_parent": "부모 / 자식",
+    "edge_mention": "멘션",
+    "edge_types": "링크 유형",
+    "relations_incomplete": "관계가 불완전합니다: 일부 링크를 불러오지 못했습니다.",
+    "more_issues": "불러오지 않은 이슈가 더 있습니다.",
+    "retry": "다시 시도",
+    "load_more": "더 불러오기",
+    "no_lane": "값 없음",
+    "timeline_failed": "타임라인을 불러오지 못했습니다.",
+    "loading": "타임라인 불러오는 중…"
+  },
+  "gantt2": {
+    "clipped_start": "이 기간 이전에 시작됨",
+    "now": "지금",
+    "start_marker": "시작일",
+    "due_marker": "마감일",
+    "no_history": "기록된 이력 없음",
+    "before_records": "기록 이전",
+    "collapse": "접기",
+    "expand": "펼치기"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
@@ -450,7 +482,7 @@
       }
     },
     "search_placeholder": "태스크 검색...",
-    "search_empty": "검색 결과와 일치하는 태스크가 없습니다."
+    "search_empty": "검색 결과와 일치하는 태스크가 없습니다"
   },
   "list": {
     "empty_status": "태스크 없음",
@@ -495,6 +527,7 @@
     "card_load_failed": "이 태스크를 불러오지 못했습니다.",
     "data_error": "이 태스크에 앱이 읽을 수 없는 데이터가 있습니다.",
     "retry": "다시 시도",
+    "not_found_title": "태스크를 찾을 수 없습니다",
     "breadcrumb_project_unknown": "알 수 없는 프로젝트",
     "back": "뒤로",
     "title_placeholder": "태스크 제목",
@@ -946,6 +979,7 @@
     "col_tokens": "토큰",
     "col_cost": "비용",
     "tokens_count": "토큰 {{tokens}}",
+    "credits_count": "{{credits}} {{provider}} 크레딧",
     "details_toggle": "실행 세부 정보",
     "detail_breakdown": "비용 내역",
     "detail_total": "합계",
@@ -1545,7 +1579,6 @@
     "not_merged": "{{prs}}이(가) 병합되지 않고 닫혔습니다",
     "not_merged_action": "제거",
     "all_merged_to": "PR이 모두 병합되었습니다. 다음 PR이 병합되면 {{status}}(으)로 변경합니다.",
-    "workflow_owned": "PR이 병합되면 워크플로가 이 태스크를 이동합니다",
     "issue_disabled": "이 태스크는 PR 병합 시 상태를 바꾸지 않음",
     "issue_disabled_action": "다시 켜기"
   },
@@ -1991,7 +2024,8 @@
       "star": "{{name}}을(를) 사이드바에 추가",
       "unstar": "{{name}}을(를) 사이드바에서 제거",
       "row_actions": "{{name}} 작업",
-      "no_matches": "일치하는 뷰가 없습니다"
+      "empty_title": "아직 저장된 뷰가 없습니다",
+      "empty_description": "태스크 목록에서 필터와 표시 방식을 맞춘 뒤 뷰로 저장하세요."
     }
   },
   "status_history": {

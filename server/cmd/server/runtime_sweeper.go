@@ -31,6 +31,9 @@ const (
 	// delegatedFailureRecoverySweepInterval keeps the low-probability durable
 	// recovery scan off the latency-sensitive runtime liveness path.
 	delegatedFailureRecoverySweepInterval = 5 * time.Minute
+	// backgroundDeadlineSweepInterval: the shortest background deadline is 5 s
+	// (quick_actions claim), so a deadline overshoots by at most about a second.
+	backgroundDeadlineSweepInterval = time.Second
 	// staleThresholdSeconds marks runtimes offline if no heartbeat for this
 	// long. The heartbeat timing derivation lives with the shared service
 	// constant so every task release path uses the same eligibility window.
@@ -187,6 +190,30 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 func runDelegatedFailureRecoverySweeper(ctx context.Context, taskSvc *service.TaskService) {
 	runPeriodicSweep(ctx, delegatedFailureRecoverySweepInterval, func() {
 		sweepPendingDelegatedFailureRecoveries(ctx, taskSvc)
+	})
+}
+
+// runBackgroundDeadlineSweeper enforces output-only background deadlines on
+// their own one-second tick (CHE-4103): the shortest deadline is 5 s, so the
+// 30 s runtime sweep cannot carry it.
+func runBackgroundDeadlineSweeper(ctx context.Context, taskSvc *service.TaskService) {
+	runPeriodicSweep(ctx, backgroundDeadlineSweepInterval, func() {
+		sweepBackgroundDeadlines(ctx, taskSvc)
+	})
+}
+
+// providerReleaseSweepInterval is the controller tick. The 15 s stagger and the
+// canary cool-off live in the controller and its breaker row, so a faster tick
+// releases nothing extra.
+const providerReleaseSweepInterval = 5 * time.Second
+
+// runProviderReleaseController releases provider-held rows on health evidence
+// or one canary (CHE-1741). All state is in the database, so a restart resumes.
+func runProviderReleaseController(ctx context.Context, taskSvc *service.TaskService) {
+	runPeriodicSweep(ctx, providerReleaseSweepInterval, func() {
+		if err := taskSvc.ReleaseProviderHeldTasks(ctx, time.Now()); err != nil {
+			slog.Warn("provider release controller: round failed", "error", err)
+		}
 	})
 }
 
@@ -661,6 +688,28 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
 	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
+	return
+}
+
+// sweepBackgroundDeadlines enforces the claim and run deadlines of output-only
+// background tasks (CHE-4103): the overdue task is cancelled or failed and its
+// chain moves to the next slot or the job's no-agent path.
+func sweepBackgroundDeadlines(ctx context.Context, taskSvc *service.TaskService) (stats runtimeSweepStageStats) {
+	startedAt := time.Now()
+	defer func() {
+		observeRuntimeSweepStage(taskServiceMetrics(taskSvc), obsmetrics.RuntimeSweepStageBackgroundDeadlines, startedAt, stats)
+	}()
+
+	cancelled, failed, err := taskSvc.SweepBackgroundDeadlines(ctx, queuedExpireBatchSize)
+	stats.candidates = cancelled + failed
+	stats.changed = cancelled + failed
+	if err != nil {
+		slog.Warn("task sweeper: background deadlines failed", "error", err)
+		return
+	}
+	if stats.changed > 0 {
+		slog.Info("task sweeper: enforced background deadlines", "claim_expired", cancelled, "run_expired", failed)
+	}
 	return
 }
 

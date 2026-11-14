@@ -24,10 +24,14 @@
     "supplement_failure_provider_rejected": "AI 代理拒絕了該訊息",
     "supplement_failure_timeout": "送達超時",
     "supplement_failure_unknown": "原因未知",
+    "supplement_failure_replay_exhausted": "重試次數已用完",
+    "supplement_failure_run_budget_exhausted": "執行預算已用完",
+    "supplement_failure_agent_paused": "AI 代理已暫停",
     "supplement_retry": "重試",
     "supplement_retry_failed": "無法重試送達。",
     "steer_badge": "插話給 {{names}}",
     "steer_waiting": "等待 {{name}} 讀取",
+    "steer_replay_queued": "{{name}} 將在下一次執行中讀取",
     "steer_read": "{{name}} 已讀取",
     "steer_not_received": "{{name}} 未收到 · {{reason}}",
     "steer_resend": "作為新一輪傳送",
@@ -117,6 +121,9 @@
     "breadcrumb_title": "任務",
     "breadcrumb_workspace_fallback": "工作區",
     "empty_title": "還沒有任務",
+    "empty_description": "任務是交給成員或 AI 代理的一件具體工作。指派給 AI 代理後，它會在你的執行時上自己開始。",
+    "break_down_with_chat": "用聊天拆解需求",
+    "break_down_prompt": "我想完成下面這件事。先問清楚你需要了解的，然後在這個工作區裡把它拆成任務：\n\n",
     "move_failed": "移動任務失敗"
   },
   "status": {
@@ -310,7 +317,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特圖",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "選擇所有可見任務",
@@ -387,6 +395,30 @@
     "empty": "暫無已排期的任務 — 給任意任務設定開始或截止日期，即可顯示在時間軸上。",
     "inverted_dates_warning": "開始日期晚於截止日期——已按區間最小/最大端繪製。"
   },
+  "swimlane2": {
+    "edge_wakeup": "喚醒",
+    "edge_dependency": "相依",
+    "edge_parent": "父 / 子",
+    "edge_mention": "提及",
+    "edge_types": "連線類型",
+    "relations_incomplete": "關係不完整：部分連線未能載入。",
+    "more_issues": "還有未載入的議題。",
+    "retry": "重試",
+    "load_more": "載入更多",
+    "no_lane": "無值",
+    "timeline_failed": "無法載入時間軸。",
+    "loading": "正在載入時間軸…"
+  },
+  "gantt2": {
+    "clipped_start": "在此時間視窗之前開始",
+    "now": "現在",
+    "start_marker": "開始日期",
+    "due_marker": "截止日期",
+    "no_history": "無歷史記錄",
+    "before_records": "記錄之前",
+    "collapse": "摺疊",
+    "expand": "展開"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
@@ -407,7 +439,7 @@
       }
     },
     "search_placeholder": "搜尋任務...",
-    "search_empty": "沒有匹配的任務。"
+    "search_empty": "沒有匹配的任務"
   },
   "list": {
     "empty_status": "無任務",
@@ -452,6 +484,7 @@
     "card_load_failed": "無法載入這個任務。",
     "data_error": "這個任務包含應用程式無法讀取的資料。",
     "retry": "重試",
+    "not_found_title": "未找到該任務",
     "breadcrumb_project_unknown": "未知專案",
     "back": "返回",
     "title_placeholder": "任務標題",
@@ -903,6 +936,7 @@
     "col_tokens": "Token",
     "col_cost": "費用",
     "tokens_count": "{{tokens}} Token",
+    "credits_count": "{{credits}} {{provider}} 點數",
     "details_toggle": "執行詳情",
     "detail_breakdown": "費用明細",
     "detail_total": "合計",
@@ -1502,7 +1536,6 @@
     "not_merged": "{{prs}} 已關閉，未合併",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合併。之後有新 PR 合併時會改為 {{status}}。",
-    "workflow_owned": "PR 合併後由工作流程移動此任務",
     "issue_disabled": "此任務合併後不改狀態",
     "issue_disabled_action": "恢復"
   },
@@ -1991,7 +2024,8 @@
       "star": "將{{name}}新增到側欄",
       "unstar": "將{{name}}從側欄移除",
       "row_actions": "{{name}} 的操作",
-      "no_matches": "沒有符合的檢視"
+      "empty_title": "還沒有儲存的檢視",
+      "empty_description": "在任務列表裡調好篩選和顯示方式，然後另存為檢視。"
     }
   },
   "status_history": {

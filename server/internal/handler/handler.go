@@ -624,6 +624,9 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		return err
 	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	service.SetAdmissionSnapshotRefresh(func(pr db.GithubPullRequest) {
+		h.PRRefresh.Enqueue(pr.InstallationID, pr.RepoOwner, pr.RepoName, pr.PrNumber)
+	})
 	h.enableCIWatch(ghClient)
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
@@ -631,6 +634,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		}
 	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
+	taskSvc.PRMergeOwed = h.evaluatePRMergeOwed
+	taskSvc.PRMergeOwe = upsertPRMergeOwed
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
 	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
 	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
