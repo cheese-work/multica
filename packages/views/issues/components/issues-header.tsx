@@ -1829,6 +1829,7 @@ export function IssueFilterMenu({
 }
 
 const LAYOUTS: { mode: ViewMode; Icon: typeof List }[] = [
+  { mode: "swimlane2", Icon: Workflow },
   { mode: "board", Icon: Columns3 },
   { mode: "list", Icon: List },
   { mode: "table", Icon: Table2 },
@@ -1840,6 +1841,7 @@ export function IssueDisplayControls({
   scopedIssues,
   hideViewToggle = false,
   allowGantt = false,
+  allowSwimlane2 = false,
   dateFilter = null,
   onDateFilterChange,
   facetCountsExact = true,
@@ -1864,6 +1866,7 @@ export function IssueDisplayControls({
   // /my-issues, actor panel) ignore viewMode === "gantt" and would silently
   // fall back to List if the option were exposed there. Keep Gantt opt-in.
   allowGantt?: boolean;
+  allowSwimlane2?: boolean;
   /**
    * Whether `scopedIssues` covers the surface's full window. Table does not
    * use loaded rows for counts; server-paged List, Board, and Swimlane follow
@@ -2042,8 +2045,11 @@ export function IssueDisplayControls({
           ? t(($) => $.table.columns.project)
           : t(($) => $.table.group_none);
   // A Gantt layout persisted on a surface without Gantt renders as List.
-  const layout: ViewMode = viewMode === "gantt" && !allowGantt ? "list" : viewMode;
-  const layouts = LAYOUTS.filter(({ mode }) => mode !== "gantt" || allowGantt);
+  const layout: ViewMode =
+    (viewMode === "gantt" && !allowGantt) || (viewMode === "swimlane2" && !allowSwimlane2) ? "list" : viewMode;
+  const layouts = LAYOUTS.filter(
+    ({ mode }) => (mode !== "gantt" || allowGantt) && (mode !== "swimlane2" || allowSwimlane2),
+  );
   const LayoutIcon = hideViewToggle
     ? SlidersHorizontal
     : LAYOUTS.find(({ mode }) => mode === layout)!.Icon;
@@ -2127,7 +2133,7 @@ export function IssueDisplayControls({
                 aria-label={t(($) => $.view.section)}
                 className={cn(
                   "mb-3 grid gap-0.5 rounded-lg bg-muted p-0.5",
-                  layouts.length === 5 ? "grid-cols-5" : "grid-cols-4",
+                  layouts.length === 6 ? "grid-cols-6" : layouts.length === 5 ? "grid-cols-5" : "grid-cols-4",
                 )}
               >
                 {layouts.map(({ mode, Icon }) => (
@@ -2186,7 +2192,7 @@ export function IssueDisplayControls({
                   </Select>
                 </div>
               )}
-              {viewMode === "swimlane" && (
+              {(viewMode === "swimlane" || viewMode === "swimlane2") && (
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-caption font-medium text-muted-foreground">
                     {t(($) => $.display.grouping_section)}

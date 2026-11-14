@@ -14,6 +14,7 @@
     "issues": "Issues",
     "autopilots": "Autopilots",
     "chats": "Chats",
+    "messages": "Messages",
     "skills": "Skills",
     "cancelled": "Cancelled",
     "recent": "Recent",
@@ -133,7 +134,9 @@
     "no_results": "No results found.",
     "no_labels": "No labels",
     "type_to_find_issue": "Type to find an issue",
-    "type_to_find_people": "Type to find people and agents"
+    "type_to_find_people": "Type to find people and agents",
+    "no_results_for": "No results for “{{query}}”",
+    "no_results_hint": "Try a different keyword."
   },
   "delegate": {
     "heading": "Hand to agent",
@@ -171,5 +174,16 @@
   },
   "trigger": {
     "label": "Search..."
+  },
+  "messages": {
+    "untitled": "Untitled chat",
+    "searching": "Searching messages…",
+    "error_title": "Couldn't search message content",
+    "error_failed": "The server returned an error. Chats still filter by title.",
+    "error_timed_out": "The search took too long. Chats still filter by title.",
+    "retry": "Retry",
+    "offline_title": "You're offline",
+    "offline_body_one": "Searching only {{count}} saved chat by title, not message content.",
+    "offline_body_other": "Searching only {{count}} saved chats by title, not message content."
   }
 }

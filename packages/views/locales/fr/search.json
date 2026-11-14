@@ -14,6 +14,7 @@
     "issues": "Tâches",
     "autopilots": "Automatisations",
     "chats": "Discussions",
+    "messages": "Messages",
     "skills": "Skills",
     "cancelled": "Annulés",
     "recent": "Récents",
@@ -133,7 +134,9 @@
     "no_results": "Aucun résultat.",
     "no_labels": "Aucun libellé",
     "type_to_find_issue": "Tapez pour trouver une tâche",
-    "type_to_find_people": "Tapez pour trouver des membres et des agents"
+    "type_to_find_people": "Tapez pour trouver des membres et des agents",
+    "no_results_for": "Aucun résultat pour « {{query}} »",
+    "no_results_hint": "Essayez un autre mot-clé."
   },
   "delegate": {
     "heading": "Confier à un agent",
@@ -171,5 +174,16 @@
   },
   "trigger": {
     "label": "Rechercher..."
+  },
+  "messages": {
+    "untitled": "Discussion sans titre",
+    "searching": "Recherche dans les messages…",
+    "error_title": "Impossible de rechercher dans les messages",
+    "error_failed": "Le serveur a renvoyé une erreur. Les discussions restent filtrables par titre.",
+    "error_timed_out": "La recherche a pris trop de temps. Les discussions restent filtrables par titre.",
+    "retry": "Réessayer",
+    "offline_title": "Vous êtes hors ligne",
+    "offline_body_one": "Recherche uniquement par titre dans {{count}} discussion enregistrée, pas dans les messages.",
+    "offline_body_other": "Recherche uniquement par titre dans {{count}} discussions enregistrées, pas dans les messages."
   }
 }

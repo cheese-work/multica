@@ -530,6 +530,7 @@ export function IssueViewHeader({
             hideFilter
             scopedIssues={controller.surfaceIssues}
             allowGantt={controller.allowGantt}
+            allowSwimlane2={controller.allowSwimlane2}
             facetCountsExact={controller.facetCountsExact}
             tableFacetCounts={controller.tableFacetCounts}
             onTableFacetChange={controller.setActiveTableFacet}

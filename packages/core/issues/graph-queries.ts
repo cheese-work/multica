@@ -1,5 +1,6 @@
 import { infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import type { Issue } from "../types";
 import type {
   EDGE_TYPES,
   IssueTimelineRequest,
@@ -34,7 +35,28 @@ export const issueGraphKeys = {
     [...issueGraphKeys.all(wsId), "timeline", request] as const,
   relations: (wsId: string, ids: readonly string[], opts: RelationsOptions) =>
     [...issueGraphKeys.all(wsId), "relations", [...ids].sort(), opts] as const,
+  rows: (wsId: string, ids: readonly string[]) =>
+    [...issueGraphKeys.all(wsId), "rows", [...ids].sort()] as const,
 };
+
+/** Ids per issue-rows request; the server caps `ids` queries at 100 rows. */
+export const ISSUE_ROWS_CHUNK = 100;
+
+/** Issue rows (assignee, project, parent) for timeline ids, which the timeline response does not carry. */
+export async function fetchIssueRowsByIds(ids: readonly string[]): Promise<Issue[]> {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += ISSUE_ROWS_CHUNK) chunks.push(ids.slice(i, i + ISSUE_ROWS_CHUNK));
+  const pages = await Promise.all(chunks.map((chunk) => api.listIssues({ ids: chunk, limit: ISSUE_ROWS_CHUNK })));
+  return pages.flatMap((page) => page.issues);
+}
+
+export function issueRowsByIdsOptions(wsId: string, ids: readonly string[]) {
+  return {
+    queryKey: issueGraphKeys.rows(wsId, ids),
+    queryFn: () => fetchIssueRowsByIds(ids),
+    enabled: !!wsId && ids.length > 0,
+  };
+}
 
 const isAbort = (e: unknown) => e instanceof DOMException && e.name === "AbortError";
 
