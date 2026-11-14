@@ -1,0 +1,12 @@
+EmailService: DEV mode — codes printed to stdout (set MULTICA_DEV_VERIFICATION_CODE in .env for a fixed local code)
+2026/11/15 03:00:54 WARN plugins: MULTICA_PLUGIN_API_URL and MULTICA_PUBLIC_URL are not set; hook callbacks will carry no callback_url
+2026/11/15 03:00:54 WARN auth rate limiting disabled: REDIS_URL not configured
+2026/11/15 03:00:54 WARN daemon update: serving no daemon binaries dir=/app/daemon-binaries error="server build has no commit stamp"
+Integration suite: database connected; running tests
+=== RUN   TestChannelListC2
+2026/11/15 03:00:54 WARN http request method=GET path=/api/channels status=404 duration=110µs request_id=congvc-X99/zACNimWFsm-000001
+    channel_list_c2_red_test.go:107: GET /api/channels = 404, want 200
+--- FAIL: TestChannelListC2 (0.09s)
+FAIL
+FAIL	github.com/multica-ai/multica/server/cmd/server	0.168s
+FAIL
