@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,7 +23,7 @@ type decisionWakeRecipient struct {
 // resolveDecisionWakeRecipients returns the requester, plus the issue
 // assignee (an agent, or a squad's leader with the squad id) when that is a
 // different agent. Eligibility is checked at delivery time, not here.
-func resolveDecisionWakeRecipients(ctx context.Context, queries *db.Queries, decision db.DecisionRequest) ([]decisionWakeRecipient, error) {
+func (handler *Handler) resolveDecisionWakeRecipients(ctx context.Context, queries *db.Queries, decision db.DecisionRequest) ([]decisionWakeRecipient, error) {
 	recipients := []decisionWakeRecipient{{agentID: decision.AskingAgentID, role: "requester"}}
 	issue, err := queries.GetIssue(ctx, decision.IssueID)
 	if err != nil {
@@ -40,6 +41,15 @@ func resolveDecisionWakeRecipients(ctx context.Context, queries *db.Queries, dec
 		assignee.agentID, assignee.squadID = squad.LeaderID, squad.ID
 	}
 	if assignee.agentID.Valid && assignee.agentID != decision.AskingAgentID {
+		if issue.Status == "need_decision" {
+			// The assignee owns the wake only when the person could invoke it.
+			if invocable, err := handler.personMayInvoke(ctx, queries, assignee.agentID, decision.HumanUserID, decision.WorkspaceID); err != nil {
+				return nil, err
+			} else if invocable {
+				return []decisionWakeRecipient{assignee}, nil
+			}
+			return recipients, nil
+		}
 		recipients = append(recipients, assignee)
 	}
 	return recipients, nil
@@ -48,8 +58,8 @@ func resolveDecisionWakeRecipients(ctx context.Context, queries *db.Queries, dec
 // recordDecisionWakeEvent writes one wake event and a receipt per recipient.
 // Call it after the writer has locked the request row (any UPDATE of the
 // request does), so wake_seq order equals commit order.
-func recordDecisionWakeEvent(ctx context.Context, queries *db.Queries, decision db.DecisionRequest, eventType string, answerID, sourceCommentID pgtype.UUID) error {
-	recipients, err := resolveDecisionWakeRecipients(ctx, queries, decision)
+func (handler *Handler) recordDecisionWakeEvent(ctx context.Context, queries *db.Queries, decision db.DecisionRequest, eventType string, answerID, sourceCommentID pgtype.UUID) error {
+	recipients, err := handler.resolveDecisionWakeRecipients(ctx, queries, decision)
 	if err != nil {
 		return err
 	}
@@ -72,12 +82,12 @@ func recordDecisionWakeEvent(ctx context.Context, queries *db.Queries, decision 
 // markDecisionRequestAnswered is the one place a request becomes answered.
 // kind=action also gets its durable answered event; kind=decision keeps the
 // legacy answer-row wake.
-func markDecisionRequestAnswered(ctx context.Context, queries *db.Queries, decision db.DecisionRequest, answer db.DecisionAnswer) (db.DecisionRequest, error) {
+func (handler *Handler) markDecisionRequestAnswered(ctx context.Context, queries *db.Queries, decision db.DecisionRequest, answer db.DecisionAnswer) (db.DecisionRequest, error) {
 	marked, err := queries.MarkDecisionRequestAnswered(ctx, db.MarkDecisionRequestAnsweredParams{WorkspaceID: decision.WorkspaceID, ID: decision.ID})
 	if err != nil || marked.Kind != "action" {
 		return marked, err
 	}
-	return marked, recordDecisionWakeEvent(ctx, queries, marked, "answered", answer.ID, answer.IssueCommentID)
+	return marked, handler.recordDecisionWakeEvent(ctx, queries, marked, "answered", answer.ID, answer.IssueCommentID)
 }
 
 // decisionReceiptState is everything a receipt delivery reads before it locks;
@@ -116,7 +126,7 @@ func (handler *Handler) loadDecisionReceiptState(ctx context.Context, queries *d
 // deliverDecisionWakeReceipt delivers one pending receipt in one transaction:
 // the dispatch and the receipt's terminal status commit together. Locks follow
 // the order of deliverDecisionWake (runtime, recipient, asking agent, issue,
-// task, request), then the receipt.
+// task, request), then the answer, the event and the receipt.
 func (handler *Handler) deliverDecisionWakeReceipt(ctx context.Context, receiptID pgtype.UUID) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		restart, err := handler.tryDeliverDecisionWakeReceipt(ctx, receiptID)
@@ -176,6 +186,9 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 			return false, err
 		}
 	}
+	if _, err := queries.LockDecisionWakeEvent(ctx, state.event.ID); err != nil {
+		return false, err
+	}
 	if _, err := queries.LockDecisionWakeReceipt(ctx, receiptID); err != nil {
 		return false, err
 	}
@@ -186,9 +199,32 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 	if !reflect.DeepEqual(current, state) {
 		return true, nil
 	}
+	// The request lock is held, so no event can be written while these checks run.
+	blocked, err := queries.HasOlderPendingDecisionWakeReceipt(ctx, db.HasOlderPendingDecisionWakeReceiptParams{RequestID: state.request.ID, RecipientAgentID: state.recipient.ID, EventSeq: state.receipt.EventSeq})
+	if err != nil || blocked {
+		return false, err
+	}
+	verdict, held, err := decisionReceiptVerdict(ctx, queries, state)
+	if err != nil || held {
+		return false, err
+	}
 	status, outcome := "skipped_ineligible", pgtype.Text{}
+	if verdict != "" {
+		status = verdict
+	}
+	if verdict == "" && state.receipt.Role == "assignee" && state.issue.Status == "need_decision" {
+		// Permission can change after the receipt was written: the person must
+		// still be able to invoke the assignee when it dispatches.
+		invocable, err := handler.personMayInvoke(ctx, queries, state.recipient.ID, state.request.HumanUserID, workspaceID)
+		if err != nil {
+			return false, err
+		}
+		if !invocable {
+			verdict = "skipped_ineligible"
+		}
+	}
 	var enqueued db.AgentTaskQueue
-	if !state.recipient.ArchivedAt.Valid && state.recipient.RuntimeID.Valid && state.recipient.Kind != "system" {
+	if verdict == "" && !state.recipient.ArchivedAt.Valid && state.recipient.RuntimeID.Valid && state.recipient.Kind != "system" {
 		trigger, err := queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{WorkspaceID: workspaceID, ID: state.event.SourceCommentID})
 		if err != nil {
 			return false, err
@@ -223,6 +259,50 @@ func (handler *Handler) tryDeliverDecisionWakeReceipt(ctx context.Context, recei
 		handler.TaskService.PublishTaskEnqueued(ctx, enqueued)
 	}
 	return false, nil
+}
+
+// decisionEventCancelReasons are the cancel reasons that make a non-answer
+// event valid: a cancelled request is the expected state for these events.
+var decisionEventCancelReasons = map[string][]string{
+	"expired":            {"expired"},
+	"withdrawn_human":    {"agent_withdrawn"},
+	"withdrawn_agent":    {"agent_withdrawn"},
+	"reask":              {"human_removed", "lane_archived"},
+	"requester_archived": {"agent_archived"},
+}
+
+// decisionReceiptVerdict runs delivery-time checks 1 to 3 on a state reloaded
+// under the locks. A non-empty verdict is the receipt's terminal status and
+// nothing dispatches; held means the answer's wake_at is still ahead, so the
+// receipt stays pending without an attempt.
+func decisionReceiptVerdict(ctx context.Context, queries *db.Queries, state decisionReceiptState) (verdict string, held bool, err error) {
+	switch state.issue.Status {
+	case "done", "cancelled", "agent_accepted", "approved":
+		return "suppressed_issue_closed", false, nil
+	}
+	if state.event.SupersededAt.Valid {
+		return "superseded", false, nil
+	}
+	if !state.event.AnswerID.Valid {
+		if slices.Contains(decisionEventCancelReasons[state.event.Type], state.request.CancelReason.String) && state.request.Status == "cancelled" {
+			return "", false, nil
+		}
+		return "superseded", false, nil
+	}
+	answer, err := queries.GetDecisionAnswerWakeState(ctx, state.event.AnswerID)
+	if err != nil {
+		return "", false, err
+	}
+	if state.event.Type == "retracted" {
+		if answer.Disclaimed {
+			return "", false, nil
+		}
+		return "superseded", false, nil
+	}
+	if state.request.Status != "answered" || answer.Disclaimed || !answer.LatestLive {
+		return "superseded", false, nil
+	}
+	return "", answer.Held, nil
 }
 
 // acknowledgeDecisionWakeEvent sets the answer's woken_at and wake_outcome once

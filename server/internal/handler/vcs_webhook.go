@@ -265,12 +265,25 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 			touched[id] = struct{}{}
 		}
 	}
+	// The decision this event owes commits with it (CHE-5244): a failure rolls
+	// the mirror back and the delivery returns 5xx for a redelivery.
+	touchedIDs := make([]pgtype.UUID, 0, len(touched))
+	for issueID := range touched {
+		touchedIDs = append(touchedIDs, issueID)
+	}
+	persisted, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+	if err != nil {
+		return fmt.Errorf("vcs: list persisted links: %w", err)
+	}
+	owed, err := h.owePRMergeWithLinked(ctx, qtx, conn.WorkspaceID, touchedIDs, persisted)
+	if err != nil {
+		return fmt.Errorf("vcs: record pr_merge_owed: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("vcs: commit mirror transaction: %w", err)
 	}
-	resolver := issuestatus.NewResolver(conn.WorkspaceID)
-	for issueID := range touched {
-		h.maybeAutoCompleteIssue(ctx, conn.WorkspaceID, issueID, resolver)
+	for _, err := range h.attemptPRMergeOwed(ctx, conn.WorkspaceID, owed, issuestatus.NewResolver(conn.WorkspaceID)) {
+		slog.Warn("pr auto-complete failed", "err", err)
 	}
 
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{

@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,9 +40,22 @@ const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
 const getDecisionActionOutcome = vi.hoisted(() => vi.fn());
+const challengeDecisionAction = vi.hoisted(() => vi.fn());
+const approveDecisionAction = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome },
+  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction },
+}));
+
+// Config-change approval is owner-only: the role comes from the member list of the current workspace.
+const member = vi.hoisted(() => ({ role: "owner" as string | null, workspace: { id: "ws-1" } as { id: string } | null }));
+vi.mock("@multica/core/permissions", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/permissions")>()),
+  useCurrentMember: () => ({ userId: "u1", role: member.role, member: null, isLoading: member.role === null }),
+}));
+vi.mock("@multica/core/paths", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => member.workspace,
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -130,7 +143,7 @@ describe("DecisionRequestCard accessibility", () => {
     for (const state of ["answered", "withdrawn"] as const) {
       rerender(view(state));
       expect(container.querySelector("[data-comment-content]")).toBeNull();
-      expect(screen.getByText(/original ask/)).toBeInTheDocument();
+      expect(within(container.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     }
   });
 
@@ -237,7 +250,8 @@ describe("DecisionRequestCard accessibility", () => {
   it("keeps a localized status label and tolerates missing legacy source and invalid time", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, state: "withdrawn", source_comment_id: undefined, created_at: "invalid", reason: "Scope changed." }} /></WorkspaceSlugProvider></QueryClientProvider>, { locale: "zh-Hans" });
     expect(screen.getByRole("region", { name: "决策请求：已撤回" })).toHaveTextContent("Scope changed.");
-    expect(screen.getByText(/original ask/)).toBeInTheDocument();
+    // A withdrawn card is folded: its question shows in the row and the full ask in the body.
+    expect(within(document.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
   });
@@ -460,7 +474,7 @@ describe("DecisionRequestCard answering", () => {
       renderCard();
       const file = new File(["png"], "x.png", { type: "image/png" });
       const result = await editorProps().onUploadFile?.(file, "upload-1");
-      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined });
+      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined }, expect.any(AbortSignal));
       expect(result).toMatchObject({ markdownLink: "https://app/att-1" });
     });
 
@@ -688,7 +702,7 @@ describe("DecisionRequestCard answering", () => {
       expect(region).toHaveTextContent("10");
       expect(region).toHaveTextContent("30");
       expect(region).toHaveTextContent("Runs left");
-      expect(await screen.findByRole("button", { name: "Approve with passkey" })).toBeEnabled();
+      expect(await screen.findByRole("radio", { name: "Approve" })).toBeEnabled();
       expect(screen.queryByText("Details unavailable")).toBeNull();
     });
 
@@ -698,19 +712,155 @@ describe("DecisionRequestCard answering", () => {
       ["digestless", { ...preview, sha256: "" }],
       ["not a sha-256 digest", { ...preview, sha256: "digest" }],
       ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
-    ])("says details are unavailable and keeps Approve disabled when the preview is %s", (_name, bad) => {
+    ])("says details are unavailable, keeps Approve disabled and keeps Reject when the preview is %s", async (_name, bad) => {
       show({ ...action, preview: bad });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
     });
 
-    it("keeps Approve disabled for an action type this client does not know, even with fields", () => {
+    it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
       show({ ...action, action_type: "future.thing" });
       expect(screen.getByText("Details unavailable")).toBeInTheDocument();
       expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
-      expect(screen.getByRole("button", { name: "Approve with passkey" })).toBeDisabled();
-      expect(getDecisionActionOutcome).not.toHaveBeenCalled();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+    });
+
+    describe("config change", () => {
+      const change = {
+        field: "workspace.context",
+        target_id: "ws-1",
+        keys: [] as string[],
+        diff_kind: "text" as const,
+        diff: [{ old_start: 1, new_start: 1, lines: ["-old rule", "+new rule"] }],
+        after: "new rule",
+        before_sha256: "b".repeat(64),
+        after_sha256: "c".repeat(64),
+        sha256: "e".repeat(64),
+      };
+      const configAction = { id: "action", action_type: "workspace.context.set", payload_sha256: "payload", config_change: change, owner_only: true };
+      const approve = () => screen.findByRole("radio", { name: "Approve" });
+      // An approve that left this tab is remembered per action id for the session; every test starts clean.
+      beforeEach(() => {
+        sessionStorage.clear();
+        member.role = "owner";
+        member.workspace = { id: "ws-1" };
+        challengeDecisionAction.mockReset().mockResolvedValue({ challenge_id: "ch" });
+        signPasskeyChallenge.mockReset().mockResolvedValue({ id: "cred" });
+        approveDecisionAction.mockReset().mockResolvedValue({ id: "action", state: "executed" });
+      });
+
+      afterEach(() => sessionStorage.clear());
+
+      it("shows the server preview in the viewer and enables Approve for the owner", async () => {
+        show(configAction);
+        // The raw change sits behind the Details control (direction B v9).
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: /Details/ }));
+        const viewer = await screen.findByTestId("config-change-viewer");
+        expect(viewer).toHaveTextContent("Workspace context");
+        expect(screen.getByRole("list", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+      });
+
+      it("approves with the digest of the preview that was shown", async () => {
+        show(configAction);
+        const user = userEvent.setup();
+        await user.click(await approve());
+        await user.click(screen.getByRole("button", { name: /^Approve with passkey/ }));
+        await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledOnce());
+        expect(approveDecisionAction).toHaveBeenCalledWith("action", { payload_sha256: "payload", assertion: { id: "cred" }, preview_sha256: change.sha256 });
+      });
+
+      it.each([
+        ["a member", "member"],
+        ["an admin", "admin"],
+        ["a person whose role is not known yet", null],
+      ])("hides Approve for %s and keeps Reject", async (_name, role) => {
+        member.role = role;
+        show(configAction);
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        await userEvent.setup().click(screen.getByRole("button", { name: /Details/ }));
+        expect(screen.getByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("hides Approve when there is no current workspace to read the role from", async () => {
+        member.workspace = null;
+        show(configAction);
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("treats a config-change action as owner-only even when the server flag is missing", async () => {
+        member.role = "member";
+        show({ ...configAction, owner_only: undefined });
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("says details are unavailable and keeps Approve disabled for the owner, with Reject, when the change is %s", async (_name, bad) => {
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("shows a non-owner no Approve and keeps Reject when the change is %s", async (_name, bad) => {
+        member.role = "member";
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("shows no Approve and keeps Reject when there is no current workspace and the change is missing", async () => {
+        member.workspace = null;
+        show({ ...configAction, config_change: undefined });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("shows the viewer for a settings change with its keys", async () => {
+        show({ ...configAction, action_type: "workspace.settings.patch", config_change: { ...change, field: "workspace.settings", keys: ["compact_prompt"] } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
+        expect(await screen.findByTestId("config-change-keys")).toHaveTextContent("compact_prompt");
+      });
+
+      it.each([
+        ["workspace.routing_agent.set", "workspace.routing_agent", "json"],
+        ["workspace.delegated_writes.set", "workspace.delegated_writes", "json"],
+        ["agent.skills.set", "agent.skills", "lines"],
+      ] as const)("shows the %s preview and enables Approve for the owner (CHE-4490)", async (action_type, field, diff_kind) => {
+        show({ ...configAction, action_type, config_change: { ...change, field, diff_kind } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
+        expect(await screen.findByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+        expect(await approve()).toBeEnabled();
+      });
+
+      it("keeps the run-budget preview and Approve for a person who is not the owner", async () => {
+        member.role = "member";
+        show(action);
+        expect(await screen.findByTestId("decision-request-action-preview")).toBeInTheDocument();
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+      });
     });
 
     describe("agent note and outcome in the DM", () => {
@@ -740,7 +890,7 @@ describe("DecisionRequestCard answering", () => {
         getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
         renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
         expect(await screen.findByText("Cap applied")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
       });
 
       it("goes from Approve to the outcome when the server announces the change", async () => {
@@ -753,21 +903,21 @@ describe("DecisionRequestCard answering", () => {
           return data ? <DecisionRequestCard card={data} /> : null;
         };
         renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
-        await screen.findByRole("button", { name: "Approve with passkey" });
-        expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+        await screen.findByRole("radio", { name: "Approve" });
+        expect(screen.getByRole("radio", { name: "Reject" })).toBeInTheDocument();
         served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
         getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
         act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
         expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
-        expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
-        expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Reject" })).toBeNull();
       });
     });
 
     it("shows nothing when the card has no action", () => {
       renderCard();
       expect(screen.queryByText("Details unavailable")).toBeNull();
-      expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
+      expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
     });
   });
 });

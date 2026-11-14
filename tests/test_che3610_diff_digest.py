@@ -28,7 +28,7 @@ DIFF = "+++ b/app.py\n@@ -1 +1,2 @@\n+x = 1\n"
 
 
 def verdict(sha, digest=None):
-    lines = ["Security-Gate-Verdict: PASS", "Reviewer: x99-codex-sol (gpt-6.1-sol)", "Signed: x99-codex-sol, 2026-11-04 23:50 ICT",
+    lines = ["Security-Gate-Verdict: PASS", "Reviewer: x99-claude-opus (claude-opus-5-5)", "Signed: x99-claude-opus, 2026-11-04 23:50 ICT",
              "Repo: cheese-work/multica", "PR: 918", "Base: main", f"SHA: {sha}", "Findings: none"]
     if digest:
         lines.append(f"Diff-Digest: {digest}")
@@ -139,7 +139,7 @@ class DiffDigestTest(unittest.TestCase):
         self.assertNotEqual(sg.evaluate(pr, c, {BOT}, DIFF, human_ids=set(), digest=self.d1)[0], "success")
 
     def _vd(self, result, agent, sha, digest=None):
-        lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {agent} (gpt-6.1)", f"Signed: {agent}, 2026-11-04 23:55 ICT",
+        lines = [f"Security-Gate-Verdict: {result}", f"Reviewer: {agent} ({'claude-opus-5-5' if 'opus' in agent else 'gpt-6.1'})", f"Signed: {agent}, 2026-11-04 23:55 ICT",
                  "Repo: cheese-work/multica", "PR: 918", "Base: main", f"SHA: {sha}",
                  "Findings:" if result == "FAIL" else "Findings: none"]
         if result == "FAIL":
@@ -154,19 +154,19 @@ class DiffDigestTest(unittest.TestCase):
 
     def test_delayed_stale_pass_does_not_erase_the_same_reviewers_current_fail(self):
         stale = "a" * 40
-        got = self._eval([self._vd("PASS", "x99-codex-terra", self.h1, self.d1),
+        got = self._eval([self._vd("PASS", "x99-claude-opus", self.h1, self.d1),
                           self._vd("FAIL", "x99-codex-sol", self.h1, self.d1),
                           self._vd("PASS", "x99-codex-sol", stale)], self.h1)
         self.assertEqual(got, "failure")
 
     def test_other_reviewers_digestless_fail_survives_an_unchanged_digest_head(self):
-        got = self._eval([self._vd("PASS", "x99-codex-terra", self.h1, self.d1),
+        got = self._eval([self._vd("PASS", "x99-claude-opus", self.h1, self.d1),
                           self._vd("FAIL", "x99-codex-sol", self.h1)], "e" * 40)
         self.assertEqual(got, "failure")
 
     def test_same_reviewers_newer_applicable_pass_supersedes_its_earlier_fail(self):
-        got = self._eval([self._vd("FAIL", "x99-codex-sol", self.h1),
-                          self._vd("PASS", "x99-codex-sol", "e" * 40, self.d1)], "e" * 40)
+        got = self._eval([self._vd("FAIL", "x99-claude-opus", self.h1),
+                          self._vd("PASS", "x99-claude-opus", "e" * 40, self.d1)], "e" * 40)
         self.assertEqual(got, "success")
 
     def test_pass_survives_only_while_the_digest_matches(self):

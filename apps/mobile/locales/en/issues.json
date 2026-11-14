@@ -49,7 +49,8 @@
   "list": {
     "empty": "No issues match your filters",
     "count_other": "{{count}} issues",
-    "search_placeholder": "Search issues and projects"
+    "search_placeholder": "Search issues and projects",
+    "unread_mention": "Unread mention"
   },
   "detail": {
     "properties": "Properties",
@@ -136,6 +137,9 @@
     "issue_actions": "Issue actions"
   },
   "delete": {
+    "failed_title": "Could not delete issue",
+    "permission_denied": "You don't have permission to delete this issue.",
+    "failed": "The issue could not be deleted. Please try again.",
     "title": "Delete issue?",
     "message": "{{identifier}} and its comments, reactions, and attachments will be permanently deleted. This cannot be undone."
   },

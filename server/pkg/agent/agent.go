@@ -26,6 +26,11 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
+	// OutputOnly (CHE-4101) launches the provider in its no-tool mode for an
+	// output_only background job: no tools, no MCP, no skills, no resume, and
+	// no custom args. Only a provider that passes OutputOnlyIneligibleReason
+	// honours it.
+	OutputOnly bool
 	// EnableTaskSupplement installs provider hooks only for runs whose daemon/server
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
@@ -33,6 +38,9 @@ type ExecOptions struct {
 	// StableCwd, when set, is the cwd the process sees instead of Cwd (Claude only; see wrapStableCwd).
 	StableCwd string
 	Model     string
+	// PiSkillPaths contains only the SKILL.md files written for this task by
+	// the daemon. Pi loads them explicitly without trusting other project files.
+	PiSkillPaths []string
 	// SystemPrompt carries the Multica runtime brief for the few providers
 	// that cannot pick it up from disk. The daemon leaves it empty for every
 	// other provider (see daemon.providerNeedsInlineSystemPrompt), because the
@@ -159,6 +167,17 @@ type ExecOptions struct {
 	// EnableTaskSupplement, to accept additional messages; other providers
 	// ignore it.
 	CursorHookCommand []string
+	// OnUsage optionally receives the backend's cumulative usage snapshot while
+	// the run is still live, keyed exactly like Result.Usage so a mid-run flush
+	// and the terminal report upsert the same (task, provider, model) rows
+	// instead of adding a second row the rollup would charge twice. Backends
+	// that cannot meter mid-run never call it.
+	//
+	// The callback runs on the backend's protocol reader goroutine and MUST NOT
+	// block: a daemon that reports from here holds the agent's stdout open and
+	// can trip its idle watchdog. Take the snapshot and report on your own
+	// goroutine.
+	OnUsage func(map[string]TokenUsage)
 	// piMcpExtensionPath is set by piBackend.Execute after it writes the
 	// temporary MCP extension. The daemon does not fill it.
 	piMcpExtensionPath string
@@ -393,6 +412,9 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
+	// Script, when set, selects the model-less script backend: New returns it
+	// for any agentType and never reaches the provider switch.
+	Script *ScriptSpec
 }
 
 // New creates a Backend for the given agent type.
@@ -443,6 +465,7 @@ var SupportedTypes = []string{
 	"dim",
 	"devin",
 	"zeroclaw",
+	"zcode",
 }
 
 // IsSupportedType reports whether agentType is in the SupportedTypes whitelist.
@@ -508,6 +531,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
 
+	if cfg.Script != nil {
+		return newScriptBackend(cfg), nil
+	}
+
 	switch agentType {
 	case "claude":
 		return &claudeBackend{cfg: cfg}, nil
@@ -561,6 +588,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
 		return &zeroclawBackend{cfg: cfg}, nil
+	case "zcode":
+		return &zcodeBackend{cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unknown agent type: %q (supported: %s)", agentType, strings.Join(SupportedTypes, ", "))
 	}
@@ -610,6 +639,7 @@ var launchHeaders = map[string]string{
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",
+	"zcode":       "zcode app-server",
 }
 
 // LaunchHeader returns the user-visible launch skeleton for agentType, or an
@@ -625,4 +655,24 @@ func LaunchHeader(agentType string) string {
 		return desc.LaunchHeader
 	}
 	return ""
+}
+
+// outputOnlyProviders are the providers with a verified no-tool launch mode
+// (CHE-4101). Anything not listed is ineligible: a new provider must be proven
+// to have no file or workspace access before it is added here.
+var outputOnlyProviders = map[string]bool{
+	// Claude Code 2.1.318: `--tools ""` removes every built-in tool,
+	// `--strict-mcp-config` with no `--mcp-config` loads no MCP server, and
+	// `--disable-slash-commands` loads no skill.
+	"claude": true,
+}
+
+// OutputOnlyIneligibleReason returns why provider cannot run an output_only
+// background job, or "" when it can. A provider that can read files or
+// workspace content outside the task context is ineligible.
+func OutputOnlyIneligibleReason(provider string) string {
+	if outputOnlyProviders[provider] {
+		return ""
+	}
+	return fmt.Sprintf("provider %q has no verified no-tool mode and can read files or workspace content outside the task context", provider)
 }

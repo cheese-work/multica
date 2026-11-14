@@ -148,10 +148,30 @@ type ReadToken struct {
 // GetReadToken asks the broker for a read-only token. The broker revokes it
 // when the run ends.
 func GetReadToken(ctx context.Context, socket string) (ReadToken, error) {
+	return readToken(ctx, socket, "/readtoken", "")
+}
+
+// RefreshReadToken swaps the token the caller holds, stale, for a new one. The
+// broker mints first and revokes stale after, so a failed mint leaves the old
+// token working. A caller that holds a token another process already replaced
+// gets that newer token back, not a third one. An empty stale mints like
+// GetReadToken.
+func RefreshReadToken(ctx context.Context, socket, stale string) (ReadToken, error) {
+	id := ""
+	if stale != "" {
+		id = grant{token: stale}.id()
+	}
+	return readToken(ctx, socket, "/readtoken/refresh", id)
+}
+
+func readToken(ctx context.Context, socket, path, staleID string) (ReadToken, error) {
 	var t ReadToken
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker/readtoken", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://broker"+path, nil)
 	if err != nil {
 		return t, err
+	}
+	if staleID != "" {
+		req.Header.Set(staleTokenHeader, staleID)
 	}
 	resp, err := unixClient(socket).Do(req)
 	if err != nil {
@@ -209,4 +229,16 @@ func headRef(repoDir string) (string, error) {
 		return "", errors.New("push needs a checked-out branch, not a detached HEAD")
 	}
 	return ref, nil
+}
+
+// staleTokenHeader carries the hash prefix of the token being replaced.
+const staleTokenHeader = "X-Multica-Stale-Token"
+
+// CurrentReadToken is what the `gh` shim calls before each gh command. The
+// broker keeps the run's token in its own memory and replaces it when it nears
+// expiry, revoking the old one. The client keeps nothing, so no token value is
+// written to disk (plan 3.9).
+func CurrentReadToken(ctx context.Context, socket string) (string, error) {
+	t, err := readToken(ctx, socket, "/readtoken/current", "")
+	return t.Token, err
 }

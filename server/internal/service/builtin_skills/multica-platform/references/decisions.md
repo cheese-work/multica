@@ -12,10 +12,19 @@ multica decision ask --class <class> --ask-file ./ask.json          # same comma
 multica decision list --issue <issue> --output json
 multica decision get <decision-id> --output json
 multica decision withdraw <decision-id> --reason "no longer needed"
+multica decision revoke <request-id> --why "paused the wrong agent"   # the person only; applied + inverse registered (agent.pause)
 multica decision feed --output json   # sweep PAT with the decisions:feed scope only
 multica decision feed ack <answer-id> --version <n>
 multica issue human-in-charge <issue> --output json   # who to address; `human` is null when nobody is eligible
 ```
+
+- `decision get` on an answered request carries `answer`: `answered_by_user_id`,
+  `answer_source`, `chosen_option_index` (null for a text-only answer),
+  `content_snapshot` (the person's words), `created_at` and `disclaimed_at`.
+  `status: answered` with no `answer` means a batch card covered it: read
+  `answered_by_batch_request_id`. A text-only answer on an
+  option card is still an answer: read `content_snapshot`, do not treat the
+  card as open.
 
 - `--ask-file` is UTF-8 JSON: `agent_did`, `decision`, `options`,
   `recommendation`, `recommended_option` (the exact label of the recommended
@@ -191,9 +200,239 @@ multica decision propose <action-type> --version 1 --issue <issue> --params-file
   `--param`.
 - It works only with a task token. The output prints the card link
   `<web>/<workspace>/issues/<issue-id>?approve=<action-id>`; give that link to
-  the person.
+  the person. That link opens the approval only for a run-budget action; for
+  any other action the approve page links to the card in the chat.
+- Never send a change that needs a passkey as a plain option card
+  (`multica decision request` without `--action-file`). Approve only
+  records the answer. The server cannot read intent, so it does not refuse:
+  when the decision or an option reads like a workflow, agent, squad,
+  workspace or budget change (or names an allowlisted action type), the
+  response carries an advisory hint. Heed it.
 - A refusal prints the server's status and error code, for example
   `503 proposals_unavailable`. Report it; do not retry with a PAT.
 - `issue.run_budget.raise` takes `issue_id`, `window_id`, `new_cap`;
   `issue.run_budget.top_up` takes `issue_id`, `window_id`. Prefer
   `multica issue budget raise|top-up`, which fills these for you.
+
+## Proposing a config change
+
+`multica config propose` writes the action file for a workspace config change:
+it reads the live value, computes `before_sha256` and `after_sha256`, and the
+file goes to `multica decision request --action-file`. It sends nothing.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --dry-run
+multica config propose workspace.settings --set compact_prompt="..." --out ./action.json
+```
+
+- Fields: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`,
+  `workspace.context`, `workflow.steps <workflow-id>`,
+  `workflow.step.instructions <workflow-id> --status-key <key>`,
+  `workspace.settings --set key=value|key:=<json>`.
+- `--dry-run` prints both digests and the action and writes nothing.
+  `--out` is required otherwise.
+- Any other field or settings key is refused as `denylisted` before a read.
+- `workflow.steps` takes the steps array as the workflow GET returns it; the
+  server refuses a differently normalized array (`after_digest_mismatch`).
+
+## Config-change action files
+
+Six action types change workspace or agent configuration. An owner approves
+each with a passkey on a card that shows the diff. Send one as
+`multica decision propose <type> --version 1 --issue <issue> --for <user-id>
+--params-file ./params.json` (the `params` object below), or with
+`multica decision request --issue <issue> --for <user-id> --class <class>
+--ask-file ./ask.json --action-file ./action.json` (the whole file). Each action sends no
+secret, takes no `secret_slots`, and changes nothing until the owner approves.
+
+| Type | Changes | Digest recipe |
+| --- | --- | --- |
+| `workspace.context.set` | workspace context text | sha256 of the raw UTF-8 text |
+| `agent.instructions.set` | one agent's instructions | sha256 of the raw UTF-8 text |
+| `workspace.settings.patch` | allow-listed workspace settings keys | settings digest |
+| `workspace.routing_agent.set` | the routing agent setting | settings digest |
+| `workspace.delegated_writes.set` | the delegated governed writes setting | settings digest |
+| `agent.skills.set` | one agent's skill list | skill-set digest |
+
+`base_sha256` is the digest of the live value you read. `after_sha256` is the
+digest of the value you want. The server recomputes both; a stale base is
+refused as `precondition_drift`, a wrong after digest as
+`after_digest_mismatch`. Both are lowercase hex SHA-256.
+
+- **Text digest.** `printf %s "$(cat ./context.md)"` would strip the final
+  newline, so hash the file itself: `sha256sum ./context.md`. A value that is
+  not set hashes as the empty string.
+- **Settings digest.** sha256 of the compact JSON, keys sorted, of
+  `{"keys": {<key>: <value or null>}, "workspace_id": "<id>"}`. A key that is
+  not set is `null`. For example, with `jq`:
+  `jq -cnS --arg ws "$WS" --argjson v "$VALUE" '{keys:{routing_agent:$v},workspace_id:$ws}' | tr -d '\n' | sha256sum`.
+  The value is the whole stored setting, in the shape shown below (all keys
+  present, lists sorted and without duplicates, agent ids lower case).
+- **Skill-set digest.** Over the agent's assignment: each skill id with its
+  enabled flag, and each skill's bundle hash. Every skill in the after list
+  counts as enabled. Read the live list with `multica agent skills list
+  <agent-id> --output json` and each skill with `multica skill get <id>
+  --with-content --output json` (without `--with-content` the bodies are
+  missing and the script fails), then run the script below with the skills (a JSON array of
+  those `skill get` objects, covering the live and the proposed skills), the
+  live assignment (`{"<skill-id>": <enabled>}`) and the proposed id list. It
+  prints `base_sha256` then `after_sha256`.
+- Prefer `multica config propose` (above) for `workspace.context`,
+  `agent.instructions` and `workspace.settings`: it reads the live value and
+  writes this action file with both digests.
+
+```python
+import hashlib, json, sys
+
+def part(h, s):
+    b = s.encode()
+    h.update(b"%d:" % len(b) + b + b"\n")
+
+def manifest(skill):
+    h = hashlib.sha256()
+    for s in ("v1", "workspace", skill["id"], skill["name"], skill["description"], skill["content"]):
+        part(h, s)
+    for f in sorted(skill.get("files") or [], key=lambda f: f["path"].encode()):
+        part(h, f["path"])
+        part(h, "sha256:" + hashlib.sha256(f["content"].encode()).hexdigest())
+        part(h, f["content"])
+    return "sha256:" + h.hexdigest()
+
+def digest(enabled, skills):
+    h = hashlib.sha256(b"skill-set/v1\n")
+    for sid in sorted(enabled):
+        h.update(f"{sid}:{str(enabled[sid]).lower()}:{manifest(skills[sid])}\n".encode())
+    return h.hexdigest()
+
+skills = {s["id"]: s for s in json.load(open(sys.argv[1]))}
+live, after = json.load(open(sys.argv[2])), json.load(open(sys.argv[3]))
+print(digest(live, skills), digest({i: True for i in after}, skills))
+```
+
+### workspace.context.set
+
+A `governed:human` block in the context may not change.
+
+```json
+{
+  "type": "workspace.context.set",
+  "version": 1,
+  "params": {
+    "workspace_id": "2f4c8a1e-6b3d-4e5f-9a70-1c2d3e4f5a6b",
+    "context": "Be brief. Link every PR.\nRun the full gate before handoff.\n",
+    "base_sha256": "f42e4df49cccd826231e9190f25f6f72ea5e86a7aea950668bd63e03e696742f",
+    "after_sha256": "67f7a8af78c220a03c448dc2fa5f07c37ff1a17dff759515bfbc5cde1ad9314f"
+  }
+}
+```
+
+### agent.instructions.set
+
+```json
+{
+  "type": "agent.instructions.set",
+  "version": 1,
+  "params": {
+    "agent_id": "9d1e7c3a-5b24-4f68-8a0c-3e5f7a9b1d2c",
+    "instructions": "Review PRs.\nSign the verdict with the exact head SHA.\n",
+    "base_sha256": "9cc0cb00eec6ef16a5716369155246ffcfe43668eff4f463eca4fe6e4884f7bd",
+    "after_sha256": "9be91507313a3e1d0a98284b7d4f1a0282956f15e5047a144436699b654c4c8a"
+  }
+}
+```
+
+### workspace.settings.patch
+
+`settings` names the keys to change; a stored key it does not name keeps its
+value. The digest covers the named keys only. A key outside the allow table is
+refused as `denylisted`.
+
+```json
+{
+  "type": "workspace.settings.patch",
+  "version": 1,
+  "params": {
+    "workspace_id": "2f4c8a1e-6b3d-4e5f-9a70-1c2d3e4f5a6b",
+    "settings": {
+      "compact_prompt": "Keep decisions and open questions.",
+      "wakeups_paused": false
+    },
+    "base_sha256": "9932f2bdd26537a00ae58c41be55d8ed6d32aa46f7b1e95c690c83a9022e9ecb",
+    "after_sha256": "5c61f5f6ae0af114947168ce3751df591ba6059e589a12c2184adf63241caa88"
+  }
+}
+```
+
+### workspace.routing_agent.set
+
+Replaces the whole routing agent setting. Every agent id must be a live agent
+of the workspace. You may not newly name yourself. Send `overrides` as `{}`
+when there is none, and list `statuses` in full (the server fills the default
+list when it is empty, so the digest of an empty list would not match).
+
+```json
+{
+  "type": "workspace.routing_agent.set",
+  "version": 1,
+  "params": {
+    "workspace_id": "2f4c8a1e-6b3d-4e5f-9a70-1c2d3e4f5a6b",
+    "routing_agent": {
+      "agent_id": "9d1e7c3a-5b24-4f68-8a0c-3e5f7a9b1d2c",
+      "fallback_agent_id": "c3b8a6d4-1e7f-4a29-b5c0-7d9e1f3a5b8c",
+      "statuses": ["todo", "blocked"],
+      "overrides": {}
+    },
+    "base_sha256": "d79779acfbe20a6c16ba54c37f23d964c7ade0a05aed7c4dc070f51140d2d53a",
+    "after_sha256": "09ef2f63c872212917cd1b7a87e1e322db0497d924b4378f3212015aac3c6b6f"
+  }
+}
+```
+
+### workspace.delegated_writes.set
+
+Replaces the whole delegated governed writes setting. A proposal may not give
+its own proposer write authority it does not already hold, and may not turn
+`requires_human_decision` from true to false. Narrowing and granting another
+agent are allowed.
+
+```json
+{
+  "type": "workspace.delegated_writes.set",
+  "version": 1,
+  "params": {
+    "workspace_id": "2f4c8a1e-6b3d-4e5f-9a70-1c2d3e4f5a6b",
+    "delegated_governed_writes": {
+      "allowed_agents": ["9d1e7c3a-5b24-4f68-8a0c-3e5f7a9b1d2c"],
+      "allowed_fields": ["agent.instructions", "workspace.context"],
+      "requires_human_decision": true
+    },
+    "base_sha256": "4b7867c4982199d304c5973c34bf1f15b71671d93e694e1ef46dbbce6c56af3f",
+    "after_sha256": "042b74af678d40ec7229340f9329062bba054cfaac701232a13226b1b547111b"
+  }
+}
+```
+
+### agent.skills.set
+
+Replaces the agent's whole skill list (at most 50 skills; `[]` removes all).
+Every skill must be in the workspace. An edit to a listed skill or an enabled
+flag change after you propose makes the approval fail with
+`precondition_drift`: read again and propose again. An agent may not add or
+re-enable a skill for itself.
+
+```json
+{
+  "type": "agent.skills.set",
+  "version": 1,
+  "params": {
+    "agent_id": "9d1e7c3a-5b24-4f68-8a0c-3e5f7a9b1d2c",
+    "skill_ids": [
+      "5a6b7c8d-1e2f-4a3b-9c4d-5e6f7a8b9c0d",
+      "7e8f9a0b-2c3d-4e4f-8a5b-6c7d8e9f0a1b"
+    ],
+    "base_sha256": "d6a47789d494253b9e3f96999ba50883304297fde3a3f61c5a473729c48c38a2",
+    "after_sha256": "a7694e72cc6cad647e1742339da5113eae1b8b208132b369b326b287884a9744"
+  }
+}
+```

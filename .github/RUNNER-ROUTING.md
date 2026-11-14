@@ -46,5 +46,5 @@ Rules behind the targets (CHE-2425 routing table):
 | `ci.yml` | `deploy-cd` | `RUNNER_DEPLOY_CD` | `ubuntu-24.04` | cheese-x99 |
 | `main-build.yml` | `daemon-artifact` | `RUNNER_DAEMON_ARTIFACT` | `ubuntu-24.04` | cheese-x99 |
 | `mobile-verify.yml` | `mobile` | `RUNNER_MOBILE_VERIFY` | `ubuntu-24.04` | cheese-x99 |
-| `pr-changelog-check.yml` | `changelog-line` | `RUNNER_PR_CHANGELOG_CHECK` | `ubuntu-24.04` | cheese-x99 |
-| `pr-close-target-check.yml` | `close-target` | `RUNNER_PR_CLOSE_TARGET_CHECK` | `ubuntu-24.04` | cheese-x99 |
+| `pr-guards.yml` | `changelog-line` | `RUNNER_PR_CHANGELOG_CHECK` | `ubuntu-24.04` | cheese-x99 |
+| `pr-guards.yml` | `close-target` | `RUNNER_PR_CLOSE_TARGET_CHECK` | `ubuntu-24.04` | cheese-x99 |

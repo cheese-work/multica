@@ -1,5 +1,6 @@
 "use client";
 
+import { RunBudgetMeter } from "./run-budget-meter";
 import {
   issueBehavesAs,
   issueBehavesAsAny,
@@ -28,6 +29,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleCheck,
+  FileQuestion,
   Milestone,
   MoreHorizontal,
   PanelRight,
@@ -102,7 +104,7 @@ import { AssigneePicker } from "./pickers/assignee-picker";
 import { LabelPicker } from "./pickers/label-picker";
 import { CustomPropertyValueEditor, CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { Switch } from "@multica/ui/components/ui/switch";
-import { IssueActionsDropdown, useIssueActions, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
+import { IssueActionsDropdown, useIssueActions, useArchivedInboxItemId, IssueActionsContextMenu, IssueContextMenuProvider } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { SubIssuesAgentWorkingChip } from "./sub-issues-agent-working-chip";
@@ -111,6 +113,8 @@ import { IssuePropertyPills } from "./issue-property-pills";
 import { LocalDirectoryHint } from "../../projects/components/local-directory-hint";
 import { useNewRunIds } from "./use-run-comment-motion";
 import { AgentRunComment, CommentCard } from "./comment-card";
+import { AttachmentList } from "./attachment-list";
+import { chainedIssueAttachments } from "@multica/core/attachments/revision-diff";
 import { projectCommentThread, type CommentThreadRow } from "./comment-thread-rows";
 import { EMPTY_COMMENT_RUNS, buildCommentRunView, isActiveCommentRun, orderTimelineWithRuns, type CommentRun } from "./comment-runs";
 import { issueTasksOptions } from "@multica/core/issues/queries";
@@ -131,7 +135,6 @@ import { collectThreadParticipants, collectThreadReplies, deriveThreadResolution
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
 import { IssueWakeupHeaderChip } from "./issue-wakeup-header-chip";
 import { useWakeupsFocus } from "./use-wakeups-focus";
-import { IssueInboxRestoreButton } from "./issue-inbox-restore-button";
 import { ExecutionLogSection } from "./execution-log-section";
 import { StatusHistoryButton } from "./status-history-button";
 import { WakeupsSection } from "./wakeups-section";
@@ -190,6 +193,8 @@ import {
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
 import { useIssueReactions } from "../hooks/use-issue-reactions";
 import { useIssueSubscribers } from "../hooks/use-issue-subscribers";
+import { useMarkIssueReadWhileViewing } from "../hooks/use-mark-issue-read-while-viewing";
+import { useMarkIssueInboxReadWhileViewing } from "../hooks/use-mark-issue-inbox-read-while-viewing";
 import { ReactionBar } from "@multica/ui/components/common/reaction-bar";
 import { useLocale, useTimeAgo } from "../../i18n";
 import {
@@ -200,6 +205,7 @@ import {
 } from "../../platform";
 import { cn } from "@multica/ui/lib/utils";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
+import { CollectionPageState } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
 
 import { ProgressRing } from "./progress-ring";
@@ -1224,6 +1230,12 @@ interface IssueDetailProps {
   variant?: "page" | "peek";
   /** Peek only: host controls at the end of the header (open full page, close). */
   trailingActions?: ReactNode;
+  /**
+   * Read the viewer's inbox notifications on this issue while it is on screen
+   * (MUL-8588). The inbox turns this off for the issue it has open: it reads
+   * the notification it selected itself, and keeps one marked unread there.
+   */
+  readsInbox?: boolean;
 }
 
 // Not found
@@ -1271,21 +1283,29 @@ export function IssueNotFound({
           {trailing && <div className="ml-auto flex shrink-0 items-center gap-1">{trailing}</div>}
         </div>
       )}
-      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        {dataError && issueKey && <p className="font-medium">{issueKey}</p>}
-        <p>{t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found))}</p>
-        {onRetry && (
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            {t(($) => $.detail.retry)}
-          </Button>
-        )}
-        {showBackLink && (
-          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-            {t(($) => $.detail.back)}
-          </Button>
-        )}
-      </div>
+      <CollectionPageState
+        icon={FileQuestion}
+        title={t(($) => (dataError ? $.detail.data_error : onRetry ? $.detail.load_failed : $.detail.not_found_title))}
+        description={dataError ? issueKey : onRetry ? undefined : t(($) => $.detail.not_found)}
+        tone={onRetry || dataError ? "destructive" : "muted"}
+        actions={
+          onRetry || showBackLink ? (
+            <>
+              {onRetry && (
+                <Button variant="outline" size="sm" onClick={onRetry}>
+                  {t(($) => $.detail.retry)}
+                </Button>
+              )}
+              {showBackLink && (
+                <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+                  <ChevronLeft aria-hidden="true" />
+                  {t(($) => $.detail.back)}
+                </Button>
+              )}
+            </>
+          ) : undefined
+        }
+      />
     </div>
   );
 }
@@ -1367,7 +1387,7 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, authoritative, leadingAction, variant = "page", trailingActions, readsInbox = true }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
   const { t: tCommon } = useT("common");
@@ -1493,6 +1513,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const consumedHighlightId = useRestoredViewState(issueHighlightMementoKey(id));
   const consumedHighlightRef = useRef(consumedHighlightId);
   consumedHighlightRef.current = consumedHighlightId;
+  // The comment id the list was OPENED at (initialTopMostItemIndex), set once when
+  // the list first renders for this issue. While it matches the landing target,
+  // Virtuoso owns the scroll and the landing effect must not write to it: a
+  // scrollTop write mid-placement makes Virtuoso scroll to NaN, which snaps the
+  // page to the top (CHE-5376).
+  const listOpenedAtRef = useRef<{ listKey: string; commentId: string | null } | null>(null);
   const writeViewState = useViewStateWriter();
   const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const attachScrollContainer = useCallback(
@@ -1635,6 +1661,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { data: issue = null, error: issueError, isLoading: issueLoading, refetch: refetchIssue } = useQuery(
     issueDetailViewOptions(wsId, id, allIssues.find((i) => i.id === id), authoritative),
   );
+  useMarkIssueReadWhileViewing(wsId, issue?.id ?? "");
+  useMarkIssueInboxReadWhileViewing(wsId, issue?.id ?? "", readsInbox);
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     draftKey: `new:${id}`,
@@ -1872,6 +1900,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return map;
   }, [timelineView.threadReplies]);
 
+  // Thread root of a deep-link target. A run that left no comment is addressed
+  // by its task id and sits in a slot inside the thread it answers, so it
+  // unfolds and scrolls with that thread exactly like a reply does.
+  const highlightRootId = useMemo(() => {
+    if (!highlightCommentId) return undefined;
+    const replyRoot = replyToRoot.get(highlightCommentId);
+    if (replyRoot) return replyRoot;
+    for (const [rootId, runs] of commentRuns) {
+      if (runs.some((run) => run.task.id === highlightCommentId)) return rootId;
+    }
+    return undefined;
+  }, [highlightCommentId, replyToRoot, commentRuns]);
+
   // The root whose thread contains the current deep-link/highlight request,
   // derived purely from `highlightCommentId` + `replyToRoot` — NOT from
   // `highlightedId` (only set once the target DOM node is actually found,
@@ -1883,8 +1924,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const targetRootId = useMemo(() => {
     if (!highlightCommentId) return null;
     if (timelineView.threadReplies.has(highlightCommentId)) return highlightCommentId;
-    return replyToRoot.get(highlightCommentId) ?? null;
-  }, [highlightCommentId, replyToRoot, timelineView.threadReplies]);
+    return highlightRootId ?? null;
+  }, [highlightCommentId, highlightRootId, timelineView.threadReplies]);
 
   // Readiness predicate handed to `useInPageFind` below (01-DESIGN "no query
   // effect or MutationObserver callback can walk pre-reveal DOM"). Declared
@@ -2035,6 +2076,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return ids;
   }, [draftsByKey, id, timelineView.threadReplies]);
 
+  // CHE-5437: what may pin a thread open against an explicit manual Collapse.
+  // Reply TEXT does not: it lives in the draft store, so the composer restores
+  // it on expand. An upload in flight or an inline edit does: both are
+  // component-local and would be lost on unmount.
+  const rootIdsPinnedByLocalWork = useMemo(() => {
+    const ids = new Set<string>();
+    const uploading = (key: string) => !!draftsByKey[key]?.attachments.some((u) => u.status === "uploading");
+    const editing = (key: string) => uploading(key) || (draftsByKey[key]?.content.trim().length ?? 0) > 0;
+    for (const [rootId, replies] of timelineView.threadReplies) {
+      if (uploading(`reply:${id}:${rootId}`) || editing(`edit:${id}:${rootId}`)
+        || replies.some((reply) => editing(`edit:${id}:${reply.id}`))) ids.add(rootId);
+    }
+    return ids;
+  }, [draftsByKey, id, timelineView.threadReplies]);
+
   // Root ids with an active (queued/running) run that has no published reply
   // yet, anchored to the root itself or to one of the root's replies. Split
   // out from `forceThreadOpen` below so it can also feed the latch effect
@@ -2107,6 +2163,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       const ids = new Set<string>();
       for (const node of [active, selAnchor]) {
         const element = node instanceof Element ? node : node?.parentElement;
+        // CHE-5437: pressing Collapse focuses that button inside the thread.
+        // Its own focus is not an interaction to protect from hiding.
+        if (element?.closest("[data-thread-toggle]")) continue;
         const rootId = element?.closest<HTMLElement>("[data-thread-root]")?.dataset.threadRoot;
         if (rootId) ids.add(rootId);
       }
@@ -2148,18 +2207,36 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // (`targetRootId`, latch its length-expanded choice). "Find open / close"
   // is the one reason here that does NOT latch — row 58 is explicit that
   // find writes no fold preference.
+  // CHE-5437: roots the user collapsed by pressing the button. A press outranks
+  // the soft pins (target, highlight, focus/selection); find, an active run and
+  // unsaved local work still hold the thread open.
+  const [manualCollapsedRoots, setManualCollapsedRoots] = useState<ReadonlySet<string>>(EMPTY_ID_SET);
+  const handleManualCollapseChange = useCallback((rootId: string, collapsed: boolean) => {
+    setManualCollapsedRoots((prev) => {
+      if (prev.has(rootId) === collapsed) return prev;
+      const next = new Set(prev);
+      if (collapsed) next.add(rootId); else next.delete(rootId);
+      return next;
+    });
+  }, []);
+  // A new deep-link request re-targets a thread: the earlier press no longer applies.
+  useEffect(() => {
+    setManualCollapsedRoots(EMPTY_ID_SET);
+  }, [highlightCommentId, highlightRequestToken]);
+
   const forceThreadOpen = useCallback((rootId: string): boolean => {
     if (findRootId === rootId) return true;
-    if (targetRootId === rootId) return true;
-    if (rootIdsWithActiveReplyDraft.has(rootId)) return true;
+    if (rootIdsPinnedByLocalWork.has(rootId)) return true;
     if (rootIdsWithActiveRun.has(rootId)) return true;
+    if (manualCollapsedRoots.has(rootId)) return false;
+    if (targetRootId === rootId) return true;
     if (rootIdsWithActiveFocusOrSelection.has(rootId)) return true;
     const threadRepliesForRoot = timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES;
     if (highlightedId && (highlightedId === rootId || threadRepliesForRoot.some((r) => r.id === highlightedId))) {
       return true;
     }
     return false;
-  }, [findRootId, targetRootId, rootIdsWithActiveReplyDraft, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, timelineView.threadReplies, highlightedId]);
+  }, [findRootId, targetRootId, rootIdsPinnedByLocalWork, rootIdsWithActiveRun, rootIdsWithActiveFocusOrSelection, manualCollapsedRoots, timelineView.threadReplies, highlightedId]);
 
   // CHE-554: same reasons as `forceThreadOpen` above, MINUS a bare
   // focus/selection-only pin. `forceThreadOpen` correctly forces `open` (the
@@ -2331,15 +2408,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }, [timelineView.groups]);
 
   // Deep-link target index in the flat items array. For root comments this is
-  // a direct findIndex hit; for reply ids we look up the enclosing root.
+  // a direct findIndex hit; for replies and threaded runs we look up the
+  // enclosing root.
   const targetIdx = useMemo(() => {
     if (!highlightCommentId) return -1;
     const rootId = replyToRoot.get(highlightCommentId) ?? highlightCommentId;
     const landingId = commentLandingTarget(highlightCommentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES);
     const direct = items.findIndex((it) => it.id === landingId);
     if (direct >= 0) return direct;
-    return items.findIndex((it) => it.id === rootId);
-  }, [items, highlightCommentId, replyToRoot, timelineView.threadReplies]);
+    if (!highlightRootId) return -1;
+    return items.findIndex((it) => it.id === highlightRootId);
+  }, [items, highlightCommentId, highlightRootId, replyToRoot, timelineView.threadReplies]);
 
   // One entry per comment thread (folded resolved bars included), activity
   // groups skipped. Derived from the same flat `items` array Virtuoso renders
@@ -2948,9 +3027,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Deep-link landing. Semantically equivalent to navigating to
   // `#comment-${id}`: find the element with that id, scrollIntoView it.
-  // For a reply inside a folded resolved thread, the reply is not in items
-  // (only the resolved-bar root is). Auto-expand the thread first; the
-  // effect re-runs once items re-flatten.
+  // For a reply or threaded run inside a folded resolved thread, the target
+  // is not in items (only the resolved-bar root is). Auto-expand the thread
+  // first; the effect re-runs once items re-flatten.
   //
   // `scrollContainerEl` is in deps because the component early-returns a
   // loading skeleton while the issue query is pending. The scroll-container
@@ -2964,6 +3043,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (lastHighlightRequestTokenRef.current !== highlightRequestToken) {
       lastHighlightRequestTokenRef.current = highlightRequestToken;
       didHighlightRef.current = null;
+      // A replay asks a mounted, measured list to scroll: the page drives it.
+      listOpenedAtRef.current = { listKey: `${wsId}:${id}`, commentId: null };
     }
     if (didHighlightRef.current === highlightCommentId) return;
     // The deep link already landed before this mount (memento entry — a tab
@@ -2979,7 +3060,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     const mementoConsumed = consumedHighlightRef.current === highlightCommentId;
     if (mementoConsumed) didHighlightRef.current = highlightCommentId;
 
-    const rootId = replyToRoot.get(highlightCommentId);
+    const rootId = highlightRootId;
     if (rootId && rootId !== highlightCommentId) {
       // Root resolved → the whole thread is a folded bar.
       const rootItem = items[targetIdx];
@@ -3019,7 +3100,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     // committed. A resolved-thread expand just requested above hasn't
     // committed by definition, so this also naturally waits out that case
     // without a separate branch.
-    if (!isDisclosureRevealCommitted(id, revealKey)) return;
+    // A standalone run has no thread to open: nothing is pinned, so there is
+    // no reveal generation to wait for.
+    if (targetRootId && !isDisclosureRevealCommitted(id, revealKey)) return;
 
     // A deleted reply renders nothing, so the id a notification or share link
     // carries has no anchor to scroll to and no row to flash. Land on the
@@ -3033,7 +3116,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
     const container = scrollContainerEl;
     if (!container || targetIdx < 0) return;
-    if (!document.getElementById(`comment-${landingId}`)) {
+    const listOwnsScroll = listOpenedAtRef.current?.commentId === highlightCommentId;
+    if (!listOwnsScroll && !document.getElementById(`comment-${landingId}`)) {
       virtuosoRef.current?.scrollToIndex({ index: targetIdx, align: "start", offset: -16 });
     }
 
@@ -3066,6 +3150,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
       }
+      if (listOwnsScroll) return;
       const c = container.getBoundingClientRect();
       const e = el.getBoundingClientRect();
       const target = Math.max(
@@ -3085,7 +3170,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     return () => {
       cancelAnimationFrame(rafId);
     };
-  }, [highlightCommentId, highlightRequestToken, id, writeViewState, items, targetIdx, scrollContainerEl, replyToRoot, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightRequestToken, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -3182,6 +3267,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         : issueAttachments,
     [issueAttachments, descPendingAttachments],
   );
+
+  const chainedAttachments = useMemo(() => chainedIssueAttachments(issueAttachments), [issueAttachments]);
 
   // Every previewable file in this issue, in the order the page renders them:
   // the description first, then each timeline comment with its thread replies
@@ -3323,6 +3410,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Called before the `if (!issue)` early return so hook order stays stable.
   const actions = useIssueActions(issue);
   const handleUpdateField = actions.updateField;
+  // The inbox passes `onDone` and owns archive and restore there.
+  const archivedInboxItemId = useArchivedInboxItemId(id, !onDone);
 
   // Labels live in their own query (not on the issue body) — fetch the count
   // here so seeding can decide whether the "Labels" optional row should be
@@ -3472,6 +3561,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     keyAt: (index) => (items[index] ? timelineItemKey(items[index]) : undefined),
   });
   const scrollAnchorIndex = scrollAnchor ? items.findIndex((item) => timelineItemKey(item) === scrollAnchor.key) : -1;
+  // A deep link not yet landed opens the list AT its comment. Asking a mounted
+  // list to scroll there instead lands it on a guess and then on NaN, which
+  // snaps the page to the top (CHE-5376).
+  const openAtLandingIndex = highlightCommentId && consumedHighlightId !== highlightCommentId ? targetIdx : -1;
+  const listKey = `${wsId}:${id}`;
+  if (!loading && !!scrollContainerEl && !(timelineLoading && timelineView.groups.length === 0) && listOpenedAtRef.current?.listKey !== listKey) {
+    listOpenedAtRef.current = { listKey, commentId: openAtLandingIndex >= 0 ? highlightCommentId ?? null : null };
+  }
 
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
@@ -3586,6 +3683,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
           the Parent issue section and the Relations graph button. */}
       <IssueHierarchy key={issue.id} issue={issue} />
+
+      <RunBudgetMeter key={issue.id} issueId={issue.id} />
 
       {/* Properties */}
       <div>
@@ -3834,7 +3933,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           Hides itself when there are no runs to show. */}
       <ExecutionLogSection issueId={id} identifier={issue.identifier} issueTitle={issue.title} />
 
-      <StatusHistoryButton issueId={id} wsId={wsId} />
+      <StatusHistoryButton issueId={id} wsId={wsId} projectId={issue.project_id} workflowId={issue.workflow_id} />
 
       {/* Details — creator and timestamps. Sits below the execution log
           because it is the least-read block in the sidebar: the values
@@ -3916,11 +4015,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Shared row renderer for both timeline render modes (flat / virtualized).
   // The wrapper `id="comment-..."` is the deep-link target — equivalent to
-  // a native `<a href="#comment-...">` anchor.
+  // a native `<a href="#comment-...">` anchor. A run that left no comment is
+  // addressed by its task id, which the sidebar's unread link lands on.
   const renderItem = (_i: number, item: TimelineItem): React.ReactElement => {
     if (item.kind === "run") {
       const reply = item.entry;
-      return <div className={!item.row || item.row.last ? "pb-3" : undefined} id={reply ? `comment-${reply.id}` : undefined}>
+      return <div className={!item.row || item.row.last ? "pb-3" : undefined} id={`comment-${item.id}`}>
         {reply?.resolved_at && !effectiveExpandedResolved.has(reply.id) ? <ResolvedThreadBar
           entry={reply} replies={timelineView.threadReplies.get(reply.id) ?? EMPTY_REPLIES}
           onExpand={() => toggleResolvedExpand(reply.id, true)} /> : <AgentRunComment run={item.run} entering={enteringRunIds.has(item.run.task.id)} standalone
@@ -3945,6 +4045,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange: toggleThreadLengthExpand,
             forceThreadExpanded: forceThreadOpen(reply.id),
             forceThreadLengthExpanded: forceThreadLengthExpand(reply.id),
+            onManualCollapseChange: handleManualCollapseChange,
             findManualCollapseDisabled: findRootId === reply?.id,
             findManualCollapseDisabledReason: findCollapseDisabledReason,
           } : undefined} />}
@@ -3996,6 +4097,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             onThreadLengthExpandChange={toggleThreadLengthExpand}
             forceThreadExpanded={forceThreadOpen(rootId)}
             forceThreadLengthExpanded={forceThreadLengthExpand(rootId)}
+            onManualCollapseChange={handleManualCollapseChange}
             findManualCollapseDisabled={findRootId === rootId}
             findManualCollapseDisabledReason={findCollapseDisabledReason}
           />
@@ -4094,8 +4196,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 It self-hides when no agent is active. */}
             <IssueAgentHeaderChip issueId={id} onJumpToRun={jumpToRun} />
             <IssueWakeupHeaderChip issueId={id} onOpen={openWakeups} />
-            {/* The inbox passes `onDone` and owns archive and restore there. */}
-            {!onDone && <IssueInboxRestoreButton issueId={id} />}
             {onDone && !issueBehavesAsAny(issue, ["done", "closed"]) && (
               <Tooltip>
                 <TooltipTrigger
@@ -4152,6 +4252,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               // above and skip navigation. Otherwise the modal takes us back
               // to the list we came from, falling back to all issues.
               onDeletedFallbackPath={onDelete ? undefined : paths.issues()}
+              archivedInboxItemId={archivedInboxItemId}
               trigger={
                 <IconButton
                   label={tCommon(($) => $.more_actions)}
@@ -4504,6 +4605,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </DescriptionDisclosure>
 
+            <AttachmentList
+              attachments={chainedAttachments}
+              content={issue?.description ?? ""}
+              className="mt-3"
+            />
+
             <div className="flex items-center gap-1 mt-3">
               <ReactionBar
                 reactions={issueReactions}
@@ -4810,8 +4917,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       data={items}
                       {...(scrollAnchor && scrollAnchorIndex >= 0
                         ? { initialTopMostItemIndex: { index: scrollAnchorIndex, align: "start" as const, offset: scrollAnchor.offset } }
-                        : {})}
-                      initialScrollTop={scrollAnchorIndex >= 0 ? undefined : restoredScrollTop}
+                        : openAtLandingIndex >= 0
+                          ? { initialTopMostItemIndex: { index: openAtLandingIndex, align: "start" as const, offset: -16 } }
+                          : {})}
+                      initialScrollTop={scrollAnchorIndex >= 0 || openAtLandingIndex >= 0 ? undefined : restoredScrollTop}
                       increaseViewportBy={{ top: 800, bottom: 800 }}
                       computeItemKey={(_i, item) => timelineItemKey(item)}
                       skipAnimationFrameInResizeObserver

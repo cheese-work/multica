@@ -51,8 +51,10 @@ import {
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
+import { deriveChatTitle } from "@multica/core/chat/title";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { api } from "@/data/api";
+import { sendWithPendingId } from "@/data/stores/pending-send-store";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { agentListOptions } from "@/data/queries/agents";
@@ -399,7 +401,7 @@ export default function ChatTab() {
         try {
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
-            title: titleSeed.slice(0, 50),
+            title: deriveChatTitle(titleSeed),
           });
           return session.id;
         } finally {
@@ -482,7 +484,9 @@ export default function ChatTab() {
       }
 
       try {
-        const result = await api.sendChatMessage(sessionId, content, {
+        // A retry of the same text reuses its client_message_id (A22), so a
+        // timeout that hid a delivered send cannot store a second message.
+        const result = await sendWithPendingId(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>

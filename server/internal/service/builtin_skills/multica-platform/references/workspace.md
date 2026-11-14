@@ -42,6 +42,40 @@ multica workspace member invite <email> [workspace] [--role member|admin]
 Workspace context is standing instruction text for every agent. Do not change it
 without the approval the workspace requires.
 
+## Background-agent chains
+
+```bash
+multica workspace background-agents list [--output json]
+multica workspace background-agents set <job> [--agent <id|name|none>] [--fallback <id|name|none>]
+multica me background-agents list [--output json]
+multica me background-agents set <job> [--agent <id|name|none>] [--fallback <id|name|none>]
+```
+
+- Jobs: `dm_title`, `quick_actions`, `compact`, `routing`. `routing` is
+  workspace-only; `me` covers the other three.
+- An agent is an id or a name in the target workspace. An ambiguous name is
+  refused before any write. `none` clears the field.
+- Chain order: your own chain wins when it names a primary agent, else the
+  workspace chain, else no agent. `list --output json` shows each job's chain
+  and its `source` (`user`, `workspace` or `off`).
+- Workspace writes need owner or admin and replace the whole value (the command
+  reads, edits one job and writes back). Writes are human-only: a task token gets
+  403 `background_agents_human_only`, printed with exit code 3.
+
+## Audit trail
+
+```bash
+multica audit list [--kind agent.] [--target <agent name or id>] [--actor <id>] [--since 2h|1d] [--until <time>] [--limit N] [--all] --output json|table
+```
+
+- Owner or admin only; a task token is refused (403). Newest first.
+- `--kind` is a prefix (`agent.` matches `agent.update`). `--since` and `--until`
+  take a duration (`2h`, `1d`) or an RFC 3339 time. `--target` resolves an agent
+  name; an ambiguous name errors with the candidates and sends nothing.
+- One page by default; the table prints a stderr hint when more rows exist and
+  `--output json` carries `next_cursor`. `--all` follows the cursor to the end.
+- Redacted fields show the stored `"changed"` marker, never the value.
+
 ## Workspace MCP servers
 
 ```bash

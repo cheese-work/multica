@@ -243,3 +243,22 @@ func TestProjectionUnclassifiedTurns(t *testing.T) {
 		t.Fatalf("unclassified = %v, want the new turn t2", got.Unclassified)
 	}
 }
+
+// CHE-4153 (L9): AskKeys lists the displayed asks that still need a reply, so the web
+// reply-to-ask control can send `ask_ids`. Waiting, later and unseen items are not targets.
+func TestProjectionAskKeys(t *testing.T) {
+	w := attnAsk("w", attnT0)
+	w.Waiting = true
+	later := AttentionSubject{Key: ItemKey("l"), Kind: AttentionKindLater, Start: attnT0}
+	unseen := AttentionSubject{Key: ItemKey("u"), Kind: AttentionKindUnseen, Start: attnT0}
+	c := attnChain(attnAsk("a2", attnT0), attnAsk("a1", attnT0), w, later, unseen)
+	got := ProjectChatAttention(c, attnT0.Add(time.Hour))
+	if want := []string{ItemKey("a1"), ItemKey("a2")}; !slices.Equal(got.AskKeys, want) {
+		t.Fatalf("AskKeys = %v, want %v", got.AskKeys, want)
+	}
+	c.Marks[ItemKey("a1")] = AttentionMark{Acked: true}
+	got = ProjectChatAttention(c, attnT0.Add(time.Hour))
+	if want := []string{ItemKey("a2")}; !slices.Equal(got.AskKeys, want) {
+		t.Fatalf("after ack AskKeys = %v, want %v", got.AskKeys, want)
+	}
+}

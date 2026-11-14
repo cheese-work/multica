@@ -104,6 +104,19 @@ describe("issueViewFilterCount", () => {
   });
 });
 
+describe("baselineFromQuery agent running", () => {
+  it("fixes the filter only when the view saved it as true", () => {
+    expect(baselineFromQuery({ agentRunningFilter: true }).agentRunning).toBe(true);
+    expect(baselineFromQuery({ agentRunningFilter: true }).raw.agentRunningFilter).toBe(true);
+    expect(baselineFromQuery({ agentRunningFilter: "yes" }).agentRunning).toBe(false);
+    expect(baselineFromQuery({}).raw.agentRunningFilter).toBe(false);
+  });
+
+  it("counts as one condition in the view summary", () => {
+    expect(issueViewFilterCount({ agentRunningFilter: true, statusFilters: ["todo"] })).toBe(2);
+  });
+});
+
 // A shared view's query is attacker-controlled JSON. An actor whose `type` is
 // not one of the known strings must be dropped, never reach actorFilterKey
 // (a non-string `type` throws in the template literal and breaks the directory
@@ -139,5 +152,18 @@ describe("baselineFromQuery actor filters", () => {
     expect(
       issueViewFilterCount({ assigneeFilters: [{ id, type: { toString: null } }] }),
     ).toBe(0);
+  });
+});
+
+describe("baselineFromQuery unread", () => {
+  it("fixes the filter only when the view saved it as true", () => {
+    expect(baselineFromQuery({ unreadFilter: true }).unread).toBe(true);
+    expect(baselineFromQuery({ unreadFilter: true }).raw.unreadFilter).toBe(true);
+    expect(baselineFromQuery({ unreadFilter: "yes" }).unread).toBe(false);
+    expect(baselineFromQuery({}).raw.unreadFilter).toBe(false);
+  });
+
+  it("counts as one condition in the view summary", () => {
+    expect(issueViewFilterCount({ unreadFilter: true, statusFilters: ["todo"] })).toBe(2);
   });
 });

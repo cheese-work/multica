@@ -78,7 +78,7 @@ If the local session no longer exists, the context can't be continued, or the pr
 
 ## Watch and stop a run
 
-While the agent runs, the UI shows the current phase and tool activity. Expand **View details** to inspect the run in full.
+While the agent runs, the UI shows the current phase and tool activity. Expand **View details** to inspect the run in full. Messages the agent writes between tool calls appear in the conversation as they are written, so you don't need to expand the details to read them.
 
 To interrupt, click the stop button next to the input (shown while the input is empty). Content already returned to the conversation is kept.
 
@@ -112,6 +112,10 @@ Conversations can be renamed, pinned, archived, and deleted:
 - **Unarchive** lets you send messages again;
 - **Delete** permanently removes the conversation and its messages.
 
+Open these from the **⋯** on a row (it shows when you hover the row or tab to it) or by right-clicking the row. With a row focused, press `U` to mark it unseen, `P` to pin, `E` to archive, and `R` to rename; the keys do nothing while you type in a field or hold `⌘`, `Ctrl`, or `Alt`.
+
+To act on several conversations at once, press `X` on a focused row, choose **Select multiple**, or long-press a row on a phone. Tick rows, or tick a day header to select its whole group, then use the bar at the bottom: **Mark seen**, **Pin** and **Archive**. Each button follows your selection (for example **Unpin** when most selected rows are pinned), and its **▾** offers the opposite action with the number of conversations it applies to. Bulk delete does not exist.
+
 If a conversation is bound to an external channel (such as Slack), archiving breaks the binding; unarchiving does not restore it — bind again.
 
 <Callout type="warning">
@@ -132,8 +136,26 @@ Type `/` at the start of the chat composer to run built-in Multica commands alon
 | `/compact [focus]` | Active DM | Summarize the current DM and continue in a new one (runs the agent). |
 | `/rename <title>` | Active DM | Rename the current DM without starting an agent turn. |
 | `/fork [message]` | Active DM | Copy the current DM into a new one and optionally send a message there. |
+| `/later [duration]` | Active DM | Snooze everything the current DM shows in "Needs you" (also matches `snooze`). The duration is a number plus `s`, `m`, `h` or `d`, from 1 second to 7 days; the default is 2 hours. Nothing is sent to the agent. |
 
-Client commands (`/statistic`, `/archive`, `/pin`, `/unseen`, `/unarchive`, and `/rename`) take effect immediately without starting an agent turn and cannot be sent with attachments; `/statistic`, `/archive`, `/pin`, `/unseen`, and `/unarchive` take no arguments.
+Client commands (`/statistic`, `/archive`, `/pin`, `/unseen`, `/unarchive`, `/rename`, and `/later`) take effect immediately without starting an agent turn and cannot be sent with attachments; `/statistic`, `/archive`, `/pin`, `/unseen`, and `/unarchive` take no arguments.
+
+## Open decisions
+
+While an agent waits for your decision, a chip on every page reads "N decisions need you". On the chat page the same count sits in the chat header as a button: click it to list every open decision and open one without moving the message list. Elsewhere, click the chip to open the oldest one: the issue at the decision card, or the issue when the card has no comment. The same decision also shows in your Inbox and in the "Needs you" list. An answer with free text and no option still closes the card, and the agent reads your words.
+
+A decision that asks you to approve a change shows the plain-language ask first. The raw change sits behind **Details**. Choose **Approve** or **Reject**, add an optional note, and press the one button below. Its label names what the send key does: **Discuss more**, **Approve with passkey** or **Confirm Reject**. Plain Enter only adds a new line. Once decided, the card collapses to a row with the state (Approved, Rejected), what happened (applied, not applied, nothing ran) and when it was asked. Click the row to open the full card.
+
+### Clear your "Needs you" list
+
+Each row in the "Needs you" list has two actions:
+
+- **Done** marks the row handled. A decision card cannot be marked done; answer it instead.
+- **Later** hides the row until a time you choose (default 2 hours, shown in ICT). A decision stays open; only its place in the list is snoozed.
+
+**Done all** marks every row done in one step, except decisions. A message at the bottom of the screen offers **Undo** for 10 seconds.
+
+A message you send in a DM with open questions counts as your reply to them. The agent closes each question, or it returns to you with its original age.
 
 ## Next steps
 

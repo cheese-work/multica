@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import importlib.util
 import io
 import subprocess
@@ -92,6 +93,30 @@ class CachePolicyTests(unittest.TestCase):
     def test_unmanaged_archive_versions_remain_independent(self):
         caches = [dict(cache(1, 'modules'), version='one'), dict(cache(2, 'modules'), version='two')]
         self.assertEqual(policy.plan_deletions(caches), [])
+
+
+class MergeQueueRefTests(unittest.TestCase):
+    QUEUE = 'refs/heads/gh-readonly-queue/main/pr-1-' + 'a' * 40
+
+    def test_idle_merge_queue_ref_caches_are_deleted(self):
+        entry = cache(5, 'turbo-build-Linux-X64-v22-refs/heads/gh-readonly-queue/main/pr-1-x-1', ref=self.QUEUE)
+        now = datetime.datetime(2026, 10, 5, 2, tzinfo=datetime.timezone.utc)
+        self.assertEqual(policy.plan_deletions([entry], now=now), [5])
+
+    def test_recent_merge_queue_ref_caches_are_kept(self):
+        entry = cache(5, 'turbo-build-Linux-X64-v22-refs/heads/gh-readonly-queue/main/pr-1-x-1', ref=self.QUEUE)
+        now = datetime.datetime(2026, 10, 5, 0, 30, tzinfo=datetime.timezone.utc)
+        self.assertEqual(policy.plan_deletions([entry], now=now), [])
+
+
+class PullRequestOnlySetupGoTests(unittest.TestCase):
+    def test_go_lint_does_not_save_a_setup_go_cache_per_pull_request(self):
+        # CHE-5128: go-lint runs on pull requests only, so main never holds the
+        # 1.26.x setup-go entry and every PR ref saved its own ~397 MB copy.
+        ci = Path(__file__).parents[1].joinpath('workflows', 'ci.yml').read_text()
+        job = ci.split('\n  go-lint:\n', 1)[1].split('\n  # ', 1)[0]
+        step = job.split('uses: actions/setup-go@v7', 1)[1].split('- name:', 1)[0]
+        self.assertRegex(step, r'(?m)^\s+cache: false\s*$')
 
 
 if __name__ == '__main__':

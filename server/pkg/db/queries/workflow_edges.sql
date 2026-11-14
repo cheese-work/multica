@@ -20,6 +20,8 @@ DELETE FROM issue_wakeup WHERE id = sqlc.arg('id')::uuid AND system_rule = 'work
 -- per-check rows exist yet); 'unknown' when a failing check has no cause; then
 -- 'infra' or 'optional'. 'flaky' when nothing fails now but a check was marked
 -- flaky on this head: red earlier, green on a rerun of the same head.
+-- The last six columns identify the PR for the PR merge rule's activity entry
+-- and its refs (CHE-5242); the edge guards ignore them.
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
@@ -33,7 +35,13 @@ SELECT pr.state::text AS state,
           WHEN f.unknown > 0 THEN 'unknown'
           WHEN f.infra > 0 THEN 'infra'
           ELSE 'optional'
-        END)::text AS red_cause
+        END)::text AS red_cause,
+       pr.id AS pr_id,
+       'github'::text AS provider,
+       pr.pr_number AS pr_number,
+       pr.repo_owner::text AS repo_owner,
+       pr.repo_name::text AS repo_name,
+       pr.merge_commit_sha::text AS merge_commit_sha
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 CROSS JOIN LATERAL (
@@ -51,7 +59,8 @@ CROSS JOIN LATERAL (
 ) f
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text,
+       pr.id, pr.provider::text, pr.pr_number, pr.repo_owner::text, pr.repo_name::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);
@@ -74,8 +83,25 @@ SELECT COALESCE(pg_xact_status(sqlc.arg('xid')::bigint::text::xid8), 'unknown'):
 -- name: LatestMemberStatusChange :one
 -- When a person last changed the issue's status or topped up its run budget: a
 -- person who moves a blocked issue on, or tops it up, starts its run budget over.
+-- After the S1d cutover only an interactive session's ui_or_api move opens a
+-- window; a PAT, cli_jwt, a row with no trigger and a remap never do.
 SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
+  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+  AND (
+    action = 'run_budget_top_up'
+    OR created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+    OR (details->'trigger'->>'auth_source' = 'interactive_jwt' AND details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+  )
+ORDER BY created_at DESC LIMIT 1;
+
+-- name: LatestMemberStatusMove :one
+-- When a person last moved the issue's status or topped up its run budget,
+-- whatever session made the move. A refused dispatch resumes on any such move
+-- (decision_wait.sql selects on the same rows); only the run-budget window is
+-- limited to interactive sessions (LatestMemberStatusChange).
+SELECT created_at FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND (actor_type = 'member' OR (action = 'run_budget_top_up' AND actor_type = 'system'))
   AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
 ORDER BY created_at DESC LIMIT 1;
 
@@ -95,11 +121,3 @@ WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uui
   AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
 RETURNING max_runs_override;
 
--- name: ListMemberStatusChangesAfter :many
--- Every time a person moved the issue's status or topped up its run budget after
--- a point: each one opened a run-budget window, whether or not anything was admitted in it.
-SELECT created_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id')::uuid AND action IN ('status_changed', 'run_budget_top_up') AND actor_type = 'member'
-  AND details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
-  AND created_at > sqlc.arg('after')::timestamptz
-ORDER BY created_at;

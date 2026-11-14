@@ -365,3 +365,101 @@ func TestIssueWakeupInstructionAPI(t *testing.T) {
 		testutil.Call(t, testHandler.EditIssueWakeupInstruction, req).Want(tc.want)
 	}
 }
+
+// linkTimerGuardPR links a PR in the given state and checks rollup to the issue.
+func linkTimerGuardPR(t *testing.T, issueID, state, rollup string, number int) {
+	t.Helper()
+	prID := dbfx.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "installation_id": 1, "repo_owner": "multica-ai", "repo_name": "multica",
+		"pr_number": number, "title": "timer guard", "state": state, "html_url": "https://example.test/pr",
+		"pr_created_at": "now()", "pr_updated_at": "now()", "head_sha": "abc", "checks_rollup_state": rollup,
+	})
+	dbfx.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", prID)
+	dbfx.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", prID)
+	dbfx.Exec(t, "INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2)", issueID, prID)
+}
+
+func timerBodies() map[string]map[string]any {
+	return map[string]map[string]any{
+		"at":    {"kind": "at", "after_seconds": 600},
+		"every": {"kind": "every", "interval_seconds": 3600},
+		"cron":  {"kind": "cron", "cron_expression": "0 * * * *", "timezone": "UTC"},
+	}
+}
+
+func TestAgentTimeWakeupRefusedWithOpenPR(t *testing.T) {
+	for _, rollup := range []string{"PENDING", "SUCCESS"} {
+		for kind, base := range timerBodies() {
+			for lang, text := range askGuardWakeupTexts {
+				t.Run(rollup+"/"+kind+"/"+lang, func(t *testing.T) {
+					f := newAskGuardWakeupFixture(t)
+					testHandler.TaskService.PRSnapshotsEnabled = true
+					t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+					linkTimerGuardPR(t, f.issueID, "open", rollup, 990000+len(rollup)*10+len(kind)+len(lang))
+					body := map[string]any{"instruction": text}
+					for k, v := range base {
+						body[k] = v
+					}
+					res := f.create(t, body)
+					res.Want(http.StatusUnprocessableEntity)
+					for _, fix := range []string{"--until-pr checks", "--until-pr conflicts", "--until-gh-run"} {
+						if !strings.Contains(res.Text(), fix) {
+							t.Errorf("422 body lacks %q: %s", fix, res.Text())
+						}
+					}
+					if n := f.wakeups(t); n != 0 {
+						t.Fatalf("refused wakeup was saved: %d", n)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestAgentTimeWakeupAllowedWhenConditionCannotCover(t *testing.T) {
+	cases := map[string]struct {
+		state     string
+		snapshots bool
+		agent     bool
+	}{
+		"no linked PR":       {state: "", snapshots: true, agent: true},
+		"draft only":         {state: "draft", snapshots: true, agent: true},
+		"merged only":        {state: "merged", snapshots: true, agent: true},
+		"no snapshot client": {state: "open", snapshots: false, agent: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newAskGuardWakeupFixture(t)
+			testHandler.TaskService.PRSnapshotsEnabled = tc.snapshots
+			t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+			if tc.state != "" {
+				linkTimerGuardPR(t, f.issueID, tc.state, "PENDING", 991000+len(name))
+			}
+			f.create(t, map[string]any{"kind": "at", "after_seconds": 600, "instruction": "check"}).Want(http.StatusCreated)
+		})
+	}
+}
+
+func TestPersonTimeWakeupAllowedWithOpenPR(t *testing.T) {
+	issue := dbfx.Issue(t, "wake person timer")
+	agent := dbfx.Agent(t, "wake person timer", testRuntimeID)
+	dbfx.Cleanup(t, "DELETE FROM issue_wakeup WHERE issue_id=$1", issue)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	linkTimerGuardPR(t, issue, "open", "PENDING", 992000)
+	req := withURLParam(newRequest("POST", "/", map[string]any{"agent_id": agent, "kind": "at", "after_seconds": 600, "instruction": "check"}), "id", issue)
+	rec := httptest.NewRecorder()
+	testHandler.CreateIssueWakeup(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("person timer %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAgentConditionWakeupUnaffectedByTimerGuard(t *testing.T) {
+	f := newAskGuardWakeupFixture(t)
+	testHandler.TaskService.PRSnapshotsEnabled = true
+	t.Cleanup(func() { testHandler.TaskService.PRSnapshotsEnabled = false })
+	linkTimerGuardPR(t, f.issueID, "open", "PENDING", 993000)
+	f.create(t, map[string]any{"kind": "event", "instruction": "x",
+		"condition": map[string]any{"type": "pull_request", "event": "conflicts"}}).Want(http.StatusCreated)
+}

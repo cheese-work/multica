@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,7 +56,7 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	actionType, known := runBudgetActionTypes[req.Kind]
+	_, known := runBudgetActionTypes[req.Kind]
 	if !known {
 		writeError(w, http.StatusBadRequest, "kind must be raise or top_up")
 		return
@@ -66,7 +67,6 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 	}
 	var results []decisionRequestResult
 	var links []RunBudgetActionLink
-	created := false
 	err := h.withPgxTx(r.Context(), func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		recipients, err := h.runBudgetActionRecipients(r, q, issue, userID)
@@ -80,65 +80,17 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 		if len(plan.lanes) == 0 {
 			return decisionIntentRefusal{http.StatusConflict, "no owner can be asked to approve"}
 		}
-		workspace, err := q.GetWorkspace(r.Context(), issue.WorkspaceID)
-		if err != nil {
+		links, results, err = h.openRunBudgetActionCards(r.Context(), q, issue, plan, req.Kind, req.NewCap, req.WindowID, runBudgetActionAsk(issue, req))
+		if err != nil || len(results) == 0 {
 			return err
 		}
-		params := map[string]any{"issue_id": uuidToString(issue.ID), "window_id": req.WindowID}
-		if req.Kind == "raise" {
-			params["new_cap"] = req.NewCap
-		}
-		if refusal, err := service.FindOpenRunBudgetRefusal(r.Context(), q, issue.ID, req.WindowID); err == nil {
-			params["refusal_id"] = uuidToString(refusal)
-		} else if !errors.Is(err, service.ErrRunBudgetRefusalNotFound) {
-			return err
-		}
-		raw, err := json.Marshal(params)
-		if err != nil {
-			return err
-		}
-		draft, err := draftDecisionAction(&decisionActionWire{Type: actionType, Version: 1, Params: raw})
-		if err != nil {
-			return err
-		}
-		input := decisionRequestInput{
-			Ask: runBudgetActionAsk(issue, req), EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
-			Fingerprint: fmt.Sprintf("%srun_budget_action:%s:%s:%d", serverDecisionFingerprint, req.Kind, req.WindowID, req.NewCap),
-		}
-		for _, lane := range plan.lanes {
-			link := func(request db.DecisionRequest, action db.DecisionAction) {
-				links = append(links, RunBudgetActionLink{
-					RequestID: uuidToString(request.ID), ActionID: uuidToString(action.ID),
-					ApproveURL: "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID),
-				})
-			}
-			open, err := q.FindOpenServerDecisionRequest(r.Context(), db.FindOpenServerDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HumanUserID: lane.human, Fingerprint: input.Fingerprint})
-			if err == nil {
-				action, err := q.GetDecisionActionByRequest(r.Context(), db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
-				if err != nil {
-					return err
-				}
-				link(open, action)
-				continue
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return err
-			}
-			input.HumanUserID = lane.human
-			result, err := h.openRunBudgetDecision(r.Context(), q, issue, plan, lane, input)
-			if err != nil {
-				return err
-			}
-			results = append(results, result)
-			link(result.Request, *result.Action)
-		}
-		created = len(results) > 0
-		return nil
+		return recordRunBudgetAsk(r.Context(), q, issue, "member", parseUUID(userID), runBudgetActionTypes[req.Kind], req.WindowID)
 	})
 	if err != nil {
 		writeDecisionError(w, err, "run budget request")
 		return
 	}
+	created := len(results) > 0
 	h.publishRunBudgetDecisions(issue, results)
 	status := http.StatusOK
 	if created {
@@ -166,4 +118,88 @@ func runBudgetActionAsk(issue db.Issue, req RunBudgetActionRequest) string {
 		what = fmt.Sprintf("raise the run cap to %d", req.NewCap)
 	}
 	return fmt.Sprintf("**Run budget request**\nA person asked to %s on [Issue](mention://issue/%s).\nApprove it with your passkey in the web app, or reject it.", what, uuidToString(issue.ID))
+}
+
+// openRunBudgetActionCards opens the raise or top-up action card of one window
+// for every planned lane, and returns the card a lane already has open without
+// a second one: the fingerprint names kind, window and cap, so a repeat request
+// and a repeat refusal in one window share a card. Both entry points use it
+// (CHE-5303).
+func (h *Handler) openRunBudgetActionCards(ctx context.Context, q *db.Queries, issue db.Issue, plan runBudgetDecisionPlan, kind string, newCap int, windowID, ask string) ([]RunBudgetActionLink, []decisionRequestResult, error) {
+	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	params := map[string]any{"issue_id": uuidToString(issue.ID), "window_id": windowID}
+	if kind == "raise" {
+		params["new_cap"] = newCap
+	}
+	if refusal, err := service.FindOpenRunBudgetRefusal(ctx, q, issue.ID, windowID); err == nil {
+		params["refusal_id"] = uuidToString(refusal)
+	} else if !errors.Is(err, service.ErrRunBudgetRefusalNotFound) {
+		return nil, nil, err
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, nil, err
+	}
+	draft, err := draftDecisionAction(&decisionActionWire{Type: runBudgetActionTypes[kind], Version: 1, Params: raw})
+	if err != nil {
+		return nil, nil, err
+	}
+	input := decisionRequestInput{
+		Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+		Fingerprint: fmt.Sprintf("%srun_budget_action:%s:%s:%d", serverDecisionFingerprint, kind, windowID, newCap),
+	}
+	var links []RunBudgetActionLink
+	var results []decisionRequestResult
+	for _, lane := range plan.lanes {
+		link := func(request db.DecisionRequest, action db.DecisionAction) {
+			links = append(links, RunBudgetActionLink{
+				RequestID: uuidToString(request.ID), ActionID: uuidToString(action.ID),
+				ApproveURL: "/" + workspace.Slug + "/issues/" + uuidToString(issue.ID) + "?approve=" + uuidToString(action.ID),
+			})
+		}
+		open, err := q.FindOpenServerDecisionRequest(ctx, db.FindOpenServerDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, HumanUserID: lane.human, Fingerprint: input.Fingerprint})
+		if err == nil {
+			action, err := q.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: open.ID, WorkspaceID: issue.WorkspaceID})
+			if err != nil {
+				return nil, nil, err
+			}
+			link(open, action)
+			continue
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil, err
+		}
+		input.HumanUserID = lane.human
+		result, err := h.openRunBudgetDecision(ctx, q, issue, plan, lane, input)
+		if err != nil {
+			return nil, nil, err
+		}
+		results = append(results, result)
+		link(result.Request, *result.Action)
+	}
+	return links, results, nil
+}
+
+// runBudgetCardRecipients is who a refusal's top-up card goes to: the requester
+// when they own the workspace, else every owner. Approving needs an owner and
+// a passkey, so a card for anyone else could never be approved.
+func runBudgetCardRecipients(ctx context.Context, q *db.Queries, issue db.Issue, recipients []pgtype.UUID) ([]pgtype.UUID, error) {
+	for _, userID := range recipients {
+		member, err := q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: userID, WorkspaceID: issue.WorkspaceID})
+		if err == nil && member.Role == "owner" {
+			return []pgtype.UUID{userID}, nil
+		}
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
+		}
+	}
+	return q.ListWorkspaceOwnerUserIDs(ctx, issue.WorkspaceID)
+}
+
+// runBudgetRefusalAsk is the card's text when the platform itself refused a run.
+func runBudgetRefusalAsk(issue db.Issue) string {
+	return fmt.Sprintf("**Run budget used up**\nThe platform refused the next run on [Issue](mention://issue/%s). Nothing runs on it until a new run window opens.\nApprove a top-up with your passkey in the web app to open one, or decline to keep it stopped.", uuidToString(issue.ID))
 }

@@ -74,9 +74,10 @@ func (h *Handler) wecomIntegrationConfigured() bool {
 func (h *Handler) ListWecomInstallations(w http.ResponseWriter, r *http.Request) {
 	if !h.wecomIntegrationConfigured() {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"installations":     []WecomInstallationResponse{},
-			"configured":        false,
-			"install_supported": false,
+			"installations":          []WecomInstallationResponse{},
+			"configured":             false,
+			"install_supported":      false,
+			"scan_install_supported": false,
 		})
 		return
 	}
@@ -102,6 +103,10 @@ func (h *Handler) ListWecomInstallations(w http.ResponseWriter, r *http.Request)
 		"installations":     out,
 		"configured":        true,
 		"install_supported": true,
+		// Scan install additionally needs a QR provider (a source id), so it can
+		// be off on a deployment where the BYO path works. The UI hides the
+		// "create a new bot" option rather than offering a button that 503s.
+		"scan_install_supported": h.WecomInstall != nil && h.WecomInstall.Configured(),
 	})
 }
 
@@ -175,8 +180,12 @@ func (h *Handler) RegisterWecomBYO(w http.ResponseWriter, r *http.Request) {
 		BotID:           strings.TrimSpace(body.BotID),
 		Secret:          strings.TrimSpace(body.Secret),
 		BotDisplayName:  strings.TrimSpace(body.BotName),
+		Audit:           h.chatInstallAuditHook(r, "wecom"),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "wecom.install") {
+			return
+		}
 		writeWecomInstallError(w, err, wsUUID, agentUUID)
 		return
 	}
@@ -292,8 +301,7 @@ func (h *Handler) RevokeWecomInstallation(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "failed to load installation")
 		return
 	}
-	if err := svc.Revoke(r.Context(), instUUID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to revoke installation")
+	if !h.revokeChatInstallation(w, r, "wecom", "wecom", wsUUID, instUUID) {
 		return
 	}
 	h.publish(protocol.EventWecomInstallationRevoked, uuidToString(wsUUID), "user", userID, map[string]any{

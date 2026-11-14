@@ -35,13 +35,15 @@ WITH gone_follows AS (
     DELETE FROM dm_progress_follow AS f WHERE f.workspace_id = $1
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.workspace_id = $1
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.workspace_id = $1
 ), gone_incidents AS (
     DELETE FROM dm_progress_data_incident AS i WHERE i.workspace_id = $1
 )
 DELETE FROM dm_progress_lane AS l WHERE l.workspace_id = $1
 `
 
-// No FKs (repo rule): workspace delete sweeps all four tables here.
+// No FKs (repo rule): workspace delete sweeps all five tables here.
 func (q *Queries) DeleteDMProgressByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressByWorkspace, workspaceID)
 	return err
@@ -50,6 +52,8 @@ func (q *Queries) DeleteDMProgressByWorkspace(ctx context.Context, workspaceID p
 const deleteDMProgressForIssue = `-- name: DeleteDMProgressForIssue :exec
 WITH gone AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.issue_id = $1 AND e.workspace_id = $2
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.issue_id = $1 AND p.workspace_id = $2
 )
 DELETE FROM dm_progress_follow AS f WHERE f.issue_id = $1 AND f.workspace_id = $2
 `
@@ -59,7 +63,7 @@ type DeleteDMProgressForIssueParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// No FKs (repo rule): issue delete sweeps its follows and lane events here.
+// No FKs (repo rule): issue delete sweeps its follows, lane events and pending rows here.
 func (q *Queries) DeleteDMProgressForIssue(ctx context.Context, arg DeleteDMProgressForIssueParams) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressForIssue, arg.IssueID, arg.WorkspaceID)
 	return err
@@ -70,6 +74,8 @@ WITH gone AS (
     DELETE FROM dm_progress_follow AS f WHERE f.lineage_id = $1 AND f.workspace_id = $2
 ), gone_events AS (
     DELETE FROM dm_progress_lane_event AS e WHERE e.lineage_id = $1 AND e.workspace_id = $2
+), gone_pending AS (
+    DELETE FROM dm_progress_pending AS p WHERE p.lineage_id = $1 AND p.workspace_id = $2
 )
 DELETE FROM dm_progress_lane AS l WHERE l.lineage_id = $1 AND l.workspace_id = $2
 `
@@ -79,7 +85,7 @@ type DeleteDMProgressForLineageParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// No FKs (repo rule): chat session delete sweeps its follows, lane events and lane here.
+// No FKs (repo rule): chat session delete sweeps its follows, lane events, pending rows and lane here.
 // Callers hold the chat_session lock, so a new follow cannot slip in between.
 func (q *Queries) DeleteDMProgressForLineage(ctx context.Context, arg DeleteDMProgressForLineageParams) error {
 	_, err := q.db.Exec(ctx, deleteDMProgressForLineage, arg.LineageID, arg.WorkspaceID)

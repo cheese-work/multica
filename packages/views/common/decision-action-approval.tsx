@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "@multica/core/api";
 import { ApiError } from "@multica/core/api/client";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
@@ -10,11 +10,32 @@ import { useT } from "../i18n";
 
 type View =
   | { step: "loading" | "idle" | "busy" | "rejecting" | "no_passkey" | "retry" | "reject_retry" | "lost" }
+  | { step: "refused"; code: string }
   | { step: "done"; outcome: PasskeyDecisionOutcome };
 
 const TERMINAL = ["executed", "failed", "rejected", "expired", "cancelled"] as const;
 type Terminal = (typeof TERMINAL)[number];
 const isTerminal = (state: string): state is Terminal => (TERMINAL as readonly string[]).includes(state);
+
+// Refusal codes the server sends as `code: message` (CHE-3348). Each has its own text; a code this
+// client does not know is shown as it came, never swallowed into a generic retry.
+const REFUSAL_CODES = [
+  "class_needs_owner", "payload_mismatch", "preview_required", "precondition_drift",
+  "busy_retry", "not_permitted", "action_not_executable", "approval_proof_unavailable",
+] as const;
+type RefusalCode = (typeof REFUSAL_CODES)[number];
+const isRefusalCode = (code: string): code is RefusalCode => (REFUSAL_CODES as readonly string[]).includes(code);
+// Asking again cannot change these answers.
+const FINAL_REFUSALS: readonly string[] = ["class_needs_owner", "not_permitted", "action_not_executable", "approval_proof_unavailable"];
+
+// A definite server answer: any 4xx, and 501 (action_not_executable). Other 5xx leave the outcome unknown.
+const isDefiniteAnswer = (error: unknown): error is ApiError => error instanceof ApiError && (error.status < 500 || error.status === 501);
+
+/** The `code` of a `code: message` refusal, or "" when the error carries none. */
+function refusalCode(error: ApiError): string {
+  const [code, rest] = error.message.split(":", 2);
+  return rest !== undefined && /^[a-z][a-z0-9_]*$/.test(code!) ? code! : "";
+}
 
 // An approve request that left this tab. Survives a remount, so an undecided
 // action never offers approve again (N15); a new tab or session starts clean.
@@ -44,6 +65,10 @@ function executedEffect(result: unknown): { token: string; change?: string } | n
   return { token: outcome, change: typeof from === "number" && typeof to === "number" ? `${from} → ${to}` : undefined };
 }
 
+/** What a card with its own button reads and presses: Approve or Reject, once `ready`. */
+export type ApprovalHandle = { approve: () => void; reject: () => void };
+export type ApprovalControls = { ready: boolean; mayApprove: boolean; approveDisabled: boolean };
+
 /**
  * Passkey approval of one executable decision action: challenge → WebAuthn
  * assertion → approve → outcome. After the approve request leaves, a lost or
@@ -55,17 +80,46 @@ function executedEffect(result: unknown): { token: string; change?: string } | n
 export function DecisionActionApproval({
   actionId,
   payloadSha256,
+  previewSha256,
+  canApprove = true,
+  approveDisabled = false,
   state,
   onEnroll,
+  onOutcome,
+  handle,
+  hideControls = false,
+  onControls,
 }: {
   actionId: string;
   payloadSha256: string;
+  /** The digest of the preview the person was shown. The server refuses the approval when it differs from the stored one. */
+  previewSha256?: string;
+  /** False hides Approve (the person may not approve this action). Reject stays. */
+  canApprove?: boolean;
+  /** Shows Approve but not clickable: the person may approve, the details they would approve are unavailable. */
+  approveDisabled?: boolean;
   /** The action state the surrounding card reports; a change reads the outcome again (a decision made in another tab or by a worker). */
   state?: string;
   onEnroll?: () => void;
+  /** Called once when the action reaches a terminal state, so the caller can refresh what the action changed. */
+  onOutcome?: (state: string) => void;
+  /** Lets the card press Approve or Reject from its own button. Only acts while `onControls` reports `ready`. */
+  handle?: Ref<ApprovalHandle>;
+  /** The card renders the Approve and Reject buttons itself; notes, errors and the outcome stay here. */
+  hideControls?: boolean;
+  onControls?: (controls: ApprovalControls) => void;
 }) {
   const { t } = useT("common");
   const [view, setView] = useState<View>({ step: "loading" });
+  // The preview digest the server refused (`preview_required`). Asking again with it gets the same answer,
+  // so Approve stays off until the card shows a different preview.
+  const [refusedPreview, setRefusedPreview] = useState<string | undefined>();
+  const onOutcomeRef = useRef(onOutcome);
+  onOutcomeRef.current = onOutcome;
+  const doneState = view.step === "done" ? view.outcome.state : null;
+  useEffect(() => {
+    if (doneState) onOutcomeRef.current?.(doneState);
+  }, [doneState]);
 
   // `ifPending` is the view for an action that is still undecided.
   const readBack = async (ifPending: View = { step: "lost" }) => {
@@ -89,15 +143,23 @@ export function DecisionActionApproval({
       const assertion = await signPasskeyChallenge(await api.challengeDecisionAction(actionId));
       sent = true;
       markApproveSent(actionId);
-      const outcome = await api.approveDecisionAction(actionId, { payload_sha256: payloadSha256, assertion });
+      const outcome = await api.approveDecisionAction(actionId, {
+        payload_sha256: payloadSha256,
+        assertion,
+        ...(previewSha256 ? { preview_sha256: previewSha256 } : {}),
+      });
       setView(isTerminal(outcome.state) ? { step: "done", outcome } : { step: "lost" });
     } catch (error) {
-      const refused = error instanceof ApiError && error.status < 500;
+      const refused = isDefiniteAnswer(error);
       if (sent && refused) markApproveSent(actionId, false); // the server answered: nothing was approved
-      const reason = refused ? error.message.split(":")[0] : "";
+      const reason = refused ? refusalCode(error) : "";
       if (!sent && reason === "no_passkey") setView({ step: "no_passkey" });
       else if (!sent && reason === "not_pending") await readBack();
       else if (!sent && reason === "expired") await readBack({ step: "done", outcome: { id: actionId, state: "expired" } });
+      else if (reason) {
+        if (reason === "preview_required") setRefusedPreview(previewSha256 ?? "");
+        setView({ step: "refused", code: reason });
+      }
       else if (!sent || refused) setView({ step: "retry" });
       else await readBack();
     }
@@ -114,13 +176,31 @@ export function DecisionActionApproval({
     }
   };
 
+  const previewRefused = refusedPreview !== undefined && refusedPreview === (previewSha256 ?? "");
+  // A `preview_required` refusal belongs to the preview it answered; a different preview starts clean.
+  const refusal = view.step === "refused" && (view.code !== "preview_required" || previewRefused) ? view.code : undefined;
+  const mayApprove = canApprove && !(refusal && FINAL_REFUSALS.includes(refusal));
+  const approveOff = approveDisabled || previewRefused;
+  const ready = view.step === "idle" || view.step === "retry" || view.step === "reject_retry" || view.step === "refused";
+  // Closed synchronously on the first press: a second press before the next render cannot send a second approval (N15).
+  const open = useRef(false);
+  useEffect(() => { open.current = ready; }, [ready]);
+  const onControlsRef = useRef(onControls);
+  onControlsRef.current = onControls;
+  useEffect(() => { onControlsRef.current?.({ ready, mayApprove, approveDisabled: approveOff }); }, [ready, mayApprove, approveOff]);
+  useImperativeHandle(handle, () => ({
+    approve: () => { if (open.current && mayApprove && !approveOff) { open.current = false; void approve(); } },
+    reject: () => { if (open.current) { open.current = false; void reject(); } },
+  }));
+
   if (view.step === "done") {
-    const { state, error_code: code } = view.outcome;
+    const { state, error_code: code, error_message: reason } = view.outcome;
     const detail =
       code === "stale_cap" ? t(($) => $.decision_action.failed_code.stale_cap)
       : code === "stale_window" ? t(($) => $.decision_action.failed_code.stale_window)
       : code === "not_budgeted" ? t(($) => $.decision_action.failed_code.not_budgeted)
       : code === "stale_base" ? t(($) => $.decision_action.failed_code.stale_base)
+      : reason ? reason
       : code ? t(($) => $.decision_action.failed_code.other, { code })
       : null;
     const effect = state === "executed" ? executedEffect(view.outcome.result) : null;
@@ -159,14 +239,26 @@ export function DecisionActionApproval({
   if (view.step === "loading") return null;
   return (
     <div className="space-y-1 text-label">
+      {refusal && (
+        <p role="alert" data-testid="decision-action-refusal" className="text-caption text-destructive">
+          {isRefusalCode(refusal) ? (
+            <>
+              {t(($) => $.decision_action.refusal[refusal])} <code className="font-mono">{refusal}</code>
+            </>
+          ) : t(($) => $.decision_action.refusal.other, { code: refusal })}
+        </p>
+      )}
+      {!canApprove && <p data-testid="decision-action-owner-note" className="text-caption text-muted-foreground">{t(($) => $.decision_action.owner_only)}</p>}
       {view.step === "retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.error)}</p>}
       {view.step === "reject_retry" && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision_action.reject_error)}</p>}
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={approve} disabled={view.step === "busy" || view.step === "rejecting"}>
-          {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
-        </Button>
+      {!hideControls && <div className="flex flex-wrap gap-2">
+        {mayApprove && (
+          <Button size="sm" data-testid="decision-action-approve" onClick={approve} disabled={approveOff || view.step === "busy" || view.step === "rejecting"}>
+            {view.step === "busy" ? t(($) => $.decision_action.waiting) : t(($) => $.decision_action.approve)}
+          </Button>
+        )}
         <Button size="sm" variant="outline" onClick={reject} disabled={view.step === "busy" || view.step === "rejecting"}>{t(($) => $.decision_action.reject)}</Button>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -55,6 +55,6 @@ func normalizeTextSet(idKey, contentKey string) NormalizeFunc {
 func init() {
 	// Spend is the lowest class that sits above a reversible agent edit: the
 	// action is owner-only, so the class only orders the card.
-	Register(&Definition{Type: "squad.instructions.set", Version: 1, MinClass: "spend", Target: TargetSquad, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeTextSet("squad_id", "instructions")})
-	Register(&Definition{Type: "workspace.context.set", Version: 1, MinClass: "spend", Target: TargetWorkspace, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeTextSet("workspace_id", "context")})
+	Register(&Definition{Type: "squad.instructions.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace a squad's instructions", Summary: "Replaces the squad's instructions with the proposed text."}, MinClass: "spend", Target: TargetSquad, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeTextSet("squad_id", "instructions")})
+	Register(&Definition{Type: "workspace.context.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace the workspace context", Summary: "Replaces the workspace context text with the proposed text."}, MinClass: "spend", Target: TargetWorkspace, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeTextSet("workspace_id", "context")})
 }

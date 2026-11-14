@@ -11,6 +11,7 @@ export {
   CollectionPageState,
   CollectionResetButton,
   CollectionScopeItems,
+  CollectionSearch,
   type CollectionScopeOption,
 } from "./collection-page";
 export {
@@ -37,5 +38,6 @@ export { WorkspaceLoader } from "./workspace-loader";
 export { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 export { GlobalShortcuts } from "./global-shortcuts";
 export { MachinePauseBanner } from "./machine-pause-banner";
+export { WorkspacePauseBanner } from "./workspace-pause-banner";
 export { NewIssueButton, SearchButton } from "./global-actions";
 export { NavigationProgress } from "./navigation-progress";

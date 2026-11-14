@@ -10,6 +10,7 @@ import {
   type PendingDraftUpload,
 } from "../drafts/draft-upload";
 import { createLogger } from "../logger";
+import { DEFAULT_CHAT_LIST_VIEW, type ChatListView } from "./queries";
 
 const logger = createLogger("chat.store");
 
@@ -378,6 +379,8 @@ export interface ChatState {
   /** Drop a placeholder (dismiss a failure / interrupted). */
   removeInputDraftUpload: (sessionId: string, clientUploadId: string) => void;
   clearInputDraft: (sessionId: string) => void;
+  /** Move text + attachments from one slot to another and clear the source. */
+  moveInputDraft: (from: string, to: string) => void;
   /** Record that a durable restore reached the composer; survives a reload. */
   markDraftRestoreApplied: (restoreId: string) => void;
   /** Drop the ledger entry once the server row is confirmed gone. */
@@ -389,6 +392,10 @@ export interface ChatState {
   /** Persist raw size and auto-exit expanded mode. */
   setChatSize: (width: number, height: number) => void;
   setExpanded: (expanded: boolean) => void;
+  /** DM list filter chip. In-memory only; resets when the user leaves Chat. */
+  listView: ChatListView;
+  setListView: (view: ChatListView) => void;
+  resetListView: () => void;
 }
 
 export interface ChatStoreOptions {
@@ -438,6 +445,9 @@ export function createChatStore(options: ChatStoreOptions) {
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
+    listView: DEFAULT_CHAT_LIST_VIEW,
+    setListView: (listView) => set({ listView }),
+    resetListView: () => set({ listView: DEFAULT_CHAT_LIST_VIEW }),
     setOpen: (open) => {
       logger.debug("setOpen", { from: get().isOpen, to: open });
       storage.setItem(OPEN_KEY, String(open));
@@ -637,6 +647,18 @@ export function createChatStore(options: ChatStoreOptions) {
       else delete next[sessionId];
       writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), next);
       set({ inputDraftAttachments: next });
+    },
+    moveInputDraft: (from, to) => {
+      if (from === to) return;
+      const drafts = { ...get().inputDrafts };
+      const attachments = { ...get().inputDraftAttachments };
+      if (from in drafts) drafts[to] = drafts[from]!;
+      if (from in attachments) attachments[to] = attachments[from]!;
+      delete drafts[from];
+      delete attachments[from];
+      writeDrafts(storage, wsKey(DRAFTS_KEY), drafts);
+      writeDraftAttachments(storage, wsKey(DRAFT_ATTACHMENTS_KEY), attachments);
+      set({ inputDrafts: drafts, inputDraftAttachments: attachments });
     },
     clearInputDraft: (sessionId) => {
       const currentDrafts = get().inputDrafts;

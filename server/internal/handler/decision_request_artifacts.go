@@ -159,11 +159,12 @@ func (handler *Handler) readPreviewText(ctx context.Context, attachment db.Attac
 		return "", err
 	}
 	defer reader.Close()
-	body, err := io.ReadAll(io.LimitReader(reader, maxPreviewTextSize+1))
+	limit := handler.maxPreviewSizeBytes()
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return "", err
 	}
-	if len(body) > maxPreviewTextSize {
+	if int64(len(body)) > limit {
 		return "", errPreviewTooLarge
 	}
 	return string(body), nil

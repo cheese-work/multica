@@ -51,6 +51,18 @@ func TestGetConfigReportsCdnSignedMode(t *testing.T) {
 	}
 }
 
+func TestGetConfigDeclaresAutopilotDescriptionGuard(t *testing.T) {
+	w := httptest.NewRecorder()
+	testHandler.GetConfig(w, httptest.NewRequest(http.MethodGet, "/api/config", nil))
+	var cfg AppConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+	if !cfg.AutopilotDescriptionGuardSupported {
+		t.Fatalf("autopilot_description_guard_supported = false, want true")
+	}
+}
+
 func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	origStorage := testHandler.Storage
 	origCfg := testHandler.cfg
