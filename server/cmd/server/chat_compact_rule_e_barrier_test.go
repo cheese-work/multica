@@ -196,7 +196,8 @@ func TestRuleE_BarrierCompletionQueuesBehindCompactClaimDoesNot(t *testing.T) {
 
 // Order 2: a claim parked mid-transaction (it holds the task and a shared DM
 // lock). A compact that arrives meanwhile waits for the claim to commit, then
-// sees the claimed task and answers 409 with the epoch untouched.
+// proceeds once the claim has lost to the running caller (CHE-2894: one active
+// task per DM), leaving the queued task queued.
 func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	svc := ruleENewService()
 	fx := newRuleEFixture(t)
@@ -236,15 +237,17 @@ func TestRuleE_BarrierCompactWaitsForInFlightClaim(t *testing.T) {
 	}
 
 	release()
-	if !<-claimed {
-		t.Fatal("the parked claim did not return the queued task")
+	// One active task per DM (CHE-2894): the caller turned running while the
+	// claim was parked, so the claim's update loses to the one-active index and
+	// the poll is empty. The task stays queued; the compact then runs.
+	if <-claimed {
+		t.Fatal("the parked claim returned the queued task beside a running DM task")
 	}
-	if code := <-compactDone; code != http.StatusConflict {
-		t.Fatalf("compact after the claim = %d, want 409", code)
+	if code := <-compactDone; code != http.StatusOK {
+		t.Fatalf("compact after the empty claim = %d, want 200", code)
 	}
-	assertCompactUntouched(t, fx.sessionID)
-	if status, stamp, dm := ruleEQueuedState(t, queued); status != "dispatched" || stamp != 0 || dm != 0 {
-		t.Fatalf("queued task = %q at epoch %d, DM epoch %d, want dispatched at 0/0", status, stamp, dm)
+	if status, stamp, dm := ruleEQueuedState(t, queued); status != "queued" || stamp != -1 || dm != 1 {
+		t.Fatalf("queued task = %q at epoch %d, DM epoch %d, want queued, unstamped, DM epoch 1", status, stamp, dm)
 	}
 }
 
