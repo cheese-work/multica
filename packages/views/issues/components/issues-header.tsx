@@ -1033,6 +1033,7 @@ export function IssueFilterMenu({
   onTableFacetChange,
   dateFilter = null,
   onDateFilterChange,
+  open,
   onOpenChange,
   freezeAnchor = false,
   viewBaseline,
@@ -1063,6 +1064,9 @@ export function IssueFilterMenu({
   onTableFacetChange?: (facet: IssueTableFacetSpec | null) => void;
   dateFilter?: IssueDateFilter | null;
   onDateFilterChange?: (filter: IssueDateFilter | null) => void;
+  /** Opens the simple menu from the host, e.g. right after a view is named.
+   *  Pair it with `onOpenChange`. */
+  open?: boolean;
   /** Mirrors the menu's open state. */
   onOpenChange?: (open: boolean) => void;
   /** Pin the open menu to the trigger's position AT OPEN TIME (a virtual
@@ -1164,6 +1168,13 @@ export function IssueFilterMenu({
     return keys;
   };
   const [activeAtOpen, setActiveAtOpen] = useState<ReadonlySet<string> | null>(null);
+  // A host opening the menu fires no onOpenChange, so the open-time snapshot
+  // is taken when the prop flips instead.
+  const [openProp, setOpenProp] = useState(open);
+  if (open !== openProp) {
+    setOpenProp(open);
+    if (open && activeAtOpen === null) setActiveAtOpen(currentActiveKeys());
+  }
   const activeKeys = activeAtOpen ?? currentActiveKeys();
   const dateFilterLabel = showDateFilter && dateFilter
     ? `${t(($) => $.filters[DATE_FIELD_LABEL_KEY[dateFilter.field]])}: ${
@@ -1769,21 +1780,22 @@ export function IssueFilterMenu({
 
   return (
     <DropdownMenu
-      onOpenChange={(open) => {
+      open={open}
+      onOpenChange={(next) => {
         if (freezeAnchor) {
-          if (open && triggerRef.current) {
+          if (next && triggerRef.current) {
             const rect = triggerRef.current.getBoundingClientRect();
             setFrozenAnchor({ getBoundingClientRect: () => rect });
-          } else if (!open) {
+          } else if (!next) {
             setFrozenAnchor(null);
           }
         }
-        setActiveAtOpen(open ? currentActiveKeys() : null);
-        if (!open) {
+        setActiveAtOpen(next ? currentActiveKeys() : null);
+        if (!next) {
           setSearch("");
           onTableFacetChange?.(null);
         }
-        onOpenChange?.(open);
+        onOpenChange?.(next);
       }}
     >
       {/* One tree for both bodies: swapping wrappers when the first filter
