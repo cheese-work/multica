@@ -555,7 +555,9 @@ func (handler *Handler) completeDecisionActionPostCommit(ctx context.Context, ac
 		if err := handler.publishDecisionActionExecuted(ctx, action); err != nil {
 			return err
 		}
-		handler.notifyRunBudgetResume(ctx, action.ID)
+		if err := handler.resumeRefusalsAfterBudgetChange(ctx, action); err != nil {
+			return err
+		}
 	}
 	handler.DecisionWorker.Notify()
 	return handler.Queries.MarkDecisionActionPostCommitDone(ctx, db.MarkDecisionActionPostCommitDoneParams{ID: action.ID, WorkspaceID: action.WorkspaceID})
