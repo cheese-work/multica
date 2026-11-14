@@ -5209,7 +5209,7 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 	if err := cli.CheckUpdateFreeze(); err != nil {
 		return "", err
 	}
-	if cli.ForkUpdateSupported(runtime.GOOS) {
+	if forkUpdateSource() {
 		// targetVersion is an upstream release tag from the server or poller; the
 		// fork source ignores it and takes the build its own server carries.
 		return d.runForkUpdate()
@@ -5223,7 +5223,11 @@ func (d *Daemon) runUpdate(targetVersion string) (string, error) {
 		return out, nil
 	}
 	d.logger.Info("updating CLI via direct download...", "target_version", targetVersion)
-	out, err := cli.UpdateViaDownload(targetVersion)
+	opts := cli.DownloadOptions{Timeout: cli.DefaultUpdateDownloadTimeout}
+	if rep := d.updateProgress.Load(); rep != nil { // set only by a server-triggered update; the poller stays quiet
+		opts.Progress = rep.progress()
+	}
+	out, err := cli.UpdateViaDownloadWithOptions(targetVersion, opts)
 	if err != nil {
 		return out, fmt.Errorf("download update failed: %w", err)
 	}
