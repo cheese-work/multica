@@ -49,6 +49,11 @@ function workspaceScoped(slug: string) {
     usage: () => `${ws}/usage`,
     issues: () => `${ws}/issues`,
     issueDetail: (id: string) => `${ws}/issues/${encode(id)}`,
+    // Opens the newest upload of the deliverable named `filename` on this
+    // issue. Addresses the file by name, not by attachment id, so the link
+    // keeps pointing at the latest version as new ones are uploaded.
+    issueDeliverable: (id: string, filename: string) =>
+      `${ws}/issues/${encode(id)}/deliverables/${encode(filename)}`,
     projects: () => `${ws}/projects`,
     projectDetail: (id: string) => `${ws}/projects/${encode(id)}`,
     // Deep links to the wakeup rules on a project's or an issue's own page.

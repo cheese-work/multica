@@ -401,6 +401,7 @@ export function ActorSubContent({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={stopMenuSearchKeys}
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-body placeholder:text-muted-foreground outline-none"
           autoFocus
@@ -570,6 +571,7 @@ export function ProjectSubContent({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={stopMenuSearchKeys}
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-body placeholder:text-muted-foreground outline-none"
           autoFocus
@@ -738,6 +740,7 @@ export function LabelSubContent({
           type="text"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={stopMenuSearchKeys}
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-body placeholder:text-muted-foreground outline-none"
           autoFocus

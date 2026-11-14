@@ -5122,7 +5122,7 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		Supplement:     slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1),
 		ChatSupplement: slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementChatV1),
 		PREvent:        slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementPREventV1),
-		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1),
+		ProcessCleanup: slices.Contains(req.Capabilities, protocol.DaemonCapabilityPiProcessCleanupV1) || slices.Contains(req.Capabilities, protocol.DaemonCapabilityMuseAppProcessCleanupV1),
 	}
 	var task *db.AgentTaskQueue
 	var err error
@@ -6571,7 +6571,7 @@ type TaskCancelAckRequest struct {
 	// proof (or ) opens the stop gate;
 	// an ack without one still delivers the work pointers below.
 	CancelAckProof string `json:"cancel_ack_proof,omitempty"`
-	// Absent on older daemons: a pending Pi cleanup cannot be assumed clean.
+	// Absent on older daemons: negotiated cleanup cannot be assumed complete.
 	ProcessCleanupConfirmed *bool `json:"process_cleanup_confirmed,omitempty"`
 	// BranchName: a cancelled worktree task has already committed whatever the
 	// agent produced — the worktree is finalized before the daemon learns of

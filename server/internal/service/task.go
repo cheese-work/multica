@@ -8007,6 +8007,9 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 		if err != nil {
 			return nil, err
 		}
+		if err := markMuseRecoveryCleanupUnconfirmed(ctx, s.Queries, failed); err != nil {
+			return nil, err
+		}
 		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
 	}
 	tx, err := s.TxStarter.Begin(ctx)
@@ -8048,6 +8051,9 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 			return nil, fmt.Errorf("lock chat sessions: %w", err)
 		}
 	}
+	if err := markMuseRecoveryCleanupUnconfirmed(ctx, qtx, failed); err != nil {
+		return nil, err
+	}
 	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, err)
@@ -8056,6 +8062,31 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 		return nil, err
 	}
 	return failed, nil
+}
+
+// markMuseRecoveryCleanupUnconfirmed persists, in the caller's transaction, that a terminal
+// infrastructure error does not stop an independent Muse worker. It runs before retry decisions or
+// another claim can observe the failed rows, and rewrites the entries of failed in place.
+func markMuseRecoveryCleanupUnconfirmed(ctx context.Context, q *db.Queries, failed []db.AgentTaskQueue) error {
+	var startedIDs []pgtype.UUID
+	indices := make(map[pgtype.UUID]int)
+	for i, task := range failed {
+		if task.Status == "failed" && task.StartedAt.Valid {
+			startedIDs = append(startedIDs, task.ID)
+			indices[task.ID] = i
+		}
+	}
+	if len(startedIDs) == 0 {
+		return nil
+	}
+	unconfirmed, err := q.MarkMuseAppRecoveryCleanupUnconfirmed(ctx, startedIDs)
+	if err != nil {
+		return fmt.Errorf("record Muse recovery cleanup: %w", err)
+	}
+	for _, task := range unconfirmed {
+		failed[indices[task.ID]] = task
+	}
+	return nil
 }
 
 // HandleFailedTasks runs the post-failure side effects for a batch of
@@ -8089,12 +8120,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			}
 		}
 		if !retryPending {
-			if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
-				slog.Warn("handle failed tasks: delegated failure recovery failed",
-					"task_id", util.UUIDToString(t.ID),
-					"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
-					"error", err,
-				)
+			if t.FailureReason.String != taskfailure.ReasonProcessCleanupUnconfirmed.String() && t.FailureReason.String != taskfailure.ReasonProcessCleanupBlocked.String() {
+				if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
+					slog.Warn("handle failed tasks: delegated failure recovery failed",
+						"task_id", util.UUIDToString(t.ID),
+						"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
+						"error", err,
+					)
+				}
 			}
 			// Same terminal-failure comment FailTaskWithTransition posts, so
 			// swept tasks are not silent on their issue.
