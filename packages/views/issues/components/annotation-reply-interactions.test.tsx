@@ -1,12 +1,13 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Editor } from "@tiptap/core";
-import { useCommentDraftStore } from "@multica/core/issues/stores";
+import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { toast } from "sonner";
+import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
 vi.mock("@multica/core/api", async (original) => {
   const actual = await original<typeof import("@multica/core/api")>();
@@ -20,7 +21,7 @@ const writeText = vi.fn(async (_text: string) => {});
 
 const draftKey = "reply:issue:root" as const;
 function Fixture({ deleted = false, onSubmit = async () => false }: {
-  deleted?: boolean; onSubmit?: (sourceId: string, content: string) => Promise<boolean>;
+  deleted?: boolean; onSubmit?: (sourceId: string, content: string) => Promise<boolean | InvalidMentionRejection>;
 }) {
   const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   const annotations = useCommentAnnotations({ issueId: "issue", draftKey, enabled: true,
@@ -51,8 +52,12 @@ async function typeNote(value: string) {
   return input;
 }
 
+// The hook loads the composer on demand; warm the module so the first open is not bound by findBy's 1 s.
+beforeAll(() => import("./annotation-composer"), 30_000);
+
 beforeEach(() => {
   useCommentDraftStore.setState({ drafts: {} });
+  useAnnotationNoteDraftStore.setState({ drafts: {} });
   writeText.mockClear();
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
@@ -75,6 +80,59 @@ describe("selection replies with the real ContentEditor", () => {
     await typeNote("Please revise");
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("child", "> Child text\n\nPlease revise", undefined, undefined));
+  });
+
+  // Fork rule (AGENTS.md State Rules): authored input persists until successful send or explicit discard.
+  it.each(["dismiss", "unmount"] as const)("restores an unsent issue-composer note after %s", async (how) => {
+    const first = renderWithI18n(<Fixture />);
+    selectText(first.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNote("Survives the popup");
+    if (how === "dismiss") {
+      fireEvent.pointerDown(document.body);
+      await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    } else first.unmount();
+
+    const second = how === "dismiss" ? first : renderWithI18n(<Fixture />);
+    selectText(second.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveTextContent("Survives the popup");
+  });
+
+  // Retrospective (added after the merge fix, not an original red): a refused mention keeps the composer and its note.
+  it("keeps the composer and note open when the send returns an invalid-mention rejection", async () => {
+    const onSubmit = vi.fn(async () => ({ invalidMentionIds: ["agent-1"] }));
+    const view = renderWithI18n(<Fixture onSubmit={onSubmit} />);
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNote("Mentions a bad agent");
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reply" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "Comment" })).toHaveTextContent("Mentions a bad agent");
+    expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0);
+  });
+
+  it("keeps the unsent note when the send is rejected and clears it on a successful send", async () => {
+    const onSubmit = vi.fn(async () => false);
+    const view = renderWithI18n(<Fixture onSubmit={onSubmit} />);
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    await typeNote("Rejected once");
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveTextContent("Rejected once");
+
+    onSubmit.mockResolvedValueOnce(true);
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    selectText(view.container, "child");
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    expect(await screen.findByRole("textbox", { name: "Comment" })).not.toHaveTextContent("Rejected once");
   });
 
   it.each([false, true])("copies the deleted target's latest note before leaving (quota full: %s)", async (full) => {
