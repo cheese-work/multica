@@ -45,7 +45,7 @@ import {
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import type { Agent, ChatSearchHit, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
+import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
   RowActionsMenu,
@@ -60,7 +60,6 @@ import { useLocale, useT } from "../../i18n";
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { handleRowShortcut } from "./use-row-shortcuts";
 import { SessionRenameInput } from "./session-rename-input";
-import { ChatSearch } from "./chat-search";
 import { SwipeRow, type SwipeAction } from "./swipe-row";
 import { formatChatClock } from "./format-chat-time";
 import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
@@ -83,6 +82,25 @@ function toPreview(content: string): string {
     .trim();
 }
 
+interface ChatThreadListProps {
+  sessions: ChatSession[];
+  agents: Agent[];
+  activeSessionId: string | null;
+  onSelectSession: (session: ChatSession) => void;
+  // Archiving is owned by the parent so the selection advance stays layout-
+  // aware (desktop advances to the next chat; mobile drops back to the list)
+  // and routes through the shared controller — see ChatPage.handleArchive.
+  onArchive: (session: ChatSession) => void;
+  /** First load of the list. Only shown while there are no rows to show. */
+  loadState?: "loading" | "error";
+  onRetry?: () => void;
+  /**
+   * Called after the list enters multi-select with this row (`X`, the menu
+   * item or a long-press); the list owns the selection itself.
+   */
+  onEnterSelectMode?: (session: ChatSession) => void;
+}
+
 /**
  * IM-style conversation list: each row is agent avatar + session title + agent
  * name + last-message preview + time, with a red unread *count* badge. An
@@ -99,53 +117,7 @@ function toPreview(content: string): string {
  * unarchive + delete). Both views read the same flat sessions cache and split
  * on `status` locally.
  */
-export function ChatThreadList(props: ChatThreadListProps) {
-  const { sessions, agents, activeSessionId, onSelectSession, onArchive, onOpenSearchHit } = props;
-  const setPinned = useSetChatSessionPinned();
-  const sessionActions = useChatSessionActions();
-  return (
-    <ChatSearch
-      scope="page"
-      bindShortcut
-      sessions={sessions}
-      agents={agents}
-      activeSessionId={activeSessionId}
-      onOpenHit={(hit) => {
-        if (onOpenSearchHit) return onOpenSearchHit(hit);
-        const session = sessions.find((s) => s.id === hit.session_id);
-        if (session) onSelectSession(session);
-      }}
-      onUnarchive={(session) => void sessionActions.unarchive(session)}
-      onTogglePin={(session) => setPinned.mutate({ sessionId: session.id, pinned: !session.pinned })}
-      onArchive={onArchive}
-    >
-      <ChatThreadListBody {...props} />
-    </ChatSearch>
-  );
-}
-
-interface ChatThreadListProps {
-  sessions: ChatSession[];
-  agents: Agent[];
-  activeSessionId: string | null;
-  onSelectSession: (session: ChatSession) => void;
-  // Archiving is owned by the parent so the selection advance stays layout-
-  // aware (desktop advances to the next chat; mobile drops back to the list)
-  // and routes through the shared controller — see ChatPage.handleArchive.
-  onArchive: (session: ChatSession) => void;
-  /** Opens a search hit; a message hit also lands on that message. Defaults to selecting the chat. */
-  onOpenSearchHit?: (hit: ChatSearchHit) => void;
-  /** First load of the list. Only shown while there are no rows to show. */
-  loadState?: "loading" | "error";
-  onRetry?: () => void;
-  /**
-   * Called after the list enters multi-select with this row (`X`, the menu
-   * item or a long-press); the list owns the selection itself.
-   */
-  onEnterSelectMode?: (session: ChatSession) => void;
-}
-
-function ChatThreadListBody({
+export function ChatThreadList({
   sessions,
   agents,
   activeSessionId,
