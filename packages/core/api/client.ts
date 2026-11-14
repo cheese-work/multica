@@ -2,9 +2,10 @@ import type { ZodType } from "zod";
 import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
 import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
 import type { ProviderBreaker } from "../types/provider-breaker";
+import type { GuardDecision, GuardDecisionFilters, GuardStats } from "../types/guard";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
-import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
+import { GuardDecisionListSchema, GuardStatsSchema, ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
@@ -1501,6 +1502,26 @@ export class ApiClient {
     const parsed = parseWithFallback<{ breakers: ProviderBreaker[] } | null>(raw, ProviderBreakerListSchema, null, { endpoint: "GET /api/workspaces/:id/provider-breakers" });
     if (!parsed) throw new Error("Could not load provider breakers");
     return parsed.breakers;
+  }
+
+  async getGuardStats(days: number): Promise<GuardStats> {
+    const raw = await this.fetch<unknown>(`/api/guard/stats?days=${days}`);
+    const parsed = parseWithFallback<GuardStats | null>(raw, GuardStatsSchema, null, { endpoint: "GET /api/guard/stats" });
+    if (!parsed) throw new Error("Could not load guard stats");
+    return parsed;
+  }
+
+  async listGuardDecisions(filters: GuardDecisionFilters): Promise<GuardDecision[]> {
+    const query = new URLSearchParams();
+    if (filters.plugin) query.set("plugin", filters.plugin);
+    if (filters.action) query.set("action", filters.action);
+    if (filters.since) query.set("since", filters.since);
+    if (filters.limit) query.set("limit", String(filters.limit));
+    const qs = query.toString();
+    const raw = await this.fetch<unknown>(`/api/guard/decisions${qs ? `?${qs}` : ""}`);
+    const parsed = parseWithFallback<{ decisions: GuardDecision[] } | null>(raw, GuardDecisionListSchema, null, { endpoint: "GET /api/guard/decisions" });
+    if (!parsed) throw new Error("Could not load guard decisions");
+    return parsed.decisions;
   }
 
   async resetProviderBreaker(workspaceId: string, provider: string): Promise<void> {

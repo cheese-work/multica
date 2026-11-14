@@ -410,3 +410,4 @@ export type { IssueWakeup, IssueWakeupInput, SystemWakeup, WorkspaceSystemWakeup
 export type { WorkspaceWakeup, WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupScope } from "./issue-wakeup";
 
 export type { ProviderBreaker, ProviderBreakerState } from "./provider-breaker";
+export type { GuardDayCounts, GuardDecision, GuardDecisionAction, GuardDecisionFilters, GuardPluginStats, GuardStats } from "./guard";

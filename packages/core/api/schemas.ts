@@ -4787,6 +4787,45 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
   last_success_at: z.string().nullish().transform((v) => v ?? null),
   trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
 }));
+// Tool-guard decision counts and rows (CHE-5207). Counts default to zero and
+// the list shapes are strict: a malformed body must not read as "no hits".
+const guardCount = z.number().int().nonnegative().catch(0);
+const guardText = z.string().nullish().transform((v) => v ?? "");
+export const GuardDayCountsSchema = z.lazy(() => z.object({
+  day: z.string(),
+  fixed: guardCount,
+  refused: guardCount,
+  errors: guardCount,
+}));
+export const GuardStatsSchema = z.lazy(() => z.object({
+  days: z.number().int().catch(7),
+  tz: guardText,
+  since: guardText,
+  plugins: z.array(z.object({
+    plugin: z.string(),
+    fixed: guardCount,
+    refused: guardCount,
+    errors: guardCount,
+    shadow_hits: guardCount,
+    passes: guardCount,
+    daily: z.array(GuardDayCountsSchema).nullish().transform((v) => v ?? []),
+  })),
+}));
+export const GuardDecisionListSchema = z.lazy(() => z.object({
+  decisions: z.array(z.object({
+    id: z.string(),
+    task_id: guardText,
+    time: guardText,
+    plugin: guardText,
+    action: guardText,
+    tool: guardText,
+    subcommand: guardText,
+    line: guardText,
+    issue: guardText,
+    note: guardText,
+    runtime: guardText,
+  })),
+}));
 export const ProviderBreakerListSchema = z.lazy(() => z.object({
   breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
 }));
