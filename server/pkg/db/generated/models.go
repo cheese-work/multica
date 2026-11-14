@@ -3397,6 +3397,18 @@ type System1Label struct {
 	Supersedes    pgtype.UUID        `json:"supersedes"`
 }
 
+type System1LabelSample struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	Kind           string             `json:"kind"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	Seed           int64              `json:"seed"`
+	ObservationIds []pgtype.UUID      `json:"observation_ids"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
 type System1Observation struct {
 	ID                  pgtype.UUID        `json:"id"`
 	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
