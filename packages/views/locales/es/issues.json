@@ -323,7 +323,8 @@
     "list": "Lista",
     "table": "Tabla",
     "gantt": "Gantt",
-    "swimlane": "Carriles"
+    "swimlane": "Carriles",
+    "swimlane2": "Swimlane 2.0"
   },
   "table": {
     "select_all": "Seleccionar todas las tareas visibles",
@@ -410,7 +411,9 @@
     "more_issues": "Hay más incidencias sin cargar.",
     "retry": "Reintentar",
     "load_more": "Cargar más",
-    "no_lane": "Sin valor"
+    "no_lane": "Sin valor",
+    "timeline_failed": "No se pudo cargar la línea de tiempo.",
+    "loading": "Cargando línea de tiempo…"
   },
   "gantt2": {
     "clipped_start": "Comenzó antes de esta ventana",
@@ -1510,8 +1513,7 @@
     "unlinked_moved": "{{pr}} eliminado. Todos los PR restantes están fusionados, así que la tarea pasó a {{status}}.",
     "waiting_to_one": "Pasa a {{status}} cuando {{prs}} se fusione",
     "waiting_to_other": "Pasa a {{status}} cuando {{prs}} se fusionen",
-    "all_merged_to": "Todos los PR fusionados. El próximo PR fusionado mueve esta tarea a {{status}}.",
-    "workflow_owned": "The workflow moves this issue when its PR merges"
+    "all_merged_to": "Todos los PR fusionados. El próximo PR fusionado mueve esta tarea a {{status}}."
   },
   "working_filter_error": {
     "title": "No se han podido cargar las tareas con agentes trabajando"

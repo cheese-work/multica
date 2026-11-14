@@ -18,7 +18,8 @@
     "skills": "Skills",
     "new": "Nuevo",
     "best_match": "Mejor coincidencia",
-    "actions": "Acciones"
+    "actions": "Acciones",
+    "messages": "Mensajes"
   },
   "commands": {
     "current_theme_aria": "Tema actual",
@@ -50,7 +51,9 @@
     "no_results": "No se encontraron resultados.",
     "no_labels": "Sin etiquetas",
     "type_to_find_issue": "Escribe para buscar una tarea",
-    "type_to_find_people": "Escribe para buscar personas y agentes"
+    "type_to_find_people": "Escribe para buscar personas y agentes",
+    "no_results_for": "Sin resultados para “{{query}}”",
+    "no_results_hint": "Prueba con otra palabra clave."
   },
   "trigger": {
     "label": "Buscar..."
@@ -171,5 +174,16 @@
     "prefix_commands": "Comandos",
     "prefix_issues": "Tareas",
     "prefix_people": "Personas y agentes"
+  },
+  "messages": {
+    "untitled": "Chat sin título",
+    "searching": "Buscando en los mensajes…",
+    "error_title": "No se pudo buscar en el contenido de los mensajes",
+    "error_failed": "El servidor devolvió un error. Los chats se siguen filtrando por título.",
+    "error_timed_out": "La búsqueda tardó demasiado. Los chats se siguen filtrando por título.",
+    "retry": "Reintentar",
+    "offline_title": "Sin conexión",
+    "offline_body_one": "Buscando solo por título en {{count}} chat guardado, no en el contenido de los mensajes.",
+    "offline_body_other": "Buscando solo por título en {{count}} chats guardados, no en el contenido de los mensajes."
   }
 }

@@ -322,7 +322,18 @@
     "pin_failed": "Couldn't update the pin",
     "unseen": "Mark as unseen",
     "unseen_failed": "Couldn't mark this chat as unseen",
-    "undo": "Undo"
+    "undo": "Undo",
+    "rename": "Renombrar",
+    "select": "Seleccionar varios",
+    "group": {
+      "pinned": "Fijados",
+      "today": "Hoy",
+      "yesterday": "Ayer",
+      "this_week": "Esta semana",
+      "older": "Anteriores"
+    },
+    "unseen_dot": "Sin ver",
+    "tag_decision": "Decisión"
   },
   "header": {
     "rename": "Renombrar chat",
