@@ -297,7 +297,6 @@ func TestAuditRead_KeysetPaginationWithEqualAt(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
-	var order []string
 	cursor := ""
 	for pages := 0; ; pages++ {
 		if pages > 20 {
@@ -313,7 +312,6 @@ func TestAuditRead_KeysetPaginationWithEqualAt(t *testing.T) {
 				t.Fatalf("row %s repeated across pages", e.ID)
 			}
 			seen[e.ID] = true
-			order = append(order, e.ID)
 		}
 		if page.NextCursor == nil {
 			break
