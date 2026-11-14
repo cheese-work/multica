@@ -241,7 +241,7 @@ func (q *Queries) ListAgentPresets(ctx context.Context, arg ListAgentPresetsPara
 const setChatSessionPresetName = `-- name: SetChatSessionPresetName :one
 UPDATE chat_session SET preset_name = $2
 WHERE id = $1
-RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set, compaction_epoch, preset_name, decision_topic_id
+RETURNING id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id, explicitly_created_at, continued_from_session_id, continued_into_session_id, channel_origin_at, forked_from_session_id, fork_idempotency_key, fork_last_message_id, fork_message_count, fork_source_message_id, title_manually_set, compaction_epoch, preset_name, decision_topic_id, segment_floor_at, segment_floor_id, chain_root_session_id, taint_ids, taint_verified
 `
 
 type SetChatSessionPresetNameParams struct {
@@ -282,6 +282,11 @@ func (q *Queries) SetChatSessionPresetName(ctx context.Context, arg SetChatSessi
 		&i.CompactionEpoch,
 		&i.PresetName,
 		&i.DecisionTopicID,
+		&i.SegmentFloorAt,
+		&i.SegmentFloorID,
+		&i.ChainRootSessionID,
+		&i.TaintIds,
+		&i.TaintVerified,
 	)
 	return i, err
 }

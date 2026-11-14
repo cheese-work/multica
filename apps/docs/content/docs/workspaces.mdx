@@ -50,6 +50,19 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
 
+The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
+
+### Delegated governed writes
+
+The workspace setting `delegated_governed_writes` decides which agents may write governed fields, and whether each write still needs a person's decision. Find it in workspace settings under **Delegated governed writes**.
+
+- **Who can edit:** `owner` and `admin`. A `member` sees the same table read-only, with a lock note and no Edit button.
+- **Allowed agents:** the agents that may write. An archived agent cannot be added.
+- **Allowed fields:** any of `workflow.steps`, `workflow.instructions`, `workspace.context`, `squad.instructions`, `agent.instructions`, `project.description`, `workflow.budget`, `issue.workflow`. Fields you do not tick stay read-only for every agent.
+- **Requires human decision:** on by default. An allowed agent then opens a decision request instead of writing. Turning it off lets allowed agents write directly, so Save asks you to confirm first.
+
+Unsaved edits are kept if a save fails, so nothing you typed is lost.
+
 ## Switch and leave
 
 One account can join multiple workspaces. Switching only changes what you are currently viewing; it moves no data.

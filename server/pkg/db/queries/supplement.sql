@@ -157,10 +157,10 @@ WITH locked_task AS MATERIALIZED (
 ), inserted AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
-        client_request_id, status
+        client_request_id, status, implicit
     )
     SELECT t.id, @workspace_id, t.issue_id, @comment_id, @author_id,
-           @client_request_id, 'pending'
+           @client_request_id, 'pending', @implicit::bool
     FROM locked_task t
     RETURNING *
 )

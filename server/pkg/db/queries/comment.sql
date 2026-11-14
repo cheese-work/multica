@@ -129,16 +129,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ListRootCommentsSinceForIssue :many
@@ -175,16 +189,30 @@ thread_stats AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+),
+thread_resolutions AS (
+    SELECT DISTINCT ON (m.root_id)
+           m.root_id,
+           c.id AS resolution_id,
+           c.content AS resolution_content
+    FROM membership m
+    JOIN comment c ON c.id = m.id
+    WHERE m.id <> m.root_id
+      AND c.resolved_at IS NOT NULL
+    ORDER BY m.root_id, c.resolved_at DESC, c.created_at ASC, c.id ASC
 )
 SELECT c.id, c.issue_id, c.author_type, c.author_id, c.content, c.type,
        c.created_at, c.updated_at, c.parent_id, c.workspace_id,
        c.resolved_at, c.resolved_by_type, c.resolved_by_id,
        c.source_task_id, c.quick_action_id, c.revision, c.deleted_at,
        ts.reply_count AS reply_count,
-       ts.last_activity_at AS last_activity_at
+       ts.last_activity_at AS last_activity_at,
+       tr.resolution_id AS resolution_id,
+       tr.resolution_content AS resolution_content
 FROM selected_roots sr
 JOIN comment c ON c.id = sr.id
 JOIN thread_stats ts ON ts.root_id = sr.id
+LEFT JOIN thread_resolutions tr ON tr.root_id = sr.id
 ORDER BY c.created_at ASC, c.id ASC;
 
 -- name: ListThreadCommentsForIssuePaged :many
@@ -404,28 +432,33 @@ SELECT c.* FROM comment c
 WHERE c.issue_id = @issue_id
   AND (c.id = ANY(@planned_comment_ids::uuid[])
        OR comment_thread_root_id(c.id) = sqlc.narg('comment_thread_id')::uuid
-       -- An agent comment that steered this run but was never read took the
-       -- place of the follow-up its mention would have queued; replay it.
-       OR (c.author_type = 'agent' AND EXISTS (
+       -- An agent comment, or a member comment folded in by default, that
+       -- steered this run but was never read took the place of the follow-up
+       -- its mention would have queued; replay it.
+       OR ((c.author_type = 'agent' OR EXISTS (
+               SELECT 1 FROM task_supplement imp
+               WHERE imp.comment_id = c.id AND imp.task_id = sqlc.narg('task_id')::uuid AND imp.implicit
+           )) AND EXISTS (
            SELECT 1 FROM task_supplement steered
            WHERE steered.comment_id = c.id AND steered.task_id = sqlc.narg('task_id')::uuid
              AND steered.status <> 'delivered'
        )))
   -- A deleted comment is no longer input, even when replies keep its row.
   AND c.deleted_at IS NULL
-  -- A member comment that steered this agent's running turn belongs to that
-  -- turn, regardless of delivery status: failed delivery must not become an
-  -- automatic new run, because the member sees the failure and can retry or
-  -- send it as a new run. No one watches an agent's steering receipt, so an
-  -- agent comment belongs to the turn only once delivered; otherwise it is
-  -- replayed like any other mention. The same comment still reconciles
+  -- A member comment that the member chose to steer into this agent's running
+  -- turn belongs to that turn, regardless of delivery status: failed delivery
+  -- must not become an automatic new run, because the member sees the failure
+  -- and can retry or send it as a new run. No one watches the receipt of an
+  -- agent comment or of an implicit member steer (the author never asked to
+  -- steer, CHE-5286), so those belong to the turn only once delivered;
+  -- otherwise they are replayed like any other mention. The same comment still reconciles
   -- normally for any other agent it addressed without steering.
   AND NOT EXISTS (
       SELECT 1 FROM task_supplement s
       JOIN agent_task_queue bound ON bound.id = s.task_id
       WHERE s.comment_id = c.id AND s.workspace_id = c.workspace_id
         AND bound.agent_id = @agent_id
-        AND (c.author_type <> 'agent' OR s.status = 'delivered')
+        AND ((c.author_type <> 'agent' AND NOT s.implicit) OR s.status = 'delivered')
   )
   -- An explicit member/agent cancellation acknowledges the planned input for
   -- this agent only for completing tasks already in flight at cancellation;
@@ -1105,6 +1138,41 @@ descendants AS (
 SELECT * FROM comment
 WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT 1;
+
+-- name: GetThreadLatestAgentComment :one
+-- The newest live agent-authored comment in @target_id's thread (root plus every
+-- descendant). An unmentioned member reply wakes that comment's author, not the
+-- thread-root author (CHE-5421). No row when no agent has spoken in the thread.
+-- When @before_comment_id is set, only agent comments created before it count, so
+-- a recompute of an earlier reply routes the same as the original did.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT * FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+  AND comment.author_type = 'agent'
+  AND (sqlc.narg('before_comment_id')::uuid IS NULL
+       OR (comment.created_at, comment.id) < (
+           SELECT b.created_at, b.id FROM comment b WHERE b.id = sqlc.narg('before_comment_id')::uuid))
 ORDER BY comment.created_at DESC, comment.id DESC
 LIMIT 1;
 

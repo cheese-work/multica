@@ -18,6 +18,7 @@
     "from": "De",
     "unread_only": "Non lues uniquement",
     "no_agents_working": "Aucun agent au travail",
+    "mentions_only": "Mes mentions",
     "notification_count_one": "{{count}} notification",
     "notification_count_other": "{{count}} notifications",
     "clear": "Effacer les filtres",

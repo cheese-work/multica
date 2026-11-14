@@ -48,14 +48,82 @@ type decisionActionResponse struct {
 	PayloadSHA256 string          `json:"payload_sha256"`
 	ExpiresAt     string          `json:"expires_at"`
 	State         string          `json:"state"`
+	// ChatSessionID is the chat that holds the action's card. Only the read
+	// sets it; the approve page links to that card when it cannot decide here.
+	ChatSessionID string `json:"chat_session_id,omitempty"`
+	// The outcome readback (CHE-5411): empty while the action is pending.
+	Outcome       string  `json:"outcome,omitempty"`
+	OutcomeReason *string `json:"outcome_reason,omitempty"`
+	AppliedAt     *string `json:"applied_at,omitempty"`
+	// RequiresPasskey is the registry's flag for this action type, never the proposer's.
+	RequiresPasskey bool `json:"requires_passkey"`
 }
 
 func newDecisionActionResponse(action db.DecisionAction) *decisionActionResponse {
+	outcome, reason := decisionActionOutcomeOf(action)
 	return &decisionActionResponse{
 		ID: uuidToString(action.ID), ActionType: action.ActionType, ActionVersion: action.ActionVersion,
 		Params: action.Params, Preconditions: action.Preconditions, SecretSlots: action.SecretSlots,
 		PayloadSHA256: action.PayloadSha256, ExpiresAt: timestampToString(action.ExpiresAt), State: action.State,
+		Outcome: outcome, OutcomeReason: reason, AppliedAt: appliedAtOf(action),
+		RequiresPasskey: actionRequiresPasskey(action),
 	}
+}
+
+// decisionActionOutcomeOf is the one place a stored action state becomes the
+// outcome the card, the CLI and the wake text state. "" means still pending.
+func decisionActionOutcomeOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "executed":
+		return "applied", nil
+	case "rejected":
+		return "rejected", nil
+	case "failed":
+		reason := action.ErrorMessage.String
+		if reason == "" {
+			reason = action.ErrorCode.String
+		}
+		return "not_applied", &reason
+	case "expired", "cancelled":
+		return "not_applied", &action.State
+	}
+	return "", nil
+}
+
+// decisionEffectOf is the readback of what the approval did (B v9 S5):
+// applied, not_applied with the reason, or expired. "" means still pending.
+func decisionEffectOf(action db.DecisionAction) (string, *string) {
+	switch action.State {
+	case "expired":
+		return "expired", nil
+	case "rejected":
+		reason := "rejected"
+		return "not_applied", &reason
+	}
+	return decisionActionOutcomeOf(action)
+}
+
+func actionRequiresPasskey(action db.DecisionAction) bool {
+	definition, ok := decisionaction.Lookup(action.ActionType, int(action.ActionVersion))
+	return ok && definition.RequiresPasskey()
+}
+
+func appliedAtOf(action db.DecisionAction) *string {
+	if action.State != "executed" {
+		return nil
+	}
+	return timestampToPtr(action.ExecutedAt)
+}
+
+// decisionActionSummary is the wake and card text of a terminal action.
+func decisionActionSummary(action db.DecisionAction) string {
+	switch outcome, reason := decisionActionOutcomeOf(action); outcome {
+	case "applied":
+		return "Applied " + action.ActionType + "."
+	case "not_applied":
+		return "Not applied " + action.ActionType + ": " + *reason + "."
+	}
+	return "Rejected " + action.ActionType + "."
 }
 
 // draftDecisionAction validates the wire action against the allowlist.
@@ -116,6 +184,15 @@ func snapshotDecisionAction(ctx context.Context, queries *db.Queries, workspaceI
 			return nil, err
 		}
 		return map[string]any{"agent_id": params.AgentID, "custom_env_version": agent.CustomEnvVersion}, nil
+	case agentPauseAction, agentResumeAction:
+		var params decisionaction.AgentSchedulingParams
+		if err := json.Unmarshal(draft.Params, &params); err != nil {
+			return nil, err
+		}
+		if _, err := loadAgent(params.AgentID); err != nil {
+			return nil, err
+		}
+		return map[string]any{"agent_id": params.AgentID}, nil
 	case "agent.copy":
 		var params struct {
 			SourceAgentID string  `json:"source_agent_id"`
@@ -284,12 +361,15 @@ func workflowPreconditions(ctx context.Context, queries *db.Queries, workspaceID
 // actionPreconditions records what the approver must still find true: the
 // issue, workflow, squad or workspace the action names, otherwise the agent's
 // snapshot.
-func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, draft *decisionActionDraft) (map[string]any, error) {
+func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issue, proposer pgtype.UUID, draft *decisionActionDraft) (map[string]any, error) {
 	if change, ok := configChanges[draft.Type]; ok {
-		return configChangePreconditions(ctx, queries, issue.WorkspaceID, draft, change)
+		return configChangePreconditions(ctx, queries, issue.WorkspaceID, proposer, draft, change)
 	}
 	switch draft.Definition.Target {
 	case decisionaction.TargetIssue:
+		if draft.Type == issueProjectSetType {
+			return issueProjectPreconditions(ctx, queries, issue, draft)
+		}
 		if err := checkIssueTarget(draft.Params, issue.ID, http.StatusBadRequest); err != nil {
 			return nil, err
 		}
@@ -316,7 +396,7 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 // request never exists without the action it asks Cheese to approve.
 func createDecisionAction(ctx context.Context, queries *db.Queries, issue db.Issue, request db.DecisionRequest, taskID pgtype.UUID, draft *decisionActionDraft) (db.DecisionAction, error) {
 	empty := db.DecisionAction{}
-	preconditions, err := actionPreconditions(ctx, queries, issue, draft)
+	preconditions, err := actionPreconditions(ctx, queries, issue, request.AskingAgentID, draft)
 	if err != nil {
 		return empty, err
 	}

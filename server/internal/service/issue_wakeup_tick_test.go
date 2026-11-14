@@ -7,15 +7,25 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // drainTick runs one pass over the workspace with room to finish: these tests
 // pin which rules a pass reaches, not how fast a loaded CI machine runs them.
+// A rule row held past dispatch's 50ms lock wait fails that pass and keeps its
+// pending hint, and the scheduler's next pass fires it; so a lock timeout (and
+// only that) repeats the pass, up to three times.
 func drainTick(t *testing.T, s *IssueWakeupService, ws pgtype.UUID) {
 	t.Helper()
-	if err := s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{budget: 5 * time.Minute, inputBudget: 5 * time.Minute}); err != nil {
+	var err error
+	for range 3 {
+		if err = s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{budget: 5 * time.Minute, inputBudget: 5 * time.Minute}); !isLockTimeout(err) {
+			break
+		}
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -349,5 +359,99 @@ func TestPendingWakeupInputsReportsAnIncompleteScan(t *testing.T) {
 	cancel()
 	if _, err := s.pendingInputs(ctx, []pgtype.UUID{parseTestUUID(t, f.WorkspaceID)}, wakeupPendingScanPage); err == nil {
 		t.Fatal("a scan whose context ended reported a complete result")
+	}
+}
+
+// A rule whose row another writer holds past dispatch's 50ms lock wait fails
+// that pass and keeps its pending hint; the next pass fires it. drainTick
+// must ride out that transient lock timeout, as the scheduler's next pass does.
+func TestDrainTickRetriesTransientLockTimeout(t *testing.T) {
+	f, s, issue, reviewer := conditionFixture(t)
+	ctx := context.Background()
+	ws := parseTestUUID(t, f.WorkspaceID)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: reviewer, Kind: "event", Instruction: "Review it",
+		Condition: condition(t, map[string]any{"type": "issue_field", "field": "status", "value": "in_review"})})
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
+	f.Exec(t, "UPDATE issue SET status='in_review' WHERE id=$1", issue)
+
+	locked, released := make(chan error, 1), make(chan struct{})
+	go func() {
+		defer close(released)
+		holder, err := f.Pool.Begin(ctx)
+		if err != nil {
+			locked <- err
+			return
+		}
+		defer holder.Rollback(ctx)
+		_, err = holder.Exec(ctx, "SELECT 1 FROM issue_wakeup WHERE id=$1 FOR UPDATE", w.ID)
+		locked <- err
+		// Release once a second blocked statement has started: the first one
+		// timed out, so the pass that follows it is the retry. A deadline
+		// keeps a missing retry from hanging the test.
+		waits := map[string]bool{}
+		for deadline := time.Now().Add(10 * time.Second); len(waits) < 2 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+			rows, qerr := f.Pool.Query(ctx, `SELECT query_start::text FROM pg_stat_activity
+				WHERE wait_event_type = 'Lock' AND datname = current_database()`)
+			if qerr != nil {
+				return
+			}
+			for rows.Next() {
+				var started string
+				if rows.Scan(&started) == nil {
+					waits[started] = true
+				}
+			}
+			rows.Close()
+		}
+	}()
+	if err := <-locked; err != nil {
+		t.Fatal(err)
+	}
+	drainTick(t, s, ws)
+	<-released
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("reviewer runs after the lock cleared = %d, want 1", n)
+	}
+}
+
+// CHE-5252: a one-shot "at" rule is created with a fresh updated_at, so it sorts
+// behind every older due rule in the scan order. With more due rules than a
+// pass can dispatch before its budget runs out, the new rule waited for the
+// whole backlog to rotate (6-23 min in production). A due "at" rule must be
+// dispatched in the first pass whatever the backlog.
+func TestWakeupTickFiresDueAtRuleBehindFullBatchOfRecurringRules(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	ws := parseTestUUID(t, f.WorkspaceID)
+	idleConditionRules(t, f, s, agent, 3*wakeupTickBatch)
+
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 600, Instruction: "one-shot"})
+	// Due now, with the fresh updated_at a rule gets on creation.
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second', updated_at=now() WHERE id=$1", w.ID)
+
+	// A pass that can only dispatch a few rules before its budget ends.
+	err := s.tickWith(context.Background(), []pgtype.UUID{ws}, tickLimits{
+		budget:         400 * time.Millisecond,
+		beforeDispatch: func(db.IssueWakeup) { time.Sleep(20 * time.Millisecond) },
+	})
+	if err != nil && !isLockTimeout(err) {
+		t.Fatal(err)
+	}
+	if n := wakeRuns(t, f, w.ID); n != 1 {
+		t.Fatalf("one-shot runs after one short pass = %d, want 1", n)
+	}
+}
+
+// A due "at" rule that is held (here: its own run is already claimed) must say
+// so on the rule, so lateness is visible.
+func TestWakeupDueAtRuleHeldByClaimedRunRecordsReason(t *testing.T) {
+	f, s, issue, agent := conditionFixture(t)
+	w := wakeCreate(t, f, s, issue, WakeupInput{AgentID: agent, Kind: "at", AfterSeconds: 600, Instruction: "one-shot"})
+	f.Task(t, agent, testutil.Cols{"issue_id": issue, "status": "dispatched", "dispatched_at": testutil.Raw("now()"),
+		"runtime_id": testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agent + "')"),
+		"context":    testutil.Raw("jsonb_build_object('wakeup_id','" + util.UUIDToString(w.ID) + "')")})
+	f.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", w.ID)
+	got := wakeTick(t, f, s, w.ID)
+	if !got.LastError.Valid || got.LastError.String == "" {
+		t.Fatalf("held due rule records no reason: enabled=%v last_error=%v", got.Enabled, got.LastError)
 	}
 }

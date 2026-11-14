@@ -624,3 +624,118 @@ func TestUnconfiguredHTTPProviderFailureProbeReportsNotConfigured(t *testing.T) 
 		t.Fatalf("typed-nil probe decision = %+v, want not-configured skip reason", typedAttempt)
 	}
 }
+
+// seedAutopilotProviderFailure fails one scheduled autopilot run with a
+// provider 503 (gpt-5.6-sol, provider openai) failedAgo ago. No provider_breaker
+// row exists: one 503 does not create one.
+func seedAutopilotProviderFailure(t *testing.T, f principalFixture, ownerID, failedAgo string) (autopilotID, triggerID, failedTaskID string) {
+	t.Helper()
+	agentID := f.privateAgentOwnedBy(t, ownerID, "breaker-evidence")
+	f.Exec(t, "UPDATE agent SET model='gpt-5.6-sol' WHERE id=$1", agentID)
+	autopilotID, triggerID = f.autopilotWithTrigger(t, agentID, ownerID, ownerID)
+	failedRun, err := f.q.CreateAutopilotRun(context.Background(), db.CreateAutopilotRunParams{
+		ID: dbid.NewV7(), AutopilotID: parseTestUUID(t, autopilotID), TriggerID: parseTestUUID(t, triggerID),
+		Source: "schedule", Status: "running", TriggerPayload: []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Cleanup(t, "DELETE FROM autopilot_run WHERE id=$1", util.UUIDToString(failedRun.ID))
+	failedTaskID = f.Task(t, agentID, testutil.Cols{
+		"runtime_id":       testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agentID + "')"),
+		"autopilot_run_id": util.UUIDToString(failedRun.ID),
+		"status":           "failed",
+		"failure_reason":   "agent_error.provider_server_error",
+		"completed_at":     testutil.Raw("now()-interval '" + failedAgo + "'"),
+	})
+	f.Cleanup(t, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", failedTaskID)
+	f.Exec(t, "UPDATE autopilot_run SET status='failed',completed_at=now() WHERE id=$1", util.UUIDToString(failedRun.ID))
+	f.Exec(t, "DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'", f.WorkspaceID)
+	f.Cleanup(t, "DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider='openai'", f.WorkspaceID)
+	return autopilotID, triggerID, failedTaskID
+}
+
+// completeOnOtherAgent completes a task of a second agent running model, through
+// the real success recorder, and returns that agent's id.
+func completeOnOtherAgent(t *testing.T, f principalFixture, ownerID, model string) string {
+	t.Helper()
+	agentID := f.privateAgentOwnedBy(t, ownerID, "breaker-evidence-other")
+	f.Exec(t, "UPDATE agent SET model=$2 WHERE id=$1", agentID, model)
+	taskID := f.Task(t, agentID, testutil.Cols{
+		"runtime_id":   testutil.Raw("(SELECT runtime_id FROM agent WHERE id='" + agentID + "')"),
+		"status":       "completed",
+		"completed_at": testutil.Raw("now()"),
+	})
+	task, err := f.q.GetAgentTask(context.Background(), parseTestUUID(t, taskID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recordProviderSuccess(context.Background(), f.q, task); err != nil {
+		t.Fatal(err)
+	}
+	return agentID
+}
+
+// CHE-4311: no probe configured, one 503, then another agent completed a task
+// on the same provider (breaker closed, last_success_at after the failure): the
+// next scheduled run admits.
+func TestAutopilotScheduleAdmitsOnSameProviderSuccessEvidence(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, failedTaskID := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes")
+	completeOnOtherAgent(t, f, ownerID, "gpt-5.6-sol")
+
+	run := f.dispatch(t, autopilotID, triggerID)
+	if run.Status != "running" || !run.TaskID.Valid {
+		t.Fatalf("run = status %q task valid=%v reason=%q, want admitted", run.Status, run.TaskID.Valid, run.FailureReason.String)
+	}
+	var recordedRun string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT recovery_run_id FROM provider_failure_recovery WHERE failed_task_id=$1`, failedTaskID).Scan(&recordedRun); err != nil {
+		t.Fatal(err)
+	}
+	if recordedRun != util.UUIDToString(run.ID) {
+		t.Fatalf("recovery receipt run=%s, want %s", recordedRun, util.UUIDToString(run.ID))
+	}
+}
+
+func requireCooldownSkip(t *testing.T, f principalFixture, autopilotID, triggerID, why string) {
+	t.Helper()
+	run := f.dispatch(t, autopilotID, triggerID)
+	if run.Status != "skipped" || run.ReasonCode.String != string(dispatch.ReasonProviderFailureCooldown) {
+		t.Fatalf("%s: run = status %q reason=%q, want provider_failure_cooldown skip", why, run.Status, run.ReasonCode.String)
+	}
+}
+
+func TestAutopilotScheduleSkipsWithoutProviderSuccessEvidence(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes")
+	requireCooldownSkip(t, f, autopilotID, triggerID, "no success recorded")
+}
+
+// Success older than the failure is not recovery evidence.
+func TestAutopilotScheduleSkipsWhenProviderSuccessPredatesFailure(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes")
+	completeOnOtherAgent(t, f, ownerID, "gpt-5.6-sol")
+	f.Exec(t, "UPDATE provider_breaker SET last_success_at=now()-interval '90 minutes' WHERE workspace_id=$1 AND provider='openai'", f.WorkspaceID)
+	requireCooldownSkip(t, f, autopilotID, triggerID, "stale success")
+}
+
+// A success on another provider is not evidence, even if that agent's model is
+// edited to the failed provider afterwards.
+func TestAutopilotScheduleSkipsWhenSuccessAgentModelChangedToFailedProvider(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes")
+	otherAgentID := completeOnOtherAgent(t, f, ownerID, "claude-sonnet-5-5")
+	f.Exec(t, "UPDATE agent SET model='gpt-5.6-sol' WHERE id=$1", otherAgentID)
+	requireCooldownSkip(t, f, autopilotID, triggerID, "model edited after success")
+}
+
+// An open breaker still blocks admission despite a later success.
+func TestAutopilotScheduleSkipsWhenProviderBreakerOpenDespiteSuccess(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "61 minutes")
+	f.Exec(t, "INSERT INTO provider_breaker (workspace_id, provider, state, next_probe_at, last_success_at) VALUES ($1,'openai','open', now()+interval '5 minutes', now())", f.WorkspaceID)
+	if run := f.dispatch(t, autopilotID, triggerID); run.Status != "skipped" {
+		t.Fatalf("open breaker: run status %q, want skipped", run.Status)
+	}
+}

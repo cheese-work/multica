@@ -78,3 +78,11 @@ FROM activity_log
 WHERE issue_id = sqlc.arg('issue_id')::uuid
   AND action = 'entry_gate_warning'
   AND details->>'step' = sqlc.arg('step')::text;
+
+-- name: ListIssueRunSkips :many
+-- The runs the platform declined to start on an issue (CHE-4649), newest
+-- first. They are no task rows, so the run list reads them from the activity.
+SELECT id, created_at, details FROM activity_log
+WHERE issue_id = $1 AND action = 'run_skipped'
+ORDER BY created_at DESC
+LIMIT 50;

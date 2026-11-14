@@ -129,7 +129,13 @@ export function RuntimeConfigTab({
     setSaving(true);
     try {
       await onSave({
-        runtime_config: serializeOpenclawRuntimeConfig(currentCfg),
+        runtime_config: {
+          ...serializeOpenclawRuntimeConfig(currentCfg),
+          // Owned by the General tab; this form must not drop it.
+          ...(agent.runtime_config.auto_compact != null
+            ? { auto_compact: agent.runtime_config.auto_compact }
+            : {}),
+        },
       });
       toast.success(t(($) => $.tab_body.runtime_config.saved_toast));
     } catch (err) {

@@ -76,6 +76,8 @@ Resolves MUL-123
 
 正文中的普通提及，例如 `Related to MUL-123`，不会与该任务建立关联。Commit message 和 PR 评论也不会触发关联。
 
+来自 fork 的 PR 仅在该 fork 与基础仓库属于同一所有者时才会自动关联。合并这类 PR 不会推进任务状态。来自其他所有者 fork 的 PR 请手动关联。
+
 也可以手动关联：在任务的 **Pull requests** 区块点 **+**，粘贴 PR 链接。要把 PR 从任务上移除，打开这一行的 **⋯** 菜单，选择 **移除关联**；之后 Multica 不会再根据标题或分支把它关联回来。
 
 ## 在任务中查看 PR
@@ -124,6 +126,12 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 在 **设置 → 代码** 的 GitHub 一行，从 **⋯** 菜单选择 **断开**，只会移除当前 Multica 工作区与该 installation 的关系，不会替你从 GitHub 卸载 App。已有 PR 记录会保留，新的事件不再进入该工作区。
 
 撤销 GitHub 侧的仓库授权，需到个人或组织的 GitHub App installations 页面卸载或调整仓库范围。卸载后，与该 installation 关联的所有 Multica 工作区都会停止接收事件。
+
+## 检查通过唤醒
+
+在工作区设置中将 `github_wake_on_ci_success` 设为 `true` 后，已关联的打开或草稿 PR 的检查在当前提交上通过时会启动一次运行。该设置默认关闭。唯一未完成的检查是 `security-gate` 裁决状态的 PR 视为已通过。新提交会再次唤醒。失败的运行在同一提交上重跑变绿时会再唤醒一次。重复投递同一次通过不会再唤醒。
+
+运行会交给 PR 的作者智能体，解析方式与冲突和检查失败唤醒相同。作者未知时交给议题的负责人。负责人是人且作者智能体未知时，该人会收到通知。
 
 ## 等待 GitHub Actions 运行
 
@@ -191,6 +199,7 @@ Repository permissions：
 | Actions | Read-only；`--until-gh-run` 唤醒所需 |
 | Checks | Read-only；用于显示 CI 状态 |
 | Commit statuses | Read-only；用于汇总 legacy status 形式的 CI |
+| Actions | 可选，Read-only；同一提交上，被同一工作流的新运行取代的已取消运行不再计入 CI 状态 |
 
 Organization permissions：
 
@@ -205,7 +214,7 @@ Organization permissions：
 - **Workflow run** 和 **Workflow job**，`--until-gh-run` 唤醒所需；
 - **Check suite**、**Check run** 和 **Status**，用于触发 CI 与可合并性刷新。
 
-PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。
+PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。授予可选的 Actions 权限后，还会读取该提交的工作流运行记录；未授予时，即使同一工作流的新运行已通过，被取消的旧运行仍按失败计算。
 
 <Callout type="warning">
 这里需要的是 **Webhook secret**，不是 OAuth Client secret。两边填写的 Webhook secret 不一致时，GitHub delivery 会返回 `401 invalid signature`。

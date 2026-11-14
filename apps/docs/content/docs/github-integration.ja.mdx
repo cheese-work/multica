@@ -74,6 +74,8 @@ Resolves MUL-123
 
 本文に `Related to MUL-123` のような通常の参照を書いただけでは、そのタスクへまったく紐づきません。Commit message と PR コメントも紐づけの対象外です。
 
+フォークからの PR は、フォークのオーナーがベースリポジトリと同じ場合にのみ自動で紐づきます。そのような PR をマージしても、タスクのステータスは変わりません。他のオーナーのフォークからの PR は手動で紐づけてください。
+
 手動で紐づけることもできます。タスクの **Pull requests** セクションで **+** をクリックし、PR の URL を貼り付けます。PR をタスクから外すには、その行の **⋯** メニューから **タスクから外す** を選びます。以後、Multica がタイトルやブランチから再び紐づけることはありません。
 
 ## タスクから PR を確認する
@@ -122,6 +124,12 @@ PR の紐づけ方は結果に影響しません。タイトル、ブランチ�
 **設定 → コード** の GitHub の行で **⋯** メニューから**接続解除**を選ぶと、現在の Multica ワークスペースと installation の関係だけが削除されます。GitHub から App がアンインストールされることはありません。既存の PR 記録は保持されますが、新しいイベントはこのワークスペースに届かなくなります。
 
 GitHub 側のリポジトリアクセスを取り消す場合は、個人または organization の GitHub App installations ページで App をアンインストールするか、リポジトリの範囲を変更してください。App をアンインストールすると、その installation に接続していたすべての Multica ワークスペースがイベントを受信しなくなります。
+
+## チェック成功による起動
+
+ワークスペース設定で `github_wake_on_ci_success` を `true` にすると、リンクされたオープンまたはドラフトの PR のチェックが現在のヘッドで成功したときに実行を開始します。既定ではオフです。未完了のチェックが `security-gate` の判定ステータスだけの PR は、成功として扱います。新しいヘッドでは再び起動します。失敗した実行を同じヘッドで再実行して成功した場合は、もう一度起動します。同じ成功が再配信されても起動しません。
+
+実行は、コンフリクトやチェック失敗の起動と同じ方法で決まる PR の作成者エージェントに送られます。作成者が不明な場合は、課題の担当者に送られます。担当者が人で作成者エージェントが不明な場合は、その人に通知が届きます。
 
 ## GitHub Actions の実行を待つ
 
@@ -189,6 +197,7 @@ Repository permissions:
 | Actions | Read-only。`--until-gh-run` wakeup に必要 |
 | Checks | Read-only。CI の状態表示に使用 |
 | Commit statuses | Read-only。legacy status 形式の CI 集計に使用 |
+| Actions | 任意。Read-only。同じコミットで同じワークフローの新しい実行に置き換えられた、キャンセル済みの実行を CI 状態から除外するために使用 |
 
 Organization permissions:
 
@@ -203,7 +212,7 @@ Organization permissions:
 - **Workflow run**、**Workflow job**。`--until-gh-run` wakeup に必要です。
 - **Check suite**、**Check run**、**Status**。CI とマージ可能性を更新するために使用します。
 
-PR スナップショットは Pull requests、Checks、Commit statuses の REST API から取得します。Contents 権限は不要です。
+PR スナップショットは Pull requests、Checks、Commit statuses の REST API から取得します。Contents 権限は不要です。任意の Actions 権限を付与すると、そのコミットのワークフロー実行も読み取ります。付与しない場合、同じワークフローの新しい実行が成功しても、キャンセルされた古い実行は失敗として数えられます。
 
 <Callout type="warning">
 必要なのは **Webhook secret** であり、OAuth Client secret ではありません。GitHub と Multica に入力した Webhook secret が異なる場合、GitHub delivery は `401 invalid signature` を返します。

@@ -421,6 +421,7 @@ The daemon auto-detects these AI CLIs on your PATH:
 | [Codex](https://github.com/openai/codex) | `codex` | OpenAI's coding agent |
 | [GitHub Copilot CLI](https://docs.github.com/en/copilot) | `copilot` | GitHub's coding agent (model routed by your GitHub entitlement) |
 | OpenCode | `opencode` | Open-source coding agent |
+| [ZCode](https://zcode.z.ai/) | `zcode` / ZCode Desktop | Native NDJSON app-server, sessions, model discovery, thinking levels, MCP and yolo execution |
 | OpenClaw | `openclaw` | Open-source coding agent |
 | Hermes | `hermes` | Nous Research coding agent |
 | [Pi](https://pi.dev/) | `pi` | Pi coding agent |
@@ -460,6 +461,7 @@ Daemon behavior is configured via flags or environment variables:
 | Healthy WebSocket claim poll upper bound | `--ws-claim-poll-interval` | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` (configured independently of `--poll-interval`; downward jitter makes the normal interval `2m30s`–`2m45s`, while old servers and uncertain claims retain the ordinary poll interval) |
 | Heartbeat interval | `--heartbeat-interval` | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` |
 | Agent timeout | `--agent-timeout` | `MULTICA_AGENT_TIMEOUT` | `0` (no cap; bounded by the watchdogs) |
+| Codex agent timeout | — | `MULTICA_CODEX_AGENT_TIMEOUT` | `0` (off). Positive value caps Codex runs only and overrides the global agent timeout for them; other providers are unaffected |
 | Agent idle watchdog | — | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` (`0` disables the whole watchdog suite) |
 | Agent tool watchdog | — | `MULTICA_AGENT_TOOL_WATCHDOG` | same as the idle watchdog (`0` = never force-stop during a tool call) |
 | Silence warn tier | — | `MULTICA_AGENT_SILENCE_WARN_AFTER` | `15m` (`0` = off; marks the transcript when a run has no message and no tool in flight; also marks a tool call running this long. Never stops the run) |
@@ -1180,15 +1182,21 @@ multica autopilot create \
   --mode create_issue \
   --subscriber "Alice"
 
+multica autopilot create --title "Sweep reconcile" --agent "Lambda" \
+  --mode script --script sweep-reconcile --arg --once
 multica autopilot update <id> --status paused
 multica autopilot update <id> --description "New prompt"
+multica autopilot update <id> --description "New prompt" --if-description-sha256 <hex>
 multica autopilot update <id> --subscriber "Alice" --subscriber "Bob"
 multica autopilot update <id> --clear-subscribers
 multica autopilot delete <id>
 ```
 
-`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent) or `run_only` (enqueues a direct agent task without creating an issue). `--agent` accepts either a name or UUID.
+`--mode` accepts `create_issue` (creates a new issue on each run and assigns it to the agent), `run_only` (enqueues a direct agent task without creating an issue) or `script` (runs one allowlisted script, no model session). `--agent` accepts either a name or UUID.
+`--mode script --script <name> [--arg <value>]...` runs one allowlisted script under the agent's task token, with no model session. `--script` and `--arg` require `--mode script`; `--mode script` requires `--script`. `--description` is never executed. With no daemon allowlist every script task fails closed. `--output json` shows the script name and args as `script_config`. `autopilot update --mode <other>` clears the script.
 `--subscriber` accepts a workspace member name or user ID and may be repeated; on update it replaces the autopilot's subscriber template. Subscribers receive inbox notifications for issues created by a `create_issue` autopilot. Use `--clear-subscribers` to remove all autopilot subscribers.
+
+`--if-description-sha256 <hex>` guards a `--description` write against lost updates: the server compares the SHA-256 of the live description (UTF-8, empty when unset) with the given hex digest under the row lock and, on mismatch, rejects the request with HTTP 409 (`autopilot_description_conflict`) without writing anything. It requires `--description`. The CLI first reads `autopilot_description_guard_supported` from `/api/config` and refuses to send the write to a server that does not declare it, because older servers ignore the digest and would overwrite the description.
 
 ### Manual Trigger
 

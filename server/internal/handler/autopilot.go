@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,11 +49,13 @@ type AutopilotResponse struct {
 	PauseReason        *string `json:"pause_reason"`
 	ExecutionMode      string  `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
-	CreatedByType      string  `json:"created_by_type"`
-	CreatedByID        string  `json:"created_by_id"`
-	LastRunAt          *string `json:"last_run_at"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
+	// ScriptConfig is set only for execution_mode=script: {"name","args"}.
+	ScriptConfig  json.RawMessage `json:"script_config,omitempty"`
+	CreatedByType string          `json:"created_by_type"`
+	CreatedByID   string          `json:"created_by_id"`
+	LastRunAt     *string         `json:"last_run_at"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
 
 	// List-endpoint-only derived fields (absent on the detail/create/update
 	// responses and on older servers — clients must treat them as optional).
@@ -210,6 +214,7 @@ func autopilotToResponse(a db.Autopilot, subscribers []db.AutopilotSubscriber) A
 		PauseReason:        textToPtr(a.PauseReason),
 		ExecutionMode:      a.ExecutionMode,
 		IssueTitleTemplate: textToPtr(a.IssueTitleTemplate),
+		ScriptConfig:       a.ScriptConfig,
 		CreatedByType:      a.CreatedByType,
 		CreatedByID:        uuidToString(a.CreatedByID),
 		LastRunAt:          timestampToPtr(a.LastRunAt),
@@ -366,6 +371,7 @@ type CreateAutopilotRequest struct {
 	AssigneeID         string            `json:"assignee_id"`
 	ExecutionMode      string            `json:"execution_mode"`
 	IssueTitleTemplate *string           `json:"issue_title_template"`
+	ScriptConfig       json.RawMessage   `json:"script_config"`
 	Subscribers        []SubscriberInput `json:"subscribers"`
 }
 
@@ -378,8 +384,14 @@ type UpdateAutopilotRequest struct {
 	Status             *string `json:"status"`
 	ExecutionMode      *string `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
+	// ScriptConfig replaces the stored config when present; null clears it.
+	ScriptConfig json.RawMessage `json:"script_config"`
 	// Wholesale replacement when present; omit to leave subscribers untouched.
 	Subscribers []SubscriberInput `json:"subscribers"`
+	// Optional stale-write guard: hex SHA-256 of the description the caller
+	// last read. Requires "description"; a mismatch with the row locked for
+	// update fails the whole request with 409 and writes nothing.
+	ExpectedDescriptionSHA256 *string `json:"expected_description_sha256"`
 }
 
 type SubscriberInput struct {
@@ -823,8 +835,13 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "execution_mode is required")
 		return
 	}
-	if req.ExecutionMode != "create_issue" && req.ExecutionMode != "run_only" {
-		writeError(w, http.StatusBadRequest, "execution_mode must be create_issue or run_only")
+	if !isValidAutopilotExecutionMode(req.ExecutionMode) {
+		writeError(w, http.StatusBadRequest, "execution_mode must be create_issue, run_only or script")
+		return
+	}
+	scriptCfg, err := resolveScriptConfig(req.ExecutionMode, req.ScriptConfig, true, nil)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.IssueTitleTemplate != nil {
@@ -906,6 +923,7 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		AssigneeID:         assigneeUUID,
 		Status:             "active",
 		ExecutionMode:      req.ExecutionMode,
+		ScriptConfig:       scriptCfg,
 		CreatedByType:      "member",
 		CreatedByID:        actor.UserID,
 		Description:        ptrToText(req.Description),
@@ -934,6 +952,19 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to add autopilot subscriber")
 			return
 		}
+	}
+	subscriberKeys := make([]string, len(subscribers))
+	for i, subscriber := range subscribers {
+		subscriberKeys[i] = "member:" + uuidToString(subscriber.UserID)
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.create",
+		WorkspaceID: wsUUID,
+		TargetID:    autopilot.ID,
+		After:       autopilotAuditFields(autopilot, subscriberKeys),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.create")
+		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create autopilot")
@@ -1071,6 +1102,7 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		AssigneeID:         prev.AssigneeID,
 		IssueTitleTemplate: prev.IssueTitleTemplate,
 		ProjectID:          prev.ProjectID,
+		ScriptConfig:       prev.ScriptConfig,
 	}
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
@@ -1078,11 +1110,29 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil {
 		params.Status = pgtype.Text{String: *req.Status, Valid: true}
 	}
+	nextMode := prev.ExecutionMode
 	if req.ExecutionMode != nil {
-		params.ExecutionMode = pgtype.Text{String: *req.ExecutionMode, Valid: true}
+		if !isValidAutopilotExecutionMode(*req.ExecutionMode) {
+			writeError(w, http.StatusBadRequest, "execution_mode must be create_issue, run_only or script")
+			return
+		}
+		nextMode = *req.ExecutionMode
+		params.ExecutionMode = pgtype.Text{String: nextMode, Valid: true}
 	}
-	if _, ok := rawFields["description"]; ok {
+	_, scriptCfgSent := rawFields["script_config"]
+	scriptCfg, err := resolveScriptConfig(nextMode, req.ScriptConfig, scriptCfgSent, prev.ScriptConfig)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	params.ScriptConfig = scriptCfg
+	_, descriptionSent := rawFields["description"]
+	if descriptionSent {
 		params.Description = ptrToText(req.Description)
+	}
+	if req.ExpectedDescriptionSHA256 != nil && !descriptionSent {
+		writeError(w, http.StatusBadRequest, "expected_description_sha256 requires description")
+		return
 	}
 	if _, ok := rawFields["issue_title_template"]; ok {
 		if req.IssueTitleTemplate != nil {
@@ -1211,10 +1261,41 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.ExpectedDescriptionSHA256 != nil {
+		live := sha256.Sum256([]byte(lockedPrev.Description.String))
+		if !strings.EqualFold(*req.ExpectedDescriptionSHA256, hex.EncodeToString(live[:])) {
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error": "the autopilot description changed since it was read; re-read it and try again.",
+				"code":  "autopilot_description_conflict",
+			})
+			return
+		}
+	}
+
+	// The subscriber set only enters the audit diff when this request replaces it.
+	var prevSubscriberKeys []string
+	if replaceSubscribers {
+		prevSubs, err := qtx.ListAutopilotSubscribers(r.Context(), prev.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
+		prevSubscriberKeys = autopilotSubscriberKeys(prevSubs)
+	}
+
 	autopilot, err := qtx.UpdateAutopilot(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update autopilot")
 		return
+	}
+
+	// Resuming skips the runs missed while the autopilot was not active, so the
+	// display next_run_at left over from before the pause must move to the future.
+	if prev.Status != "active" && autopilot.Status == "active" {
+		if err := refreshScheduleNextRuns(r.Context(), qtx, autopilot.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update autopilot")
+			return
+		}
 	}
 
 	// A substantive change (target / enabled-state / execution mode) republishes the
@@ -1260,6 +1341,24 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nextSubscriberKeys := prevSubscriberKeys
+	if replaceSubscribers {
+		nextSubscriberKeys = make([]string, len(subscribers))
+		for i, subscriber := range subscribers {
+			nextSubscriberKeys[i] = "member:" + uuidToString(subscriber.UserID)
+		}
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.update",
+		WorkspaceID: prev.WorkspaceID,
+		TargetID:    autopilot.ID,
+		Before:      autopilotAuditFields(lockedPrev, prevSubscriberKeys),
+		After:       autopilotAuditFields(autopilot, nextSubscriberKeys),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.update")
+		return
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update autopilot")
 		return
@@ -1272,6 +1371,36 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	resp := autopilotToResponse(autopilot, subs)
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", userID, map[string]any{"autopilot": resp})
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// refreshScheduleNextRuns recomputes next_run_at from the current time for every
+// enabled schedule trigger of the autopilot. A trigger whose cron no longer parses
+// keeps its value: it cannot fire either way, and it must not block the resume.
+func refreshScheduleNextRuns(ctx context.Context, q *db.Queries, autopilotID pgtype.UUID) error {
+	triggers, err := q.ListAutopilotTriggers(ctx, autopilotID)
+	if err != nil {
+		return err
+	}
+	for _, t := range triggers {
+		if t.Kind != "schedule" || !t.Enabled || t.CronExpression.String == "" {
+			continue
+		}
+		tz := "UTC"
+		if t.Timezone.Valid && t.Timezone.String != "" {
+			tz = t.Timezone.String
+		}
+		next, err := computeNextRun(t.CronExpression.String, tz)
+		if err != nil {
+			continue
+		}
+		if _, err := q.UpdateAutopilotTrigger(ctx, db.UpdateAutopilotTriggerParams{
+			ID:        t.ID,
+			NextRunAt: pgtype.Timestamptz{Time: next, Valid: true},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // autopilotRuleSubstantiveChange reports whether a substantive (publish-worthy)
@@ -1380,9 +1509,20 @@ func (h *Handler) DeleteAutopilot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete autopilot")
 		return
 	}
+	deleted := autopilotAuditFields(ap, nil)
+	delete(deleted, "subscribers")
 	ap.Status = "archived" // reflect the post-archive state in the version snapshot
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", actor.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete autopilot")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.delete",
+		WorkspaceID: wsUUID,
+		TargetID:    idUUID,
+		Before:      deleted,
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1637,7 +1777,9 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		}
 		trigger, err := h.createWebhookTriggerWithMintedToken(r, ap, ptrToText(req.Label), provider, eventFiltersBytes, publisherID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to create trigger")
+			if !failedAudit(w, r, err, "autopilot.trigger.create") {
+				writeError(w, http.StatusInternalServerError, "failed to create trigger")
+			}
 			return
 		}
 		resp := h.triggerToResponse(trigger)
@@ -1685,6 +1827,15 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 	}
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", publisherID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to create trigger")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.create",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    trigger.ID,
+		After:       autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.create")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1760,6 +1911,15 @@ func (h *Handler) createWebhookTriggerWithMintedToken(
 		if err := h.recordAutopilotRuleVersion(ctx, qtx, ap, "member", publisherID); err != nil {
 			tx.Rollback(ctx)
 			return db.AutopilotTrigger{}, err
+		}
+		if err := h.writeAudit(ctx, qtx, r, auditInput{
+			Kind:        "autopilot.trigger.create",
+			WorkspaceID: ap.WorkspaceID,
+			TargetID:    trigger.ID,
+			After:       autopilotTriggerAuditFields(trigger),
+		}); err != nil {
+			tx.Rollback(ctx)
+			return db.AutopilotTrigger{}, auditWriteError{err}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return db.AutopilotTrigger{}, err
@@ -2032,6 +2192,16 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.update",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    trigger.ID,
+		Before:      autopilotTriggerAuditFields(prev),
+		After:       autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.update")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update trigger")
 		return
@@ -2101,6 +2271,15 @@ func (h *Handler) DeleteAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 	}
 	if err := h.recordAutopilotRuleVersion(r.Context(), qtx, ap, "member", actor.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete trigger")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.trigger.delete",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    triggerUUID,
+		Before:      autopilotTriggerAuditFields(trigger),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {

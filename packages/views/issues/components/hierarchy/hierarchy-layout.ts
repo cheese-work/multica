@@ -1,7 +1,7 @@
+import type { Box } from "../canvas/canvas-math";
 import type { GroupSummary, HierarchyIssue } from "./hierarchy-model";
 
-export interface Box { x: number; y: number; w: number; h: number }
-export interface View { x: number; y: number; scale: number }
+export { centerOn, fitView, intersects, panBy, zoomAt, type Box, type View } from "../canvas/canvas-math";
 export type Mode = "groups" | "cards";
 export type LayoutItem =
   | { kind: "issue"; role: "parent" | "current" | "sibling" | "child" | "related"; issue: HierarchyIssue; box: Box }
@@ -19,8 +19,6 @@ export interface Hierarchy {
   relatedIssues: HierarchyIssue[];
 }
 
-export const ZOOM_MIN = 0.2;
-export const ZOOM_MAX = 2;
 /** At and above this zoom a group splits into single issue cards. */
 export const ZOOM_SPLIT = 0.7;
 const MAX_CARDS = 60;
@@ -97,25 +95,3 @@ export function layoutHierarchy(h: Hierarchy, mode: Mode): Layout {
   const bottom = Math.max(...boxes.map((b) => b.y + b.h));
   return { items, edges, bounds: { x: left, y: top, w: right - left, h: bottom - top } };
 }
-
-const clampScale = (scale: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, scale));
-
-/** Zoom to `scale`, keeping the world point under `anchor` (screen px) fixed. */
-export function zoomAt(view: View, scale: number, anchor: { x: number; y: number }): View {
-  const next = clampScale(scale);
-  const ratio = next / view.scale;
-  return { scale: next, x: anchor.x - (anchor.x - view.x) * ratio, y: anchor.y - (anchor.y - view.y) * ratio };
-}
-
-export function centerOn(box: Box, viewport: { w: number; h: number }, scale: number): View {
-  return { scale, x: viewport.w / 2 - center(box) * scale, y: viewport.h / 2 - (box.y + box.h / 2) * scale };
-}
-
-export function fitView(bounds: Box, viewport: { w: number; h: number }, pad = 32): View {
-  const scale = clampScale(Math.min((viewport.w - pad * 2) / bounds.w, (viewport.h - pad * 2) / bounds.h, 1));
-  return centerOn(bounds, viewport, scale);
-}
-
-export const panBy = (view: View, dx: number, dy: number): View => ({ ...view, x: view.x + dx, y: view.y + dy });
-
-export const intersects = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

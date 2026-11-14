@@ -11,7 +11,8 @@ import (
 
 func usesPRResolver(config *builtinWakeup, wakeup db.IssueWakeup) bool {
 	return (config == nil || !config.Eff.Config.Target.Set) &&
-		(wakeup.SystemRule.String == SystemRulePRAttention || wakeup.SystemRule.String == SystemRulePRChecksFailed)
+		(wakeup.SystemRule.String == SystemRulePRAttention || wakeup.SystemRule.String == SystemRulePRChecksFailed ||
+			wakeup.SystemRule.String == SystemRulePRChecksPassed)
 }
 
 func prResolverTarget(ctx context.Context, queries *db.Queries, issue db.Issue, receipt db.IssueWakeupReceipt) (wakeTarget, error) {

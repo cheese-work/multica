@@ -114,6 +114,10 @@ func TestBackgroundSweepQuickActionsGivesNoPills(t *testing.T) {
 	b := newBGFailoverFixture(t)
 	var noAgent, written int
 	purpose := bgagents.Purpose(bgagents.QuickActions)
+	// The enqueue re-reads the stored chain (CHE-4114): give the member a personal one.
+	b.rows.Exec(t, `UPDATE member_setting SET value = value || jsonb_build_object($3::text, jsonb_build_object('agent_id', $4::text))
+		WHERE workspace_id = $1 AND user_id = $2 AND key = 'background_agents'`,
+		b.workspaceID, b.userID, string(bgagents.QuickActions), b.primary)
 	b.svc.BackgroundNoAgent[purpose] = func(context.Context, db.AgentTaskQueue) { noAgent++ }
 	b.svc.BackgroundWriters = map[string]BackgroundWriter{
 		purpose: func(context.Context, *db.Queries, db.AgentTaskQueue, []byte) error { written++; return nil },
@@ -159,7 +163,8 @@ func TestBackgroundLateCompletionOfAnExpiredAttemptWritesNothing(t *testing.T) {
 				return nil
 			},
 		}
-		return b, b.enqueue(t), writes
+		task := b.enqueue(t)
+		return b, task, writes
 	}
 	complete := func(b *bgFailoverFixture, task db.AgentTaskQueue) {
 		// The outcome (error or idempotent no-op) is not the contract; the

@@ -2,6 +2,14 @@
 -- bottom-up deletion plan; the legacy foreign keys remain only as a
 -- compatibility safety net during the expand phase.
 
+-- name: DeleteProviderBreakersForWorkspace :exec
+-- Provider breaker state is workspace-owned; remove it explicitly before the
+-- workspace row instead of relying on the legacy FK cascade.
+DELETE FROM provider_breaker WHERE workspace_id = $1;
+
+-- name: DeleteProviderBreakerAuditForWorkspace :exec
+DELETE FROM provider_breaker_audit WHERE workspace_id = $1;
+
 -- name: SetWorkspaceTeardownMode :exec
 -- The setting is transaction-local. Migration 242 makes only the three DELETE
 -- dirty triggers skip their per-row work while this flag is on.
@@ -99,12 +107,11 @@ LIMIT $3;
 -- name: ListTaskIDsByAgentFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByAgentPage :many
 -- One owner key per call, one keyset-paged chunk per call.
@@ -125,55 +132,87 @@ FOR UPDATE;
 -- the agent's entire task set in front of every page, so a busy agent costs
 -- roughly O(N² / page) for the sweep.
 --
--- FOR UPDATE is load-bearing for correctness, not throughput. It locks the rows
--- this page is about to delete, and under READ COMMITTED PostgreSQL re-checks the
--- WHERE clause after acquiring each lock: a task a concurrent committed UPDATE
--- has already moved to another owner no longer matches and is skipped, and one we
--- did lock cannot be moved away before we delete it.
+-- The page takes no row lock. Locking the run rows before the issues they touch
+-- inverts the order of AuthorizeElevatedOp (issue, then run), so the sweep locks
+-- the issues of the page first and then the rows, through LockTaskBatch.
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
 
 -- name: ListTaskIDsByIssueFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByIssuePage :many
 -- Uses idx_agent_task_queue_issue_id_keyset (migration 279). See
--- ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+-- ListTaskIDsByAgentPage for the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
 
 -- name: ListTaskIDsByRuntimeFirstPage :many
 -- First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 -- a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
--- the single-key / keyset / FOR UPDATE rationale.
+-- the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE runtime_id = $1
 ORDER BY id
-LIMIT $2
-FOR UPDATE;
+LIMIT $2;
 
 -- name: ListTaskIDsByRuntimePage :many
 -- Uses idx_agent_task_queue_runtime_id (migration 273, (runtime_id, id)); before
 -- it every runtime_id index was partial, so this path had none at all. See
--- ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
+-- ListTaskIDsByAgentPage for the single-key / keyset rationale.
 SELECT id FROM agent_task_queue
 WHERE runtime_id = $1 AND id > $2
 ORDER BY id
-LIMIT $3
-FOR UPDATE;
+LIMIT $3;
+
+-- name: ListIssueIDsOfTaskBatch :many
+-- Issues the deletion of a task batch touches: the issue of each task and the
+-- issue of each child that names a task as parent. Nulling parent_task_id re-runs
+-- the taint inheritance trigger on each child, whose issue-taint trigger locks the
+-- child's issue FOR NO KEY UPDATE. Ascending, so callers can lock in this order.
+SELECT t.issue_id AS id
+FROM (
+    SELECT p.issue_id FROM agent_task_queue p
+    WHERE p.id = ANY(@task_ids::uuid[])
+    UNION
+    SELECT c.issue_id FROM agent_task_queue c
+    WHERE c.parent_task_id = ANY(@task_ids::uuid[])
+) t
+WHERE t.issue_id IS NOT NULL
+ORDER BY t.issue_id;
+
+-- name: LockIssuesByID :exec
+-- AuthorizeElevatedOp takes the issue lock first and then waits on the run row, so
+-- teardown takes the issue locks before any run row it deletes or updates, or
+-- Postgres aborts one side (40P01). Ascending id, so two teardowns cannot cross.
+SELECT 1 FROM issue i
+WHERE i.id = ANY(@issue_ids::uuid[])
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
+
+-- name: LockTaskBatch :many
+-- Locks the rows of one task page, after the issues of the page are locked. Under
+-- READ COMMITTED PostgreSQL re-checks the WHERE clause after acquiring each lock:
+-- a task a concurrent committed UPDATE has already moved to another owner no
+-- longer matches and is skipped, and a row that is gone is not returned. A task
+-- we did lock cannot be moved away before we delete it. The owner id is that of
+-- the agent, issue or runtime the page was listed for; the three id spaces are
+-- disjoint.
+SELECT q.id FROM agent_task_queue q
+WHERE q.id = ANY(@task_ids::uuid[])
+  AND (q.agent_id = @owner_id OR q.issue_id = @owner_id OR q.runtime_id = @owner_id)
+ORDER BY q.id
+FOR UPDATE OF q;
 
 -- name: DetachTaskBatchReferences :exec
 -- Break inbound references to a task batch before deleting it, in the
@@ -377,6 +416,10 @@ deleted_github_dispatch_halts AS (
 deleted_github_dispatch_halt_audits AS (
     DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
 ),
+-- CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
+deleted_decision_waits AS (
+    DELETE FROM decision_wait WHERE workspace_id = $1
+),
 -- CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
 deleted_config_sync AS (
     DELETE FROM workspace_config_sync WHERE workspace_id = $1
@@ -388,6 +431,34 @@ deleted_ask_guard_events AS (
 -- CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 deleted_system1_observations AS (
     DELETE FROM system1_observation WHERE workspace_id = $1
+),
+-- CHE-4470 System 1 labels: workspace-owned leaf, no FK.
+deleted_system1_labels AS (
+    DELETE FROM system1_label WHERE workspace_id = $1
+),
+-- CHE-4471 System 1 predictions: workspace-owned leaf, no FK.
+deleted_system1_predictions AS (
+    DELETE FROM system1_prediction WHERE workspace_id = $1
+),
+-- CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
+-- budget tables are per App installation, have no workspace_id, and stay.
+deleted_ci_watch_configs AS (
+    DELETE FROM ci_watch_config WHERE workspace_id = $1
+),
+deleted_ci_watch_config_audits AS (
+    DELETE FROM ci_watch_config_audit WHERE workspace_id = $1
+),
+deleted_ci_failure_events AS (
+    DELETE FROM ci_failure_event WHERE workspace_id = $1
+),
+deleted_ci_watch_actions AS (
+    DELETE FROM ci_watch_action WHERE workspace_id = $1
+),
+deleted_ci_signature_owners AS (
+    DELETE FROM ci_signature_owner WHERE workspace_id = $1
+),
+deleted_ci_flake_increments AS (
+    DELETE FROM ci_flake_increment WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -415,6 +486,10 @@ deleted_recovery_claims AS (
 -- CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
 deleted_run_budget_notices AS (
     DELETE FROM run_budget_notice WHERE workspace_id = $1
+),
+-- CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
+deleted_run_budget_refusals AS (
+    DELETE FROM run_budget_refusal WHERE workspace_id = $1
 ),
 -- CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
 deleted_issue_run_budget_entries AS (
@@ -446,12 +521,19 @@ deleted_issue_taints AS (
 deleted_issue_taint_clears AS (
     DELETE FROM issue_taint_clear WHERE workspace_id = $1
 ),
+deleted_issue_run_taints AS (
+    DELETE FROM issue_run_taint WHERE workspace_id = $1
+),
 deleted_issue_checkpoints AS (
     DELETE FROM issue_checkpoint WHERE workspace_id = $1
 ),
 -- CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
 deleted_governed_vote_records AS (
     DELETE FROM governed_vote_record WHERE workspace_id = $1
+),
+-- CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
+deleted_governed_pass_receipts AS (
+    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
 ),
 -- CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
 -- and no FK. Outlives issues and receipts; goes with the workspace.
@@ -682,6 +764,9 @@ deleted_channel_user_bindings AS (
 deleted_channel_binding_tokens AS (
     DELETE FROM channel_binding_token WHERE workspace_id = $1
 ),
+deleted_wecom_install_sessions AS (
+    DELETE FROM wecom_install_session WHERE workspace_id = $1
+),
 deleted_lark_chat_bindings AS (
     DELETE FROM lark_chat_session_binding
     WHERE installation_id IN (SELECT id FROM ws_lark_installations)
@@ -724,6 +809,20 @@ WHERE chat_session_id IN (
 
 -- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
+-- No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
+-- their chain root is one of this workspace's sessions.
+deleted_attention_items AS (
+    DELETE FROM chat_attention_item WHERE workspace_id = $1
+),
+deleted_attention_marks AS (
+    DELETE FROM chat_attention_mark
+    WHERE chain_root_session_id IN (
+        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
+    )
+),
+deleted_turn_outcomes AS (
+    DELETE FROM chat_turn_outcome WHERE workspace_id = $1
+),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -738,6 +837,19 @@ deleted_channel_installations AS (
     WHERE channel_installation.workspace_id = $1
 )
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1;
+
+-- name: LockIssuesOfWorkspaceCommentTasks :exec
+-- Runs before DeleteWorkspaceComments. A run can name one of the workspace's
+-- comments from an issue of a neighbour workspace, and nulling that trigger
+-- locks the run's issue. Take those issues first, in ascending id order.
+SELECT 1 FROM issue i
+WHERE i.id IN (
+    SELECT t.issue_id FROM agent_task_queue t
+    JOIN comment c ON c.id = t.trigger_comment_id
+    WHERE c.workspace_id = @workspace_id AND t.issue_id IS NOT NULL
+)
+ORDER BY i.id
+FOR NO KEY UPDATE OF i;
 
 -- name: DeleteWorkspaceComments :exec
 DELETE FROM comment WHERE comment.workspace_id = $1;
@@ -757,6 +869,8 @@ WITH deleted_wakeup_pr_events AS (
  DELETE FROM dm_progress_follow WHERE workspace_id=$1
 ), deleted_dm_progress_lanes AS (
  DELETE FROM dm_progress_lane WHERE workspace_id=$1
+), deleted_dm_progress_data_incidents AS (
+ DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_reservations AS (
  DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
 ), deleted_wakeup_aggregate_budgets AS (
@@ -766,6 +880,9 @@ WITH deleted_wakeup_pr_events AS (
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
+),
+deleted_unread AS (
+ DELETE FROM issue_unread WHERE workspace_id=$1
 ),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1

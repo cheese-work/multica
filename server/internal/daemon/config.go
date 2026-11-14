@@ -140,6 +140,8 @@ type Config struct {
 	WSClaimPollInterval            time.Duration // upper bound for healthy WS batch-claim safety polls; actual sleeps use downward-only jitter
 	HeartbeatInterval              time.Duration
 	AgentTimeout                   time.Duration
+	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
+	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex
 	// first-turn no-progress ceiling (MULTICA_CODEX_FIRST_TURN_TIMEOUT). 0 means
@@ -280,7 +282,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	// can re-run the same discovery on a live daemon (MUL-5439).
 	agents := probeAgentCLIs()
 	if len(agents) == 0 && !overrides.AllowNoAgents {
-		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, devin, dim, or zeroclaw and ensure it is on PATH")
+		return Config{}, fmt.Errorf("no agent CLI found: install claude, codebuddy, codearts, codex, copilot, opencode, deveco, openclaw, hermes, pi, omp, cursor-agent, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, devin, dim, zeroclaw, or zcode and ensure it is on PATH")
 	}
 
 	claudeArgs, err := shellArgsFromEnv("MULTICA_CLAUDE_ARGS")
@@ -343,6 +345,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 	if overrides.AgentTimeout != nil {
 		agentTimeout = *overrides.AgentTimeout
+	}
+
+	codexAgentTimeout, err := durationFromEnv("MULTICA_CODEX_AGENT_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
 	}
 
 	// MULTICA_AGENT_IDLE_WATCHDOG=0 disables the per-task idle watchdog. We
@@ -687,6 +694,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		WSClaimPollInterval:             wsClaimPollInterval,
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
+		CodexAgentTimeout:               codexAgentTimeout,
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
@@ -1010,8 +1018,21 @@ func isExecutableFile(path string) bool {
 // doesn't require editing this list by hand.
 var defaultAgentCommandNames = append([]string{
 	"claude", "codex", "opencode", "codearts", "deveco", "openclaw", "hermes",
-	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "muse", "devin", "dim", "zeroclaw",
+	"pi", "cursor-agent", "copilot", "kimi", "reasonix", "dsh", "kiro-cli", "codebuddy", "agy", "qodercli", "qoderclicn", "traecli", "grok", "qwen", "qwenpaw", "mcode", "muse", "devin", "dim", "zeroclaw", "zcode",
 }, agent.BuiltinRuntimeCommands()...)
+
+// zcodeDesktopAppBundlePaths discovers the CLI in default Desktop installs.
+var zcodeDesktopAppBundlePaths = func() []string {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	const bundle = "ZCode.app/Contents/Resources/glm/zcode.cjs"
+	paths := []string{"/Applications/" + bundle}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, "Applications", bundle))
+	}
+	return paths
+}
 
 // codexDesktopAppBundlePaths returns candidate macOS app-bundle locations for
 // the bundled Codex CLI. OpenAI relocated the Desktop app from Codex.app to
@@ -1545,4 +1566,12 @@ func applyOpenclawOverride(oc *cli.OpenClawOverride) {
 			_ = os.Setenv(execenv.OpenclawCLITimeoutEnv, oc.CLITimeout)
 		}
 	}
+}
+
+// agentTimeoutFor returns the absolute run cap for provider.
+func (c Config) agentTimeoutFor(provider string) time.Duration {
+	if provider == "codex" && c.CodexAgentTimeout > 0 {
+		return c.CodexAgentTimeout
+	}
+	return c.AgentTimeout
 }

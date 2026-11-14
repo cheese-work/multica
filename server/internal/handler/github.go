@@ -1416,6 +1416,12 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
 		issueIDs = nil
 	}
+	// A deferred reviewer run starts once the new head is admissible (CHE-4651).
+	if len(issueIDs) > 0 {
+		if err := h.TaskService.ReleaseAdmissionDeferrals(ctx, issueIDs); err != nil {
+			slog.Warn("github: failed to release deferred reviewer runs", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so
 	// mergeable=CONFLICTING counts as DIRTY.
@@ -1453,17 +1459,28 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	// A rollup held PENDING only by the security-gate verdict is green for the
+	// wake (CHE-4938); the workflow move below still waits for a real SUCCESS.
+	checksGreen := pr.ChecksRollupState.String == "SUCCESS"
+	verdictPending := false
+	if pr.ChecksRollupState.String == "PENDING" {
+		rollup, err := service.PRChecksRollupIgnoringVerdict(ctx, h.DB, pr.ID)
+		if err != nil {
+			slog.Warn("github: failed to read verdict-pending checks rollup", "err", err, "pr_id", uuidToString(pr.ID))
+		}
+		verdictPending = rollup == "SUCCESS"
+	}
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && (checksGreen || verdictPending) &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
+			if checksGreen && h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
-				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: "SUCCESS",
 				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
@@ -1709,6 +1726,9 @@ type ghPRHeadRepository struct {
 	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
 	Fork     *bool  `json:"fork"`
+	Owner    struct {
+		ID int64 `json:"id"`
+	} `json:"owner"`
 }
 
 // sameRepository compares head and base by repository id and full name only.
@@ -1720,8 +1740,20 @@ func (repo *ghPRHeadRepository) sameRepository(id int64, owner, name string) boo
 		repo.Fork != nil && strings.EqualFold(repo.FullName, owner+"/"+name)
 }
 
+// sameOwnerHead reports a fork owned by the same account as the base repository.
+// Owner ids are compared, not logins: a login can be renamed and the login text
+// in full_name grants nothing. It only widens automatic issue linking; trust
+// decisions keep sameRepository.
+func (repo *ghPRHeadRepository) sameOwnerHead(baseID, baseOwnerID int64, baseOwner, baseName string) bool {
+	return repo != nil && repo.ID > 0 && repo.FullName != "" && repo.Fork != nil &&
+		repo.Owner.ID > 0 && repo.Owner.ID == baseOwnerID &&
+		baseID > 0 && baseOwner != "" && baseName != ""
+}
+
 type ghPullRequestPayload struct {
-	Action      string `json:"action"`
+	Action string `json:"action"`
+	// Reason is GitHub's cause of a dequeued action (e.g. MERGE_CONFLICT).
+	Reason      string `json:"reason"`
 	PullRequest struct {
 		Number         int32  `json:"number"`
 		HTMLURL        string `json:"html_url"`
@@ -1759,12 +1791,21 @@ type ghPullRequestPayload struct {
 		Name          string `json:"name"`
 		DefaultBranch string `json:"default_branch"`
 		Owner         struct {
+			ID    int64  `json:"id"`
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
 	Installation struct {
 		ID int64 `json:"id"`
 	} `json:"installation"`
+}
+
+// prHeadLinkEligible reports whether the PR may link to issues automatically:
+// the head is the base repository, or a fork owned by the base repository's owner.
+func (p *ghPullRequestPayload) prHeadLinkEligible() bool {
+	repo, head := p.Repository, p.PullRequest.Head.Repo
+	return head.sameRepository(repo.ID, repo.Owner.Login, repo.Name) ||
+		head.sameOwnerHead(repo.ID, repo.Owner.ID, repo.Owner.Login, repo.Name)
 }
 
 func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error {
@@ -1894,10 +1935,14 @@ func (c prLinkPolicy) permits(identifier, workspaceID string) bool {
 // resolve it; misjudging "unique" as "ambiguous" costs a link a person can add
 // by hand, while the reverse would move someone else's issue on merge.
 func (h *Handler) resolvePRLinkPolicy(ctx context.Context, insts []db.GithubInstallation, p *ghPullRequestPayload) prLinkPolicy {
-	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+	if !p.prHeadLinkEligible() {
 		slog.Info("github: denied automatic pull request actions", "reason", "fork_or_unverified_head_repository",
 			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
 		return prLinkPolicy{indeterminate: true}
+	}
+	if !p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name) {
+		slog.Info("github: allowed automatic pull request links", "reason", "same_owner_head_repository",
+			"installation_id", p.Installation.ID, "repo_owner", p.Repository.Owner.Login, "repo_name", p.Repository.Name, "pr_number", p.PullRequest.Number)
 	}
 	if len(insts) < 2 {
 		return prLinkPolicy{unrestricted: true}
@@ -2119,7 +2164,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		AuthorAvatarUrl: ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
+		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
@@ -2135,7 +2180,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	workspaceID := uuidToString(wsID)
 	linkedIssueIDs := make([]string, 0)
 	touched := map[pgtype.UUID]struct{}{}
-	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
+	if githubFeaturesEnabled(ws) && p.prHeadLinkEligible() && !linkPolicy.indeterminate {
 		idents := prClaimedIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		closingIdents := prClosingIdentifiers(p.PullRequest.Title, p.PullRequest.Body, p.PullRequest.Head.Ref)
 		autoLink, err := autoLinkPRsEnabledForWorkspace(ws)
@@ -2187,6 +2232,28 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list closing links: %w", err)
 	}
+	// The completion decision this event owes is recorded in the same
+	// transaction, so a crash or a failed write after the commit cannot lose it
+	// (CHE-5244). A failure here rolls the mirror back and the delivery returns
+	// 5xx for GitHub to redeliver.
+	var owed []pgtype.UUID
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
+			for _, issueID := range closingIssueIDs {
+				touched[issueID] = struct{}{}
+			}
+		}
+		ids := make([]pgtype.UUID, 0, len(touched))
+		for issueID := range touched {
+			ids = append(ids, issueID)
+		}
+		if owed, err = h.owePRMergeWithLinked(ctx, qtx, wsID, ids, issueIDs); err != nil {
+			return fmt.Errorf("github: record pr_merge_owed: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
@@ -2202,26 +2269,19 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	var autoCompleteErrs []error
-	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		// An owed closed-PR replay runs after an earlier attempt may have failed
-		// past the commit: the links are unchanged but the auto-completion they
-		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
-		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
-			for _, issueID := range closingIssueIDs {
-				touched[issueID] = struct{}{}
-			}
-		}
-		resolver := issuestatus.NewResolver(wsID)
-		for issueID := range touched {
-			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
-			switch {
-			case err == nil:
-			case isOwedClosedReplay(ctx):
-				// Fail the replay so its marker stays and the sweep retries.
-				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
-			default:
-				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
-			}
+	if state == "merged" {
+		ctx = withMergedPRInput(ctx, service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
+			RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL,
+			HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
+		})
+	}
+	for _, err := range h.attemptPRMergeOwed(ctx, wsID, owed, issuestatus.NewResolver(wsID)) {
+		if isOwedClosedReplay(ctx) {
+			// Fail the replay so its marker stays and the sweep retries.
+			autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete: %w", err))
+		} else {
+			slog.Warn("pr auto-complete failed", "err", err)
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2230,6 +2290,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
+	case p.Action == "dequeued":
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. EventAt is
+		// the signed updated_at, which keys the wake (not the unsigned header).
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, EventAt: p.PullRequest.UpdatedAt}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,

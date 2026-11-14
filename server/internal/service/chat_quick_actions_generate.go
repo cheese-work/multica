@@ -230,63 +230,45 @@ func (s *TaskService) enqueueChatQuickActions(ctx context.Context, task db.Agent
 	return s.admitQuickActions(ctx, in, res.Chain)
 }
 
-// admitQuickActions applies the two admission gates and the insert as one step
-// across every server instance. A transaction-scoped advisory lock serialises
-// admissions for the job: without it, concurrent requests all read "under the
-// ceiling" or "no pass for this DM" and all insert, so a burst could exceed 16
-// paid jobs or queue duplicates for one DM. The lock transaction stays open
-// until the insert has committed on that same transaction, so the next admission sees the row.
+// admitQuickActions queues the pass through the chain. The two admission gates
+// run in the insert transaction (BackgroundTaskInput.Admit) under a
+// transaction-scoped advisory lock, so across every server instance a burst
+// cannot exceed the ceiling or queue duplicates for one DM. The lock is taken
+// last, after every pool read, so a waiting admission holds no pool demand.
 func (s *TaskService) admitQuickActions(ctx context.Context, in BackgroundTaskInput, chain []bgagents.Candidate) (queued, failed bool, err error) {
-	if s.TxStarter == nil {
-		return false, true, errors.New("quick actions admission requires transaction support")
+	purpose := pgtype.Text{String: bgagents.Purpose(bgagents.QuickActions), Valid: true}
+	in.Admit = func(ctx context.Context, tx db.DBTX, q *db.Queries) error {
+		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", purpose.String); err != nil {
+			return fmt.Errorf("lock quick actions admission: %w", err)
+		}
+		active, err := q.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{Purpose: purpose, SourceChatSessionID: in.SourceChatSessionID})
+		if err != nil {
+			return fmt.Errorf("check active quick actions task: %w", err)
+		}
+		if active {
+			slog.Info("chat quick actions pass skipped: one already active for this session", "chat_session_id", util.UUIDToString(in.SourceChatSessionID))
+			return ErrBackgroundDropped
+		}
+		count, err := q.CountActiveBackgroundTasksByPurpose(ctx, purpose)
+		if err != nil {
+			return fmt.Errorf("count active quick actions tasks: %w", err)
+		}
+		if count >= chatQuickActionsMaxConcurrent {
+			slog.Warn("chat quick actions pass shed: concurrency ceiling reached", "ceiling", chatQuickActionsMaxConcurrent)
+			return ErrBackgroundDropped
+		}
+		return nil
 	}
-	// Every pool read happens before the lock, so the lock-holding transaction
-	// is the only connection this admission needs (no pool starvation).
-	in, err = s.pickBackgroundCandidate(ctx, in, chain)
-	if errors.Is(err, ErrNoReachableBackgroundAgent) {
+	switch _, err := s.EnqueueBackgroundChain(ctx, in, chain); {
+	case err == nil:
+		return true, false, nil
+	case errors.Is(err, ErrBackgroundDropped):
+		return false, false, nil
+	case errors.Is(err, ErrNoReachableBackgroundAgent), errors.Is(err, ErrBackgroundChainChanged):
 		return false, true, nil
-	}
-	if err != nil {
+	default:
 		return false, true, err
 	}
-	params, attr, err := s.prepareBackgroundTask(ctx, in)
-	if err != nil {
-		return false, true, fmt.Errorf("prepare quick actions task: %w", err)
-	}
-	tx, err := s.TxStarter.Begin(ctx)
-	if err != nil {
-		return false, true, fmt.Errorf("begin quick actions admission: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", bgagents.Purpose(bgagents.QuickActions)); err != nil {
-		return false, true, fmt.Errorf("lock quick actions admission: %w", err)
-	}
-	q := s.Queries.WithTx(tx)
-	active, err := q.HasActiveBackgroundTaskForSession(ctx, db.HasActiveBackgroundTaskForSessionParams{Purpose: params.Purpose, SourceChatSessionID: in.SourceChatSessionID})
-	if err != nil {
-		return false, true, fmt.Errorf("check active quick actions task: %w", err)
-	}
-	if active {
-		slog.Info("chat quick actions pass skipped: one already active for this session", "chat_session_id", util.UUIDToString(in.SourceChatSessionID))
-		return false, false, nil
-	}
-	count, err := q.CountActiveBackgroundTasksByPurpose(ctx, params.Purpose)
-	if err != nil {
-		return false, true, fmt.Errorf("count active quick actions tasks: %w", err)
-	}
-	if count >= chatQuickActionsMaxConcurrent {
-		slog.Warn("chat quick actions pass shed: concurrency ceiling reached", "ceiling", chatQuickActionsMaxConcurrent)
-		return false, false, nil
-	}
-	task, err := q.CreateBackgroundTask(ctx, params)
-	if err != nil {
-		return false, true, fmt.Errorf("create quick actions task: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, true, fmt.Errorf("commit quick actions admission: %w", err)
-	}
-	s.announceBackgroundTask(ctx, attr, task)
-	return true, false, nil
 }
 
 // chatQuickActionsInFlight reports whether a quick_actions task is already

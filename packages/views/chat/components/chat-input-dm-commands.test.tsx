@@ -128,6 +128,20 @@ describe("ChatInput DM commands", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it("marks unseen for /unseen without sending a message, and keeps it in the box on failure", async () => {
+    const onUnseen = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const { editor, onSend } = renderInput({ onUnseen });
+    await type(editor, "/unseen");
+
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => expect(onUnseen).toHaveBeenCalledTimes(1));
+    expect(editor.getText()).toBe("/unseen");
+
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => expect(onUnseen).toHaveBeenCalledTimes(2));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("unarchives for /unarchive on an archived DM without sending a message", async () => {
     const onUnarchive = vi.fn().mockResolvedValue(true);
     const { editor, onSend } = renderInput({ onUnarchive, sessionArchived: true });

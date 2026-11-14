@@ -3,6 +3,8 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,6 +32,7 @@ var testPool *pgxpool.Pool
 var testUserID string
 var testWorkspaceID string
 var testRuntimeID string
+var testSeededAgentID string
 
 // dbfx builds the rows these tests act on and removes them again when the test
 // that asked for them ends. New tests build fixtures through it rather than
@@ -67,6 +70,7 @@ func TestMain(m *testing.M) {
 	bus := events.New()
 	emailSvc := service.NewEmailService()
 	testHandler = New(queries, pool, hub, bus, emailSvc, nil, nil, analytics.NoopClient{}, Config{AllowSignup: true})
+	watchStatusEventsWithoutActivityID(bus)
 	// Production always wires a real *featureflag.Service (cmd/server/main.go);
 	// leaving it nil here would make every flag defaulting to true (currently
 	// only ExportPrivacyControls, CHE-766) silently deny in tests where a
@@ -100,7 +104,15 @@ func TestMain(m *testing.M) {
 	}
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
+	stopHeartbeat := keepRuntimeFresh(ctx, pool, testRuntimeID, service.RuntimeClaimFreshnessSeconds/5*time.Second)
+	// The run-budget suites spend many runs in seconds; the loop breaker has its own tests.
+	os.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "0")
 	code := m.Run()
+	stopHeartbeat()
+	if lost := statusEventsWithoutActivityID(); len(lost) > 0 {
+		fmt.Printf("status-change events without activity_id (the listener no longer writes their row): %v\n", lost)
+		code = 1
+	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -127,8 +139,8 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 
 	var workspaceID string
 	if err := pool.QueryRow(ctx, `
-		INSERT INTO workspace (name, slug, description, issue_prefix)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO workspace (name, slug, description, issue_prefix, settings)
+		VALUES ($1, $2, $3, $4, '{"run_budget_auto":{"enabled":false}}')
 		RETURNING id
 	`, "Handler Tests", handlerTestWorkspaceSlug, "Temporary workspace for handler tests", "HAN").Scan(&workspaceID); err != nil {
 		return "", "", err
@@ -173,6 +185,7 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 	`, seededAgentID, workspaceID); err != nil {
 		return "", "", err
 	}
+	testSeededAgentID = seededAgentID
 
 	return userID, workspaceID, nil
 }
@@ -1388,6 +1401,50 @@ func TestUpdateAutopilotCanSetAndClearProject(t *testing.T) {
 	if cleared.ProjectID != nil {
 		t.Fatalf("cleared project_id = %v, want nil", cleared.ProjectID)
 	}
+}
+
+func TestUpdateAutopilotDescriptionGuard(t *testing.T) {
+	ctx := context.Background()
+	var agentID string
+	dbfx.QueryRow(t, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID)
+
+	req := newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
+		"title":          "Description guard autopilot",
+		"description":    "v1",
+		"assignee_id":    agentID,
+		"execution_mode": "create_issue",
+	})
+	var created AutopilotResponse
+	testutil.Call(t, testHandler.CreateAutopilot, req).Want(http.StatusCreated).JSON(&created)
+	defer testPool.Exec(ctx, `DELETE FROM autopilot WHERE id = $1`, created.ID)
+
+	patch := func(body map[string]any) *testutil.Response {
+		req := newRequest("PATCH", "/api/autopilots/"+created.ID+"?workspace_id="+testWorkspaceID, body)
+		req = withURLParam(req, "id", created.ID)
+		return testutil.Call(t, testHandler.UpdateAutopilot, req)
+	}
+	sum := func(s string) string {
+		h := sha256.Sum256([]byte(s))
+		return hex.EncodeToString(h[:])
+	}
+
+	// Stale digest: rejected, description untouched.
+	patch(map[string]any{"description": "v2", "expected_description_sha256": sum("other")}).Want(http.StatusConflict)
+	var live string
+	dbfx.QueryRow(t, `SELECT COALESCE(description, '') FROM autopilot WHERE id = $1`, created.ID).Scan(&live)
+	if live != "v1" {
+		t.Fatalf("description after stale write = %q, want v1", live)
+	}
+
+	// Matching digest: applied.
+	patch(map[string]any{"description": "v2", "expected_description_sha256": sum("v1")}).Want(http.StatusOK)
+	dbfx.QueryRow(t, `SELECT COALESCE(description, '') FROM autopilot WHERE id = $1`, created.ID).Scan(&live)
+	if live != "v2" {
+		t.Fatalf("description after matching write = %q, want v2", live)
+	}
+
+	// Digest without a description write is a client bug.
+	patch(map[string]any{"title": "x", "expected_description_sha256": sum("v2")}).Want(http.StatusBadRequest)
 }
 
 // TestCreateIssueRejectsNonexistentMemberAssignee covers the bug where any
