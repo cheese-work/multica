@@ -480,7 +480,10 @@
     "no_history": "No recorded history",
     "before_records": "Before records",
     "collapse": "Collapse",
-    "expand": "Expand"
+    "expand": "Expand",
+    "wakeup_cross": "Wakeup",
+    "wakeup_children_done": "Children done",
+    "target_inside": "Target inside (hidden by collapse)"
   },
   "actor_issues": {
     "scope": {
