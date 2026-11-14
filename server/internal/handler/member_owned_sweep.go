@@ -47,6 +47,10 @@ func (handler *Handler) returnMemberOwnedIssue(ctx context.Context, workspaceID,
 		runAfter     func()
 		cancelledRun []db.AgentTaskQueue
 	)
+	// The Composio overlay reads the pool and calls out, so it is built before
+	// the transaction opens, for the agent the sweep is about to return the issue
+	// to. The recheck under the lock decides whether the run is inserted at all.
+	overlay := handler.prepareMemberOwnedOverlay(ctx, issueID)
 	err := handler.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := handler.Queries.WithTx(tx)
 		var err error
@@ -78,8 +82,8 @@ func (handler *Handler) returnMemberOwnedIssue(ctx context.Context, workspaceID,
 			return err
 		}
 		comment = created.Comment()
-		_, runAfter, err = handler.TaskService.EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{}, pgtype.UUID{},
-			handler.TaskService.PrepareIssueRunOverlay(ctx, updated, pgtype.UUID{}))
+		// TxScoped: reads inside the enqueue go through q, not a second pool connection.
+		_, runAfter, err = handler.TaskService.TxScoped(q).EnqueueIssueRunInTx(ctx, q, updated, pgtype.UUID{}, pgtype.UUID{}, overlay)
 		if errors.Is(err, service.ErrDuplicatePendingTask) {
 			return nil
 		}
@@ -99,4 +103,21 @@ func (handler *Handler) returnMemberOwnedIssue(ctx context.Context, workspaceID,
 	}
 	slog.Info("member_owned_sweep returned", "issue_id", uuidToString(updated.ID), "agent_id", uuidToString(updated.AssigneeID))
 	return nil
+}
+
+// prepareMemberOwnedOverlay builds the run overlay for the issue's last agent
+// outside any transaction. A missing candidate or issue gives no overlay; the
+// transaction's recheck then skips or fails the issue on its own.
+func (handler *Handler) prepareMemberOwnedOverlay(ctx context.Context, issueID pgtype.UUID) *service.PreparedRuntimeMCPOverlay {
+	candidate, err := handler.Queries.ListMemberOwnedSweepIssues(ctx, issueID)
+	if err != nil || len(candidate) == 0 {
+		return nil
+	}
+	issue, err := handler.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return nil
+	}
+	issue.AssigneeType = pgtype.Text{String: "agent", Valid: true}
+	issue.AssigneeID = candidate[0].AgentID
+	return handler.TaskService.PrepareIssueRunOverlay(ctx, issue, pgtype.UUID{})
 }

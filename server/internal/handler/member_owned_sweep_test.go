@@ -3,8 +3,15 @@ package handler
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-5838: a member-owned open issue with no open decision card goes back to
@@ -93,5 +100,28 @@ func TestMemberOwnedSweepSkipsClosedAndAgentlessIssues_CHE5838(t *testing.T) {
 		if f.queuedRuns(t) != 0 || f.notes(t) != 0 {
 			t.Fatalf("issue %s must get no run and no note", f.issue)
 		}
+	}
+}
+
+// CHE-5838 F1: the sweep's transaction holds the only pool connection. Every
+// read inside it must go through that transaction, or the run is never queued.
+func TestMemberOwnedSweepUsesTransactionConnection_CHE5838(t *testing.T) {
+	f := newMemberOwnedIssue(t, "in_review", " pool probe")
+	cfg := testPool.Config().Copy()
+	cfg.MaxConns, cfg.MinConns = 1, 0
+	small, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	h := New(db.New(small), small, realtime.NewHub(), events.New(), service.NewEmailService(), nil, nil, analytics.NoopClient{}, Config{})
+	t.Cleanup(giveBackRunBudgetHooks)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.returnMemberOwnedIssue(ctx, parseUUID(testWorkspaceID), parseUUID(f.issue)); err != nil {
+		t.Fatalf("sweep with one pool connection: %v", err)
+	}
+	if _, kind, _ := issueStatusAndAssignee(t, f.issue); kind != "agent" || f.queuedRuns(t) != 1 || f.notes(t) != 1 {
+		t.Fatalf("assignee=%s queued=%d notes=%d; want agent, 1, 1", kind, f.queuedRuns(t), f.notes(t))
 	}
 }
