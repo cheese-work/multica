@@ -42,6 +42,13 @@ test("captures a fixture page at 1440 and 390 as non-blank PNGs plus frame HTML"
   assert.doesNotMatch(html, /(src|href)="https?:/, "frame HTML must not fetch from the network");
 });
 
+test("height option makes a taller capture", async () => {
+  const out = join(dir, "tall");
+  await captureFrame({ url: pathToFileURL(fixture).href, outDir: out, notes, height: 1200 });
+  const png = readFileSync(join(out, "inline-retry-1440.png"));
+  assert.equal(png.readUInt32BE(20), 1200, "PNG height from the IHDR chunk");
+});
+
 test("flags a blank capture", async () => {
   const out = join(dir, "blank-out");
   await assert.rejects(

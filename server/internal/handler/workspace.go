@@ -332,6 +332,14 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "workspace.create", WorkspaceID: ws.ID, TargetID: ws.ID,
+		After: workspaceCreateAuditFields(ws),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "workspace.create")
+		return
+	}
+
 	// NOTE: CreateWorkspace deliberately does NOT mark the user as
 	// onboarded. The `onboarded_at` flag is owned by CompleteOnboarding
 	// (Step 3 of the flow) and by AcceptInvitation (invitee joining an

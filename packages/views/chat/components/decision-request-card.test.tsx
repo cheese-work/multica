@@ -761,8 +761,7 @@ describe("DecisionRequestCard answering", () => {
         await user.click(await screen.findByRole("button", { name: /Details/ }));
         const viewer = await screen.findByTestId("config-change-viewer");
         expect(viewer).toHaveTextContent("Workspace context");
-        await user.click(screen.getByTestId("config-change-tab-changes"));
-        expect(screen.getByRole("region", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
+        expect(screen.getByRole("list", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
         expect(await approve()).toBeEnabled();
         expect(screen.queryByText("Details unavailable")).toBeNull();
       });

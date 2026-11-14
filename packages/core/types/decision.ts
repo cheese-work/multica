@@ -59,6 +59,21 @@ export interface DecisionRequestCard {
   covered_cards?: DecisionCoveredCard[];
   /** Set when a batch card's answer closed this card. */
   answered_by_batch_request_id?: string | null;
+  /** Set on every card of a proposal batch; `batch_items` then lists one entry per item, in action-id order. */
+  batch_id?: string;
+  batch_items?: DecisionBatchItem[];
+}
+
+/** One action of a proposal batch. Batch approve takes `choices: { [action_id]: "approve" | "reject" }`, one per item. */
+export interface DecisionBatchItem {
+  action_id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  /** The action's state: pending, executed, failed or rejected. */
+  state: string;
+  result?: unknown;
+  error_code?: string;
 }
 
 /** One per-issue card a batch card covers, with the decision it asks. */
@@ -114,6 +129,15 @@ export interface DecisionRequestAction {
   config_change?: DecisionConfigChange;
   /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
   owner_only?: boolean;
+  /** Readback of a decided action (B v9 S9). `applied`, `not_applied` or `expired`; absent while pending or on an older server. */
+  effect?: "applied" | "not_applied" | "expired" | (string & {});
+  effect_reason?: string;
+  decided_at?: string;
+  decided_by_name?: string;
+  on_behalf_of_name?: string;
+  /** True while a revoke would be accepted; the card shows Revoke only then. */
+  revocable?: boolean;
+  revoke?: { at: string; by_name?: string; reason: string };
 }
 
 /** The run that resumed the issue after the answer was recorded. */

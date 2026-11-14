@@ -76,6 +76,16 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	if !ok {
 		return false
 	}
+	// An issue with an open sub-issue stays where it is (workflow step 5); a head
+	// refused here is not claimed, so the next snapshot tries again once they close.
+	open, err := h.hasOpenChildren(ctx, issue)
+	if err != nil {
+		slog.Warn("ci advance: load children failed", "err", err, "issue_id", uuidToString(issueID))
+		return false
+	}
+	if open {
+		return false
+	}
 	next := edge.To
 	claimed, err := h.Queries.ClaimIssueCIAdvance(ctx, db.ClaimIssueCIAdvanceParams{IssueID: issue.ID, HeadSha: headSHA})
 	if err != nil || claimed == 0 {
@@ -104,6 +114,22 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		}
 	}
 	return ranHandler
+}
+
+// hasOpenChildren reports whether any direct child of issue is not yet in a
+// done or closed category.
+func (h *Handler) hasOpenChildren(ctx context.Context, issue db.Issue) (bool, error) {
+	children, err := h.Queries.ListChildIssues(ctx, issue.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, c := range children {
+		cat := issuestatus.Category(ctx, h.Queries, c.WorkspaceID, c.Status)
+		if cat != issuestatus.CategoryDone && cat != issuestatus.CategoryClosed {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // moveIssueOnEdge writes the status change a workflow edge stands for and

@@ -1568,7 +1568,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	h.ingestHostSample(r.Context(), rt.DaemonID.String, req.HostSample)
 
 	ack, m, err := h.processHeartbeat(r.Context(), runtimeID, req.SupportsBatchImport, req.InFlightTasks)
-	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
+	h.reconcileStopsFromHeartbeat(r.Context(), runtimeID, req)
 	probeModelMs = m.ProbeModelMs
 	popModelMs = m.PopModelMs
 	probeSkillsMs = m.ProbeSkillsMs
@@ -1638,7 +1638,7 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 	}
 	h.ingestHostSample(ctx, identity.DaemonID, req.HostSample)
 	ack, _, err := h.processHeartbeat(ctx, runtimeID, req.SupportsBatchImport, req.InFlightTasks)
-	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req.LiveTaskIDs, req.DaemonUptimeMs)
+	h.reconcileStopsFromHeartbeat(ctx, runtimeID, req)
 	return ack, err
 }
 

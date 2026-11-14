@@ -163,6 +163,11 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
 	}
+	// Before the budget: a member's status move reopens a budget window, never
+	// this one (CHE-5720).
+	if err := guardWeeklyRuns(ctx, q, issueID); err != nil {
+		return ReviewGate{}, err
+	}
 	gate, err := guardRunBudget(ctx, q, issueID, target)
 	if err != nil {
 		return ReviewGate{}, err
