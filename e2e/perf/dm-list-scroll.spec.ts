@@ -43,23 +43,38 @@ test("DM list scroll: 300 DMs, top to bottom, 4x CPU", async ({ page, baseURL })
       for (const e of list.getEntries()) w.__perf.long.push(e.duration);
     }).observe({ type: "longtask", buffered: true });
   });
+  if (process.env.DM_LIST_NO_SHIELD) {
+    // Diagnostic: drop the scroll pointer shield to see what it costs.
+    await page.addInitScript(() => {
+      Object.defineProperty(CSSStyleDeclaration.prototype, "pointerEvents", { set() {}, get: () => "" });
+    });
+  }
   await page.goto(`${origin}/${fx.WORKSPACE_SLUG}/chat`, { waitUntil: "domcontentloaded" });
   const firstRow = page.getByTestId("chat-thread-row").first();
   await expect(firstRow).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(1500);
 
-  // The list's own scroll container: nearest vertically scrolling ancestor of a
-  // row. Resolved per call; the page may re-create it after first paint.
-  const atBottom = () =>
-    page.getByTestId("chat-thread-row").first().evaluate((el) => {
-      for (let p = el.parentElement; p; p = p.parentElement) {
+  // One in-page read per step (mounted rows, at bottom): locator calls inject
+  // Playwright's own scripts and would add their cost to the page's CPU.
+  const readList = () =>
+    page.evaluate(() => {
+      const rows = document.querySelectorAll("[data-testid='chat-thread-row']");
+      let atBottom = false;
+      for (let p = rows[0]?.parentElement ?? null; p; p = p.parentElement) {
         const o = getComputedStyle(p).overflowY;
-        if (o === "auto" || o === "scroll") return p.scrollTop + p.clientHeight >= p.scrollHeight - 2;
+        if (o === "auto" || o === "scroll") { atBottom = p.scrollTop + p.clientHeight >= p.scrollHeight - 2; break; }
       }
-      throw new Error("no scroll container");
+      return { rows: rows.length, atBottom };
     });
-  const box = (await page.getByTestId("chat-thread-row").first().boundingBox())!;
+  const box = (await firstRow.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  // Start from a quiet page: app-shell prefetch is not scroll cost.
+  let quietFor = 0;
+  let lastRequest = Date.now();
+  const touch = () => { lastRequest = Date.now(); };
+  page.on("request", touch);
+  while (quietFor < 2000) { await page.waitForTimeout(250); quietFor = Date.now() - lastRequest; }
+  page.off("request", touch);
 
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
@@ -76,32 +91,62 @@ test("DM list scroll: 300 DMs, top to bottom, 4x CPU", async ({ page, baseURL })
     requestAnimationFrame(loop);
   });
 
-  let requests = 0;
-  const onRequest = (r: { url(): string }) => { if (new URL(r.url()).pathname.startsWith("/api/")) requests += 1; };
+  const requestUrls: string[] = [];
+  const onRequest = (r: { url(): string }) => {
+    const u = new URL(r.url());
+    if (u.pathname.startsWith("/api/")) requestUrls.push(u.pathname);
+  };
+  const metrics = async () =>
+    Object.fromEntries((await cdp.send("Performance.getMetrics")).metrics.map((m) => [m.name, m.value]));
+  await cdp.send("Performance.enable");
+  const m0 = await metrics();
+  const profile = process.env.DM_LIST_PROFILE === "1";
+  if (profile) { await cdp.send("Profiler.enable"); await cdp.send("Profiler.start"); }
   page.on("request", onRequest);
   let maxRows = 0;
   let steps = 0;
   for (; steps < 3000; steps += 1) {
     await page.mouse.wheel(0, 120);
     await page.waitForTimeout(16);
-    maxRows = Math.max(maxRows, await page.getByTestId("chat-thread-row").count());
-    if (await atBottom()) break;
+    const state = await readList();
+    maxRows = Math.max(maxRows, state.rows);
+    if (state.atBottom) break;
   }
   await page.waitForTimeout(600);
   page.off("request", onRequest);
+  let hot: string[] = [];
+  if (profile) {
+    const { profile: prof } = await cdp.send("Profiler.stop");
+    const dt = new Map<number, number>();
+    prof.samples!.forEach((id, i) => dt.set(id, (dt.get(id) ?? 0) + (prof.timeDeltas![i] ?? 0)));
+    const self = new Map<string, number>();
+    for (const n of prof.nodes) {
+      const f = n.callFrame;
+      const k = `${f.functionName || "(anon)"} ${f.url.split("/").slice(-2).join("/")}:${f.lineNumber}`;
+      self.set(k, (self.get(k) ?? 0) + (dt.get(n.id) ?? 0));
+    }
+    hot = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, v]) => `${Math.round(v / 1000)}ms ${k}`);
+  }
+  const m1 = await metrics();
+  const secs = (k: string) => Math.round(((m1[k] ?? 0) - (m0[k] ?? 0)) * 1000);
   const perf = await page.evaluate(() => (window as unknown as { __perf: { long: number[]; frames: number[] } }).__perf);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 });
 
   const longTasks = perf.long.filter((d) => d > 50);
   const report = {
-    dms: DM_COUNT, wheel_steps: steps, requests_during_scroll: requests,
+    dms: DM_COUNT, wheel_steps: steps, requests_during_scroll: requestUrls.length,
     long_tasks_over_50ms: longTasks.length, longest_task_ms: Math.round(Math.max(0, ...perf.long)),
     // A frame longer than 2 vsync intervals (33 ms) is dropped.
     dropped_frames: perf.frames.filter((d) => d > 33.4).length, total_frames: perf.frames.length,
     max_frame_ms: Math.round(Math.max(0, ...perf.frames)), max_mounted_rows: maxRows,
-    final_rows_mounted: await page.getByTestId("chat-thread-row").count(),
+    final_rows_mounted: (await readList()).rows,
+    // Main-thread time by kind while scrolling, ms of throttled CPU.
+    script_ms: secs("ScriptDuration"), layout_ms: secs("LayoutDuration"),
+    style_ms: secs("RecalcStyleDuration"), task_ms: secs("TaskDuration"),
     page_errors: app.pageErrors.length,
   };
+  if (requestUrls.length) console.log(`DM_LIST_REQUESTS ${JSON.stringify(requestUrls)}`);
+  if (hot.length) console.log(`DM_LIST_HOT\n${hot.join("\n")}`);
   console.log(`DM_LIST_REPORT ${JSON.stringify(report)}`);
   if (process.env.PERF_REPORT_PATH) writeFileSync(process.env.PERF_REPORT_PATH, JSON.stringify(report, null, 2));
 
