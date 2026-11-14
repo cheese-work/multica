@@ -96,3 +96,36 @@ func TestPRChecksPassedIgnoresRedAndHonoursSetting(t *testing.T) {
 		t.Fatalf("setting off queued %d runs", got)
 	}
 }
+
+// CHE-5699: an event for a head the PR has already left wakes nobody; the next
+// green on the current head does.
+func TestPRChecksPassedDropsEventForStaleHead(t *testing.T) {
+	f, s, issue, agent := wakeFixture(t)
+	assignPRWakeupIssue(t, f, issue, agent)
+	f.Exec(t, `UPDATE workspace SET settings='{"github_wake_on_ci_success":true}'::jsonb WHERE id=$1`, f.WorkspaceID)
+	var pr string
+	f.QueryRow(t, `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha)
+		VALUES($1,1,'acme','widget',203,'PR','open','https://github.com/acme/widget/pull/203',now(),now(),'head-b','head-b') RETURNING id`, f.WorkspaceID).Scan(&pr)
+	f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
+	input := PullRequestWakeupInput{
+		Rule: SystemRulePRChecksPassed, RepoOwner: "acme", RepoName: "widget", Number: 203,
+		URL: "https://github.com/acme/widget/pull/203", HeadSHA: "head-a", Conclusion: "SUCCESS",
+	}
+	runs := func() int {
+		return f.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND context->>'wakeup_system'=$2`, issue, SystemRulePRChecksPassed)
+	}
+	ctx := context.Background()
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(); got != 0 {
+		t.Fatalf("event for stale head queued %d runs, want 0", got)
+	}
+	input.HeadSHA = "head-b"
+	if err := s.TriggerPullRequestWakeup(ctx, issue, input); err != nil {
+		t.Fatal(err)
+	}
+	if got := runs(); got != 1 {
+		t.Fatalf("event for current head queued %d runs, want 1", got)
+	}
+}

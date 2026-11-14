@@ -428,6 +428,29 @@ func (s *IssueWakeupService) capturePRWakeupTx(ctx context.Context, tx pgx.Tx, i
 			return c, err
 		}
 	}
+	if in.Rule == SystemRulePRChecksPassed {
+		// A green for a head the PR has left asks the owner to act on a state that
+		// no longer exists; the next green on the current head wakes as usual
+		// (CHE-5699). No stored row, or an empty head, is not evidence of a move.
+		var stale bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM github_pull_request
+			WHERE workspace_id=$1 AND repo_owner=$2 AND repo_name=$3 AND pr_number=$4
+			AND (COALESCE(snapshot_head_sha,'') NOT IN ('',$5) OR head_sha NOT IN ('',$5)))`,
+			issue.WorkspaceID, in.RepoOwner, in.RepoName, in.Number, in.HeadSHA).Scan(&stale); err != nil {
+			return c, err
+		}
+		if stale {
+			a, err := recordWakeupActivity(ctx, q, w, wakeupActivityTriggered, "system", pgtype.UUID{}, map[string]any{
+				"rule": in.Rule, "repo_owner": in.RepoOwner, "repo_name": in.RepoName, "pr_number": in.Number,
+				"head_sha": in.HeadSHA, "outcome": wakeupOutcomeStaleHead,
+			})
+			if err != nil {
+				return c, err
+			}
+			c.activity = &a
+			return c, nil
+		}
+	}
 	if failedKey != "" {
 		var rerun bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM issue_wakeup_pr_event e JOIN issue_wakeup x ON x.id=e.wakeup_id
