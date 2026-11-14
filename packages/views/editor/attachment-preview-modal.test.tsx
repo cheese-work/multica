@@ -111,6 +111,14 @@ vi.mock("@multica/core/paths", async (importOriginal) => {
   };
 });
 
+// The plan-revision viewer has its own suite; stub it to check only the
+// modal's routing to it (fork behavior, CHE-2124).
+vi.mock("./plan-revision-viewer", () => ({
+  PlanRevisionViewer: ({ attachment }: { attachment: { id: string } }) => (
+    <div data-testid="plan-revision-viewer">{attachment.id}</div>
+  ),
+}));
+
 // ReadonlyContent has a heavy import surface (lowlight + KaTeX + Mermaid).
 // Stub it so the markdown dispatch test only verifies wiring.
 vi.mock("./readonly-content", () => ({
@@ -318,6 +326,27 @@ describe("AttachmentPreviewModal — dispatch", () => {
       expect(screen.getByTestId("readonly-content")).toBeTruthy();
     });
     expect(screen.getByTestId("readonly-content").textContent).toContain("# heading");
+  });
+
+  it("routes an issue's plan-rev-N.md Markdown to the plan revision viewer", async () => {
+    getAttachmentTextContentMock.mockResolvedValue({ text: "# plan", originalContentType: "text/markdown" });
+    const att = makeAttachment({ id: "plan-3", issue_id: "issue-1", filename: "plan-rev-3.md", content_type: "text/markdown" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    expect((await screen.findByTestId("plan-revision-viewer")).textContent).toBe("plan-3");
+  });
+
+  it("keeps ordinary Markdown on the generic preview, and a plan name without an issue too", async () => {
+    getAttachmentTextContentMock.mockResolvedValue({ text: "# doc", originalContentType: "text/markdown" });
+    const att = makeAttachment({ filename: "plan-rev-3.md", issue_id: null, content_type: "text/markdown" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("readonly-content")).toBeTruthy());
+    expect(screen.queryByTestId("plan-revision-viewer")).toBeNull();
+  });
+
+  it("marks the viewer header as the media toolbar", () => {
+    const att = makeAttachment({ filename: "pic.png", content_type: "image/png" });
+    render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
+    expect(screen.getByTestId("media-toolbar")).toBeTruthy();
   });
 
   it("renders an iframe with srcdoc + sandbox='allow-scripts' for HTML", async () => {

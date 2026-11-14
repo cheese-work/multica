@@ -1,12 +1,18 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -48,6 +54,28 @@ type agentSkillsUnknown struct {
 	Skills *[]AgentSkillSummary `json:"skills,omitempty"`
 }
 
+const maxPauseReasonChars = 500
+
+// readPauseReason reads the optional {"reason": "..."} body of an agent pause.
+// No body, or a blank reason, means no reason. Over the limit is a 400.
+func readPauseReason(w http.ResponseWriter, r *http.Request) (pgtype.Text, bool) {
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return pgtype.Text{}, false
+		}
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if utf8.RuneCountInString(reason) > maxPauseReasonChars {
+		writeError(w, http.StatusBadRequest, "reason is too long")
+		return pgtype.Text{}, false
+	}
+	return pgtype.Text{String: reason, Valid: reason != ""}, true
+}
+
 func (h *Handler) PauseAgentScheduling(w http.ResponseWriter, r *http.Request) {
 	h.setAgentScheduling(w, r, true)
 }
@@ -77,7 +105,11 @@ func (h *Handler) setAgentScheduling(w http.ResponseWriter, r *http.Request, pau
 		err     error
 	)
 	if pause {
-		updated, changed, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID))
+		reason, ok := readPauseReason(w, r)
+		if !ok {
+			return
+		}
+		updated, changed, err = h.TaskService.PauseAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID, parseUUID(userID), reason)
 	} else {
 		updated, changed, err = h.TaskService.ResumeAgentScheduling(r.Context(), agent.WorkspaceID, agent.ID)
 	}
@@ -136,10 +168,26 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 		changed bool
 		err     error
 	)
+	kind := "workspace.scheduling.resume"
 	if pause {
-		updated, changed, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID))
+		kind = "workspace.scheduling.pause"
+	}
+	var auditErr error
+	audit := func(ctx context.Context, q *db.Queries, prev, next db.Workspace) error {
+		auditErr = h.writeAudit(ctx, q, r, auditInput{
+			Kind: kind, WorkspaceID: wsUUID, TargetID: wsUUID,
+			Before: workspaceSchedulingAuditFields(prev), After: workspaceSchedulingAuditFields(next),
+		})
+		return auditErr
+	}
+	if pause {
+		updated, changed, err = h.TaskService.PauseWorkspaceScheduling(r.Context(), wsUUID, parseUUID(userID), audit)
 	} else {
-		updated, changed, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID)
+		updated, changed, err = h.TaskService.ResumeWorkspaceScheduling(r.Context(), wsUUID, audit)
+	}
+	if auditErr != nil {
+		writeAuditFailure(w, r, auditErr, kind)
+		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusNotFound, "workspace not found")
@@ -161,4 +209,33 @@ func (h *Handler) setWorkspaceScheduling(w http.ResponseWriter, r *http.Request,
 		h.publish(eventType, wsID, actorType, actorID, map[string]any{"workspace": resp})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// GetAgentSchedulingImpact reads what a pause would leave waiting (CHE-5334).
+// Same gate as pause: a person who owns or administers the workspace.
+func (h *Handler) GetAgentSchedulingImpact(w http.ResponseWriter, r *http.Request) {
+	wsID := h.resolveWorkspaceID(r)
+	if wsID == "" {
+		writeError(w, http.StatusBadRequest, "workspace_id is required")
+		return
+	}
+	if _, ok := h.requireSchedulingAdmin(w, r, wsID); !ok {
+		return
+	}
+	agent, ok := h.loadAgentForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+	radius, err := h.agentBlastRadius(r.Context(), agent.ID)
+	if err != nil {
+		slog.Warn("read agent scheduling impact failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to read scheduling impact")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{
+		"running_tasks":   radius.running,
+		"queued_tasks":    radius.queued,
+		"open_issues":     radius.openIssues,
+		"enabled_wakeups": radius.wakeups,
+	})
 }

@@ -16,6 +16,13 @@ WITH gone AS (
 )
 DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM gone);
 
+-- name: DeletePushSubscriptionsByUser :exec
+-- Passkey recovery: the person's devices stop receiving pushes with their sessions.
+WITH gone AS (
+    DELETE FROM push_subscription WHERE user_id = @user_id RETURNING id
+)
+DELETE FROM push_delivery WHERE subscription_id IN (SELECT id FROM gone);
+
 -- name: EndPushSession :exec
 -- A marker row, not an update of the device rows: logout must not wait behind a
 -- send that holds a device (see GetPushDeliveryContext).

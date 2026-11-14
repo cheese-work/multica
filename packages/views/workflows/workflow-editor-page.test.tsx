@@ -11,12 +11,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api";
+import { resetAllRegisteredDrafts } from "@multica/core/drafts";
 import { issueStatusKeys } from "@multica/core/issue-statuses/queries";
 import { issueWorkflowKeys } from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type { IssueStatusEntry, IssueWorkflow } from "@multica/core/types";
 import { renderWithI18n } from "../test/i18n";
 import { WorkflowEditorPage } from "./workflow-editor-page";
+
+// Unsent editor edits persist per target; start every test with none.
+beforeEach(resetAllRegisteredDrafts);
 
 const apiMock = vi.hoisted(() => ({
   updateIssueWorkflow: vi.fn(),

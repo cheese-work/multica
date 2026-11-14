@@ -181,10 +181,3 @@ func TestShouldGenerateFirstMessageTitlePreservesChannelManualRename(t *testing.
 		t.Fatal("first-party Chat should retain the existing title refinement flow")
 	}
 }
-
-// CHE-4096: the deterministic fallback title cut is 60 runes.
-func TestChatTitleFallbackMaxLen(t *testing.T) {
-	if chatTitleFallbackMaxLen != 60 {
-		t.Fatalf("chatTitleFallbackMaxLen = %d, want 60", chatTitleFallbackMaxLen)
-	}
-}

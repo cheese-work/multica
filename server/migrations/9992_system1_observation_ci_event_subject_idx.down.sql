@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS system1_observation_ci_event_subject;

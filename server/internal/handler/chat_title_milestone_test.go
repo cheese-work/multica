@@ -31,8 +31,8 @@ func milestoneFixture(t *testing.T, title string) (agentID, sessionID string) {
 	return agentID, sessionID
 }
 
-// compactedDM adds a prior exchange and a compaction summary to the DM.
-func compactedDM(t *testing.T, sessionID string) {
+// compactedMilestoneDM adds a prior exchange and a compaction summary to the DM.
+func compactedMilestoneDM(t *testing.T, sessionID string) {
 	t.Helper()
 	forkMessage(t, sessionID, testutil.Cols{"role": "user", "content": "Plan the schema", "created_at": testutil.Raw("now() - interval '3 minutes'")})
 	forkMessage(t, sessionID, testutil.Cols{"role": "assistant", "content": "Use Postgres", "created_at": testutil.Raw("now() - interval '2 minutes'")})
@@ -49,7 +49,7 @@ func sendDM(t *testing.T, sessionID, content string) {
 func TestDMTitleCompactionMilestoneQueuesOnFirstMessageAfterCompaction(t *testing.T) {
 	requireDB(t)
 	_, sid := milestoneFixture(t, "Schema Plan")
-	compactedDM(t, sid)
+	compactedMilestoneDM(t, sid)
 
 	sendDM(t, sid, "Now let's talk about billing")
 	tasks := dmTitleTasks(t, sid)
@@ -73,7 +73,7 @@ func TestDMTitleCompactionMilestoneQueuesOnFirstMessageAfterCompaction(t *testin
 func TestDMTitleMilestoneSkippedAfterManualRename(t *testing.T) {
 	requireDB(t)
 	_, sid := milestoneFixture(t, "Schema Plan")
-	compactedDM(t, sid)
+	compactedMilestoneDM(t, sid)
 	if _, err := testHandler.Queries.UpdateChatSessionTitle(context.Background(), db.UpdateChatSessionTitleParams{ID: util.MustParseUUID(sid), Title: "My Name"}); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestDMTitleMilestoneSkippedAfterManualRename(t *testing.T) {
 func TestDMTitleMilestoneRenameDuringRunWins(t *testing.T) {
 	requireDB(t)
 	_, sid := milestoneFixture(t, "Schema Plan")
-	compactedDM(t, sid)
+	compactedMilestoneDM(t, sid)
 	sendDM(t, sid, "Now let's talk about billing")
 	tasks := dmTitleTasks(t, sid)
 	if len(tasks) != 1 {

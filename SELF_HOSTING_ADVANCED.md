@@ -337,6 +337,15 @@ These are configured on each user's machine, not on the server:
 | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` | Upper bound for healthy WebSocket claim safety polls, configured independently of `MULTICA_DAEMON_POLL_INTERVAL`; downward jitter keeps normal polls at `2m30s`–`2m45s`, while old servers and uncertain claims retain the ordinary poll interval |
 | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` | Heartbeat frequency |
 
+Browser login callbacks accept only `localhost`, `127.0.0.1`, and RFC 1918
+IPv4 addresses. If route detection selects an unsupported virtual-adapter
+address (for example `198.18.0.1`), login stops before opening the browser.
+When the browser and CLI run on the same machine, retry with
+`multica login --callback-host 127.0.0.1`. For a browser on another LAN machine,
+use `--callback-host <CLI-machine-LAN-IPv4>`; SSH-only machines can use token
+login or the printed SSH tunnel instructions. The login page reports invalid
+callback links instead of treating them as ordinary web sign-ins.
+
 Agent-specific overrides:
 
 | Variable | Description |
@@ -487,7 +496,7 @@ If you are upgrading from a binary that pre-dates MUL-2957 (or the auto-hook fai
 
 If you prefer to build and run services manually:
 
-**Prerequisites:** Go 1.26.9, Node.js 22, pnpm 10.28.2, PostgreSQL 17 — a stock install is enough, see [Database Setup](#database-setup).
+**Prerequisites:** Go 1.26.10, Node.js 22, pnpm 10.28.2, PostgreSQL 17 — a stock install is enough, see [Database Setup](#database-setup).
 
 ```bash
 # Start your PostgreSQL (or use: docker compose up -d postgres)

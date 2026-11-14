@@ -1,0 +1,31 @@
+-- One wait episode per issue that waits on the person in charge of a decision
+-- request (CHE-2591 L5 design §4.2). The bound sets are fixed at entry.
+CREATE TABLE IF NOT EXISTS decision_wait (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id uuid NOT NULL,
+    issue_id uuid NOT NULL,
+    asking_agent_id uuid NOT NULL,
+    asking_task_id uuid,
+    resume_squad_id uuid,
+    human_user_id uuid NOT NULL,
+    request_ids uuid[] NOT NULL,
+    intent_ids uuid[] NOT NULL DEFAULT '{}',
+    group_ack_intent_ids uuid[] NOT NULL DEFAULT '{}',
+    restore_status text NOT NULL,
+    restore_assignee_type text,
+    restore_assignee_id uuid,
+    restore_on_resume boolean NOT NULL DEFAULT true,
+    phase text NOT NULL DEFAULT 'waiting' CHECK (phase IN ('waiting', 'suspended')),
+    suspend_reason text CHECK (suspend_reason IN ('run_budget', 'dispatch_refused', 'status_moved')),
+    suspended_at timestamptz,
+    refused_task_id uuid,
+    entered_at timestamptz NOT NULL DEFAULT now(),
+    reminder_due_at timestamptz,
+    reminder_delivered_at timestamptz,
+    dispatch_refused_since timestamptz,
+    closed_at timestamptz,
+    close_reason text,
+    resume_task_id uuid,
+    resume_outcome text,
+    CHECK ((phase = 'suspended') = (suspend_reason IS NOT NULL))
+);

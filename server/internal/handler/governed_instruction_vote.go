@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/db/generated"
@@ -79,7 +80,7 @@ var ownerCASProjectDescription = ownerCASColumn{"project.description", "descript
 // other agent write keeps the CHE-455 denial.
 func voteEntered(actorType string, fieldWillBeWritten bool, raw map[string]json.RawMessage) bool {
 	return actorType == "agent" && fieldWillBeWritten &&
-		(rawFieldsHasKeyFold(raw, voteIssueKey) || rawFieldsHasKeyFold(raw, decisionIDKey))
+		(rawFieldsHasKeyFold(raw, voteIssueKey) || rawFieldsHasKeyFold(raw, decisionIDKey) || receiptEntered(raw))
 }
 
 // governedPublisher is the actor recorded on the update event.
@@ -266,6 +267,54 @@ func hasGovernedHumanBlock(s string) bool {
 	return ok && len(blocks) > 0
 }
 
+// writerTaskLab is the lab of the task the writer's token belongs to: the
+// runtime the task runs on and the model recorded when the daemon claimed it.
+// The agent row is not read, because the writer can edit it mid-run. Voters'
+// labs were recorded the same way when they voted. reason is non-empty when
+// the writer's lab cannot be established.
+func writerTaskLab(ctx context.Context, q db.DBTX, wsUUID pgtype.UUID, writerID, writerTaskID string) (lab, reason string, err error) {
+	taskUUID, err := util.ParseUUID(writerTaskID)
+	if err != nil {
+		return "", "the writing agent's task is unknown", nil
+	}
+	var provider, model string
+	err = q.QueryRow(ctx, `
+		SELECT COALESCE(r.provider, ''), COALESCE(t.claimed_model, '') FROM agent_task_queue t
+		JOIN agent a ON a.id = t.agent_id AND a.workspace_id = $3 AND a.archived_at IS NULL
+		JOIN agent_runtime r ON r.id = t.runtime_id
+		WHERE t.id = $1 AND t.agent_id = $2 AND t.status IN ('dispatched', 'running')`,
+		taskUUID, writerID, wsUUID).Scan(&provider, &model)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "the writing agent has no live task", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	if lab = voteLab(provider, model); lab == "" {
+		return "", "the writing task's provider and model are not in the lab registry", nil
+	}
+	return lab, "", nil
+}
+
+// liveAgentSet returns which of ids are live (non-archived) agents of the
+// workspace, share-locking their rows. A voter that is no longer live does not count.
+func liveAgentSet(ctx context.Context, q db.DBTX, wsUUID pgtype.UUID, ids []string) (map[string]bool, error) {
+	rows, err := q.Query(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 AND archived_at IS NULL AND id::text = ANY($2) FOR SHARE`, wsUUID, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	live := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		live[id] = true
+	}
+	return live, rows.Err()
+}
+
 // voteReceiptReason returns why the votes on issueID do not authorize the
 // change, or "" when checks 2 to 6 pass.
 func voteReceiptReason(ctx context.Context, q db.DBTX, workspaceID, issueID, writerID, writerTaskID, label, after string) (string, []string, error) {
@@ -301,51 +350,17 @@ func voteReceiptReason(ctx context.Context, q db.DBTX, workspaceID, issueID, wri
 		return "a BLOCK vote exists", nil, nil
 	}
 
-	// The writer's lab is that of the task its token belongs to: the runtime
-	// the task runs on and the model recorded when the daemon claimed it. The
-	// agent row is not read, because the writer can edit it mid-run. Voters'
-	// labs were recorded the same way when they voted. A voter that is no
-	// longer a live agent of this workspace does not count.
-	taskUUID, err := util.ParseUUID(writerTaskID)
-	if err != nil {
-		return "the writing agent's task is unknown", nil, nil
-	}
-	var writerProvider, writerModel string
-	err = q.QueryRow(ctx, `
-		SELECT COALESCE(r.provider, ''), COALESCE(t.claimed_model, '') FROM agent_task_queue t
-		JOIN agent a ON a.id = t.agent_id AND a.workspace_id = $3 AND a.archived_at IS NULL
-		JOIN agent_runtime r ON r.id = t.runtime_id
-		WHERE t.id = $1 AND t.agent_id = $2 AND t.status IN ('dispatched', 'running')`,
-		taskUUID, writerID, wsUUID).Scan(&writerProvider, &writerModel)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "the writing agent has no live task", nil, nil
-	}
-	if err != nil {
-		return "", nil, err
-	}
-	writerLab := voteLab(writerProvider, writerModel)
-	if writerLab == "" {
-		return "the writing task's provider and model are not in the lab registry", nil, nil
+	writerLab, reason, err := writerTaskLab(ctx, q, wsUUID, writerID, writerTaskID)
+	if err != nil || reason != "" {
+		return reason, nil, err
 	}
 
 	voterIDs := make([]string, len(voters))
 	for i, v := range voters {
 		voterIDs[i] = v.authorID
 	}
-	liveRows, err := q.Query(ctx, `SELECT id::text FROM agent WHERE workspace_id = $1 AND archived_at IS NULL AND id::text = ANY($2) FOR SHARE`, wsUUID, voterIDs)
+	liveAgents, err := liveAgentSet(ctx, q, wsUUID, voterIDs)
 	if err != nil {
-		return "", nil, err
-	}
-	defer liveRows.Close()
-	liveAgents := map[string]bool{}
-	for liveRows.Next() {
-		var id string
-		if err := liveRows.Scan(&id); err != nil {
-			return "", nil, err
-		}
-		liveAgents[id] = true
-	}
-	if err := liveRows.Err(); err != nil {
 		return "", nil, err
 	}
 
@@ -390,16 +405,19 @@ func (h *Handler) governedApply(w http.ResponseWriter, r *http.Request, actorTyp
 	return h.ownerCASApply(w, r, actorType, role, raw, c, workspaceID, id)
 }
 
-// agentGovernedApply sends an agent write to the vote receipt or to the
-// decision binding. The two are alternatives: a body naming both is refused.
+// agentGovernedApply sends an agent write to the vote receipt, the decision
+// binding or the PASS receipt (CHE-3490). They are alternatives: a body naming
+// more than one is refused.
 func (h *Handler) agentGovernedApply(w http.ResponseWriter, r *http.Request, writerID string, raw map[string]json.RawMessage, c ownerCASColumn, workspaceID, id string) (hermesExceptionSwapResult, bool) {
-	hasVote, hasDecision := rawFieldsHasKeyFold(raw, voteIssueKey), rawFieldsHasKeyFold(raw, decisionIDKey)
+	hasVote, hasDecision, hasReceipt := rawFieldsHasKeyFold(raw, voteIssueKey), rawFieldsHasKeyFold(raw, decisionIDKey), receiptEntered(raw)
 	switch {
-	case hasVote && hasDecision:
-		writeError(w, http.StatusBadRequest, voteIssueKey+" and "+decisionIDKey+" are alternatives; send one")
+	case hasVote && hasDecision, hasVote && hasReceipt, hasDecision && hasReceipt:
+		writeError(w, http.StatusBadRequest, voteIssueKey+", "+decisionIDKey+" and "+receiptIssueKey+" are alternatives; send one")
 		return hermesExceptionSwapResult{}, false
 	case hasDecision:
 		return h.decisionApply(w, r, writerID, raw, c, workspaceID, id)
+	case hasReceipt:
+		return h.receiptApply(w, r, writerID, raw, c, workspaceID, id)
 	}
 	return h.voteApply(w, r, writerID, raw, c, workspaceID, id)
 }
@@ -485,12 +503,17 @@ func (h *Handler) voteApply(w http.ResponseWriter, r *http.Request, writerID str
 
 	result, rejected, err := ownerCASWriteTx(r.Context(), tx, c, workspaceID, id, content, before)
 	if rejected == hermesExceptionRejectNone {
-		if err = tx.Commit(r.Context()); err != nil {
+		if err = h.auditGovernedWrite(r.Context(), tx, r, c, workspaceID, id, result); err != nil {
+			rejected = hermesExceptionRejectInternal
+		} else if err = tx.Commit(r.Context()); err != nil {
 			rejected = hermesExceptionRejectInternal
 		}
 	}
 	logVoteOutcome(r, c, writerID, id, issueID, voters, "", err)
 	if rejected != hermesExceptionRejectNone {
+		if failedAudit(w, r, err, c.kind) {
+			return hermesExceptionSwapResult{}, false
+		}
 		hermesExceptionWriteRejection(w, r, rejected, err)
 		return hermesExceptionSwapResult{}, false
 	}

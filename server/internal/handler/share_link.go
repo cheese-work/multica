@@ -157,6 +157,14 @@ func (h *Handler) CreateShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "share_link.create", WorkspaceID: link.WorkspaceID, TargetID: link.ID,
+		After: shareLinkAuditFields(link),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "share_link.create")
+		return
+	}
+
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit share link failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to create share link")

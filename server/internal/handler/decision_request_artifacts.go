@@ -109,11 +109,11 @@ func (handler *Handler) ListDecisionArtifacts(writer http.ResponseWriter, reques
 	for _, artifact := range ask.Artifacts {
 		item := decisionArtifactResponse{Artifact: artifact}
 		current, err := handler.sourceIssueAttachment(request.Context(), issue, artifact.AttachmentID, "artifact")
-		if err == nil {
+		if err == nil && len(handler.readableAttachments(request, []db.Attachment{current})) == 1 {
 			response := handler.attachmentToResponse(current, mode)
 			item.Attachment = &response
 			if artifact.SupersedesAttachmentID != "" {
-				item.Diff = handler.artifactDiff(request.Context(), issue, current, artifact.SupersedesAttachmentID)
+				item.Diff = handler.artifactDiff(request, issue, current, artifact.SupersedesAttachmentID)
 			}
 		}
 		artifacts = append(artifacts, item)
@@ -121,9 +121,10 @@ func (handler *Handler) ListDecisionArtifacts(writer http.ResponseWriter, reques
 	writeJSON(writer, http.StatusOK, map[string]any{"artifacts": artifacts})
 }
 
-func (handler *Handler) artifactDiff(ctx context.Context, issue db.Issue, current db.Attachment, previousID string) *decisionArtifactDiff {
+func (handler *Handler) artifactDiff(request *http.Request, issue db.Issue, current db.Attachment, previousID string) *decisionArtifactDiff {
+	ctx := request.Context()
 	previous, err := handler.sourceIssueAttachment(ctx, issue, previousID, "artifact")
-	if err != nil {
+	if err != nil || len(handler.readableAttachments(request, []db.Attachment{previous})) == 0 {
 		return &decisionArtifactDiff{Hunks: []decisiontx.DiffHunk{}, Problem: "unavailable"}
 	}
 	diff := &decisionArtifactDiff{PreviousFilename: previous.Filename, Hunks: []decisiontx.DiffHunk{}}
@@ -158,11 +159,12 @@ func (handler *Handler) readPreviewText(ctx context.Context, attachment db.Attac
 		return "", err
 	}
 	defer reader.Close()
-	body, err := io.ReadAll(io.LimitReader(reader, maxPreviewTextSize+1))
+	limit := handler.maxPreviewSizeBytes()
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
 	if err != nil {
 		return "", err
 	}
-	if len(body) > maxPreviewTextSize {
+	if int64(len(body)) > limit {
 		return "", errPreviewTooLarge
 	}
 	return string(body), nil

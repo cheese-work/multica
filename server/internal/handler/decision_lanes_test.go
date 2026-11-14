@@ -71,10 +71,10 @@ func TestDecisionLanesScopeAndNoTranscripts(test *testing.T) {
 			test.Fatalf("wrong lanes: %+v", lanes)
 		}
 		for _, lane := range lanes {
-			if len(lane) != 5 {
-				test.Fatalf("lane must expose only five bounded metadata fields: %+v", lane)
+			if len(lane) != 6 {
+				test.Fatalf("lane must expose only six bounded metadata fields: %+v", lane)
 			}
-			for _, key := range []string{"id", "title", "issue_mentions", "updated_at", "eligible"} {
+			for _, key := range []string{"id", "title", "issue_mentions", "updated_at", "eligible", "unseen"} {
 				if _, exists := lane[key]; !exists {
 					test.Fatalf("missing metadata field %s: %+v", key, lane)
 				}
@@ -304,5 +304,23 @@ func TestDecisionLanesDeleteAfterListing(test *testing.T) {
 				test.Fatalf("metadata-only listing: %s", writer.Body)
 			}
 		})
+	}
+}
+
+func TestDecisionLanesUnseen(test *testing.T) {
+	fixture := newIntentFixture(test)
+	openLaneIntent(test, fixture, fixture.mention())
+	unseen := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "unseen"})
+	seen := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agentID, "creator_id": fixture.humanID, "title": "seen", "updated_at": time.Now().Add(-time.Hour)})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": unseen, "role": "assistant", "content": "unread reply", "created_at": time.Now().Add(time.Minute)})
+	dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": seen, "role": "assistant", "content": "read reply", "created_at": time.Now().Add(-time.Minute)})
+	var lanes []decisionLaneResponse
+	testutil.Call(test, testHandler.ListChatSessions, laneRequest(fixture, "")).Want(http.StatusOK).JSON(&lanes)
+	got := map[string]bool{}
+	for _, lane := range lanes {
+		got[lane.ID] = lane.Unseen
+	}
+	if len(got) != 2 || !got[unseen] || got[seen] {
+		test.Fatalf("unseen = %v, want unseen lane true and seen lane false", got)
 	}
 }

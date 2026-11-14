@@ -159,6 +159,22 @@ export interface IssueSourceContext {
   snapshot: SourceContextSnapshot;
 }
 
+/**
+ * An issue with an agent result the viewer has not seen yet
+ * (`GET /api/issues/unread`). `outcome` is `completed` | `failed` for a run, or
+ * `manual` when the viewer marked it unread; `agent_id` and `task_id` are null
+ * for manual. `comment_id` is the last comment that run left on the issue, null
+ * when it left none.
+ */
+export interface IssueUnread {
+  issue_id: string;
+  outcome: string;
+  agent_id: string | null;
+  task_id: string | null;
+  comment_id: string | null;
+  created_at: string;
+}
+
 /** The original a duplicate points at: enough to link it and show its status. */
 export interface IssueDuplicateOf {
   id: string;
@@ -190,6 +206,8 @@ export interface Issue {
    * server always sends the field. (MUL-6749)
    */
   status_name?: string;
+  /** True while the run budget, not a person, holds this issue in blocked. Absent when false. (CHE-5285) */
+  run_budget_blocked?: boolean;
   priority: IssuePriority;
   assignee_type: IssueAssigneeType | null;
   assignee_id: string | null;
@@ -220,6 +238,11 @@ export interface Issue {
   // + local formatting, which shifts the day by the viewer's offset.
   start_date: string | null;
   due_date: string | null;
+  /** Earliest inherited due date (own, parent or prerequisite); absent when none or closed. */
+  effective_due?: string;
+  /** `own`, `parent:<key>` or `prereq_of:<key>`; present with `effective_due`. */
+  due_source?: string;
+  diagnostics?: { type: string; members?: string[] }[];
   metadata: IssueMetadata;
   // Custom property values keyed by property definition id. Always present
   // in responses (empty object when unset), mirroring `metadata`.

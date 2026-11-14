@@ -152,6 +152,11 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{at + ".value", "is a placeholder; give the literal or a source"}
 		}
 	}
+	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+		if agentOwned(field.value) {
+			return &AskError{prefix + "." + field.name, agentOwnedMessage}
+		}
+	}
 	text := step.Action + "\n" + step.Command
 	for _, name := range append(upperName.FindAllString(text, -1), placeholder.FindAllString(text, -1)...) {
 		if !step.declares(name) {
@@ -217,6 +222,10 @@ func lintHumanSteps(ask Ask) []string {
 	}
 	return hints
 }
+
+// FenceFor is the code fence that safely wraps text: longer than any backtick
+// run in it, so quoted text cannot close the fence.
+func FenceFor(text string) string { return fenceFor(text) }
 
 func fenceFor(text string) string {
 	longest, run := 0, 0

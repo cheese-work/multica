@@ -14,8 +14,9 @@
 //
 // A project without a workflow uses the workspace Default workflow. Default
 // is a stored row once created; before that it is the built-in statuses.
-// Status writes on a Default project are never rejected: issues already on
-// statuses Default does not list keep them, as they always have.
+// Once stored, Default limits status writes like any workflow, on its
+// projects and on issues outside any project alike (MUL-8250). Issues already
+// on statuses Default does not list keep them until someone moves them.
 package issueworkflow
 
 import (
@@ -46,6 +47,10 @@ const (
 	// HandlerHumanByRole hands the issue to a person, by role: the issue's
 	// requester, then the project lead, then the workspace owner.
 	HandlerHumanByRole = "human_by_role"
+	// HandlerHumanInCharge marks a status that waits on the person in charge
+	// of a decision request (CHE-2591 L5). Entering it never hands off by
+	// itself: the entry check assigns the issue explicitly.
+	HandlerHumanInCharge = "human_in_charge"
 )
 
 const (
@@ -193,9 +198,21 @@ type Step struct {
 	// DynamicAssignment says the step's assignee is chosen at run time, so it
 	// has no handler. Lint-only: the dispatcher ignores it.
 	DynamicAssignment bool `json:"dynamic_assignment,omitempty"`
+	// WaitsOnOpenDecision declares the step a no-op while a human decision
+	// request is open on the issue (CHE-4976): the answer wakes the issue, so
+	// entering the step starts no run. Only a step whose author set it is
+	// skipped; entry work in the instructions is never inferred away.
+	WaitsOnOpenDecision bool `json:"waits_on_open_decision,omitempty"`
 	// LintWaive silences lint rules on this step, each with its reason. A
 	// waived finding is still reported, marked waived.
 	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
+	// KeepOtherAssignee makes entering the step leave an assignee in place
+	// when that assignee is neither this step's handler nor the handler of the
+	// step the issue leaves (CHE-5013).
+	//
+	// TEMPORARY: CHE-5024 (per-issue workflows) replaces it; an issue's own
+	// workflow will then say who owns each step. Remove this flag with it.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 // LintWaiver waives one lint rule on a step.
@@ -226,11 +243,34 @@ type Definition struct {
 	// RunBudgetSince is when the budget starts counting: runs before it are
 	// free, so issues in flight when the budget shipped start fresh.
 	RunBudgetSince time.Time
-	// TokenAllowance (A) and TokenReserve (E) are the weighted tokens credited
-	// per budget window and held per admitted run. Token accounting is active
-	// only when both are stored.
-	TokenAllowance int64
-	TokenReserve   int64
+	// StartStatusKey is the status where new issues of the workflow start
+	// (CHE-3113); empty means StartStatus.
+	StartStatusKey string
+}
+
+// Start is the status a new issue lands on when its creator picks none. A key
+// the workflow no longer lists falls back to StartStatus.
+func (d Definition) Start() string {
+	if d.StartStatusKey != "" && d.Has(d.StartStatusKey) {
+		return d.StartStatusKey
+	}
+	return StartStatus
+}
+
+// ValidateStartStatus checks a workflow's start status: empty keeps todo;
+// otherwise the key must be one of the steps, in an unstarted or started
+// category, so a new issue never begins finished or cancelled.
+func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEntry) error {
+	if key == "" {
+		return nil
+	}
+	if !(Definition{Steps: steps}).Has(key) {
+		return invalid("start status %q is not a status of this workflow", key)
+	}
+	if category := catalog[key].Category; category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted {
+		return invalid("start status %q must be an unstarted or started status", key)
+	}
+	return nil
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
@@ -255,8 +295,12 @@ type storedStep struct {
 	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
 	Entry         []EntryGate  `json:"entry,omitempty"`
 
-	DynamicAssignment bool         `json:"dynamic_assignment,omitempty"`
-	LintWaive         []LintWaiver `json:"lint_waive,omitempty"`
+	DynamicAssignment   bool         `json:"dynamic_assignment,omitempty"`
+	WaitsOnOpenDecision bool         `json:"waits_on_open_decision,omitempty"`
+	LintWaive           []LintWaiver `json:"lint_waive,omitempty"`
+
+	// KeepOtherAssignee: see Step. TEMPORARY, CHE-5024.
+	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -268,12 +312,10 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	def := Definition{
 		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
 		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
+		StartStatusKey: row.StartStatusKey.String,
 	}
 	if row.RunBudgetSince.Valid {
 		def.RunBudgetSince = row.RunBudgetSince.Time
-	}
-	if row.RunBudgetTokenAllowance.Valid && row.RunBudgetTokenReserve.Valid {
-		def.TokenAllowance, def.TokenReserve = row.RunBudgetTokenAllowance.Int64, row.RunBudgetTokenReserve.Int64
 	}
 	return def, nil
 }
@@ -302,8 +344,10 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			SubWorkflow:      s.SubWorkflow,
 			Entry:            s.Entry,
 
-			DynamicAssignment: s.DynamicAssignment,
-			LintWaive:         s.LintWaive,
+			DynamicAssignment:   s.DynamicAssignment,
+			WaitsOnOpenDecision: s.WaitsOnOpenDecision,
+			LintWaive:           s.LintWaive,
+			KeepOtherAssignee:   s.KeepOtherAssignee,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -325,8 +369,10 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, LintWaive: s.LintWaive}
-		if s.HandsOff() {
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, WaitsOnOpenDecision: s.WaitsOnOpenDecision, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee}
+		// A human_in_charge step hands nothing off, but its handler is the entry
+		// rule of a decision episode and must survive storage.
+		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
 			h := s.Handler
 			stored[i].Handler = &h
 			stored[i].Instructions = s.Instructions
@@ -346,6 +392,14 @@ func stepsFor(keys []string) []Step {
 		steps[i] = Step{StatusKey: key, Handler: Handler{Type: HandlerNone}}
 	}
 	return steps
+}
+
+// Limits reports whether the workflow restricts the statuses its issues may
+// enter. Only a Default the workspace has not stored yet does not: it stands
+// for "the built-in statuses" before the workspace ever used workflows, and
+// limiting by it would strand custom statuses that workspace already uses.
+func (d Definition) Limits() bool {
+	return !d.IsDefault || d.ID.Valid
 }
 
 // Has reports whether the workflow lists the status key.
@@ -522,7 +576,7 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole:
+	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
 	case HandlerAgent, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
@@ -624,6 +678,25 @@ func ForIssue(ctx context.Context, q Querier, workspaceID, workflowID, projectID
 	return def, project, err
 }
 
+// OutsideProject loads the workflow that limits the statuses of an issue
+// outside any project: the workspace's stored Default, or nil before the
+// workspace stores one. Nothing hands off outside a project, so it is only
+// for checking statuses; ForProject stays nil there. (MUL-8250)
+func OutsideProject(ctx context.Context, q Querier, workspaceID pgtype.UUID) (*Definition, error) {
+	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	def, err := Decode(row)
+	if err != nil {
+		return nil, err
+	}
+	return &def, nil
+}
+
 // ForProjectRow loads the workflow of an already-loaded project. A dangling
 // workflow reference falls back to Default.
 func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definition, error) {
@@ -721,9 +794,16 @@ type NotInWorkflowError struct {
 	StatusKey    string
 	WorkflowName string
 	Allowed      []string
+	// OutsideProject marks an issue outside any project, which takes the
+	// statuses of the workspace Default.
+	OutsideProject bool
 }
 
 func (e *NotInWorkflowError) Error() string {
+	if e.OutsideProject {
+		return fmt.Sprintf("status %q is not part of the workflow %q that issues outside a project use; use one of: %s",
+			e.StatusKey, e.WorkflowName, strings.Join(e.Allowed, ", "))
+	}
 	return fmt.Sprintf("status %q is not part of this project's workflow %q; use one of: %s",
 		e.StatusKey, e.WorkflowName, strings.Join(e.Allowed, ", "))
 }
@@ -775,14 +855,25 @@ func statusLabel(name, key string) string {
 	return fmt.Sprintf("%q (%s)", name, key)
 }
 
-// CheckStatus rejects a status a named workflow does not list. Default
-// accepts every status, so issues already on statuses it no longer lists
-// keep working.
+// CheckStatus rejects a status the workflow does not list. Callers skip it
+// when a write keeps the issue's current status, so an issue already on a
+// status its workflow no longer lists keeps working.
 func CheckStatus(def *Definition, key string) error {
-	if def == nil || def.IsDefault || def.Has(key) {
+	if def == nil || !def.Limits() || def.Has(key) {
 		return nil
 	}
 	return &NotInWorkflowError{StatusKey: key, WorkflowName: def.Name, Allowed: def.StatusKeys()}
+}
+
+// CheckStatusOutsideProject is CheckStatus for an issue outside any project,
+// against OutsideProject's workflow.
+func CheckStatusOutsideProject(def *Definition, key string) error {
+	err := CheckStatus(def, key)
+	var notIn *NotInWorkflowError
+	if errors.As(err, &notIn) {
+		notIn.OutsideProject = true
+	}
+	return err
 }
 
 // BriefInput carries what the handoff brief names.
@@ -804,6 +895,10 @@ type BriefInput struct {
 	// AssigneeName names the issue's assignee in an observer's brief; empty
 	// means unassigned.
 	AssigneeName string
+	// Routing marks a step the workspace's routing agent handles (CHE-4439 S5):
+	// its commands are `multica issue route` lines, which record why, instead
+	// of `multica issue status` lines.
+	Routing bool
 }
 
 // Brief renders what an agent reads about the issue's project workflow: the
@@ -878,15 +973,22 @@ func Brief(in BriefInput) string {
 		return b.String()
 	}
 	b.WriteString("\nHand off by changing the status — moving the issue into a step that hands off reassigns it to that step's handler and starts their run:\n")
+	// move renders one command: a routing step records why through `issue route`.
+	move := func(status string) string {
+		if in.Routing {
+			return fmt.Sprintf("multica issue route %s --status %s --reason \"<why>\" --confidence <0-1>", in.IssueIdentifier, status)
+		}
+		return fmt.Sprintf("multica issue status %s %s", in.IssueIdentifier, status)
+	}
 	if next := in.Workflow.NextStatus(in.StatusKey); next != "" {
-		fmt.Fprintf(&b, "Step done      → multica issue status %s %s\n", in.IssueIdentifier, next)
+		fmt.Fprintf(&b, "Step done      → %s\n", move(next))
 	}
 	if step.BackStatusKey != "" {
-		fmt.Fprintf(&b, "Needs changes  → multica issue status %s %s\n", in.IssueIdentifier, step.BackStatusKey)
+		fmt.Fprintf(&b, "Needs changes  → %s\n", move(step.BackStatusKey))
 	}
 	switch {
 	case in.Workflow.Has(issuestatus.Blocked):
-		fmt.Fprintf(&b, "Can't proceed  → multica issue status %s blocked, then comment why\n", in.IssueIdentifier)
+		fmt.Fprintf(&b, "Can't proceed  → %s, then comment why\n", move(issuestatus.Blocked))
 	case step.BackStatusKey != "":
 		b.WriteString("Can't proceed  → this workflow has no blocked status: comment why, then use the \"Needs changes\" command above\n")
 	default:

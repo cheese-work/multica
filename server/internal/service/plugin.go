@@ -328,6 +328,28 @@ func decodeScopes(raw []byte) []string {
 	return scopes
 }
 
+// PluginAuditFn writes the audit row through q, which is bound to the
+// mutation's own transaction. A non-nil error rolls the whole mutation back,
+// secrets included, and is returned to the caller unchanged. A nil
+// PluginAuditFn writes nothing.
+type PluginAuditFn func(ctx context.Context, q *db.Queries, change PluginChange) error
+
+// PluginChange carries what the mutation read and wrote, for the audit row.
+// Before is nil on a first install; After is nil on uninstall. Package and
+// Version are set only by publish and package delete.
+type PluginChange struct {
+	Before, After *db.PluginInstallation
+	Package       *db.PluginPackage
+	Version       *db.PluginPackageVersion
+}
+
+func (f PluginAuditFn) run(ctx context.Context, q *db.Queries, change PluginChange) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, q, change)
+}
+
 // InstallPlugin is the second half of the install. grantedScopes must match the
 // manifest exactly: partial consent would leave the plugin silently broken, and
 // consenting to a scope the manifest does not request would grant access the
@@ -337,7 +359,7 @@ func decodeScopes(raw []byte) []string {
 // another version and does not touch this row — upgrading is a second, explicit
 // consent, which is what makes "approved the manifest, ran the code" a true
 // statement rather than an aspiration.
-func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID pgtype.UUID, versionID string, grantedScopes []string) (db.PluginInstallation, error) {
+func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID pgtype.UUID, versionID string, grantedScopes []string, audit PluginAuditFn) (db.PluginInstallation, error) {
 	version, err := s.VersionForWorkspace(ctx, workspaceID, versionID)
 	if err != nil {
 		return db.PluginInstallation{}, err
@@ -405,6 +427,9 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		if scheduleErr := s.reconcilePluginHookSchedules(ctx, queries, installation, manifest); scheduleErr != nil {
 			return db.PluginInstallation{}, scheduleErr
 		}
+		if auditErr := audit.run(ctx, queries, PluginChange{After: &installation}); auditErr != nil {
+			return db.PluginInstallation{}, auditErr
+		}
 		if commitErr := tx.Commit(ctx); commitErr != nil {
 			return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit install", Err: commitErr}
 		}
@@ -462,6 +487,9 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		return db.PluginInstallation{}, err
 	}
 	if err := s.reconcilePluginHookSchedules(ctx, queries, updated, manifest); err != nil {
+		return db.PluginInstallation{}, err
+	}
+	if err := audit.run(ctx, queries, PluginChange{Before: &existing, After: &updated}); err != nil {
 		return db.PluginInstallation{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -538,7 +566,7 @@ func ParseInstallationManifest(installation db.PluginInstallation) (plugincontra
 // SetConfig validates values against the stored manifest schema and splits them
 // by destination: plain values go on the installation row, secrets go to the
 // encrypted table. A secret value never lands in `config`.
-func (s *PluginService) SetConfig(ctx context.Context, installation db.PluginInstallation, values map[string]any) (db.PluginInstallation, error) {
+func (s *PluginService) SetConfig(ctx context.Context, installation db.PluginInstallation, values map[string]any, audit PluginAuditFn) (db.PluginInstallation, error) {
 	manifest, err := ParseInstallationManifest(installation)
 	if err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorInvalid, Message: "stored plugin manifest is unreadable", Err: err}
@@ -624,6 +652,9 @@ func (s *PluginService) SetConfig(ctx context.Context, installation db.PluginIns
 	if err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "store plugin config", Err: err}
 	}
+	if err := audit.run(ctx, queries, PluginChange{Before: &installation, After: &updated}); err != nil {
+		return db.PluginInstallation{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit configure", Err: err}
 	}
@@ -696,7 +727,7 @@ func (s *PluginService) ConfiguredSecretKeys(ctx context.Context, installationID
 
 // SetEnabled toggles an installation. Disabling hides every contribution
 // immediately but keeps storage and secrets, so re-enabling is not a reinstall.
-func (s *PluginService) SetEnabled(ctx context.Context, installation db.PluginInstallation, enabled bool) (db.PluginInstallation, error) {
+func (s *PluginService) SetEnabled(ctx context.Context, installation db.PluginInstallation, enabled bool, audit PluginAuditFn) (db.PluginInstallation, error) {
 	if installation.Enabled == enabled {
 		return installation, nil
 	}
@@ -717,6 +748,9 @@ func (s *PluginService) SetEnabled(ctx context.Context, installation db.PluginIn
 	if err := s.setPluginHookSchedulesEnabled(ctx, queries, installation.ID, enabled); err != nil {
 		return db.PluginInstallation{}, err
 	}
+	if err := audit.run(ctx, queries, PluginChange{Before: &installation, After: &updated}); err != nil {
+		return db.PluginInstallation{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit plugin state update", Err: err}
 	}
@@ -727,7 +761,7 @@ func (s *PluginService) SetEnabled(ctx context.Context, installation db.PluginIn
 // There are no foreign keys or cascades by repository policy, so the deletes
 // share one transaction: a partial uninstall would strand rows nothing can
 // reach or clean up later.
-func (s *PluginService) Uninstall(ctx context.Context, installation db.PluginInstallation) error {
+func (s *PluginService) Uninstall(ctx context.Context, installation db.PluginInstallation, audit PluginAuditFn) error {
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "begin uninstall", Err: err}
@@ -758,6 +792,9 @@ func (s *PluginService) Uninstall(ctx context.Context, installation db.PluginIns
 	}
 	if err := queries.DeletePluginInstallation(ctx, installation.ID); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "delete plugin installation", Err: err}
+	}
+	if err := audit.run(ctx, queries, PluginChange{Before: &installation}); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "commit uninstall", Err: err}

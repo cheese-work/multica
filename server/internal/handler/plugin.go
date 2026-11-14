@@ -256,8 +256,14 @@ func (h *Handler) InstallPlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes)
+	audit := h.pluginAudit(r, workspaceID, "plugin.install", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return pluginInstallationFields(c.Before), pluginInstallationFields(c.After)
+	})
+	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes, audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.install") {
+			return
+		}
 		writePluginError(w, err, "failed to install the Plugin")
 		return
 	}
@@ -284,8 +290,12 @@ func (h *Handler) ConfigurePlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	updated, err := h.PluginService.SetConfig(r.Context(), installation, req.Values)
+	audit := h.pluginAudit(r, installation.WorkspaceID, "plugin.config.update", pluginConfigAudit(req.Values))
+	updated, err := h.PluginService.SetConfig(r.Context(), installation, req.Values, audit)
 	if err != nil {
+		if failedAudit(w, r, err, "plugin.config.update") {
+			return
+		}
 		writePluginError(w, err, "failed to configure the Plugin")
 		return
 	}
@@ -312,8 +322,18 @@ func (h *Handler) setPluginEnabled(w http.ResponseWriter, r *http.Request, enabl
 	if !ok {
 		return
 	}
-	updated, err := h.PluginService.SetEnabled(r.Context(), installation, enabled)
+	kind := "plugin.disable"
+	if enabled {
+		kind = "plugin.enable"
+	}
+	audit := h.pluginAudit(r, installation.WorkspaceID, kind, func(c service.PluginChange) (map[string]any, map[string]any) {
+		return map[string]any{"enabled": c.Before.Enabled}, map[string]any{"enabled": c.After.Enabled}
+	})
+	updated, err := h.PluginService.SetEnabled(r.Context(), installation, enabled, audit)
 	if err != nil {
+		if failedAudit(w, r, err, kind) {
+			return
+		}
 		writePluginError(w, err, "failed to update the Plugin")
 		return
 	}
@@ -331,7 +351,13 @@ func (h *Handler) UninstallPlugin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.PluginService.Uninstall(r.Context(), installation); err != nil {
+	audit := h.pluginAudit(r, installation.WorkspaceID, "plugin.uninstall", func(c service.PluginChange) (map[string]any, map[string]any) {
+		return pluginInstallationFields(c.Before), nil
+	})
+	if err := h.PluginService.Uninstall(r.Context(), installation, audit); err != nil {
+		if failedAudit(w, r, err, "plugin.uninstall") {
+			return
+		}
 		writePluginError(w, err, "failed to uninstall the Plugin")
 		return
 	}

@@ -166,7 +166,7 @@ func TestRejectDecisionActionTwiceIsNotPending(test *testing.T) {
 	}
 }
 
-func TestRejectDecisionActionNeverWaitsOnAHeldRow(test *testing.T) {
+func TestRejectDecisionActionRefusesAHeldRowAfterBoundedRetries(test *testing.T) {
 	for _, held := range []struct{ name, query string }{
 		{"action", `SELECT 1 FROM decision_action WHERE id = $1 FOR UPDATE`},
 		{"request", `SELECT 1 FROM decision_request WHERE id = (SELECT decision_request_id FROM decision_action WHERE id = $1) FOR UPDATE`},
@@ -177,8 +177,8 @@ func TestRejectDecisionActionNeverWaitsOnAHeldRow(test *testing.T) {
 			holdRow(test, held.query, action.actionID)
 			started := time.Now()
 			body := action.reject(test, testHandler, http.StatusConflict)
-			if !strings.Contains(body, "busy_retry") || time.Since(started) > time.Second {
-				test.Fatalf("after %s body %q; want an immediate busy_retry", time.Since(started), body)
+			if !strings.Contains(body, "busy_retry") || time.Since(started) > 5*time.Second {
+				test.Fatalf("after %s body %q; want busy_retry within the bounded retries", time.Since(started), body)
 			}
 			action.assertUntouched(test)
 		})

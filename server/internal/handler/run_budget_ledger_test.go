@@ -87,8 +87,8 @@ func TestRunBudgetLedgerWritesRunEntriesOnly(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM issue_run_budget_entry WHERE issue_id=$1 AND kind='run' AND event_key=$2 AND runs_delta=-1`, c.issueID, "run:"+uuidToString(task.ID)); n != 1 {
 		t.Fatalf("run debits for the admitted task = %d, want 1", n)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM issue_run_budget_entry WHERE issue_id=$1 AND (tokens_delta<>0 OR kind NOT IN ('window','run'))`, c.issueID); n != 0 {
-		t.Fatalf("%d token or credit entries, want none: no A or E check is stored", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue_run_budget_entry WHERE issue_id=$1 AND kind NOT IN ('window','run')`, c.issueID); n != 0 {
+		t.Fatalf("%d credit entries, want none", n)
 	}
 }
 

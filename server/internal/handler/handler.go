@@ -68,6 +68,11 @@ type dbExecutor interface {
 }
 
 type Config struct {
+	// SetupComponents is the registry of Setup component ids the
+	// adoption_linked close gate checks metadata `components` and the `none`
+	// cross-check against (MULTICA_SETUP_COMPONENTS, comma separated). The
+	// registry lives outside this repo, so the operator mirrors its ids here.
+	SetupComponents     []string
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
@@ -125,6 +130,9 @@ type Config struct {
 	CloudTimeout             time.Duration
 	AttachmentDownloadMode   string
 	AttachmentDownloadURLTTL time.Duration
+	// MaxPreviewSizeBytes bounds text-backed attachment previews independently
+	// of upload/download limits. Zero selects the default 2 MiB limit.
+	MaxPreviewSizeBytes int64
 	// AttachmentFrameAncestors are trusted browser origins allowed to embed
 	// attachment preview responses. In production this should mirror the
 	// frontend/CORS origin allowlist so split app/api self-hosted deployments
@@ -227,7 +235,9 @@ type Handler struct {
 	// workflowWriter overrides how workflow deliveries are stored; nil means the
 	// default transaction-per-workspace writer. Tests inject faults through it.
 	workflowWriter workflowWriter
-	Queries        *db.Queries
+	// ciWatch records completed runs for the CI failure watcher; nil = off.
+	ciWatch ciWatcher
+	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
 	ActionRequestsEnabled  bool
@@ -256,6 +266,9 @@ type Handler struct {
 	// ApprovalVerifier proves a human approved a decision action. Nil until
 	// the passkey verifier is wired; approve then fails closed.
 	ApprovalVerifier ApprovalVerifier
+	// ProposalGuard admits agent action proposals. New wires the real guard; nil
+	// refuses them all (C2).
+	ProposalGuard ProposalGuard
 	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
 	// off (MULTICA_WEBAUTHN_* unset).
 	Passkeys              *passkey.Service
@@ -387,6 +400,14 @@ type Handler struct {
 	// WecomCredentials unseals a wecom installation's smart-bot secret for the
 	// WebSocket subscribe frame. Nil disables the wecom integration.
 	WecomCredentials wecom.CredentialsResolver
+	// WecomInstall drives the scan-code install sessions (QR generate + poll).
+	// Nil unless MULTICA_WECOM_SECRET_KEY is set; Configured() is additionally
+	// false without a QR provider, in which case the endpoints return 503 but
+	// in-flight sessions still terminate cleanly.
+	WecomInstall *wecom.InstallService
+	// WecomInstallWorker drives those sessions. Built in cmd/server/router.go;
+	// main.go starts it as an independent worker.
+	WecomInstallWorker *wecom.InstallWorker
 	// WecomBindingTokens mints/redeems the user-binding tokens behind the
 	// "link your Multica account" prompt sent to first-time WeCom users
 	// (their aibot userid is a "T"-prefixed anonymized id with no relation
@@ -542,6 +563,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
+		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
@@ -606,13 +628,21 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		return err
 	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
+	service.SetAdmissionSnapshotRefresh(func(pr db.GithubPullRequest) {
+		h.PRRefresh.Enqueue(pr.InstallationID, pr.RepoOwner, pr.RepoName, pr.PrNumber)
+	})
+	h.enableCIWatch(ghClient)
 	if h.PRRefresh.Enabled() {
 		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
 			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
 		}
 	}
 	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
+	taskSvc.PRMergeOwed = h.evaluatePRMergeOwed
+	taskSvc.PRMergeOwe = upsertPRMergeOwed
 	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
+	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
+	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
 	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
 	if h.IssueService != nil {
@@ -1069,6 +1099,10 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
+	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
+}
+
+func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1077,7 +1111,7 @@ func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID st
 	if err != nil {
 		return db.Member{}, err
 	}
-	return h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})

@@ -51,7 +51,7 @@ func TestBackgroundTaskDispatchHidesDMInputFromBystander(t *testing.T) {
 			labels = append(labels, label)
 			ctxJSON, _ := json.Marshal(service.BackgroundTaskContext{
 				Type: service.BackgroundTaskContextType, Job: string(job), WorkspaceID: testWorkspaceID,
-				Slot: string(slot), Input: secret + " " + label,
+				Slot: string(slot), Input: secret + " " + label, Guard: secret + " guard " + label,
 			})
 			cols := testutil.Cols{
 				"runtime_id": runtimeID, "purpose": bgagents.Purpose(job), "source_chat_session_id": dm,
@@ -85,7 +85,7 @@ func TestBackgroundTaskDispatchHidesDMInputFromBystander(t *testing.T) {
 			}
 			dispatches++
 			if name == "bystander" && strings.Contains(f.raw, secret) {
-				t.Errorf("bystander task:dispatch leaked the DM input: %s", f.raw)
+				t.Errorf("bystander task:dispatch leaked the DM input or guard: %s", f.raw)
 			}
 		}
 		if dispatches != len(labels) {

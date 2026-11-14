@@ -58,13 +58,10 @@ func agentDecisionOutcome(gate string) string {
 }
 
 // Classes that stay with Cheese, whoever the decider is.
+var agentDecisionExcludedClasses = []string{"irreversible", "design_direction", "architecture", "high_level"}
+
 func agentDecisionClassExcluded(class string) bool {
-	switch class {
-	case "irreversible", "design_direction", "architecture", "high_level":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(agentDecisionExcludedClasses, class)
 }
 
 var agentDecisionEvidenceKinds = []string{"characterization_test", "manual_repro", "static_check", "review_only"}
@@ -99,6 +96,8 @@ type agentDecisionProposal struct {
 	RedImpossibleReason string `json:"red_impossible_reason,omitempty"`
 	WeakerEvidenceKind  string `json:"weaker_evidence_kind,omitempty"`
 	FollowupCheck       string `json:"followup_check,omitempty"`
+	// Crashlytics issue id or signature of the crash or ANR the change fixes.
+	CrashSignature string `json:"crash_signature,omitempty"`
 	// Any gate. DecisionClass is the proposer's own class; Decider and
 	// Confidence label a decision Jev took for Cheese.
 	DecisionClass string   `json:"decision_class,omitempty"`
@@ -289,7 +288,13 @@ func validateAgentDecisionProposal(p agentDecisionProposal, author string) error
 			!slices.Contains(agentDecisionEvidenceKinds, p.WeakerEvidenceKind) || !slices.Contains(p.Signers, p.ReviewerID) {
 			return agentDecisionRefusal("test_first_red needs a cosign route, a named signer as reviewer, the reason red is impossible, the weaker evidence kind and a follow-up check")
 		}
-	} else if p.ReviewerID != "" || p.RedImpossibleReason != "" || p.WeakerEvidenceKind != "" || p.FollowupCheck != "" {
+		if len(p.FollowupCheck) > agentDecisionFollowupCheckMax {
+			return agentDecisionRefusal("followup_check is too long")
+		}
+		if p.CrashSignature != "" && !crashSignaturePattern.MatchString(p.CrashSignature) {
+			return agentDecisionRefusal("crash_signature must be 1-128 letters, digits, dots, colons, underscores or hyphens")
+		}
+	} else if p.ReviewerID != "" || p.RedImpossibleReason != "" || p.WeakerEvidenceKind != "" || p.FollowupCheck != "" || p.CrashSignature != "" {
 		return agentDecisionRefusal("test_first_red fields are only for the test_first_red gate")
 	}
 	if p.WorkAuthorID != author {

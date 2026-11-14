@@ -27,3 +27,20 @@ func TestPredict(test *testing.T) {
 		})
 	}
 }
+
+func TestWaiverRule(t *testing.T) {
+	for _, c := range []struct {
+		crossLab bool
+		evidence string
+		want     string
+	}{
+		{false, "characterization_test", KeyRefuse},
+		{false, "review_only", KeyRefuse},
+		{true, "manual_repro", KeyWaive},
+		{true, "review_only", ""},
+	} {
+		if got := WaiverRule(c.crossLab, c.evidence); got != c.want {
+			t.Errorf("WaiverRule(%v, %q) = %q, want %q", c.crossLab, c.evidence, got, c.want)
+		}
+	}
+}

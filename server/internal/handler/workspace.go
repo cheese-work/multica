@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -377,6 +378,9 @@ type UpdateWorkspaceRequest struct {
 	// overwrite, absent fields keep their saved value, null resets to the
 	// defaults. Raw for the same reason as CompactPrompt.
 	AutoCompact json.RawMessage `json:"auto_compact"`
+	// HarnessProfile sets settings.harness_profile alone (CHE-3706); null
+	// removes it so the workspace falls back to personal.
+	HarnessProfile json.RawMessage `json:"harness_profile"`
 	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
 	// named fields overwrite, absent fields keep their saved value. Owner only.
 	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
@@ -464,6 +468,16 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// struct fields case-insensitively).
 	actorType, actorID := h.resolveActor(r, requestUserID(r), id)
 
+	// CHE-3482: a machine identity needs a passkey-approved action for the
+	// context and for the settings the allow table covers. Before every older
+	// exception below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Context != nil, workspaceContextAction) {
+		return
+	}
+	if refuseMachineCoveredWrite(w, r, actorType, req.CompactPrompt != nil || req.AutoCompact != nil || req.IdleStartedGuard != nil || req.WakeupsPaused != nil, settingsPatchAction) {
+		return
+	}
+
 	// CHE-764: a single, human-approved, narrowly-scoped exception to the
 	// CHE-455 rule immediately above — see
 	// governed_instruction_hermes_exception.go for the full predicate and
@@ -477,11 +491,14 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
 			return
 		}
-		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), id, hermesExceptionRequest{
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), r, id, hermesExceptionRequest{
 			NewContent:           *req.Context,
 			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
 		})
 		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if failedAudit(w, r, swapErr, "workspace.context") {
+			return
+		}
 		if reason != hermesExceptionRejectNone {
 			hermesExceptionWriteRejection(w, r, reason, swapErr)
 			return
@@ -509,13 +526,9 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	var rawFields map[string]json.RawMessage
 	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
+	// CHE-1862: the vote receipt entry; only a human reaches it.
 	if voteEntered(actorType, req.Context != nil, rawFields) {
 		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
-		return
-	}
-
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Context != nil, "context") {
 		return
 	}
 
@@ -546,7 +559,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -575,7 +588,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			err = errAutoCompactShape
 		} else {
-			err = validateAutoCompactConfig(map[string]any{"auto_compact": incoming})
+			err = validateAutoCompactPatch(incoming)
 		}
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -584,7 +597,23 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		if incoming == nil {
 			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
 		} else {
-			params.AutoCompact = req.AutoCompact
+			params.AutoCompact = clearStalePct(req.AutoCompact)
+		}
+	}
+	if req.HarnessProfile != nil {
+		var profile any
+		err := json.Unmarshal(req.HarnessProfile, &profile)
+		if err == nil {
+			err = validateHarnessProfileConfig(map[string]any{"harness_profile": profile})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := profile.(string); ok {
+			params.HarnessProfile = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.HarnessProfileReset = pgtype.Bool{Bool: true, Valid: true}
 		}
 	}
 	if req.IdleStartedGuard != nil {
@@ -654,14 +683,21 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, pauseAction, activity, err := h.saveWorkspace(r.Context(), params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
+	ws, pauseAction, activity, err := h.saveWorkspace(r, params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
 	var rejected settingsRejectedError
 	if errors.Is(err, errBackgroundAgentsHumanOnly) {
 		writeBackgroundAgentsRefused(w)
 		return
 	}
+	if errors.Is(err, errSettingsPasskeyRequired) {
+		writePasskeyActionRequired(w, settingsPatchAction)
+		return
+	}
 	if errors.As(err, &rejected) {
 		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
+	if failedAudit(w, r, err, "workspace.update") {
 		return
 	}
 	if err != nil {
@@ -842,11 +878,29 @@ func (h *Handler) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updatedMember, err := h.Queries.UpdateMemberRole(r.Context(), db.UpdateMemberRoleParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	updatedMember, err := qtx.UpdateMemberRole(r.Context(), db.UpdateMemberRoleParams{
 		ID:   target.ID,
 		Role: role,
 	})
 	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "member.update", WorkspaceID: updatedMember.WorkspaceID, TargetID: updatedMember.ID,
+		Before: memberAuditFields(target), After: memberAuditFields(updatedMember),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "member.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update member")
 		return
 	}
@@ -903,8 +957,11 @@ func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requesterUserID := requestUserID(r)
-	result, err := h.revokeAndRemoveMember(r.Context(), target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
+	result, err := h.removeMemberAudited(r.Context(), r, "member.remove", target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
 	if err != nil {
+		if failedAudit(w, r, err, "member.remove") {
+			return
+		}
 		slog.Warn("delete member failed", append(logger.RequestAttrs(r), "error", err, "member_id", memberID, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete member")
 		return
@@ -948,8 +1005,11 @@ func (h *Handler) LeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.revokeAndRemoveMember(r.Context(), member.WorkspaceID, member.UserID, member.ID, member.UserID)
+	result, err := h.removeMemberAudited(r.Context(), r, "member.leave", member.WorkspaceID, member.UserID, member.ID, member.UserID)
 	if err != nil {
+		if failedAudit(w, r, err, "member.leave") {
+			return
+		}
 		slog.Warn("leave workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to leave workspace")
 		return
@@ -1068,6 +1128,11 @@ var workspaceDeleteOwnerPageSize int32 = 500
 // tenant with rows left behind.
 const workspaceDeleteVerifyPasses = 3
 
+// workspaceDeleteMaxRestarts caps how often one delete rolls back and starts again
+// because a task page named an issue it had not locked. Past the cap the delete
+// fails closed with the workspace intact.
+const workspaceDeleteMaxRestarts = 3
+
 // deleteWorkspaceTasks removes every agent_task_queue row a workspace owns,
 // together with the rows that hang off those tasks, in bounded keyset pages.
 //
@@ -1180,6 +1245,25 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 		},
 	}
 
+	// Every issue any task page will touch is locked here, once and in ascending
+	// order, before the first task row of the first page. A page that met a new
+	// issue later would lock it while the delete holds the rows of earlier pages,
+	// against a writer that holds that issue and waits on one of those rows.
+	held := make(map[pgtype.UUID]struct{})
+	for _, kind := range ownerKinds {
+		if err := discoverTaskIssues(ctx, qtx, kind.ownerFirstPage, kind.ownerPage, kind.taskFirstPage, kind.taskPage, held); err != nil {
+			return err
+		}
+	}
+	heldIDs := make([]pgtype.UUID, 0, len(held))
+	for id := range held {
+		heldIDs = append(heldIDs, id)
+	}
+	heldIDs = service.MergeSortedUUIDs(heldIDs, nil)
+	if err := qtx.LockIssuesByID(ctx, heldIDs); err != nil {
+		return fmt.Errorf("lock issues of every task page: %w", err)
+	}
+
 	for _, kind := range ownerKinds {
 		owners, err := kind.ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
 		if err != nil {
@@ -1189,6 +1273,9 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 			for _, ownerID := range owners {
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
+					func(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
+						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids, held)
+					},
 					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
 					return err
 				}
@@ -1207,6 +1294,105 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 	return nil
 }
 
+// issuesWidenedError reports that a task page names issues the page did not lock
+// before it locked its task rows: a run created after the issue lock query names a
+// task of the page as its parent, on an issue nobody holds. The page must not lock
+// that issue while it holds task rows, so the teardown rolls back, which releases
+// every lock, and starts again with these issues locked first.
+type issuesWidenedError struct{ IDs []pgtype.UUID }
+
+func (e *issuesWidenedError) Error() string {
+	return fmt.Sprintf("task page names %d issue(s) it did not lock first", len(e.IDs))
+}
+
+// discoverTaskIssues reads every task page of every owner of one kind, locks
+// nothing, and adds the issues the deletion of each page touches to held.
+func discoverTaskIssues(
+	ctx context.Context,
+	qtx *db.Queries,
+	ownerFirstPage func(context.Context, int32) ([]pgtype.UUID, error),
+	ownerPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	held map[pgtype.UUID]struct{},
+) error {
+	owners, err := ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
+	if err != nil {
+		return fmt.Errorf("discover task issues: list owners: %w", err)
+	}
+	for len(owners) > 0 {
+		for _, ownerID := range owners {
+			ids, err := taskFirstPage(ctx, ownerID, workspaceDeleteTaskPageSize)
+			for err == nil && len(ids) > 0 {
+				var issueIDs []pgtype.UUID
+				if issueIDs, err = qtx.ListIssueIDsOfTaskBatch(ctx, ids); err != nil {
+					break
+				}
+				for _, id := range issueIDs {
+					held[id] = struct{}{}
+				}
+				ids, err = taskPage(ctx, ownerID, ids[len(ids)-1], workspaceDeleteTaskPageSize)
+			}
+			if err != nil {
+				return fmt.Errorf("discover task issues: %w", err)
+			}
+		}
+		if owners, err = ownerPage(ctx, owners[len(owners)-1], workspaceDeleteOwnerPageSize); err != nil {
+			return fmt.Errorf("discover task issues: list owners: %w", err)
+		}
+	}
+	return nil
+}
+
+// lockTaskPageIssuesFirst prepares one task page in the order every other writer
+// uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
+// issue and then waits on the run row, so a page that held run rows (its own or
+// an earlier page's) and then asked for another issue would be aborted with 40P01.
+//
+// held is every issue the teardown has locked, found by discoverTaskIssues before
+// the first page. A page never locks an issue itself:
+//
+//  1. The issues of the page's tasks and of their children are read. One that is
+//     not in held was created after the discovery.
+//  2. The task rows are locked; a row that moved to another owner or is gone drops
+//     out of the returned ids.
+//  3. The children of the locked rows are read again, for a child created after
+//     step 1.
+//
+// At step 1 or 3 an issue outside held makes the page return an issuesWidenedError
+// without locking it, and the teardown rolls back, which releases every lock, and
+// starts again with those issues locked first.
+func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID, held map[pgtype.UUID]struct{}) ([]pgtype.UUID, error) {
+	unheldOf := func(ids []pgtype.UUID) []pgtype.UUID {
+		var unheld []pgtype.UUID
+		for _, id := range ids {
+			if _, ok := held[id]; !ok {
+				unheld = append(unheld, id)
+			}
+		}
+		return unheld
+	}
+	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of task page: %w", err)
+	}
+	if unheld := unheldOf(need); len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
+	}
+	locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
+	if err != nil {
+		return nil, fmt.Errorf("lock task page: %w", err)
+	}
+	current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of locked task page: %w", err)
+	}
+	if unheld := unheldOf(current); len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
+	}
+	return locked, nil
+}
+
 // sweepTasksForOwner deletes one owner's tasks, then re-verifies that owner.
 //
 // Each pass walks the owner's tasks by keyset and deletes each page. A pass that
@@ -1220,6 +1406,7 @@ func sweepTasksForOwner(
 	ownerID pgtype.UUID,
 	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
 	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	lockPage func(context.Context, []pgtype.UUID) ([]pgtype.UUID, error),
 	detach func(context.Context, []pgtype.UUID) error,
 	deletePage func(context.Context, []pgtype.UUID) error,
 ) error {
@@ -1230,13 +1417,19 @@ func sweepTasksForOwner(
 			return fmt.Errorf("list tasks by %s: %w", label, err)
 		}
 		for len(taskIDs) > 0 {
-			if err := detach(ctx, taskIDs); err != nil {
-				return fmt.Errorf("detach task page references: %w", err)
+			locked, err := lockPage(ctx, taskIDs)
+			if err != nil {
+				return fmt.Errorf("lock task page: %w", err)
 			}
-			if err := deletePage(ctx, taskIDs); err != nil {
-				return fmt.Errorf("delete task page: %w", err)
+			if len(locked) > 0 {
+				if err := detach(ctx, locked); err != nil {
+					return fmt.Errorf("detach task page references: %w", err)
+				}
+				if err := deletePage(ctx, locked); err != nil {
+					return fmt.Errorf("delete task page: %w", err)
+				}
+				deleted += len(locked)
 			}
-			deleted += len(taskIDs)
 			if taskIDs, err = taskPage(ctx, ownerID, taskIDs[len(taskIDs)-1], workspaceDeleteTaskPageSize); err != nil {
 				return fmt.Errorf("list tasks by %s: %w", label, err)
 			}
@@ -1338,11 +1531,64 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// delete window would otherwise slip in a session nobody locked, and its
 	// restore would outlive the cascade the same way. Holding the workspace row
 	// FOR UPDATE blocks that insert on its workspace FK (FOR KEY SHARE).
+	// A task page can name an issue created after its lock query. The attempt then
+	// rolls back, which releases every lock, and runs again with that issue locked
+	// first. The restarts are bounded; past the bound the delete fails closed.
+	var extraIssueIDs []pgtype.UUID
+	var snap *workspaceDeleteSnapshot
+	for restarts := 0; ; restarts++ {
+		var widened []pgtype.UUID
+		var ok bool
+		snap, widened, ok = h.deleteWorkspaceAttempt(w, r, requester, workspaceID, extraIssueIDs)
+		if ok {
+			break
+		}
+		if len(widened) == 0 {
+			return
+		}
+		if restarts >= workspaceDeleteMaxRestarts {
+			failWorkspaceDelete(w, r, workspaceID, "lock task page issues",
+				fmt.Errorf("task pages kept naming unlocked issues after %d restarts: %w", restarts, &issuesWidenedError{IDs: widened}))
+			return
+		}
+		extraIssueIDs = service.MergeSortedUUIDs(extraIssueIDs, widened)
+	}
+	for _, runtimeID := range snap.runtimeIDs {
+		h.NotifyRuntimeGone(uuidToString(runtimeID))
+	}
+	for _, machine := range snap.machines {
+		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
+	}
+	h.deleteS3Objects(r.Context(), snap.objectURLs)
+
+	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
+	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
+		"workspace_id": workspaceID,
+	})
+	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// workspaceDeleteSnapshot is what a committed delete attempt read for the work
+// that follows the commit.
+type workspaceDeleteSnapshot struct {
+	runtimeIDs []pgtype.UUID
+	machines   []db.ListMachinesOfWorkspaceRow
+	objectURLs []string
+}
+
+// deleteWorkspaceAttempt runs one delete transaction. It returns the snapshot
+// when the transaction committed. When a task page named an issue it had not
+// locked, it rolls back, writes nothing and returns those issues so the caller
+// can run again. On any other failure it writes the response and returns no
+// snapshot and no issues.
+func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request, requester db.Member, workspaceID string, extraIssueIDs []pgtype.UUID) (*workspaceDeleteSnapshot, []pgtype.UUID, bool) {
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Warn("begin workspace delete tx failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
@@ -1356,12 +1602,18 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	lockTimeoutMs := int(effectiveWorkspaceDeleteLockTimeout() / time.Millisecond)
 	if _, err := tx.Exec(r.Context(), fmt.Sprintf("SET LOCAL lock_timeout = %d", lockTimeoutMs)); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "set lock timeout", err)
-		return
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
-		return
+		return nil, nil, false
+	}
+	// A restart locks the issues the earlier attempt found too late, in id order,
+	// before any task row.
+	if err := qtx.LockIssuesByID(r.Context(), extraIssueIDs); err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "lock issues found by an earlier attempt", err)
+		return nil, nil, false
 	}
 	// Take a best-effort snapshot for post-commit daemon invalidation. Runtime
 	// registration does not participate in the workspace delete lock protocol,
@@ -1370,7 +1622,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list runtimes", err)
-		return
+		return nil, nil, false
 	}
 
 	// The sweep below removes the runtimes and the pauses this workspace set, which
@@ -1380,20 +1632,20 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	machines, err := qtx.ListMachinesOfWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list workspace machines", err)
-		return
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextAttachmentURLs, err = qtx.ListSourceContextAttachmentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context attachment objects", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextIntentURLs, err = qtx.ListSourceContextObjectIntentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context pending objects", err)
-		return
+		return nil, nil, false
 	}
 
 	// Keep the relationship graph in the application layer. Each step is a
@@ -1475,6 +1727,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete provider breaker audit",
+			run:  func() error { return qtx.DeleteProviderBreakerAuditForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete leaf data",
 			run:  func() error { return qtx.DeleteWorkspaceLeafData(ctx, requester.WorkspaceID) },
 		},
@@ -1500,7 +1760,7 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			name: "delete comments",
-			run:  func() error { return qtx.DeleteWorkspaceComments(ctx, requester.WorkspaceID) },
+			run:  func() error { return deleteWorkspaceComments(ctx, qtx, requester.WorkspaceID) },
 		},
 		{
 			// Teardown mode keeps the triggers from logging the deletes above
@@ -1584,6 +1844,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
 		},
 		{
+			// The one place audit rows may go: the SQL function sets the purge
+			// flag inside this tx (CHE-2774).
+			name: "delete audit events",
+			run: func() error {
+				_, err := qtx.AuditWorkspaceDelete(ctx, requester.WorkspaceID)
+				return err
+			},
+		},
+		{
 			// At this point workspaceMember has resolved → workspaceID is a
 			// valid UUID, so reuse the resolved value. The existing final
 			// statement also sweeps any expand-phase compatibility leftovers.
@@ -1593,29 +1862,32 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, step := range deleteSteps {
 		if err := step.run(); err != nil {
+			var widened *issuesWidenedError
+			if errors.As(err, &widened) {
+				return nil, widened.IDs, false
+			}
 			failWorkspaceDelete(w, r, workspaceID, step.name, err)
-			return
+			return nil, nil, false
 		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit workspace delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
-	for _, runtimeID := range runtimeIDs {
-		h.NotifyRuntimeGone(uuidToString(runtimeID))
-	}
-	for _, machine := range machines {
-		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
-	}
-	h.deleteS3Objects(r.Context(), append(sourceContextAttachmentURLs, sourceContextIntentURLs...))
+	return &workspaceDeleteSnapshot{
+		runtimeIDs: runtimeIDs, machines: machines,
+		objectURLs: append(sourceContextAttachmentURLs, sourceContextIntentURLs...),
+	}, nil, true
+}
 
-	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
-	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
-		"workspace_id": workspaceID,
-	})
-	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
-
-	w.WriteHeader(http.StatusNoContent)
+// deleteWorkspaceComments deletes the workspace's comments after it locks the
+// issues of the runs that name them: the delete nulls those runs' trigger, which
+// locks each run's issue, and that issue comes before the run row on every path.
+func deleteWorkspaceComments(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	if err := qtx.LockIssuesOfWorkspaceCommentTasks(ctx, workspaceID); err != nil {
+		return err
+	}
+	return qtx.DeleteWorkspaceComments(ctx, workspaceID)
 }

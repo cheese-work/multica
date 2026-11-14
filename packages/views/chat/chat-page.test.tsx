@@ -3,10 +3,11 @@
 import { StrictMode, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
+import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
@@ -85,7 +86,13 @@ vi.mock("./components/chat-thread-list", () => ({
   ),
 }));
 vi.mock("./components/chat-session-header", () => ({
-  ChatSessionHeader: () => <div>chat-session-header</div>,
+  // The compact back button is the header's `leading` slot.
+  ChatSessionHeader: ({ leading }: { leading?: React.ReactNode }) => (
+    <div>
+      chat-session-header
+      {leading}
+    </div>
+  ),
 }));
 vi.mock("./components/chat-empty-state", () => ({
   EmptyState: () => <div>chat-empty-state</div>,
@@ -105,18 +112,6 @@ vi.mock("./components/no-agent-banner", () => ({
 }));
 vi.mock("./components/archived-agent-banner", () => ({
   ArchivedAgentBanner: () => null,
-}));
-vi.mock("react-resizable-panels", () => ({
-  useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),
-}));
-vi.mock("@multica/ui/components/ui/resizable", () => ({
-  ResizablePanelGroup: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  ResizablePanel: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  ResizableHandle: () => null,
 }));
 // Same width-driven layout mock the inbox page tests use: the deep-link tests
 // all want the desktop two-pane layout, the breakpoint tests at the bottom set
@@ -212,7 +207,6 @@ vi.mock("./components/use-chat-controller", async () => {
       showSkeleton: false,
       messagesLoaded: messagesLoadedRef.current,
       hasMessages: false,
-      firstItemIndex: 0,
       hasOlderMessages: false,
       isFetchingOlderMessages: false,
       fetchOlderMessages: vi.fn(),
@@ -294,6 +288,8 @@ function renderPage(search: string, { strict = false } = {}) {
   const view = render(makeUi());
   return {
     replace,
+    qc,
+    unmount: view.unmount,
     rerender: (
       { pathname, search }: { pathname?: string; search?: string } = {},
     ) => {
@@ -337,37 +333,60 @@ describe("ChatPage URL synchronization", () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
-  it("toasts and drops ?message= when the message cannot be found", () => {
+  it("refetches the transcript before calling a message gone, then toasts if it is still missing", async () => {
     seedSession("session-9");
-    const { replace } = renderPage("session=session-9&message=gone");
+    const { replace, qc } = renderPage("session=session-9&message=gone");
+    const refetch = vi.spyOn(qc, "refetchQueries");
     fireEvent.click(screen.getByText("settle-missing"));
+    // A cached transcript can predate the message (a card opened right after
+    // propose): one authoritative refetch comes before the verdict.
+    expect(refetch).toHaveBeenCalledWith({ queryKey: chatKeys.messagesPage("session-9"), exact: true });
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    // The list is re-armed with the target once the refetch lands.
+    await waitFor(() => expect(screen.getByTestId("jump-target")).toHaveTextContent("gone"));
+    fireEvent.click(screen.getByText("settle-missing"));
+    expect(refetch).toHaveBeenCalledTimes(1);
     expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
     expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
   });
 
-  it("toasts and drops ?message= when the chat has no messages left to show", () => {
+  it("lands on a message that the refetch brought in without a notice", async () => {
+    seedSession("session-9");
+    const { replace } = renderPage("session=session-9&message=msg-7");
+    fireEvent.click(screen.getByText("settle-missing"));
+    await waitFor(() => expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-7"));
+    fireEvent.click(screen.getByText("settle-landed"));
+    expect(mockToastError).not.toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
+  });
+
+  it("toasts and drops ?message= when the chat has no messages left to show", async () => {
     seedSession("session-empty");
     const { replace } = renderPage("session=session-empty&message=gone");
     expect(screen.getByText("chat-empty-state")).toBeInTheDocument();
-    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("Message no longer available"));
     expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-empty");
   });
 
-  it("settles an empty chat's missing message once under StrictMode", () => {
+  it("settles an empty chat's missing message once under StrictMode", async () => {
     seedSession("session-empty");
     renderPage("session=session-empty&message=gone", { strict: true });
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
+    await new Promise((r) => setTimeout(r, 20));
     expect(mockToastError).toHaveBeenCalledTimes(1);
   });
 
-  it("settles the same hit again after the first notice cleared the param", () => {
+  it("settles the same hit again after the first notice cleared the param", async () => {
     seedSession("session-empty");
     const { rerender } = renderPage("session=session-empty&message=gone");
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
     rerender({ search: "session=session-empty" });
     rerender({ search: "session=session-empty&message=gone" });
-    expect(mockToastError).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(2));
   });
 
-  it("waits for the transcript to load before calling the message gone", () => {
+  it("waits for the transcript to load before calling the message gone", async () => {
     seedSession("session-empty");
     messagesLoadedRef.current = false;
     const { replace, rerender } = renderPage("session=session-empty&message=m-1");
@@ -375,7 +394,7 @@ describe("ChatPage URL synchronization", () => {
     expect(replace).not.toHaveBeenCalled();
     messagesLoadedRef.current = true;
     rerender();
-    expect(mockToastError).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
   });
 
   it("leaves a session with no ?message= alone when it is empty", () => {
@@ -1298,5 +1317,13 @@ describe("ChatPage deep link vs workspace rehydration", () => {
 
     expect(activeSession()).toBe("session-5");
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps the DM list chip while Chat is open and resets it to Main on leaving Chat", () => {
+    const { unmount } = renderPage("session=session-5");
+    useChatStore.getState().setListView("unseen");
+    expect(useChatStore.getState().listView).toBe("unseen");
+    unmount();
+    expect(useChatStore.getState().listView).toBe("main");
   });
 });

@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useT } from "../../i18n";
 import type { SettingsSearchEntry } from "./settings-search";
 import { CHANNEL_INTEGRATIONS } from "./settings-navigation";
+import { browserNotificationSettingAvailable } from "./browser-notification-setting";
 
 const NOTIFICATION_GROUPS = [
   "assignments",
@@ -25,7 +26,8 @@ export type SettingsSearchIndexEntry = SettingsSearchEntry;
  * The searchable settings for the pages currently in the navigation. Anchors
  * here must match the `anchor` props on the corresponding `SettingsSection` /
  * `SettingsRow`; entries for hidden pages (feature flags, desktop-only) are
- * dropped so a result never lands on a page the user cannot open.
+ * dropped so a result never lands on a page the user cannot open, and rows
+ * that only render on some platforms are indexed under the same condition.
  */
 export function useSettingsSearchIndex(
   pages: readonly SettingsSearchPage[],
@@ -70,6 +72,11 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "preferences",
+        anchor: "recent-agents",
+        title: t(($) => $.chat.recent_agents_label),
+      },
+      {
+        tab: "preferences",
         anchor: "issue-opening",
         title: t(($) => $.issue.opening.click),
         description: t(($) => $.issue.opening.hint),
@@ -105,11 +112,16 @@ export function useSettingsSearchIndex(
         anchor: "system",
         title: t(($) => $.notifications.system.label),
       },
-      {
-        tab: "notifications",
-        anchor: "browser",
-        title: t(($) => $.notifications.browser.label),
-      },
+      // Web-only row: absent on desktop and without the Notification API.
+      ...(browserNotificationSettingAvailable()
+        ? [
+            {
+              tab: "notifications",
+              anchor: "browser",
+              title: t(($) => $.notifications.browser.label),
+            },
+          ]
+        : []),
       {
         tab: "tokens",
         title: t(($) => $.page.tabs.tokens),
@@ -153,6 +165,12 @@ export function useSettingsSearchIndex(
       },
       {
         tab: "workspace",
+        anchor: "runtime-profile",
+        title: t(($) => $.workspace.runtime_profile_label),
+        description: t(($) => $.workspace.runtime_profile_hint),
+      },
+      {
+        tab: "workspace",
         anchor: "idle-guard",
         title: t(($) => $.workspace.idle_guard_label),
         description: t(($) => $.workspace.idle_guard_hint),
@@ -190,6 +208,11 @@ export function useSettingsSearchIndex(
         anchor: "child-done",
         title: t(($) => $.wakeups.child_done_title),
         description: t(($) => $.wakeups.child_done_description),
+      },
+      {
+        tab: "provider-breakers",
+        title: t(($) => $.page.tabs.provider_breakers),
+        description: t(($) => $.provider_breakers.description),
       },
       {
         tab: "labels",

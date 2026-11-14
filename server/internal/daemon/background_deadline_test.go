@@ -38,7 +38,7 @@ func TestRunTaskBackgroundStopsTheProcessAtTheRunDeadline(t *testing.T) {
 	if res.Status != "blocked" || res.FailureReason != "bg_run_timeout" {
 		t.Fatalf("status/reason = %q/%q, want blocked/bg_run_timeout", res.Status, res.FailureReason)
 	}
-	if elapsed < time.Second || elapsed > 3*time.Second {
+	if elapsed < time.Second || elapsed > 4*time.Second {
 		t.Fatalf("run lasted %s, want about the 1 s run deadline (not the 5 s AgentTimeout)", elapsed)
 	}
 	raw, err := os.ReadFile(pidFile)

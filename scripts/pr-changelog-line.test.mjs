@@ -65,3 +65,27 @@ test("AGENTS.md requires the line with the same examples, verbatim, per stack an
   assert.match(rule, /without a valid line is hidden/i);
   for (const example of [...GOOD, ...BAD]) assert.ok(rule.includes(example), example);
 });
+
+// CHE-4396: every PR states its cost delta (C1 delta, C2 optimality, C3 watch).
+test("PR template carries the Cost delta section", () => {
+  const section = template.split(/^## Cost delta\s*$/m)[1];
+  assert.ok(section, "missing ## Cost delta");
+  for (const p of ["C1", "C2", "C3"]) assert.match(section.split(/^## /m)[0], new RegExp(`^- ${p} `, "m"));
+});
+
+// CHE-5576 (plan CHE-5574 step 1): machine-checkable waiver fields for an upstream-merge PR.
+test("PR template carries the Upstream merge waiver fields", () => {
+  const section = template.split(/^## Upstream merge waiver\s*$/m)[1];
+  assert.ok(section, "missing ## Upstream merge waiver");
+  const body = section.split(/^## /m)[0];
+  for (const f of ["P", "U", "M"]) assert.match(body, new RegExp(`^${f}: `, "m"), `field ${f}`);
+  for (const text of [
+    "git fetch https://github.com/multica-ai/multica.git",
+    "git merge-base --is-ancestor U FETCH_HEAD",
+    "ls-remote",
+    "git merge-tree --write-tree --name-only P U",
+    "git diff B M",
+    "fails the waiver closed",
+    "observed red",
+  ]) assert.ok(body.includes(text), text);
+});

@@ -1,0 +1,31 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "zsMjEpBoPW",
+  "page_id": "zsMjEpBoPW:che-4144",
+  "screens": [
+    {
+      "screen": "B · Docked · Light · overhaul v4",
+      "frame_id": "y7DenM6GGW",
+      "updatedAt": "2026-11-07T12:07:33.378Z",
+      "content_sha256": "3ac510dd7173bce12aaf93004d529d7d46821692d131cf4cfdb860b0f6a4fedf"
+    },
+    {
+      "screen": "B · Docked · Dark · overhaul v4",
+      "frame_id": "ztpwE4spMa",
+      "updatedAt": "2026-11-07T12:07:37.297Z",
+      "content_sha256": "ae6ea03c6065b0b4d894d9f69381a5dec4d44ce0798fd3549a00142f4b3b6fa5"
+    }
+  ],
+  "export_sha256": "99e05cb225e499341708b8966b8f5dbebde91432d142ee940e4caa952df6a5ef",
+  "export_files": {
+    "dm-attention-b-light.html": "3ac510dd7173bce12aaf93004d529d7d46821692d131cf4cfdb860b0f6a4fedf",
+    "dm-attention-b-dark.html": "ae6ea03c6065b0b4d894d9f69381a5dec4d44ce0798fd3549a00142f4b3b6fa5"
+  },
+  "export_transform": "Exact HTML read from doop get_frame for both selected B frames; no changes.",
+  "exported_at": "2026-11-07 22:18 ICT",
+  "exported_by": "x99-codex-luna-design / gpt-6-luna / X99",
+  "issue": "CHE-4144",
+  "selection_id": "01a1b695-7f1d-72f6-81f3-b674a1bfe09a",
+  "ux_verdict_id": "01a1b5f4-1ff1-72fe-bb21-5356a0a30fc9"
+}

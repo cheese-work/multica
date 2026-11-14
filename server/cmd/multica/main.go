@@ -57,9 +57,11 @@ func init() {
 	labelCmd.GroupID = groupCore
 	workflowCmd.GroupID = groupCore
 	propertyCmd.GroupID = groupCore
+	viewCmd.GroupID = groupCore
 	agentCmd.GroupID = groupCore
 	autopilotCmd.GroupID = groupCore
 	workspaceCmd.GroupID = groupCore
+	meCmd.GroupID = groupCore
 	repoCmd.GroupID = groupCore
 	skillCmd.GroupID = groupCore
 	squadCmd.GroupID = groupCore
@@ -81,15 +83,18 @@ func init() {
 	versionCmd.GroupID = groupAdditional
 	githubCmd.GroupID = groupAdditional
 	gitCmd.GroupID = groupAdditional
+	guardCmd.GroupID = groupAdditional
 
 	rootCmd.AddCommand(issueCmd)
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(workflowCmd)
 	rootCmd.AddCommand(propertyCmd)
+	rootCmd.AddCommand(viewCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(autopilotCmd)
 	rootCmd.AddCommand(workspaceCmd)
+	rootCmd.AddCommand(meCmd)
 	rootCmd.AddCommand(repoCmd)
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(squadCmd)
@@ -107,6 +112,7 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(githubCmd)
 	rootCmd.AddCommand(gitCmd)
+	rootCmd.AddCommand(guardCmd)
 
 	initHelp(rootCmd)
 }

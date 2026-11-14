@@ -11,6 +11,8 @@ multica workspace list [--full-id]
 multica workspace switch <workspace-id|slug|prefix>
 multica workspace create --name "Support" --slug support --issue-prefix SUP
 multica workspace update [workspace-id|slug|prefix] --name ... --description ... --issue-prefix ...
+multica workspace pause [workspace-id|slug|prefix]    # stop claims for every agent
+multica workspace resume [workspace-id|slug|prefix]
 multica workspace member invite <email> [workspace] [--role member|admin]
 ```
 
@@ -20,6 +22,8 @@ multica workspace member invite <email> [workspace] [--role member|admin]
   `MULTICA_WORKSPACE_ID`, then the profile default. It changes where later
   commands go, so a stray `switch` makes them write to the wrong workspace.
   Prefer an explicit `--workspace-id` on each command in an agent run.
+- `pause`/`resume` are person owner/admin only; agent tokens get 403. Running
+  tasks finish and queued work is kept. `resume` on an unpaused target is a no-op.
 - `create` makes you owner. The slug is permanent. It does not change the
   default workspace.
 - `invite` sends a pending invitation; the invitee must accept. Owners cannot
@@ -37,6 +41,26 @@ multica workspace member invite <email> [workspace] [--role member|admin]
 
 Workspace context is standing instruction text for every agent. Do not change it
 without the approval the workspace requires.
+
+## Background-agent chains
+
+```bash
+multica workspace background-agents list [--output json]
+multica workspace background-agents set <job> [--agent <id|name|none>] [--fallback <id|name|none>]
+multica me background-agents list [--output json]
+multica me background-agents set <job> [--agent <id|name|none>] [--fallback <id|name|none>]
+```
+
+- Jobs: `dm_title`, `quick_actions`, `compact`, `routing`. `routing` is
+  workspace-only; `me` covers the other three.
+- An agent is an id or a name in the target workspace. An ambiguous name is
+  refused before any write. `none` clears the field.
+- Chain order: your own chain wins when it names a primary agent, else the
+  workspace chain, else no agent. `list --output json` shows each job's chain
+  and its `source` (`user`, `workspace` or `off`).
+- Workspace writes need owner or admin and replace the whole value (the command
+  reads, edits one job and writes back). Writes are human-only: a task token gets
+  403 `background_agents_human_only`, printed with exit code 3.
 
 ## Workspace MCP servers
 

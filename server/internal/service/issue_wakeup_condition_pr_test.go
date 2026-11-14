@@ -23,6 +23,7 @@ type prConditionTx struct {
 	prs       [][]any
 	queryErr  error
 	lastError pgtype.Text
+	state     string
 	next      pgtype.Timestamptz
 	writes    int
 }
@@ -64,6 +65,7 @@ func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgcon
 		tx.lastError = args[0].(pgtype.Text)
 		tx.writes++
 	case strings.Contains(sql, "SetWakeupConditionState"):
+		tx.state = args[0].(string)
 		tx.next = args[1].(pgtype.Timestamptz)
 	case strings.Contains(sql, "LockGitHubDispatchHaltShared"):
 	default:
@@ -186,6 +188,37 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 	}
 }
 
+// Checks already finished on a PR's current head must fire a new
+// checks_finished rule. Only a result for a replaced head is baselined, even
+// when another linked PR has a current result.
+func TestBaselineChecksFinishedOnCurrentHead(t *testing.T) {
+	current := []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget"}
+	replaced := []any{int32(2), "open", "old", "SUCCESS", "head", "", "p2", "acme", "widget"}
+	running := []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget"}
+	for _, tc := range []struct {
+		name      string
+		rows      [][]any
+		wantState string
+	}{
+		{"finished on current head", [][]any{current}, ""},
+		{"finished on replaced head", [][]any{replaced}, "pr:2@old:SUCCESS"},
+		{"still running", [][]any{running}, ""},
+		{"current and replaced PRs", [][]any{current, replaced}, "pr:2@old:SUCCESS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &IssueWakeupService{Tasks: &TaskService{PRSnapshotsEnabled: true}}
+			w := db.IssueWakeup{ID: dbid.NewV7(), IssueID: dbid.NewV7(), Condition: condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})}
+			tx := &prConditionTx{issue: w.IssueID, prs: tc.rows}
+			if err := s.baselineCondition(context.Background(), tx, db.New(tx), w, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if tx.state != tc.wantState {
+				t.Fatalf("baseline state=%q, want %q", tx.state, tc.wantState)
+			}
+		})
+	}
+}
+
 func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	ctx := context.Background()
 	s := &IssueWakeupService{Tasks: &TaskService{}}
@@ -212,7 +245,7 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	} {
 		tx.prs = step.prs
 		w.LastError = tx.lastError
-		next, err := s.pollCondition(ctx, tx, q, w, now)
+		next, _, err := s.pollCondition(ctx, tx, q, w, now)
 		if err != nil || !next.Valid || !next.Time.Equal(now.Add(conditionPollInterval)) {
 			t.Fatalf("poll must remain scheduled: next=%+v err=%v", next, err)
 		}
@@ -226,7 +259,7 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	}
 	// Real query failures still propagate; they are never treated as unmet facts.
 	tx.queryErr = errors.New("database offline")
-	if _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
+	if _, _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
 		t.Fatalf("database error swallowed: %v", err)
 	}
 }

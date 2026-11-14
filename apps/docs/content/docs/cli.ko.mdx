@@ -141,7 +141,27 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+에이전트 작업에서 멤버를 멘션(`[@이름](mention://member/<id>)`)하는 댓글은 결정 요청, `--decision-intent`·`--decision-record`·`--decision-veto` 댓글, 또는 `--notify-only` 댓글일 때만 허용됩니다. 답이 필요 없는 알림에는 `--notify-only`를 사용합니다. 대기를 시작하지 않으며 결정 요청으로도 계산되지 않습니다. 결정 관련 플래그와 함께 쓸 수 없습니다. 검사는 문구가 아니라 멘션 링크를 읽으며, 코드 안의 링크도 포함됩니다. 워크스페이스 설정 `ask_guard_mode`(`off`, `warn`, `block`)가 거부될 댓글을 기록만 할지 422를 반환할지 정합니다. 채팅 작업과 작업이 없는 호출은 기록만 합니다. 멤버 멘션을 추가하는 수정에도 같은 규칙이 적용됩니다.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
+`multica decision request`의 `--recovers <event-id>`는 요청이 ask 가드 이벤트(거부된 작업이나 복구 알림에 표시된 이벤트)에 대한 응답임을 나타냅니다. 서버는 이벤트가 이 이슈에 있고 요청이 묻는 사람을 위해 발생한 경우에만, 요청과 같은 트랜잭션에서 그 이벤트를 해제합니다. 한 사람에 대한 요청은 다른 사람의 이벤트를 해제하지 않으며, `--recovers`가 없는 요청은 아무것도 해제하지 않습니다. 다른 이슈나 다른 사람의 이벤트는 `400`으로 거부됩니다.하나의 요청은 이벤트 하나만 복구합니다. 같은 요청을 재시도하면서 두 번째 이벤트를 지정하면 `400`으로 거부됩니다.
+
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
+
+### 이슈 라우팅
+
+`issue route`는 이슈의 상태를 바꾸고 그 이유를 한 번의 호출로 기록합니다. 라우팅 단계가 이슈를 다음에 어디로 보낼지 정할 때 사용합니다. `--status`, `--reason`(1~500자), `--confidence`(0~1)는 필수입니다.
+
+```bash
+multica issue route MUL-123 --status in_review --reason "테스트 통과, 리뷰 필요" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "백엔드 수정 필요" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "리뷰어가 나중에 가져감" --confidence 0.9
+```
+
+`--owner`가 없으면 `issue status`와 같이 프로젝트 워크플로가 담당자를 정합니다. 명시적인 `--owner`(멤버, 에이전트 또는 스쿼드. `--owner-id`는 이름 대신 UUID를 받습니다)는 워크플로의 담당자를 대체합니다. 현재 상태는 유지하고 담당자만 바꾸는 라우트는 허용됩니다. 상태와 담당자가 모두 같은 라우트는 HTTP 409로 거부되며 아무것도 기록하지 않습니다. `--no-start`는 `issue update`와 같이 에이전트 실행을 시작하지 않습니다. `--expected-revision`을 지정하면 그 사이에 이슈가 바뀐 경우 라우트를 거부합니다.
 
 ### 타임라인
 
@@ -154,6 +174,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 ```
 
 `--activity-only`는 댓글을 빼고 모든 활동 기록을 남깁니다. `--action`은 지정한 동작만 반환하며 반복해서 쓸 수 있고 `--activity-only`를 포함합니다. 서버가 읽는 기록에는 한도가 있어 잘린 경우 stderr에 경고가 출력됩니다. 이때는 그 결과로 머문 시간을 추정하지 마세요.
+
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history`는 이슈 설명의 기록된 리비전을 오래된 순으로 리비전 번호, 시각(ICT), 실행자와 함께 나열합니다. `issue description diff`는 그중 두 리비전 사이의 unified diff를 출력합니다. 리비전 번호는 이슈 자체의 리비전 카운터입니다. 기록 기능이 도입된 이후에 기록된 리비전만 존재하며, 각 이슈의 첫 항목은 그 시점의 설명을 기준으로 저장한 것입니다. 설명을 바꾸지 않은 리비전은 그 이전의 가장 최근 텍스트로 처리됩니다. 존재하지 않는 리비전은 404를 반환합니다. 둘 다 `--output json`을 지원합니다.
 
 ### 긴 댓글 스레드 읽기
 
@@ -189,6 +216,27 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 ```
 
 터미널에서 멤버로 만들 때는 `--agent-id`가 필요합니다. 에이전트가 자기 실행 안에서 만들면 기본적으로 자기 자신을 깨웁니다.
+
+사람이 트리거할 수 있는 규칙은 댓글, 이슈, 반응, 첨부 변경에 대한 이벤트 규칙 중 행위자 필터가 멤버를 제외하지 않는 것입니다. 워크스페이스 설정 `ask_guard_mode`가 `warn` 또는 `block`이면, 에이전트는 다음 중 하나가 없는 한 이런 규칙을 스스로 등록할 수 없습니다.
+
+- `--decision <request-id>`는 규칙을 이 이슈의 결정 요청에 묶습니다. 요청은 질문됨 또는 응답됨 상태여야 하고, `--filter-actor-id`를 지정했다면 그 멤버의 요청이어야 합니다. 요청 하나는 활성 웨이크업 하나에만 묶입니다.
+- `--purpose observe`는 사람을 기다리지 않는 규칙을 나타냅니다. 멤버가 일으킨 실행마다 감사 이벤트가 기록됩니다.
+- `--filter-actor-id` 없는 `--filter-actor-type agent`는 모든 에이전트와 일치하고 멤버와는 일치하지 않습니다.
+
+`block` 모드에서는 수정 명령이 담긴 메시지와 함께 422로 거부됩니다. `warn` 모드에서는 규칙이 만들어지고 이벤트만 기록됩니다.
+
+### 웨이크업 규칙
+
+워크스페이스 및 프로젝트 웨이크업 규칙([이슈 웨이크업](/issue-wakeups) 참고)에는 전용 명령이 있으며, `create`와 `get` 외에 다음을 쓸 수 있습니다.
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision`은 `list`가 보여 주는 리비전입니다. `update`에 `--revision 0`을 주면 오버라이드를 만듭니다. `preview`는 아무것도 저장하지 않고 최종 적용된 규칙을 출력합니다. 조건 규칙에서는 `already_satisfied`가 즉시 일치할 이슈 수를 알려 주고 `issues`가 그 이슈를 나열합니다(`--output table`은 목록으로 출력). 미리보기는 범위의 처음 200개 이슈를 살펴 그중 열려 있고 백로그가 아닌 이슈를 평가합니다. 범위에 그보다 많으면 `truncated`가 `true`이며 더 많은 이슈가 일치할 수 있습니다. 이벤트 규칙은 조건이 없으므로 미리보기에 `already_satisfied`가 없고 기존 이슈와 일치하지 않습니다. 규칙 편집과 삭제는 소유자나 관리자만 할 수 있습니다. 미리보기는 사람 멤버라면 누구나 할 수 있고, 에이전트 등 머신 자격 증명은 `403`을 받으며, 에이전트가 만든 규칙은 사람이 활성화할 때까지 비활성 상태로 남습니다.
 
 ### DM에서 진행 상황 팔로우
 
@@ -273,6 +321,8 @@ multica runtime profile create --display-name "사내 Claude 래퍼" \
 
 활성 에이전트가 계속 연결된 런타임을 삭제하면 명령이 기본적으로 거부됩니다. `multica runtime delete <id> --cascade`는 에이전트의 런타임 연결을 해제하고 설정과 기록을 보존하며 활성 실행을 취소합니다.
 
+`multica runtime breaker list`는 프로바이더별 서킷 브레이커를 보여 주고, `multica runtime breaker reset <provider>`는 강제로 닫습니다(소유자 또는 관리자만). [프로바이더 서킷 브레이커](/daemon-runtimes#provider-breaker)를 참고하세요.
+
 실행 메커니즘과 사용자 지정 profile은 [데몬과 런타임](/daemon-runtimes)을 참고하세요.
 
 ## 프로젝트, 워크스페이스, 오토파일럿
@@ -293,8 +343,30 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead`에는 멤버나 에이전트의 이름을 씁니다. `--default-branch-hint`는 저장소의 기본 브랜치를 에이전트에게 알려 줄 뿐 브랜치를 바꾸지는 않습니다.
 - 워크스페이스의 `--context`는 워크스페이스의 모든 에이전트에게 제공됩니다. `--slug`는 만든 뒤 바꿀 수 없습니다. `--issue-prefix`는 대문자로 바뀌며, 변경하면 기존 태스크 번호가 모두 다시 매겨져 외부에서 참조하던 예전 번호는 더 이상 연결되지 않습니다.
-- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]`는 라우팅만 하는 워크플로 단계(기본값 `todo`, `blocked`, `merged`, `need_decision`; `--routing-statuses`로 변경하고, `--routing-overrides todo=<agent-id>`로 특정 상태를 다른 에이전트에 보냅니다)를 맡을 에이전트를 지정합니다. 이 에이전트가 보관 처리되거나 실행이 공급자 오류로 실패하면 대체 에이전트가 이어받습니다. 재정의 키를 `<workflow-id>:<status>`로 쓰면 해당 재정의는 한 워크플로로 한정됩니다. `none`은 해당 항목을 끕니다. 사람 소유자나 관리자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다.
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]`는 라우팅만 하는 워크플로 단계(기본값 `todo`, `blocked`, `merged`, `need_decision`; `--routing-statuses`로 변경하고, `--routing-overrides todo=<agent-id>`로 특정 상태를 다른 에이전트에 보냅니다)를 맡을 에이전트를 지정합니다. 이 에이전트가 보관 처리되거나 실행이 공급자 오류로 실패하면 대체 에이전트가 이어받습니다. 재정의 키를 `<workflow-id>:<status>`로 쓰면 해당 재정의는 한 워크플로로 한정됩니다. `none`은 해당 항목을 끕니다. 사람 소유자나 관리자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다. 설정은 `background_agents`의 `routing` 작업으로 저장됩니다. 이 플래그는 `multica workspace background-agents set routing`의 별칭이며, 기존 `/routing-agent` API 경로도 한 릴리스 동안 별칭으로 남습니다.
 - `--issue-title-template`은 `{{date}}`(UTC, `YYYY-MM-DD`)만 치환하며 다른 `{{...}}`는 거부합니다. 일정 트리거의 `--timezone` 기본값은 UTC입니다.
+- `--mode script --script <name> [--arg <value>]...`은 모델 세션 없이 에이전트의 작업 토큰으로 허용 목록의 스크립트 하나를 실행합니다. `--script`와 `--arg`에는 `--mode script`가 필요하고, `--mode script`에는 `--script`가 필요합니다. `--description`은 실행되지 않습니다. 데몬에 허용 목록이 없으면 모든 스크립트 작업이 안전하게 실패합니다. `--output json`은 스크립트 이름과 인자를 `script_config`로 보여 줍니다. `autopilot update --mode <다른 모드>`는 스크립트를 지웁니다. 작업이 끝나면 서버는 최선을 다해 작업 토큰을 삭제합니다. 삭제에 실패하면 토큰은 만료될 때까지 유효하며, 더 일찍 폐기하는 수단은 없습니다. 실행 결과의 `script` 아래에 스크립트 이름, 인수 목록의 SHA-256, 종료 코드, 소요 시간이 기록되고, 삭제에 실패하면 `token_revoke_failed`가 설정됩니다.
+
+### 설정 변경 제안
+
+`multica config propose` 는 워크스페이스 설정 변경용 액션 파일을 만듭니다. 현재 값을 읽고, 서버가 다시 계산하는 것과 같은 방식으로 `before_sha256` 과 `after_sha256` 을 계산해서 `multica decision request --action-file` 이 받는 파일을 씁니다. 아무것도 전송하지 않으며 시크릿도 쓰지 않습니다. 승인은 여전히 사람이 패스키로 합니다.
+
+필드: `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>`, `workflow.budget <workflow-id>`, `workspace.settings --set key=value|key:=<json>`. 텍스트 필드는 `--file`(UTF-8, NUL 바이트 없음)을 받습니다. `workflow.steps` 는 워크플로 GET 이 돌려주는 steps 배열을 받습니다. 이 출력을 편집하세요. 서버가 steps 를 다르게 정규화하면 요청이 거부됩니다(`after_digest_mismatch`). `workflow.step.instructions` 는 서버가 after 다이제스트를 계산하므로 파일에 `after_sha256` 이 없고, 출력되는 다이제스트는 비교용입니다. `--out <path>` 는 파일을 쓰고, `--dry-run` 은 아무것도 쓰지 않고 두 다이제스트와 액션을 출력합니다. `--expires-in <초>` 로 만료를 지정합니다.
+
+`workflow.budget <workflow-id>` 는 `--file` 대신 `--max-runs <n>`(1~1000, 0 이면 상한 해제)과 `--include-child-prs=<true|false>` 를 받습니다. 하나 이상 지정해야 하며, 생략한 필드는 저장된 값을 유지합니다. 에이전트는 이 두 필드를 워크플로에 직접 쓸 수 없습니다(`budget_requires_decision`). 변경을 제안하고 결정을 요청하면, 워크플로가 CLI 가 읽은 다이제스트와 여전히 같을 때 승인 시 서버가 적용합니다.
+
+작업 토큰을 가진 에이전트는 한 번의 호출로 카드를 엽니다. `multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 는 현재 워크플로를 읽고, 지정한 예산 플래그만으로 `workflow.budget.set` 을 제안하며, 카드 URL 을 출력합니다. 소유자가 승인하기 전에는 아무것도 쓰지 않습니다. 같은 호출을 반복하면 같은 카드가 돌아옵니다. 예산 호출에는 `--name`, `--description`, `--steps-file`, `--start-status`, `--map`, `--dry-run` 을 함께 쓸 수 없습니다. 명령이 요청 전에 거부하므로 두 개의 명령으로 나누어 실행하세요. `--print-hash` 는 예산 변경의 `before_sha256` 와 `after_sha256` 를 출력합니다. `multica config propose workflow.budget` 에서는 같은 플래그를 `--max-runs` 라고 부릅니다. 워크플로 예산이 더 넓어지면 `multica issue update <issue> --workflow <workflow-id>` 와 `multica issue create --workflow <workflow-id>` 도 같은 `--print-hash` 와 `--decision-id`(필드 `issue.workflow`)를 받습니다. 두 명령은 하나의 규칙을 따르며, 소유자의 대화형 세션에는 결정이 필요 없습니다. 에이전트 실행에서 더 큰 예산이 되는 `multica issue update <id> --workflow <workflow-id>`는 결정이 필요 없습니다. 워크스페이스 소유자를 위한 승인 카드를 열고 그 액션 ID와 URL을 출력하며, 소유자가 패스키로 승인할 때까지 이슈는 변경되지 않습니다. 카드를 연 뒤 이슈의 워크플로, 프로젝트의 워크플로 또는 예산이 바뀌면 승인은 `stale_base`로 실패합니다.
+
+그 밖의 필드는 아무것도 읽기 전에 `denylisted` 로 거부됩니다: `project.description`, 패스키와 결정 게이트, 멤버와 역할, 소유자 이전, 인증·연동 시크릿, 워크스페이스 삭제, 액션 레지스트리, `delegated_governed_writes`. 서버 허용 표에 없는 설정 키도 같은 방식으로 거부되며, 허용 키와 거부 키가 섞인 패치는 전체가 거부됩니다. 서버는 요청 시점과 승인 시점에 다시 확인합니다.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
 
 ## 명령 개요
 
@@ -303,6 +375,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `issue` | 태스크 생성, 업데이트, 할당, 검색. 댓글, 구독, 라벨, 속성, 깨우기, 타임라인, 실행 기록 관리 |
 | `project` | 프로젝트와 프로젝트 리소스 관리 |
 | `label`, `property` | 워크스페이스 라벨과 사용자 지정 속성 관리 |
+| `view` | 저장된 뷰를 읽고 뷰에 보이는 태스크 나열 |
 | `agent`, `skill`, `squad` | 에이전트, 스킬, 스쿼드 관리 |
 | `autopilot` | 자동화, 트리거, 실행 기록 관리 |
 | `workspace` | 워크스페이스 생성, 확인, 전환 및 멤버 초대 |
@@ -313,8 +386,40 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 | `auth`, `login`, `setup` | 로그인, 인증 상태 확인, 연결 초기화 |
 | `config` | 현재 CLI profile의 로컬 설정 확인 또는 변경 |
 | `update`, `version` | CLI 업데이트 또는 버전 확인 |
+| `guard` | 에이전트의 도구 호출을 워크스페이스 정책에 따라 검사 |
 
 `multica chat`은 **에이전트가 현재 처리 중인 외부 채팅 대화**를 읽으며 주로 채팅 연동의 에이전트가 사용합니다. 워크스페이스의 임의 대화를 탐색하는 일반 명령이 아닙니다.
+
+### 섀도 리포트
+
+워크스페이스 멤버는 누구나 System 1 섀도 리포트를 읽을 수 있습니다:
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+`decision` 블록과 `routing` 블록은 전체 기간을 다룹니다. `route` 블록은 `[since, until)` 구간을 다룹니다. `--since`와 `--until`은 RFC 3339 시각을 받고, `--until`의 기본값은 현재, `--since`의 기본값은 `--until` 24시간 전입니다. 잘못된 시각이나 `--until`보다 늦은 `--since`는 서버가 400으로 거부합니다.
+
+`route` 블록은 하나의 이벤트 집합을 셉니다. 라우팅 단계를 떠난 것으로 표시된 에이전트의 상태 변경(`eligible_exits`)과, 같은 이벤트 ID를 가진 route 라벨(`matched_labels`)입니다. `label_coverage`는 `matched_labels / eligible_exits`이며 1을 넘지 않습니다. `via_route_share`는 첫 라벨이 상태 폴백이 아니라 `issue route`에서 온, 일치한 이벤트의 비율입니다. `duplicate_labels`는 더 이른 라벨과 이벤트를 공유하는 라벨의 수입니다(목표 0). `labels_total`, `owner_only_labels`(상태를 유지한 route라 이벤트 없음), `non_routing_labels`(라우팅 에이전트가 없는 단계에서의 route)는 커버리지에 포함되지 않습니다. `overridden`은 1시간 안에 사람이 되돌린 에이전트 라벨 수이고, `override_rate`는 `overridden / labels_total`입니다. 블록에는 클래스별 `decided`, `predicted`, `agreed`, `coverage`, `precision`도 들어 있습니다.
+
+### System 1 라벨링
+
+지정된 System 1 라벨러 에이전트는 자신의 에이전트 작업 안에서 블라인드 큐를 읽고 라벨을 기록합니다. 서버는 작업 토큰에서 에이전트와 작업을 가져오며, 멤버 세션이나 PAT는 403을 받습니다.
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+큐에는 관찰 ID와 타입이 지정된 특성만 들어 있고 예측은 절대 들어 있지 않습니다. 이 범위에서 같은 종류의 유효한 라벨이 아직 없는 관찰을 최대 20개 담습니다. 서버는 큐를 제공할 때 샘플링한 ID와 시드를 저장하며, 같은 작업이 다시 요청하면 같은 샘플을 받습니다. `--supersedes`에는 정정할 유효한 라벨의 ID를 넣습니다. 없이 같은 관찰에 두 번째 라벨을 쓰면 409가 됩니다.
+
+워크스페이스 멤버는 누구나 스코프와 예측기 버전별 System 1 자격 상태를 읽을 수 있습니다:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope`는 `test_first_waiver` 또는 `ci:<repo>:<protocol>`입니다. 각 행은 예측기 버전 하나의 최신 에포크를 다룹니다. 에포크 시작 이후에 만들어진 관측만 세고, 새 예측기 버전은 자체 에포크를 엽니다. 케이스는 기준 라벨(교체되지 않은 가장 최근 라벨)이 있는 예측 하나입니다. `denominator`는 기권이 아닌 예측과 매핑된 라벨이 있는 케이스, `agreed`는 둘이 일치한 케이스, `abstained`는 예측기가 기권한 라벨 케이스, `unmapped`는 자유 텍스트 답변 수입니다. `status`는 7일 이상, `denominator` 20 이상, 일치율 90% 이상이면 `qualified`입니다. 4주 뒤에도 센 케이스가 20 미만이면 `insufficient_data`, 강등된 에포크는 `demoted`, 그 외는 `collecting`입니다.
 
 ## ID와 출력 형식
 
@@ -362,7 +467,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 
 | 명령 | 하위 명령 | 용도 | 주요 flag |
 | --- | --- | --- | --- |
-| `issue` | `list` | 태스크 목록 | `--status`, `--priority`, `--assignee`, `--project`, `--metadata`(반복 가능), `--property`(반복 가능, `"이름=값"` 또는 `"Score>=3"`, `"Due<2026-01-01"`, `"Notes~=text"` 같은 비교; `__none__`은 미설정과 일치), `--limit`, `--offset`, `--sort`(`property:<이름 또는 id>` 지원), `--full-id`, `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환), `--fields`(JSON 전용. 남길 필드를 쉼표로 구분) |
+| `issue` | `list` | 태스크 목록 | `--status`, `--priority`, `--assignee`, `--project`, `--metadata`(반복 가능), `--property`(반복 가능, `"이름=값"` 또는 `"Score>=3"`, `"Due<2026-01-01"`, `"Notes~=text"` 같은 비교; `__none__`은 미설정과 일치), `--limit`, `--offset`, `--sort`(`effective_due`: 상속된 가장 이른 마감일 순으로 마감일이 있는 항목을 앞에 정렬, 그리고 `property:<이름 또는 id>` 지원), `--full-id`, `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환), `--fields`(JSON 전용. 남길 필드를 쉼표로 구분) |
 | | `get <id>` | 태스크 하나 확인 | `--resolve-properties`(JSON 전용; 저장된 id와 함께 속성, 옵션, 멤버 이름을 반환) |
 | | `create` | 태스크 생성 | `--title`(필수), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment`(반복 가능), `--property`(반복 가능), `--allow-duplicate`(같은 제목의 닫히지 않은 태스크가 있어도 생성) |
 | | `update <id>` | 태스크 필드 업데이트 | `create`와 같은 종류의 필드에 `--position`, `--no-start`, `--duplicate-of` 추가 |
@@ -384,11 +489,12 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `usage <issue-id>` | 집계 token 사용량 확인 | |
 | | `rerun-task <run-id>` | 원래 에이전트와 트리거 컨텍스트로 지정한 실행을 재시도 | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | 진행 중 또는 큐 대기 중인 실행 취소 | `--issue` |
-| `project` | `list/get/create/update/delete` | 프로젝트 관리 | `create`: `--title`(필수), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo`(반복 가능) |
+| `project` | `list/get/create/update/delete` | 프로젝트 관리 | `create`: `--title`(필수), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo`(반복 가능); `update` A/B 분할(오너, 관리자, 프로젝트 리드): `--split-arm-b`(워크플로 ID), `--split-start`, `--split-end`(RFC 3339), `--split-exclude-assignee` / `--split-exclude-squad`(반복 가능), `--clear-split` |
 | | `status <id> <status>` | 프로젝트 상태 변경 | |
 | | `resource list/add/update/remove` | 프로젝트 추가 리소스 관리 | `--type`, `--url`, `--default-branch-hint`, `--ref`, `--local-path`, `--daemon-id`, `--execution-mode`(로컬 디렉터리의 `in_place` / `worktree`) |
 | `label` | `list/get/create/update/delete` | 워크스페이스 라벨 관리 | `list`: `--resource-type`(`issue` 또는 `skill`), `--full-id`; `create`: `--name`, `--color`, `--resource-type`(`issue` 또는 `skill`), `--description` |
 | `property` | `list/get/create/update/archive/unarchive` | 워크스페이스 사용자 지정 속성 관리 | `create`: `--name`, `--type`(`text`, `number`, `select`, `multi_select`, `date`, `checkbox`, `url`, `actor`, `multi_actor`, `multi_text`, `multi_url`), `--option`(반복 가능, select 유형만). `list`: `--include-archived`. 유형은 생성 후 변경 불가 |
+| `view` | `list/get/issues` | 열 수 있는 뷰(내 뷰와 워크스페이스에 공유된 뷰)를 읽고, `issues`로 뷰에 보이는 태스크를 저장된 정렬 순서대로 나열(저장된 필터는 모두 서버에서 적용). 에이전트 실행 중에는 뷰와 '나' 조건이 런타임 소유자 기준 | `<view>`는 ID, ID 접두사 또는 정확한 이름을 받음. `list`: `--scope`(`workspace`, `my`, `project`), `--project`, `--full-id`. `issues`: `--limit`(최대 100), `--cursor`(이전 페이지의 `next_cursor`), `--today`(상대 마감일 필터의 기준일, 기본값은 오늘), `--fields`(JSON 전용), `--full-id` |
 | `agent` | `list/get/create/update/archive/restore` | 에이전트 관리 | `--name`, `--runtime-id`(`create`에서 필수), `--instructions`, `--conversation-starters`, `--model`, `--thinking-level`, `--custom-env` / `--custom-env-file` / `--custom-env-stdin`(`create` 전용), `--custom-args`, `--mcp-config` / `--mcp-config-file` / `--mcp-config-stdin`, `--permission-mode`, `--visibility`(예전 방식), `--max-concurrent-tasks` |
 | | `copy <agent-id>` | 원래 에이전트에 영향 없이 새 에이전트로 복사 | `--name`(기본값은 원래 이름 + ` (copy)`), `--runtime-id`(다른 런타임으로 복사할 때 `--model`도 필수), `--no-skills`. `custom_env`, `mcp_config`, `runtime_config` 같은 기밀 설정은 복사되지 않으며 `create`와 같은 flag로 다시 제공해야 함 |
 | | `tasks <id>` | 에이전트 실행 확인 | |
@@ -396,10 +502,11 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `env get/set <agent-id>` | 사용자 지정 환경 변수 읽기/쓰기(에이전트 소유자 또는 워크스페이스 owner/admin. 읽을 때마다 기록됨) | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`. 전체를 교체하며 값이 `****`인 키는 기존 값 유지 |
 | | `skills list/set/add <agent-id>` | 연결된 스킬 관리 | `--skill-ids`(`set`은 전체 교체, `add`는 증분 추가) |
 | | `mcp list/add/enable/disable/remove <agent-id>` | 워크스페이스 MCP 서버를 이 에이전트에 할당 | server id는 `workspace mcp list`에서 확인. 라이브러리 항목은 여기서 추가하기 전까지 동작하지 않으며, `disable`은 할당을 유지한 채 전달만 중단합니다 |
-| `autopilot` | `list/get/create/update/delete` | 자동화 관리 | `create`: `--title`, `--agent`, `--mode`(모두 필수), `--description`, `--issue-title-template`, `--project`, `--subscriber`(반복 가능) |
+| `autopilot` | `list/get/create/update/delete` | 자동화 관리 | `create`: `--title`, `--agent`, `--mode`(모두 필수), `--description`, `--issue-title-template`, `--project`, `--subscriber`(반복 가능), `--script`, `--arg` |
 | | `trigger <id>` | 수동으로 한 번 트리거 | |
 | | `runs <id>` | 실행 기록 확인 | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | 일정 및 webhook 트리거 관리 | `trigger-add`: `--kind`(`schedule` 또는 `webhook`), `--cron`, `--timezone`(기본값 UTC), `--label` |
+| `workflow` | `lint [<id>]` | 워크플로의 단계, 엣지, 핸들러, 지침을 검사. 표로 출력하며 `--output json`이면 JSON으로 출력. 면제되지 않은 오류가 있으면 0이 아닌 종료 코드를 반환 | `--all`(워크스페이스의 모든 워크플로, ID와 둘 중 하나만 지정), `--output`(`table` 또는 `json`) |
 | `workspace` | `list/get/create/update/switch` | 워크스페이스 관리. `switch`는 현재 profile의 기본 워크스페이스 설정 | `create`: `--name`, `--slug`(모두 필수), `--issue-prefix`, `--description`, `--context` / `--context-stdin`. `update`는 slug를 제외한 같은 항목 변경 |
 | | `mcp list/add/update/remove` | 워크스페이스의 MCP 서버 라이브러리를 관리 | 쓰기는 owner/admin 전용. 여기에 추가한 서버는 어떤 에이전트에도 할당되지 않으며 `multica agent mcp add`로 할당합니다. `list`는 이름과 transport만 표시하고, 저장된 항목은 쓰기 전용이라 어떤 역할에도 반환되지 않습니다. `--server-config-file` / `--server-config-stdin`은 토큰이 셸 기록에 남지 않게 합니다 |
 | | `member list/invite <email>` | 멤버 확인 및 초대 전송 | `invite`: `--role`(member 또는 admin, 기본 member) |
@@ -426,6 +533,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `runtime` | `list/usage/activity/update/rename/delete` | 런타임 확인 및 관리 | `usage`: `--days`(기본값 90, 최대 365). `update`: `--target-version`(필수), `--wait`. `delete`: `--cascade`(연결된 에이전트의 런타임을 해제하고 데이터를 보존하며 실행 취소) |
 | | `profile list/create/update/delete` | 사용자 지정 런타임 profile 관리 | `create`: `--display-name`, `--command-name`(모두 필수), `--runtime-type`(또는 예전 `--protocol-family`), `--description`. `update`: `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | 로컬 실행 파일 경로 고정(로컬에만 적용되고 서버에 업로드되지 않음) | |
+| | `breaker list/reset <provider>` | 프로바이더 서킷 브레이커 조회 또는 강제 닫기 | `reset`: 워크스페이스 소유자 또는 관리자만 |
 
 ### Additional
 
@@ -435,10 +543,37 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `user` | `profile get/update` | 현재 사용자 profile 확인 또는 업데이트 | |
 | `login` | — | 브라우저에서 로그인하고 모든 워크스페이스 자동 설정 | `--token`(값을 함께 쓰지 않으면 터미널에서 대화형 입력) |
 | `setup` | `cloud`(기본), `self-host` | 서비스 주소 저장, 로그인 완료, 데몬 시작 | `self-host`: `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | 첨부 파일 다운로드 또는 업로드 | `download`: `--output-dir`. `upload`: `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | 첨부 파일 다운로드 또는 업로드, 리비전 목록, 두 리비전 비교 | `download`: `--output-dir`. `upload`: `--task`, `--issue`, `--replaces <attachment-id>`(새 파일이 해당 첨부 파일의 다음 리비전이 됩니다). `diff`: `--from`, `--to`(리비전 번호) |
 | `config` | `show`, `set <key> <value>` | 현재 profile의 로컬 설정 확인 또는 변경 | 우선순위: 명령줄 flag > 환경 변수 > `config.json` > 내장 기본값. 빈 문자열로 설정하면 삭제 |
 | `update` | — | CLI를 최신 버전으로 업데이트 | |
 | `version` | — | 버전 정보 확인 | `--output`(`text` 또는 `json`) |
+| `guard` | `exec <tool> -- <args>` | 가드를 거쳐 도구 실행: `gh pr create`·`edit`·`ready`는 드래프트 강제, 태그 부여, 재조회 확인을 거치고 `gh api`로 풀 리퀘스트에 쓰는 호출(GraphQL mutation 포함)은 거부, CI 대기(`gh pr checks --watch`, `gh run watch`, 20초 이상의 `sleep`)는 대신 쓸 wakeup 명령을 안내하며 거부 | 종료 코드: 도구 자체의 코드, 가드가 거부하면 2. 환경 변수: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | 풀 리퀘스트를 정책과 저장소의 `.github/agent-rules.yml`에 비추어 변경 없이 검사합니다. 파일은 PR의 보호된 기본 브랜치의 현재 끝에서 데이터로 읽으며 PR 브랜치에서는 읽지 않습니다. 파일이 없으면 규칙이 추가되지 않고, 형식이 잘못된 파일이나 읽을 수 없는 기본 브랜치는 검사를 실패시킵니다. CI 검사로 사용합니다 | 종료 코드: 0 통과, 1 규칙 위반, 2 거부. `-R owner/name`으로 저장소 지정 |
+| `guard` | `plugin list\|get\|set` | 저장된 가드 정책을 읽거나(`list`, `get <name>`) 이를 대체하는 결정 액션 파일을 작성(`set --file <policy.json> --out <action.json>` 또는 `--dry-run`). 정책에는 워크스페이스 플러그인과 리뷰 규칙, 그리고 org·저장소·경로 레이어가 들어 있다. 더 깊은 레이어가 얕은 레이어를 키 단위로 덮어쓰며, `locked`가 붙은 레이어 또는 워크스페이스는 그 키를 더 깊은 레이어로부터 고정한다. `set`은 아무것도 전송하지 않으며, 사람이 passkey로 `workspace.settings.patch`를 승인한다. 데몬은 승인된 정책을 작업 트리 밖의 파일 `MULTICA_GUARD_POLICY`와 `MULTICA_GUARD_POLICY_SHA256`로 각 실행에 전달한다 | 출력: JSON 행(`--output table`은 표). `set`은 `before_sha256`과 `after_sha256`을 출력 |
+
+### 결정 제안
+
+작업 토큰은 사람이 패스키로 승인하는 관리 대상 작업을 제안할 수 있습니다. 제안 자체는 아무것도 변경하지 않습니다.
+
+```bash
+multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
+  --for <user-id> --param window_id=<id> --param new_cap:=40 [--reason "..."]
+multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
+```
+
+`--version`과 `--issue`는 필수입니다. `--param k=v`는 문자열, `--param k:=<json>`은 원시 JSON을 보냅니다. `--params-file`은 JSON 객체 하나를 받으며 `--param`과 함께 쓸 수 없습니다. 명령은 승인 카드 링크를 출력합니다. 실행 예산 액션의 링크는 이슈에서 승인을 열고, 다른 액션의 링크는 채팅의 카드로 연결되어 그곳에서 승인합니다. 일반 선택지 카드(`--action-file` 없는 `multica decision request`)는 변경을 적용할 수 없습니다. 승인해도 답변만 기록됩니다. 서버는 의도를 읽을 수 없어 그런 카드를 거부하지 않고, 결정이나 선택지가 워크플로·에이전트·스쿼드·워크스페이스·예산 변경처럼 보일 때(또는 허용 목록의 액션 유형을 담을 때) 참고용 힌트를 붙입니다. 그 변경은 `multica decision propose`로 보내세요. 거부되면 서버의 상태와 오류 코드를 보여 줍니다. `multica issue budget raise`와 `multica issue budget top-up`은 작업 토큰에서 같은 경로를 사용하며(`--for <user-id>` 추가), 개인 액세스 토큰에서는 기존처럼 지출 요청을 엽니다. 두 명령 모두 하나 이상의 issue ID를 받습니다: `multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<목표>"`. ID가 하나면 기존 단일 제안 그대로입니다. 작업 토큰에서 여러 ID를 주면 배치 경로를 한 번만 호출하고 카드 링크를 하나 출력합니다. `--goal`은 배치 이름이며(기본값: 작업과 issue 수) `--output json`은 배치 id와 issue별 제안 id를 반환합니다. 개인 액세스 토큰에서는 ID마다 별도 요청을 엽니다. 배치 경로는 채팅 작업이 필요하고 issue는 최대 25개입니다. 서버는 raise 배치를 패스키 하나로 승인하지만 top-up 배치는 승인 시 거부하므로 top-up은 하나씩 승인하세요.
+
+실행 예산 다음 단계: issue의 80 % 알림에는 수치와 바로 실행할 수 있는 명령이 함께 나옵니다. 예: `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`. 예산이 거부한 실행은 오류 코드 `run_budget_exhausted`와 `runs_used`, `runs_limit`, `workflow_id`, `window_id`, `open_card`, `next_command`를 반환합니다. `multica issue budget get <issue> --output json`도 `open_card`와 `next_command`를 반환합니다. issue의 현재 윈도우에 상향 또는 추가 윈도우 카드가 열려 있는 동안 `next_command`는 그 카드를 기다리라고 알려 주고, `multica issue budget raise`를 다시 실행해도 새 카드를 열지 않고 같은 카드를 반환합니다. 작업 토큰에서는 issue 작업의 `--for` 기본값이 워크스페이스 소유자이며, 도움말에는 `raise`만 표시됩니다. `top-up`은 멤버가 계속 사용할 수 있습니다. 서버, 멤버, 에이전트가 카드를 열 때마다 행위자 유형, 행위자, 액션 유형을 기록하는 `run_budget_ask` 활동 행이 하나 추가됩니다.
+
+적용된 작업은 되돌릴 수 있는 동안 요청 대상자가 되돌릴 수 있습니다. `multica decision revoke <request-id> --why "<사유>"`를 실행하세요. 작업이 되돌릴 수 있는 경우는 적용되었고, 해당 유형에 정확한 역작업이 있으며, 아직 되돌려지지 않았을 때뿐입니다. 이번 릴리스에서 역작업이 있는 유형은 `agent.pause`(역작업은 `agent.resume`)뿐이며, 승인으로 에이전트가 일시 중지되었고 그 뒤 아무도 일시 중지 상태를 바꾸지 않은 경우에만 해당합니다. 다른 모든 작업 유형은 되돌릴 수 없습니다. 요청 대상자만 되돌릴 수 있고 승인과 같은 역할 규칙이 적용됩니다. passkey가 필요한 작업은 앱에서 되돌립니다. 서버는 누가, 언제, 왜 되돌렸는지 기록하고 역작업을 실행한 뒤 요청한 에이전트를 결과 `revoked`로 깨웁니다. 거절됨, 만료됨, 적용되지 않음, 논의만 있음, 이미 되돌려진 결정은 거부됩니다. `multica decision get <request-id>`는 `revocable`을 보여 주고, 되돌린 뒤에는 `revoke` 기록(`at`, `by`, `reason`)도 보여 줍니다.
+
+`issue.project.set`은 이슈를 다른 프로젝트로 옮깁니다: `multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`. 카드에는 이동 전후의 프로젝트, 워크플로, 실행 한도, 사용한 실행 횟수가 표시되고 이동이 실행 예산을 넓히는지도 알려 줍니다. 예산을 넓히는 이동은 `spend` 카드이고, 그 밖의 이동은 `reversible`입니다. 워크스페이스 소유자만 승인할 수 있습니다. 요청 뒤에 이슈가 원래 프로젝트를 떠났거나 대상 워크플로의 예산이 늘었으면 카드는 거부됩니다.
+
+Run 예산 자동 승인: issue가 run 예산을 다 쓰면, 직전 창에 진전이 있고 이상이 없으며 워크스페이스 일일 한도에 여유가 있을 때 서버가 다음 창을 직접 승인합니다. issue의 감사 댓글에 규칙 이름(`auto-approver v1`)과 끄는 방법이 적힙니다. 승인된 창은 서버가 거부했던 run도 다시 시작하므로 issue가 `blocked`에 머물지 않습니다. 진전은 run이 issue 상태를 바꿨거나, 연결된 PR의 head나 상태를 바꿨거나(PR 댓글은 해당하지 않음), 또는 커밋한 경우입니다. 댓글은 내용과 상관없이 진전이 아니며, 이 중 하나도 없는 run은 헛도는 run입니다. 루프(같은 실패 검사, 실패한 CI 워크플로 또는 run 오류가 3개 이상의 run에서 반복됨, 댓글은 읽지 않음), 헛도는 창(run의 80% 이상이 아무것도 전달하지 못함), 토큰 급증(run당 토큰이 워크스페이스 중앙값의 3배 초과), 반복 증액(한 issue에서 24시간 안에 3회 이상), OpenAI 제한 중인 OpenAI 풀 에이전트는 자동 승인하지 않습니다. 소유자는 하루 최대 한 장의 묶음 카드를 받습니다. 같은 날의 이후 이상은 그 카드의 채팅에 메시지로 도착하고, 브리프에 보류된 issue가 나열됩니다. 그 밖의 경우(이미 `blocked`인 issue, 거부된 run이 issue의 에이전트 담당자 대상이 아닌 경우 포함)는 issue별 카드로 돌아갑니다. 워크스페이스 설정 `run_budget_auto`: `enabled`(기본 `false`: 자동 승인은 꺼진 상태로 출시됩니다)와 `daily_envelope`(ICT 하루당 추가 run 수, 기본 `300`)와 `expected_checks`(푸시한 head가 CI를 확정된 것으로 인정받기 위해 완료된 상태로 갖춰야 하는 체크 이름. 기본값은 비어 있으며, head를 푸시한 모든 윈도우를 보류합니다). 기대하는 체크 중 일부만 완료된 스냅샷은 확정된 것으로 보지 않습니다. 이름은 완료된 Checks API run이 정확히 하나일 때만 인정됩니다. 같은 이름의 커밋 상태나 같은 이름의 두 번째 run이 있으면 해당 윈도우는 보류됩니다. `multica config propose workspace.settings --set 'run_budget_auto:={"enabled":true}'` 또는 `workspace.settings` 설정 제안으로 켤 수 있습니다(`"enabled":false`로 다시 끕니다).
+
+### 대상 필드는 패스키 작업이 필요합니다
+
+작업 토큰과 클라우드 노드 토큰은 기존 경로로 다음 필드에 쓸 수 없습니다: `agent.instructions`, `squad.instructions`, `workspace.context`, 워크플로 단계와 단계 지침, 결정 작업 허용 표에 있는 워크스페이스 설정 키(`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` 등 단순 운영 키). 서버는 403과 `code: passkey_action_required`를 반환하고, 대신 제안할 작업을 `action_type`으로 알려 줍니다(`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). 저장된 값은 바뀌지 않습니다. 투표 영수증, 결정 바인딩, PASS 영수증, Hermes 예외로는 이 거부가 풀리지 않습니다. `multica decision propose <action-type>`으로 작업을 제안하면 사람이 패스키로 승인합니다. 사람의 쓰기와 `project.description`은 이전과 같습니다.
 
 ## 다른 코딩 에이전트에서 Multica 조작하기
 

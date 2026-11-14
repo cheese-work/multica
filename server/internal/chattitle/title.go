@@ -6,9 +6,12 @@ import (
 	"unicode"
 )
 
-// FallbackMaxLen is the rune cut (ellipsis included) of the deterministic
-// fallback title. It matches the client CHAT_TITLE_MAX.
-const FallbackMaxLen = 60
+const (
+	deterministicTitleLimit = 80
+	// minWordCut: a word boundary is used only when it keeps at least 2/3 of
+	// the limit; otherwise a long token (a URL) would be dropped whole.
+	minWordCut = deterministicTitleLimit * 2 / 3
+)
 
 var (
 	markdownFence = regexp.MustCompile("```.*?```")
@@ -17,10 +20,10 @@ var (
 	titleSpace    = regexp.MustCompile(`[[:space:]]+`)
 )
 
-// Derive mirrors the existing first-party deterministic title policy for
-// channel-created Chats. Go slices valid Unicode code points rather than UTF-16
-// code units, while preserving the same first-line, Markdown, whitespace, and
-// single-ellipsis behavior at FallbackMaxLen characters.
+// Derive is the deterministic DM title: first non-empty line, Markdown and
+// whitespace cleaned, at most 80 Unicode code points, cut at a word boundary
+// when that keeps at least 2/3 of the limit (else a hard cut). It never adds an ellipsis; the UI truncates at the container
+// edge. Twin: deriveChatTitle in packages/core/chat/title.ts.
 func Derive(body string) string {
 	line := ""
 	for _, candidate := range strings.Split(body, "\n") {
@@ -36,9 +39,32 @@ func Derive(body string) string {
 	if line == "" {
 		return ""
 	}
+	return Cut(line)
+}
+
+// Cut limits an already cleaned single-line title to 80 code points at a word
+// boundary when that keeps at least 2/3 of the limit (else a hard cut), without
+// an ellipsis.
+func Cut(line string) string {
 	runes := []rune(line)
-	if len(runes) <= FallbackMaxLen {
+	if len(runes) <= deterministicTitleLimit {
 		return line
 	}
-	return strings.TrimRightFunc(string(runes[:FallbackMaxLen-1]), unicode.IsSpace) + "…"
+	cut := runes[:deterministicTitleLimit]
+	// Whitespace right after the cut means the last word is whole.
+	if !unicode.IsSpace(runes[deterministicTitleLimit]) {
+		if i := lastSpace(cut); i >= minWordCut {
+			cut = cut[:i]
+		}
+	}
+	return strings.TrimRightFunc(string(cut), unicode.IsSpace)
+}
+
+func lastSpace(r []rune) int {
+	for i := len(r) - 1; i >= 0; i-- {
+		if unicode.IsSpace(r[i]) {
+			return i
+		}
+	}
+	return -1
 }

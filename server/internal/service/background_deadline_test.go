@@ -159,7 +159,8 @@ func TestBackgroundLateCompletionOfAnExpiredAttemptWritesNothing(t *testing.T) {
 				return nil
 			},
 		}
-		return b, b.enqueue(t), writes
+		task := b.enqueue(t)
+		return b, task, writes
 	}
 	complete := func(b *bgFailoverFixture, task db.AgentTaskQueue) {
 		// The outcome (error or idempotent no-op) is not the contract; the
