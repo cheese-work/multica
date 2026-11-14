@@ -16,7 +16,7 @@ export function findScrollParent(el: HTMLElement): HTMLElement | null {
  * Rows slide under a still cursor while the list scrolls, and each one fires
  * `mouseenter`, which opens avatar hover cards and their queries. While
  * `scrollEl` scrolls, a transparent overlay inside it takes the pointer; wheel
- * events still bubble to the scroller. An overlay, not `pointer-events: none`
+ * events still scroll it. An overlay, not `pointer-events: none`
  * on the list: that property inherits, so toggling it re-styled every row on
  * each scroll burst (about 20 s of style recalc over one 300-row pass at 4x CPU).
  * Done on the DOM, not through state, so scrolling never re-renders the list.
@@ -32,11 +32,16 @@ export function useScrollPointerShield(scrollEl: HTMLElement | null) {
     };
     const onScroll = () => {
       if (!shield) {
-        const r = scrollEl.getBoundingClientRect();
+        // Zero-height sticky wrapper + absolute cover, so the scroller stays in
+        // the cover's scroll chain. A `position: fixed` cover would not: wheel
+        // input over it would scroll the viewport and stall the list.
         shield = document.createElement("div");
         shield.dataset.scrollShield = "";
-        shield.style.cssText = `position:fixed;z-index:1;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`;
-        scrollEl.appendChild(shield);
+        shield.style.cssText = "position:sticky;top:0;height:0;z-index:1";
+        const cover = document.createElement("div");
+        cover.style.cssText = `position:absolute;left:0;top:0;width:100%;height:${scrollEl.clientHeight}px`;
+        shield.append(cover);
+        scrollEl.prepend(shield);
       }
       clearTimeout(timer);
       timer = setTimeout(remove, SETTLE_MS);

@@ -17,6 +17,7 @@ const virtuoso = vi.hoisted(() => ({
   renderFirst: false,
   bump: () => {},
   avatarRenders: 0,
+  presenceCalls: 0,
 }));
 vi.mock("react-virtuoso", () => ({
   GroupedVirtuoso: (props: Record<string, unknown>) => {
@@ -39,7 +40,12 @@ vi.mock("../../common/actor-avatar", () => ({
   },
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
-vi.mock("@multica/core/agents", () => ({ useWorkspacePresenceMap: () => ({ byAgent: new Map() }) }));
+vi.mock("@multica/core/agents", () => ({
+  useWorkspacePresenceMap: () => {
+    virtuoso.presenceCalls += 1;
+    return { byAgent: new Map() };
+  },
+}));
 vi.mock("@multica/core/api", () => ({ api: { cancelTaskById: vi.fn() } }));
 vi.mock("@multica/core/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/chat")>();
@@ -130,6 +136,7 @@ beforeEach(() => {
   virtuoso.props = null;
   virtuoso.renderFirst = false;
   virtuoso.avatarRenders = 0;
+  virtuoso.presenceCalls = 0;
   useChatStore.setState({ listView: "main" });
 });
 afterEach(cleanup);
@@ -172,5 +179,14 @@ describe("ChatThreadList virtualization", () => {
     act(() => virtuoso.bump());
     act(() => virtuoso.bump());
     expect(virtuoso.avatarRenders).toBe(before);
+  });
+
+  // Presence is read once for the list and passed down; a per-row read would
+  // put one set of query observers and a 30 s timer on every mounted row.
+  it("reads agent presence once per list render, not once per row", () => {
+    renderList(false);
+    const rows = screen.getAllByTestId("chat-thread-row").length;
+    expect(rows).toBeGreaterThan(20);
+    expect(virtuoso.presenceCalls).toBeLessThan(rows / 2);
   });
 });
