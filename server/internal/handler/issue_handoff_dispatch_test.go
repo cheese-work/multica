@@ -200,7 +200,9 @@ func TestHandoffToMemberOrNoneWritesNoIntent(t *testing.T) {
 			}
 			setColumnHandoff(t, projectID, "in_progress", column).Want(http.StatusOK)
 			issueID := dbfx.Issue(t, "intent-free "+name, testutil.Cols{"project_id": projectID, "status": "todo"})
-			t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue_handoff_dispatch WHERE issue_id = $1`, issueID) })
+			t.Cleanup(func() {
+				testPool.Exec(context.Background(), `DELETE FROM issue_handoff_dispatch WHERE issue_id = $1`, issueID)
+			})
 
 			moveIntoHandoffStep(t, issueID, nil)
 
