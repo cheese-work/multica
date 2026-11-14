@@ -72,6 +72,9 @@ type BackgroundTaskInput struct {
 	// when this run holds the last slot.
 	FallbackAgentID pgtype.UUID
 	Input           string
+	// Guard is opaque state the job's writer compares at completion (dm_title:
+	// the title the DM had when the job was queued).
+	Guard string
 	// Resolve, when set, picks the chain slot instead of AgentID/Source/Slot/
 	// FallbackAgentID. EnqueueBackgroundTask calls it after taking the member's
 	// lock, so a personal write is either fully visible to it or waits for the
@@ -103,6 +106,7 @@ type BackgroundTaskContext struct {
 	ClaimSeconds    int    `json:"claim_deadline_seconds"`
 	RunSeconds      int    `json:"run_deadline_seconds"`
 	Input           string `json:"input"`
+	Guard           string `json:"guard,omitempty"`
 }
 
 // EnqueueBackgroundTask queues an output-only job on the chain agent's runtime:
@@ -167,7 +171,7 @@ func (s *TaskService) EnqueueBackgroundTask(ctx context.Context, in BackgroundTa
 		Type: BackgroundTaskContextType, Job: string(in.Job), WorkspaceID: util.UUIDToString(in.WorkspaceID),
 		ChainSource: string(target.Source), Slot: string(target.Slot),
 		ClaimSeconds: int(spec.ClaimDeadline.Seconds()), RunSeconds: int(spec.RunDeadline.Seconds()),
-		Input: input,
+		Input: input, Guard: in.Guard,
 	}
 	if target.FallbackAgentID.Valid {
 		payload.FallbackAgentID = util.UUIDToString(target.FallbackAgentID)
