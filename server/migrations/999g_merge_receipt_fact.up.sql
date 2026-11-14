@@ -51,3 +51,16 @@ CREATE TRIGGER merge_receipt_invalidate AFTER UPDATE ON github_pull_request
    OR OLD.review_head_sha IS DISTINCT FROM NEW.review_head_sha
    OR OLD.pr_updated_at IS DISTINCT FROM NEW.pr_updated_at)
  EXECUTE FUNCTION merge_receipt_invalidate();
+
+-- A veto Cheese records in Multica only (no GitHub review or comment). It holds
+-- the PR until it is cleared, whatever receipt a producer writes meanwhile.
+CREATE TABLE merge_veto (
+    workspace_id uuid NOT NULL,
+    repo_owner text NOT NULL,
+    repo_name text NOT NULL,
+    pr_number integer NOT NULL,
+    vetoed_by uuid NOT NULL,
+    reason text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL,
+    PRIMARY KEY (workspace_id, repo_owner, repo_name, pr_number)
+);

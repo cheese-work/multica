@@ -54,3 +54,48 @@ func (h *Handler) PutMergeReceipt(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
+
+type mergeVetoRequest struct {
+	Owner  string `json:"repo_owner"`
+	Repo   string `json:"repo_name"`
+	Number int32  `json:"pr_number"`
+	Reason string `json:"reason"`
+}
+
+func decodeMergeVeto(w http.ResponseWriter, r *http.Request) (mergeVetoRequest, bool) {
+	var req mergeVetoRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Owner == "" || req.Repo == "" || req.Number <= 0 {
+		writeError(w, http.StatusBadRequest, "repo_owner, repo_name and pr_number are required")
+		return req, false
+	}
+	return req, true
+}
+
+// PutMergeVeto records a veto made in Multica only (CHE-5594). It holds the PR
+// and drops its receipt; nothing a producer records under it survives. Routing
+// limits it to a workspace owner or admin acting as a person.
+func (h *Handler) PutMergeVeto(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeMergeVeto(w, r)
+	if !ok {
+		return
+	}
+	if err := service.SetMergeVeto(r.Context(), h.TxStarter, parseUUID(h.resolveWorkspaceID(r)), req.Owner, req.Repo, req.Number, parseUUID(requestUserID(r)), req.Reason, time.Now()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record the veto")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteMergeVeto lifts a veto. The PR stays held until a producer records a
+// new receipt.
+func (h *Handler) DeleteMergeVeto(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodeMergeVeto(w, r)
+	if !ok {
+		return
+	}
+	if err := service.ClearMergeVeto(r.Context(), h.TxStarter, parseUUID(h.resolveWorkspaceID(r)), req.Owner, req.Repo, req.Number); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to lift the veto")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

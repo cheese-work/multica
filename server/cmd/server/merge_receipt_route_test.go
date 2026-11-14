@@ -37,9 +37,21 @@ func TestMergeReceiptRouteAcceptsOnlyAPersonWhoIsOwnerOrAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, route := range []struct{ method, path string }{
+		{http.MethodPut, "/api/github/merge-receipts"},
+		{http.MethodPut, "/api/github/merge-vetoes"},
+		{http.MethodDelete, "/api/github/merge-vetoes"},
+	} {
+		route := route
+		t.Run(route.method+" "+route.path, func(t *testing.T) { mergeRouteGates(t, route.method, route.path, agentID, memberToken) })
+	}
+}
+
+func mergeRouteGates(t *testing.T, method, path, agentID, memberToken string) {
+	t.Helper()
 	put := func(bearer string) int {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodPut, testServer.URL+"/api/github/merge-receipts", strings.NewReader(`{}`))
+		req, err := http.NewRequest(method, testServer.URL+path, strings.NewReader(`{}`))
 		if err != nil {
 			t.Fatal(err)
 		}
