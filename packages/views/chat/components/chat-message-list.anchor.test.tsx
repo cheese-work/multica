@@ -65,13 +65,24 @@ const messagesFor = (sessionId: string, ids = IDS) =>
 
 let store: Map<string, string>;
 let writes: number;
+// The route a write is filed under. A write through the unbound setViewState is
+// filed under the route current when it ARRIVES (like the desktop adapter); a
+// bound writer is filed under the route current when it was bound.
+let route: string;
+let writeRoutes: string[];
+const putEntry = (at: string, key: string, value: string | undefined) => {
+  writes += 1;
+  writeRoutes.push(at);
+  if (value === undefined) store.delete(key);
+  else store.set(key, value);
+};
 const adapter: ScrollRestorationAdapter = {
   get: () => undefined,
   getViewState: (key) => store.get(key),
-  setViewState: (key, value) => {
-    writes += 1;
-    if (value === undefined) store.delete(key);
-    else store.set(key, value);
+  setViewState: (key, value) => putEntry(route, key, value),
+  bindViewStateWriter: () => {
+    const bound = route;
+    return (key, value) => putEntry(bound, key, value);
   },
 };
 
@@ -104,6 +115,8 @@ const savedAnchor = (sessionId: string) => {
 beforeEach(() => {
   store = new Map();
   writes = 0;
+  route = "/chat";
+  writeRoutes = [];
   virtuosoProps = {};
   vi.stubGlobal(
     "ResizeObserver",
@@ -282,5 +295,56 @@ describe("ChatMessageList anchor persistence under scroll (CHE-3234)", () => {
     });
 
     expect(savedAnchor("s1")?.offsetInItemPx).toBe(500);
+  });
+
+  // jsdom has no layout: the rows only measure while they are still attached,
+  // as in a browser. A drain that runs after React removed the DOM reads zeros.
+  function measureWhileConnected(root: HTMLElement, row: HTMLElement, rowTop: () => number) {
+    row.getBoundingClientRect = () =>
+      (row.isConnected ? { top: rowTop(), bottom: rowTop() + 1400 } : { top: 0, bottom: 0 }) as DOMRect;
+    root.getBoundingClientRect = () => (root.isConnected ? { top: 100, bottom: 700 } : { top: 0, bottom: 0 }) as DOMRect;
+  }
+
+  it("persists the offset of a scroll whose frame has not run when the list unmounts", () => {
+    const { view, root, scrollTo } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    const top = -900;
+    measureWhileConnected(root, row, () => top);
+    scrollTo(top);
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll")); // frame queued, never run
+    });
+    view.unmount();
+
+    expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 1000, atLiveEnd: false });
+  });
+
+  it("persists the offset of a scroll whose frame has not run on pagehide", () => {
+    const { view, root } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    measureWhileConnected(root, row, () => -400);
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("pagehide")); // same tick, frame not run
+    });
+
+    expect(savedAnchor("s1")?.offsetInItemPx).toBe(500);
+  });
+
+  it("files the unmount flush under the route the list was scrolled on", () => {
+    const { view, root, scrollTo } = mountScrolling();
+    act(() => {
+      scrollTo(-900);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+    });
+    writeRoutes = [];
+
+    route = "/issues"; // navigation commits before the old view unmounts
+    view.unmount();
+
+    expect(writeRoutes).toEqual(["/chat"]);
   });
 });
