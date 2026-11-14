@@ -27,21 +27,56 @@ func (q *Queries) AcquireProjectAdmissionLock(ctx context.Context, projectID str
 	return err
 }
 
-const bindHeldRunInputs = `-- name: BindHeldRunInputs :many
-UPDATE run_input SET state = 'claimed', task_id = $1, updated_at = clock_timestamp()
-WHERE issue_id = $2 AND agent_id = $3 AND state = 'held'
-RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+const assignParkedInputThread = `-- name: AssignParkedInputThread :many
+UPDATE run_input SET thread_key = $1, updated_at = clock_timestamp()
+WHERE seq = ANY($2::bigint[]) AND issue_id = $3 AND agent_id = $4
+  AND state = 'parked' AND thread_key IS NULL
+RETURNING seq
 `
 
-type BindHeldRunInputsParams struct {
-	TaskID  pgtype.UUID `json:"task_id"`
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
+type AssignParkedInputThreadParams struct {
+	ThreadKey pgtype.UUID `json:"thread_key"`
+	Ids       []int64     `json:"ids"`
+	IssueID   pgtype.UUID `json:"issue_id"`
+	AgentID   pgtype.UUID `json:"agent_id"`
 }
 
-// The claim moves every held input of (issue, agent) to the run, in arrival order.
-func (q *Queries) BindHeldRunInputs(ctx context.Context, arg BindHeldRunInputsParams) ([]RunInput, error) {
-	rows, err := q.db.Query(ctx, bindHeldRunInputs, arg.TaskID, arg.IssueID, arg.AgentID)
+// A member's explicit choice of thread for unknown-thread rows.
+func (q *Queries) AssignParkedInputThread(ctx context.Context, arg AssignParkedInputThreadParams) ([]pgtype.Int8, error) {
+	rows, err := q.db.Query(ctx, assignParkedInputThread,
+		arg.ThreadKey,
+		arg.Ids,
+		arg.IssueID,
+		arg.AgentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Int8{}
+	for rows.Next() {
+		var seq pgtype.Int8
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const bindOwnedRunInputs = `-- name: BindOwnedRunInputs :many
+UPDATE run_input SET state = 'claimed', task_id = $1, updated_at = clock_timestamp()
+WHERE owner_task_id = $1 AND state = 'owned'
+RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key
+`
+
+// The claim moves the inputs its run owns to the run, in arrival order. Same
+// issue, same agent or same thread is never proof of ownership.
+func (q *Queries) BindOwnedRunInputs(ctx context.Context, taskID pgtype.UUID) ([]RunInput, error) {
+	rows, err := q.db.Query(ctx, bindOwnedRunInputs, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +99,8 @@ func (q *Queries) BindHeldRunInputs(ctx context.Context, arg BindHeldRunInputsPa
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -145,7 +182,7 @@ func (q *Queries) DeliverRunInputs(ctx context.Context, taskID pgtype.UUID) erro
 const discardParkedRunInputs = `-- name: DiscardParkedRunInputs :many
 UPDATE run_input SET state = 'discarded', updated_at = clock_timestamp()
 WHERE issue_id = $1 AND agent_id = $2 AND state = 'parked'
-RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key
 `
 
 type DiscardParkedRunInputsParams struct {
@@ -177,6 +214,8 @@ func (q *Queries) DiscardParkedRunInputs(ctx context.Context, arg DiscardParkedR
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -304,6 +343,23 @@ func (q *Queries) ExpireReservation(ctx context.Context, arg ExpireReservationPa
 		&i.SourceChatSessionID,
 	)
 	return i, err
+}
+
+const getCommentInIssue = `-- name: GetCommentInIssue :one
+SELECT id FROM comment WHERE id = $1 AND issue_id = $2
+`
+
+type GetCommentInIssueParams struct {
+	ID      pgtype.UUID `json:"id"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// A thread key names a comment of this issue.
+func (q *Queries) GetCommentInIssue(ctx context.Context, arg GetCommentInIssueParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getCommentInIssue, arg.ID, arg.IssueID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getProjectAdmission = `-- name: GetProjectAdmission :one
@@ -495,24 +551,52 @@ func (q *Queries) InsertAdmissionRelease(ctx context.Context, arg InsertAdmissio
 }
 
 const insertCoalescedRunInput = `-- name: InsertCoalescedRunInput :one
-INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload)
-SELECT $1, $2, $3, $4, $5, $6
-WHERE EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.issue_id = $2 AND t.agent_id = $3 AND t.status = 'queued')
+WITH slot AS (
+    SELECT COALESCE(CASE WHEN $7::uuid IS NULL THEN NULL
+                         ELSE comment_thread_root_id($7::uuid) END,
+                    '00000000-0000-0000-0000-000000000000'::uuid) AS thread
+), carrier AS (
+    SELECT t.id, t.status,
+           COALESCE(t.comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid) AS thread
+    FROM agent_task_queue t
+    WHERE t.id = $8::uuid AND t.issue_id = $2 AND t.agent_id = $3
+    FOR UPDATE
+), verdict AS (
+    SELECT s.thread AS slot_thread, c.id AS carrier_id, c.status AS carrier_status,
+           COALESCE(c.thread = s.thread, false) AS entitled
+    FROM slot s LEFT JOIN carrier c ON true
+)
+INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload, state, owner_task_id, thread_key, park_reason)
+SELECT $1, $2, $3, $4, $5, $6,
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN 'owned' ELSE 'parked' END,
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN v.carrier_id END,
+       CASE WHEN v.entitled AND v.carrier_status = 'queued' THEN v.slot_thread END,
+       CASE WHEN NOT (v.entitled AND v.carrier_status = 'queued') THEN 'ambiguous_owner' END
+FROM verdict v
+WHERE NOT (v.entitled AND v.carrier_status IN ('dispatched', 'running'))
 ON CONFLICT (issue_id, agent_id, event_id) DO NOTHING
-RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key
 `
 
 type InsertCoalescedRunInputParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	AgentID     pgtype.UUID `json:"agent_id"`
-	EventID     string      `json:"event_id"`
-	Kind        string      `json:"kind"`
-	Payload     []byte      `json:"payload"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	EventID       string      `json:"event_id"`
+	Kind          string      `json:"kind"`
+	Payload       []byte      `json:"payload"`
+	CommentID     pgtype.UUID `json:"comment_id"`
+	CarrierTaskID pgtype.UUID `json:"carrier_task_id"`
 }
 
-// The trigger a queued run absorbed instead of a new run. Stored only while a
-// queued run of (issue, agent) exists to carry it; a retry of the same event id
+// The trigger a pending run absorbed instead of a new run (CHE-5266 addendum A5).
+// carrier_task_id is the run the coalescing decision read. The statement locks that
+// row and compares, under the lock, its thread with the trigger's own slot thread
+// (the comment's thread root, the zero UUID for a trigger without a comment), for
+// every status. Entitled and queued: owned by the carrier. Entitled and dispatched
+// or running: absorbed, nothing is stored (slice 1 boundary). Everything else (no
+// carrier, another thread, any other status): parked as ambiguous_owner, no
+// owner, thread unknown, so a member can resume it. A retry of the same event id
 // changes nothing.
 func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalescedRunInputParams) (RunInput, error) {
 	row := q.db.QueryRow(ctx, insertCoalescedRunInput,
@@ -522,6 +606,8 @@ func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalesc
 		arg.EventID,
 		arg.Kind,
 		arg.Payload,
+		arg.CommentID,
+		arg.CarrierTaskID,
 	)
 	var i RunInput
 	err := row.Scan(
@@ -539,15 +625,17 @@ func (q *Queries) InsertCoalescedRunInput(ctx context.Context, arg InsertCoalesc
 		&i.FailureClass,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnerTaskID,
+		&i.ThreadKey,
 	)
 	return i, err
 }
 
 const insertRunInput = `-- name: InsertRunInput :one
-INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload)
-VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO run_input (workspace_id, issue_id, agent_id, event_id, kind, payload, state, owner_task_id, thread_key)
+VALUES ($1, $2, $3, $4, $5, $6, 'owned', $7, $8)
 ON CONFLICT (issue_id, agent_id, event_id) DO NOTHING
-RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key
 `
 
 type InsertRunInputParams struct {
@@ -557,9 +645,12 @@ type InsertRunInputParams struct {
 	EventID     string      `json:"event_id"`
 	Kind        string      `json:"kind"`
 	Payload     []byte      `json:"payload"`
+	OwnerTaskID pgtype.UUID `json:"owner_task_id"`
+	ThreadKey   pgtype.UUID `json:"thread_key"`
 }
 
-// One row per trigger. A retry of the same event id changes nothing.
+// One row per trigger, owned by the run it was written for. A retry of the same
+// event id changes nothing.
 func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) (RunInput, error) {
 	row := q.db.QueryRow(ctx, insertRunInput,
 		arg.WorkspaceID,
@@ -568,6 +659,8 @@ func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) 
 		arg.EventID,
 		arg.Kind,
 		arg.Payload,
+		arg.OwnerTaskID,
+		arg.ThreadKey,
 	)
 	var i RunInput
 	err := row.Scan(
@@ -585,6 +678,8 @@ func (q *Queries) InsertRunInput(ctx context.Context, arg InsertRunInputParams) 
 		&i.FailureClass,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnerTaskID,
+		&i.ThreadKey,
 	)
 	return i, err
 }
@@ -721,7 +816,7 @@ func (q *Queries) ListHeldProjectTasks(ctx context.Context, projectID pgtype.UUI
 }
 
 const listIssueRunInputs = `-- name: ListIssueRunInputs :many
-SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at FROM run_input WHERE issue_id = $1 AND state IN ('held', 'claimed', 'parked') ORDER BY seq ASC
+SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key FROM run_input WHERE issue_id = $1 AND state IN ('owned', 'claimed', 'parked') ORDER BY seq ASC
 `
 
 func (q *Queries) ListIssueRunInputs(ctx context.Context, issueID pgtype.UUID) ([]RunInput, error) {
@@ -748,6 +843,8 @@ func (q *Queries) ListIssueRunInputs(ctx context.Context, issueID pgtype.UUID) (
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -759,8 +856,44 @@ func (q *Queries) ListIssueRunInputs(ctx context.Context, issueID pgtype.UUID) (
 	return items, nil
 }
 
+const listParkedRunInputRefs = `-- name: ListParkedRunInputRefs :many
+SELECT seq, thread_key FROM run_input
+WHERE issue_id = $1 AND agent_id = $2 AND state = 'parked'
+ORDER BY seq
+`
+
+type ListParkedRunInputRefsParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+type ListParkedRunInputRefsRow struct {
+	Seq       pgtype.Int8 `json:"seq"`
+	ThreadKey pgtype.UUID `json:"thread_key"`
+}
+
+func (q *Queries) ListParkedRunInputRefs(ctx context.Context, arg ListParkedRunInputRefsParams) ([]ListParkedRunInputRefsRow, error) {
+	rows, err := q.db.Query(ctx, listParkedRunInputRefs, arg.IssueID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListParkedRunInputRefsRow{}
+	for rows.Next() {
+		var i ListParkedRunInputRefsRow
+		if err := rows.Scan(&i.Seq, &i.ThreadKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listParkedRunInputs = `-- name: ListParkedRunInputs :many
-SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at FROM run_input
+SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key FROM run_input
 WHERE issue_id = $1 AND agent_id = $2 AND state = 'parked'
 ORDER BY seq ASC
 `
@@ -794,6 +927,8 @@ func (q *Queries) ListParkedRunInputs(ctx context.Context, arg ListParkedRunInpu
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -841,7 +976,7 @@ func (q *Queries) ListProjectsWithHeldRuns(ctx context.Context) ([]pgtype.UUID, 
 }
 
 const listRunInputsForTask = `-- name: ListRunInputsForTask :many
-SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at FROM run_input WHERE task_id = $1 AND state = 'claimed' ORDER BY seq ASC
+SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key FROM run_input WHERE task_id = $1 AND state = 'claimed' ORDER BY seq ASC
 `
 
 func (q *Queries) ListRunInputsForTask(ctx context.Context, taskID pgtype.UUID) ([]RunInput, error) {
@@ -868,6 +1003,8 @@ func (q *Queries) ListRunInputsForTask(ctx context.Context, taskID pgtype.UUID) 
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -879,45 +1016,300 @@ func (q *Queries) ListRunInputsForTask(ctx context.Context, taskID pgtype.UUID) 
 	return items, nil
 }
 
-const parkHeldRunInputs = `-- name: ParkHeldRunInputs :exec
-UPDATE run_input SET state = 'parked', park_reason = $1, failure_class = $2,
-    updated_at = clock_timestamp()
-WHERE issue_id = $3 AND agent_id = $4 AND state = 'held'
+const lockOwnedRunInputs = `-- name: LockOwnedRunInputs :many
+SELECT workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at, owner_task_id, thread_key FROM run_input WHERE owner_task_id = $1 AND state = 'owned' ORDER BY seq FOR UPDATE
 `
 
-type ParkHeldRunInputsParams struct {
-	ParkReason   pgtype.Text `json:"park_reason"`
-	FailureClass pgtype.Text `json:"failure_class"`
-	IssueID      pgtype.UUID `json:"issue_id"`
-	AgentID      pgtype.UUID `json:"agent_id"`
+// The inputs a run still owns, locked. The task row is locked first.
+func (q *Queries) LockOwnedRunInputs(ctx context.Context, ownerTaskID pgtype.UUID) ([]RunInput, error) {
+	rows, err := q.db.Query(ctx, lockOwnedRunInputs, ownerTaskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RunInput{}
+	for rows.Next() {
+		var i RunInput
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AgentID,
+			&i.EventID,
+			&i.Seq,
+			&i.Kind,
+			&i.Payload,
+			&i.State,
+			&i.TaskID,
+			&i.RedeliveryOfTaskID,
+			&i.ParkReason,
+			&i.FailureClass,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-// A run that ends before any claim (cancelled while held) parks the inputs it
-// was holding; no new trigger pulls them back.
-func (q *Queries) ParkHeldRunInputs(ctx context.Context, arg ParkHeldRunInputsParams) error {
-	_, err := q.db.Exec(ctx, parkHeldRunInputs,
-		arg.ParkReason,
-		arg.FailureClass,
-		arg.IssueID,
-		arg.AgentID,
+const lockParkedNullThreadRunInputs = `-- name: LockParkedNullThreadRunInputs :many
+SELECT seq FROM run_input
+WHERE seq = ANY($1::bigint[]) AND issue_id = $2 AND agent_id = $3
+  AND state = 'parked' AND thread_key IS NULL
+ORDER BY seq
+FOR UPDATE
+`
+
+type LockParkedNullThreadRunInputsParams struct {
+	Ids     []int64     `json:"ids"`
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+func (q *Queries) LockParkedNullThreadRunInputs(ctx context.Context, arg LockParkedNullThreadRunInputsParams) ([]pgtype.Int8, error) {
+	rows, err := q.db.Query(ctx, lockParkedNullThreadRunInputs, arg.Ids, arg.IssueID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Int8{}
+	for rows.Next() {
+		var seq pgtype.Int8
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockParkedRunInputsForRetry = `-- name: LockParkedRunInputsForRetry :many
+SELECT seq FROM run_input
+WHERE task_id = $1 AND state = 'parked' AND thread_key = $2
+  AND park_reason IS DISTINCT FROM 'legacy_claim_unproven'
+  AND park_reason IS DISTINCT FROM 'legacy_unowned'
+ORDER BY seq
+FOR UPDATE
+`
+
+type LockParkedRunInputsForRetryParams struct {
+	ParentID       pgtype.UUID `json:"parent_id"`
+	RetryThreadKey pgtype.UUID `json:"retry_thread_key"`
+}
+
+// The parked inputs a failed parent claimed that belong to the retry child's
+// thread. thread_key is compared with =, so an unknown thread never matches; a
+// quarantined legacy row is never re-held to a retry.
+func (q *Queries) LockParkedRunInputsForRetry(ctx context.Context, arg LockParkedRunInputsForRetryParams) ([]pgtype.Int8, error) {
+	rows, err := q.db.Query(ctx, lockParkedRunInputsForRetry, arg.ParentID, arg.RetryThreadKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Int8{}
+	for rows.Next() {
+		var seq pgtype.Int8
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockParkedRunInputsInThread = `-- name: LockParkedRunInputsInThread :many
+SELECT seq FROM run_input
+WHERE seq = ANY($1::bigint[]) AND state = 'parked' AND thread_key = $2
+ORDER BY seq
+FOR UPDATE
+`
+
+type LockParkedRunInputsInThreadParams struct {
+	Ids       []int64     `json:"ids"`
+	ThreadKey pgtype.UUID `json:"thread_key"`
+}
+
+func (q *Queries) LockParkedRunInputsInThread(ctx context.Context, arg LockParkedRunInputsInThreadParams) ([]pgtype.Int8, error) {
+	rows, err := q.db.Query(ctx, lockParkedRunInputsInThread, arg.Ids, arg.ThreadKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Int8{}
+	for rows.Next() {
+		var seq pgtype.Int8
+		if err := rows.Scan(&seq); err != nil {
+			return nil, err
+		}
+		items = append(items, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockSlotCarrier = `-- name: LockSlotCarrier :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, admission_state, hold_reason, reservation_lease_id, reservation_expires_at, source_chat_session_id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched')
+  AND COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid) = $3
+FOR UPDATE
+`
+
+type LockSlotCarrierParams struct {
+	IssueID   pgtype.UUID `json:"issue_id"`
+	AgentID   pgtype.UUID `json:"agent_id"`
+	ThreadKey pgtype.UUID `json:"thread_key"`
+}
+
+// The pending (queued or dispatched) run of one slot, locked. No row: the slot is free.
+func (q *Queries) LockSlotCarrier(ctx context.Context, arg LockSlotCarrierParams) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, lockSlotCarrier, arg.IssueID, arg.AgentID, arg.ThreadKey)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.ContextTokens,
+		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
+		&i.ChatCompactionEpoch,
+		&i.PresetName,
+		&i.PresetSource,
+		&i.PresetSkips,
+		&i.ClaimedThinkingLevel,
+		&i.ClaimedServiceTier,
+		&i.ClaimedContextArgs,
+		&i.CancelAckedAt,
+		&i.StopUnconfirmedAt,
+		&i.PullRequestID,
+		&i.ReplacementReleasedAt,
+		&i.StopHoldIssueWide,
+		&i.TaintIds,
+		&i.AppliedModel,
+		&i.AppliedThinkingLevel,
+		&i.AppliedServiceTier,
+		&i.AppliedContextArgs,
+		&i.AppliedReportedAt,
+		&i.ExternalRead,
+		&i.Purpose,
+		&i.CancelAckReason,
+		&i.AdmissionState,
+		&i.HoldReason,
+		&i.ReservationLeaseID,
+		&i.ReservationExpiresAt,
+		&i.SourceChatSessionID,
 	)
+	return i, err
+}
+
+const moveOwnedRunInputs = `-- name: MoveOwnedRunInputs :exec
+UPDATE run_input SET owner_task_id = $1, updated_at = clock_timestamp()
+WHERE owner_task_id = $2 AND state = 'owned' AND thread_key = $3
+`
+
+type MoveOwnedRunInputsParams struct {
+	NewOwnerTaskID pgtype.UUID `json:"new_owner_task_id"`
+	OldOwnerTaskID pgtype.UUID `json:"old_owner_task_id"`
+	ThreadKey      pgtype.UUID `json:"thread_key"`
+}
+
+// Hands the inputs of one owner to another. The thread guard keeps a row off a
+// carrier of another thread; unmatched rows stay with the old owner.
+func (q *Queries) MoveOwnedRunInputs(ctx context.Context, arg MoveOwnedRunInputsParams) error {
+	_, err := q.db.Exec(ctx, moveOwnedRunInputs, arg.NewOwnerTaskID, arg.OldOwnerTaskID, arg.ThreadKey)
 	return err
 }
 
 const parkOrphanedRunInputs = `-- name: ParkOrphanedRunInputs :many
 UPDATE run_input r
-SET state = 'parked', park_reason = 'orphaned', updated_at = clock_timestamp()
-WHERE r.state = 'held'
-  AND NOT EXISTS (
-      SELECT 1 FROM agent_task_queue t
-      WHERE t.issue_id = r.issue_id AND t.agent_id = r.agent_id AND t.status IN ('queued', 'deferred')
-  )
-RETURNING r.workspace_id, r.issue_id, r.agent_id, r.event_id, r.seq, r.kind, r.payload, r.state, r.task_id, r.redelivery_of_task_id, r.park_reason, r.failure_class, r.created_at, r.updated_at
+SET state = 'parked', owner_task_id = NULL,
+    park_reason = CASE WHEN r.state = 'held' THEN 'legacy_unowned' ELSE 'orphaned' END,
+    updated_at = clock_timestamp()
+WHERE (r.state = 'owned'
+       AND NOT EXISTS (
+           SELECT 1 FROM agent_task_queue t
+           WHERE t.id = r.owner_task_id AND t.status IN ('queued', 'dispatched', 'running', 'deferred')
+       ))
+   OR r.state = 'held'
+RETURNING r.workspace_id, r.issue_id, r.agent_id, r.event_id, r.seq, r.kind, r.payload, r.state, r.task_id, r.redelivery_of_task_id, r.park_reason, r.failure_class, r.created_at, r.updated_at, r.owner_task_id, r.thread_key
 `
 
-// Held inputs of an (issue, agent) with no queued run to carry them: nothing
-// would ever start them, so they are parked for a member to resume or discard.
-// A run and its input commit together, so a live input always has its run.
+// Owned inputs whose owner is no longer an active run: nothing would ever
+// start them, so they are parked for a member to resume or discard. A held row
+// (none should exist, the retire trigger parks them) is parked as legacy_unowned.
 func (q *Queries) ParkOrphanedRunInputs(ctx context.Context) ([]RunInput, error) {
 	rows, err := q.db.Query(ctx, parkOrphanedRunInputs)
 	if err != nil {
@@ -942,6 +1334,8 @@ func (q *Queries) ParkOrphanedRunInputs(ctx context.Context) ([]RunInput, error)
 			&i.FailureClass,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.OwnerTaskID,
+			&i.ThreadKey,
 		); err != nil {
 			return nil, err
 		}
@@ -951,6 +1345,25 @@ func (q *Queries) ParkOrphanedRunInputs(ctx context.Context) ([]RunInput, error)
 		return nil, err
 	}
 	return items, nil
+}
+
+const parkOwnedRunInputs = `-- name: ParkOwnedRunInputs :exec
+UPDATE run_input SET state = 'parked', park_reason = $1, failure_class = $2,
+    owner_task_id = NULL, updated_at = clock_timestamp()
+WHERE owner_task_id = $3 AND state = 'owned'
+`
+
+type ParkOwnedRunInputsParams struct {
+	ParkReason   pgtype.Text `json:"park_reason"`
+	FailureClass pgtype.Text `json:"failure_class"`
+	TaskID       pgtype.UUID `json:"task_id"`
+}
+
+// A run that ends before any claim parks the inputs it owns, and only those;
+// inputs owned by another run stay owned.
+func (q *Queries) ParkOwnedRunInputs(ctx context.Context, arg ParkOwnedRunInputsParams) error {
+	_, err := q.db.Exec(ctx, parkOwnedRunInputs, arg.ParkReason, arg.FailureClass, arg.TaskID)
+	return err
 }
 
 const parkRunInputs = `-- name: ParkRunInputs :exec
@@ -990,50 +1403,35 @@ func (q *Queries) ProjectHasHeldRuns(ctx context.Context, projectID pgtype.UUID)
 	return exists, err
 }
 
-const reheldParkedRunInputs = `-- name: ReheldParkedRunInputs :many
-UPDATE run_input SET state = 'held', redelivery_of_task_id = COALESCE(redelivery_of_task_id, task_id),
+const reheldRunInputsByID = `-- name: ReheldRunInputsByID :many
+UPDATE run_input SET state = 'owned', owner_task_id = $1, park_reason = NULL,
+    redelivery_of_task_id = COALESCE(redelivery_of_task_id, task_id),
     task_id = NULL, updated_at = clock_timestamp()
-WHERE issue_id = $1 AND agent_id = $2 AND state = 'parked'
-  AND ($3::uuid IS NULL OR task_id = $3::uuid)
-RETURNING workspace_id, issue_id, agent_id, event_id, seq, kind, payload, state, task_id, redelivery_of_task_id, park_reason, failure_class, created_at, updated_at
+WHERE seq = ANY($2::bigint[]) AND state = 'parked' AND thread_key = $3
+RETURNING seq
 `
 
-type ReheldParkedRunInputsParams struct {
-	IssueID    pgtype.UUID `json:"issue_id"`
-	AgentID    pgtype.UUID `json:"agent_id"`
-	FromTaskID pgtype.UUID `json:"from_task_id"`
+type ReheldRunInputsByIDParams struct {
+	OwnerTaskID pgtype.UUID `json:"owner_task_id"`
+	Ids         []int64     `json:"ids"`
+	ThreadKey   pgtype.UUID `json:"thread_key"`
 }
 
-// Returns parked inputs to held. redelivery_of_task_id marks them as a redelivery
-// of the earlier run.
-func (q *Queries) ReheldParkedRunInputs(ctx context.Context, arg ReheldParkedRunInputsParams) ([]RunInput, error) {
-	rows, err := q.db.Query(ctx, reheldParkedRunInputs, arg.IssueID, arg.AgentID, arg.FromTaskID)
+// Returns exact parked rows to owned by one task. The thread guard keeps a row
+// off a carrier of another thread even if a caller passes a wrong id.
+func (q *Queries) ReheldRunInputsByID(ctx context.Context, arg ReheldRunInputsByIDParams) ([]pgtype.Int8, error) {
+	rows, err := q.db.Query(ctx, reheldRunInputsByID, arg.OwnerTaskID, arg.Ids, arg.ThreadKey)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []RunInput{}
+	items := []pgtype.Int8{}
 	for rows.Next() {
-		var i RunInput
-		if err := rows.Scan(
-			&i.WorkspaceID,
-			&i.IssueID,
-			&i.AgentID,
-			&i.EventID,
-			&i.Seq,
-			&i.Kind,
-			&i.Payload,
-			&i.State,
-			&i.TaskID,
-			&i.RedeliveryOfTaskID,
-			&i.ParkReason,
-			&i.FailureClass,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
+		var seq pgtype.Int8
+		if err := rows.Scan(&seq); err != nil {
 			return nil, err
 		}
-		items = append(items, i)
+		items = append(items, seq)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

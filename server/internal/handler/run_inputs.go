@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -22,6 +24,8 @@ type RunInputResponse struct {
 	FailureClass       *string         `json:"failure_class"`
 	Payload            json.RawMessage `json:"payload"`
 	CreatedAt          string          `json:"created_at"`
+	// ThreadKey is the comment thread the input belongs to; null while unknown.
+	ThreadKey *string `json:"thread_key"`
 }
 
 func runInputResponse(in db.RunInput) RunInputResponse {
@@ -33,11 +37,11 @@ func runInputResponse(in db.RunInput) RunInputResponse {
 		EventID: in.EventID, Seq: in.Seq.Int64, AgentID: uuidToString(in.AgentID), Kind: in.Kind, State: in.State,
 		TaskID: uuidToPtr(in.TaskID), RedeliveryOfTaskID: uuidToPtr(in.RedeliveryOfTaskID),
 		ParkReason: textToPtr(in.ParkReason), FailureClass: textToPtr(in.FailureClass),
-		Payload: payload, CreatedAt: timestampToString(in.CreatedAt),
+		Payload: payload, CreatedAt: timestampToString(in.CreatedAt), ThreadKey: uuidToPtr(in.ThreadKey),
 	}
 }
 
-// ListIssueRunInputs lists held, claimed and parked inputs of an issue.
+// ListIssueRunInputs lists owned, claimed and parked inputs of an issue.
 func (h *Handler) ListIssueRunInputs(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
@@ -57,6 +61,11 @@ func (h *Handler) ListIssueRunInputs(w http.ResponseWriter, r *http.Request) {
 
 type runInputsActionRequest struct {
 	AgentID string `json:"agent_id"`
+	// ThreadKey and InputIDs are the explicit recovery of inputs whose thread is
+	// unknown: a comment id of the issue, or "none" for no thread, and the exact
+	// input seqs to resume there.
+	ThreadKey string  `json:"thread_key"`
+	InputIDs  []int64 `json:"input_ids"`
 }
 
 // ResumeIssueRunInputs and DiscardIssueRunInputs act on the parked batch of one
@@ -108,11 +117,35 @@ func (h *Handler) actOnParkedInputs(w http.ResponseWriter, r *http.Request, disc
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
-	var n int
 	if discard {
-		n, err = h.TaskService.DiscardParkedInputs(r.Context(), issue.ID, agent.ID)
+		n, derr := h.TaskService.DiscardParkedInputs(r.Context(), issue.ID, agent.ID)
+		if derr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to update inputs")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]int{"count": n})
+		return
+	}
+	var res service.ResumeResult
+	if req.ThreadKey != "" || len(req.InputIDs) > 0 {
+		threadKey := pgtype.UUID{Valid: true}
+		if req.ThreadKey != "none" {
+			var tok bool
+			if threadKey, tok = parseUUIDOrBadRequest(w, req.ThreadKey, "thread_key"); !tok {
+				return
+			}
+		}
+		res, err = h.TaskService.ResumeUnknownThreadInputs(r.Context(), issue.ID, agent.ID, threadKey, req.InputIDs)
+		if errors.Is(err, service.ErrResumeInvalid) {
+			writeError(w, http.StatusBadRequest, "invalid thread_key or input_ids")
+			return
+		}
+		if errors.Is(err, service.ErrResumeConflict) {
+			writeError(w, http.StatusConflict, "inputs changed or the thread's run is busy; nothing was changed")
+			return
+		}
 	} else {
-		n, err = h.TaskService.ResumeParkedInputs(r.Context(), issue.ID, agent.ID)
+		res, err = h.TaskService.ResumeParkedInputs(r.Context(), issue.ID, agent.ID)
 	}
 	if writeProjectAdmissionError(w, err) {
 		return
@@ -121,7 +154,7 @@ func (h *Handler) actOnParkedInputs(w http.ResponseWriter, r *http.Request, disc
 		writeError(w, http.StatusInternalServerError, "failed to update inputs")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"count": n})
+	writeJSON(w, http.StatusOK, res)
 }
 
 type setWIPLimitRequest struct {

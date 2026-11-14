@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -192,9 +193,18 @@ func (e *admEnv) inputStates(issueID string) []string {
 
 func (e *admEnv) record(issueID, agent, eventID, kind string) bool {
 	e.t.Helper()
+	// The owner is the pending run of (issue, agent); with none, an owner that is
+	// not an active run, which the orphan job parks.
+	owner, thread := dbid.NewV7(), pgtype.UUID{Valid: true}
+	var oid, tid pgtype.UUID
+	if err := e.pool.QueryRow(context.Background(), `SELECT id, COALESCE(comment_thread_id, '00000000-0000-0000-0000-000000000000'::uuid) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running') ORDER BY created_at DESC LIMIT 1`, issueID, agent).Scan(&oid, &tid); err == nil {
+		owner, thread = oid, tid
+	}
 	ok, err := e.svc.RecordRunInput(context.Background(), RunInput{
 		WorkspaceID: util.MustParseUUID(e.ws), IssueID: util.MustParseUUID(issueID), AgentID: util.MustParseUUID(agent),
 		EventID: eventID, Kind: kind, Payload: []byte(`{"k":"` + eventID + `"}`),
+		OwnerTaskID: owner, ThreadKey: thread,
 	})
 	if err != nil {
 		e.t.Fatalf("record input: %v", err)
@@ -547,13 +557,13 @@ func TestAdmissionCrashAfterBatchDeliveredParksThenAuthorizedRetryRedelivers(t *
 	if got := e.inputStates(issue); !eqStrings(got, []string{"parked"}) {
 		t.Fatalf("inputs = %v, want [parked]", got)
 	}
-	n, err := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
-	if err != nil || n != 1 {
+	res, err := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
+	if n := res.Resumed; err != nil || n != 1 {
 		t.Fatalf("resume = %d, %v, want 1", n, err)
 	}
 	in := e.inputs(issue)
-	if len(in) != 1 || in[0].State != "held" || in[0].RedeliveryOfTaskID != run.ID {
-		t.Fatalf("after resume: %+v, want held redelivery of %v", in, run.ID)
+	if len(in) != 1 || in[0].State != "owned" || in[0].RedeliveryOfTaskID != run.ID {
+		t.Fatalf("after resume: %+v, want owned redelivery of %v", in, run.ID)
 	}
 }
 
@@ -760,8 +770,8 @@ func TestAdmissionExplicitResumeReturnsBatchToHeldAndStartsOnce(t *testing.T) {
 	e.enqueue(issue)
 	run := e.claim()
 	e.fail(run, "agent_error")
-	n, err := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
-	if err != nil || n != 1 {
+	res, err := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent))
+	if n := res.Resumed; err != nil || n != 1 {
 		t.Fatalf("resume = %d, %v", n, err)
 	}
 	got := e.claim()
@@ -790,7 +800,7 @@ func TestAdmissionDiscardParkedBatch(t *testing.T) {
 	if got := e.inputStates(issue); !eqStrings(got, []string{"discarded"}) {
 		t.Fatalf("inputs = %v, want [discarded]", got)
 	}
-	if m, _ := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent)); m != 0 {
+	if m, _ := e.svc.ResumeParkedInputs(context.Background(), util.MustParseUUID(issue), util.MustParseUUID(e.agent)); m.Resumed != 0 {
 		t.Fatalf("a discarded batch was resumed")
 	}
 }

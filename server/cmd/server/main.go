@@ -29,6 +29,7 @@ import (
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/runinput"
 	"github.com/multica-ai/multica/server/internal/scheduler"
 	"github.com/multica-ai/multica/server/internal/selfhosttelemetry"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -406,6 +407,24 @@ func main() {
 		slog.Error("unable to ping database", "error", err)
 		os.Exit(1)
 	}
+	// CHE-5266: never serve against a schema without the run_input owner
+	// migration, even with MULTICA_SKIP_MIGRATIONS=1, and hold the shared lease
+	// that keeps its down migration out while this server runs.
+	if err := runinput.RequireSchema(startupCtx, pool, 2*time.Second, 120*time.Second); err != nil {
+		stopStartup()
+		slog.Error("run_input schema gate failed", "error", err)
+		os.Exit(1)
+	}
+	runInputLease, err := runinput.HoldLease(startupCtx, pool, 5*time.Second, func(err error) {
+		slog.Error("run_input lease lost; exiting", "error", err)
+		os.Exit(1)
+	})
+	if err != nil {
+		stopStartup()
+		slog.Error("run_input lease failed", "error", err)
+		os.Exit(1)
+	}
+	defer runInputLease.Release()
 	stopStartup()
 	slog.Info("connected to database")
 	logPoolConfig("primary", pool)

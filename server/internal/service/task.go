@@ -6720,7 +6720,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		}
 		if retried != nil {
 			// Failed-run recovery path: the retry child carries the same batch.
-			return redeliverToRetry(ctx, qtx, t)
+			return redeliverToRetry(ctx, qtx, t, *retried)
 		}
 		return nil
 	}); err != nil {
@@ -7390,7 +7390,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 			return nil, err
 		}
 	}
-	if err := redeliverToRetry(ctx, qtx, parent); err != nil {
+	if err := redeliverToRetry(ctx, qtx, parent, child); err != nil {
 		return nil, err
 	}
 	if parent.IssueID.Valid {

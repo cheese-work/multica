@@ -144,6 +144,8 @@ multica project wip-limit <project> 3
 multica project wip-limit <project> none
 ```
 
+Chaque entrée appartient à une exécution (son propriétaire) et à un fil. Une exécution ne prend que ses propres entrées, jamais celles d'une autre exécution du même ticket et du même agent. `resume` remet les entrées en attente de chaque fil sur une exécution de ce fil et affiche `count` ainsi que les nombres ignorés : `skipped_unknown_thread` (aucun fil connu), `skipped_unresumable_thread`, `skipped_slot_busy` et `skipped_changed`. Les entrées ignorées restent en attente. Motifs de mise en attente : `legacy_unowned` (écrite par un serveur d'avant la migration du propriétaire), `legacy_claim_unproven` (une prise en charge impossible à rattacher à son exécution) et `ambiguous_owner` (aucune exécution unique n'a pu être désignée comme propriétaire). Ces trois motifs ne sont jamais remis en attente automatiquement ; un membre les reprend ou les supprime.
+
 Une écriture qui porte `--event-id <id>` (commentaire, mise à jour de ticket, création ou mise à jour de réveil) n'a lieu qu'une fois par id : une nouvelle livraison avec le même id reçoit la première réponse. Une écriture échouée n'est pas retenue : réessayez avec le même id. Une écriture inachevée avec cet id répond 409 pendant 2 minutes. Les ids sont conservés 7 jours.
 
 Ajouter un commentaire à une exécution encore en cours, au lieu de mettre une exécution de suivi en file d'attente (uniquement les exécutions qui acceptent des messages supplémentaires, et seulement pour un agent que votre commentaire pourrait démarrer) :
