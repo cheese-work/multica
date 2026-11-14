@@ -57,8 +57,14 @@ export function isIssueIdentifier(value: string): boolean {
  *   - existing markdown links / images (findMarkdownLinkRanges)
  *   - detected URLs / emails / file paths (detectLinks)
  *   - dotted filename tails like `ABC-123.ts` and path segments like `FOO-1/bar`
+ *   - with `deferTrailing`, a key that ends the text: while a message streams,
+ *     `CHE-1`, `CHE-18`, `CHE-182` may still grow into `CHE-1824`, and each
+ *     prefix would otherwise resolve to a different real issue
  */
-export function preprocessIssueIdentifiers(text: string): string {
+export function preprocessIssueIdentifiers(
+  text: string,
+  { deferTrailing = false }: { deferTrailing?: boolean } = {},
+): string {
   // Cheap early-out: no `<UPPER>…-<DIGIT>` shape at all.
   if (!/[A-Z][A-Z0-9]*-\d/.test(text)) return text
 
@@ -78,6 +84,7 @@ export function preprocessIssueIdentifiers(text: string): string {
     const end = start + identifier.length
     const range = { start, end }
 
+    if (deferTrailing && end === text.length) continue
     // Inside fenced/inline code or math.
     if (isInsideCode(start, codeRanges)) continue
     // Inside an existing markdown link/image (label OR destination).
