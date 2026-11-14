@@ -314,7 +314,7 @@ func TestRedactCredentialValuesSpanNestingAndLines(t *testing.T) {
 		{"list across lines", "secret: [\n  planted1,\n  planted2\n]\nafter", []string{"planted1", "planted2"}, []string{"after"}},
 		{"unterminated object masks to EOF", "password: {\nplanted1\nplanted2\n", []string{"planted1", "planted2"}, nil},
 		{"unterminated list masks to EOF", "token = [\nplanted1\n", []string{"planted1"}, nil},
-		{"unterminated string stays on its line", "password: \"planted1 planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"unterminated string masks to EOF", "password: \"planted1 planted2\nafter", []string{"planted1", "planted2", "after"}, nil},
 		{"value then more json", `{"password":{"a":1},"id":7}` + "\nafter", nil, []string{`"id":7`, "after"}},
 	}
 	for _, tc := range cases {
@@ -328,4 +328,95 @@ func TestRedactCredentialValuesSpanNestingAndLines(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Stored-evidence regressions for uncertain value boundaries (CHE-4376). Each
+// case runs through RedactTail whole and one byte at a time.
+func TestRedactUncertainBoundaries(t *testing.T) {
+	const ts = "2026-11-06T04:50:25.7365445Z "
+	long := strings.Repeat("x", maxLineBytes+10)
+	cases := []struct {
+		name, in string
+		planted  []string
+		keep     []string
+	}{
+		// YAML block scalars: the indicator is not the value.
+		{"block literal", "password: |\n  planted1\n  planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"block folded", "password: >\n  planted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"block strip", "secret: |-\n  planted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"block keep indent", "token: >2+\n   planted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"block with comment", "password: |  # note\n  planted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"block in list item", "- password: |\n    planted1\n    planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"block keeps blank lines", "password: |\n  planted1\n\n  planted2\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"block with quotes and braces inside", "password: |\n  a \" planted1 {\n  planted2 ]\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"block indicator on next line", "password:\n  |\n  planted1\nafter", []string{"planted1"}, []string{"after"}},
+		{"block in timestamped log", ts + "      password: |\n" + ts + "        planted1\n" + ts + "      user: bob\n", []string{"planted1"}, nil},
+		{"block ends at dedent", "pass:\n  password: |\n    planted1\n  other: kept\n", []string{"planted1"}, []string{"pass:"}},
+		// Quoted values that cross a line end keep their quote state.
+		{"double quote over lines", "password: \"one\n  planted1 two\n  planted2\"\nafter", []string{"planted1", "planted2"}, []string{"after"}},
+		{"double quote unindented lines", "password=\"one\nplanted1\"\nafter", []string{"planted1"}, []string{"after"}},
+		{"single quote over lines", "password: 'one\n  planted1'\nafter", []string{"planted1"}, []string{"after"}},
+		{"escaped quote over lines", "msg=\"{\\\"password\\\":\\\"one\n  planted1\\\"}\"\nafter", []string{"planted1"}, nil},
+		{"json string over lines", "{\"token\":\"one\nplanted1\"}\nafter", []string{"planted1"}, []string{"after"}},
+		{"unterminated quote masks to EOF", "password: \"planted1\nplanted2\nplanted3\n", []string{"planted1", "planted2", "planted3"}, nil},
+		// A line over the cap cannot be tracked: fail closed.
+		{"omitted line opens object", "\"password\": {" + long + "\n\"user\": \"planted1\",\n\"pw\": \"planted2\"\n}\n", []string{"planted1", "planted2"}, nil},
+		{"omitted line key past the cap", long + "\"password\": {\n\"user\": \"planted1\"\n}\nafter", []string{"planted1"}, nil},
+		{"omitted line opens block", "password: |" + long + "\n  planted1\nafter", []string{"planted1"}, nil},
+		{"omitted line opens quote", "token: \"" + long + "\nplanted1\"\n", []string{"planted1"}, nil},
+		{"omitted line after pending key", "password:\n" + long + "\n  planted1\n", []string{"planted1"}, nil},
+		{"omitted line inside open object masks to EOF", "password: {\n" + long + "\nplanted1\n}\nafter", []string{"planted1", "after"}, nil},
+		{"omitted line opens array inside active object", "{\"password\": {\n \"items\": [" + strings.Repeat(" ", maxLineBytes) + "\n\"x\"\n],\n\"user\": \"planted1\"\n}\n}\nafter", []string{"planted1"}, nil},
+		{"omitted line inside active quote", "password: \"" + long + "\nplanted1\"\n", []string{"planted1"}, nil},
+		{"omitted line inside block", "password: |\n  planted1\n" + long + "\n  planted2\n", []string{"planted1", "planted2"}, nil},
+		{"omitted line without credential word", long + "\nafter", nil, []string{"after"}},
+	}
+	for _, tc := range cases {
+		for _, oneByte := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/oneByte=%v", tc.name, oneByte), func(t *testing.T) {
+				got := redact(t, "before\n"+tc.in+"\n", oneByte)
+				noLeak(t, got, tc.planted...)
+				for _, k := range append([]string{"before"}, tc.keep...) {
+					if !strings.Contains(got, k) {
+						t.Errorf("%q lost:\n%s", k, got)
+					}
+				}
+			})
+		}
+	}
+}
+
+// An oversized line is read in 32 KiB fragments: a credential word that
+// straddles a fragment boundary must still be seen.
+func TestRedactOmittedLineCredentialWordSplitAcrossFragments(t *testing.T) {
+	const frag = 32 << 10
+	for cut := 1; cut < len("password"); cut++ {
+		in := strings.Repeat("x", 3*frag-cut) + "password\nplanted1\nplanted2\n"
+		noLeak(t, redact(t, in, false), "planted1", "planted2")
+	}
+}
+
+// A line over the cap keeps at most maxLineBytes, however many fragments follow.
+func TestLineScanHeadStaysBoundedAfterOverflow(t *testing.T) {
+	frag := []byte(strings.Repeat("x", 32<<10))
+	sc := lineScan{}
+	for i := 0; i < 32; i++ {
+		sc.add(frag)
+	}
+	if !sc.overflow {
+		t.Fatal("overflow not flagged")
+	}
+	if len(sc.head) > maxLineBytes {
+		t.Errorf("retained %d bytes; cap %d", len(sc.head), maxLineBytes)
+	}
+}
+
+// After overflow the line is still scanned for key markers and credential words.
+func TestLineScanOverflowStillScansMarkersAndWords(t *testing.T) {
+	long := strings.Repeat("x", maxLineBytes+(32<<10))
+	in := long + "-----BEGIN PRIVATE KEY-----\n" + pemBody + "\nafter-key\n"
+	got := redact(t, in, false)
+	noLeak(t, got, pemBody)
+	got = redact(t, long+"password\nplanted1\n", false)
+	noLeak(t, got, "planted1")
 }

@@ -208,11 +208,61 @@ ORDER BY created_at, id
 LIMIT $1;
 
 -- name: MarkDecisionPingNotified :one
+-- A coalesced receipt may be replaced once by the worker's re-ping (CHE-2689).
 UPDATE decision_request
-SET ping_notified_at = clock_timestamp()
+SET ping_notified_at = clock_timestamp(), ping_outcome = sqlc.arg('outcome')
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id')
-  AND ping_notified_at IS NULL
+  AND (ping_notified_at IS NULL OR ping_outcome = 'coalesced')
 RETURNING *;
+
+-- name: LockDecisionPingGroup :exec
+-- Serializes the pings of one agent to one person in one DM, so two requests
+-- cannot both miss each other's unread item and ping twice (CHE-2689).
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('asking_agent_id')::uuid::text || sqlc.arg('human_user_id')::uuid::text || sqlc.arg('chat_session_id')::uuid::text, 0));
+
+-- name: GetDecisionPingHeadItem :one
+-- The unread ping item of another open ask from the same agent to the same
+-- person in the same DM, oldest ask first.
+SELECT item.* FROM decision_request head
+JOIN inbox_item item ON item.workspace_id = head.workspace_id
+  AND item.details->>'decision_request_id' = head.id::text
+  AND item.type = 'mentioned' AND item.read = false AND item.archived = false
+WHERE head.authority = 'human' AND head.origin = 'asked' AND head.status = 'open'
+  AND head.workspace_id = sqlc.arg('workspace_id') AND head.asking_agent_id = sqlc.arg('asking_agent_id')
+  AND head.human_user_id = sqlc.arg('human_user_id') AND head.chat_session_id = sqlc.arg('chat_session_id')
+  AND head.id <> sqlc.arg('id') AND head.ping_notified_at IS NOT NULL AND head.ping_outcome IS DISTINCT FROM 'coalesced'
+ORDER BY head.created_at, head.id
+LIMIT 1
+FOR UPDATE OF item;
+
+-- name: CountDecisionPingGroupAsks :one
+-- Open asks one ping line covers: the received pings of the group plus the one being recorded.
+SELECT count(*)::int FROM decision_request
+WHERE authority = 'human' AND origin = 'asked' AND status = 'open'
+  AND workspace_id = sqlc.arg('workspace_id') AND asking_agent_id = sqlc.arg('asking_agent_id')
+  AND human_user_id = sqlc.arg('human_user_id') AND chat_session_id = sqlc.arg('chat_session_id')
+  AND (ping_notified_at IS NOT NULL OR id = sqlc.arg('id'));
+
+-- name: UpdateDecisionPingLine :exec
+-- Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+UPDATE inbox_item
+SET body = sqlc.arg('body'), details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int), updated_at = now()
+WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: ListDecisionPingRepings :many
+-- One coalesced open ask per (agent, person, DM) whose group has no open
+-- request with a live ping left: the pinged one was answered or cancelled.
+SELECT DISTINCT ON (r.asking_agent_id, r.human_user_id, r.chat_session_id) r.*
+FROM decision_request r
+WHERE r.authority = 'human' AND r.origin = 'asked' AND r.status = 'open' AND r.ping_outcome = 'coalesced'
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_request head
+      WHERE head.authority = 'human' AND head.origin = 'asked' AND head.status = 'open'
+        AND head.workspace_id = r.workspace_id AND head.asking_agent_id = r.asking_agent_id
+        AND head.human_user_id = r.human_user_id AND head.chat_session_id = r.chat_session_id
+        AND head.ping_notified_at IS NOT NULL AND head.ping_outcome IS DISTINCT FROM 'coalesced')
+ORDER BY r.asking_agent_id, r.human_user_id, r.chat_session_id, r.created_at, r.id
+LIMIT $1;
 
 -- name: ConsumeDecisionIntentTarget :execrows
 UPDATE decision_intent_target target

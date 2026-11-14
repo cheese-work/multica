@@ -12,20 +12,44 @@ var (
 	credKey = regexp.MustCompile(`(?i)\b[a-z0-9_.-]*(?:password|passwd|secret|secret[_-]?key|access[_-]?key|api[_-]?key|private[_-]?key|credentials?|token)\\?["']?\s*[:=]\s*`)
 	// A bare value stops at whitespace or , } ] &.
 	bareValue = regexp.MustCompile(`(?i)^(?:bearer\s+)?[^\s,}\]&]+`)
+	// A YAML block scalar header ("|", ">", "|-", ">+", "|2"): the value is the
+	// indented lines that follow, not the header.
+	blockIndicator = regexp.MustCompile(`^[|>](?:[+-][1-9]?|[1-9][+-]?)?(?:\s|$)`)
+	// An Actions log line starts with a timestamp that is not part of the content.
+	logTimestamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z `)
+	// Any word that can start a credential key. An oversized line is never
+	// parsed, so one of these inside it means a value boundary we cannot see.
+	credWord = regexp.MustCompile(`(?i)password|passwd|secret|credential|token|api[_-]?key|access[_-]?key|private[_-]?key`)
 )
+
+// credWordCarry is longer than any credWord match, so a word split across two
+// fragments of an oversized line is still seen.
+const credWordCarry = 16
+
+// lineIndent is the count of leading blanks after an optional log timestamp.
+func lineIndent(s string) (indent int, blank bool) {
+	s = logTimestamp.ReplaceAllString(s, "")
+	rest := strings.TrimLeft(s, " \t")
+	return len(s) - len(rest), strings.TrimSpace(rest) == ""
+}
 
 // credMasker masks the value after every credential key. It sees every line,
 // so a value that nests ({ [), holds quoted braces or sits on a later line is
-// masked whole. An unterminated bracket value masks to EOF (fail closed).
+// masked whole. Where a value boundary is uncertain the mask fails closed: an
+// unterminated bracket or quote masks to EOF, a block scalar masks to its
+// dedent, and a line we could not parse masks to EOF.
 type credMasker struct {
-	depth   int  // open { and [ of the value being masked
-	quote   byte // open string quote inside the value: ' " or 'E' for an escaped \" string
-	esc     bool
-	pending bool // a key ended its line: mask the next non-empty line
+	depth     int  // open { and [ of the value being masked
+	quote     byte // open string quote inside the value: ' " or 'E' for an escaped \" string
+	esc       bool
+	pending   bool // a key ended its line: mask the next non-empty line
+	block     bool // a YAML block scalar is open: mask lines indented deeper than keyIndent
+	keyIndent int  // indent of the line that opened the block
+	eof       bool // value boundary unknown: mask everything that follows
 }
 
 // consume masks from s[i:] until the value ends and returns the index past it.
-// A string value never outlives its line; a bracket value does.
+// A bracket or quoted value may outlive its line, so its state stays in m.
 func (m *credMasker) consume(s string, i int) int {
 	for ; i < len(s); i++ {
 		c := s[i]
@@ -63,16 +87,34 @@ func (m *credMasker) consume(s string, i int) int {
 			}
 		}
 	}
-	if m.depth == 0 {
-		m.quote, m.esc = 0, false
-	}
 	return len(s)
 }
 
-func (m *credMasker) active() bool { return m.depth > 0 }
+func (m *credMasker) active() bool { return m.depth > 0 || m.quote != 0 }
+
+// omitted records a line too long to parse. Its text can open or close any
+// bracket, quote or block, so the tracked state is stale if a value is active
+// or a key waits for its value, and the line may itself name a credential. In
+// all three cases the value boundary is unknown: mask to EOF.
+func (m *credMasker) omitted(sawCredWord bool) {
+	if sawCredWord || m.pending || m.active() || m.block {
+		m.eof, m.pending = true, false
+	}
+}
 
 // line returns s with every credential value replaced by a placeholder.
 func (m *credMasker) line(s string) string {
+	if m.eof {
+		return tokenPlaceholer
+	}
+	indent, blank := lineIndent(s)
+	if m.block {
+		if !blank && indent <= m.keyIndent {
+			m.block = false
+		} else {
+			return tokenPlaceholer
+		}
+	}
 	var out strings.Builder
 	i := 0
 	for i < len(s) {
@@ -89,7 +131,10 @@ func (m *credMasker) line(s string) string {
 			m.pending = false
 			out.WriteString(s[i : len(s)-len(rest)])
 			i = len(s) - len(rest)
-			if strings.ContainsRune(`{["'\`, rune(s[i])) {
+			if blockIndicator.MatchString(s[i:]) {
+				m.block = true
+				i = len(s)
+			} else if strings.ContainsRune(`{["'\`, rune(s[i])) {
 				i = m.consume(s, i)
 			} else {
 				i = len(s)
@@ -104,11 +149,15 @@ func (m *credMasker) line(s string) string {
 		end := i + loc[1]
 		out.WriteString(s[i:end])
 		i = end
+		m.keyIndent = indent
 		if i == len(s) {
 			m.pending = true
 			break
 		}
-		if v := bareValue.FindString(s[i:]); strings.ContainsRune(`{["'\`, rune(s[i])) {
+		if blockIndicator.MatchString(s[i:]) {
+			m.block = true
+			i = len(s)
+		} else if v := bareValue.FindString(s[i:]); strings.ContainsRune(`{["'\`, rune(s[i])) {
 			i = m.consume(s, i)
 		} else if v != "" {
 			i += len(v)
