@@ -2,6 +2,7 @@
 
 import { Fragment, type KeyboardEvent, type ReactNode } from "react";
 import { MoreHorizontal } from "@multica/ui/icons";
+import { cn } from "@multica/ui/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -18,7 +19,6 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@multica/ui/components/ui/context-menu";
-import { cn } from "@multica/ui/lib/utils";
 
 export interface RowActionItem {
   key: string;
@@ -63,11 +63,19 @@ export function handleRowActivationKey(
 export function RowActionsMenu({
   label,
   groups,
+  large,
+  open,
+  onOpenChange,
   revealOnHover = false,
 }: {
   /** Accessible name of the trigger, e.g. "Chat actions". */
   label: string;
   groups: RowActionItem[][];
+  /** 44×44 hit area where the pointer cannot hover (touch). */
+  large?: boolean;
+  /** Controlled open state, e.g. for a swipe tray's "More". */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /**
    * Where the pointer can hover, show the trigger only while the enclosing
    * `group/row` is hovered or has focus, instead of replacing it with the
@@ -79,7 +87,7 @@ export function RowActionsMenu({
   if (filled.length === 0) return null;
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger
         render={
           <button
@@ -89,7 +97,8 @@ export function RowActionsMenu({
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
             className={cn(
-              "inline-flex size-8 shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground",
+              "inline-flex shrink-0 items-center justify-center rounded-xs text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-popup-open:bg-accent data-popup-open:text-foreground",
+              large ? "size-11 [@media(hover:hover)]:size-8" : "size-8",
               revealOnHover
                 ? "[@media(hover:hover)]:invisible [@media(hover:hover)]:group-hover/row:visible [@media(hover:hover)]:group-focus-within/row:visible data-popup-open:visible"
                 : "[@media(hover:hover)]:hidden",
