@@ -36,6 +36,7 @@ import { BatchActionToolbar } from "../components/batch-action-toolbar";
 import { GanttView } from "../components/gantt-view";
 import { ListView } from "../components/list-view";
 import { SwimLaneView } from "../components/swimlane-view";
+import { Swimlane2View } from "../components/swimlane2/swimlane2-view";
 import { TableView } from "../components/table-view";
 import { useT } from "../../i18n";
 import { CollectionPageState } from "../../layout/collection-page";
@@ -194,6 +195,7 @@ function IssueSurfaceContent({
   contentClassName,
 }: Omit<IssueSurfaceComponentProps, "surfaceKey">) {
   const workspaceId = useWorkspaceId();
+  const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
   // One polling owner for the whole surface; individual cards only select cache data.
   useQuery({ ...workspaceWakeupSummariesOptions(workspaceId), refetchInterval: 10_000 });
   const { t } = useT("projects");
@@ -357,6 +359,9 @@ function IssueSurfaceContent({
             )}
             {controller.viewMode === "gantt" && (
               <GanttView issues={controller.filteredGanttIssues} />
+            )}
+            {controller.viewMode === "swimlane2" && (
+              <Swimlane2View query={controller.tableQuerySpec} grouping={swimlaneGrouping} />
             )}
             {controller.viewMode === "swimlane" && (
               <SwimLaneView

@@ -336,6 +336,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "篩選對話",
+      "all": "全部",
+      "main": "主收件匣",
+      "decisions": "決策",
+      "waiting": "等你處理",
+      "unseen": "未讀",
+      "pinned": "已置頂",
+      "unpinned": "未置頂",
+      "archived": "已封存",
+      "count_aria": "{{label}}，{{count}} 個"
+    },
+    "states": {
+      "loading": "正在載入對話…",
+      "empty_title": "還沒有對話",
+      "empty_body": "傳訊息給代理人即可開始。需要你處理的問題和決策會顯示在這裡。",
+      "empty_view": "此檢視下沒有對話",
+      "empty_waiting": "沒有等你處理的事項",
+      "empty_waiting_body": "所有問題和決策都已回覆。",
+      "error_title": "無法載入對話",
+      "error_body": "伺服器回傳了錯誤。你的訊息沒有遺失。請重試，或幾分鐘後再來。",
+      "retry": "重試",
+      "offline_title": "你已離線",
+      "offline_body": "正在顯示已儲存的清單，會自動重新連線。"
+    },
     "typing": "正在輸入…",
     "failed": "傳送失敗",
     "you_prefix": "你：",
@@ -359,7 +384,18 @@
     "pin_failed": "無法更新置頂狀態",
     "unseen": "標記為未讀",
     "unseen_failed": "無法將此對話標記為未讀",
-    "undo": "復原"
+    "rename": "重新命名",
+    "select": "多選",
+    "undo": "復原",
+    "group": {
+      "pinned": "已置頂",
+      "today": "今天",
+      "yesterday": "昨天",
+      "this_week": "本週",
+      "older": "更早"
+    },
+    "unseen_dot": "未查看",
+    "tag_decision": "決定"
   },
   "header": {
     "agent_settings": "AI 代理設定",

@@ -355,7 +355,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `workflow.budget <workflow-id>` は `--file` の代わりに `--max-runs <n>`（1〜1000。0 で上限を解除）と `--include-child-prs=<true|false>` を取ります。少なくとも 1 つを指定してください。省略した欄は保存済みの値のままです。エージェントはこの 2 つの欄をワークフローに直接書き込めません（`budget_requires_decision`）。変更を提案して決定を依頼すると、CLI が読んだダイジェストとワークフローが一致する場合に限り、承認時にサーバーが適用します。
 
-タスクトークンを持つエージェントは 1 回の呼び出しでカードを開きます。`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` は現在のワークフローを読み取り、指定した予算フラグだけで `workflow.budget.set` を提案し、カードの URL を表示します。オーナーが承認するまで何も書き込まれません。同じ呼び出しを繰り返すと同じカードが返ります。予算の呼び出しには `--name`、`--description`、`--steps-file`、`--start-status`、`--map`、`--dry-run` を付けられません。コマンドはリクエスト前に拒否するので、2 つのコマンドに分けて実行してください。`--print-hash` は予算変更の `before_sha256` と `after_sha256` を表示します。`multica config propose workflow.budget` では同じフラグを `--max-runs` と呼びます。ワークフローの予算が広がる場合、`multica issue update <issue> --workflow <workflow-id>` と `multica issue create --workflow <workflow-id>` も同じ `--print-hash` と `--decision-id`（欄 `issue.workflow`）を取ります。両コマンドは同じ規則に従い、オーナーの対話セッションでは決定は不要です。
+タスクトークンを持つエージェントは 1 回の呼び出しでカードを開きます。`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` は現在のワークフローを読み取り、指定した予算フラグだけで `workflow.budget.set` を提案し、カードの URL を表示します。オーナーが承認するまで何も書き込まれません。同じ呼び出しを繰り返すと同じカードが返ります。予算の呼び出しには `--name`、`--description`、`--steps-file`、`--start-status`、`--map`、`--dry-run` を付けられません。コマンドはリクエスト前に拒否するので、2 つのコマンドに分けて実行してください。`--print-hash` は予算変更の `before_sha256` と `after_sha256` を表示します。`multica config propose workflow.budget` では同じフラグを `--max-runs` と呼びます。ワークフローの予算が広がる場合、`multica issue update <issue> --workflow <workflow-id>` と `multica issue create --workflow <workflow-id>` も同じ `--print-hash` と `--decision-id`（欄 `issue.workflow`）を取ります。両コマンドは同じ規則に従い、オーナーの対話セッションでは決定は不要です。 エージェントの実行から、より大きな予算になる `multica issue update <id> --workflow <workflow-id>` を実行する場合、決定は不要です。ワークスペースのオーナー向けに承認カードを開き、そのアクション ID と URL を表示し、オーナーがパスキーで承認するまで課題は変更されません。カードを開いた後に課題のワークフロー、プロジェクトのワークフロー、または予算が変わった場合、承認は `stale_base` で失敗します。
 
 それ以外のフィールドは、何も読む前に `denylisted` で拒否されます: `project.description`、パスキーと決定ゲート、メンバーとロール、オーナー移譲、認証・連携のシークレット、ワークスペース削除、アクションレジストリ、`delegated_governed_writes`。サーバーの許可テーブルにない設定キーも同様に拒否され、許可キーと拒否キーが混在するパッチは全体が拒否されます。サーバーはリクエスト時と承認時にもう一度確認します。
 
@@ -400,6 +400,14 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 `decision` ブロックと `routing` ブロックは全期間を対象にします。`route` ブロックは `[since, until)` の期間を対象にします。`--since` と `--until` は RFC 3339 の時刻を取り、`--until` の既定値は現在、`--since` の既定値は `--until` の 24 時間前です。不正な時刻や `--until` より後の `--since` は、サーバーが 400 で拒否します。
 
 `route` ブロックは 1 つのイベント集合を数えます。ルーティングステップを離れたと記録されたエージェントのステータス変更 (`eligible_exits`) と、同じイベント ID を持つ route ラベル (`matched_labels`) です。`label_coverage` は `matched_labels / eligible_exits` で、1 を超えません。`via_route_share` は、最初のラベルがステータスのフォールバックではなく `issue route` から来た、一致イベントの割合です。`duplicate_labels` は、より古いラベルとイベントを共有するラベルの数です (目標は 0)。`labels_total`、`owner_only_labels` (ステータスを変えない route のためイベントなし)、`non_routing_labels` (ルーティングエージェントのないステップからの route) はカバレッジに含まれません。`overridden` は 1 時間以内に人が取り消したエージェントのラベル数で、`override_rate` は `overridden / labels_total` です。ブロックにはクラスごとの `decided`、`predicted`、`agreed`、`coverage`、`precision` も含まれます。
+
+ワークスペースのメンバーは誰でも、スコープと予測器バージョンごとの System 1 資格状態を読めます:
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` は `test_first_waiver` または `ci:<repo>:<protocol>` です。各行は 1 つの予測器バージョンの最新のエポックを対象にします。エポック開始以降に作成された観測だけが数えられ、新しい予測器バージョンは独自のエポックを開きます。1 ケースは、正式ラベル (置き換えられていない最新のラベル) を持つ 1 件の予測です。`denominator` は棄権でない予測と対応済みラベルを持つケース、`agreed` は両者が一致したもの、`abstained` は予測器が棄権したラベル付きケース、`unmapped` は自由記述の回答の数です。`status` は、7 日以上、`denominator` が 20 以上、一致率 90% 以上で `qualified` になります。4 週間経っても数えたケースが 20 未満なら `insufficient_data`、降格されたエポックは `demoted`、それ以外は `collecting` です。
 
 ## ID と出力形式
 
@@ -526,7 +534,8 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `config` | `show`、`set <key> <value>` | 現在のプロファイルのローカル設定を表示・編集 | 優先順位: コマンドラインフラグ > 環境変数 > `config.json` > 組み込みデフォルト。空文字列を設定すると値をクリア |
 | `update` | — | CLI を最新バージョンに更新 | |
 | `version` | — | バージョン情報を表示 | `--output`（`text` または `json`） |
-| `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込みは拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `exec <tool> -- <args>` | ガード経由でツールを実行：`gh pr create`・`edit`・`ready` はドラフト固定・タグ付け・読み戻し確認を行い、`gh api` による pull request への書き込み（GraphQL mutation を含む）は拒否。CI 待ち（`gh pr checks --watch`・`gh run watch`・20 秒以上の `sleep`）は、代わりに使う wakeup コマンドを示して拒否 | 終了コード：ツール自身のもの、ガードが拒否した場合は 2。環境変数：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | プルリクエストをポリシーとリポジトリの `.github/agent-rules.yml` に照らして、変更せずに検査します。ファイルは PR の保護されたベースブランチの現在の先端からデータとして読み、PR ブランチからは読みません。ファイルがなければルールは増えず、不正な形式のファイルや読めないベースは検査を失敗させます。CI のチェックとして使います | 終了コード: 0 は合格、1 はルール違反、2 は拒否。`-R owner/name` でリポジトリを指定 |
 | `guard` | `plugin list\|get\|set` | 保存済みのガードポリシーを読む（`list`、`get <name>`）か、置き換える決定アクションファイルを書き出す（`set --file <policy.json> --out <action.json>`、または `--dry-run`）。ポリシーはワークスペースのプラグインとレビュールールに加え、org・リポジトリ・パスの各レイヤーを持つ。深いレイヤーは浅いレイヤーをキーごとに上書きし、`locked` を付けたレイヤーまたはワークスペースは、そのキーを深いレイヤーから固定する。`set` は何も送信せず、人が passkey で `workspace.settings.patch` を承認する。デーモンは承認済みポリシーを、作業ツリー外のファイル `MULTICA_GUARD_POLICY` と `MULTICA_GUARD_POLICY_SHA256` として各実行に渡す | 出力：JSON 行（`--output table` で表）。`set` は `before_sha256` と `after_sha256` を表示 |
 
 ### 判断の提案

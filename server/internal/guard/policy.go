@@ -45,6 +45,8 @@ const (
 var builtinFlags = map[string][]string{
 	"gh-pr":  {"--draft", "--reviewer", "--add-reviewer", "--title"},
 	"gh-api": {},
+	// ci-wait only refuses.
+	"ci-wait": {},
 	// multica-wakeup only logs.
 	"multica-wakeup": {},
 }
@@ -87,8 +89,13 @@ type Policy struct {
 	// Locked freezes every key this workspace layer sets against deeper layers.
 	Locked bool    `json:"locked,omitempty"`
 	Layers []Layer `json:"layers,omitempty"`
+	// Rules are PR rules (title, trailer) that every repository inherits.
+	Rules *Rules `json:"rules,omitempty"`
 
 	lockdown bool // set by lockdownPolicy; never read from JSON
+	// fileReviewers are the reviewers a repository file asks for; set on a
+	// resolved copy only.
+	fileReviewers []string
 }
 
 // Lockdown reports whether the guard refuses every call because the stored
@@ -97,10 +104,14 @@ func (p *Policy) Lockdown() bool { return p != nil && p.lockdown }
 
 func (p *Policy) verify() bool { return p == nil || p.Verify == nil || *p.Verify }
 
-// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers) and
-// the `gh api` write refusal, with no review rules.
+// DefaultPolicy is the compiled policy: plugin 1 (PR tag, draft, reviewers),
+// plugin 2 (CI-wait refusal) and the `gh api` write refusal, with no review rules.
 func DefaultPolicy() *Policy {
 	return &Policy{Version: 1, Plugins: []Plugin{
+		// ci-wait comes first and answers only for a CI wait, so the plugins
+		// after it still see every other call.
+		{Name: "ci-wait", Match: Match{Tool: "gh"}, Action: ActionDeny, Builtin: "ci-wait"},
+		{Name: "ci-wait-sleep", Match: Match{Tool: "sleep"}, Action: ActionDeny, Builtin: "ci-wait"},
 		{Name: "gh-pr", Match: Match{Tool: "gh", Subcommand: []string{"pr"}}, Action: ActionFix, Builtin: "gh-pr"},
 		{Name: "gh-api", Match: Match{Tool: "gh", Subcommand: []string{"api"}}, Action: ActionDeny, Builtin: "gh-api"},
 		{Name: "wakeup-create", Match: Match{Tool: "multica", Subcommand: []string{"issue", "wakeup", "create"}}, Action: ActionShadow, Builtin: "multica-wakeup"},
@@ -157,7 +168,7 @@ func (p *Policy) validate() error {
 			return fmt.Errorf("review rule %s: github must be required or skip, not %q", r.Repo, r.GitHub)
 		}
 	}
-	return nil
+	return p.Rules.validate()
 }
 
 // ParsePolicy decodes and validates a policy document. Unknown fields (for
@@ -246,10 +257,19 @@ func (p *Policy) reviewFor(repo string) *ReviewRule {
 // githubReviewers lists the logins to request on GitHub for repo.
 func (p *Policy) githubReviewers(repo string) []string {
 	r := p.reviewFor(repo)
-	if r == nil || r.GitHub == "skip" {
+	if r != nil && r.GitHub == "skip" {
 		return nil
 	}
-	return r.Reviewers
+	var out []string
+	if r != nil {
+		out = append(out, r.Reviewers...)
+	}
+	for _, f := range p.fileReviewers {
+		if !hasFold(out, f) {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func contains(list []string, s string) bool {

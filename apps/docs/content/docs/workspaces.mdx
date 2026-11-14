@@ -50,6 +50,8 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 
 Each event keeps the mode it was created under, so switching from `warn` to `block` does not turn earlier events into recovery work. If the event cannot be written, the operation fails with `503` and a `Retry-After` header, and nothing is written.
 
+When the run that raised a `block` event has ended, the server sends the one person the ask names an automatic recovery notice: a DM message, an issue comment and an inbox item, written in one transaction. The notice quotes the stored ask, links the issue, and has no options, recommendation or approval, so it is never a decision request. It is sent only if the stored source has the ask text, names exactly one member, and that member is still in the workspace; otherwise the event waits for repair. Replying in the notice's comment thread marks it `answered`. A member who left the workspace can no longer read or answer it.
+
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
 ### Delegated governed writes

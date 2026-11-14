@@ -336,6 +336,31 @@
     }
   },
   "list": {
+    "filters": {
+      "label": "チャットを絞り込む",
+      "all": "すべて",
+      "main": "メイン",
+      "decisions": "決定",
+      "waiting": "あなたの対応待ち",
+      "unseen": "未読",
+      "pinned": "ピン留め",
+      "unpinned": "ピン留めなし",
+      "archived": "アーカイブ済み",
+      "count_aria": "{{label}}、{{count}}件"
+    },
+    "states": {
+      "loading": "チャットを読み込み中…",
+      "empty_title": "チャットはまだありません",
+      "empty_body": "エージェントにメッセージを送って始めましょう。あなたの対応が必要な質問や決定がここに表示されます。",
+      "empty_view": "このビューにチャットはありません",
+      "empty_waiting": "対応待ちはありません",
+      "empty_waiting_body": "すべての質問と決定に回答済みです。",
+      "error_title": "チャットを読み込めませんでした",
+      "error_body": "サーバーがエラーを返しました。メッセージは失われていません。再試行するか、しばらくしてからお試しください。",
+      "retry": "再試行",
+      "offline_title": "オフラインです",
+      "offline_body": "保存済みの一覧を表示しています。自動的に再接続します。"
+    },
     "typing": "入力中…",
     "failed": "送信失敗",
     "you_prefix": "あなた：",
@@ -359,7 +384,18 @@
     "pin_failed": "ピン留めを更新できませんでした",
     "unseen": "未読にする",
     "unseen_failed": "このチャットを未読にできませんでした",
-    "undo": "元に戻す"
+    "rename": "名前を変更",
+    "select": "複数選択",
+    "undo": "元に戻す",
+    "group": {
+      "pinned": "ピン留め",
+      "today": "今日",
+      "yesterday": "昨日",
+      "this_week": "今週",
+      "older": "それ以前"
+    },
+    "unseen_dot": "未確認",
+    "tag_decision": "決定"
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",

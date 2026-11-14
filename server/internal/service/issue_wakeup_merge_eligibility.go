@@ -270,11 +270,12 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 		} else if paused {
 			continue
 		}
-		if s.MergeFacts == nil {
+		source := s.mergeFactsSource()
+		if source == nil {
 			pending = errMergeFactsUnavailable
 			continue
 		}
-		facts, err := s.MergeFacts.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
+		facts, err := source.MergeFacts(ctx, MergeCandidate{WorkspaceID: w.WorkspaceID, Owner: l.owner, Repo: l.repo, Number: l.number, HeadSHA: l.head, BaseRef: l.base, MergerAgentID: w.AgentID})
 		if err != nil {
 			pending = errMergeFactsUnavailable
 			continue
@@ -294,9 +295,9 @@ func (s *IssueWakeupService) evaluateMergeEligibility(ctx context.Context, tx pg
 		if len(policy.refusals(facts, now)) > 0 {
 			continue
 		}
-		// One key per candidate, comma-free because conditionKeys splits on commas.
-		keys = append(keys, strings.ReplaceAll(fmt.Sprintf("%s/%s#%d@%s>%s|%s|%s", l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence), ",", "%2C"))
-		observed = append(observed, map[string]any{"repo": l.owner + "/" + l.repo, "number": l.number, "head_sha": l.head, "base_ref": l.base, "policy_revision": policy.Revision, "evidence": facts.Evidence})
+		key := mergeCandidateKey(l.owner, l.repo, l.number, l.head, l.base, policy.Revision, facts.Evidence)
+		keys = append(keys, key)
+		observed = append(observed, map[string]any{"candidate": key, "repo": l.owner + "/" + l.repo, "number": l.number, "head_sha": l.head, "base_ref": l.base, "policy_revision": policy.Revision, "evidence": facts.Evidence})
 	}
 	if len(keys) == 0 {
 		return false, "", nil, pending
