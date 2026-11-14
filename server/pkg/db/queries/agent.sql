@@ -395,7 +395,7 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
-    workflow_step, pull_request_id, taint_ids, id
+    workflow_step, pull_request_id, taint_ids, trigger_kind, id
 )
 SELECT
     $1, $2, $3, CASE WHEN EXISTS (SELECT 1 FROM provider_hold) THEN 'deferred' ELSE 'queued' END, $4, sqlc.narg(trigger_comment_id),
@@ -442,6 +442,7 @@ SELECT
     -- The assigning task's taint (migration 831): the trigger unions in every
     -- other source, but only the request knows which task is acting.
     COALESCE(sqlc.narg('taint_ids')::text[], '{}'),
+    sqlc.narg(trigger_kind),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, $3, $2)
   AND (NOT COALESCE(sqlc.narg('gate_required')::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
@@ -664,7 +665,7 @@ INSERT INTO agent_task_queue (
     originator_source, delegated_from_task_id, rule_version_id,
     trigger_evidence_kind, trigger_evidence_ref_id, retry_of_task_id,
     chat_input_task_id, fire_at,
-    channel_context_revision, handoff_note, workflow_step, purpose, source_chat_session_id, id
+    channel_context_revision, handoff_note, workflow_step, purpose, trigger_kind, source_chat_session_id, id
 )
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -700,6 +701,8 @@ SELECT
     p.workflow_step,
     -- A retry is for what its parent was for (CHE-2894 ENG-3).
     p.purpose,
+    -- A retry of a status-handoff run keeps the handoff framing (CHE-5485).
+    p.trigger_kind,
     -- ...and for the DM it came from, so a clone stays private to that DM's owner (CHE-4013 step 9).
     p.source_chat_session_id,
     -- Named new_task_id, not id: $1 above is the PARENT task's id.

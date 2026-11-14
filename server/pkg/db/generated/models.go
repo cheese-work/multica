@@ -248,6 +248,7 @@ type AgentTaskQueue struct {
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
+	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 }
 
 type AgentToLabel struct {
