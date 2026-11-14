@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -90,6 +92,95 @@ func refuseMachineWorkflowWrite(w http.ResponseWriter, r *http.Request) bool {
 	}
 	writePasskeyActionRequired(w, workflowStepsAction)
 	return true
+}
+
+// refuseMachineWorkflowUpdate is refuseMachineWorkflowWrite for a workflow
+// PATCH. When the request changes the instructions of one step and nothing
+// else, the refusal names workflow.step.instructions.set and the command that
+// proposes it, the action that works for that change (CHE-5843).
+func (h *Handler) refuseMachineWorkflowUpdate(w http.ResponseWriter, r *http.Request, workspaceID, workflowID pgtype.UUID, steps *[]IssueWorkflowStepInput) bool {
+	if !isMachineCredentialActor(r) {
+		return false
+	}
+	if steps != nil {
+		if current, err := h.Queries.GetIssueWorkflow(r.Context(), db.GetIssueWorkflowParams{ID: workflowID, WorkspaceID: workspaceID}); err == nil {
+			if live, err := issueworkflow.DecodeSteps(current.Steps); err == nil {
+				if statusKey, ok := onlyInstructionsDiffer(live, *steps); ok {
+					command, _ := decisiontx.PasskeyOnlyCommand(workflowInstructionsField, uuidToString(workflowID), statusKey)
+					writePasskeyActionRequiredWithCommand(w, decisionaction.WorkflowStepInstructionsSet, command)
+					return true
+				}
+			}
+		}
+	}
+	writePasskeyActionRequired(w, workflowStepsAction)
+	return true
+}
+
+// onlyInstructionsDiffer reports the status key of the one step whose
+// instructions the request changes, when every other step and every other
+// field of that step match the live workflow. The entry gates and the wait
+// flag are left out of the comparison: a write that omits them keeps the
+// stored ones.
+func onlyInstructionsDiffer(live []issueworkflow.Step, requested []IssueWorkflowStepInput) (string, bool) {
+	if len(live) != len(requested) {
+		return "", false
+	}
+	changed := ""
+	for i, step := range live {
+		if requested[i].StatusKey != step.StatusKey || requested[i].NewStatus != nil {
+			return "", false
+		}
+		if !sameStepExceptInstructions(stepToPayload(step), requested[i]) {
+			return "", false
+		}
+		if requested[i].Instructions != step.Instructions {
+			if changed != "" {
+				return "", false
+			}
+			changed = step.StatusKey
+		}
+	}
+	return changed, changed != ""
+}
+
+// sameStepExceptInstructions compares two steps as JSON with empty values and
+// the fields a write may omit removed.
+func sameStepExceptInstructions(live IssueWorkflowStepPayload, requested IssueWorkflowStepInput) bool {
+	shape := func(step any) map[string]any {
+		raw, _ := json.Marshal(step)
+		fields := map[string]any{}
+		_ = json.Unmarshal(raw, &fields)
+		for _, key := range []string{"instructions", "entry", "waits_on_open_decision"} {
+			delete(fields, key)
+		}
+		for key, value := range fields {
+			switch typed := value.(type) {
+			case nil:
+				delete(fields, key)
+			case string:
+				if typed == "" {
+					delete(fields, key)
+				}
+			case bool:
+				if !typed {
+					delete(fields, key)
+				}
+			case []any:
+				if len(typed) == 0 {
+					delete(fields, key)
+				}
+			case map[string]any:
+				for inner, innerValue := range typed {
+					if innerValue == "" || innerValue == nil {
+						delete(typed, inner)
+					}
+				}
+			}
+		}
+		return fields
+	}
+	return reflect.DeepEqual(shape(live), shape(requested))
 }
 
 // verifyWorkflowWrite proves an agent's workflow write: the live workflow still

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/featureflags"
@@ -206,7 +207,16 @@ func TestPasskeyRequired_WorkflowRoutesRefuseMachineCredentials(t *testing.T) {
 	steps := write.steps(t, edit)
 
 	w := write.patch(t, write.body(t, steps))
-	wantPasskeyRequired(t, w.ResponseRecorder, "workflow.steps.set")
+	wantPasskeyRequired(t, w.ResponseRecorder, "workflow.step.instructions.set")
+	var refusal struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &refusal); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	if !strings.Contains(refusal.Error, "multica config propose workflow.step.instructions "+write.workflowID+" --status-key in_progress --file <path>") {
+		t.Fatalf("refusal must name the propose command, got %s", refusal.Error)
+	}
 	if got := write.storedInstructions(t, "in_progress"); got != "" {
 		t.Fatalf("stored instructions moved: %q", got)
 	}
@@ -319,4 +329,12 @@ func TestPasskeyRequired_ArchiveStatusRefusesMachineCredentials(t *testing.T) {
 			t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 		}
 	})
+}
+
+// CHE-5843: a structural edit still names workflow.steps.set.
+func TestPasskeyRequired_StructuralWorkflowEditNamesStepsAction(t *testing.T) {
+	edit := func(step map[string]any) { step["next_status_key"] = "done" }
+	write := newBoundWorkflowWrite(t, "workflow.steps", edit, "workflow.steps")
+	w := write.patch(t, write.body(t, write.steps(t, edit)))
+	wantPasskeyRequired(t, w.ResponseRecorder, "workflow.steps.set")
 }
