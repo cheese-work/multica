@@ -167,7 +167,9 @@
     "back": "뒤로",
     "prefix_commands": "명령어",
     "prefix_issues": "태스크",
-    "prefix_people": "멤버와 에이전트"
+    "prefix_people": "멤버와 에이전트",
+    "add_filter": "필터 추가",
+    "remove_filter": "필터 제거"
   },
   "trigger": {
     "label": "검색..."

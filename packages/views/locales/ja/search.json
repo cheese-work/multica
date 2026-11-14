@@ -167,7 +167,9 @@
     "back": "戻る",
     "prefix_commands": "コマンド",
     "prefix_issues": "タスク",
-    "prefix_people": "メンバーとエージェント"
+    "prefix_people": "メンバーとエージェント",
+    "add_filter": "フィルターを追加",
+    "remove_filter": "フィルターを外す"
   },
   "trigger": {
     "label": "検索..."

@@ -167,7 +167,9 @@
     "back": "返回",
     "prefix_commands": "命令",
     "prefix_issues": "任务",
-    "prefix_people": "人和智能体"
+    "prefix_people": "人和智能体",
+    "add_filter": "添加筛选",
+    "remove_filter": "移除筛选"
   },
   "trigger": {
     "label": "搜索..."

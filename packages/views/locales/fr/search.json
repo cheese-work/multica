@@ -170,7 +170,9 @@
     "back": "Retour",
     "prefix_commands": "Commandes",
     "prefix_issues": "Tâches",
-    "prefix_people": "Membres et agents"
+    "prefix_people": "Membres et agents",
+    "add_filter": "Ajouter un filtre",
+    "remove_filter": "Retirer un filtre"
   },
   "trigger": {
     "label": "Rechercher..."

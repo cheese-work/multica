@@ -167,7 +167,9 @@
     "back": "返回",
     "prefix_commands": "命令",
     "prefix_issues": "任務",
-    "prefix_people": "人和 AI 代理"
+    "prefix_people": "人和 AI 代理",
+    "add_filter": "新增篩選",
+    "remove_filter": "移除篩選"
   },
   "trigger": {
     "label": "搜尋..."

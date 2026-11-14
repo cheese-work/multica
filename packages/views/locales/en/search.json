@@ -170,7 +170,9 @@
     "back": "Back",
     "prefix_commands": "Commands",
     "prefix_issues": "Issues",
-    "prefix_people": "People & agents"
+    "prefix_people": "People & agents",
+    "add_filter": "Add filter",
+    "remove_filter": "Remove filter"
   },
   "trigger": {
     "label": "Search..."

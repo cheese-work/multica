@@ -958,17 +958,26 @@ describe("SearchCommand", () => {
         session_id, agent_id, title: session_id, message_id: `m-${session_id}`,
         snippet: "budget cap", updated_at: "2026-11-13T07:15:00Z", archived: false,
       });
-      chatSearch.hits = [hit("c-wait-tofu", "agent-tofu"), hit("c-wait-luna", "agent-luna")];
+      chatSearch.hits = [hit("c-wait-tofu", "agent-tofu"), hit("c-unseen-luna", "agent-luna")];
       renderSearch();
       await user.type(input(), "budget");
-      await waitFor(() => expect(renderedValues()).toContain("message:c-wait-tofu:m-c-wait-tofu"));
+      await waitFor(() =>
+        expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual([
+          "message:c-wait-tofu:m-c-wait-tofu",
+          "message:c-unseen-luna:m-c-unseen-luna",
+        ]),
+      );
 
       await user.click(screen.getByRole("button", { name: "Waiting on you" }));
-      await user.type(input(), "{Tab}");
-      expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual([
-        "message:c-wait-tofu:m-c-wait-tofu",
-        "message:c-wait-luna:m-c-wait-luna",
-      ]);
+      await waitFor(() =>
+        expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual(["message:c-wait-tofu:m-c-wait-tofu"]),
+      );
+    });
+
+    it("shows the Tab and ⌫ chip hints in the footer", () => {
+      renderSearch();
+      expect(screen.getByText("Add filter")).toBeInTheDocument();
+      expect(screen.getByText("Remove filter")).toBeInTheDocument();
     });
 
     it("every chip is a button with the 2px focus ring", () => {
