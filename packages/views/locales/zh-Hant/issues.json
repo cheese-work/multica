@@ -417,7 +417,10 @@
     "no_history": "無歷史記錄",
     "before_records": "記錄之前",
     "collapse": "摺疊",
-    "expand": "展開"
+    "expand": "展開",
+    "wakeup_cross": "喚醒",
+    "wakeup_children_done": "子項已完成",
+    "target_inside": "目標在內部（已摺疊隱藏）"
   },
   "actor_issues": {
     "scope": {

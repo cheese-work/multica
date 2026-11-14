@@ -460,7 +460,10 @@
     "no_history": "기록된 이력 없음",
     "before_records": "기록 이전",
     "collapse": "접기",
-    "expand": "펼치기"
+    "expand": "펼치기",
+    "wakeup_cross": "웨이크업",
+    "wakeup_children_done": "하위 이슈 완료",
+    "target_inside": "대상이 내부에 있음(접힘으로 숨김)"
   },
   "actor_issues": {
     "scope": {
