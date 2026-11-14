@@ -146,7 +146,10 @@ test("CLI output adds no line the CI warning budget counts as a warning", () => 
   const counted = /##\[(warning|notice)\]|::(?:warning|notice)::|\b(?:DeprecationWarning|ExperimentalWarning|[Ww]arning[:!]|WARN(?:ING)?\b)|\bnpm warn\b|⚠|╭ Warning |Found \d+ warnings|\d+:\d+\s+warning\b/;
   const lines = `${run.stdout}\n${run.stderr}`.split("\n").filter((l) => counted.test(l));
   assert.deepEqual(lines, []);
-  assert.match(run.stdout, /pending/);
+  // The pending line appears only while some entry is still pending; once every batch has landed it must be absent.
+  const yml = readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8");
+  const hasPending = parsePatterns(yml).some((e) => e.frame?.state === "pending");
+  assert.equal(/pending/.test(run.stdout), hasPending);
 });
 
 test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", () => {
