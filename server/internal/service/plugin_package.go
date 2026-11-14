@@ -57,7 +57,7 @@ type PluginPackageSummary struct {
 const pluginTimeFormat = "2006-01-02T15:04:05Z07:00"
 
 // PublishBundle stores an uploaded artifact bundle as a new immutable version.
-func (s *PluginService) PublishBundle(ctx context.Context, workspaceID, userID pgtype.UUID, archive []byte) (PluginPackageSummary, error) {
+func (s *PluginService) PublishBundle(ctx context.Context, workspaceID, userID pgtype.UUID, archive []byte, audit PluginAuditFn) (PluginPackageSummary, error) {
 	bundle, err := plugincontract.ParseBundle(archive)
 	if err != nil {
 		// The wrapped text names the file or field at fault, and it is written
@@ -65,7 +65,7 @@ func (s *PluginService) PublishBundle(ctx context.Context, workspaceID, userID p
 		// back to guessing, which is the failure mode this whole path replaces.
 		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "plugin package is invalid: %v", err)
 	}
-	return s.publish(ctx, workspaceID, userID, bundle, false)
+	return s.publish(ctx, workspaceID, userID, bundle, false, audit)
 }
 
 // PublishLocalBundle publishes from MULTICA_PLUGIN_DIR — the development
@@ -78,7 +78,7 @@ func (s *PluginService) PublishBundle(ctx context.Context, workspaceID, userID p
 // ambiguity this change removes. Re-publishing an unchanged version string is
 // what a dev loop does constantly, so those get a `+dev.N` build suffix instead
 // of a conflict.
-func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, userID pgtype.UUID, name string) (PluginPackageSummary, error) {
+func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, userID pgtype.UUID, name string, audit PluginAuditFn) (PluginPackageSummary, error) {
 	if s.LocalDir == "" {
 		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "local plugin sources require MULTICA_PLUGIN_DIR")
 	}
@@ -99,7 +99,7 @@ func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, use
 	if err != nil {
 		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "local plugin package is invalid: %v", err)
 	}
-	return s.publish(ctx, workspaceID, userID, bundle, true)
+	return s.publish(ctx, workspaceID, userID, bundle, true, audit)
 }
 
 // publish writes the package row, the version and its files in ONE transaction,
@@ -111,7 +111,7 @@ func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, use
 // updated by a publish that then conflicted claims to describe a version that
 // was never stored; and a first publish that failed after creating the package
 // leaves a plugin with zero versions in the list.
-func (s *PluginService) publish(ctx context.Context, workspaceID, userID pgtype.UUID, bundle plugincontract.Bundle, devLoop bool) (PluginPackageSummary, error) {
+func (s *PluginService) publish(ctx context.Context, workspaceID, userID pgtype.UUID, bundle plugincontract.Bundle, devLoop bool, audit PluginAuditFn) (PluginPackageSummary, error) {
 	if err := bundle.Manifest.CheckCapabilities(s.Host); err != nil {
 		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorIncompatible, Message: capabilityMessage(err), Err: err}
 	}
@@ -165,6 +165,9 @@ func (s *PluginService) publish(ctx context.Context, workspaceID, userID pgtype.
 		}); err != nil {
 			return PluginPackageSummary{}, &PluginError{Kind: PluginErrorUnavailable, Message: "store plugin package file", Err: err}
 		}
+	}
+	if err := audit.run(ctx, queries, PluginChange{Package: &pkg, Version: &row}); err != nil {
+		return PluginPackageSummary{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit publish", Err: err}
@@ -333,7 +336,7 @@ func (s *PluginService) packageSummary(ctx context.Context, workspaceID pgtype.U
 // Refused while any installation still runs one of those versions: deleting them
 // would leave an installed panel with no code to load, and an installation is
 // the administrator's decision to unwind, not the publisher's.
-func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UUID, packageID string) error {
+func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UUID, packageID string, audit PluginAuditFn) error {
 	parsed, err := util.ParseUUID(packageID)
 	if err != nil {
 		return pluginErrf(PluginErrorNotFound, "plugin package not found")
@@ -382,6 +385,9 @@ func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UU
 	}
 	if err := queries.DeletePluginPackage(ctx, pkg.ID); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "delete plugin package", Err: err}
+	}
+	if err := audit.run(ctx, queries, PluginChange{Package: &pkg}); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "commit delete", Err: err}

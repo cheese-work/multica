@@ -306,7 +306,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || routeCaptureFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -3314,7 +3314,7 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
-	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, hasSquad, len(req.AttachmentIDs) > 0); status != 0 {
+	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, len(req.AttachmentIDs) > 0); status != 0 {
 		writeJSON(w, status, payload)
 		return
 	}
@@ -3432,26 +3432,19 @@ func (h *Handler) checkQuickCreateDaemonVersion(ctx context.Context, source stri
 	return h.checkQuickCreateDaemonVersionAtLeast(ctx, source, runtimeID, agentpkg.MinQuickCreateCLIVersion)
 }
 
-// checkQuickCreateQoderLimits rejects quick-create requests that a Qoder
-// Cloud Agents leader can create but not run afterwards. The bridge drafts and
-// creates the issue itself, but the run that the new issue's assignment
-// dispatches next fails on the bridge for a squad-leader task or an issue with
-// attachments, so the user would see "created" followed by a failed run.
-func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, squad, attachments bool) (int, map[string]any) {
-	if !squad && !attachments {
+// checkQuickCreateQoderLimits keeps attachment-backed quick-create blocked:
+// the bridge can run squad leaders, but cannot draft from these attachments.
+func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, attachments bool) (int, map[string]any) {
+	if !attachments {
 		return 0, nil
 	}
 	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
 	if err != nil || rt.Provider != qoderruntime.Provider {
 		return 0, nil
 	}
-	reason := "Qoder Cloud Agents cannot lead a squad; pick the agent directly to create the issue"
-	if !squad {
-		reason = "Qoder Cloud Agents cannot read attachments; remove them or pick another agent"
-	}
 	return http.StatusUnprocessableEntity, map[string]any{
 		"code":   "agent_unavailable",
-		"reason": reason,
+		"reason": "Qoder Cloud Agents cannot read attachments; remove them or pick another agent",
 	}
 }
 
@@ -4901,6 +4894,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			armHandoffIntent(statusRec, r, actorType, actorID, intentComment, req.HandoffNote, handed.write)
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
+		// Status-only fallback label (CHE-4439 decision 14): an agent run
+		// leaving the step it works on. The capture decides under the issue
+		// lock whether that step is a routing step.
+		if params.Status.Valid && actorType == "agent" && callerRun != nil && callerRun.WorkflowStep.String != "" {
+			writeCtx = withRouteCapture(writeCtx, &routeCapture{
+				Via: "status", DecisionSource: "agent", Fallback: true,
+				Caller: workflowCaller{run: callerRun, agent: true}, RunStep: callerRun.WorkflowStep.String,
+			})
+		}
 	}
 	if actorType == "member" {
 		writeCtx = withMemberRouteOverride(writeCtx)
@@ -5347,6 +5349,9 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	issue, ok := h.loadIssueForUser(w, r, id)
 	if !ok {
+		return
+	}
+	if !h.requireIssueDeletion(w, r, issue.WorkspaceID, []db.Issue{issue}) {
 		return
 	}
 
@@ -6115,6 +6120,9 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		seenIssueIDs[issueUUID] = struct{}{}
 		issues = append(issues, issue)
 		excludedIDs = append(excludedIDs, issue.ID)
+	}
+	if !h.requireIssueDeletion(w, r, wsUUID, issues) {
+		return
 	}
 	for _, issue := range issues {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)

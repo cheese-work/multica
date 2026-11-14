@@ -271,6 +271,39 @@ type AskGuardEvent struct {
 	MemberID           pgtype.UUID        `json:"member_id"`
 	ClearedAt          pgtype.Timestamptz `json:"cleared_at"`
 	ClearedByRequestID pgtype.UUID        `json:"cleared_by_request_id"`
+	SourceText         pgtype.Text        `json:"source_text"`
+	DeliveredAt        pgtype.Timestamptz `json:"delivered_at"`
+	RepairReason       pgtype.Text        `json:"repair_reason"`
+	RootID             pgtype.UUID        `json:"root_id"`
+	RepairHandledAt    pgtype.Timestamptz `json:"repair_handled_at"`
+}
+
+type AskRecoveryNotice struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	EventID       pgtype.UUID        `json:"event_id"`
+	MemberID      pgtype.UUID        `json:"member_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
+	CommentID     pgtype.UUID        `json:"comment_id"`
+	State         string             `json:"state"`
+	DeliveredAt   pgtype.Timestamptz `json:"delivered_at"`
+	AnsweredAt    pgtype.Timestamptz `json:"answered_at"`
+}
+
+type AskRepairRoot struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RepairTaskID     pgtype.UUID        `json:"repair_task_id"`
+	State            string             `json:"state"`
+	FailureReason    pgtype.Text        `json:"failure_reason"`
+	FailureCommentID pgtype.UUID        `json:"failure_comment_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	SettledAt        pgtype.Timestamptz `json:"settled_at"`
+	FailedAt         pgtype.Timestamptz `json:"failed_at"`
 }
 
 type Attachment struct {
@@ -2059,6 +2092,7 @@ type InboxItem struct {
 	ChatMessageID pgtype.UUID        `json:"chat_message_id"`
 	DedupeKey     pgtype.Text        `json:"dedupe_key"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	Section       pgtype.Text        `json:"section"`
 }
 
 type InstanceTelemetryState struct {
@@ -2687,6 +2721,24 @@ type MemberSetting struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+type MergePauseState struct {
+	RepoOwner    string             `json:"repo_owner"`
+	RepoName     string             `json:"repo_name"`
+	VariableName string             `json:"variable_name"`
+	IsSet        pgtype.Bool        `json:"is_set"`
+	FetchedAt    pgtype.Timestamptz `json:"fetched_at"`
+	Error        pgtype.Text        `json:"error"`
+}
+
+type MergeVetoDeadline struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RepoOwner   string             `json:"repo_owner"`
+	RepoName    string             `json:"repo_name"`
+	PrNumber    int32              `json:"pr_number"`
+	LastPassAt  pgtype.Timestamptz `json:"last_pass_at"`
+	DueAt       pgtype.Timestamptz `json:"due_at"`
+}
+
 type NotificationChannelPreference struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -3282,6 +3334,22 @@ type SkillToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type SkillVersion struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	SkillID             pgtype.UUID        `json:"skill_id"`
+	Version             int32              `json:"version"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description"`
+	Content             string             `json:"content"`
+	Files               []byte             `json:"files"`
+	ContentHash         string             `json:"content_hash"`
+	Source              string             `json:"source"`
+	RestoredFromVersion pgtype.Int4        `json:"restored_from_version"`
+	CreatedBy           pgtype.UUID        `json:"created_by"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+}
+
 type Squad struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`
@@ -3358,6 +3426,16 @@ type SysCronExecution struct {
 	UpdatedAt    pgtype.Timestamptz `json:"updated_at"`
 }
 
+type System1Epoch struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	Scope            string             `json:"scope"`
+	PredictorID      string             `json:"predictor_id"`
+	PredictorVersion string             `json:"predictor_version"`
+	StartedAt        pgtype.Timestamptz `json:"started_at"`
+	DemotedAt        pgtype.Timestamptz `json:"demoted_at"`
+}
+
 type System1Label struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -3371,6 +3449,18 @@ type System1Label struct {
 	TaskID        pgtype.UUID        `json:"task_id"`
 	AgentID       pgtype.UUID        `json:"agent_id"`
 	Supersedes    pgtype.UUID        `json:"supersedes"`
+}
+
+type System1LabelSample struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	Kind           string             `json:"kind"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	AgentID        pgtype.UUID        `json:"agent_id"`
+	Seed           int64              `json:"seed"`
+	ObservationIds []pgtype.UUID      `json:"observation_ids"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type System1Observation struct {
@@ -3476,6 +3566,8 @@ type TaskSupplement struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeliveredAt     pgtype.Timestamptz `json:"delivered_at"`
 	Implicit        bool               `json:"implicit"`
+	ReplayAttempts  int32              `json:"replay_attempts"`
+	ReplayNextAt    pgtype.Timestamptz `json:"replay_next_at"`
 }
 
 type TaskSupplementCapability struct {
@@ -3515,7 +3607,8 @@ type TaskUsage struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
-	CostUsdTicks pgtype.Int8 `json:"cost_usd_ticks"`
+	CostUsdTicks  pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros pgtype.Int8 `json:"credits_micros"`
 }
 
 type TaskUsageHourly struct {
@@ -3577,9 +3670,10 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone          pgtype.Text `json:"timezone"`
-	SessionGeneration int32       `json:"session_generation"`
-	PasskeyState      string      `json:"passkey_state"`
+	Timezone            pgtype.Text `json:"timezone"`
+	SessionGeneration   int32       `json:"session_generation"`
+	PasskeyState        string      `json:"passkey_state"`
+	WhatsNewSeenVersion pgtype.Text `json:"whats_new_seen_version"`
 }
 
 type UserComposioConnection struct {

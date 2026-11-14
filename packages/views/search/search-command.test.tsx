@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueStatusCatalog } from "@multica/core/issue-statuses/queries";
 import { useCommandBarContextStore, type CommandBarContext } from "@multica/core/command-bar";
+import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { inboxUnreadSummaryOptions } from "@multica/core/inbox/queries";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { issueDetailOptions, issueTimelineOptions } from "@multica/core/issues/queries";
@@ -15,6 +16,7 @@ import {
   squadListOptions,
   workspaceListOptions,
 } from "@multica/core/workspace/queries";
+import { ApiError } from "@multica/core/api/client";
 import { RESOURCES } from "../locales";
 import enLayout from "../locales/en/layout.json";
 import zhHansProjects from "../locales/zh-Hans/projects.json";
@@ -44,6 +46,7 @@ const {
   foldCallOrder,
   mockThreadCollapseAll,
   mockThreadExpandAll,
+  chatSearch,
 } = vi.hoisted(() => {
   const apiFns = new Map<string, ReturnType<typeof vi.fn>>();
   const toast = Object.assign(vi.fn(), {
@@ -86,6 +89,12 @@ const {
     foldCallOrder: [] as string[],
     mockThreadCollapseAll: vi.fn(),
     mockThreadExpandAll: vi.fn(),
+    // What the palette's chat message search (useInfiniteQuery) answers with.
+    chatSearch: {
+      hits: [] as unknown[],
+      error: null as Error | null,
+      refetch: vi.fn(),
+    },
   };
 });
 
@@ -133,6 +142,18 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     useQueries: (opts: { queries: Opts[]; combine?: (r: unknown[]) => unknown }) => {
       const results = opts.queries.map((q) => ({ data: read(q) }));
       return opts.combine ? opts.combine(results) : results;
+    },
+    useInfiniteQuery: (opts: { enabled?: boolean }) => {
+      const idle = opts.enabled === false;
+      return {
+        data: idle ? undefined : { pages: [{ results: chatSearch.hits, next_cursor: null }] },
+        error: chatSearch.error,
+        isPending: idle,
+        isError: !idle && !!chatSearch.error,
+        isPlaceholderData: false,
+        fetchStatus: "idle",
+        refetch: chatSearch.refetch,
+      };
     },
     useQueryClient: () => client,
     // Mutations run their mutationFn (which calls the mocked api) and the
@@ -444,6 +465,9 @@ describe("SearchCommand", () => {
     mockThreadCollapseAll.mockReset();
     mockThreadExpandAll.mockReset();
     foldCallOrder.length = 0;
+    chatSearch.hits = [];
+    chatSearch.error = null;
+    chatSearch.refetch.mockReset();
 
     seed(memberListOptions("ws-test"), [makeMember(ME, "Me Myself", "me@example.com")]);
     seed(agentListOptions("ws-test"), []);
@@ -814,6 +838,170 @@ describe("SearchCommand", () => {
       fireEvent.click(await rowText("Acme Corp"));
 
       expect(mockPush).toHaveBeenCalledWith("/acme-hq/issues");
+    });
+  });
+
+  describe("chat messages", () => {
+    const messageHit = {
+      session_id: "s-1",
+      title: "sub2api budget",
+      agent_id: "a-1",
+      message_id: "m-1",
+      snippet: "the november budget is capped",
+      updated_at: "2026-11-13T07:15:00Z",
+      archived: false,
+    };
+
+    it("lists a content hit under Messages and opens the DM at that message", async () => {
+      const user = userEvent.setup();
+      chatSearch.hits = [messageHit];
+      renderSearch();
+      await user.type(input(), "budget");
+
+      await waitFor(() => expect(renderedHeadings()).toContain("Messages"));
+      fireEvent.click(await rowText("sub2api budget"));
+      expect(mockPush).toHaveBeenCalledWith("/ws-test/chat?session=s-1&message=m-1");
+    });
+
+    it("shows the error copy with a Retry that refetches instead of the empty state", async () => {
+      const user = userEvent.setup();
+      chatSearch.error = new ApiError("boom", 500, "Internal Server Error");
+      renderSearch();
+      await user.type(input(), "budget");
+
+      expect(await screen.findByText("Couldn't search message content")).toBeInTheDocument();
+      expect(screen.queryByText(/No results for/)).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(chatSearch.refetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows the no-results copy when nothing matches", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "zzzxq");
+
+      expect(await screen.findByText("No results for “zzzxq”")).toBeInTheDocument();
+      expect(screen.getByText("Try a different keyword.")).toBeInTheDocument();
+    });
+  });
+
+  describe("chat filter chips", () => {
+    const chat = (id: string, title: string, over: Record<string, unknown> = {}) => ({
+      id,
+      title,
+      agent_id: "agent-tofu",
+      status: "active",
+      has_unread: false,
+      ...over,
+    });
+    const titles = () => renderedValues().filter((v) => v.startsWith("chat:"));
+
+    beforeEach(() => {
+      seed(agentListOptions("ws-test"), [makeAgent("agent-tofu", "Tofu"), makeAgent("agent-luna", "Luna")]);
+      seed(openDecisionRequestsOptions("ws-test"), []);
+      seed(chatSessionsOptions("ws-test"), [
+        chat("c-wait-tofu", "budget waiting tofu", { stale_level: "red" }),
+        chat("c-wait-luna", "budget waiting luna", { stale_level: "red", agent_id: "agent-luna" }),
+        chat("c-unseen-luna", "budget unseen luna", { has_unread: true, agent_id: "agent-luna" }),
+        chat("c-old", "budget archived", { status: "archived" }),
+      ]);
+    });
+
+    it("Tab turns typed text into a chip and clears the input; ⌫ on an empty input removes it", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "wait{Tab}");
+
+      expect(input().value).toBe("");
+      expect(screen.getByRole("button", { name: "Waiting on you" })).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByRole("status", { name: "" })).toHaveTextContent("Filters on: Waiting on you");
+
+      await user.keyboard("{Backspace}");
+      expect(screen.getByRole("button", { name: "Waiting on you" })).toHaveAttribute("aria-pressed", "false");
+      expect(screen.getByRole("status", { name: "" })).toHaveTextContent("No filters on");
+    });
+
+    it("a scope chip and an agent chip AND; two scope chips OR", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "wait{Tab}");
+      await user.type(input(), "luna{Tab}");
+      expect(screen.getByRole("button", { name: "Agent: Luna" })).toHaveAttribute("aria-pressed", "true");
+      await user.type(input(), "budget");
+      await waitFor(() => expect(titles()).toEqual(["chat:c-wait-luna"]));
+
+      await user.click(screen.getByRole("button", { name: "Agent: Luna" }));
+      await user.click(screen.getByRole("button", { name: "Unseen" }));
+      await waitFor(() => expect(titles()).toEqual(["chat:c-wait-tofu", "chat:c-wait-luna", "chat:c-unseen-luna"]));
+    });
+
+    it("Lưu trữ reaches archived chats; All clears the others and picking another clears All", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "budget");
+      await waitFor(() => expect(titles()).toHaveLength(3));
+
+      await user.click(screen.getByRole("button", { name: "Archived" }));
+      await waitFor(() => expect(titles()).toEqual(["chat:c-old"]));
+
+      await user.click(screen.getByRole("button", { name: "All" }));
+      expect(screen.getByRole("button", { name: "Archived" })).toHaveAttribute("aria-pressed", "false");
+      await waitFor(() => expect(titles()).toHaveLength(4));
+
+      await user.click(screen.getByRole("button", { name: "Unseen" }));
+      expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("filters message hits by their session", async () => {
+      const user = userEvent.setup();
+      const hit = (session_id: string, agent_id: string) => ({
+        session_id, agent_id, title: session_id, message_id: `m-${session_id}`,
+        snippet: "budget cap", updated_at: "2026-11-13T07:15:00Z", archived: false,
+      });
+      chatSearch.hits = [hit("c-wait-tofu", "agent-tofu"), hit("c-unseen-luna", "agent-luna")];
+      renderSearch();
+      await user.type(input(), "budget");
+      await waitFor(() =>
+        expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual([
+          "message:c-wait-tofu:m-c-wait-tofu",
+          "message:c-unseen-luna:m-c-unseen-luna",
+        ]),
+      );
+
+      await user.click(screen.getByRole("button", { name: "Waiting on you" }));
+      await waitFor(() =>
+        expect(renderedValues().filter((v) => v.startsWith("message:"))).toEqual(["message:c-wait-tofu:m-c-wait-tofu"]),
+      );
+    });
+
+    it("shows the Tab and ⌫ chip hints in the footer", () => {
+      renderSearch();
+      expect(screen.getByText("Add filter")).toBeInTheDocument();
+      expect(screen.getByText("Remove filter")).toBeInTheDocument();
+    });
+
+    it("every chip is a button with the 2px focus ring", () => {
+      renderSearch();
+      const chips = within(screen.getByRole("group", { name: "Filter chats" })).getAllByRole("button");
+      expect(chips.length).toBeGreaterThanOrEqual(7);
+      for (const chip of chips) expect(chip.className).toContain("focus-visible:ring-2");
+    });
+  });
+
+  describe("current agent", () => {
+    it("opens the agent's settings when 'settings' is typed", async () => {
+      const user = userEvent.setup();
+      const agent = makeAgent("agent-lambda", "Lambda");
+      seed(agentListOptions("ws-test"), [agent]);
+      registerContext({ kind: "agent", agent } as CommandBarContext);
+      renderSearch();
+      await user.type(input(), "settings");
+
+      await waitFor(() =>
+        expect(renderedValues()).toContain("command:context-agent:agent-settings"),
+      );
+      await user.click(await rowText("Open agent settings"));
+      expect(mockPush).toHaveBeenCalledWith("/ws-test/agents/agent-lambda?view=general");
     });
   });
 

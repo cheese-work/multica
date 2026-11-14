@@ -56,7 +56,6 @@ const (
 	prAutoCompleteWaiting           = "waiting"            // some PRs still open / draft
 	prAutoCompleteNotMerged         = "not_merged"         // some PRs closed without merging
 	prAutoCompleteAllMerged         = "all_merged"         // every linked PR merged
-	prAutoCompleteWorkflowOwned     = "workflow_owned"     // the issue's workflow step routes the merge
 )
 
 // Workspace settings keys. pr_auto_complete_enabled is the switch desktop
@@ -229,30 +228,8 @@ func (h *Handler) decidePRAutoComplete(ctx context.Context, ws db.Workspace, iss
 		d.State = prAutoCompleteAtTarget
 		return d, nil
 	}
-	// A step with a pr.merged edge is routed by the workflow, which also hands
-	// the issue to the target step's handler (CHE-2398). Moving it here would
-	// skip that handoff and leave the edge nothing to do.
-	owned, err := h.workflowRoutesPRMerge(ctx, issue)
-	if err != nil {
-		return prAutoCompleteDecision{}, err
-	}
-	if owned {
-		d.State = prAutoCompleteWorkflowOwned
-		return d, nil
-	}
 	d.State, d.PRs = classifyDeliveryPRs(prs, include)
 	return d, nil
-}
-
-// workflowRoutesPRMerge reports whether the workflow step the issue sits on has
-// a pr.merged edge.
-func (h *Handler) workflowRoutesPRMerge(ctx context.Context, issue db.Issue) (bool, error) {
-	def, err := h.issueWorkflowDef(ctx, issue)
-	if err != nil || def == nil {
-		return false, err
-	}
-	step, ok := def.Step(issue.Status)
-	return ok && step.HasGuard(issueworkflow.GuardPRMerged), nil
 }
 
 // issueWorkflowDef is the workflow the issue follows: its own, else its
@@ -426,13 +403,13 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 // first wins.
 func (h *Handler) handOffPRMerge(ctx context.Context, issue db.Issue, d prAutoCompleteDecision) error {
 	extra := map[string]any{"pull_requests": prNumberList(d.PRs), "pr_refs": prStatusRefs(d.PRs)}
-	_, _, err := h.tryMoveIssueOnEdgeIf(ctx, issue, d.Target, "pr_automation", extra, true,
+	_, _, err := h.tryMoveIssueOnEdgeSettle(ctx, issue, d.Target, "pr_automation", extra, true,
 		func(ctx context.Context, q *db.Queries) (bool, error) {
 			if d.IncludeChildPRs {
 				return prMergeStillReady(ctx, q, issue.ID, true)
 			}
 			return q.IssuePullRequestsAllMerged(ctx, issue.ID)
-		})
+		}, h.settlePRMergedReceipts(issue.ID, d.PRs))
 	// A writer that moved the issue first wins, whether the revision or the
 	// workflow re-check under the lock saw it.
 	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, errWorkflowChanged) {
@@ -442,6 +419,44 @@ func (h *Handler) handOffPRMerge(ctx context.Context, issue db.Issue, d prAutoCo
 		return fmt.Errorf("status write: %w", err)
 	}
 	return nil
+}
+
+// mergedPRInputKey carries the webhook's merged-PR wake input to the handoff,
+// so a receipt captured there has the facts the later wake would have (CHE-5241).
+type mergedPRInputKey struct{}
+
+func withMergedPRInput(ctx context.Context, in service.PullRequestWakeupInput) context.Context {
+	return context.WithValue(ctx, mergedPRInputKey{}, in)
+}
+
+// settlePRMergedReceipts reserves the pr_merged receipts of the merged GitHub
+// PRs to the handler run the handoff inserted, in the handoff's transaction. It
+// captures a PR's receipt first when the wake has not delivered it yet. When the
+// run was refused or the transaction rolls back, nothing is reserved (CHE-5241).
+func (h *Handler) settlePRMergedReceipts(issueID pgtype.UUID, prs []db.ListIssueLinkedPullRequestStatesRow) edgeRunSettle {
+	return func(ctx context.Context, tx pgx.Tx, taskID pgtype.UUID) (func(context.Context), error) {
+		fromWebhook, _ := ctx.Value(mergedPRInputKey{}).(service.PullRequestWakeupInput)
+		var inputs []service.PullRequestWakeupInput
+		for _, pr := range prs {
+			if pr.Provider != "github" || pr.State != "merged" {
+				continue
+			}
+			in := fromWebhook
+			if !strings.EqualFold(in.RepoOwner, pr.RepoOwner) || !strings.EqualFold(in.RepoName, pr.RepoName) || in.Number != pr.PrNumber {
+				row, err := h.Queries.WithTx(tx).GetGitHubPullRequestByID(ctx, pr.ID)
+				if err != nil {
+					return nil, fmt.Errorf("load merged PR: %w", err)
+				}
+				in = service.PullRequestWakeupInput{
+					RepoOwner: pr.RepoOwner, RepoName: pr.RepoName, Number: pr.PrNumber, URL: row.HtmlUrl,
+					MergeCommit: pr.MergeCommitSha, HeadSHA: row.HeadSha, HeadBranch: row.Branch.String, BaseBranch: row.SnapshotBaseRef.String,
+				}
+			}
+			inputs = append(inputs, in)
+		}
+		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
+		return wakeup.SettlePRMergedReceiptsTx(ctx, tx, issueID, taskID, inputs)
+	}
 }
 
 // prNumberList renders "#12, #15" for the activity entry.

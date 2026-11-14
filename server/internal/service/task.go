@@ -57,6 +57,10 @@ type TaskService struct {
 	Wakeup    TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
+	// MergeFacts is the facts source every wakeup service built on this task
+	// service reads when it judges a merge_eligibility candidate, so the claim
+	// and start checks in the daemon handler see what the scheduler saw.
+	MergeFacts MergeFactsSource
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.
@@ -1866,6 +1870,13 @@ func (s *TaskService) EnqueueDecisionTaskInTx(ctx context.Context, queries *db.Q
 	return task, err
 }
 
+// EnqueueAskRepairTaskInTx is EnqueueDecisionTaskInTx for an ask repair run.
+// A repair is not a review, so it never uses the review-head exception to a
+// spent run budget, even when the producing agent is the issue's reviewer.
+func (s *TaskService) EnqueueAskRepairTaskInTx(ctx context.Context, queries *db.Queries, issue db.Issue, agentID pgtype.UUID, handoff string) (db.AgentTaskQueue, error) {
+	return s.EnqueueDecisionTaskInTx(withoutReviewRun(ctx), queries, issue, agentID, pgtype.UUID{}, pgtype.UUID{}, nil, handoff)
+}
+
 // EnqueueDecisionWaitLeaderTaskInTx shares leader callback admission and
 // attribution. The caller commits its episode receipt with the task and calls
 // PublishTaskEnqueued only after commit. An automated alert is not a review run
@@ -3505,9 +3516,16 @@ func distinctAgentIDs(cancelled []db.AgentTaskQueue) []pgtype.UUID {
 //
 // Returns the cancelled rows so callers can report counts / log them.
 func (s *TaskService) CancelTasksForAgent(ctx context.Context, agentID pgtype.UUID) ([]db.AgentTaskQueue, error) {
-	cancelled, err := s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+	return s.CancelTasksForAgentInTx(ctx, agentID, nil)
+}
+
+// CancelTasksForAgentInTx is CancelTasksForAgent with a hook that runs on the
+// cancel's own transaction, after the tasks are settled and before commit. A
+// hook error rolls the cancel back (the admin audit row, CHE-5646).
+func (s *TaskService) CancelTasksForAgentInTx(ctx context.Context, agentID pgtype.UUID, inTx TerminateHook) ([]db.AgentTaskQueue, error) {
+	cancelled, err := s.terminateTasksWithHook(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.CancelAgentTasksByAgent(ctx, agentID)
-	})
+	}, inTx)
 	if err != nil {
 		return nil, err
 	}
@@ -5856,11 +5874,10 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
-					// Match the CLI's --content / --description behavior: agents that
-					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
-					// decoded into real newlines before the comment hits the DB. See
-					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
+					// An agent that emitted its whole answer as one escaped blob gets
+					// its literal `\n` decoded; formatted output is stored verbatim.
+					// See util.DecodeEscapedAgentOutput for the exact contract.
+					body := util.DecodeEscapedAgentOutput(payload.Output)
 					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
 						slog.Warn("suppressing trivial comment-trigger fallback output",
 							"task_id", util.UUIDToString(task.ID),
@@ -5967,9 +5984,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	// valid JSON; an empty Output is the only case this branch cares about.
 	var payload protocol.TaskCompletedPayload
 	_ = json.Unmarshal(result, &payload)
-	// Same unescape as the issue-comment path: literal `\n` from agent stdout
-	// becomes a real newline so the chat panel renders paragraph breaks.
-	body := util.UnescapeBackslashEscapes(payload.Output)
+	// Same decoding as the issue-comment path: an escaped blob gets its
+	// paragraph breaks back, while LaTeX and paths in formatted replies survive.
+	body := util.DecodeEscapedAgentOutput(payload.Output)
 	// Strip any in-band quick-actions footer from EVERY chat completion — the
 	// reserved syntax must never reach a stored transcript. This includes the
 	// agent-initiated intro turn (chat_input_task_id NULL), which previously
@@ -8080,12 +8097,26 @@ func (s *TaskService) CancelTasksForArchivedAgent(ctx context.Context, agentID p
 // its task row locks), those sessions are locked in id order, and it runs again. Every pass that
 // repeats holds at least one more session, so the loop ends.
 func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error)) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksWithHook(ctx, fail, nil)
+}
+
+// TerminateHook runs on a terminate batch's transaction with the settled rows,
+// before commit.
+type TerminateHook func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error
+
+func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.Queries) ([]db.AgentTaskQueue, error), inTx TerminateHook) ([]db.AgentTaskQueue, error) {
 	if s.TxStarter == nil {
 		failed, err := fail(s.Queries)
 		if err != nil {
 			return nil, err
 		}
-		return failed, SettleTerminalTaskState(ctx, s.Queries, failed...)
+		if err := SettleTerminalTaskState(ctx, s.Queries, failed...); err != nil {
+			return failed, err
+		}
+		if inTx != nil {
+			return failed, inTx(ctx, s.Queries, failed)
+		}
+		return failed, nil
 	}
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
@@ -8129,6 +8160,11 @@ func (s *TaskService) terminateTasksInTx(ctx context.Context, fail func(*db.Quer
 	if err := SettleTerminalTaskState(ctx, qtx, failed...); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, err)
+	}
+	if inTx != nil {
+		if err := inTx(ctx, qtx, failed); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -9528,6 +9564,12 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 	s.Wakeup.NotifyTaskAvailable(runtimeKey, taskID)
 }
 
+// backgroundDispatchKeys are the task-context keys safe to fan out workspace-wide.
+var backgroundDispatchKeys = []string{
+	"type", "job", "workspace_id", "chain_source", "member_id", "slot",
+	"fallback_agent_id", "claim_deadline_seconds", "run_deadline_seconds",
+}
+
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
 	var payload map[string]any
 	if task.Context != nil {
@@ -9535,6 +9577,18 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	}
 	if payload == nil {
 		payload = map[string]any{}
+	}
+	// This event fans out to the whole workspace. A background task's input and
+	// guard carry the DM owner's text, so only an allowlist of workload
+	// metadata goes out.
+	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
+		safe := map[string]any{}
+		for _, k := range backgroundDispatchKeys {
+			if v, ok := payload[k]; ok {
+				safe[k] = v
+			}
+		}
+		payload = safe
 	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
@@ -9733,6 +9787,26 @@ func (s *TaskService) ResolveTaskScopeChecked(ctx context.Context, task db.Agent
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return TaskScope{WorkspaceID: qc.WorkspaceID}, nil
+	}
+	// Background tasks: a DM-derived one belongs to its source session's
+	// creator (spec §Privacy of DM-derived tasks), so its message events reach
+	// only that member. A bg task with no source session keeps an empty owner;
+	// callers treat that as "no private room", never as "workspace-wide".
+	if strings.HasPrefix(task.Purpose.String, "bg:") {
+		if task.SourceChatSessionID.Valid {
+			cs, err := s.Queries.GetChatSession(ctx, task.SourceChatSessionID)
+			if err == nil {
+				return TaskScope{
+					WorkspaceID:        util.UUIDToString(cs.WorkspaceID),
+					ChatSessionOwnerID: util.UUIDToString(cs.CreatorID),
+				}, nil
+			}
+			note(err)
+		}
+		var c BackgroundTaskContext
+		if json.Unmarshal(task.Context, &c) == nil && c.Type == BackgroundTaskContextType && c.WorkspaceID != "" {
+			return TaskScope{WorkspaceID: c.WorkspaceID}, nil
+		}
 	}
 	if lookupErr != nil {
 		return TaskScope{}, fmt.Errorf("resolve task workspace: %w", lookupErr)
@@ -10207,9 +10281,9 @@ func quickCreateFailureDetail(result []byte) string {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		return ""
 	}
-	// Same unescape as the comment-fallback path: literal `\n` sequences from
-	// agent stdout become real newlines before the reason reaches the user.
-	body := strings.TrimSpace(util.UnescapeBackslashEscapes(payload.Output))
+	// Same decoding as the comment-fallback path: an escaped blob's literal
+	// `\n` sequences become real newlines before the reason reaches the user.
+	body := strings.TrimSpace(util.DecodeEscapedAgentOutput(payload.Output))
 	if body == "" {
 		return ""
 	}

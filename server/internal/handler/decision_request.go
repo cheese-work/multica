@@ -119,7 +119,8 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	if err != nil || !result.Replayed {
 		return result, err
 	}
-	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID)
+	taskID, _ := util.ParseUUID(request.Header.Get("X-Task-ID")) // createDecisionRequestOnce already required it
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID, taskID)
 }
 
 func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
@@ -564,7 +565,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
 		return empty, err
 	}
-	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID, intent.TaskID); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
@@ -792,6 +793,15 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, input.ParentID, commentID, nil)
 	if err != nil {
 		return empty, err
+	}
+	if input.Action != nil && isRunBudgetActionType(input.Action.Type) {
+		window, err := runBudgetWindowOf(input.Action.Params)
+		if err != nil {
+			return empty, err
+		}
+		if err := recordRunBudgetAsk(ctx, queries, issue, "agent", agent.ID, input.Action.Type, window); err != nil {
+			return empty, err
+		}
 	}
 	// The ping commits with the request: a ping failure refuses the whole call.
 	// A batch pings once, for its lead; the others are recorded as handled.

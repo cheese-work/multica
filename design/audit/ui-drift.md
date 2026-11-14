@@ -260,7 +260,7 @@ Caveats:
 4. Counts are recurrence-dominated. Many items repeat one recipe across files (5 integration tabs, 5 ICT formatters, 4 or more retry styles), so independent cases are fewer than 126.
 5. One audit claim was refuted and one count differed (see Corrections). 8 of 10 spot-checked claims held.
 6. **Cause 2** (the gates compare the wrong pair, CHE-1485 Layer A review pack) and **cause 3** (a lost decision, CHE-1594 to CHE-2085 doop) are not tested by this data. S0 owns cause 2.
-7. S0b-1 found no doop tool in its run. The 1 raw-element file it could not screenshot is `issues/components/issue-decision-banner.tsx`.
+7. S0b-1 found no doop tool in its run, so `issues/components/issue-decision-banner.tsx` was NOT-CAPTURED there. CHE-5534 captured it on the reference frame (see S4b raw-element files).
 
 ## Corrections to the batch files
 
@@ -271,16 +271,18 @@ The batch files stay unchanged. Totals above apply these two corrections.
 
 ## S4b raw-element files (CHE-5430)
 
-1. `issues/components/issue-decision-banner.tsx` (batch 1, raw*, not marked S4b)
-2. `issues/components/hierarchy/hierarchy-dialog.tsx` (batch 2, S4b)
-3. `issues/components/hierarchy/hierarchy-minimap.tsx` (batch 2, S4b)
-4. `chat/components/wakeup-event-row.tsx` (batch 2, S4b)
-5. `issues/components/wakeup-condition-params.tsx` (batch 2, S4b)
-6. `issues/components/wakeup-fields.tsx` (batch 2, S4b)
-7. `issues/components/wakeup-pickers.tsx` (batch 2, S4b)
-8. `settings/components/workspace-wakeup-rules.tsx` (batch 2, S4b)
-9. `chat/components/chat-search.tsx` (batch 2, S4b)
-10. `chat/components/config-change-viewer.tsx` (batch 2, S4b)
+Reference frame (doop, Multica project file, page `patterns`): [S0b raw-element reference](https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=tGd4_CW9vU). One labelled 1440 and 390 capture per file. `captured` = on the frame. Captured by `scripts/design/pattern-harness/run.sh` on X99.
+
+1. `issues/components/issue-decision-banner.tsx` (batch 1, raw*, not marked S4b) — captured (CHE-5534)
+2. `issues/components/hierarchy/hierarchy-dialog.tsx` (batch 2, S4b) — captured (CHE-5534)
+3. `issues/components/hierarchy/hierarchy-minimap.tsx` (batch 2, S4b) — captured (CHE-5534)
+4. `chat/components/wakeup-event-row.tsx` (batch 2, S4b) — captured (CHE-5534)
+5. `issues/components/wakeup-condition-params.tsx` (batch 2, S4b) — captured (CHE-5534)
+6. `issues/components/wakeup-fields.tsx` (batch 2, S4b) — captured (CHE-5535)
+7. `issues/components/wakeup-pickers.tsx` (batch 2, S4b) — captured (CHE-5535)
+8. `settings/components/workspace-wakeup-rules.tsx` (batch 2, S4b) — captured (CHE-5535)
+9. `chat/components/chat-search.tsx` (batch 2, S4b) — captured (CHE-5535)
+10. `chat/components/config-change-viewer.tsx` (batch 2, S4b) — captured (CHE-5535)
 11. `chat/components/decision-artifacts.tsx` (batch 2, S4b)
 12. `chat/components/decision-request-card.tsx` (batch 2, S4b)
 13. `chat/components/needs-you-list.tsx` (batch 2, S4b)
@@ -307,4 +309,4 @@ The batch files stay unchanged. Totals above apply these two corrections.
 34. `rich-content/next-self-mention.tsx` (batch 4, S4b)
 35. `workflows/project-workflow-menu.tsx` (batch 4, S4b)
 
-Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. S4b should capture it too. No frame was captured in S0b-1 to S0b-4.
+Count: 35 raw-element files from the batch plan (`scripts/design/output/s0b-batch-plan.md`). 34 are marked `screenshot: S4b` in their batch (S0b-2: 13, S0b-3: 11, S0b-4: 10). 1 is in S0b-1, marked NOT-CAPTURED (no doop tool in that run): `issues/components/issue-decision-banner.tsx`. No frame was captured in S0b-1 to S0b-4. CHE-5534 (S4b-SS1) captured 5 of the 35: items 1 to 5. CHE-5535 (S4b-SS2) captured 5 more: items 6 to 10. 10 of 35 captured.

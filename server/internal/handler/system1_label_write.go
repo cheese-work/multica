@@ -30,12 +30,15 @@ type system1LabelRequest struct {
 	Supersedes    string `json:"supersedes"`
 }
 
-func (h *Handler) WriteSystem1Label(w http.ResponseWriter, r *http.Request) {
+// system1TaskIdentity returns the workspace, task and agent of an agent task
+// token, or writes 403/400 and reports false. The auth middleware strips and
+// re-stamps the X- headers, so a client cannot forge them.
+func (h *Handler) system1TaskIdentity(w http.ResponseWriter, r *http.Request) (workspaceID, task, agent pgtype.UUID, ok bool) {
 	if r.Header.Get("X-Actor-Source") != "task_token" {
 		writeError(w, http.StatusForbidden, "labels are written by an agent task only")
 		return
 	}
-	workspaceID, ok := parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace_id")
+	workspaceID, ok = parseUUIDOrBadRequest(w, h.resolveWorkspaceID(r), "workspace_id")
 	if !ok {
 		return
 	}
@@ -43,6 +46,14 @@ func (h *Handler) WriteSystem1Label(w http.ResponseWriter, r *http.Request) {
 	agent, aerr := util.ParseUUID(r.Header.Get("X-Agent-ID"))
 	if terr != nil || aerr != nil {
 		writeError(w, http.StatusForbidden, "labels are written by an agent task only")
+		return workspaceID, task, agent, false
+	}
+	return workspaceID, task, agent, true
+}
+
+func (h *Handler) WriteSystem1Label(w http.ResponseWriter, r *http.Request) {
+	workspaceID, task, agent, ok := h.system1TaskIdentity(w, r)
+	if !ok {
 		return
 	}
 	var req system1LabelRequest

@@ -136,7 +136,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 				writeError(writer, http.StatusBadRequest, "a request from a chat takes no new_dm, session_id or parent_id")
 				return
 			}
-			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For); !ok {
+			if humanID, dmSession, ok = handler.proposalRecipient(writer, request, issue, taskID, input.For, pgtype.UUID{}); !ok {
 				return
 			}
 		}

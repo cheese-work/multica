@@ -104,6 +104,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 	switch {
 	case key == "provider_breaker_max_hold_seconds":
 		err = validateProviderHoldSetting(map[string]any{key: value})
+	case key == "guard_policy":
+		err = validateGuardPolicySetting(map[string]any{key: value})
 	case key == "compact_prompt":
 		err = validateCompactPromptConfig(map[string]any{key: value})
 		if _, isString := value.(string); !isString && err == nil {

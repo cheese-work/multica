@@ -144,6 +144,7 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"9999918_skill_version_index":                               "idx_skill_version_skill_version",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
 	"881_decision_request_proposal_fingerprint_idx":             "idx_decision_request_open_proposal",
@@ -160,11 +161,13 @@ var concurrentIndexCleanups = map[string]string{
 	"998_ci_signature_owner_issue_uidx":                         "ci_signature_owner_issue_uidx",
 	"999_ci_failure_event_created_at_idx":                       "ci_failure_event_created_at_idx",
 	"9999916_agent_task_handoff_dispatch_idx":                   "agent_task_queue_handoff_dispatch_uidx",
+	"999f_task_supplement_replay_due_idx":                       "task_supplement_replay_due_idx",
 	"9992_system1_observation_ci_event_subject_idx":             "system1_observation_ci_event_subject",
 	"99953_system1_observation_route_event_id_idx":              "system1_observation_route_event_idx",
 	"99961_browser_profile_name_idx":                            "browser_profile_workspace_name_uidx",
 	"99962_browser_instance_name_idx":                           "browser_instance_workspace_name_uidx",
 	"99963_browser_lease_one_holder_idx":                        "browser_lease_one_holder_uidx",
+	"99973_system1_epoch_open_idx":                              "system1_epoch_open",
 	"99964_browser_lease_epoch_idx":                             "browser_lease_instance_epoch_uidx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
