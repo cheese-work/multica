@@ -274,6 +274,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"skill":                              workspaceDelete,
 	"skill_file":                         workspaceDelete,
 	"skill_to_label":                     workspaceDelete,
+	"skill_version":                      workspaceDelete,
 	"squad":                              workspaceDelete,
 	"squad_member":                       workspaceDelete,
 	"stage_completion_wake":              workspaceDelete,

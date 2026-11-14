@@ -90,10 +90,17 @@
   "working_filter_error": {
     "title": "Impossible de charger les tâches en cours de traitement par les agents"
   },
+  "unread_filter_error": {
+    "title": "Impossible de charger vos tâches non lues"
+  },
   "status_catalog_error": {
     "title": "Impossible de charger la liste des états",
     "hint": "Les tâches ne peuvent pas s’afficher tant que les statuts ne sont pas chargés.",
     "retry": "Réessayer"
+  },
+  "relation_filter_error": {
+    "title": "Impossible de charger le filtre « Lien avec moi »",
+    "hint": "Les tâches filtrées par « Auxquels je suis abonné » ou « Assignés à mes agents » s'affichent une fois vos abonnements et agents chargés."
   },
   "source_context": {
     "create_action": "Créer une sous-tâche à partir d'ici",
@@ -233,8 +240,11 @@
     "relation_assigned": "Qui me sont assignés",
     "relation_created": "Créés par moi",
     "relation_my_agents": "Assignés à mes agents",
+    "relation_subscribed": "Auxquels je suis abonné",
     "section_agent_status": "Statut de l'agent",
     "agent_status_running": "En cours d'exécution",
+    "section_read_state": "État de lecture",
+    "read_state_unread": "Non lu",
     "operator_label": "Condition",
     "operator_is": "est",
     "operator_is_not": "n'est pas",
@@ -470,7 +480,10 @@
     "no_history": "Aucun historique enregistré",
     "before_records": "Avant les enregistrements",
     "collapse": "Réduire",
-    "expand": "Développer"
+    "expand": "Développer",
+    "wakeup_cross": "Réveil",
+    "wakeup_children_done": "Enfants terminés",
+    "target_inside": "Cible à l'intérieur (masquée par le repli)"
   },
   "actor_issues": {
     "scope": {
@@ -900,6 +913,7 @@
   },
   "filtered_empty": {
     "title": "Aucune tâche ne correspond à ces filtres",
+    "unread_title": "Aucune tâche non lue",
     "clear_button": "Effacer les filtres"
   },
   "agent_live": {
@@ -1044,6 +1058,7 @@
     "confirm": "Arrêter l'exécution"
   },
   "batch": {
+    "delete_restricted": "Vous pouvez supprimer les tâches créées par vous ou par vos agents. Les propriétaires et administrateurs peuvent supprimer toute tâche.",
     "selected": "{{count}} sélectionnés",
     "status": "Statut",
     "priority": "Priorité",
@@ -1068,7 +1083,6 @@
     "delete_dialog_title_other": "Supprimer {{count}} tâches ?",
     "delete_dialog_desc_one": "Cette action est irréversible. La tâche sélectionnée et toutes ses données associées seront définitivement supprimées.",
     "delete_dialog_desc_other": "Cette action est irréversible. Les tâches sélectionnées et toutes leurs données associées seront définitivement supprimées.",
-    "delete_dialog_warning": "Tout membre de l'espace de travail peut supprimer des tâches.",
     "cancel": "Annuler"
   },
   "card": {
@@ -2049,7 +2063,8 @@
     "builtin": {
       "my_issues": "Mes tâches",
       "my_agents": "Travail de mes agents",
-      "all_issues": "Toutes les tâches"
+      "all_issues": "Toutes les tâches",
+      "unread": "Non lues"
     },
     "untitled": "Vue sans titre",
     "copy_name": "{{name}} (copie)",

@@ -89,7 +89,9 @@ function shoot(url, width, file) {
   try {
     const r = spawnSync(
       chromeBin(),
-      ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars", `--user-data-dir=${profile}`,
+      ["--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+        // A page with an input makes Chrome ask the OS keyring; with no keyring on X99 that blocks forever.
+        "--password-store=basic", "--use-mock-keychain", `--user-data-dir=${profile}`,
         `--window-size=${width},${HEIGHT}`, "--virtual-time-budget=5000", `--screenshot=${file}`, url],
       { encoding: "utf8", timeout: 60_000 },
     );

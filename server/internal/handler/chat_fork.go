@@ -257,6 +257,9 @@ func (h *Handler) ForkChatSession(w http.ResponseWriter, r *http.Request) {
 			Content: message, TaskID: uuidToString(sent.Task.ID), CreatedAt: timestampToString(sent.Message.CreatedAt),
 		})
 		h.TaskService.NotifyDirectChatSent(r.Context(), sent.Task)
+		// CHE-4107: the fork's first message re-titles the child. Skipped for an
+		// attachments-only first send (no text to title from).
+		h.enqueueDMTitle(workspaceID, userID, child.ID, dmTitleFork, child.Title, message, sent.Message.ID)
 		first := chatMessageToResponse(sent.Message, nil)
 		response.Message = &first
 		response.AttachmentIDs = uuidsToStrings(sent.BoundAttachmentIDs)

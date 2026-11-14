@@ -171,6 +171,7 @@ func (h *Handler) RefreshSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := h.overwriteSkillWithFiles(r.Context(), r, skillOverwriteInput{
+		VersionSource: skillVersionSourceRefresh,
 		WorkspaceID:   skill.WorkspaceID,
 		TargetSkillID: skill.ID,
 		UserID:        userID,

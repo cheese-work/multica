@@ -1,0 +1,108 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CHE-4122 v2 D2</title><style>
+*{margin:0;box-sizing:border-box;font-family:Inter,"Segoe UI",Roboto,"Helvetica Neue",Helvetica,Arial,"Liberation Sans","DejaVu Sans",sans-serif}
+:root{--shell:oklch(0.155 0.005 285.823);--surface:oklch(0.21 0.006 285.885);--raised:oklch(0.235 0.007 285.885);--hover:oklch(0.274 0.006 286.033);--sel:oklch(0.3 0.006 286.033);--bd:oklch(1 0 0 / 10%);--fg:oklch(0.985 0 0);--mut:oklch(0.705 0.015 286.067);--faint:oklch(0.60 0.015 286.067);--inp:oklch(1 0 0 / 15%);--ring:oklch(0.552 0.016 285.938);--pri:oklch(0.92 0.004 286.32);--prifg:oklch(0.21 0.006 285.885);--ok:oklch(0.65 0.15 145);--warn:oklch(0.70 0.16 85);--err:oklch(0.704 0.191 22.216);--info:oklch(0.72 0.12 250)}
+body{font-size:13px;line-height:18px;color:var(--fg);background:var(--shell);padding:24px}
+h1{font-size:20px;line-height:28px;font-weight:600}.lead{font-size:14px;line-height:20px;color:var(--mut);max-width:1200px;margin:4px 0 8px}
+.cols{display:grid;grid-template-columns:900px 390px;gap:48px;align-items:start}
+.band{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;margin:22px 0 8px}
+.pg{background:var(--surface);border:1px solid var(--bd);border-radius:12px;padding:20px;display:grid;gap:14px}.ph{width:390px;padding:16px}
+.main{display:grid;gap:14px;min-width:0}
+.crumb{color:var(--mut);font-size:12px;line-height:16px}.sh{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.sh h3{font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.d{color:var(--mut);font-size:13px}.ss{display:inline-flex;gap:6px;align-items:center;color:var(--mut);font-size:12px;white-space:nowrap}
+.scope{display:inline-flex;gap:5px;align-items:center;height:22px;padding:0 8px;border:1px solid var(--inp);border-radius:99px;font-size:12px;font-weight:600;color:var(--fg);background:oklch(1 0 0 / 6%)}
+.scope.ws{border-color:oklch(0.72 0.12 250 / 55%);color:var(--info)}.scope.me{border-color:oklch(0.70 0.16 85 / 55%);color:var(--warn)}
+.info{display:flex;gap:8px;align-items:flex-start;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;background:oklch(1 0 0 / 4%);color:var(--mut);font-size:13px;line-height:18px}.info .i{margin-top:2px;color:var(--info);flex:none}.info.w .i{color:var(--warn)}.info.e .i{color:var(--err)}.info.k .i{color:var(--ok)}
+.info b{color:var(--fg);font-weight:600}a,.lk{color:var(--fg);text-decoration:underline;text-underline-offset:2px}
+.card{background:var(--raised);border:1px solid var(--bd);border-radius:10px;overflow:hidden}
+.hd,.row{display:grid;grid-template-columns:minmax(0,1fr) 200px 200px;gap:16px;padding:14px 16px;align-items:start}
+.hd{padding:8px 16px;font-size:12px;line-height:16px;color:var(--mut);font-weight:600}.row{border-top:1px solid var(--bd)}
+.t{font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.m{color:var(--mut);font-size:12px;line-height:16px;margin-top:2px}
+.no{display:flex;gap:6px;align-items:flex-start;color:var(--mut);font-size:12px;line-height:16px;margin-top:6px}.no .i{margin-top:1px}
+.lbl{display:none;font-size:12px;line-height:16px;color:var(--mut);margin-bottom:4px}
+.sel{width:100%;height:32px;border:1px solid var(--inp);border-radius:8px;background:oklch(1 0 0 / 5%);color:var(--fg);padding:0 8px 0 10px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:13px;text-align:left}
+.sel span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sel.u span{color:var(--mut)}.sel[disabled]{opacity:.55}
+.i{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.ph .row{grid-template-columns:1fr;gap:10px;padding:14px}.ph .hd{display:none}.ph .lbl{display:block}.ph .sel{height:40px}
+.ann{font-size:12px;line-height:16px;color:var(--mut);max-width:900px}
+.bar{height:12px;border-radius:6px;background:var(--hover)}.bar.m2{width:60%}.bar.l{width:85%}.bar.sl{height:32px;border-radius:8px;border:1px solid var(--bd)}.ph .bar.sl{height:40px}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:8px;border:1px solid var(--inp);background:oklch(1 0 0 / 5%);color:var(--fg);font-size:13px;font-weight:500;white-space:nowrap}.btn.p{background:var(--pri);color:var(--prifg);border-color:transparent}.btn[disabled]{opacity:.55}.ph .btn{height:40px}
+.sbox{display:grid;gap:10px;justify-items:start;padding:28px 20px;border:1px dashed var(--inp);border-radius:10px;background:oklch(1 0 0 / 3%)}.sbox h4{font-size:14px;line-height:20px;font-weight:600;display:flex;gap:8px;align-items:center}.sbox p{color:var(--mut);font-size:13px;max-width:560px}
+.acts{display:flex;gap:8px;flex-wrap:wrap}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:12px}.ph .cmp{grid-template-columns:1fr}
+.cc{border:1px solid var(--bd);border-radius:10px;background:var(--raised);padding:12px;display:grid;gap:4px}.cc h5{font-size:12px;line-height:16px;letter-spacing:.06em;text-transform:uppercase;color:var(--mut);font-weight:600;display:flex;gap:6px;align-items:center;margin-bottom:4px}
+.kv{display:flex;justify-content:space-between;gap:8px;font-size:13px;padding:5px 0;border-top:1px solid var(--bd)}.kv span:first-child{color:var(--mut)}.kv .df{color:var(--warn);font-weight:600}.kv .df::before{content:"Changed · ";font-weight:500}
+.toast{display:flex;gap:8px;align-items:center;border:1px solid oklch(0.704 0.191 22.216 / 50%);background:oklch(0.704 0.191 22.216 / 10%);border-radius:8px;padding:8px 10px;font-size:13px}.toast .i{color:var(--err)}
+</style></head><body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="cd" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></symbol><symbol id="in" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v.5M12 11v5"/></symbol><symbol id="ck" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol><symbol id="al" viewBox="0 0 24 24"><path d="M12 3l10 18H2zM12 10v5M12 18v.5"/></symbol><symbol id="x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol><symbol id="us" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6M16 4.8a3.5 3.5 0 010 6.4M18 14.4c2 .8 3.5 2.6 3.5 5.6"/></symbol><symbol id="u1" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4.5 20.5c0-4 3.4-6.5 7.5-6.5s7.5 2.5 7.5 6.5"/></symbol><symbol id="lk" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/></symbol><symbol id="ar" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol><symbol id="of" viewBox="0 0 24 24"><path d="M3 3l18 18M8.5 8.5A10 10 0 004 10.5M12 5a15 15 0 0116 5.5M5 14a10 10 0 015-3M9 17.5a5 5 0 015-1.2M12 21v.01"/></symbol><symbol id="rf" viewBox="0 0 24 24"><path d="M20 11A8 8 0 006.3 6.3L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0013.7 4.7L20 15.5M20 20v-4.5h-4.5"/></symbol><symbol id="lo" viewBox="0 0 24 24"><path d="M12 3a9 9 0 109 9"/></symbol></defs></svg>
+<h1>D2 · States for the Workspace and Personal tabs</h1>
+<p class="lead">v2 keeps every v1 state and adds scope to each one. Same states apply to both tabs unless marked. Unset is always "No agent". The Workspace or Personal badge stays visible in every state, errors included. Agent names are sample data. Left: 900 px. Right: 390 px phone.</p>
+<div class="cols"><div>
+<p class="band">1 · Loading (Workspace tab)</p>
+<div class="pg"><div class="main" aria-busy="true">
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3><p class="d">Small jobs agents do behind the scenes for everyone in this workspace.</p></div><span class="ss" role="status"><svg class="i"><use href="#lo"/></svg>Loading settings…</span></div>
+<div class="card"><div class="hd"><span>Job</span><span>Agent</span><span>Fallback agent</span></div>
+<div class="row"><div><div class="t">DM title</div><div class="bar l" style="margin-top:8px"></div></div><div class="bar sl"></div><div class="bar sl"></div></div>
+<div class="row"><div><div class="t">Quick actions</div><div class="bar m2" style="margin-top:8px"></div></div><div class="bar sl"></div><div class="bar sl"></div></div>
+<div class="row"><div><div class="t">Compact</div><div class="bar l" style="margin-top:8px"></div></div><div class="bar sl"></div><div class="bar sl"></div></div>
+<div class="row"><div><div class="t">Routing</div><div class="bar m2" style="margin-top:8px"></div></div><div class="bar sl"></div><div class="bar sl"></div></div></div>
+</div></div>
+<p class="ann">Job names and the scope badge render at once. Only the selects wait. The status line says "Loading settings…" in text, so the grey bars are not the only signal. Selects are not clickable until the load ends.</p>
+<p class="band">2 · Empty: no agent can be picked</p>
+<div class="pg"><div class="main">
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div></div>
+<div class="sbox"><h4><svg class="i"><use href="#in"/></svg>No agents available for background jobs</h4><p>Background jobs need an agent that is not archived, runs on a workspace runtime and that everyone in this workspace can run. Create one, or widen an agent's access, then come back.</p><div class="acts"><span class="btn p">Go to Agents <svg class="i"><use href="#ar"/></svg></span></div></div>
+<p class="ann">2a · Owner or admin. The button goes to Agents.</p>
+<div class="sbox"><h4><svg class="i"><use href="#in"/></svg>No agents available for background jobs</h4><p>Only owners and admins can pick agents for the whole workspace. You can pick your own agent for DM title and Quick actions.</p><div class="acts"><span class="btn p">Open Personal → Background agents <svg class="i"><use href="#ar"/></svg></span></div></div>
+<p class="ann">2b · Member. The button goes to Personal → Background agents, not to Agents. Members cannot create workspace picks, so sending them to Agents would be a dead end.</p>
+</div></div>
+<p class="band">3 · Load error (503)</p>
+<div class="pg"><div class="main">
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div></div>
+<div class="info e" role="alert"><svg class="i"><use href="#al"/></svg><div><b>Could not load background agent settings.</b> The server answered 503. Nothing was changed. Your last saved picks still apply to jobs.<div class="acts" style="margin-top:8px"><span class="btn"><svg class="i"><use href="#rf"/></svg>Try again</span></div></div></div>
+</div></div>
+<p class="ann">The same banner shows on the Personal tab with the Personal badge. "Try again" re-runs the load. No select is shown, so nobody edits blind.</p>
+<p class="band">4 · Offline (either tab)</p>
+<div class="pg"><div class="main">
+<div class="sh"><div><h3>Background agents <span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal</span></h3></div><span class="ss" role="status"><svg class="i"><use href="#of"/></svg>Offline</span></div>
+<div class="info w" role="status"><svg class="i"><use href="#of"/></svg><div><b>You are offline.</b> Changes are paused. The picks below are the last ones loaded and may be out of date. Selects turn back on when you reconnect.</div></div>
+<div class="card"><div class="row" style="border-top:0"><div><div class="t">Quick actions</div><div class="m">Suggests follow-up buttons under a reply.</div></div><div><div class="lbl">Agent</div><button class="sel" disabled aria-disabled="true"><span>My notes bot</span><svg class="i"><use href="#cd"/></svg></button></div><div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-disabled="true"><span>No agent</span><svg class="i"><use href="#cd"/></svg></button></div></div></div>
+</div></div>
+<p class="band">5 · Member read-only (Workspace tab)</p>
+<div class="pg"><div class="main">
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span><span class="scope"><svg class="i"><use href="#lk"/></svg>Read only</span></h3><p class="d">Small jobs agents do behind the scenes for everyone in this workspace.</p></div></div>
+<div class="info"><svg class="i"><use href="#lk"/></svg><div><b>Only owners and admins can change these.</b> Ask Dana Pham, Lee Tran or Minh Vo. You can set your own picks for DM title and Quick actions in <a href="#">Personal → Background agents</a>.</div></div>
+<div class="card"><div class="hd"><span>Job</span><span>Agent</span><span>Fallback agent</span></div>
+<div class="row"><div><div class="t">DM title</div><div class="m">Names a DM after its first message.</div></div><div><div class="lbl">Agent</div><button class="sel u" disabled aria-disabled="true"><span>No agent</span><svg class="i"><use href="#lk"/></svg></button></div><div><div class="lbl">Fallback agent</div><button class="sel u" disabled aria-disabled="true"><span>No agent</span><svg class="i"><use href="#lk"/></svg></button></div></div>
+<div class="row"><div><div class="t">Quick actions</div><div class="m">Suggests follow-up buttons under a reply.</div></div><div><div class="lbl">Agent</div><button class="sel" disabled aria-disabled="true"><span>x99-claude-haiku</span><svg class="i"><use href="#lk"/></svg></button></div><div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-disabled="true"><span>x99-codex-luna</span><svg class="i"><use href="#lk"/></svg></button></div></div>
+<div class="row"><div><div class="t">Routing <span class="scope ws"><svg class="i"><use href="#lk"/></svg>Workspace only</span></div><div class="m">Handles routing-only workflow steps.</div></div><div><div class="lbl">Agent</div><button class="sel" disabled aria-disabled="true"><span>Routing lead</span><svg class="i"><use href="#lk"/></svg></button></div><div><div class="lbl">Fallback agent</div><button class="sel" disabled aria-disabled="true"><span>x99-codex-luna</span><svg class="i"><use href="#lk"/></svg></button></div></div></div>
+</div></div>
+<p class="ann">Members see the current picks so they know what their jobs use. Selects show a lock icon and are disabled; the text above says why and who to ask.</p>
+<p class="band">6 · Save conflict (409): someone else saved first</p>
+<div class="pg"><div class="main">
+<div class="sh"><div><h3>Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div></div>
+<div class="info w" role="alert"><svg class="i"><use href="#al"/></svg><div><b>Lee Tran saved a change while you were editing.</b> Your change was not saved. Compare, then keep theirs or apply yours again.</div></div>
+<div class="cmp">
+<div class="cc"><h5><svg class="i"><use href="#x"/></svg>Your change (not saved)</h5><div class="kv"><span>Job</span><span>Quick actions</span></div><div class="kv"><span>Agent</span><span class="df">x99-codex-luna</span></div><div class="kv"><span>Fallback agent</span><span>x99-codex-luna</span></div></div>
+<div class="cc"><h5><svg class="i"><use href="#ck"/></svg>Saved by Lee Tran, 11:42 ICT</h5><div class="kv"><span>Job</span><span>Quick actions</span></div><div class="kv"><span>Agent</span><span class="df">x99-claude-haiku</span></div><div class="kv"><span>Fallback agent</span><span>x99-codex-luna</span></div></div>
+</div>
+<div class="acts"><span class="btn p">Keep Lee's version</span><span class="btn">Apply my change again</span></div>
+</div></div>
+<p class="ann">Both choices re-read the latest saved value first. "Apply my change again" saves with the new version stamp, so it can fail again with a new compare. The Personal tab has no 409 compare between people: only you write your picks, so a second tab of yours shows the same banner with "You saved a change in another tab".</p>
+</div>
+<div>
+<p class="band">Phone · loading</p>
+<div class="pg ph" aria-busy="true"><div><h3 style="font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div><span class="ss" role="status"><svg class="i"><use href="#lo"/></svg>Loading settings…</span>
+<div class="card"><div class="row" style="border-top:0"><div><div class="t">DM title</div><div class="bar l" style="margin-top:8px"></div></div><div class="bar sl"></div><div class="bar sl"></div></div></div></div>
+<p class="band">Phone · member empty</p>
+<div class="pg ph"><div><h3 style="font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div>
+<div class="sbox" style="padding:20px 14px"><h4><svg class="i"><use href="#in"/></svg>No agents available</h4><p>Only owners and admins can pick agents for the workspace. You can pick your own for DM title and Quick actions.</p><span class="btn p" style="width:100%;justify-content:center">Open Personal → Background agents</span></div></div>
+<p class="band">Phone · error</p>
+<div class="pg ph"><div><h3 style="font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">Background agents <span class="scope me"><svg class="i"><use href="#u1"/></svg>Personal</span></h3></div>
+<div class="info e" role="alert"><svg class="i"><use href="#al"/></svg><div><b>Could not load background agent settings.</b> Nothing was changed.<div class="acts" style="margin-top:8px"><span class="btn" style="width:100%;justify-content:center"><svg class="i"><use href="#rf"/></svg>Try again</span></div></div></div></div>
+<p class="band">Phone · conflict</p>
+<div class="pg ph"><div><h3 style="font-size:16px;line-height:24px;font-weight:600;display:flex;gap:8px;align-items:center;flex-wrap:wrap">Background agents <span class="scope ws"><svg class="i"><use href="#us"/></svg>Workspace</span></h3></div><div class="info w" role="alert"><svg class="i"><use href="#al"/></svg><div><b>Lee Tran saved first.</b> Your change was not saved.</div></div>
+<div class="cmp"><div class="cc"><h5><svg class="i"><use href="#x"/></svg>Your change</h5><div class="kv"><span>Quick actions</span><span class="df">x99-codex-luna</span></div></div><div class="cc"><h5><svg class="i"><use href="#ck"/></svg>Lee Tran, 11:42 ICT</h5><div class="kv"><span>Quick actions</span><span class="df">x99-claude-haiku</span></div></div></div>
+<div class="acts"><span class="btn p" style="width:100%;justify-content:center">Keep Lee's version</span><span class="btn" style="width:100%;justify-content:center">Apply my change again</span></div></div>
+<p class="ann" style="margin-top:12px">Phone: one column, 40 px controls, full-width buttons. Offline and read-only use the same stacked rows as the main tabs.</p>
+</div></div>
+</body></html>
