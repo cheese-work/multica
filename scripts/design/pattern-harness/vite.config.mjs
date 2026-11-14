@@ -28,6 +28,11 @@ export default defineConfig({
     // The harness has no workspace, session or websocket: stub the hook that reads the URL slug, the auth
     // store and the realtime barrel (both hang headless Chrome at module init).
     alias: [
+      // settings-navigation renders the real SettingsPage shell; its tabs and auth-bound hooks are stubbed.
+      // These come first: the first matching alias wins, and workspace-stub.ts's paths are a thin subset.
+      { find: /^@multica\/core\/paths$/, replacement: resolve(here, "paths-stub.ts") },
+      { find: /^@multica\/core\/permissions$/, replacement: resolve(here, "permissions-stub.ts") },
+      { find: /^\.{1,2}\/(?:[\w-]+\/)*[\w-]+-tab$/, replacement: resolve(here, "settings-stubs.tsx") },
       { find: /^@multica\/core\/auth$/, replacement: resolve(here, "auth-stub.ts") },
       { find: /^@multica\/core\/realtime$/, replacement: resolve(here, "realtime-stub.ts") },
       // editor/attachment.tsx imports these by relative path; the real preview modal is a 14 MB graph that hangs headless Chrome.
