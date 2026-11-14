@@ -120,9 +120,11 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const action = focusKeyAction(event, depth);
     if (!action) return;
-    // Enter and Space on a focused card or button keep their native activation.
+    // Enter on a focused card or button keeps its native activation; so does Space on a button.
+    // Space on a card link has none, so it toggles the level.
     const onViewport = event.target === event.currentTarget;
-    if ((action.type === "open" || action.type === "toggle") && !onViewport) return;
+    const onButton = (event.target as HTMLElement).closest("button") !== null;
+    if ((action.type === "open" && !onViewport) || (action.type === "toggle" && onButton)) return;
     event.preventDefault();
     event.stopPropagation();
     const into = () => { if (canIn && activeCard) stepIn(activeCard.issue.id); };
