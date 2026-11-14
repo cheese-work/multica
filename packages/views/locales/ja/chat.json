@@ -397,7 +397,26 @@
       "older": "それ以前"
     },
     "unseen_dot": "未確認",
-    "tag_decision": "決定"
+    "tag_decision": "決定",
+    "bulk": {
+      "toolbar_aria_other": "選択した{{count}}件のチャットの操作",
+      "selected": "{{count}}件を選択",
+      "select_all": "すべて選択",
+      "cancel": "選択をキャンセル",
+      "more_aria": "その他: {{action}}",
+      "group_aria": "グループ「{{label}}」を選択",
+      "row_aria": "{{title}}を選択",
+      "failed_other": "{{count}}件のチャットを更新できませんでした",
+      "archived_toast_other": "{{count}}件のチャットをアーカイブしました",
+      "action": {
+        "seen": "既読にする",
+        "unseen": "未読にする",
+        "pin": "ピン留め",
+        "unpin": "ピン留め解除",
+        "archive": "アーカイブ",
+        "unarchive": "アーカイブ解除"
+      }
+    }
   },
   "header": {
     "context_meter": "{{window}} 中 {{pct}}%",

@@ -522,3 +522,74 @@ export function useCancelChatWakeup() {
     },
   });
 }
+
+export type ChatBulkAction = "seen" | "unseen" | "pin" | "unpin" | "archive" | "unarchive";
+
+const BULK_CALL: Record<ChatBulkAction, (id: string) => Promise<unknown>> = {
+  seen: (id) => api.markChatSessionRead(id),
+  unseen: (id) => api.markChatSessionUnread(id),
+  pin: (id) => api.setChatSessionPinned(id, true),
+  unpin: (id) => api.setChatSessionPinned(id, false),
+  archive: (id) => api.setChatSessionArchived(id, true),
+  unarchive: (id) => api.setChatSessionArchived(id, false),
+};
+
+function patchForBulk(action: ChatBulkAction, s: ChatSession, nowIso: string): ChatSession {
+  switch (action) {
+    case "seen":
+      return { ...s, has_unread: false, unread_count: 0 };
+    case "unseen":
+      return { ...s, has_unread: true, unread_count: Math.max(1, s.unread_count ?? 0) };
+    case "pin":
+    case "unpin":
+      return { ...s, pinned: action === "pin" };
+    case "archive":
+      return { ...s, status: "archived", updated_at: nowIso, unread_count: 0, has_unread: false };
+    case "unarchive":
+      return { ...s, status: "active", updated_at: nowIso };
+  }
+}
+
+/**
+ * Applies one action to many DMs. One optimistic patch for the whole batch;
+ * each request settles on its own, and rows whose request failed go back to
+ * their previous value. Resolves with the failed ids (it does not throw), so
+ * the caller can report a partial failure.
+ */
+export function useBatchChatSessions() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+
+  return useMutation({
+    mutationKey: chatKeys.sessionAction(wsId),
+    mutationFn: async ({ action, sessionIds }: { action: ChatBulkAction; sessionIds: string[] }) => {
+      logger.info("batchChatSessions.start", { action, count: sessionIds.length });
+      const results = await Promise.allSettled(sessionIds.map((id) => BULK_CALL[action](id)));
+      return { failed: sessionIds.filter((_, i) => results[i]!.status === "rejected") };
+    },
+    onMutate: async ({ action, sessionIds }) => {
+      await qc.cancelQueries({ queryKey: chatKeys.sessions(wsId) });
+      const prevSessions = qc.getQueryData<ChatSession[]>(chatKeys.sessions(wsId));
+      const ids = new Set(sessionIds);
+      const nowIso = new Date().toISOString();
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old && sortChatSessions(old.map((s) => (ids.has(s.id) ? patchForBulk(action, s, nowIso) : s))),
+      );
+      return { prevSessions };
+    },
+    onError: (err, _vars, ctx) => {
+      logger.error("batchChatSessions.error.rollback", err);
+      if (ctx?.prevSessions) qc.setQueryData(chatKeys.sessions(wsId), ctx.prevSessions);
+    },
+    onSuccess: ({ failed }, _vars, ctx) => {
+      if (failed.length === 0 || !ctx?.prevSessions) return;
+      const back = new Map(ctx.prevSessions.filter((s) => failed.includes(s.id)).map((s) => [s.id, s]));
+      qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
+        old && sortChatSessions(old.map((s) => back.get(s.id) ?? s)),
+      );
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: chatKeys.sessions(wsId) });
+    },
+  });
+}
