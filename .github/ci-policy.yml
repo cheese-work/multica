@@ -1,5 +1,4 @@
 # Policy file for the CI economy standard (cheese-work/multica-dotfiles standards/general/ci.md, D-2).
-# CHE-3279 adds this file for the latency exception; the checker caller is added by CHE-3273.
 merge_queue: true
 required_checks:
   - backend-tests
@@ -8,8 +7,17 @@ status_contexts:
   - name: security-gate
     workflow: security-gate.yml
     targets:
-      pull_request: pr-head
+      pull_request_target: pr-head
+      merge_group: merge-group-head
 exceptions:
+  # backend-tests is the heavy Go job, not an aggregate; CHE-3429 makes the required check an aggregate.
+  - repo: cheese-work/multica
+    workflow: ci.yml
+    rule: R8
+    reason: the required check is the heavy job itself, so a failed changes selector reports it skipped; CHE-3429 restructures it
+    owner: x99-claude-sonnet-200k
+    added: 2026-11-03
+    expires: 2026-12-15
   - repo: cheese-work/multica
     workflow: security-gate.yml
     rule: pr-feedback-latency
@@ -17,3 +25,18 @@ exceptions:
     owner: x99-claude-sonnet-200k
     added: 2026-11-03
     expires: 2026-12-31
+  - repo: cheese-work/multica
+    workflow: .github/ci-policy.yml
+    rule: R5
+    reason: "security-gate is a commit status posted by security-gate.yml, not a job name, so the checker cannot find a producing job; the status_contexts entry verifies it instead"
+    owner: x99-claude-sonnet-200k
+    added: 2026-11-04
+    expires: 2026-12-31
+  - repo: cheese-work/multica
+    workflow: security-gate.yml
+    rule: R7
+    reason: "since CHE-4385 security-gate.yml starts only through the reusable-workflow call from pr-guards.yml, not on pull_request or merge_group itself; the checker reads only the called file's triggers and cannot see the caller. The gate is unchanged and still blocks merge. Follow-up: make the checker follow workflow_call callers"
+    decision: 4f5b1c3f-9650-438c-b33b-7f04160b3a50
+    owner: x99-claude-sonnet-200k
+    added: 2026-11-09
+    expires: 2026-12-15

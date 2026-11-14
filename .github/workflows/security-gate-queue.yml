@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 # Queue-time security gate (CHE-4251), switched OFF by Cheese (CHE-5126; this change: CHE-5148).
 #
 # While the gate is off this workflow posts `security-gate` = `success` on the queue commit and runs no verdict logic.

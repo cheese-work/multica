@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: PR main sync
 
 # Merges `main` into open PR branches that are behind it, so a PR does not wait for an author run
@@ -22,10 +23,10 @@ on:
 permissions:
   contents: read
 
-# A newer run supersedes a running sync; it sees the newest main anyway.
+# One running, one pending (ci-policy R3): a newer main push replaces the pending run, so the last run sees the newest main.
 concurrency:
   group: pr-main-sync
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   sync:

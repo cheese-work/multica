@@ -1,3 +1,4 @@
+# ci-policy: class=scheduled
 # CHE-3701: weekly full-tree security scan of the fork. Informational: findings never fail a job; a scanner that
 # cannot run does, so a broken scan is never read as clean. Read-only token, GitHub-hosted runners, no secrets, no image build.
 # This repo is public, so artifacts and logs are world-readable: every report is sealed (scripts/security-weekly/seal.sh) to a

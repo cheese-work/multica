@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 name: Merge queue dequeue report
 
 # Explains a failed-check removal from the merge queue on the PR itself and marks the PR head red.

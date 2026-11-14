@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 name: pr-guards
 
 # CHE-4385: one run per PR event. GitHub disabled Actions on this repo at about 2,500 created runs a day, and a skipped

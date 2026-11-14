@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 # Pre-merge security gate (CHE-2671), switched OFF by Cheese (CHE-5126, 10 Nov 2026; re-scan: CHE-5127; this change: CHE-5148).
 #
 # While the gate is off this workflow runs no verdict logic: its one step posts commit status `security-gate` = `success`

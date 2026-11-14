@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: Mirror upstream-main
 
 # CHE-3955. Fast-forwards branch upstream-main to multica-ai/multica main.

@@ -1,3 +1,4 @@
+# ci-policy: class=scheduled
 # Security-gate sweep (CHE-4385), switched OFF by Cheese (CHE-5126; this change: CHE-5148).
 #
 # The 30-minute schedule is removed so it stops spending runner minutes. What is left is a manual backfill: it posts

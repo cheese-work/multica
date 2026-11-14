@@ -1,3 +1,4 @@
+# ci-policy: class=manual
 name: UI performance report
 
 # Manual only. This builds the frontend twice — about five minutes of runner

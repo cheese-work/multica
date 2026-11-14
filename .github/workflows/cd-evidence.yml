@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: CD release-candidate evidence (no deploy)
 run-name: CD evidence · ${{ inputs.candidate_sha }}
 

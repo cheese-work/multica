@@ -1,0 +1,71 @@
+# ci-policy: class=gate
+# ci-policy caller (D-6, eng review D10 = A and D14 = A). Same content in every enrolled repo; scripts/ci-policy/sync.py
+# keeps the copies current. See standards/general/ci.md.
+#
+# SECURITY — same boundary as mechanical-tier.yml: `pull_request_target` runs the PR check with the BASE revision's
+# checker. The job checks out the base SHA and only FETCHES head objects; gate.py reads the head's `.github` tree as data.
+# Do not add a head checkout, a head `run:` or a secret to this workflow.
+# This workflow has one trigger and one job, so no skipped run can ever report a check named `ci-policy`. The review and
+# queue events live in ci-policy-handoff.yml: they run the definition from the PR merge / queue commit, which the PR can
+# edit, so they may only hand off. The trusted ci-policy-queue.yml (`workflow_run`, default branch) follows those runs: after
+# a review change it re-runs this PR check and re-evaluates the open queue groups, and for a queue run it posts the
+# `ci-policy` queue status itself. gate.py refuses a PR that disables the handoff (`handoff-disabled`).
+# After a policy-changed approval, the review event re-runs this job on its own (a re-run keeps the trusted definition).
+# Not a required check until D-9 promotion; a push trigger is never needed (D-4).
+
+name: ci-policy
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# One group per PR.
+concurrency:
+  group: ci-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ci-policy:
+    name: ci-policy
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      PRIVATE: ${{ github.event.repository.private && '--private' || '' }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      # A plain git checkout of the BASE sha: no `actions/checkout` and no head ref, so the pull_request_target
+      # checkout rule has nothing to match and the base-only boundary stays visible.
+      - name: Check out the trusted base
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init --quiet .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --no-tags origin "+refs/heads/*:refs/remotes/origin/*"
+          git checkout --quiet --detach "$BASE_SHA"
+      - name: Fetch the head objects without checking them out
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/head"
+          test "$(git rev-parse refs/remotes/pull/head)" = "$HEAD_SHA"
+      # Some X99 runners ship no PyYAML (CHE-2397); --target avoids PEP 668.
+      - name: Install PyYAML
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/pydeps" pyyaml
+          echo "PYTHONPATH=$RUNNER_TEMP/pydeps" >> "$GITHUB_ENV"
+      - name: Check the PR against the base policy
+        run: |
+          python3 .github/ci-policy/gate.py pr --repo "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --default-branch "$DEFAULT_BRANCH" $PRIVATE

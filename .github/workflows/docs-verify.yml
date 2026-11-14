@@ -1,3 +1,4 @@
+# ci-policy: class=pr-validation
 name: Docs Verify
 
 # Typecheck, test and build apps/docs on PRs. The main CI excludes

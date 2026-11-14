@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: CD deploy to C00
 run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.event_name }}
 

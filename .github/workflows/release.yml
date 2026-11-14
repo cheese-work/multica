@@ -1,3 +1,4 @@
+# ci-policy: class=deploy
 name: Release
 
 on:
@@ -259,7 +260,7 @@ jobs:
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04"]') }}
     concurrency:
       group: release-docker-backend-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       - name: Use disposable build caches
         shell: bash
@@ -430,7 +431,7 @@ jobs:
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-24.04"]') }}
     concurrency:
       group: release-docker-web-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       - name: Use disposable build caches
         shell: bash
@@ -510,7 +511,7 @@ jobs:
     runs-on: ubuntu-24.04
     concurrency:
       group: release-helm-chart-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       CHART_DIR: deploy/helm/multica
       OCI_REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/charts

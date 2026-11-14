@@ -1203,3 +1203,5 @@ jobs:
 
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
+
+# ci-policy: class=pr-validation

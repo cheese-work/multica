@@ -1,0 +1,100 @@
+# ci-policy: class=gate
+# ci-policy queue verdict on a trusted workflow definition. Runs from the DEFAULT branch via `workflow_run`; same content in
+# every enrolled repo (scripts/ci-policy/sync.py). See standards/general/ci.md.
+#
+# SECURITY: a `merge_group` definition comes from the queue commit, which carries the queued PRs' own changes, and a check
+# name is not authenticated, so neither can be trusted to say `ci-policy` passed. This workflow runs the default branch's
+# gate.py on every queued head and posts the `ci-policy` commit status on the queue commit itself. The only inputs read
+# from the trigger are the queue commit SHA and ref name, which GitHub sets. The queue ref is fetched as data and never
+# checked out or executed. It holds no secret and no environment. If ci-policy-handoff.yml loses its `merge_group` run, this
+# workflow never fires and the required `ci-policy` context stays missing: the queue blocks (fail closed).
+#
+# A `pull_request_review` run (review submitted or dismissed) is the same kind of trusted follow-up: ci-policy-handoff.yml's review
+# definition comes from the PR, so it only hands off. Here the default branch's gate.py re-runs the PR check of the open PR
+# at that head (a re-run keeps the base-branch definition and re-reads the reviews) and re-evaluates every open queue group,
+# so a withdrawn approval flips the cached success. The only input read from the trigger is the head SHA, which is matched
+# against the repository's own open PRs; nothing from the PR is executed.
+
+name: ci-policy-queue
+
+on:
+  workflow_run:
+    workflows: [ci-policy-handoff]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ci-policy-queue-${{ github.event.workflow_run.event }}-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  ci-policy-queue:
+    name: ci-policy-queue-eval
+    # A merge-queue run of this repository, or a review run (a fork PR's head repository is the fork, so no repository check
+    # there; the head SHA is matched against open PRs). A `push` or `pull_request` run that happens to be named ci-policy-handoff is ignored.
+    if: >-
+      (github.event.workflow_run.event == 'merge_group' &&
+      github.event.workflow_run.head_repository.full_name == github.repository) ||
+      github.event.workflow_run.event == 'pull_request_review'
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      RUN_EVENT: ${{ github.event.workflow_run.event }}
+      GROUP_REF: refs/heads/${{ github.event.workflow_run.head_branch }}
+      GROUP_SHA: ${{ github.event.workflow_run.head_sha }}
+      PRIVATE: ${{ github.event.repository.private && '--private' || '' }}
+    steps:
+      - name: Discard a reused workspace
+        run: |
+          find "$GITHUB_WORKSPACE" -mindepth 1 -delete
+      # A plain git checkout of the default branch: the trusted gate.py and check.py. The queue ref is fetched as data;
+      # a queue commit has each queued PR head as a parent, so the head objects arrive with it.
+      - name: Check out the default branch and fetch the queue ref
+        run: |
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init --quiet .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            fetch --quiet --no-tags origin "+refs/heads/*:refs/remotes/origin/*"
+          git checkout --quiet --detach "refs/remotes/origin/${DEFAULT_BRANCH}"
+      # Some X99 runners ship no PyYAML (CHE-2397); --target avoids PEP 668.
+      - name: Install PyYAML
+        run: |
+          python3 -m pip install --quiet --target "$RUNNER_TEMP/pydeps" pyyaml
+          echo "PYTHONPATH=$RUNNER_TEMP/pydeps" >> "$GITHUB_ENV"
+      # A crash is a failure on the queue commit, never a stalled entry. A review run re-evaluates every open queue group
+      # (the group heads are already fetched as origin/gh-readonly-queue/*).
+      - name: Check every queued PR and post the status
+        run: |
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          post_group() { # $1 = refs/heads/<queue branch>, $2 = its tip SHA
+            set +e
+            out="$(python3 .github/ci-policy/gate.py merge-group --repo "$GITHUB_REPOSITORY" --group-ref "$1" \
+              --default-branch "$DEFAULT_BRANCH" $PRIVATE 2>&1)"
+            rc=$?
+            set -e
+            state=success
+            [ "$rc" -eq 0 ] || state=failure
+            desc="$(printf '%s' "${out:-every queued PR passes ci-policy}" | head -n1)"
+            gh api "repos/$GITHUB_REPOSITORY/statuses/$2" -f "state=$state" -f context=ci-policy \
+              -f "description=${desc:0:140}" -f "target_url=$run_url"
+            printf '%s\n' "$out"
+            [ "$state" = success ]
+          }
+          if [ "$RUN_EVENT" = merge_group ]; then
+            post_group "$GROUP_REF" "$GROUP_SHA"
+          else
+            status=0
+            python3 .github/ci-policy/gate.py rerun-pr --repo "$GITHUB_REPOSITORY" --head "$GROUP_SHA" || status=1
+            while read -r sha ref; do
+              post_group "refs/heads/${ref#refs/remotes/origin/}" "$sha" || status=1
+            done < <(git for-each-ref --format='%(objectname) %(refname)' refs/remotes/origin/gh-readonly-queue/)
+            exit "$status"
+          fi
