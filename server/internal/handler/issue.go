@@ -401,6 +401,13 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		rec.activity = &row
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
+	// The intent to run the handler is written with the write that hands the
+	// issue to it, so a crash after the commit leaves it behind to find.
+	if rec != nil && rec.intent != nil {
+		if err := writeHandoffIntent(ctx, q, rec, issue); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
 	if taint := issueWriteTaint(ctx); len(taint) > 0 {
@@ -4839,6 +4846,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// refuses a comment that is not a live comment of this issue; a move that
 	// starts no run keeps the lenient drop-and-mark of the status history.
 	dispatchCtx := h.actingTaskContext(r)
+	var intentComment string
 	if req.HandoffCommentID != nil && !suppressRun {
 		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
 		if err != nil {
@@ -4848,6 +4856,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case ok:
 			dispatchCtx = service.WithStatusHandoffComment(dispatchCtx, parseUUID(*req.HandoffCommentID))
+			intentComment = *req.HandoffCommentID
 		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
 			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
 			return
@@ -4887,6 +4896,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
+		}
+		if handoff != nil && handed.agent != "" {
+			armHandoffIntent(statusRec, r, actorType, actorID, intentComment, req.HandoffNote, handed.write)
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
 	}
@@ -5085,9 +5097,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(dispatchCtx, issue, trigger, actorType, actorID, handoffNote) {
+		intentID := recIntentID(statusRec)
+		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
+	} else if statusRec != nil {
+		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 	}
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
@@ -5874,6 +5889,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
 				statusRec.handoffWorkflow = handoff.def.Name
+				if handed.agent != "" {
+					armHandoffIntent(statusRec, r, actorType, actorID, "", req.Updates.HandoffNote, handed.write)
+				}
 			}
 			writeCtx = withStatusRecord(writeCtx, statusRec)
 		}
@@ -5993,9 +6011,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
+			intentID := recIntentID(statusRec)
+			if h.dispatchIssueRun(withHandoffIntent(h.actingTaskContext(r), intentID), issue, trigger, actorType, actorID, batchHandoffNote) && !intentID.Valid {
 				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 			}
+		} else if statusRec != nil {
+			h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 		}
 
 		if statusChanged && issue.ParentIssueID.Valid {
