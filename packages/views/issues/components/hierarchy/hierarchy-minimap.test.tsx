@@ -7,7 +7,7 @@ import { IssueHierarchy } from "./hierarchy-minimap";
 import type { HierarchyIssue } from "./hierarchy-model";
 
 const push = vi.hoisted(() => vi.fn());
-const state = vi.hoisted(() => ({ loading: false }));
+const state = vi.hoisted(() => ({ loading: false, levels: {} as Record<number, { nodes: unknown[]; status: string }>, expand: vi.fn() }));
 vi.mock("@multica/core/paths", () => ({ useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }) }));
 vi.mock("../../../navigation", () => ({
   useNavigation: () => ({ push }),
@@ -42,15 +42,27 @@ vi.mock("./use-hierarchy", async () => {
   };
 });
 
+// Root id-2 → CHE-100 (2 kids), CHE-101 (leaf), CHE-102 (1 kid) → CHE-300/301 under 100, CHE-302 under 102; depth 3 is empty.
+vi.mock("./use-hierarchy-levels", async (importActual) => ({
+  ...(await importActual<typeof import("./use-hierarchy-levels")>()),
+  useHierarchyLevels: () => ({ levels: state.levels, expand: state.expand }),
+}));
+const tn = (n: number, parentId: string) => ({ id: `id-${n}`, identifier: `CHE-${n}`, title: `Issue ${n}`, status: "todo", parentId, context: false });
+const fullLevels = () => ({
+  1: { nodes: [tn(100, "id-2"), tn(101, "id-2"), tn(102, "id-2")], status: "ready" },
+  2: { nodes: [tn(300, "id-100"), tn(301, "id-100"), tn(302, "id-102")], status: "ready" },
+  3: { nodes: [], status: "ready" },
+});
+
 const issue = { id: "id-2", identifier: "CHE-2", title: "x", status: "in_progress", parent_issue_id: "id-1" } as Issue;
 const ui = () => <I18nProvider locale="en" resources={{ en: { issues: enIssues } }}><IssueHierarchy issue={issue} /></I18nProvider>;
-const world = () => screen.getByTestId("hierarchy-world").style.transform;
-const percent = () => screen.getByRole("status", { name: /^Zoom/ }).textContent;
 const press = (key: string, times = 1) => { for (let i = 0; i < times; i++) fireEvent.keyDown(screen.getByTestId("hierarchy-canvas"), { key }); };
 const openCanvas = () => fireEvent.click(screen.getByRole("button", { name: "Expand hierarchy" }));
 
 beforeEach(() => {
   state.loading = false;
+  state.levels = fullLevels();
+  state.expand.mockClear();
   push.mockClear();
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 1000, height: 600, x: 0, y: 0, top: 0, left: 0, right: 1000, bottom: 600, toJSON: () => ({}) });
 });
@@ -91,74 +103,117 @@ describe("minimap", () => {
   });
 });
 
-describe("canvas dialog", () => {
-  it("opens focused on the canvas, zoomed out to group totals", async () => {
-    render(ui());
-    openCanvas();
-    const canvas = screen.getByTestId("hierarchy-canvas");
-    await waitFor(() => expect(canvas).toHaveFocus());
-    expect(canvas).toHaveAttribute("data-mode", "groups");
-    expect(within(canvas).getByText("21 siblings")).toBeInTheDocument();
+const canvas = () => screen.getByTestId("hierarchy-canvas");
+const ready = () => canvas().getAttribute("data-level-ready");
+const ids = () => within(canvas()).queryAllByRole("link").map((a) => a.textContent?.match(/CHE-\d+/)?.[0]);
+const marks = () => (performance.mark as unknown as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+
+describe("canvas dialog: focus-depth levels (CHE-5715)", () => {
+  beforeEach(() => {
+    vi.spyOn(performance, "mark").mockImplementation((() => undefined) as never);
   });
-  it("zooms with + and -, and splits groups into single issues from 70%", () => {
+  it("opens on depth 0: the root card with one count card, canvas focused, level ready", async () => {
     render(ui());
     openCanvas();
-    const start = Number.parseInt(percent()!, 10);
+    await waitFor(() => expect(canvas()).toHaveFocus());
+    expect(ready()).toBe("0");
+    expect(within(canvas()).getByText("CHE-2")).toBeInTheDocument();
+    expect(within(canvas()).getByText("3 children")).toBeInTheDocument();
+    expect(screen.getByText("Depth 0 / 2")).toBeInTheDocument();
+  });
+  it("+ steps in to the children level, - and Escape step back out, Escape at the root closes the dialog", () => {
+    render(ui());
+    openCanvas();
     press("+");
-    expect(Number.parseInt(percent()!, 10)).toBeGreaterThan(start);
+    expect(ready()).toBe("1");
+    expect(ids()).toEqual(["CHE-100", "CHE-101", "CHE-102"]);
+    press("-");
+    expect(ready()).toBe("0");
+    press("+");
+    press("Escape");
+    expect(ready()).toBe("0");
+    expect(screen.getByTestId("hierarchy-dialog")).toBeInTheDocument();
+    press("Escape");
+    expect(screen.queryByTestId("hierarchy-dialog")).not.toBeInTheDocument();
+  });
+  it("+ stops at the deepest level; the button is disabled there", () => {
+    render(ui());
+    openCanvas();
     press("+", 5);
-    expect(screen.getByTestId("hierarchy-canvas")).toHaveAttribute("data-mode", "cards");
-    expect(within(screen.getByTestId("hierarchy-canvas")).getAllByRole("link").length).toBeGreaterThan(50);
-    press("-", 8);
-    expect(screen.getByTestId("hierarchy-canvas")).toHaveAttribute("data-mode", "groups");
+    expect(ready()).toBe("2");
+    expect(screen.getByRole("button", { name: "Step in" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Step out" })).toBeEnabled();
   });
-  it("pans with the arrow keys", () => {
+  it("Space steps in, and steps out at the deepest level", () => {
     render(ui());
     openCanvas();
-    const before = world();
-    press("ArrowRight");
-    expect(world()).not.toBe(before);
+    press(" ");
+    expect(ready()).toBe("1");
+    press(" ");
+    expect(ready()).toBe("2");
+    press(" ");
+    expect(ready()).toBe("1");
   });
-  it("buttons zoom, Fit restores the whole hierarchy and Me centres the current issue", () => {
+  it("marks level-start then level-ready for every level change", () => {
     render(ui());
     openCanvas();
-    const fitted = percent();
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
-    expect(percent()).not.toBe(fitted);
-    fireEvent.click(screen.getByRole("button", { name: "Me" }));
-    expect(percent()).toBe("100%");
-    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
-    expect(percent()).toBe(fitted);
+    press("+");
+    press("-");
+    expect(marks().filter((m) => m === "level-start")).toHaveLength(2);
+    expect(marks().filter((m) => m === "level-ready")).toHaveLength(2);
+    expect(marks().slice(-2)).toEqual(["level-start", "level-ready"]);
   });
-  it("highlights off-screen cards in the overview after panning away", () => {
+  it("requests the count level on mount and the next one when the focus steps in", () => {
+    state.levels = {};
+    const first = render(ui());
+    openCanvas();
+    expect(state.expand).toHaveBeenCalledWith(0);
+    first.unmount();
+    state.levels = { 1: fullLevels()[1] };
+    state.expand.mockClear();
     render(ui());
     openCanvas();
-    expect(screen.queryAllByTestId("overview-offscreen")).toHaveLength(0);
-    press("ArrowRight", 40);
-    expect(screen.getAllByTestId("overview-offscreen").length).toBeGreaterThan(0);
-    expect(screen.getByText(/off-screen/)).toBeInTheDocument();
+    expect(state.expand).not.toHaveBeenCalled();
+    press("+");
+    expect(state.expand).toHaveBeenCalledWith(1);
   });
-  it("draws the overview blocks with real SVG geometry (width and height)", () => {
+  it("is not ready while the count level is still loading", () => {
+    state.levels = { 1: { nodes: [], status: "loading" } };
     render(ui());
     openCanvas();
-    const svg = screen.getByRole("img", { name: "Overview" });
-    const blocks = Array.from(svg.querySelectorAll("rect"));
-    expect(blocks.length).toBeGreaterThan(2);
-    blocks.forEach((rect) => {
-      expect(Number(rect.getAttribute("width"))).toBeGreaterThan(0);
-      expect(Number(rect.getAttribute("height"))).toBeGreaterThan(0);
-    });
+    expect(canvas()).not.toHaveAttribute("data-level-ready");
+    expect(screen.getByRole("status", { name: "Loading hierarchy…" })).toBeInTheDocument();
   });
-  it("animates button moves but never when reduced motion is asked for", () => {
+  it("a failed level shows a retry that reloads it", () => {
+    state.levels = { 1: { nodes: [], status: "failed" } };
     render(ui());
     openCanvas();
-    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
-    expect(screen.getByTestId("hierarchy-world").className).toContain("motion-reduce:transition-none");
+    state.expand.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(state.expand).toHaveBeenCalledWith(0);
   });
+  it("animates a level change over 240 ms, but not with reduced motion", () => {
+    const animate = vi.fn();
+    HTMLElement.prototype.animate = animate;
+    render(ui());
+    openCanvas();
+    press("+");
+    expect(animate).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ duration: 240 }));
+    animate.mockClear();
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    press("-");
+    expect(animate).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+    // @ts-expect-error test cleanup
+    delete HTMLElement.prototype.animate;
+  });
+});
+
+describe("canvas dialog: opening an issue", () => {
   const openCard = () => {
     openCanvas();
-    press("+", 5);
-    fireEvent.click(within(screen.getByTestId("hierarchy-canvas")).getByRole("link", { name: /CHE-100/ }));
+    press("+");
+    fireEvent.click(within(canvas()).getByRole("link", { name: /CHE-100/ }));
   };
   it("shrinks the dialog toward the minimap for ~180ms before navigating, then focuses the minimap heading", async () => {
     render(ui());
@@ -197,8 +252,8 @@ describe("canvas dialog", () => {
   it("leaves modifier clicks to the browser", () => {
     render(ui());
     openCanvas();
-    press("+", 5);
-    fireEvent.click(within(screen.getByTestId("hierarchy-canvas")).getByRole("link", { name: /CHE-100/ }), { metaKey: true });
+    press("+");
+    fireEvent.click(within(canvas()).getByRole("link", { name: /CHE-100/ }), { metaKey: true });
     expect(push).not.toHaveBeenCalled();
     expect(screen.getByTestId("hierarchy-dialog")).toBeInTheDocument();
   });

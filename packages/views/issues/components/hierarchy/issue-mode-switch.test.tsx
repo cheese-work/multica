@@ -20,6 +20,7 @@ vi.mock("./use-hierarchy", () => ({
     wakeCount: null, mentionCount: null, mentionsLoading: false, refetch: vi.fn(),
   }),
 }));
+vi.mock("./use-hierarchy-levels", () => ({ capLevel: () => ({ shown: [], hidden: 0, pending: false }), useHierarchyLevels: () => ({ levels: {}, expand: vi.fn() }) }));
 vi.mock("../swimlane2/swimlane2-issue-tree", () => ({ Swimlane2IssueTree: () => <div>swimlane tree stub</div> }));
 
 const fake: IssueMode = {
