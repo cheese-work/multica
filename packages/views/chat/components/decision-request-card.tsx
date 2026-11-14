@@ -214,6 +214,7 @@ function DecisionAnswerForm({
             const selected = mode === value;
             const blocked = value === "approve" && decide.controls.approveDisabled;
             return (
+              // ui-pattern-ref: allow radio segment (role=radio, roving tabindex); Button has no radio variant, see choice-card
               <button
                 key={value}
                 ref={(node) => { radios.current[value] = node; }}
@@ -378,6 +379,7 @@ function ActionPreview({
       {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
       {configChange && (
         <div className="space-y-2">
+          {/* ui-pattern-ref: allow inline disclosure toggle (aria-expanded) matching the card Details link; Button has no text-disclosure variant */}
           <button
             type="button"
             aria-expanded={showDetails}
