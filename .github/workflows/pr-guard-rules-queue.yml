@@ -1,0 +1,22 @@
+name: pr-guard-rules-queue
+
+# CHE-5208: runs the PR guard rules check on every merge-queue build, so it is judged again at merge time. The result
+# of an earlier PR run can be stale: the stored policy copy (repository variables), the repository's
+# `.github/agent-rules.yml` on the base branch, a PR edit or a removed reviewer may have changed since. The queue build
+# reads all of them again. The job id and name match the calls in pr-guards.yml and pr-guard-rules-edit.yml, so
+# GitHub shows one required context for the PR and for the queue.
+# SECURITY: a `merge_group` run uses the merged tree. The reusable check therefore builds the CLI from the queue's base
+# commit, never from the PR code in the queue ref. A PR that edits this workflow changes a gate path and needs review.
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions: {}
+
+jobs:
+  guard-check:
+    uses: ./.github/workflows/pr-guard-rules.yml
+    permissions:
+      contents: read
+      pull-requests: read

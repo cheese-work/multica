@@ -248,6 +248,7 @@ type AgentTaskQueue struct {
 	Purpose                   pgtype.Text        `json:"purpose"`
 	CancelAckReason           pgtype.Text        `json:"cancel_ack_reason"`
 	SourceChatSessionID       pgtype.UUID        `json:"source_chat_session_id"`
+	TriggerKind               pgtype.Text        `json:"trigger_kind"`
 }
 
 type AgentToLabel struct {
@@ -1327,6 +1328,7 @@ type DecisionRequest struct {
 	AnswerRevision           int32              `json:"answer_revision"`
 	WakeSeq                  int64              `json:"wake_seq"`
 	BatchID                  pgtype.UUID        `json:"batch_id"`
+	PingOutcome              pgtype.Text        `json:"ping_outcome"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
 }
