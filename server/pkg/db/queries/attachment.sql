@@ -3,12 +3,14 @@ WITH inserted AS (
   INSERT INTO attachment (
     id, workspace_id, issue_id, comment_id, chat_session_id, task_id, source_context_id,
     uploader_type, uploader_id, filename, url, content_type, size_bytes, external_read,
-    revision, revision_of, revision_root, sha256
+    revision, revision_of, revision_root, sha256,
+    width, height
   )
   VALUES (
     $1, $2, sqlc.narg(issue_id), sqlc.narg(comment_id), sqlc.narg(chat_session_id), sqlc.narg(task_id), sqlc.narg(source_context_id),
     $3, $4, $5, $6, $7, $8, COALESCE(sqlc.narg(external_read)::boolean, false),
-    COALESCE(sqlc.narg(revision)::int, 1), sqlc.narg(revision_of), sqlc.narg(revision_root), COALESCE(sqlc.narg(sha256)::text, '')
+    COALESCE(sqlc.narg(revision)::int, 1), sqlc.narg(revision_of), sqlc.narg(revision_root), COALESCE(sqlc.narg(sha256)::text, ''),
+    sqlc.narg(width), sqlc.narg(height)
   )
   RETURNING *
 ), bumped_issue AS (
