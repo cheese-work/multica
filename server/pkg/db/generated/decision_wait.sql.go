@@ -506,7 +506,7 @@ func (q *Queries) ListDecisionWaitAnswers(ctx context.Context, arg ListDecisionW
 }
 
 const listDecisionWaitBoundRequests = `-- name: ListDecisionWaitBoundRequests :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.ping_outcome, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.issue_id = $2
   AND (
     (request.status = 'open' AND request.origin = 'asked' AND request.asking_agent_id = $3)
@@ -576,6 +576,7 @@ func (q *Queries) ListDecisionWaitBoundRequests(ctx context.Context, arg ListDec
 			&i.AnswerRevision,
 			&i.WakeSeq,
 			&i.BatchID,
+			&i.PingOutcome,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 		); err != nil {
@@ -768,7 +769,7 @@ func (q *Queries) ListDecisionWaitPendingRetractions(ctx context.Context, reques
 }
 
 const listDecisionWaitRequests = `-- name: ListDecisionWaitRequests :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
 ORDER BY id
 `
@@ -825,6 +826,7 @@ func (q *Queries) ListDecisionWaitRequests(ctx context.Context, arg ListDecision
 			&i.AnswerRevision,
 			&i.WakeSeq,
 			&i.BatchID,
+			&i.PingOutcome,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
 		); err != nil {
