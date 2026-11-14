@@ -1749,6 +1749,13 @@
     "toast_save_failed": "Couldn't save background agents.",
     "load_error": "Couldn't load background agents.",
     "retry": "Retry",
+    "loading": "Loading settings…",
+    "conflict_title": "Another owner saved a change while you were editing.",
+    "conflict_body": "Your change was not saved. Compare, then keep theirs or apply yours again.",
+    "conflict_mine": "Your change (not saved)",
+    "conflict_theirs": "Saved now",
+    "conflict_keep": "Keep their version",
+    "conflict_apply": "Apply my change again",
     "jobs": {
       "dm_title": {
         "label": "DM title",

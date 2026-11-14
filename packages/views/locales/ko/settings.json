@@ -1735,6 +1735,13 @@
     "toast_save_failed": "백그라운드 에이전트를 저장하지 못했습니다.",
     "load_error": "백그라운드 에이전트를 불러오지 못했습니다.",
     "retry": "다시 시도",
+    "loading": "설정을 불러오는 중…",
+    "conflict_title": "편집하는 동안 다른 소유자가 변경 사항을 저장했습니다.",
+    "conflict_body": "내 변경 사항은 저장되지 않았습니다. 비교한 뒤 상대 버전을 유지하거나 내 변경을 다시 적용하세요.",
+    "conflict_mine": "내 변경 (저장되지 않음)",
+    "conflict_theirs": "현재 저장된 값",
+    "conflict_keep": "상대 버전 유지",
+    "conflict_apply": "내 변경 다시 적용",
     "jobs": {
       "dm_title": {
         "label": "DM 제목",

@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
+import { ApiError } from "@multica/core/api/client";
 import { renderWithI18n } from "../../test/i18n";
 import { BackgroundAgentsTab } from "./background-agents-tab";
 
@@ -67,8 +68,8 @@ beforeEach(() => {
     agent("a-old", "Retired", { archived_at: "2026-11-01T00:00:00Z" }),
     agent("a-dana", "Dana notes bot", { visibility: "private" }),
   ]);
-  read.mockReset().mockResolvedValue(structuredClone(stored) as never);
-  write.mockReset().mockImplementation(async (_ws, value) => value as never);
+  read.mockReset().mockResolvedValue({ value: structuredClone(stored), etag: '"v1"' } as never);
+  write.mockReset().mockImplementation(async (_ws, value) => ({ value, etag: '"v2"' }) as never);
 });
 
 describe("BackgroundAgentsTab", () => {
@@ -108,7 +109,7 @@ describe("BackgroundAgentsTab", () => {
         statuses: ["todo", "blocked"],
         overrides: { todo: "a-haiku" },
       },
-    });
+    }, '"v1"');
   });
 
   it("keeps the primary slot when only the fallback changes", async () => {
@@ -129,7 +130,7 @@ describe("BackgroundAgentsTab", () => {
   });
 
   it("clearing the primary agent clears the fallback in the same PUT", async () => {
-    read.mockResolvedValue({ quick_actions: { agent_id: "a-haiku", fallback_agent_id: "a-luna" } } as never);
+    read.mockResolvedValue({ value: { quick_actions: { agent_id: "a-haiku", fallback_agent_id: "a-luna" } }, etag: '"v1"' } as never);
     mount();
     await choose("Quick actions: Agent", "No agent");
 
@@ -153,5 +154,82 @@ describe("BackgroundAgentsTab", () => {
     await choose("DM title: Agent", "Luna");
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("agent not found"));
+  });
+
+  it.each(["owner", "member"] as const)("%s sees the load error and Retry when the response is malformed", async (who) => {
+    role.current = who;
+    read.mockResolvedValueOnce(null);
+    mount();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load background agents.");
+    expect(screen.queryByText("No agent")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("No agent: no buttons.")).toBeInTheDocument();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows an empty saved value ({}) as No agent, not as an error", async () => {
+    read.mockResolvedValue({ value: {}, etag: '"v0"' } as never);
+    mount();
+    expect(await screen.findByText("No agent: no buttons.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Quick actions: Agent" })).toHaveTextContent("No agent");
+  });
+
+  describe("another owner saved first (409)", () => {
+    const theirs = {
+      quick_actions: { agent_id: "a-luna", fallback_agent_id: null },
+      compact: { agent_id: "a-luna" },
+    };
+    const conflict = () =>
+      new ApiError("conflict", 409, "Conflict", { code: "background_agents_conflict", current: theirs, etag: '"v9"' });
+
+    async function conflictOnDmTitle() {
+      write.mockReset().mockRejectedValueOnce(conflict());
+      mount();
+      await choose("DM title: Agent", "Haiku router");
+      return await screen.findByRole("alert");
+    }
+
+    it("sends If-Match, saves nothing, and shows both versions instead of overwriting", async () => {
+      const alert = await conflictOnDmTitle();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0]![2]).toBe('"v1"');
+      expect(alert).toHaveTextContent("Another owner saved a change while you were editing.");
+      expect(alert).toHaveTextContent("Your change was not saved.");
+      expect(screen.getByText("Your change (not saved)")).toBeInTheDocument();
+      expect(screen.getByText("Saved now")).toBeInTheDocument();
+      // The page already shows their value, not the stale one.
+      expect(screen.getByRole("combobox", { name: "Quick actions: Agent" })).toHaveTextContent("Luna");
+      expect(mockToastError).not.toHaveBeenCalled();
+    });
+
+    it("Keep their version drops my change and sends nothing", async () => {
+      await conflictOnDmTitle();
+      await userEvent.click(screen.getByRole("button", { name: "Keep their version" }));
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: "DM title: Agent" })).toHaveTextContent("No agent");
+      expect(write).toHaveBeenCalledTimes(1);
+    });
+
+    it("Apply my change again saves on top of their value with the new ETag", async () => {
+      await conflictOnDmTitle();
+      write.mockImplementationOnce(async (_ws, value) => ({ value, etag: '"v10"' }) as never);
+      await userEvent.click(screen.getByRole("button", { name: "Apply my change again" }));
+
+      await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+      expect(write.mock.calls[1]![1]).toMatchObject({
+        dm_title: { agent_id: "a-haiku", fallback_agent_id: null },
+        quick_actions: { agent_id: "a-luna", fallback_agent_id: null },
+      });
+      expect(write.mock.calls[1]![2]).toBe('"v9"');
+      await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    });
+
+    it("keeps editing off while the conflict is open", async () => {
+      await conflictOnDmTitle();
+      expect(screen.getByRole("combobox", { name: "DM title: Agent" })).toBeDisabled();
+    });
   });
 });

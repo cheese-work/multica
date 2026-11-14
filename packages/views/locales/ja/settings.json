@@ -1735,6 +1735,13 @@
     "toast_save_failed": "バックグラウンドエージェントを保存できませんでした。",
     "load_error": "バックグラウンドエージェントを読み込めませんでした。",
     "retry": "再試行",
+    "loading": "設定を読み込み中…",
+    "conflict_title": "編集中に別のオーナーが変更を保存しました。",
+    "conflict_body": "あなたの変更は保存されていません。比較して、相手の変更を残すか、自分の変更をもう一度適用してください。",
+    "conflict_mine": "あなたの変更（未保存）",
+    "conflict_theirs": "現在の保存内容",
+    "conflict_keep": "相手の変更を残す",
+    "conflict_apply": "自分の変更をもう一度適用",
     "jobs": {
       "dm_title": {
         "label": "DM タイトル",

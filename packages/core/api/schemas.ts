@@ -4757,6 +4757,8 @@ export type BackgroundAgentChain = z.infer<typeof BackgroundAgentChainSchema>;
 
 export const BackgroundAgentsSchema = z.lazy(() => z.record(z.string(), BackgroundAgentChainSchema));
 export type BackgroundAgents = z.infer<typeof BackgroundAgentsSchema>;
+// A read plus the ETag a save must present so a concurrent save is refused.
+export type BackgroundAgentsRead = { value: BackgroundAgents; etag: string | null };
 
 // CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
 // empty; a malformed requires_human_decision reads as true, the fail-closed

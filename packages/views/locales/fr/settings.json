@@ -1749,6 +1749,13 @@
     "toast_save_failed": "Impossible d'enregistrer les agents d'arrière-plan.",
     "load_error": "Impossible de charger les agents d'arrière-plan.",
     "retry": "Réessayer",
+    "loading": "Chargement des paramètres…",
+    "conflict_title": "Un autre propriétaire a enregistré une modification pendant que vous modifiiez.",
+    "conflict_body": "Votre modification n'a pas été enregistrée. Comparez, puis gardez la leur ou appliquez à nouveau la vôtre.",
+    "conflict_mine": "Votre modification (non enregistrée)",
+    "conflict_theirs": "Enregistré actuellement",
+    "conflict_keep": "Garder leur version",
+    "conflict_apply": "Appliquer de nouveau ma modification",
     "jobs": {
       "dm_title": {
         "label": "Titre des DM",
