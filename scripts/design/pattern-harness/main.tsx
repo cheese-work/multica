@@ -63,6 +63,7 @@ import { NavigationProvider } from "../../../packages/views/navigation/context";
 import {
   seedRawElements, DecisionBanner, HierarchyMinimap, HierarchyDialogPage, WakeupEventRowPage, ConditionParamsPage,
   WakeupFieldsPage, WakeupPickersPage, WorkspaceWakeupRulesPage, ChatSearchPage, ConfigChangeViewerPage,
+  DecisionArtifactsPage, DecisionRequestCardPage, NeedsYouListPage, QuickAgentBarPage, DelegatedWritesPage,
 } from "./raw-elements";
 import "./globals.css";
 
@@ -1137,6 +1138,11 @@ const PATTERNS: Record<string, () => React.JSX.Element> = {
   "workspace-wakeup-rules": WorkspaceWakeupRulesPage,
   "chat-search": ChatSearchPage,
   "config-change-viewer": ConfigChangeViewerPage,
+  "decision-artifacts": DecisionArtifactsPage,
+  "decision-request-card": DecisionRequestCardPage,
+  "needs-you-list": NeedsYouListPage,
+  "quick-agent-bar": QuickAgentBarPage,
+  "delegated-writes-section": DelegatedWritesPage,
   buttons: Buttons,
   dialogs: Dialogs,
   "dialogs-alert": AlertDialogs,

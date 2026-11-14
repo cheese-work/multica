@@ -2082,12 +2082,16 @@ WHERE id = sqlc.arg('id') AND cancel_acked_at IS NULL
 -- dispatched before the grace cutoff (so a claim still in flight to the daemon
 -- is not mistaken for a stopped run) and since the daemon process booted (a
 -- restarted daemon cannot vouch for a run it did not start), is proven stopped: stamp cancel_acked_at
--- with reason 'daemon_reconcile'. An offline runtime attests nothing. A run
+-- with reason 'daemon_reconcile'. CHE-5745: when the daemon's host scan was
+-- clean (host_scan_ok) and no process carries the task id (host_task_ids), a run
+-- from before the boot is proven stopped too, reason 'host_scan'. An offline
+-- runtime attests nothing. A run
 -- rewritten after the cancel (stop_unconfirmed_at) or whose cancel result
 -- reports a pending process cleanup is not released: only a cleanup-confirmed
 -- cancel-ack settles those. The first ack wins.
 UPDATE agent_task_queue t
-SET cancel_acked_at = now(), cancel_ack_reason = 'daemon_reconcile'
+SET cancel_acked_at = now(),
+    cancel_ack_reason = CASE WHEN t.dispatched_at < sqlc.arg('dispatched_after') THEN 'host_scan' ELSE 'daemon_reconcile' END
 FROM agent_runtime r
 WHERE r.id = t.runtime_id
   AND r.status = 'online'
@@ -2098,8 +2102,9 @@ WHERE r.id = t.runtime_id
   AND t.stop_unconfirmed_at IS NULL
   AND t.dispatched_at IS NOT NULL
   AND t.dispatched_at < sqlc.arg('dispatched_before')
-  AND t.dispatched_at >= sqlc.arg('dispatched_after')
+  AND (sqlc.arg('host_scan_ok')::boolean OR t.dispatched_at >= sqlc.arg('dispatched_after'))
   AND NOT (t.id = ANY(sqlc.arg('live_task_ids')::uuid[]))
+  AND NOT (t.id = ANY(sqlc.arg('host_task_ids')::uuid[]))
   AND COALESCE(t.result->>'process_cleanup_pending', '') <> 'true'
 RETURNING t.id, t.issue_id;
 

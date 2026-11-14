@@ -28,6 +28,12 @@ import { chatSearchKeys, useChatSearchStore } from "@multica/core/chat/search";
 import { squadListOptions } from "../../../packages/core/workspace/queries";
 import * as stub from "./workspace-stub"; // the aliased core/workspace/queries the picker components read
 import { ConditionParams } from "../../../packages/views/issues/components/wakeup-condition-params";
+import { DecisionArtifacts } from "../../../packages/views/chat/components/decision-artifacts";
+import { DecisionRequestCard } from "../../../packages/views/chat/components/decision-request-card";
+import { NeedsYouList } from "../../../packages/views/chat/components/needs-you-list";
+import { QuickAgentBar } from "../../../packages/views/chat/components/quick-agent-bar";
+import { DelegatedWritesSection } from "../../../packages/views/settings/components/delegated-writes-section";
+import { chatKeys } from "@multica/core/chat/queries";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -80,7 +86,13 @@ export function seedRawElements(qc: QueryClient) {
   setApiInstance({
     listChildIssues: async (id: string) => ({ issues: CHILDREN_OF[id] ?? [] }),
     getIssue: async (id: string) => (id === PARENT.id ? PARENT : CURRENT),
-    listDecisionArtifacts: async () => [],
+    listDecisionArtifacts: async (id: string) => {
+      if (id === "rq-art-err") throw new Error("harness: artifacts unavailable");
+      return ARTIFACTS[id] ?? [];
+    },
+    getDelegatedWrites: async (ws: string) => DELEGATED[ws] ?? null,
+    updateDelegatedWrites: async (_ws: string, rule: unknown) => rule,
+    listChatPinnedAgents: async () => PINNED,
   } as never);
   // Components read the signed-in user (assignee pickers, decision card); no real auth runs here.
   registerAuthStore(create(() => ({ user: { id: "u1", name: "Cheese", email: "c@example.com" }, isLoading: false })) as never);
@@ -115,6 +127,7 @@ export function seedRawElements(qc: QueryClient) {
     answer: { state: "delivered", text: "One frame, grows", option: "One frame, grows" }, record_comment_id: "cm1",
   })]);
   seedSS2(set);
+  seedSS3(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
@@ -335,6 +348,131 @@ export function ConfigChangeViewerPage() {
       <After pick={tab("changes")}><ConfigChangeViewer change={CHANGE as never} /></After>
       <Label>Result tab open</Label>
       <After pick={tab("result")}><ConfigChangeViewer change={{ ...CHANGE, field: "workspace.settings" } as never} /></After>
+    </div>
+  );
+}
+
+// ---- SS3 (CHE-5536): decision-artifacts, decision-request-card, needs-you-list, quick-agent-bar, delegated-writes-section ----
+const att = (id: string, filename: string, size: number, type = "text/markdown") => ({
+  id, filename, content_type: type, size_bytes: size, download_url: `/harness/${id}`,
+});
+const SHA = (c: string) => c.repeat(64);
+const ARTIFACTS: Record<string, unknown[]> = {
+  "rq-art-1": [
+    {
+      attachment_id: "at-1", label: "Plan r19", sha256: SHA("a"), supersedes_attachment_id: "at-0",
+      signed_by: { reviewer: "x99-codex-terra", comment_id: "cm-9" }, supersedes_signed_by: { reviewer: "x99-codex-terra", comment_id: "cm-3" },
+      attachment: att("at-1", "plan-r19.md", 18_432),
+      diff: { previous_filename: "plan-r18.md", hunks: [{ old_start: 12, new_start: 12, lines: [" ## Sizing", "-Batches of 7 items.", "+Batches of 5 items at most (S4a: 18 min per frame).", " Serial, one stage each."] }] },
+    },
+    { attachment_id: "at-2", label: "Capture notes", sha256: SHA("b"), attachment: att("at-2", "capture-notes.md", 2_210) },
+    { attachment_id: "at-3", label: "Harness log", sha256: SHA("c"), signed_by: { reviewer: "x99-claude-opus", comment_id: "cm-11" }, attachment: att("at-3", "harness-build.log", 94_000, "text/plain") },
+  ],
+};
+const DELEGATED: Record<string, unknown> = {
+  "ws-dw-edit": { allowed_agents: [AGENT], allowed_fields: ["workflow.steps", "squad.instructions", "project.description"], requires_human_decision: true },
+  "ws-dw-view": { allowed_agents: [AGENT], allowed_fields: ["agent.instructions", "workflow.budget"], requires_human_decision: false },
+};
+const PINNED = [{ agent_id: AGENT }, { agent_id: "agent-ux" }, { agent_id: "agent-ops" }];
+const AGENTS = [
+  { id: AGENT, name: "x99-claude-sonnet-design" }, { id: "agent-ux", name: "x99-codex-terra" },
+  { id: "agent-ops", name: "x99-claude-opus" }, { id: "agent-dev", name: "x99-codex-luna" },
+].map((a) => ({ ...a, workspace_id: WS, runtime_id: "rt1", archived_at: null }));
+const ASK = "**Decision**\nWhich reference frame layout should the 7 batches share?\n\n**Effect**\nSS3 to SS7 append to the frame you pick.";
+const sessionRow = (n: number, level: string, source: string, title: string, minutesAgo: number, extra: Record<string, unknown> = {}) => ({
+  id: `cs-n${n}`, workspace_id: WS, agent_id: AGENT, creator_id: "u1", title, status: "active", has_unread: true, pinned: false,
+  stale_level: level, attention_source: source, attention_since: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  attention_keys: [`turn:t${n}`], created_at: NOW, updated_at: NOW, ...extra,
+});
+const SESSIONS = [
+  sessionRow(1, "red", "ask", "Which frame layout should the batches share?", 26 * 60),
+  sessionRow(2, "yellow", "decision", "Approve plan r19 for CHE-5420", 5 * 60),
+  sessionRow(3, "yellow", "unseen", "Doop OAuth for the capture agent", 4.5 * 60),
+  sessionRow(4, "fresh", "decision", "x99-codex-terra proposes delegated writes v3 on CHE-5430", 20),
+  sessionRow(5, "fresh", "later", "Renderer outage on the frame screenshot", 12),
+  sessionRow(6, "fresh", "ask", "Release sub-stage 4", 3),
+  { ...sessionRow(7, "none", "ask", "Untyped replies to triage", 90), stale_level: "none", attention_source: null, attention_since: null, attention_keys: [], attention_unclassified_keys: ["turn:u1", "turn:u2"] },
+];
+
+function seedSS3(set: (key: readonly unknown[], data: unknown) => void) {
+  set(chatKeys.sessions(WS), SESSIONS);
+  set(chatKeys.pinnedAgents(WS), PINNED);
+  for (const [ws, rule] of Object.entries(DELEGATED)) set(["delegated-writes", ws], rule);
+  set(stub.agentListOptions(WS).queryKey, AGENTS);
+  set(agentListOptions(WS).queryKey, AGENTS);
+  for (const id of ["rq-ss3-open", "rq-ss3-recorded", "rq-ss3-withdrawn"]) set(decisionArtifactKeys.list(id), []);
+}
+
+export function DecisionArtifactsPage() {
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>3 files: signed with diff, unsigned, signed without diff (approving)</Label>
+      <DecisionArtifacts requestId="rq-art-1" answered={false} />
+      <Label>same files, request answered (approved)</Label>
+      <DecisionArtifacts requestId="rq-art-1" answered />
+      <Label>list failed: retry banner</Label>
+      <DecisionArtifacts requestId="rq-art-err" answered={false} />
+    </div>
+  );
+}
+
+export function DecisionRequestCardPage() {
+  const open = { ...card("rq-ss3-open", 5430, "open"), ask: ASK, covers_request_ids: undefined };
+  const recorded = {
+    ...card("rq-ss3-recorded", 5430, "answered"), ask: ASK,
+    answer: { state: "delivered", text: "One frame, grows", option: "One frame, grows", chosen_option_index: 1, option_label: "One frame, grows" },
+    record_comment_id: "cm1",
+  };
+  const withdrawn = { ...card("rq-ss3-withdrawn", 5430, "open"), ask: ASK, state: "withdrawn", withdrawn_at: "2026-11-13T08:55:00Z", reason: "Superseded by the plan r19 decision." };
+  return (
+    <div className="grid max-w-[1100px] items-start gap-6 p-6 lg:grid-cols-2">
+      <div>
+        <Label>open, 2 options</Label>
+        <DecisionRequestCard card={open as never} />
+      </div>
+      <div>
+        <Label>answered, recorded (folded)</Label>
+        <DecisionRequestCard card={recorded as never} />
+        <Label>withdrawn (folded)</Label>
+        <DecisionRequestCard card={withdrawn as never} />
+      </div>
+    </div>
+  );
+}
+
+export function NeedsYouListPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("[aria-expanded=false]");
+  return (
+    <div className="w-[360px] p-3">
+      <After pick={expand}>
+        <NeedsYouList sessions={SESSIONS as never} agents={AGENTS as never} refresh={false} />
+      </After>
+    </div>
+  );
+}
+
+export function QuickAgentBarPage() {
+  return (
+    <div className="w-[320px]">
+      <Label>3 pinned, room to add</Label>
+      <QuickAgentBar agents={AGENTS as never} userId="u1" onStartNewChat={noop} />
+    </div>
+  );
+}
+
+export function DelegatedWritesPage() {
+  const root = useRef<HTMLDivElement>(null);
+  // Owner variant opens its editor after hydration settles (the refetch on mount replaces the seeded rule first).
+  useEffect(() => {
+    const t = setTimeout(() => [...root.current!.querySelectorAll<HTMLElement>("button")].find((b) => /edit rule/i.test(b.textContent ?? ""))?.click(), 600);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div ref={root} className="grid max-w-[900px] gap-2 p-6">
+      <Label>member, read-only (writes directly)</Label>
+      <DelegatedWritesSection wsId="ws-dw-view" canEdit={false} />
+      <Label>owner or admin, editor opened (decision required)</Label>
+      <DelegatedWritesSection wsId="ws-dw-edit" canEdit />
     </div>
   );
 }
