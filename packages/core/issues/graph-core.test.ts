@@ -81,6 +81,20 @@ describe("buildGraph retarget", () => {
   });
 });
 
+describe("buildGraph edge id (repeated firings)", () => {
+  it("keeps two edges with the same (type, source, target) apart when they carry distinct ids", () => {
+    const g = buildGraph({ nodes: tree, edges: [{ ...edge("b1", "a1"), id: "e1" }, { ...edge("b1", "a1"), id: "e2" }] });
+    expect(g.edges.map((e) => e.id)).toEqual(["e1", "e2"]);
+  });
+
+  it("still merges retargeted edges of one id, and edges without an id keep the old merge", () => {
+    const withId = buildGraph({ nodes: tree, edges: [{ ...edge("b1", "a1"), id: "e1" }, { ...edge("b1", "a2"), id: "e1" }], collapsed: new Set(["a"]) });
+    expect(withId.edges).toHaveLength(1);
+    const noId = buildGraph({ nodes: tree, edges: [edge("b1", "a1"), edge("b1", "a1")] });
+    expect(noId.edges).toHaveLength(1);
+  });
+});
+
 describe("buildGraph cycle", () => {
   const cyc = [node("n3", "n1"), node("n1", "n2"), node("n2", "n3"), node("n4", "n3")];
 
