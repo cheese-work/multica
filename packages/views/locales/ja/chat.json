@@ -559,8 +559,11 @@
     "recent_runs_status": { "completed": "完了", "failed": "失敗", "cancelled": "キャンセル", "running": "実行中", "other": "待機中" },
     "config_change": {
       "viewer_label": "承認する変更",
-      "tab_changes": "変更点",
-      "tab_result": "結果",
+      "show_full": "全文を表示",
+      "hide_full": "全文を隠す",
+      "row_changed": "変更",
+      "row_added": "追加",
+      "row_removed": "削除",
       "changes_region": "{{field}}の変更点",
       "result_region": "承認後の結果",
       "no_changes": "変更された行はありません。",

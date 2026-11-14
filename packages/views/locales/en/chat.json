@@ -577,8 +577,11 @@
     "recent_runs_status": { "completed": "Completed", "failed": "Failed", "cancelled": "Cancelled", "running": "Running", "other": "Queued" },
     "config_change": {
       "viewer_label": "Change to approve",
-      "tab_changes": "Changes",
-      "tab_result": "Result",
+      "show_full": "Show full",
+      "hide_full": "Hide full",
+      "row_changed": "Changed",
+      "row_added": "Added",
+      "row_removed": "Removed",
       "changes_region": "Changes to {{field}}",
       "result_region": "Result after approval",
       "no_changes": "No line changes.",

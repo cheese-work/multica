@@ -577,8 +577,11 @@
     "recent_runs_status": { "completed": "Terminé", "failed": "Échec", "cancelled": "Annulé", "running": "En cours", "other": "En attente" },
     "config_change": {
       "viewer_label": "Changement à approuver",
-      "tab_changes": "Modifications",
-      "tab_result": "Résultat",
+      "show_full": "Tout afficher",
+      "hide_full": "Masquer",
+      "row_changed": "Modifié",
+      "row_added": "Ajouté",
+      "row_removed": "Supprimé",
       "changes_region": "Modifications de {{field}}",
       "result_region": "Résultat après approbation",
       "no_changes": "Aucune ligne modifiée.",
