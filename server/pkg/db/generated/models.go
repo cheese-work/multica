@@ -326,6 +326,8 @@ type Attachment struct {
 	RevisionOf      pgtype.UUID        `json:"revision_of"`
 	RevisionRoot    pgtype.UUID        `json:"revision_root"`
 	Sha256          string             `json:"sha256"`
+	Width           pgtype.Int4        `json:"width"`
+	Height          pgtype.Int4        `json:"height"`
 }
 
 type Autopilot struct {
@@ -2686,6 +2688,7 @@ type Member struct {
 	UserID      pgtype.UUID        `json:"user_id"`
 	Role        string             `json:"role"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	PinnedAt    pgtype.Timestamptz `json:"pinned_at"`
 }
 
 type MemberDelegationDay struct {
@@ -2966,6 +2969,8 @@ type Project struct {
 	WorkflowID        pgtype.UUID        `json:"workflow_id"`
 	DecisionDelegates []pgtype.UUID      `json:"decision_delegates"`
 	WorkflowSplit     []byte             `json:"workflow_split"`
+	CreatorType       pgtype.Text        `json:"creator_type"`
+	CreatorID         pgtype.UUID        `json:"creator_id"`
 }
 
 type ProjectResource struct {

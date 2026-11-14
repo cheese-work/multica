@@ -497,6 +497,7 @@
     "card_load_failed": "無法載入這個任務。",
     "data_error": "這個任務包含應用程式無法讀取的資料。",
     "retry": "重試",
+    "load_retry": "重試",
     "not_found_title": "未找到該任務",
     "breadcrumb_project_unknown": "未知專案",
     "back": "返回",
