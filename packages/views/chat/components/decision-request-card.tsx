@@ -1,8 +1,9 @@
 import { type KeyboardEvent, type RefObject, Suspense, useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Ban, Check, ChevronDown, KeyRound, Loader2, MessageSquareQuote, Undo2, X } from "@multica/ui/icons";
+import { Ban, Check, ChevronDown, Clock, KeyRound, Loader2, MessageSquareQuote, Undo2, X } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
-import { ApiError } from "@multica/core/api";
+import { ApiError, api } from "@multica/core/api";
+import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { useAnswerDecisionRequest } from "@multica/core/issues/decision-answer";
 import {
   type DecisionAnswerDraft as AnswerDraft,
@@ -34,6 +35,7 @@ import { AnnotatableAnswer } from "./annotatable-answer";
 import { ConfigChangeViewer } from "./config-change-viewer";
 import { DecisionArtifacts } from "./decision-artifacts";
 import { DecisionRecentRuns } from "./decision-recent-runs";
+import { DecisionSummary, effectOf, effectText, ictOf } from "./decision-summary";
 import { DECISION_REQUEST_SOURCE_PREFIX } from "./chat-annotation-context";
 
 // Mirrors the server's `maxDecisionCardTextBytes`; it counts the trimmed text, image links included.
@@ -471,6 +473,8 @@ const PICKUP_GRACE_MS = 2 * 60 * 1000;
 // or Withdrawn / Disclaimed. A disclaimed answer can leave the request open
 // again, so the receipt wins over the request state.
 function displayState(card: RequestCard, now: number) {
+  if (card.action?.revoke) return "revoked";
+  if (card.action?.effect === "expired" || card.action?.state === "expired") return "expired";
   if (card.state === "withdrawn") return "withdrawn";
   if (card.answer?.state === "disclaimed") return "disclaimed";
   if (card.state !== "answered") return "open";
@@ -508,24 +512,22 @@ function useNow(card: RequestCard) {
 
 // A decision nobody needs to act on any more: the card collapses to a block under one toggle row (direction B v9).
 // Approved and Rejected show their effect line and facts under the row; the rest keep the one-row fold of PR 1271.
-const FOLDS = new Set(["picked_up", "withdrawn", "disclaimed", "approved", "rejected"]);
-const FOLD_ICONS = { picked_up: Check, withdrawn: Undo2, disclaimed: Ban, approved: Check, rejected: X } as const;
+const FOLDS = new Set(["picked_up", "withdrawn", "disclaimed", "approved", "rejected", "expired", "revoked"]);
+const FOLD_ICONS = { picked_up: Check, withdrawn: Undo2, disclaimed: Ban, approved: Check, rejected: X, expired: Clock, revoked: Undo2 } as const;
+// Decisions whose effect block (DecisionSummary) sits under the fold row.
+const SUMMARIZED = new Set(["approved", "rejected", "expired", "revoked"]);
+
+// Animation (B v9 S9): collapse 240 ms, highlight ring 600 ms, expand 200 ms; all 0 ms under reduced motion.
+const COLLAPSE_MS = 240;
+const EXPAND_MS = 200;
+const RING_MS = 600;
+const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // The folded row names the question: the first line of the ask, markdown marks dropped.
 const questionOf = (ask: string, fallback: string) => {
   const line = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).find(Boolean);
   return line || fallback;
 };
-
-const ictFormat = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Asia/Bangkok",
-  day: "2-digit",
-  month: "short",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
 
 // `inIssue`: shown on the source issue page, where there is no DM message box.
 export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCard; inIssue?: boolean }) {
@@ -539,11 +541,38 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const timestamp = card.state === "withdrawn" ? card.withdrawn_at || card.created_at : card.created_at;
   const date = new Date(timestamp);
   const validDate = !Number.isNaN(date.getTime());
-  const ictText = validDate ? `${ictFormat.format(date)} ICT` : "";
+  const ictText = validDate ? ictOf(timestamp) : "";
   // Expand state is local and never saved. A card already done at load starts folded, so its
   // first paint has nothing to animate; a later change of state runs the CSS transition.
   const [expanded, setExpanded] = useState(false);
   const folded = FOLDS.has(shown) && !expanded;
+  const reduced = reducedMotion();
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const [ring, setRing] = useState(false);
+  const wasFolded = useRef(FOLDS.has(shown));
+  const workspaceId = useCurrentWorkspace()?.id;
+  const queryClient = useQueryClient();
+  const applied = effectOf(card.action)?.kind === "applied";
+  // The moment the server records a decision the card collapses: focus moves to the block header,
+  // and an applied decision gets one soft ring. A card already decided at load does neither.
+  useEffect(() => {
+    const decided = FOLDS.has(shown);
+    const justDecided = decided && !wasFolded.current;
+    wasFolded.current = decided;
+    if (!justDecided) return;
+    toggleRef.current?.focus();
+    if (!applied || reduced) return;
+    setRing(true);
+    const timer = setTimeout(() => setRing(false), RING_MS);
+    return () => clearTimeout(timer);
+  }, [shown, applied, reduced]);
+  const revoke = async (reason: string) => {
+    const assertion = await signPasskeyChallenge(await api.challengeDecisionRevoke(card.id));
+    await api.revokeDecision(card.id, { reason, assertion });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+    if (workspaceId) queryClient.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(workspaceId) });
+  };
   const bodyId = useId();
   const issueHref = paths.issueDetail(card.issue_id);
   const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
@@ -597,22 +626,25 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const formShown = card.state === "open" && !keptDraft && !coveredCardsMissing;
   const undecided = !!card.action && (!card.action.state || card.action.state === "pending");
   const decide: Decide | undefined = formShown && undecided ? { choice, onChoice: setChoice, approvalRef, controls } : undefined;
-  const effect = shown === "rejected" ? t(($) => $.decision.effect_rejected)
-    : shown === "approved" ? t(($) => (card.action?.state === "executed" ? $.decision.effect_applied : $.decision.effect_not_applied))
-    : "";
   const StateIcon = FOLD_ICONS[shown as keyof typeof FOLD_ICONS] ?? MessageSquareQuote;
   return (
     <section
       aria-label={t(($) => $.decision.request_label, { state })}
       data-testid="decision-request-card"
       data-state={shown}
-      className="min-w-0 rounded-xl border border-surface-border bg-surface text-body"
+      data-ring={ring}
+      className={cn("min-w-0 rounded-xl border border-surface-border bg-surface text-body transition-shadow", ring && "ring-2 ring-success/40")}
+      style={{ transitionDuration: reduced ? "0ms" : `${RING_MS}ms` }}
     >
+      <span aria-live="polite" className="sr-only">
+        {SUMMARIZED.has(shown) ? `${state}. ${effectText(card, t)}` : ""}
+      </span>
       {FOLDS.has(shown) && (
         <button
           type="button"
           aria-expanded={!folded}
           aria-controls={bodyId}
+          ref={toggleRef}
           onClick={() => setExpanded((open) => !open)}
           data-testid="decision-request-fold-toggle"
           className="flex min-h-9 w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left text-label focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
@@ -630,22 +662,15 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform duration-200 ease-out motion-reduce:transition-none", !folded && "rotate-180")} aria-hidden />
         </button>
       )}
-      {effect && (
-        <div className="space-y-1 border-t border-surface-border px-3 py-2 text-label">
-          <p data-testid="decision-request-effect" className="font-medium">{effect}</p>
-          <dl data-testid="decision-request-meta" className="grid grid-cols-[auto_1fr] gap-x-3 text-caption text-muted-foreground">
-            {ictText && (<><dt>{t(($) => $.decision.meta_asked)}</dt><dd><time dateTime={timestamp}>{ictText}</time></dd></>)}
-            {card.asking_agent_name && (<><dt>{t(($) => $.decision.meta_from)}</dt><dd>{card.asking_agent_name}</dd></>)}
-          </dl>
-        </div>
-      )}
+      {SUMMARIZED.has(shown) && <DecisionSummary decision={card} onRevoke={inIssue ? undefined : revoke} />}
       <div
         id={bodyId}
         data-fold-body
         data-folded={folded}
         inert={folded}
+        style={{ transitionDuration: reduced ? "0ms" : `${folded ? COLLAPSE_MS : EXPAND_MS}ms` }}
         className={cn(
-          "grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+          "grid grid-cols-[minmax(0,1fr)] transition-[grid-template-rows,opacity] ease-out motion-reduce:transition-none",
           folded ? "grid-rows-[0fr] opacity-0" : "grid-rows-[1fr] opacity-100",
         )}
       >
