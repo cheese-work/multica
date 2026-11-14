@@ -86,7 +86,9 @@ func TestFlush_NoReportAfterFlush(t *testing.T) {
 func TestReporter_NoTwoReportsCloserThanIntervalNorConcurrent(t *testing.T) {
 	var cur, max int
 	release := make(chan struct{})
+	started := make(chan struct{}, 8) // first-send-start signal: send has read its timestamp
 	g := newFlushRig(func(g *flushRig) {
+		started <- struct{}{}
 		g.mu.Lock()
 		cur++
 		if cur > max {
@@ -99,6 +101,7 @@ func TestReporter_NoTwoReportsCloserThanIntervalNorConcurrent(t *testing.T) {
 		g.mu.Unlock()
 	})
 	g.r.report("downloading", 1, 100)
+	<-started // first send is in flight and has stamped its time before the clock moves
 	for i := int64(2); i <= 20; i++ { // dropped/pending while the first is in flight
 		g.r.report("downloading", i, 100)
 	}
