@@ -360,7 +360,8 @@
     "list": "리스트",
     "table": "테이블",
     "gantt": "간트",
-    "swimlane": "스윔레인"
+    "swimlane": "스윔레인",
+    "swimlane2": "스윔레인 2.0"
   },
   "table": {
     "select_all": "표시된 모든 태스크 선택",
@@ -447,7 +448,9 @@
     "more_issues": "불러오지 않은 이슈가 더 있습니다.",
     "retry": "다시 시도",
     "load_more": "더 불러오기",
-    "no_lane": "값 없음"
+    "no_lane": "값 없음",
+    "timeline_failed": "타임라인을 불러오지 못했습니다.",
+    "loading": "타임라인 불러오는 중…"
   },
   "gantt2": {
     "clipped_start": "이 기간 이전에 시작됨",
@@ -1572,7 +1575,6 @@
     "not_merged": "{{prs}}이(가) 병합되지 않고 닫혔습니다",
     "not_merged_action": "제거",
     "all_merged_to": "PR이 모두 병합되었습니다. 다음 PR이 병합되면 {{status}}(으)로 변경합니다.",
-    "workflow_owned": "PR이 병합되면 워크플로가 이 태스크를 이동합니다",
     "issue_disabled": "이 태스크는 PR 병합 시 상태를 바꾸지 않음",
     "issue_disabled_action": "다시 켜기"
   },

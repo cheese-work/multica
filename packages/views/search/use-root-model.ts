@@ -6,6 +6,7 @@ import { WORKSPACE_PAGES, type WorkspacePageKey } from "@multica/core/paths";
 import { partitionAggregatedSearchResults } from "@multica/core/search/cancelled-rank";
 import type { SearchIssueResult, SearchProjectResult } from "@multica/core/types";
 import { useT } from "../i18n";
+import { useChatMessageSearch, type ChatMessageSearch } from "./commands/chat-message-commands";
 import { useAgentCommandGroup, useAutopilotCommandGroup, useChatCommandGroup, useInboxCommandGroup, useProjectCommandGroup } from "./commands/context-commands";
 import { useGlobalCommands } from "./commands/global-commands";
 import { useIssueCommandGroup } from "./commands/issue-commands";
@@ -79,6 +80,8 @@ export interface RootModel {
   pages: Scored<NavPage>[];
   objects: ObjectHits;
   server: { results: SearchResults; isLoading: boolean; stale: boolean };
+  /** Chat message-content hits and the state of that search. */
+  messages: ChatMessageSearch;
   partitioned: ReturnType<typeof partitionAggregatedSearchResults>;
   liveIssueScore: number;
   liveProjectScore: number;
@@ -96,7 +99,7 @@ export interface RootModel {
 // Server rows answer a query the client cannot re-score exactly (they may
 // have matched on a description or comment). A title hit scores like any
 // other row; a snippet-only hit ranks below every client-side match.
-const SERVER_ONLY_SCORE = 10;
+export const SERVER_ONLY_SCORE = 10;
 
 export function issueScore(issue: SearchIssueResult, q: string): number {
   if (issue.identifier.toLowerCase() === q) return 100;
@@ -149,6 +152,7 @@ export function useRootModel(
 
   const searching = active && scope !== "commands" && scope !== "people" ? text : "";
   const server = useServerSearch(searching, { projects: scope === "all" });
+  const messages = useChatMessageSearch(text, active && scope === "all");
   const objects = useObjectSearch(scope === "issues" || scope === "commands" ? "" : q, active);
   const recent = useRecentItems(active && !rawQuery.trim());
   const delegateCandidates = useDelegateCandidates(active);
@@ -266,6 +270,7 @@ export function useRootModel(
       visibleObjects.workspaces.length;
     const hasResults =
       objectCount > 0 ||
+      messages.hits.length > 0 ||
       results.issues.length > 0 ||
       results.projects.length > 0 ||
       pages.length > 0 ||
@@ -313,6 +318,7 @@ export function useRootModel(
       pages,
       objects: visibleObjects,
       server,
+      messages,
       partitioned,
       liveIssueScore,
       liveProjectScore,
@@ -335,6 +341,7 @@ export function useRootModel(
     delegateCandidates,
     globalCommands,
     inboxGroup,
+    messages,
     navPages,
     objects,
     options.dismissedDelegateFor,

@@ -384,6 +384,8 @@
     "pin_failed": "無法更新置頂狀態",
     "unseen": "標記為未讀",
     "unseen_failed": "無法將此對話標記為未讀",
+    "rename": "重新命名",
+    "select": "多選",
     "undo": "復原",
     "group": {
       "pinned": "已置頂",
