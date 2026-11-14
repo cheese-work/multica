@@ -1689,11 +1689,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const descriptionSourceId = `description:${id}`;
   const descriptionAnnotations = useCommentAnnotations({
     issueId: id,
-    reply: {
-      onSubmit: (_sourceId, content, suppressAgentIds, steerTaskIds) => submitComment(content, undefined, suppressAgentIds, steerTaskIds),
-      onAccepted: (commentId) => scrollToTimelineBottom(commentId),
-      steerByDefault: (task) => !task.trigger_comment_id,
-    },
     draftKey: `new:${id}`,
     sources: [{ id: descriptionSourceId, name: "Description", revision: issue?.revision }],
     enabled: !!user && !!issue,
@@ -4222,54 +4217,33 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <IssueAgentHeaderChip issueId={id} onJumpToRun={jumpToRun} />
             <IssueWakeupHeaderChip issueId={id} onOpen={openWakeups} />
             {onDone && !issueBehavesAsAny(issue, ["done", "closed"]) && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-muted-foreground"
-                      onClick={() => { handleUpdateField({ status: "done" }); onDone?.(); }}
-                    >
-                      <CircleCheck />
-                    </Button>
-                  }
-                />
-                <TooltipContent side="bottom">{t(($) => $.detail.mark_done_tooltip)}</TooltipContent>
-              </Tooltip>
+              <IconButton
+                label={t(($) => $.detail.mark_done_tooltip)}
+                tooltipSide="bottom"
+                className="text-muted-foreground"
+                onClick={() => { handleUpdateField({ status: "done" }); onDone?.(); }}
+              >
+                <CircleCheck />
+              </IconButton>
             )}
             {onDone && issueBehavesAs(issue, "done") && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-muted-foreground"
-                      onClick={() => { onDone(); }}
-                    >
-                      <Archive />
-                    </Button>
-                  }
-                />
-                <TooltipContent side="bottom">{t(($) => $.detail.archive_tooltip)}</TooltipContent>
-              </Tooltip>
+              <IconButton
+                label={t(($) => $.detail.archive_tooltip)}
+                tooltipSide="bottom"
+                className="text-muted-foreground"
+                onClick={() => { onDone(); }}
+              >
+                <Archive />
+              </IconButton>
             )}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className={cn("text-muted-foreground", actions.isPinned && "text-foreground")}
-                    onClick={actions.togglePin}
-                  >
-                    {actions.isPinned ? <PinOff /> : <Pin />}
-                  </Button>
-                }
-              />
-              <TooltipContent side="bottom">{actions.isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}</TooltipContent>
-            </Tooltip>
+            <IconButton
+              label={actions.isPinned ? t(($) => $.detail.unpin_tooltip) : t(($) => $.detail.pin_tooltip)}
+              tooltipSide="bottom"
+              className={cn("text-muted-foreground", actions.isPinned && "text-foreground")}
+              onClick={actions.togglePin}
+            >
+              {actions.isPinned ? <PinOff /> : <Pin />}
+            </IconButton>
             <IssueActionsDropdown
               issue={issue}
               align="end"
@@ -5008,6 +4982,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               key={id}
               issueId={id}
               onSubmit={submitComment}
+              annotationComposer={descriptionAnnotations.composer}
               onAccepted={scrollToTimelineBottom}
               onEditAnnotation={(annotationId) => descriptionAnnotations.editAnnotation(annotationId, true)}
             />
