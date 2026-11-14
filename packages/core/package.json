@@ -172,6 +172,7 @@
     "./billing/recovery": "./billing/recovery.ts",
     "./billing/queries": "./billing/queries.ts",
     "./billing/mutations": "./billing/mutations.ts",
+    "./ci-watch": "./ci-watch/index.ts",
     "./github": "./github/index.ts",
     "./github/queries": "./github/queries.ts",
     "./vcs": "./vcs/index.ts",

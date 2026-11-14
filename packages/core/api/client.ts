@@ -284,6 +284,13 @@ import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
 import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
+  CIWatchConfigSchema,
+  CIWatchEventsSchema,
+  EMPTY_CI_WATCH_EVENTS,
+  type CIWatchConfig,
+  type CIWatchEvent,
+} from "../ci-watch/schema";
+import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
   type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
@@ -5731,6 +5738,42 @@ export class ApiClient {
       EMPTY_GITHUB_CONNECT_RESPONSE,
       { endpoint: "GET /api/workspaces/:id/github/connect" },
     );
+  }
+
+  private ciWatchPath(workspaceId: string, repo: string): string {
+    return `/api/workspaces/${workspaceId}/ci-watch/repos/${encodeURIComponent(repo)}`;
+  }
+
+  /** Owner/admin only. A flag-off server answers 403 `ci_watcher_disabled`. */
+  async getCIWatchConfig(workspaceId: string, repo: string): Promise<CIWatchConfig> {
+    const raw = await this.fetch<unknown>(this.ciWatchPath(workspaceId, repo));
+    return parseOrThrow<CIWatchConfig>(raw, CIWatchConfigSchema, {
+      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo",
+    });
+  }
+
+  /** Partial update: only the fields in `patch` change. Answers the saved config. */
+  async updateCIWatchConfig(
+    workspaceId: string,
+    repo: string,
+    patch: Record<string, unknown>,
+  ): Promise<CIWatchConfig> {
+    const raw = await this.fetch<{ config?: unknown }>(this.ciWatchPath(workspaceId, repo), {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseOrThrow<CIWatchConfig>(raw?.config, CIWatchConfigSchema, {
+      endpoint: "PUT /api/workspaces/:id/ci-watch/repos/:repo",
+    });
+  }
+
+  async listCIWatchEvents(workspaceId: string, repo: string, limit = 50): Promise<CIWatchEvent[]> {
+    const raw = await this.fetch<unknown>(
+      `${this.ciWatchPath(workspaceId, repo)}/events?limit=${limit}`,
+    );
+    return parseWithFallback(raw, CIWatchEventsSchema, EMPTY_CI_WATCH_EVENTS, {
+      endpoint: "GET /api/workspaces/:id/ci-watch/repos/:repo/events",
+    });
   }
 
   async listGitHubInstallations(workspaceId: string): Promise<ListGitHubInstallationsResponse> {

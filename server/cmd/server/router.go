@@ -1930,6 +1930,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// unchanged machine write stays accepted.
 					r.Put("/background-agents", h.UpdateBackgroundAgents)
 					r.Delete("/background-agents", h.ResetBackgroundAgents)
+					// CHE-4281: CI watcher settings and event log. Human owner/admin only;
+					// the handlers answer "disabled" while the ci_watcher flag is off.
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}", h.GetCIWatchConfig)
+					r.With(handler.RequireHumanActor).Put("/ci-watch/repos/{repo}", h.PutCIWatchConfig)
+					r.With(handler.RequireHumanActor).Get("/ci-watch/repos/{repo}/events", h.ListCIWatchEvents)
 					// CHE-2490: admin-written protected-path policy for the push broker.
 					r.With(handler.RequireHumanActor).Put("/protected-path-policies/{name}", h.SetProtectedPathPolicy)
 					// Curating the shared MCP library is an admin action.
