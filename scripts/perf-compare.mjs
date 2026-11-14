@@ -12,7 +12,10 @@
  * One sample per ref is a report, not a verdict. A difference near the noise
  * floor means "run it again by hand", not "regression".
  *
- *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>]
+ *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>] [--scenario <name>]
+ *
+ * `--scenario` picks the measurement: `typing` (default), `image-thread`
+ * (MUL-8182) or `page-load`. Each run measures exactly one of them.
  *
  * `--scenario page-load` measures the five-route page-load spec (CHE-2976)
  * instead, on the desktop and phone profiles, with the same lifecycle and the
@@ -34,14 +37,40 @@ const flag = (name, fallback) => {
 const baseRef = flag("base");
 const headRef = flag("head", "HEAD");
 const outDir = resolve(flag("out", join(repoRoot, "perf-report")));
-const scenario = flag("scenario", "typing");
+const buildCache = join(repoRoot, ".turbo", "perf-build-cache");
+// Typing-family scenarios share one lifecycle and report shape; `page-load`
+// has its own (CHE-2976). `typing-under-live-runs` is the upstream name for `typing`.
+const SCENARIOS = {
+  typing: {
+    title: "Comment typing under live runs (MUL-7227)",
+    spec: "typing-under-live-runs.spec.ts",
+    metrics: [],
+  },
+  "image-thread": {
+    title: "Comment typing beside an image-heavy thread (MUL-8182)",
+    spec: "image-heavy-thread.spec.ts",
+    metrics: [
+      ["layout_shift", "Layout shift (sum)"],
+      ["images_mounted", "Images mounted"],
+      ["originals_served", "Originals fetched"],
+      ["keystrokes_over_frame", "Keystrokes over 16.7 ms"],
+      ["key_frame_p95_ms", "Keydown to frame p95 (ms)"],
+      ["image_bytes_served", "Image bytes fetched"],
+      ["js_heap_mb", "JS heap (MB)"],
+    ],
+  },
+};
+const requestedScenario = flag("scenario", "typing");
+const scenarioName = requestedScenario === "typing-under-live-runs" ? "typing" : requestedScenario;
+const isPageLoad = scenarioName === "page-load";
+const scenario = SCENARIOS[scenarioName];
 const pageLoadRuns = Number(flag("runs", 5));
 if (!baseRef) {
-  console.error("usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>] [--scenario typing|page-load [--runs N]]");
+  console.error(`usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>] [--scenario ${[...Object.keys(SCENARIOS), "page-load"].join("|")} [--runs N]]`);
   process.exit(2);
 }
-if (!["typing", "page-load"].includes(scenario)) {
-  console.error(`unknown scenario "${scenario}" (expected typing or page-load)`);
+if (!isPageLoad && !scenario) {
+  console.error(`unknown scenario "${requestedScenario}" (expected ${[...Object.keys(SCENARIOS), "page-load"].join(", ")})`);
   process.exit(2);
 }
 if (!Number.isInteger(pageLoadRuns) || pageLoadRuns < 1) {
@@ -290,7 +319,7 @@ async function measure(ref, label) {
     const buildStart = Date.now();
     const buildLog = execFileSync(
       "pnpm",
-      ["exec", "turbo", "build", "--filter=@multica/web"],
+      ["exec", "turbo", "build", "--filter=@multica/web", `--cache-dir=${buildCache}`],
       { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
     );
     process.stdout.write(buildLog);
@@ -310,7 +339,7 @@ async function measure(ref, label) {
     await waitForServer(port);
     const startS = seconds(startStart);
 
-    if (scenario === "page-load") {
+    if (isPageLoad) {
       const measureStart = Date.now();
       const result = measurePageLoad(label, port);
       return {
@@ -328,12 +357,14 @@ async function measure(ref, label) {
     const measureStart = Date.now();
     let scenarioExit = 0;
     try {
-      run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", "typing-under-live-runs.spec.ts"], {
+      run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts",
+        `--repeat-each=${process.env.PERF_REPEATS ?? "1"}`, ...(scenario.spec ? [scenario.spec] : [])], {
         cwd: repoRoot,
         env: {
           ...process.env,
           PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
           PERF_REPORT_PATH: reportPath,
+          PERF_SCENARIO: scenarioName,
         },
       });
     } catch (error) {
@@ -384,7 +415,7 @@ const METRICS = [
 
 function markdown(base, head) {
   const usable = base.status === "ok" && head.status === "ok";
-  const rows = METRICS.map(([key, label]) => {
+  const rows = [...METRICS, ...scenario.metrics].map(([key, label]) => {
     const a = base[key];
     const b = head[key];
     if (typeof a !== "number" || typeof b !== "number") return `| ${label} | ${a ?? "—"} | ${b ?? "—"} | — | — |`;
@@ -393,10 +424,10 @@ function markdown(base, head) {
     return `| ${label} | ${a} | ${b} | ${delta >= 0 ? "+" : ""}${delta} | ${ratio} |`;
   });
   return [
-    "## Comment typing under live runs (MUL-7227)",
+    `## ${scenario.title}`,
     "",
     usable
-      ? "One sample per ref. This is a report, not a merge gate — read a small difference as noise until a second run says otherwise."
+      ? `${head.samples?.length ?? 1} sample(s) per ref; numeric metrics are medians. This is a report, not a merge gate — small differences may be noise.`
       : `**Not a usable comparison.** base: \`${base.status}\`, head: \`${head.status}\`.`,
     "",
     "| Metric | base | head | Δ | ratio |",
@@ -479,7 +510,7 @@ try {
   head = await measure(headRef, "head");
   const totalS = seconds(totalStart);
 
-  const summary = scenario === "page-load" ? pageLoadMarkdown(base, head) : markdown(base, head);
+  const summary = isPageLoad ? pageLoadMarkdown(base, head) : markdown(base, head);
   writeFileSync(join(outDir, "comparison.json"), JSON.stringify({ base, head, total_s: totalS }, null, 2));
   writeFileSync(join(outDir, "comparison.md"), `${summary}\n\n- total wall clock: ${totalS}s\n`);
   console.log(`\n${summary}\n\n- total wall clock: ${totalS}s`);

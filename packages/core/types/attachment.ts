@@ -47,6 +47,12 @@ export interface Attachment {
   size_bytes: number;
   created_at: string;
   /**
+   * An image's displayed pixel size, so a body can reserve its box before the
+   * image loads. Absent for other files and for older uploads.
+   */
+  width?: number;
+  height?: number;
+  /**
    * 1 for a first upload; higher when a later upload replaced it (CHE-5295).
    * Optional: a server older than revision chains omits it.
    */
