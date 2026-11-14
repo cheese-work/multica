@@ -63,6 +63,9 @@ type wakeupFiltersSpec struct {
 	CI         *string  `json:"ci,omitempty"`
 	Labels     []string `json:"labels,omitempty"`
 	Priorities []string `json:"priorities,omitempty"`
+	// Match pairs equal a system event's payload (D3). S1 stores the shape; the
+	// key list and the matching are slice S3.
+	Match map[string]string `json:"match,omitempty"`
 }
 
 func decodeWakeupSpec(raw json.RawMessage, v any) error {
@@ -288,6 +291,14 @@ func validateWakeupFilters(raw json.RawMessage) ([]pgtype.UUID, error) {
 	if spec.CI != nil && !slices.Contains([]string{"failure", "error", "both"}, *spec.CI) {
 		return nil, wakeupDefinitionBad("ci must be failure, error or both")
 	}
+	if len(spec.Match) > maxWakeupMatchPairs {
+		return nil, wakeupDefinitionBad("match takes at most %d pairs", maxWakeupMatchPairs)
+	}
+	for k, v := range spec.Match {
+		if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" || len(k) > 64 || len(v) > 255 {
+			return nil, wakeupDefinitionBad("a match pair needs a key of 1–64 bytes and a value of 1–255 bytes")
+		}
+	}
 	if len(spec.Priorities) > 5 {
 		return nil, wakeupDefinitionBad("too many priorities")
 	}
@@ -322,6 +333,9 @@ func validateEffectiveWakeup(eff EffectiveWakeupConfig) error {
 		if err := validateEffectiveSchedule(eff.Config); err != nil {
 			return err
 		}
+	}
+	if err := validateEffectiveSystemEvents(eff); err != nil {
+		return err
 	}
 	if !eff.Config.Filters.Set {
 		return nil
