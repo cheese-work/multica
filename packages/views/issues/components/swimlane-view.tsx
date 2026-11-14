@@ -1476,7 +1476,7 @@ function SwimLaneViewImpl({
                         variant="ghost"
                         size="icon-sm"
                         aria-label={t(($) => $.board.hide_column)}
-                        className="rounded-full text-muted-foreground"
+                        className="text-muted-foreground"
                       >
                         <MoreHorizontal className="size-3.5" />
                       </Button>
@@ -1494,7 +1494,7 @@ function SwimLaneViewImpl({
                                   variant="ghost"
                                   size="icon-sm"
                                   aria-label={t(($) => $.board.hide_column)}
-                                  className="rounded-full text-muted-foreground"
+                                  className="text-muted-foreground"
                                 >
                                   <MoreHorizontal className="size-3.5" />
                                 </Button>
