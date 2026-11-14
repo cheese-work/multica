@@ -33,6 +33,7 @@ import { isDesktopShell } from "../../platform/local-directory";
 import { useOnline } from "../../settings/components/use-online";
 import { AnnotatableAnswer } from "./annotatable-answer";
 import { ConfigChangeViewer } from "./config-change-viewer";
+import { DecisionBatchForm } from "./decision-batch-form";
 import { DecisionArtifacts } from "./decision-artifacts";
 import { DecisionRecentRuns } from "./decision-recent-runs";
 import { DecisionSummary, effectOf, effectText, ictOf } from "./decision-summary";
@@ -626,6 +627,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   const formShown = card.state === "open" && !keptDraft && !coveredCardsMissing;
   const undecided = !!card.action && (!card.action.state || card.action.state === "pending");
   const decide: Decide | undefined = formShown && undecided ? { choice, onChoice: setChoice, approvalRef, controls } : undefined;
+  // One card for the whole batch: each item is decided on its own line, so the single-action controls stay away.
+  const batched = !!card.batch_id && !!card.batch_items?.length && card.state !== "withdrawn";
   const StateIcon = FOLD_ICONS[shown as keyof typeof FOLD_ICONS] ?? MessageSquareQuote;
   return (
     <section
@@ -766,8 +769,10 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           </AnnotatableAnswer>
         </div>
         {note && <AgentNote note={note} />}
-        {card.action && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} hideControls={!!decide} handle={approvalRef} onControls={setControls} />}
-        {keptDraft ? (
+        {card.action && !batched && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} hideControls={!!decide} handle={approvalRef} onControls={setControls} />}
+        {batched ? (
+          <DecisionBatchForm batchId={card.batch_id!} items={card.batch_items!} />
+        ) : keptDraft ? (
           <KeptDraft draft={draft} onDiscard={discardDraft} />
         ) : (
           card.state === "open" && (coveredCardsMissing ? (
