@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func agentLab(ctx context.Context, tx pgx.Tx, workspaceID, agentID pgtype.UUID) 
 	var model, provider string
 	err := tx.QueryRow(ctx, `SELECT COALESCE(a.model,''), COALESCE(r.provider,'') FROM agent a LEFT JOIN agent_runtime r ON r.id=a.runtime_id
 		WHERE a.id=$1 AND a.workspace_id=$2 AND a.archived_at IS NULL`, agentID, workspaceID).Scan(&model, &provider)
-	if err == pgx.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
