@@ -84,6 +84,16 @@ When the previous assignee is an agent with a run underway or waiting to start, 
 
 You can see the handoff and its instructions in the issue's timeline. Open the workflow menu on the project board to view the full flow.
 
+## When a PR merges [#pr-merged]
+
+A merge changes a status through one workspace setting: **Settings → Code → After PRs merge, move the issue to**. See [GitHub integration](/github-integration). The workflow board draws that rule. A dashed arrow labelled **PR merged** runs from an **Any step** marker into the step the setting names, and that step's card says **Set in Settings → Code**. The arrow is read-only: you can't select, move or delete it in the editor, and it is never saved in the workflow. With **Don't change**, no arrow is drawn. If the setting names a status the workflow doesn't list, the editor shows one line saying that PR merges change no status in this workflow, and which status Settings → Code names.
+
+When that step has a handler, the merge hands the issue to it and starts its run, like any other move.
+
+### The `pr.merged` transition is deprecated
+
+An older workflow can store a transition guarded by `pr.merged`. While the setting is not **Don't change**, a stored `pr.merged` transition no longer moves issues itself: it runs the same check as the setting. The editor's guard list no longer offers `pr.merged`, a save that adds one is refused with a message that points to Settings → Code, and a stored one is marked as deprecated. With **Don't change**, stored transitions work as before. They will be removed in a later release.
+
 ## Adjust a workflow
 
 A workflow can be shared by several projects. Changes saved in **Settings → Workflows** apply to every project using it. To give one project a different process, duplicate the workflow and select the copy in that project.
@@ -92,7 +102,7 @@ Admins can also set a handoff from the project board: hover a column header and 
 
 Removing a column may ask you to choose a new status for issues already in it. Other issues stay where they are, and this move does not start agents. The status library below the workflows is where you rename or recolor statuses; those changes are shared wherever the status is used.
 
-Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client. The **Include child PRs** switch next to it controls whether PR guards also read the PRs of sub-issues (on by default) and follows the same rule. An agent or token cannot change either field directly: it gets `budget_requires_decision` and proposes the change with `multica config propose workflow.budget`, and an owner approves it with a passkey. The same limit applies when an agent or token creates an issue on, or re-binds an issue to, a workflow with a wider budget (`budget_rebinding_requires_interactive`). It takes the same decision: `multica issue create` and `multica issue update` accept `--workflow <id> --decision-id <id>`.
+Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client. The **Include child PRs** switch next to it controls whether PR guards also read the PRs of sub-issues (on by default) and follows the same rule. An agent or token cannot change either field directly: it gets `budget_requires_decision` and proposes the change with `multica config propose workflow.budget`, and an owner approves it with a passkey. The same limit applies when an agent or token creates an issue on, or re-binds an issue to, a workflow with a wider budget (`budget_rebinding_requires_interactive`). It takes the same decision: `multica issue create` and `multica issue update` accept `--workflow <id> --decision-id <id>`. From an agent run, `multica issue update <id> --workflow <workflow-id>` with a wider budget needs no decision: it opens an approval card for the workspace owners, prints its action id and URL, and leaves the issue unchanged until an owner approves it with a passkey. The approval fails with `stale_base` if the issue's workflow, its project's workflow or its budget changed after the card opened.
 
 On an issue with a run budget, the sidebar shows a meter with the runs used, the runs left, a warning at 80 % and a **Run budget used up** state. **Raise** and **Top up** ask a workspace owner to approve more runs. If you are an owner, you approve with your passkey right there; otherwise the owner gets the request. In the list and on the board, an issue the budget stopped shows a **Budget used** chip next to its status.
 

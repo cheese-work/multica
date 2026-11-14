@@ -21,6 +21,7 @@ type fakePR struct {
 	Title     string
 	Draft     bool
 	Reviewers []string
+	Body      string
 }
 
 func (p *fakePR) url() string { return fmt.Sprintf("https://github.com/%s/pull/%d", p.Repo, p.Number) }
@@ -38,6 +39,8 @@ type fakeEnv struct {
 	defaultBranch string
 	branch        string // checked-out branch
 	remoteOwner   string // owner of the branch's push remote ("" = unknown)
+	prefix        string // git rev-parse --show-prefix: cwd inside the repository
+	prefixFails   bool   // git rev-parse --show-prefix fails
 	merges        map[string]bool
 	aliases       map[string]string
 
@@ -48,6 +51,12 @@ type fakeEnv struct {
 	repoViewFails       bool
 	listFails           bool
 	streamExit          int
+
+	// repository rules (.github/agent-rules.yml): base tips, protection, file contents
+	tips        map[string]string // "owner/name/branch" -> tip SHA
+	unprotected map[string]bool   // "owner/name/branch" -> branch is not protected
+	files       map[string]string // "owner/name@ref" -> file contents
+	apiFails    bool              // every gh api call exits 1 with HTTP 502
 }
 
 func newFake() *fakeEnv {
@@ -55,6 +64,7 @@ func newFake() *fakeEnv {
 		defaultRepo: "cheese-work/multica", defaultBranch: "main",
 		branch: "feature/x", remoteOwner: "cheese-work",
 		merges: map[string]bool{}, aliases: map[string]string{},
+		tips: map[string]string{}, unprotected: map[string]bool{}, files: map[string]string{},
 	}
 }
 
@@ -146,6 +156,11 @@ func (f *fakeEnv) git(args []string) Result {
 			return Result{Stdout: "tip p1 p2\n"}
 		}
 		return Result{Stdout: "tip p1\n"}
+	case len(args) >= 2 && args[0] == "rev-parse" && args[1] == "--show-prefix":
+		if f.prefixFails {
+			return Result{Exit: 128, Stderr: "fatal: not a git repository"}
+		}
+		return Result{Stdout: f.prefix + "\n"}
 	case len(args) >= 1 && args[0] == "merge-base":
 		return Result{Exit: 0}
 	}
@@ -195,6 +210,7 @@ type jsonPR struct {
 	URL                 string              `json:"url"`
 	Title               string              `json:"title"`
 	IsDraft             bool                `json:"isDraft"`
+	Body                string              `json:"body"`
 	HeadRefName         string              `json:"headRefName"`
 	BaseRefName         string              `json:"baseRefName"`
 	HeadRepositoryOwner map[string]string   `json:"headRepositoryOwner"`
@@ -202,7 +218,7 @@ type jsonPR struct {
 }
 
 func (p *fakePR) json() jsonPR {
-	j := jsonPR{Number: p.Number, URL: p.url(), Title: p.Title, IsDraft: p.Draft,
+	j := jsonPR{Number: p.Number, URL: p.url(), Title: p.Title, IsDraft: p.Draft, Body: p.Body,
 		HeadRefName: p.HeadRef, BaseRefName: p.Base,
 		HeadRepositoryOwner: map[string]string{"login": p.HeadOwner}}
 	for _, r := range p.Reviewers {
@@ -237,6 +253,8 @@ func (f *fakeEnv) gh(args []string) Result {
 		}
 		return Result{Stdout: mustJSON(map[string]any{
 			"nameWithOwner": repo, "defaultBranchRef": map[string]string{"name": f.defaultBranch}})}
+	case args[0] == "api":
+		return f.api(args[1:])
 	case len(args) >= 2 && args[0] == "pr" && args[1] == "list":
 		if f.listFails {
 			return Result{Exit: 1, Stderr: "HTTP 502"}
@@ -290,7 +308,7 @@ func (f *fakeEnv) create(args []string) Result {
 		base = f.defaultBranch
 	}
 	p := &fakePR{Number: len(f.prs) + 1, Repo: repo, HeadOwner: headOwner, HeadRef: headRef, Base: base,
-		Title: val(args, "--title", "-t"), Draft: has(args, "--draft", "-d")}
+		Title: val(args, "--title", "-t"), Body: val(args, "--body", "-b"), Draft: has(args, "--draft", "-d")}
 	f.prs = append(f.prs, p)
 	if r := val(args, "--reviewer", "-r"); r != "" {
 		if f.createReviewerFails {
@@ -330,4 +348,39 @@ func (f *fakeEnv) pr(t *testing.T, i int) *fakePR {
 		t.Fatalf("PR %d does not exist (%d PRs)", i, len(f.prs))
 	}
 	return f.prs[i]
+}
+
+// api serves the two reads the rules loader makes: the base branch (tip and
+// protection) and the rules file at a ref.
+func (f *fakeEnv) api(args []string) Result {
+	if f.apiFails {
+		return Result{Exit: 1, Stderr: "gh: Bad Gateway (HTTP 502)"}
+	}
+	path := args[len(args)-1]
+	path, query, _ := strings.Cut(path, "?")
+	parts := strings.Split(strings.TrimPrefix(path, "repos/"), "/")
+	if len(parts) >= 4 && parts[2] == "branches" {
+		repo, branch := parts[0]+"/"+parts[1], strings.Join(parts[3:], "/")
+		sha, ok := f.tips[repo+"/"+branch]
+		if !ok { // every other branch has a tip and no rules file
+			sha = "0000000000000000000000000000000000000000"
+		}
+		return Result{Stdout: mustJSON(map[string]any{"name": branch, "protected": !f.unprotected[repo+"/"+branch],
+			"commit": map[string]string{"sha": sha}})}
+	}
+	if len(parts) >= 4 && parts[2] == "contents" {
+		repo, ref := parts[0]+"/"+parts[1], strings.TrimPrefix(query, "ref=")
+		body, ok := f.files[repo+"@"+ref]
+		if !ok || strings.Join(parts[3:], "/") != RepoRulesFile {
+			return Result{Exit: 1, Stderr: "gh: Not Found (HTTP 404)"}
+		}
+		return Result{Stdout: body}
+	}
+	return Result{Exit: 1, Stderr: "fake gh api: unhandled " + path}
+}
+
+// setRules publishes a rules file at the base tip of repo's branch.
+func (f *fakeEnv) setRules(repo, branch, tip, content string) {
+	f.tips[repo+"/"+branch] = tip
+	f.files[repo+"@"+tip] = content
 }

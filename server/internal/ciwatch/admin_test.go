@@ -3,6 +3,7 @@ package ciwatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -102,7 +103,8 @@ func TestParsePatch_ValidatesEveryField(t *testing.T) {
 }
 
 func asValidation(err error, target **ValidationError) bool {
-	ve, ok := err.(*ValidationError)
+	var ve *ValidationError
+	ok := errors.As(err, &ve)
 	*target = ve
 	return ok
 }

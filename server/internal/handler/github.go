@@ -2232,6 +2232,28 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list closing links: %w", err)
 	}
+	// The completion decision this event owes is recorded in the same
+	// transaction, so a crash or a failed write after the commit cannot lose it
+	// (CHE-5244). A failure here rolls the mirror back and the delivery returns
+	// 5xx for GitHub to redeliver.
+	var owed []pgtype.UUID
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
+			for _, issueID := range closingIssueIDs {
+				touched[issueID] = struct{}{}
+			}
+		}
+		ids := make([]pgtype.UUID, 0, len(touched))
+		for issueID := range touched {
+			ids = append(ids, issueID)
+		}
+		if owed, err = h.owePRMergeWithLinked(ctx, qtx, wsID, ids, issueIDs); err != nil {
+			return fmt.Errorf("github: record pr_merge_owed: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
@@ -2247,26 +2269,19 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	var autoCompleteErrs []error
-	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		// An owed closed-PR replay runs after an earlier attempt may have failed
-		// past the commit: the links are unchanged but the auto-completion they
-		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
-		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
-			for _, issueID := range closingIssueIDs {
-				touched[issueID] = struct{}{}
-			}
-		}
-		resolver := issuestatus.NewResolver(wsID)
-		for issueID := range touched {
-			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
-			switch {
-			case err == nil:
-			case isOwedClosedReplay(ctx):
-				// Fail the replay so its marker stays and the sweep retries.
-				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
-			default:
-				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
-			}
+	if state == "merged" {
+		ctx = withMergedPRInput(ctx, service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
+			RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL,
+			HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
+		})
+	}
+	for _, err := range h.attemptPRMergeOwed(ctx, wsID, owed, issuestatus.NewResolver(wsID)) {
+		if isOwedClosedReplay(ctx) {
+			// Fail the replay so its marker stays and the sweep retries.
+			autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete: %w", err))
+		} else {
+			slog.Warn("pr auto-complete failed", "err", err)
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the

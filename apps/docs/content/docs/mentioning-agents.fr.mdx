@@ -62,7 +62,7 @@ Quand le destinataire est en cours d'exécution, une étiquette sous la zone de 
 | Arrêter et recommencer | Arrête l'exécution en cours et recommence à partir de ce message. |
 | Ne démarrera pas cette fois | Publie le commentaire sans déclencher cet agent. |
 
-Après l'envoi, le commentaire affiche d'abord « En attente de lecture par … », puis « Lu par … » une fois le message lu. La liste des étapes du journal d'exécution indique aussi à quelle étape il a été lu. Si la remise échoue, vous pouvez réessayer ou l'envoyer comme nouvelle exécution.
+Après l'envoi, le commentaire affiche d'abord « En attente de lecture par … », puis « Lu par … » une fois le message lu. La liste des étapes du journal d'exécution indique aussi à quelle étape il a été lu. Si la remise échoue, vous pouvez réessayer ou l'envoyer comme nouvelle exécution. Si l'exécution se termine avant la lecture, l'agent le lira lors de sa prochaine exécution et le commentaire affiche « … le lira à la prochaine exécution ». Si la mise en file de cette exécution échoue à chaque tentative, le commentaire indique que les nouvelles tentatives sont épuisées, et **Envoyer comme nouvelle exécution** en met une nouvelle en file.
 
 - Seul du texte peut rejoindre une exécution en cours. Un message avec des pièces jointes est traité après la fin de l'exécution.
 - La réorientation doit être prise en charge par l'outil de codage IA de l'agent. Sinon, « Ajouter à l'exécution en cours » n'est pas proposé.

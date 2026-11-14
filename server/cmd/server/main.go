@@ -22,6 +22,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -760,6 +761,7 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
 	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
@@ -778,6 +780,7 @@ func main() {
 	go runWebhookNonceSweeper(sweepCtx, queries)
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
+	go h.RunSteerReplaySweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -806,6 +809,14 @@ func main() {
 	if err := h.ConfigureGitHubAllowlistFromEnv(); err != nil {
 		slog.Error("invalid GitHub allowlist", "error", err)
 		os.Exit(1)
+	}
+	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
+	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
+	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
+		slog.Error("routing agent setting copy failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
@@ -883,6 +894,18 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
+	}
+	// CHE-5121: shared, bounded refresh of the merge pause variables. Without
+	// the GitHub App the reader stays nil, the job is a no-op and the pause
+	// state stays unknown, which holds every merge_eligibility dispatch.
+	pauseVars := &service.IssueWakeupService{Tasks: taskSvc}
+	if ghClient, err := ghsnapshot.NewClientFromEnv(); err != nil {
+		slog.Warn("github: merge pause refresh disabled (invalid App private key)", "err", err)
+	} else if ghClient != nil {
+		pauseVars.PauseVars = ghClient // ponytail: own token cache, share the handler's client if App-JWT budget matters
+	}
+	if err := schedulerMgr.Register(scheduler.MergePauseRefreshJob(pauseVars)); err != nil {
+		slog.Error("scheduler: register merge pause refresh", "error", err)
 	}
 	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
 	// It runs from the deploy that ships it, so activation needs no manual step.

@@ -165,6 +165,11 @@ type IssueWakeupService struct {
 	// MergeFacts supplies the facts a merge_eligibility condition reads; nil
 	// leaves the condition pending with a diagnostic.
 	MergeFacts MergeFactsSource
+	// PauseVars reads the AGENT_MERGE_PAUSED and MAIN_RED_PAUSED repository
+	// variables for RefreshMergePauses; nil leaves pause state unknown.
+	PauseVars PauseVariableReader
+	// PauseRefreshInterval bounds repo-variable reads per repository; zero means one minute.
+	PauseRefreshInterval time.Duration
 	// Now is the clock for fact freshness; nil means time.Now.
 	Now func() time.Time
 	// scopedPos is the scoped-event drain's fair scan position; see scopedCursor.
@@ -972,8 +977,11 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 	if w.SystemRule.Valid {
 		dispatch = s.dispatchSystem
 	}
-	if w.SystemRule.String == SystemRuleWorkflowEdges {
+	switch w.SystemRule.String {
+	case SystemRuleWorkflowEdges:
 		dispatch = s.dispatchWorkflowEdges
+	case SystemRulePRMergeOwed:
+		dispatch = s.dispatchPRMergeOwed
 	}
 	if err := dispatch(ctx, w); err != nil {
 		// The refusal rolled the dispatch back, and its deferral record with it.
@@ -982,13 +990,17 @@ func (s *IssueWakeupService) dispatchFromTick(ctx context.Context, w db.IssueWak
 		if !errors.Is(err, errAggregateCounterBusy) {
 			errs = append(errs, fmt.Errorf("wakeup %s: %w", util.UUIDToString(w.ID), err))
 		}
-		outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-		reason := err.Error()
-		if IsProjectInactive(err) {
-			reason = ErrProjectInactive.Error()
+		// A pr_merge_owed attempt records its own failure, fenced by the row's
+		// (id, revision); an id-only note here could write a newer generation.
+		if w.SystemRule.String != SystemRulePRMergeOwed {
+			outcomeCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+			reason := err.Error()
+			if IsProjectInactive(err) {
+				reason = ErrProjectInactive.Error()
+			}
+			_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
+			cancel()
 		}
-		_ = s.Tasks.Queries.NoteWakeupFailure(outcomeCtx, db.NoteWakeupFailureParams{ID: w.ID, LastError: pgtype.Text{String: truncateForSummary(reason, 500), Valid: true}})
-		cancel()
 	}
 	// Move the rule to the back of its lane so one noisy issue cannot
 	// monopolize the batches. Only scan order depends on this write: dispatch
@@ -1297,11 +1309,13 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// Timeline entries are written with the rule's changes and published only
 	// once they commit.
 	var activities []wakeupActivity
+	var polled []db.AgentTaskQueue // queued merge runs the condition poll withdrew
 	commit := func() error {
 		if err := tx.Commit(ctx); err != nil {
 			return err
 		}
 		s.publishWakeupActivities(activities...)
+		s.publishWithdrawn(ctx, polled)
 		return nil
 	}
 	note := func(action string, details map[string]any) error {
@@ -1353,7 +1367,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	// one condition.met input; a rule that ended only drops the hints.
 	if len(w.Condition) > 0 {
 		if w.Enabled && !timedOut {
-			if next, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
+			if next, polled, err = s.pollCondition(ctx, tx, q, w, now); err != nil {
 				return err
 			}
 		} else if _, _, err = consumeConditionHints(ctx, tx, w.ID); err != nil {
@@ -1754,6 +1768,9 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		if custom != nil {
 			taskContext["wakeup_custom"] = true // checked again at start, like a platform rule's run
 		}
+		if isMergeEligibilityCondition(w.Condition) {
+			taskContext["wakeup_merge"] = true // the candidate is judged again at claim and start
+		}
 		if heartbeatFP != "" {
 			taskContext[wakeupFingerprintKey] = heartbeatFP
 		}
@@ -2012,6 +2029,11 @@ func (s *IssueWakeupService) CheckClaim(ctx context.Context, task db.AgentTaskQu
 	if isDefaultDerivedWakeup(w) {
 		return s.checkCustomClaim(ctx, task, w)
 	}
+	if isMergeEligibilityCondition(w.Condition) {
+		if err := s.checkMergeClaim(ctx, task, w); err != nil {
+			return err
+		}
+	}
 	agent, err := s.Tasks.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: w.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrWakeupForbidden
@@ -2031,12 +2053,13 @@ func (s *IssueWakeupService) CheckStart(ctx context.Context, task db.AgentTaskQu
 	var source struct {
 		System string         `json:"wakeup_system"`
 		Custom bool           `json:"wakeup_custom"`
+		Merge  bool           `json:"wakeup_merge"`
 		Joined []joinedWakeup `json:"wakeup_joined"`
 	}
 	if task.StartedAt.Valid || task.Status == "running" || json.Unmarshal(task.Context, &source) != nil {
 		return nil
 	}
-	if source.System != "" || source.Custom {
+	if source.System != "" || source.Custom || source.Merge {
 		if err := s.CheckClaim(ctx, task); err != nil {
 			return err
 		}
@@ -2134,6 +2157,16 @@ func (s *IssueWakeupService) dispatchWorkflowEdges(ctx context.Context, w db.Iss
 	return s.Tasks.WorkflowEdges(ctx, w)
 }
 
+// dispatchPRMergeOwed hands a due pr_merge_owed row to the handler's evaluator.
+// It starts no run itself: a completion goes through the same status write a
+// person makes.
+func (s *IssueWakeupService) dispatchPRMergeOwed(ctx context.Context, w db.IssueWakeup) error {
+	if s.Tasks == nil || s.Tasks.PRMergeOwed == nil {
+		return nil
+	}
+	return s.Tasks.PRMergeOwed(ctx, w)
+}
+
 // waiverFollowupRecorded reports whether this waiver's own result comment exists.
 // The marker carries the decision instance, so another waiver's result on the
 // same issue does not end this check. Only a run this wakeup dispatched can
@@ -2165,6 +2198,8 @@ func (s *IssueWakeupService) DispatchRule(ctx context.Context, workspaceID, id p
 	switch {
 	case w.SystemRule.String == SystemRuleWorkflowEdges:
 		return s.dispatchWorkflowEdges(ctx, w)
+	case w.SystemRule.String == SystemRulePRMergeOwed:
+		return s.dispatchPRMergeOwed(ctx, w)
 	case w.SystemRule.Valid:
 		return s.dispatchSystem(ctx, w)
 	}

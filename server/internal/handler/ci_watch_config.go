@@ -128,11 +128,11 @@ func (h *Handler) checkCIWatchTargets(r *http.Request, workspaceID string, patch
 		if id == "" {
 			return nil
 		}
-		if err := lookup(id); errors.Is(err, pgx.ErrNoRows) {
+		err := lookup(id)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return &ciwatch.ValidationError{Field: field, Msg: "not found in this workspace"}
-		} else {
-			return err
 		}
+		return err
 	}
 	ctx := r.Context()
 	if err := check("fix_owner_id", func(id string) error {

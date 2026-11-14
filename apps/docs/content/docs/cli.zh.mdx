@@ -147,7 +147,21 @@ multica issue comment add MUL-123 --content-file note.md --steer-active
 multica issue comment add MUL-123 --content-file fyi.md --notify-only
 ```
 
+`multica decision request` 的 `--recovers <event-id>` 表示该请求是对某个 ask 守卫事件的答复，例如被拒绝的操作或恢复通知中指明的事件。只有当事件属于该请求所在的任务、且是为请求所询问的那个人产生时，服务器才会在请求的同一事务中清除该事件。针对某人的请求不会清除另一个人的事件；不带 `--recovers` 的请求不会清除任何事件。其他任务或其他人的事件会以 `400` 拒绝。一个请求只恢复一个事件：同一请求的重试若指向第二个事件，会以 `400` 拒绝。
+
 同一项目、同一父任务下已有标题相同（不区分大小写，忽略多余空格）且未关闭的任务时，`issue create` 会拒绝创建并给出那个任务。确实要再建一个，加 `--allow-duplicate`；要把一个任务标为另一个的重复，用 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`。
+
+### 路由任务
+
+`issue route` 在一次调用中修改任务状态并记录原因。路由步骤用它决定任务下一步去哪里。`--status`、`--reason`（1 到 500 个字符）和 `--confidence`（0 到 1）为必填：
+
+```bash
+multica issue route MUL-123 --status in_review --reason "测试通过，需要评审" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "需要后端修复" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "评审人稍后接手" --confidence 0.9
+```
+
+不带 `--owner` 时，由项目工作流选择处理人，与 `issue status` 相同。显式的 `--owner`（成员、智能体或小队；`--owner-id` 接受 UUID 而不是名称）会替换工作流的处理人。保持当前状态、只修改负责人的路由是允许的。状态和负责人都相同的路由会被拒绝并返回 HTTP 409，不写入任何内容。`--no-start` 与 `issue update` 一样，不会启动智能体运行。`--expected-revision` 会在任务期间发生变化时拒绝该路由。
 
 ### 时间线
 
@@ -329,7 +343,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 - `--lead` 接受成员或智能体的名称。`--default-branch-hint` 只告诉智能体仓库的默认分支，不会切换分支。
 - 工作区的 `--context` 会提供给工作区里的每个智能体。`--slug` 创建后不能修改；`--issue-prefix` 会转成大写，修改它会给所有现有任务重新编号，外部引用里的旧编号随之失效。
-- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` 指定接手纯路由工作流步骤的智能体（默认为 `todo`、`blocked`、`merged`、`need_decision`；用 `--routing-statuses` 修改，用 `--routing-overrides todo=<agent-id>` 把某个状态交给另一个智能体）。该智能体被归档，或其运行因提供商错误失败时，由备用智能体接手。覆盖键写成 `<workflow-id>:<status>` 时，只对该工作流生效。`none` 表示关闭该项。只有人类所有者或管理员可以修改，每次修改都会记入活动日志。该设置存储为 `background_agents` 的 `routing` 任务。这些标志是 `multica workspace background-agents set routing` 的别名，旧的 `/routing-agent` API 路由也会作为别名保留一个版本。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
 - `--mode script --script <name> [--arg <value>]...` 在智能体的任务令牌下运行一个白名单脚本，不启动模型会话。`--script` 和 `--arg` 需要 `--mode script`，`--mode script` 需要 `--script`。`--description` 从不被执行。守护进程没有白名单时，所有脚本任务都会安全失败。`--output json` 以 `script_config` 显示脚本名和参数。`autopilot update --mode <其他>` 会清除脚本。 任务结束时，服务器会尽力删除任务令牌。如果删除失败，令牌在过期前仍然有效，没有更早的撤销机制。运行结果的 `script` 下记录脚本名、参数列表的 SHA-256、退出码和耗时；删除失败时还会设置 `token_revoke_failed`。
 
@@ -341,7 +355,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 
 `workflow.budget <workflow-id>` 用 `--max-runs <n>`（1 到 1000；0 表示清除上限）和 `--include-child-prs=<true|false>` 代替 `--file`；至少指定一个，省略的字段保持已存储的值。智能体不能直接写入工作流的这两个字段（`budget_requires_decision`）：先提出修改并请求决定，批准后若工作流仍与 CLI 读到的摘要一致，服务端即应用。
 
-持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。
+持有任务令牌的智能体一次调用就能打开审批卡：`multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` 读取当前工作流，只用你指定的预算标志提出 `workflow.budget.set`，并打印卡片 URL；所有者批准之前不写入任何内容。重复同一调用会返回同一张卡。预算调用不能带 `--name`、`--description`、`--steps-file`、`--start-status`、`--map` 或 `--dry-run`；命令会在发出请求之前拒绝，请分成两条命令运行。`--print-hash` 打印预算修改的 `before_sha256` 和 `after_sha256`。`multica config propose workflow.budget` 中同一个标志叫 `--max-runs`。工作流预算更宽时，`multica issue update <issue> --workflow <workflow-id>` 和 `multica issue create --workflow <workflow-id>` 也接受同样的 `--print-hash` 和 `--decision-id`（字段 `issue.workflow`）；两条命令遵循同一规则，所有者的交互会话无需决定。 在智能体运行中，预算更大的 `multica issue update <id> --workflow <workflow-id>` 不需要决定：它会为工作区所有者打开一张审批卡，打印其操作 ID 和 URL，在所有者用通行密钥批准之前，工单保持不变。如果卡片打开后工单的工作流、其项目的工作流或其预算发生了变化，批准会以 `stale_base` 失败。
 
 其他任何字段都会在读取任何内容之前以 `denylisted` 拒绝：`project.description`、passkey 与决策闸门、成员与角色、所有者转移、认证与集成密钥、工作区删除、动作注册表和 `delegated_governed_writes`。不在服务端允许表中的设置键同样被拒绝，混有允许键和拒绝键的补丁整体被拒绝。服务端会在请求时和批准时再次检查。
 
@@ -362,6 +376,7 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 | `project` | 管理项目、项目资源和项目使用的工作流 |
 | `workflow` | 管理工作流：状态以及每个状态交给谁处理 |
 | `label`、`property` | 管理工作区标签和自定义属性 |
+| `view` | 读取保存的视图，列出视图里的任务 |
 | `agent`、`skill`、`squad` | 管理智能体、skill 和小队 |
 | `autopilot` | 管理自动化、触发器和运行历史 |
 | `workspace` | 创建、查看、切换工作区和邀请成员 |
@@ -387,6 +402,25 @@ multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --outpu
 `decision` 和 `routing` 块覆盖全部时间。`route` 块覆盖 `[since, until)` 窗口：`--since` 和 `--until` 接受 RFC 3339 时间，`--until` 默认为现在，`--since` 默认为 `--until` 之前 24 小时。时间格式错误或 `--since` 晚于 `--until` 时，服务器返回 400。
 
 `route` 块统计同一批事件：被标记为离开路由步骤的智能体状态变更（`eligible_exits`），以及带有相同事件 ID 的 route 标签（`matched_labels`）。`label_coverage` 等于 `matched_labels / eligible_exits`，不会超过 1。`via_route_share` 是已匹配事件中，第一个标签来自 `issue route` 而不是状态回退的比例。`duplicate_labels` 统计与更早标签共享同一事件的标签（目标为 0）。`labels_total`、`owner_only_labels`（保持状态不变的 route，因此没有事件）和 `non_routing_labels`（来自没有路由智能体的步骤的 route）不计入覆盖率。`overridden` 统计 1 小时内被人撤销的智能体标签，`override_rate` 等于 `overridden / labels_total`。该块还包含按类别统计的 `decided`、`predicted`、`agreed`、`coverage` 和 `precision`。
+
+### System 1 标注
+
+被指派的 System 1 标注 agent 在自己的 agent 任务中读取盲标队列并写入标签。服务器从任务令牌取得 agent 和任务；成员会话或 PAT 会得到 403。
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+队列只含观察 id 和类型化特征，从不含预测。每次最多 20 个该范围内尚无同类有效标签的观察。服务器在提供队列时保存抽样的 id 和种子，同一任务再次请求会得到同一份样本。`--supersedes` 填要更正的有效标签 id；缺少它时，对同一观察再写一个标签会得到 409。
+
+任何工作区成员都可以读取每个范围和预测器版本的 System 1 资格状态：
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` 为 `test_first_waiver` 或 `ci:<repo>:<protocol>`。每一行对应一个预测器版本的最新纪元。只统计纪元开始之后创建的观测，新的预测器版本会开启自己的纪元。一个案例是带有记录标签（最新且未被取代的标签）的一次预测。`denominator` 统计有非弃权预测且标签已映射的案例，`agreed` 为两者一致的案例，`abstained` 为预测器弃权的已标注案例，`unmapped` 为自由文本回答。满足 7 天、`denominator` 至少 20、一致率至少 90% 时 `status` 为 `qualified`；4 周后统计案例仍少于 20 为 `insufficient_data`，被降级的纪元为 `demoted`，其余为 `collecting`。
 
 ## ID 和输出格式
 
@@ -462,7 +496,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `usage <issue-id>` | 查看聚合 token 用量 | |
 | | `rerun-task <run-id>` | 沿用原智能体和触发上下文，重跑指定运行 | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | 取消进行中或排队中的运行 | `--issue` |
-| `project` | `list/get/create/update/delete` | 管理项目 | `create`：`--title`（必填）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（可重复） |
+| `project` | `list/get/create/update/delete` | 管理项目 | `create`：`--title`（必填）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（可重复）；`update` 的 A/B 分流（所有者、管理员或项目负责人）：`--split-arm-b`（工作流 ID）、`--split-start`、`--split-end`（RFC 3339）、`--split-exclude-assignee` / `--split-exclude-squad`（可重复）、`--clear-split` |
 | | `status <id> <status>` | 修改项目状态 | |
 | | `resource list/add/update/remove` | 管理项目附加资源 | `--type`、`--url`、`--default-branch-hint`、`--ref`、`--local-path`、`--daemon-id`、`--execution-mode`（本地目录的 `in_place` / `worktree`） |
 | | `workflow get/set <project-id>` | 查看项目当前生效的工作流，或切换工作流 | `set <project-id> <workflow\|default>`：`--map old=new`（可重复），`--dry-run` 打印状态迁移计划；切换不会重新分配任务，也不会启动运行。仅管理员和项目负责人可操作 |
@@ -470,6 +504,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `handoff set <workflow> <status-key>` | 设置单个步骤的处理人、说明和下一步/退回状态，未指定的字段保持不变 | `--handler`（`none`、`project_lead`、`creator`，或成员/智能体/小队的名称或 UUID）、`--instructions` / `--instructions-file`、`--next`、`--back`、`--copy-for-project` |
 | `label` | `list/get/create/update/delete` | 管理工作区标签 | `list`：`--resource-type`（`issue` 或 `skill`）、`--full-id`；`create`：`--name`、`--color`、`--resource-type`（`issue` 或 `skill`）、`--description` |
 | `property` | `list/get/create/update/archive/unarchive` | 管理工作区自定义属性 | `create`：`--name`、`--type`（`text`、`number`、`select`、`multi_select`、`date`、`checkbox`、`url`、`actor`、`multi_actor`、`multi_text`、`multi_url`）、`--option`（可重复，仅 select 类型）；`list`：`--include-archived`；类型创建后不可修改 |
+| `view` | `list/get/issues` | 读取你能打开的视图（自己的和工作区共享的）；`issues` 按视图保存的排序列出视图里的任务，视图保存的全部筛选条件都由服务端执行。在智能体运行中，看到的视图和其中「我的」条件都属于运行时的所有者 | `<view>` 接受 ID、ID 前缀或完整名称；`list`：`--scope`（`workspace`、`my`、`project`）、`--project`、`--full-id`；`issues`：`--limit`（最多 100）、`--cursor`（上一页的 `next_cursor`）、`--today`（相对到期日筛选按哪一天计算，默认今天）、`--fields`（仅 JSON）、`--full-id` |
 | `agent` | `list/get/create/update/archive/restore` | 管理智能体 | `--name`、`--runtime-id`（`create` 必填）、`--instructions`、`--conversation-starters`、`--model`、`--thinking-level`、`--custom-env` / `--custom-env-file` / `--custom-env-stdin`（仅 `create`）、`--custom-args`、`--mcp-config` / `--mcp-config-file` / `--mcp-config-stdin`、`--permission-mode`、`--visibility`（旧写法）、`--max-concurrent-tasks` |
 | | `copy <agent-id>` | 复制为新智能体，原智能体不受影响 | `--name`（默认为原名加 ` (copy)`）、`--runtime-id`（复制到其他运行时时必须同时指定 `--model`）、`--no-skills`；`custom_env`、`mcp_config`、`runtime_config` 等机密配置不会复制，需用与 `create` 相同的 flag 重新提供 |
 | | `tasks <id>` | 查看智能体的运行 | |
@@ -522,7 +557,9 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `config` | `show`、`set <key> <value>` | 查看或修改当前 profile 的本地配置 | 优先级：命令行 flag > 环境变量 > `config.json` > 内置默认；设为空串可清除 |
 | `update` | — | 更新 CLI 到最新版本 | |
 | `version` | — | 查看版本信息 | `--output`（`text` 或 `json`） |
-| `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request 会被拒绝 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `exec <tool> -- <args>` | 通过守卫运行工具调用：`gh pr create`、`edit`、`ready` 强制为草稿、加标签并回读确认；通过 `gh api` 写入 pull request（含 GraphQL mutation）会被拒绝；等待 CI 的调用（`gh pr checks --watch`、`gh run watch`、20 秒及以上的 `sleep`）会被拒绝，并提示应改用的 wakeup 命令 | 退出码：工具自身的退出码，守卫拒绝时为 2。环境变量：`MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`、`MULTICA_GUARD_LOG`、`MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | 对照策略和仓库的 `.github/agent-rules.yml` 检查一个拉取请求，不做任何修改。文件作为数据从 PR 受保护基础分支的当前末端读取，绝不从 PR 分支读取；文件缺失不增加规则，格式错误的文件或无法读取的基础分支会使检查失败。可用作 CI 检查 | 退出码：0 通过，1 违反规则，2 被拒绝。`-R owner/name` 指定仓库 |
+| `guard` | `plugin list\|get\|set` | 读取已存储的守卫策略（`list`、`get <name>`），或写出替换它的决策动作文件（`set --file <policy.json> --out <action.json>`，或 `--dry-run`）。策略包含工作区插件和评审规则，以及 org、仓库和路径层；更深的层按键覆盖更浅的层，带 `locked` 的层或工作区会把其键锁定，不受更深层影响。`set` 不会发送任何内容：由人通过 passkey 批准 `workspace.settings.patch`。守护进程把已批准的策略作为工作树之外的文件 `MULTICA_GUARD_POLICY` 连同 `MULTICA_GUARD_POLICY_SHA256` 交给每次运行 | 输出：JSON 行（`--output table` 为表格）；`set` 打印 `before_sha256` 和 `after_sha256` |
 
 ### 决策提案
 
@@ -535,6 +572,12 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 ```
 
 `--version` 和 `--issue` 为必填。`--param k=v` 发送字符串，`--param k:=<json>` 发送原始 JSON；`--params-file` 接收一个 JSON 对象，不能与 `--param` 同时使用。命令会打印批准卡片链接。对运行预算操作，该链接会在问题页打开批准；对其他操作，链接指向聊天中的卡片，由此人在那里批准。普通选项卡片（不带 `--action-file` 的 `multica decision request`）无法应用变更：批准只会记录答复。服务器无法读出意图，因此不会拒绝这类卡片；当决定或选项看起来像是对工作流、智能体、小队、工作区或预算的变更（或含有白名单操作类型）时，会附上一条建议性提示。请改用 `multica decision propose` 发送该变更。被拒绝时会显示服务器的状态和错误码。使用任务令牌时，`multica issue budget raise` 和 `multica issue budget top-up` 走同一条路径（加上 `--for <user-id>`）；使用个人访问令牌时仍按原样发起支出请求。两条命令都接受一个或多个 issue ID：`multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<目标>"`。单个 ID 保持原来的单条提案。任务令牌下传入多个 ID 时，只调用一次批量路由并打印一个卡片链接；`--goal` 为批量命名（默认：操作和 issue 数量），`--output json` 返回批次 id 和每个 issue 的提案 id。个人访问令牌下，每个 ID 各发起自己的请求。批量路由需要聊天任务，最多 25 个 issue；服务器可用一个通行密钥批准一批 raise，但在批准时拒绝一批 top-up，因此 top-up 需逐个批准。
+
+运行预算的下一步：issue 上 80 % 的提醒会带上数字和一条可直接运行的命令，例如 `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`。被预算拒绝的运行会返回错误码 `run_budget_exhausted`，并带有 `runs_used`、`runs_limit`、`workflow_id`、`window_id`、`open_card` 和 `next_command`。`multica issue budget get <issue> --output json` 同样返回 `open_card` 和 `next_command`。当 issue 的当前窗口已有提额或新窗口卡片处于打开状态时，`next_command` 会提示等待该卡片，再次执行 `multica issue budget raise` 会返回同一张卡片，而不是再开一张。使用任务令牌时，issue 任务的 `--for` 默认是工作区所有者，帮助中只列出 `raise`；`top-up` 仍供成员使用。服务器、成员或智能体每打开一张卡片，就会新增一条 `run_budget_ask` 活动记录，记录操作者类型、操作者和动作类型。
+
+已应用的操作在可撤销期间，可由被询问的本人撤销。运行 `multica decision revoke <request-id> --why "<原因>"`。只有同时满足已应用、其类型有精确的逆操作、且尚未被撤销，操作才可撤销。本版本中只有 `agent.pause` 有逆操作（`agent.resume`），且仅限批准时确实暂停了该智能体、之后无人改动其暂停状态的情况。其他所有操作类型仍不可撤销。只有该请求所针对的本人可以撤销，角色规则与批准相同；需要 passkey 的操作请在应用中撤销。服务端记录谁在何时因何撤销，执行逆操作，并以结果 `revoked` 唤醒提出请求的智能体。已拒绝、已过期、未应用、仅讨论或已撤销的决定会被拒绝。`multica decision get <request-id>` 显示 `revocable`，撤销后还显示 `revoke` 记录（`at`、`by`、`reason`）。
+
+`issue.project.set` 把 issue 移到另一个项目：`multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。卡片显示移动前后的项目、工作流、运行上限和已用运行次数，并说明这次移动是否扩大运行预算。扩大预算的移动是 `spend` 卡片，其他移动是 `reversible`。只有工作区所有者可以批准。若请求之后 issue 已离开原项目，或目标工作流的预算变大，卡片会被拒绝。
 
 Run 预算自动审批:issue 用完 run 预算时,如果上一个窗口有进展、没有异常,且工作区的每日额度还有余量,服务器会自动批准下一个窗口。issue 上的审计评论会写明规则(`auto-approver v1`)和关闭开关。获批的窗口还会恢复服务器拒绝的那次 run,issue 不会先停在 `blocked`。进展指 run 改了 issue 状态、改了关联 PR 的 head 或状态(PR 评论不算)、或提交了 commit;评论无论写什么都不算进展,没有这些的 run 即为空转。循环(同一个失败的检查、失败的 CI 工作流或 run 错误在 3 个及以上 run 中重复;不读取评论)、空转窗口(80% 及以上的 run 没有交付任何内容)、token 激增(每个 run 的 token 超过工作区中位数的 3 倍)、反复追加(同一 issue 24 小时内追加 3 次及以上),以及 OpenAI 限制期间属于 OpenAI 池的智能体,都不会被自动批准:所有者每天最多收到一张汇总卡片;当天后续的异常会作为消息出现在该卡片的聊天中,简报会列出被拦下的 issue。其他情况(包括已处于 `blocked` 的 issue,或被拒绝的 run 不是针对该 issue 的智能体负责人)回退到按 issue 的卡片。工作区设置 `run_budget_auto`:`enabled`(默认 `false`:自动审批默认关闭)和 `daily_envelope`(每个 ICT 日额外的 run 数,默认 `300`)和 `expected_checks`(推送的 head 要让 CI 视为已知,必须具备且已完成的检查名;默认为空,即保留所有推送过 head 的窗口)。只完成了部分预期检查的快照不视为已知。名称只有在恰好对应一个已完成的 Checks API run 时才算数:同名的提交状态或同名的第二个 run 都会保留该窗口。可用 `multica config propose workspace.settings --set 'run_budget_auto:={"enabled":true}'` 或 `workspace.settings` 配置提案开启(用 `"enabled":false` 再关闭)。
 

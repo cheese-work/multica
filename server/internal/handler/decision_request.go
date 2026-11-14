@@ -31,7 +31,11 @@ type decisionRequestInput struct {
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
-	Fingerprint     string
+	// Recovers is the ask guard event this request answers; the request clears
+	// it, for the person it asks, in its own transaction. It stays out of the
+	// legacy fingerprint, which is pinned.
+	Recovers    pgtype.UUID `json:"-"`
+	Fingerprint string
 	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
 	// Covers are the open cards this batch card answers for (CHE-4453).
 	Covers           []pgtype.UUID `json:"-"`
@@ -107,7 +111,18 @@ type decisionRequestResult struct {
 	ParkedActivity *db.ActivityLog
 }
 
+// createDecisionRequest creates the request, or finds the same-task retry of
+// it. A new request clears --recovers inside its own transaction; a replay never
+// reaches that code, so it validates and clears here. Clearing is idempotent.
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
+	result, err := handler.createDecisionRequestOnce(request, issue, input)
+	if err != nil || !result.Replayed {
+		return result, err
+	}
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID)
+}
+
+func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request requires this issue's running task"}
 	if request.Header.Get("X-Actor-Source") != "task_token" {
@@ -549,6 +564,9 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
 		return empty, err
 	}
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID); err != nil {
+		return empty, err
+	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
 		return empty, err
 	}
@@ -774,6 +792,15 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, input.ParentID, commentID, nil)
 	if err != nil {
 		return empty, err
+	}
+	if input.Action != nil && isRunBudgetActionType(input.Action.Type) {
+		window, err := runBudgetWindowOf(input.Action.Params)
+		if err != nil {
+			return empty, err
+		}
+		if err := recordRunBudgetAsk(ctx, queries, issue, "agent", agent.ID, input.Action.Type, window); err != nil {
+			return empty, err
+		}
 	}
 	// The ping commits with the request: a ping failure refuses the whole call.
 	// A batch pings once, for its lead; the others are recorded as handled.

@@ -282,13 +282,36 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		writeError(writer, http.StatusForbidden, "action proposal requires this issue's running task")
 		return
 	}
-	recipient, chatSession, ok := handler.proposalRecipient(writer, request, issue, taskID, body.For)
+	var owner pgtype.UUID
+	if body.For == "" && isRunBudgetActionType(body.ActionType) {
+		owners, err := handler.Queries.ListWorkspaceOwnerUserIDs(request.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeDecisionError(writer, err, "action proposal")
+			return
+		}
+		if len(owners) > 0 {
+			owner = owners[0]
+		}
+	}
+	recipient, chatSession, ok := handler.proposalRecipient(writer, request, issue, taskID, body.For, owner)
 	if !ok {
 		return
 	}
-	draft, err := draftDecisionAction(&decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params})
+	wire := &decisionActionWire{Type: body.ActionType, Version: body.Version, Params: body.Params}
+	if err := withIssueTarget(wire, issue.ID); err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid action proposal")
+		return
+	}
+	draft, err := draftDecisionAction(wire)
 	if err != nil {
 		writeDecisionError(writer, err, "action proposal")
+		return
+	}
+	if open, found, err := handler.openRunBudgetProposal(request.Context(), issue, draft); err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	} else if found {
+		handler.writeDecisionResult(writer, request, issue, decisionRequestResult{Request: open, Replayed: true}, nil)
 		return
 	}
 	var recipientErr error
@@ -316,8 +339,13 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 		return
 	}
 	paramsHash := sha256.Sum256(draft.Params)
+	class, err := handler.requestClassFor(request.Context(), issue, "reversible", draft)
+	if err != nil {
+		writeDecisionError(writer, err, "action proposal")
+		return
+	}
 	input := decisionRequestInput{
-		HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", draft.Definition.MinClass), Action: draft,
+		HumanUserID: recipient, Ask: ask, EscalationClass: class, Action: draft,
 		Proposal: &proposalRequest{ActionType: draft.Type, Version: draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: body.Reason, RecipientErr: recipientErr, ChatSessionID: chatSession},
 	}
 	// A duplicate that committed first makes the second pass replay it.
@@ -339,7 +367,9 @@ func (handler *Handler) ProposeDecisionAction(writer http.ResponseWriter, reques
 
 // proposalRecipient names who is asked. An issue task names a person. A chat
 // task asks the creator of its own session, and may name only that person.
-func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *http.Request, issue db.Issue, taskID pgtype.UUID, named string) (recipient, chatSession pgtype.UUID, ok bool) {
+//
+// An issue task that names no one asks fallback when it is valid.
+func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *http.Request, issue db.Issue, taskID pgtype.UUID, named string, fallback pgtype.UUID) (recipient, chatSession pgtype.UUID, ok bool) {
 	task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(writer, http.StatusInternalServerError, "failed to load task")
@@ -361,6 +391,9 @@ func (handler *Handler) proposalRecipient(writer http.ResponseWriter, request *h
 			}
 		}
 		return session.CreatorID, session.ID, true
+	}
+	if named == "" && fallback.Valid {
+		return fallback, chatSession, true
 	}
 	if recipient, ok = parseUUIDOrBadRequest(writer, named, "for"); !ok {
 		return recipient, chatSession, false

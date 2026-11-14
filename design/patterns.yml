@@ -8,7 +8,7 @@
   copy: {error: "chat:needs_you.error", action: "chat:needs_you.retry"}
   surfaces: ["chat-search", "chat-session-stats-dialog", "decision-artifacts", "needs-you-list", "plan-revision-viewer", "issue-decision-banner", "media-page", "machine-pause-card", "batch-handoff-confirm-dialog"]
   open: "S3 item 1: collapse the other Retry and Try again keys (15 keys) onto one label."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=mA8N3kWUmL"}
 - id: inline-notice
   intent: "Warning, muted, success or destructive notice box."
   origin: fork
@@ -16,7 +16,7 @@
   components: ["packages/ui/components/ui/alert.tsx"]
   surfaces: ["interactive-login-banner", "status-summary", "wakeup-fields", "wakeups-paused-banner", "wakeups-tab", "workspace-wakeup-rules", "workflow-budget-request-banner"]
   open: "Alert has default and destructive tones only. Decide warning, muted and success tone values before any change to Alert."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=UYfeQwU9vI"}
 - id: integration-tab
   intent: "Settings tab for one chat integration: provider card, installation row, bot row, loading/empty/not-enabled states, disconnect dialog."
   origin: fork
@@ -25,14 +25,14 @@
   copy: {revoked: "settings:slack.revoked_badge", installed: "settings:slack.installed_at_label", not_enabled: "settings:slack.not_enabled_title", empty: "settings:slack.empty_title", disconnected: "settings:slack.toast_disconnected"}
   surfaces: ["integrations-tab", "dingtalk-tab", "lark-tab", "slack-tab", "telegram-tab", "wecom-tab"]
   build: "One shared integration tab (copied 5 times). S3 items 3 to 8 merge the 5 duplicated keys."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=IiowtxABGu"}
 - id: diff-dialog
   intent: "Dialog or panel with diff hunks."
   origin: fork
   status: active
   components: ["packages/views/chat/components/diff-hunks.tsx", "packages/ui/components/ui/tabs.tsx", "packages/ui/components/ui/collapsible.tsx"]
   surfaces: ["config-change-viewer", "decision-artifacts", "diff-hunks", "plan-revision-viewer", "attachment-revision-diff"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=apLCi-H0lg"}
 - id: property-picker
   intent: "Popover picker for one property."
   origin: fork
@@ -47,7 +47,7 @@
   components: []
   surfaces: ["decision-recent-runs", "decision-request-card", "use-dm-session-surface", "plan-revision-viewer", "issue-decision-banner"]
   build: "One shared ICT formatter (6 local copies; 5 use Asia/Bangkok, 1 uses Asia/Ho_Chi_Minh). The literal ' ICT' in decision-recent-runs moves to a locale key."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=dxCUb6csKP"}
 - id: lazy-detail
   intent: "Suspense wrapper with a null fallback for a lazy surface."
   origin: fork
@@ -55,7 +55,7 @@
   components: []
   surfaces: ["autopilot-dialog-lazy", "deferred-content-editor", "lazy-content-editor", "issue-detail-lazy", "lazy-search-command"]
   build: "One wrapper (3 near-copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Y1a5G3La2l"}
 - id: issue-mention-chip
   intent: "Chip that links an issue."
   origin: fork
@@ -70,7 +70,7 @@
   components: []
   surfaces: ["decision-answer-content", "decision-dm-card", "decision-withdrawal-card", "decision-quote-card"]
   build: "One shared card frame (3 copies of one recipe)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=MzyQik65fF"}
 - id: icon-button-action
   intent: "Icon-only action button."
   origin: fork
@@ -84,7 +84,7 @@
   status: active
   components: ["packages/ui/components/ui/collapsible.tsx"]
   surfaces: ["continuation-block", "predecessor-dms", "project-wakeups-section", "workspace-wakeup-rules"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=oWmmYrlE7R"}
 - id: settings-select-row
   intent: "Settings row with a select."
   origin: fork
@@ -92,7 +92,7 @@
   components: ["packages/views/settings/components/settings-layout.tsx", "packages/ui/components/ui/select.tsx"]
   surfaces: ["runtime-profile-field", "idle-guard-rows", "routing-agent-rows", "runtime-profile-row"]
   open: "runtime-profile-field omits SettingsRow."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=XcnDkQZ9_Q"}
 - id: pill-menu
   intent: "Pill-shaped menu trigger."
   origin: fork
@@ -100,14 +100,14 @@
   components: ["packages/ui/components/ui/select.tsx", "packages/views/issues/components/pickers/property-picker.tsx"]
   surfaces: ["wakeup-condition-params", "wakeup-fields", "wakeup-pickers", "workflow-choice-pill"]
   open: "pillClass in wakeup-pickers is the local source; fold it into the shared pill."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=2g_6AmC_vS"}
 - id: decision-action-approval
   intent: "Approve or reject a decision action."
   origin: fork
   status: active
   components: ["packages/views/common/decision-action-approval.tsx"]
   surfaces: ["decision-request-card", "decision-action-approval", "decision-action-panel"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=rFsQxRB3T0"}
 - id: description-disclosure
   intent: "Show more / Show less."
   origin: fork
@@ -116,28 +116,28 @@
   copy: {show: "chat:needs_you.show_all", less: "chat:needs_you.show_less"}
   surfaces: ["instructions-editor", "expandable-description", "description-disclosure"]
   open: "4 implementations today; keep one label set."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=K3ntSihUPp"}
 - id: status-pill
   intent: "Small status chip."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/badge.tsx"]
   surfaces: ["run-budget-chip", "workflow-pill", "open-decisions-chip"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=OhVi1ABM_t"}
 - id: header-chip-popover
   intent: "Header chip that opens a popover."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/popover.tsx", "packages/ui/components/ui/button.tsx"]
   surfaces: ["chat-annotations", "open-decisions-badge", "scheduled-wakeups-chip"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=ka2_DdPvLD"}
 - id: form-dialog
   intent: "Dialog with a form, a destructive notice and a mono path box."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/input.tsx", "packages/ui/components/ui/field.tsx", "packages/ui/components/ui/alert.tsx"]
   surfaces: ["add-trigger-dialog", "github-ref-dialog", "local-directory-mode-dialog"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=TVphLuzmC_"}
 - id: pause-banner
   intent: "Warning banner above a page for a paused workspace or machine."
   origin: fork
@@ -146,7 +146,7 @@
   copy: {title: "runtimes:machine_pause.title"}
   surfaces: ["machine-pause-banner", "workspace-pause-banner", "machine-pause-card"]
   build: "One shared banner (2 opacity sets today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=leNqyjL3on"}
 - id: run-budget
   intent: "Meter for a budget or a context window."
   origin: fork
@@ -154,7 +154,7 @@
   components: ["packages/ui/components/ui/progress.tsx", "packages/views/issues/components/progress-ring.tsx"]
   surfaces: ["chat-context-meter", "decision-recent-runs", "run-budget-meter"]
   open: "Use role=meter."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=RVrN9fCE-8"}
 - id: attachment-card-list
   intent: "Attachment cards with a revision badge."
   origin: fork
@@ -163,7 +163,7 @@
   copy: {badge: "issues:deliverables.version_short"}
   surfaces: ["decision-artifacts", "attachment-list"]
   open: "S3 item 9: retire attachment_revision.badge."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1mMP-9owTU"}
 - id: wakeup-rule-form
   intent: "Instruction, enable switch, 4000-byte limit and 409 message for a wakeup rule."
   origin: fork
@@ -172,7 +172,7 @@
   copy: {invalid: "issues:wakeups.instruction_invalid", conflict: "issues:wakeups.conflict_error"}
   surfaces: ["issue-wakeup-defaults", "workspace-wakeup-rules"]
   build: "One form shared by issue and settings (2 copies, 2 namespaces)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=_wRWCO-9QT"}
 - id: settings-number-row
   intent: "Number input with inline error."
   origin: fork
@@ -180,14 +180,14 @@
   components: ["packages/views/settings/components/auto-compact-tokens-row.tsx"]
   surfaces: ["agent-auto-compact-section", "auto-compact-tokens-row"]
   open: "3 copies today."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=aOAZfkP9LP"}
 - id: integration-card-grid
   intent: "Card for a connectable app with a status."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/card.tsx", "packages/ui/components/ui/badge.tsx"]
   surfaces: ["agent-mcp-tab", "composio-tab"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=DuqxVys-Eo"}
 - id: settings-table-section
   intent: "Settings table."
   origin: fork
@@ -195,7 +195,7 @@
   components: ["packages/ui/components/ui/table.tsx"]
   surfaces: ["delegated-writes-section", "provider-breakers-tab"]
   open: "2 raw tables here, plus chat-session-stats-dialog."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=zwtKWV4hl7"}
 - id: settings-action-row
   intent: "Pause / resume row with a confirm dialog."
   origin: fork
@@ -203,48 +203,48 @@
   components: []
   surfaces: ["agent-scheduling", "workspace-scheduling-row"]
   build: "One row (2 copies today)."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=sG7c6FoEh5"}
 - id: create-shell
   intent: "Agent create page shell."
   origin: fork
   status: active
   components: ["packages/views/agents/create/create-shell.tsx"]
   surfaces: ["ai-create-agent-page", "builder-setup-panel"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=LqGJiAq4L4"}
 - id: confirm-dialog
   intent: "Confirm dialog for a handoff."
   origin: fork
   status: active
   components: ["packages/ui/components/ui/alert-dialog.tsx"]
   surfaces: ["use-archived-send", "batch-handoff-confirm-dialog"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Ii5sqw8rC5"}
 - id: section-eyebrow
   intent: "Uppercase label above a section (text-micro uppercase tracking-wide, 27 files)."
   origin: fork
   status: active
   components: []
   build: "One shared eyebrow component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=aYZcVB_0KF"}
 - id: type-role-tokens
   intent: "Use role tokens (text-caption, text-body), not text-xs, text-sm or text-body-sm (not a token)."
   origin: fork
   status: active
   components: ["packages/ui/styles/tokens.css"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=KDOlak_My-"}
 - id: inline-link-action
   intent: "Underlined text link (underline underline-offset-2, 8 files)."
   origin: fork
   status: active
   components: []
   build: "One shared link-action component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=TcNpuNpZTB"}
 - id: choice-card
   intent: "Single-choice card or radio list (role=radio, 7 files)."
   origin: fork
   status: active
   components: []
   build: "One shared choice card; packages/ui has no RadioGroup. dashboard-shared Segmented is the nearest component."
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=MXcaRpo5JX"}
 - id: settings-page
   intent: "One page title with scope badge, sections of text-body font-semibold, rows of label, optional help, control. SettingsTab, SettingsSection, SettingsCard, SettingsRow."
   origin: upstream
@@ -275,24 +275,24 @@
   status: active
   components: ["packages/ui/components/ui/button.tsx"]
   docs: ["packages/ui/docs/button.md", "packages/ui/docs/button.zh.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1BY4_9on61"}
 - id: dialogs
   intent: "Dialog for a focused task. AlertDialog for a consequential confirmation. Keep the footer reachable at narrow widths."
   origin: upstream
   status: active
   components: ["packages/ui/components/ui/dialog.tsx", "packages/ui/components/ui/alert-dialog.tsx"]
   docs: ["packages/ui/docs/dialog.md", "packages/ui/docs/dialog.zh.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=Ug6-1wtfrk"}
 - id: tabs
   intent: "Roving focus, Left/Right moves, Home/End jump, one tabpanel per tab. Prefer it to SettingsViewTabs (no panel semantics, 28 px high)."
   origin: upstream
   status: active
   components: ["packages/ui/components/ui/tabs.tsx"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=1EvcnL_auC"}
 - id: ui-copy
   intent: "Help only for a non-obvious choice, constraint, consequence or next step. State each fact once."
   origin: upstream
   status: active
   components: []
   docs: ["AGENTS.md"]
-  frame: {state: pending}
+  frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=S1nDnILx1h"}

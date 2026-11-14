@@ -158,3 +158,58 @@ test("the three pilot patterns link a frame on the Patterns page (CHE-5428)", ()
     assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
   }
 });
+
+test("batch F3 patterns link a frame on the Patterns page (CHE-5528)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["decision-action-approval", "description-disclosure", "status-pill", "header-chip-popover", "form-dialog"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("batch F2 patterns link a frame on the Patterns page (CHE-5527)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["lazy-detail", "decision-receipt-card", "collapsible-section", "settings-select-row", "pill-menu"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("the five S4b-F1 patterns link a frame on the Patterns page (CHE-5526)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const batch = ["inline-retry", "inline-notice", "integration-tab", "diff-dialog", "ict-timestamp"];
+  for (const id of batch) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("the four batch F6 patterns link a frame on the Patterns page (CHE-5531)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  for (const id of ["section-eyebrow", "type-role-tokens", "inline-link-action", "choice-card"]) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.match(frame?.url ?? "", /^https:\/\/[^/]+\/c\/mRAnnjvGod\?frame=[\w-]+$/, `${id} frame.url`);
+  }
+});
+
+test("batch F5 patterns link their captured frames on the Patterns page (CHE-5530)", () => {
+  const entries = parsePatterns(readFileSync(resolve(import.meta.dirname, "../../design/patterns.yml"), "utf8"));
+  const frames = {
+    "integration-card-grid": "DuqxVys-Eo",
+    "settings-table-section": "zwtKWV4hl7",
+    "settings-action-row": "sG7c6FoEh5",
+    "create-shell": "LqGJiAq4L4",
+    "confirm-dialog": "Ii5sqw8rC5",
+  };
+  for (const [id, frameId] of Object.entries(frames)) {
+    const frame = entries.find((e) => e.id === id)?.frame;
+    assert.equal(frame?.state, "patterns", `${id} frame.state`);
+    assert.equal(frame?.url, `https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=${frameId}`, `${id} frame.url`);
+  }
+});

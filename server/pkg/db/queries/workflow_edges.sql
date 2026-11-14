@@ -20,6 +20,8 @@ DELETE FROM issue_wakeup WHERE id = sqlc.arg('id')::uuid AND system_rule = 'work
 -- per-check rows exist yet); 'unknown' when a failing check has no cause; then
 -- 'infra' or 'optional'. 'flaky' when nothing fails now but a check was marked
 -- flaky on this head: red earlier, green on a rerun of the same head.
+-- The last six columns identify the PR for the PR merge rule's activity entry
+-- and its refs (CHE-5242); the edge guards ignore them.
 SELECT pr.state::text AS state,
        COALESCE(pr.checks_rollup_state, '')::text AS checks_rollup_state,
        (pr.snapshot_head_sha <> '' AND pr.snapshot_head_sha = pr.head_sha)::boolean AS head_fresh,
@@ -33,7 +35,13 @@ SELECT pr.state::text AS state,
           WHEN f.unknown > 0 THEN 'unknown'
           WHEN f.infra > 0 THEN 'infra'
           ELSE 'optional'
-        END)::text AS red_cause
+        END)::text AS red_cause,
+       pr.id AS pr_id,
+       'github'::text AS provider,
+       pr.pr_number AS pr_number,
+       pr.repo_owner::text AS repo_owner,
+       pr.repo_name::text AS repo_name,
+       pr.merge_commit_sha::text AS merge_commit_sha
 FROM github_pull_request pr
 JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 CROSS JOIN LATERAL (
@@ -51,7 +59,8 @@ CROSS JOIN LATERAL (
 ) f
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[])
 UNION ALL
-SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text
+SELECT pr.state::text, ''::text, false, ''::text, ''::text, ''::text, ''::text,
+       pr.id, pr.provider::text, pr.pr_number, pr.repo_owner::text, pr.repo_name::text, ''::text
 FROM vcs_pull_request pr
 JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 WHERE ipr.issue_id = ANY(sqlc.arg('issue_ids')::uuid[]);

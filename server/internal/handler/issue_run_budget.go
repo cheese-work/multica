@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -37,7 +39,12 @@ func (h *Handler) GetIssueRunBudget(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	next, err := h.loadRunBudgetNextStep(r.Context(), h.Queries, issue, snap)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to read the run budget")
+		return
+	}
+	writeJSON(w, http.StatusOK, runBudgetView{RunBudgetSnapshot: snap, OpenCard: next.OpenCard, NextCommand: next.NextCommand})
 }
 
 // GetIssueStageQueue returns where the issue's stage run stands in its owner's
@@ -315,36 +322,56 @@ func boundarySlotsOf(starter txStarter) chan struct{} {
 // caller takes a second boundary lock while it holds one, so a slot never
 // waits on its own holder.
 func (h *Handler) enterRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID) (leave func(), err error) {
+	return h.enterRunBudgetBoundaries(ctx, issueID)
+}
+
+// enterRunBudgetBoundaries is one boundary entry for several issues: it takes
+// every issue's turn, in id order so two batches never wait on each other, then
+// one slot. A batch of top-ups holds one slot, not one per issue.
+func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgtype.UUID) (leave func(), err error) {
+	issueIDs = slices.Clone(issueIDs)
+	slices.SortFunc(issueIDs, func(a, b pgtype.UUID) int { return bytes.Compare(a.Bytes[:], b.Bytes[:]) })
+	issueIDs = slices.Compact(issueIDs)
+
 	boundaryQueue.Lock()
-	turn := boundaryQueue.turns[issueID]
-	if turn == nil {
-		turn = &boundaryTurn{held: make(chan struct{}, 1)}
-		boundaryQueue.turns[issueID] = turn
+	turns := make([]*boundaryTurn, len(issueIDs))
+	for index, issueID := range issueIDs {
+		turn := boundaryQueue.turns[issueID]
+		if turn == nil {
+			turn = &boundaryTurn{held: make(chan struct{}, 1)}
+			boundaryQueue.turns[issueID] = turn
+		}
+		turn.waiting++
+		turns[index] = turn
 	}
-	turn.waiting++
 	boundaryQueue.Unlock()
 
 	slots := boundarySlotsOf(h.TxStarter)
-	var gotTurn, gotSlot bool
+	held := 0 // turns taken, in order
+	var gotSlot bool
 	leave = sync.OnceFunc(func() {
 		if gotSlot {
 			<-slots
 		}
-		if gotTurn {
+		for _, turn := range turns[:held] {
 			<-turn.held
 		}
 		boundaryQueue.Lock()
-		if turn.waiting--; turn.waiting == 0 {
-			delete(boundaryQueue.turns, issueID)
+		for index, turn := range turns {
+			if turn.waiting--; turn.waiting == 0 {
+				delete(boundaryQueue.turns, issueIDs[index])
+			}
 		}
 		boundaryQueue.Unlock()
 	})
-	select {
-	case turn.held <- struct{}{}:
-		gotTurn = true
-	case <-ctx.Done():
-		leave()
-		return nil, ctx.Err()
+	for _, turn := range turns {
+		select {
+		case turn.held <- struct{}{}:
+			held++
+		case <-ctx.Done():
+			leave()
+			return nil, ctx.Err()
+		}
 	}
 	select {
 	case slots <- struct{}{}:

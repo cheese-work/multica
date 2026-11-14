@@ -105,7 +105,12 @@ func (handler *Handler) ProposeDecisionActionBatch(writer http.ResponseWriter, r
 			writeError(writer, http.StatusBadRequest, "items: every issue must be in one workspace")
 			return
 		}
-		draft, err := draftDecisionAction(&decisionActionWire{Type: wire.ActionType, Version: wire.Version, Params: wire.Params})
+		actionWire := &decisionActionWire{Type: wire.ActionType, Version: wire.Version, Params: wire.Params}
+		if err := withIssueTarget(actionWire, issue.ID); err != nil {
+			writeError(writer, http.StatusBadRequest, "invalid batch proposal")
+			return
+		}
+		draft, err := draftDecisionAction(actionWire)
 		if err != nil {
 			writeDecisionError(writer, err, "batch proposal")
 			return
@@ -122,7 +127,7 @@ func (handler *Handler) ProposeDecisionActionBatch(writer http.ResponseWriter, r
 	if _, ok := handler.requireWorkspaceMember(writer, request, uuidToString(anchor.WorkspaceID), "workspace not found"); !ok {
 		return
 	}
-	recipient, chatSession, ok := handler.proposalRecipient(writer, request, anchor, taskID, body.For)
+	recipient, chatSession, ok := handler.proposalRecipient(writer, request, anchor, taskID, body.For, pgtype.UUID{})
 	if !ok {
 		return
 	}
@@ -173,10 +178,14 @@ func (handler *Handler) proposeBatchGroup(request *http.Request, group *batchGro
 			return batchProposalResponse{}, false, decisionIntentRefusal{http.StatusBadRequest, "goal is too long"}
 		}
 		paramsHash := sha256.Sum256(item.draft.Params)
+		class, err := handler.requestClassFor(request.Context(), item.issue, "reversible", item.draft)
+		if err != nil {
+			return batchProposalResponse{}, false, err
+		}
 		itemCard := *card
 		itemCard.Lead = index == 0
 		inputs[index] = decisionRequestInput{
-			HumanUserID: recipient, Ask: ask, EscalationClass: actionRequestClass("reversible", item.draft.Definition.MinClass), Action: item.draft,
+			HumanUserID: recipient, Ask: ask, EscalationClass: class, Action: item.draft,
 			Proposal: &proposalRequest{ActionType: item.draft.Type, Version: item.draft.Version, ParamsSHA256: hex.EncodeToString(paramsHash[:]), Reason: goal, RecipientErr: recipientErr, ChatSessionID: chatSession},
 			Batch:    &itemCard,
 		}
