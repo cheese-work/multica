@@ -396,6 +396,8 @@
     "pin_failed": "Couldn't update the pin",
     "unseen": "Mark as unseen",
     "unseen_failed": "Couldn't mark this chat as unseen",
+    "mark_seen": "Mark as seen",
+    "more": "More",
     "rename": "Rename",
     "select": "Select multiple",
     "undo": "Undo",

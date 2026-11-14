@@ -73,6 +73,7 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useUpdateChatSession: () => ({ mutate: updateMutate, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: archiveMutate, isPending: false }),
   useBatchChatSessions: () => ({ mutateAsync: batchAsync, isPending: false }),
+  useMarkChatSessionRead: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@multica/core/chat/attention-mutations", () => {
