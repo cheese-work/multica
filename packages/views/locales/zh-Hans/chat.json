@@ -572,8 +572,11 @@
     "recent_runs_status": { "completed": "已完成", "failed": "失败", "cancelled": "已取消", "running": "运行中", "other": "排队中" },
     "config_change": {
       "viewer_label": "待批准的更改",
-      "tab_changes": "更改",
-      "tab_result": "结果",
+      "show_full": "显示全文",
+      "hide_full": "隐藏全文",
+      "row_changed": "已更改",
+      "row_added": "已添加",
+      "row_removed": "已删除",
       "changes_region": "{{field}}的更改",
       "result_region": "批准后的结果",
       "no_changes": "没有行更改。",

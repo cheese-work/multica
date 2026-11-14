@@ -541,8 +541,11 @@
     "recent_runs_status": { "completed": "已完成", "failed": "失敗", "cancelled": "已取消", "running": "執行中", "other": "排隊中" },
     "config_change": {
       "viewer_label": "待核准的變更",
-      "tab_changes": "變更",
-      "tab_result": "結果",
+      "show_full": "顯示全文",
+      "hide_full": "隱藏全文",
+      "row_changed": "已變更",
+      "row_added": "已新增",
+      "row_removed": "已刪除",
       "changes_region": "{{field}}的變更",
       "result_region": "核准後的結果",
       "no_changes": "沒有行變更。",
