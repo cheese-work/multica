@@ -3,7 +3,7 @@
 //   PR check (pr-guards.yml): node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files <list>
 //     <list> is the PR's changed files, one per line, read through the API (the job never checks out the PR). Fails a PR that touches CLI commands, the agent brief or the daemon without `Agent-facing:`
 //     (and an `Adoption item:` when the answer is yes).
-//   Daily (autopilot, run in a checkout of this repo on X99):
+//   Daily (autopilot, on X99; needs `gh`, `multica`, tailnet access to C00; no checkout needed):
 //     node scripts/agent-adoption.mjs daily --repo <owner/repo> --project <id> --assignee-id <id> [--dry-run]
 //     Reads the revision C00 runs (C00_API_URL /api/config, the same readback as deploy/cd/check-deploy-freshness.py),
 //     collects the merged PRs between the last adoption issue's SHA and that revision, and opens ONE issue listing
@@ -78,11 +78,10 @@ export function newCliFlags(diff) {
   return flags;
 }
 
+// Only an explicit `Agent-facing: yes` counts. A missing field on an agent surface is the PR check's job (pr-guards.yml).
 function classify(pr) {
   const { agentFacing, adoptionItem } = parseAgentFacing(pr.body);
-  if (agentFacing === "no") return null;
-  if (agentFacing === "yes") return { pr, adoptionItem, fieldMissing: false };
-  return touchesAgentSurface(pr.paths) ? { pr, adoptionItem: null, fieldMissing: true } : null;
+  return agentFacing === "yes" ? { pr, adoptionItem } : null;
 }
 
 // 0.5 h to read + 0.25 h per PR, rounded up to 0.5 h, capped at the 2 h issue limit.
@@ -95,10 +94,7 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
   const agentPrs = prs.filter((pr) => !seen.has(pr.number) && !listed.has(pr.number) && listed.add(pr.number)).map(classify).filter(Boolean);
   if (agentPrs.length === 0) return { issue: false, log: `no agent-facing PR in ${range}; no adoption issue`, title: "", body: "", prs: [] };
 
-  const lines = agentPrs.map(({ pr, adoptionItem, fieldMissing }) => {
-    const change = fieldMissing ? "field missing, path heuristic; author to confirm" : `agents change: ${adoptionItem ?? "not stated"}`;
-    return `- #${pr.number} ${pr.title} — ${change} — owner: @${pr.author}`;
-  });
+  const lines = agentPrs.map(({ pr, adoptionItem }) => `- #${pr.number} ${pr.title} — agents change: ${adoptionItem ?? "not stated"} — owner: ${pr.author}`);
   const flags = agentPrs.flatMap(({ pr }) => newCliFlags(pr.diff ?? ""));
   const readback = flags.length === 0
     ? ["No new CLI flags in this range. No host readback needed."]
@@ -157,26 +153,33 @@ export function daily(deps) {
   return { log: plan.log, created: deps.create({ title: plan.title, body: plan.body }) };
 }
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+const gh = (...args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
+// Added hunks under server/cmd/multica only; the flag readback must not pick up flags from other Go code.
+const cliDiff = (diff) => diff.split(/^(?=diff --git )/m).filter((part) => /^diff --git a\/server\/cmd\/multica\//.test(part)).join("");
+
+// All reads go through the GitHub API: the checkout on an agent host is shallow and blobless, so local diffs fetch
+// one blob at a time (about 1.5 s each). One `gh pr list` read gives bodies and paths (first 100 files per PR); a
+// PR's diff is read only when it is agent-facing.
 function collectPrs(prev, next, repo) {
-  const prs = [];
-  for (const row of git("log", "--first-parent", "--format=%H%x09%s", `${prev}..${next}`).split("\n").filter(Boolean)) {
-    const [sha, subject] = row.split("\t");
-    const number = /\(#(\d+)\)$|^Merge pull request #(\d+)/.exec(subject);
-    if (!number) continue;
-    const n = number[1] ?? number[2];
-    const pr = JSON.parse(execFileSync("gh", ["api", `repos/${repo}/pulls/${n}`, "--jq", "{title,body,author:.user.login}"], { encoding: "utf8" }));
-    prs.push({
-      number: Number(n),
-      title: pr.title,
-      author: pr.author,
-      body: pr.body ?? "",
-      paths: git("diff", "--name-only", `${sha}^1`, sha).split("\n").filter(Boolean),
-      diff: git("diff", "-U0", `${sha}^1`, sha, "--", "server/cmd/multica"),
-    });
+  const since = gh("api", `repos/${repo}/commits/${prev}`, "--jq", ".commit.committer.date").trim().slice(0, 10);
+  const listed = new Map(
+    JSON.parse(gh("pr", "list", "--repo", repo, "--state", "merged", "--search", `merged:>=${since}`, "--limit", "1000", "--json", "number,title,body,author,files"))
+      .map((pr) => [pr.number, { title: pr.title, body: pr.body, author: pr.author?.login, paths: (pr.files ?? []).map((f) => f.path) }]),
+  );
+  const numbers = new Set();
+  for (const subject of gh("api", "--paginate", `repos/${repo}/compare/${prev}...${next}`, "--jq", ".commits[].commit.message | split(\"\\n\")[0]").split("\n")) {
+    const m = /\(#(\d+)\)$|^Merge pull request #(\d+)/.exec(subject);
+    if (m) numbers.add(Number(m[1] ?? m[2]));
   }
-  return prs;
+  if (listed.size >= 1000) throw new Error("gh pr list hit its 1000 PR limit; the range is too wide to read in one call");
+  // A `(#N)` commit with no merged PR in this repo is an upstream commit that came in with a sync merge: skipped.
+  return [...numbers].filter((n) => listed.has(n)).sort((a, b) => a - b).map((n) => {
+    const pr = listed.get(n);
+    const out = { number: n, title: pr.title, author: pr.author, body: pr.body ?? "", paths: pr.paths, diff: "" };
+    if (classify(out)) out.diff = cliDiff(gh("pr", "diff", String(n), "--repo", repo));
+    return out;
+  });
 }
 
 function liveShort(env) {
@@ -215,9 +218,9 @@ export function main(argv, env) {
     const multica = (...args) => execFileSync("multica", args, { encoding: "utf8" });
     const out = daily({
       liveShort: () => liveShort(env),
-      resolve: (shortSha) => git("rev-parse", "--verify", `${shortSha}^{commit}`).trim(),
+      resolve: (shortSha) => gh("api", `repos/${repo}/commits/${shortSha}`, "--jq", ".sha").trim(),
       search: () => multica("issue", "search", "agent-adoption-daily", "--include-closed", "--limit", "100", "--output", "json"),
-      bootstrap: (next) => git("rev-list", "-1", `--before=${new Date(Date.now() - 864e5).toISOString()}`, next).trim(),
+      bootstrap: (next) => gh("api", `repos/${repo}/commits?sha=${next}&until=${new Date(Date.now() - 864e5).toISOString()}&per_page=1`, "--jq", ".[0].sha").trim(),
       collectPrs: (prev, next) => collectPrs(prev, next, repo),
       create: ({ title, body }) => {
         if (dry) return `(dry run) ${title}\n${body}`;

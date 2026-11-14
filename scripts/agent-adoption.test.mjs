@@ -97,8 +97,8 @@ const missingFieldPr = { number: 14, title: "fix(daemon): retry", author: "dan",
 test("each agent-facing PR gets one line: feature, what agents change, owner", () => {
   const out = buildDaily({ prev, next, prs: [agentPr, plainPr, otherAgentPr] });
   assert.equal(out.issue, true);
-  assert.match(out.body, /- #12 feat\(cli\): property flag — agents change: pass --property on issue create — owner: @alice/);
-  assert.match(out.body, /- #15 feat\(daemon\): guard shim — agents change: no raw sleep — owner: @bob/);
+  assert.match(out.body, /- #12 feat\(cli\): property flag — agents change: pass --property on issue create — owner: alice/);
+  assert.match(out.body, /- #15 feat\(daemon\): guard shim — agents change: no raw sleep — owner: bob/);
   assert.doesNotMatch(out.body, /#13/);
   assert.deepEqual(out.prs, [12, 15]);
 });
@@ -118,9 +118,10 @@ test("a day with no agent-facing PR opens nothing and logs why", () => {
   assert.equal(buildDaily({ prev, next, prs: [] }).issue, false);
 });
 
-test("a PR with a missing field is judged by the path heuristic and flagged", () => {
+test("only an explicit Agent-facing: yes lists a PR; a missing field is the PR check's job, not the daily issue's", () => {
   const out = buildDaily({ prev, next, prs: [missingFieldPr] });
-  assert.match(out.body, /#14.*field missing, path heuristic; author to confirm.*owner: @dan/);
+  assert.equal(out.issue, false);
+  assert.deepEqual(buildDaily({ prev, next, prs: [missingFieldPr, agentPr] }).prs, [12]);
 });
 
 test("the body is ready: marker, Estimate first line, 3 numbered acceptance criteria, host readback per new flag", () => {
