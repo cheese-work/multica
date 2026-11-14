@@ -146,12 +146,12 @@ describe("useRealtimeSync — ws instance change", () => {
 
     // Should invalidate workspace-scoped and event-fed account-level keys,
     // plus the cross-workspace inbox summary.
-    // Plus the issue unread marks.
+    // Plus the issue unread marks, plus the skill version history.
     //
     // Awaited rather than counted synchronously: the inbox unread summary
     // refresh cancels any in-flight request before invalidating (see
     // onInboxSummaryInvalidate), so that one lands after the synchronous ones.
-    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(48));
+    await waitFor(() => expect(invalidateSpy).toHaveBeenCalledTimes(49));
   });
 
   it("does not re-invalidate when rerendered with the same ws instance", () => {
@@ -238,6 +238,32 @@ describe("useRealtimeSync — ws instance change", () => {
       expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: issueWorkflowKeys.all("ws-2") });
       // A deleted project takes its scoped saved views with it.
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: issueViewKeys.all("ws-1") });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes the skill catalog and agent list/details after a remote skill deletion", () => {
+    vi.useFakeTimers();
+    try {
+      const keys = [
+        workspaceKeys.skills("ws-1"),
+        workspaceKeys.agents("ws-1"),
+        workspaceKeys.agent("ws-1", "agent-1"),
+      ];
+      for (const key of keys) qc.setQueryData(key, []);
+      qc.setQueryData(workspaceKeys.agents("ws-2"), []);
+      const ws = createMockWs();
+      renderHook(() => useRealtimeSync(ws, stores), { wrapper: createWrapper(qc) });
+      const onAny = vi.mocked(ws.onAny).mock.calls[0]![0];
+
+      onAny({ type: "skill:deleted", payload: { skill_id: "skill-1" } } as never);
+      // A following catalog event must not swallow the deletion's agent refresh.
+      onAny({ type: "skill:updated", payload: { skill_id: "skill-2" } } as never);
+      vi.advanceTimersByTime(100);
+
+      for (const key of keys) expect(qc.getQueryState(key)?.isInvalidated).toBe(true);
+      expect(qc.getQueryState(workspaceKeys.agents("ws-2"))?.isInvalidated).toBe(false);
     } finally {
       vi.useRealTimers();
     }
@@ -832,6 +858,29 @@ describe("useRealtimeSync — Table server membership invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: issueKeys.tableAll("ws-1"),
     });
+  });
+
+  it("refreshes subscribed-filtered queries only for the viewer's own subscription", async () => {
+    const ws = createMockWs();
+    renderHook(() => useRealtimeSync(ws, stores), {
+      wrapper: createWrapper(qc),
+    });
+    const handler = (event: string) =>
+      vi.mocked(ws.on).mock.calls.find(([name]) => name === event)?.[1] as (payload: unknown) => void;
+    const rows = [...issueKeys.tableAll("ws-1"), "rows", { filters: { relations: ["subscribed"] } }];
+    const isStale = () => qc.getQueryState(rows)?.isInvalidated;
+
+    qc.setQueryData(rows, {});
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "member", user_id: "someone-else", reason: "manual" });
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "agent", user_id: "u1", reason: "manual" });
+    expect(isStale()).toBe(false);
+
+    handler("subscriber:added")({ issue_id: "i-1", user_type: "member", user_id: "u1", reason: "manual" });
+    await waitFor(() => expect(isStale()).toBe(true));
+
+    qc.setQueryData(rows, {});
+    handler("subscriber:removed")({ issue_id: "i-1", user_type: "member", user_id: "u1" });
+    await waitFor(() => expect(isStale()).toBe(true));
   });
 });
 

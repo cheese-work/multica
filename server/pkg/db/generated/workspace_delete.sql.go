@@ -455,6 +455,12 @@ deleted_system1_labels AS (
 deleted_system1_predictions AS (
     DELETE FROM system1_prediction WHERE workspace_id = $1
 ),
+deleted_system1_label_samples AS (
+    DELETE FROM system1_label_sample WHERE workspace_id = $1
+),
+deleted_system1_epochs AS (
+    DELETE FROM system1_epoch WHERE workspace_id = $1
+),
 deleted_ci_watch_configs AS (
     DELETE FROM ci_watch_config WHERE workspace_id = $1
 ),
@@ -469,6 +475,9 @@ deleted_ci_watch_actions AS (
 ),
 deleted_ci_signature_owners AS (
     DELETE FROM ci_signature_owner WHERE workspace_id = $1
+),
+deleted_ci_flake_increments AS (
+    DELETE FROM ci_flake_increment WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
@@ -796,6 +805,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
 // CHE-4470 System 1 labels: workspace-owned leaf, no FK.
 // CHE-4471 System 1 predictions: workspace-owned leaf, no FK.
+// CHE-4473 System 1 served label samples: workspace-owned leaf, no FK.
+// CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
 // CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
 // budget tables are per App installation, have no workspace_id, and stay.
 // CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
@@ -938,6 +949,11 @@ func (q *Queries) DeleteWorkspaceRuntimesAndProjects(ctx context.Context, worksp
 const deleteWorkspaceSquadsAndSkills = `-- name: DeleteWorkspaceSquadsAndSkills :exec
 WITH deleted_squads AS (
     DELETE FROM squad WHERE squad.workspace_id = $1
+),
+deleted_skill_versions AS (
+    -- Keyed by skill_id so the delete uses idx_skill_version_skill_version.
+    DELETE FROM skill_version
+    WHERE skill_version.skill_id IN (SELECT skill.id FROM skill WHERE skill.workspace_id = $1)
 )
 DELETE FROM skill WHERE skill.workspace_id = $1
 `

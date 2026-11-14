@@ -81,6 +81,10 @@ type CommentResponse struct {
 	// replies.
 	ReplyCount     *int    `json:"reply_count,omitempty"`
 	LastActivityAt *string `json:"last_activity_at,omitempty"`
+	// Populated on roots_only for reply-resolved threads.
+	ResolutionID               *string `json:"resolution_id,omitempty"`
+	ResolutionContent          *string `json:"resolution_content,omitempty"`
+	ResolutionContentTruncated *bool   `json:"resolution_content_truncated,omitempty"`
 	// ContentTruncated is set only under summary=true: true when Content was
 	// clipped to the summary budget, false when it fit. nil (omitted) means the
 	// caller did not request a summary projection, so Content is verbatim.
@@ -625,6 +629,20 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 				la := timestampToString(st.LastActivityAt)
 				resp[i].LastActivityAt = &la
 			}
+			if c.ResolvedAt.Valid || st.ResolutionID.Valid {
+				resolved := true
+				resp[i].ThreadResolved = &resolved
+			}
+			if !c.ResolvedAt.Valid && st.ResolutionID.Valid {
+				resp[i].ResolutionID = uuidToPtr(st.ResolutionID)
+				content := st.ResolutionContent.String
+				if summary {
+					clipped, truncated := summarizeContent(content)
+					content = clipped
+					resp[i].ResolutionContentTruncated = &truncated
+				}
+				resp[i].ResolutionContent = &content
+			}
 		}
 		// Attach fold annotations on a resolved thread's root (nil map elsewhere;
 		// keyed by root id, so only root comments match).
@@ -712,8 +730,10 @@ type fetchCommentsResult struct {
 // rootStat is the per-thread orientation metadata attached to each root comment
 // on the roots_only path. See CommentResponse.ReplyCount / LastActivityAt.
 type rootStat struct {
-	ReplyCount     int
-	LastActivityAt pgtype.Timestamptz
+	ReplyCount        int
+	LastActivityAt    pgtype.Timestamptz
+	ResolutionID      pgtype.UUID
+	ResolutionContent pgtype.Text
 }
 
 var (
@@ -1035,7 +1055,12 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 					SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID, Revision: r.Revision,
 					DeletedAt: r.DeletedAt,
 				}
-				stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
+				stats[uuidToString(r.ID)] = rootStat{
+					ReplyCount:        int(r.ReplyCount),
+					LastActivityAt:    r.LastActivityAt,
+					ResolutionID:      r.ResolutionID,
+					ResolutionContent: r.ResolutionContent,
+				}
 			}
 			return fetchCommentsResult{
 				Comments: comments, RootStats: stats, CommentsTruncated: truncated,
@@ -1066,7 +1091,12 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 				SourceTaskID: r.SourceTaskID, QuickActionID: r.QuickActionID, Revision: r.Revision,
 				DeletedAt: r.DeletedAt,
 			}
-			stats[uuidToString(r.ID)] = rootStat{ReplyCount: int(r.ReplyCount), LastActivityAt: r.LastActivityAt}
+			stats[uuidToString(r.ID)] = rootStat{
+				ReplyCount:        int(r.ReplyCount),
+				LastActivityAt:    r.LastActivityAt,
+				ResolutionID:      r.ResolutionID,
+				ResolutionContent: r.ResolutionContent,
+			}
 		}
 		return fetchCommentsResult{
 			Comments: comments, RootStats: stats, CommentsTruncated: truncated,
@@ -1786,6 +1816,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		}
 		parentComment = &parent
 	}
+	notice, answersNotice, ok := h.askRecoveryNoticeAnswer(w, r, parentComment, userID)
+	if !ok {
+		return
+	}
 
 	requestStart := time.Now()
 	supersedeTargets, ok := h.loadSupersedeTargets(w, r.Context(), issue, req.Supersedes, parentID)
@@ -2088,6 +2122,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	var supersedeOutcomes []supersedeOutcome
 	if err == nil && len(supersedeTargets) > 0 {
 		supersedeOutcomes, err = applySupersedes(r.Context(), qtx, created.Comment(), supersedeTargets, requestStart, authorType, createParams.AuthorID)
+	}
+	if err == nil && answersNotice && authorType == "member" {
+		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
 	}
 	if err != nil {
 		slog.Warn("create comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", issueID)...)
@@ -3338,10 +3375,39 @@ func (h *Handler) suppressImplicitAgentCommentRoutes(ctx context.Context, issue 
 	return targets
 }
 
+func (h *Handler) latestAgentCommentInAgentRootedThread(ctx context.Context, issue db.Issue, parent *db.Comment, opts commentTriggerComputeOptions) (db.Comment, bool) {
+	root, err := h.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{CommentID: parent.ID, WorkspaceID: issue.WorkspaceID})
+	if err != nil || root.AuthorType != "agent" {
+		return db.Comment{}, false
+	}
+	last, err := h.Queries.GetThreadLatestAgentComment(ctx, db.GetThreadLatestAgentCommentParams{
+		TargetID: parent.ID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		BeforeCommentID: opts.ExcludeTriggerCommentID,
+	})
+	if err != nil {
+		return db.Comment{}, false
+	}
+	return last, true
+}
+
 // routeMemberCommentTriggers is the implicit routing of a member comment with no
 // mentions: the replied-to agent, the thread's owners, or the issue assignee.
 func (h *Handler) routeMemberCommentTriggers(ctx context.Context, issue db.Issue, parentComment *db.Comment, actorType, actorID string, opts commentTriggerComputeOptions) []commentAgentTrigger {
-	// A deleted parent no longer speaks for its agent author (#8296).
+	// In an agent-rooted thread an unmentioned reply wakes the agent that spoke
+	// last, not the agent that owns the root (CHE-5421). A deleted comment no
+	// longer speaks for its agent author (#8296); the query skips it.
+	if parentComment != nil {
+		if last, ok := h.latestAgentCommentInAgentRootedThread(ctx, issue, parentComment, opts); ok {
+			trigger, ok := h.routeReplyToParentAuthor(ctx, issue, &last, actorType, actorID, opts)
+			if !ok {
+				return nil
+			}
+			return []commentAgentTrigger{trigger}
+		}
+	}
+
+	// Replying directly to an agent comment in a member-rooted thread wakes
+	// that comment's author (#8296: not when it is deleted).
 	if parentComment != nil && parentComment.AuthorType == "agent" && !parentComment.DeletedAt.Valid {
 		trigger, ok := h.routeReplyToParentAuthor(ctx, issue, parentComment, actorType, actorID, opts)
 		if !ok {

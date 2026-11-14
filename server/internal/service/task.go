@@ -57,10 +57,22 @@ type TaskService struct {
 	Wakeup    TaskWakeupNotifier
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
+	// MergeFacts is the facts source every wakeup service built on this task
+	// service reads when it judges a merge_eligibility candidate, so the claim
+	// and start checks in the daemon handler see what the scheduler saw.
+	MergeFacts MergeFactsSource
 	// WorkflowEdges evaluates a workflow_edges watch when it falls due: it
 	// moves the issue along an edge whose guard holds, or reschedules or drops
 	// the watch. Nil leaves the watches untouched.
 	WorkflowEdges func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwed settles a pr_merge_owed row when it falls due (CHE-5243): it
+	// re-runs the PR-merge completion decision and fences the row by its
+	// (id, revision). Nil leaves the rows untouched.
+	PRMergeOwed func(ctx context.Context, w db.IssueWakeup) error
+	// PRMergeOwe writes the pr_merge_owed intent for an issue inside the
+	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
+	// completion decision, and the intent commits with the claim. Nil skips it.
+	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
 	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
 	// Nil keeps self-hosted and isolated test services unlimited.
 	Entitlements entitlement.Provider
@@ -73,6 +85,9 @@ type TaskService struct {
 	// BackgroundWriters maps a task purpose (bgagents.Purpose) to the writer
 	// that completion dispatches to. Nil: no background output is written.
 	BackgroundWriters map[string]BackgroundWriter
+	// BackgroundNoAgent maps a task purpose to the path that runs when the
+	// job's chain ends without an output. Nil: the job has no such path.
+	BackgroundNoAgent map[string]BackgroundNoAgentPath
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -5374,6 +5389,11 @@ func (s *TaskService) startTask(ctx context.Context, taskID pgtype.UUID, claim *
 			EnableChatSupplement: offered.ChatSupplement,
 			EnableProcessCleanup: offered.ProcessCleanup,
 		})
+		if errors.Is(err, pgx.ErrNoRows) && strings.HasPrefix(candidate.Purpose.String, "bg:") {
+			// The start fence refused it: past its start bound (CHE-4103). A 409
+			// to the daemon; the deadline sweep fails the attempt.
+			return fmt.Errorf("%w: %w", ErrBackgroundAttemptExpired, err)
+		}
 		if err != nil {
 			return fmt.Errorf("start claimed task: %w", err)
 		}
@@ -5741,11 +5761,10 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			var payload protocol.TaskCompletedPayload
 			if err := json.Unmarshal(result, &payload); err == nil {
 				if payload.Output != "" {
-					// Match the CLI's --content / --description behavior: agents that
-					// emit literal `\n` 4-char sequences (Python/JSON-style) get them
-					// decoded into real newlines before the comment hits the DB. See
-					// util.UnescapeBackslashEscapes for the exact contract.
-					body := util.UnescapeBackslashEscapes(payload.Output)
+					// An agent that emitted its whole answer as one escaped blob gets
+					// its literal `\n` decoded; formatted output is stored verbatim.
+					// See util.DecodeEscapedAgentOutput for the exact contract.
+					body := util.DecodeEscapedAgentOutput(payload.Output)
 					if task.TriggerCommentID.Valid && isTrivialDoneOutput(body) {
 						slog.Warn("suppressing trivial comment-trigger fallback output",
 							"task_id", util.UUIDToString(task.ID),
@@ -5852,9 +5871,9 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 	// valid JSON; an empty Output is the only case this branch cares about.
 	var payload protocol.TaskCompletedPayload
 	_ = json.Unmarshal(result, &payload)
-	// Same unescape as the issue-comment path: literal `\n` from agent stdout
-	// becomes a real newline so the chat panel renders paragraph breaks.
-	body := util.UnescapeBackslashEscapes(payload.Output)
+	// Same decoding as the issue-comment path: an escaped blob gets its
+	// paragraph breaks back, while LaTeX and paths in formatted replies survive.
+	body := util.DecodeEscapedAgentOutput(payload.Output)
 	// Strip any in-band quick-actions footer from EVERY chat completion — the
 	// reserved syntax must never reach a stored transcript. This includes the
 	// agent-initiated intro turn (chat_input_task_id NULL), which previously
@@ -6765,7 +6784,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 		s.createAgentComment(ctx, task.IssueID, task.AgentID, s.failureNoticeText(ctx, task.AgentID, notice), "system", task.TriggerCommentID, task.ID)
 	}
 	if retried == nil {
-		s.failOverRoutingTask(ctx, task, failureReason)
+		s.failOverTask(ctx, task, failureReason)
 	} else if heldRetry.engaged && s.failOverRoutingTask(ctx, task, failureReason) {
 		// CHE-1736 M1.2: the fallback agent owns the step now; the held retry of
 		// the failed agent must not run beside it.
@@ -9408,6 +9427,12 @@ func (s *TaskService) notifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID str
 	s.Wakeup.NotifyTaskAvailable(runtimeKey, taskID)
 }
 
+// backgroundDispatchKeys are the task-context keys safe to fan out workspace-wide.
+var backgroundDispatchKeys = []string{
+	"type", "job", "workspace_id", "chain_source", "member_id", "slot",
+	"fallback_agent_id", "claim_deadline_seconds", "run_deadline_seconds",
+}
+
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
 	var payload map[string]any
 	if task.Context != nil {
@@ -9415,6 +9440,18 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	}
 	if payload == nil {
 		payload = map[string]any{}
+	}
+	// This event fans out to the whole workspace. A background task's input and
+	// guard carry the DM owner's text, so only an allowlist of workload
+	// metadata goes out.
+	if payload["type"] == BackgroundTaskContextType || strings.HasPrefix(task.Purpose.String, "bg:") {
+		safe := map[string]any{}
+		for _, k := range backgroundDispatchKeys {
+			if v, ok := payload[k]; ok {
+				safe[k] = v
+			}
+		}
+		payload = safe
 	}
 	payload["task_id"] = util.UUIDToString(task.ID)
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
@@ -9613,6 +9650,26 @@ func (s *TaskService) ResolveTaskScopeChecked(ctx context.Context, task db.Agent
 	// broadcasts, which is why quick-create tasks appeared stuck queued.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		return TaskScope{WorkspaceID: qc.WorkspaceID}, nil
+	}
+	// Background tasks: a DM-derived one belongs to its source session's
+	// creator (spec §Privacy of DM-derived tasks), so its message events reach
+	// only that member. A bg task with no source session keeps an empty owner;
+	// callers treat that as "no private room", never as "workspace-wide".
+	if strings.HasPrefix(task.Purpose.String, "bg:") {
+		if task.SourceChatSessionID.Valid {
+			cs, err := s.Queries.GetChatSession(ctx, task.SourceChatSessionID)
+			if err == nil {
+				return TaskScope{
+					WorkspaceID:        util.UUIDToString(cs.WorkspaceID),
+					ChatSessionOwnerID: util.UUIDToString(cs.CreatorID),
+				}, nil
+			}
+			note(err)
+		}
+		var c BackgroundTaskContext
+		if json.Unmarshal(task.Context, &c) == nil && c.Type == BackgroundTaskContextType && c.WorkspaceID != "" {
+			return TaskScope{WorkspaceID: c.WorkspaceID}, nil
+		}
 	}
 	if lookupErr != nil {
 		return TaskScope{}, fmt.Errorf("resolve task workspace: %w", lookupErr)
@@ -10087,9 +10144,9 @@ func quickCreateFailureDetail(result []byte) string {
 	if err := json.Unmarshal(result, &payload); err != nil {
 		return ""
 	}
-	// Same unescape as the comment-fallback path: literal `\n` sequences from
-	// agent stdout become real newlines before the reason reaches the user.
-	body := strings.TrimSpace(util.UnescapeBackslashEscapes(payload.Output))
+	// Same decoding as the comment-fallback path: an escaped blob's literal
+	// `\n` sequences become real newlines before the reason reaches the user.
+	body := strings.TrimSpace(util.DecodeEscapedAgentOutput(payload.Output))
 	if body == "" {
 		return ""
 	}

@@ -93,9 +93,6 @@ catalogs:
     typescript:
       specifier: npm:@typescript/typescript6@6.0.2
       version: 6.0.2
-    unicode-animations:
-      specifier: ^1.0.3
-      version: 1.0.3
     vitest:
       specifier: ^4.1.0
       version: 4.1.0
@@ -184,6 +181,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: '@typescript/typescript6@6.0.2'
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.0
 
   apps/desktop:
     dependencies:
@@ -266,6 +266,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../../packages/tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../../packages/vitest-setup
       '@tailwindcss/vite':
         specifier: ^4
         version: 4.2.2(vite@8.3.8(@types/node@25.5.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.47.1)(yaml@2.9.1))
@@ -647,6 +650,9 @@ importers:
       '@multica/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../../packages/vitest-setup
       '@tailwindcss/postcss':
         specifier: 'catalog:'
         version: 4.2.2
@@ -720,6 +726,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/react':
         specifier: 'catalog:'
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -830,6 +839,9 @@ importers:
       linkify-it:
         specifier: ^5.0.2
         version: 5.0.2
+      mdast-util-from-markdown:
+        specifier: ^2.0.3
+        version: 2.0.3
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -881,9 +893,6 @@ importers:
       tailwind-merge:
         specifier: 'catalog:'
         version: 3.5.0
-      unicode-animations:
-        specifier: 'catalog:'
-        version: 1.0.3
     devDependencies:
       '@multica/eslint-config':
         specifier: workspace:*
@@ -891,6 +900,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.9.1
@@ -900,6 +912,9 @@ importers:
       '@types/linkify-it':
         specifier: ^5.0.0
         version: 5.0.0
+      '@types/mdast':
+        specifier: ^4.0.4
+        version: 4.0.4
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
@@ -1135,6 +1150,9 @@ importers:
       '@multica/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@multica/vitest-setup':
+        specifier: workspace:*
+        version: link:../vitest-setup
       '@testing-library/jest-dom':
         specifier: 'catalog:'
         version: 6.9.1
@@ -1180,6 +1198,8 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 4.1.0(@opentelemetry/api@1.9.1)(@types/node@25.5.0)(jsdom@29.0.1(@noble/hashes@1.8.0))(msw@2.12.14(@types/node@25.5.0)(@typescript/typescript6@6.0.2))(vite@8.3.8(@types/node@25.5.0)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.47.1)(yaml@2.9.0))
+
+  packages/vitest-setup: {}
 
 packages:
 
@@ -11237,10 +11257,6 @@ packages:
   undici@7.30.2:
     resolution: {integrity: sha512-mLyPQnHwUxaM/rideoK/+KL8DaAJLRl4aBCfmX444aCSLnIaomqPLtNRe2jdCYcsk5wZzXrDIQC8ZeYNRAYyIA==}
     engines: {node: '>=20.18.1'}
-
-  unicode-animations@1.0.3:
-    resolution: {integrity: sha512-+klB2oWwcYZjYWhwP4Pr8UZffWDFVx6jKeIahE6z0QYyM2dwDeDPyn5nevCYbyotxvtT9lh21cVURO1RX0+YMg==}
-    hasBin: true
 
   unicode-canonical-property-names-ecmascript@2.0.1:
     resolution: {integrity: sha512-dA8WbNeb2a6oQzAQ55YlT5vQAWGV9WXOsi3SskE3bcCdM0P4SDd+24zS/OCacdRq5BkdsRj9q3Pg6YyQoxIGqg==}
@@ -23443,8 +23459,6 @@ snapshots:
   undici@6.29.1: {}
 
   undici@7.30.2: {}
-
-  unicode-animations@1.0.3: {}
 
   unicode-canonical-property-names-ecmascript@2.0.1: {}
 

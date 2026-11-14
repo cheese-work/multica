@@ -13,7 +13,13 @@ export interface TimelineNode {
   /** In the response only as tree or edge context (outside scope or window). */
   context?: boolean;
 }
-export interface TimelineEdge { type: GraphEdgeType; source: string; target: string }
+export interface TimelineEdge {
+  type: GraphEdgeType;
+  source: string;
+  target: string;
+  /** Optional identity (a wakeup firing's `activity_log.id`). Edges with distinct ids never merge; edges without one merge by (type, source, target). */
+  id?: string;
+}
 export interface ViewEdge extends TimelineEdge {
   sourceState: EndpointState;
   targetState: EndpointState;
@@ -97,12 +103,12 @@ export function buildGraph({ nodes, edges, collapsed = new Set(), notLoaded = ne
     const source = sourceInside ? visibleAncestor(e.source) : e.source;
     const target = targetInside ? visibleAncestor(e.target) : e.target;
     if (source === target) continue; // inside one collapsed group
-    const key = `${e.type}\0${source}\0${target}`;
+    const key = `${e.type}\0${source}\0${target}\0${e.id ?? ""}`;
     const prior = merged.get(key);
     // Merged edges keep an inside flag from any of them, so input order never changes the indicator.
     merged.set(key, prior
       ? { ...prior, sourceInside: prior.sourceInside || sourceInside, targetInside: prior.targetInside || targetInside }
-      : { type: e.type, source, target, sourceState, targetState, sourceInside, targetInside });
+      : { type: e.type, source, target, ...(e.id !== undefined && { id: e.id }), sourceState, targetState, sourceInside, targetInside });
   }
   const viewEdges = [...merged.values()];
 

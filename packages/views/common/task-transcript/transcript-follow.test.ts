@@ -325,4 +325,40 @@ describe("createLiveEndFollow", () => {
     follow.setActive(true);
     expect(follow.isFollowing()).toBe(true); // latch untouched while inactive
   });
+
+  describe("jump limit (CHE-5376): a far move with no input is the reader navigating", () => {
+    const LIMIT = 1600;
+
+    it("releases the follow instead of pinning back, so a growing reply cannot drag the reader down", () => {
+      const { follow, tick } = makeFollow();
+      tick(1000);
+      // scrollTo / find-in-page / assistive tech: no wheel, touch or key input.
+      expect(follow.onScroll(4000, LIMIT)).toBe(false);
+      expect(follow.isFollowing()).toBe(false);
+      // The reply keeps streaming: content growth must not pin.
+      expect(follow.onResize(4400)).toBe(false);
+    });
+
+    it("still pins a system shift under the limit", () => {
+      const { follow, tick } = makeFollow();
+      tick(1000);
+      expect(follow.onScroll(500, LIMIT)).toBe(true);
+      expect(follow.isFollowing()).toBe(true);
+    });
+
+    it("never fires without a limit (the transcript dialog passes none)", () => {
+      const { follow, tick } = makeFollow();
+      tick(1000);
+      expect(follow.onScroll(4000)).toBe(true);
+      expect(follow.isFollowing()).toBe(true);
+    });
+
+    it("scrolling back to the live end re-engages the follow", () => {
+      const { follow, tick } = makeFollow();
+      tick(1000);
+      follow.onScroll(4000, LIMIT);
+      follow.onAtEdgeChange(true);
+      expect(follow.isFollowing()).toBe(true);
+    });
+  });
 });

@@ -79,6 +79,8 @@ import type {
   User,
   Skill,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -108,6 +110,8 @@ import type {
   Attachment,
   AttachmentRevisionDiff,
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatContinueResponse,
   ChatSessionUsage,
   ChatWakeup,
@@ -280,6 +284,7 @@ import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
 import { parseOrThrow, parseWithFallback } from "./schema";
+import type { IssueTimelineRequest, IssueTimelineResponse, RelationsBatchRequest, RelationsBatchResponse } from "./issue-graph-schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
   PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
@@ -323,6 +328,10 @@ import {
   EMPTY_CHAT_SUPPLEMENT,
   ResendChatSupplementResponseSchema,
   SendChatMessageResponseSchema,
+  ChatAttentionEnvelopeSchema,
+  ChatAttentionBatchSchema,
+  EMPTY_CHAT_ATTENTION_VIEW,
+  EMPTY_CHAT_ATTENTION_BATCH,
   StartMikaOnboardingResponseSchema,
   ChildIssuesResponseSchema,
   IssueDuplicatesResponseSchema,
@@ -467,6 +476,8 @@ import {
   EMPTY_INBOX_UNREAD_SUMMARY,
   IssueUnreadPageSchema,
   EMPTY_ISSUE_UNREAD_PAGE,
+  SubscribedIssueIdsSchema,
+  IssueInboxReadSchema,
   InboxItemListSchema,
   ArchivedInboxPageSchema,
   ArchivedInboxFacetsSchema,
@@ -523,6 +534,10 @@ import {
   PresetCompletionsSchema,
   SkillSummaryListSchema,
   EMPTY_SKILL_SUMMARY_LIST,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillVersionSummaryListSchema,
+  EMPTY_SKILL_VERSION_SUMMARY_LIST,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -713,7 +728,7 @@ export function clientErrorMessage(err: unknown): string | undefined {
 }
 
 // Thrown by getAttachmentTextContent when the server refuses to inline a
-// file because it exceeds the 2 MB cap. UI maps to a "too large, please
+// file because it exceeds the server-configured preview limit. UI maps to a "too large, please
 // download" affordance with the Download CTA still available.
 export class PreviewTooLargeError extends Error {
   constructor() {
@@ -1149,6 +1164,16 @@ export class ApiClient {
     });
     return parseWithFallback(raw, UserSchema, EMPTY_USER, {
       endpoint: "PATCH /api/me/onboarding",
+    });
+  }
+
+  async markWhatsNewSeen(version: string): Promise<User> {
+    const raw = await this.fetch<unknown>("/api/me/whats-new/seen", {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "POST /api/me/whats-new/seen",
     });
   }
 
@@ -1745,6 +1770,28 @@ export class ApiClient {
     const graph = parseWithFallback<IssueRelations | null>(raw, IssueRelationsResponseSchema, null, { endpoint: "GET /api/issues/:id/relations" });
     if (!graph) throw new Error("Invalid issue relations response");
     return graph;
+  }
+
+  /** One keyset page of POST /api/issues/timeline. A malformed body throws. */
+  async getIssueActualTimeline(workspaceId: string, body: IssueTimelineRequest, signal?: AbortSignal): Promise<IssueTimelineResponse> {
+    const { IssueTimelineResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/timeline?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, IssueTimelineResponseSchema, { endpoint: "POST /api/issues/timeline" });
+  }
+
+  /** One keyset page of POST /api/issues/relations/batch. A malformed body throws. */
+  async getIssueRelationsBatch(workspaceId: string, body: RelationsBatchRequest, signal?: AbortSignal): Promise<RelationsBatchResponse> {
+    const { RelationsBatchResponseSchema } = await import("./issue-graph-schema");
+    const raw = await this.fetch<unknown>(`/api/issues/relations/batch?${new URLSearchParams({ workspace_id: workspaceId })}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal,
+    });
+    return parseOrThrow(raw, RelationsBatchResponseSchema, { endpoint: "POST /api/issues/relations/batch" });
   }
 
   async listChildIssues(id: string): Promise<{ issues: Issue[] }> {
@@ -3183,6 +3230,15 @@ export class ApiClient {
     return items;
   }
 
+  async listSubscribedIssueIds(): Promise<string[]> {
+    const raw = await this.fetch<unknown>("/api/issues/subscribed");
+    const parsed = parseWithFallback<{ issue_ids: string[] } | null>(raw, SubscribedIssueIdsSchema, null, {
+      endpoint: "GET /api/issues/subscribed",
+    });
+    if (!parsed) throw new Error("GET /api/issues/subscribed returned a malformed body");
+    return parsed.issue_ids;
+  }
+
   async markIssueRead(issueId: string): Promise<void> {
     await this.fetch(`/api/issues/${issueId}/read`, { method: "POST" });
   }
@@ -3281,6 +3337,19 @@ export class ApiClient {
 
   async markAllInboxRead(): Promise<{ count: number }> {
     return this.fetch("/api/inbox/mark-all-read", { method: "POST" });
+  }
+
+  /**
+   * Reads every unread notification the caller has on one issue. `count` is
+   * how many rows the server read, or `null` when the response did not say:
+   * the write itself succeeded, so callers must not read `null` as "nothing
+   * changed".
+   */
+  async markIssueInboxRead(issueId: string): Promise<{ count: number | null }> {
+    const raw = await this.fetch<unknown>(`/api/inbox/issues/${issueId}/read`, { method: "POST" });
+    return parseWithFallback<{ count: number | null }>(raw, IssueInboxReadSchema, { count: null }, {
+      endpoint: "POST /api/inbox/issues/{id}/read",
+    });
   }
 
   async archiveAllInbox(): Promise<{ count: number }> {
@@ -4017,6 +4086,39 @@ export class ApiClient {
     }).names;
   }
 
+  // Content history, newest first. Metadata only; fetch one version for its
+  // snapshot.
+  async listSkillVersions(skillId: string): Promise<SkillVersionSummary[]> {
+    const raw = await this.fetch<unknown>(`/api/skills/${skillId}/versions`);
+    return parseWithFallback(
+      raw,
+      SkillVersionSummaryListSchema,
+      EMPTY_SKILL_VERSION_SUMMARY_LIST,
+      { endpoint: "GET /api/skills/:id/versions" },
+    );
+  }
+
+  async getSkillVersion(skillId: string, version: number): Promise<SkillVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/skills/${skillId}/versions/${version}`,
+    );
+    return parseWithFallback(raw, SkillVersionSchema, EMPTY_SKILL_VERSION, {
+      endpoint: "GET /api/skills/:id/versions/:version",
+    });
+  }
+
+  // Writes the version's snapshot back to the skill. The server records the
+  // result as a new latest version.
+  async restoreSkillVersion(skillId: string, version: number): Promise<Skill> {
+    const raw = await this.fetch<unknown>(
+      `/api/skills/${skillId}/versions/${version}/restore`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, SkillSchema, EMPTY_SKILL, {
+      endpoint: "POST /api/skills/:id/versions/:version/restore",
+    });
+  }
+
   async listAgentSkills(agentId: string): Promise<SkillSummary[]> {
     return this.fetch(`/api/agents/${agentId}/skills`);
   }
@@ -4344,6 +4446,15 @@ export class ApiClient {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/approve`, PasskeyDecisionOutcomeSchema, input);
   }
 
+  /** Revoke (B v9 S6): its own challenge, bound to the word "revoke" so an approval's assertion cannot revoke. */
+  challengeDecisionRevoke(requestId: string): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke/challenge`, PasskeyChallengeSchema);
+  }
+
+  async revokeDecision(requestId: string, input: { reason: string; assertion: PasskeyAssertionEnvelope }): Promise<void> {
+    await this.fetch(`/api/decision-requests/${encodeURIComponent(requestId)}/revoke`, { method: "POST", body: JSON.stringify(input) });
+  }
+
   /** Ends a pending action as rejected. No passkey: declining changes nothing. */
   rejectDecisionAction(actionId: string): Promise<PasskeyDecisionOutcome> {
     return this.passkeyPost(`/api/decision-actions/${encodeURIComponent(actionId)}/reject`, PasskeyDecisionOutcomeSchema);
@@ -4434,13 +4545,18 @@ export class ApiClient {
     content: string,
     attachmentIds?: string[],
     decisionRequestId?: string,
+    options?: { clientMessageId?: string; askIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     const body: {
       content: string;
       attachment_ids?: string[];
       decision_request_id?: string;
+      client_message_id?: string;
+      ask_ids?: string[];
     } = { content };
     if (decisionRequestId) body.decision_request_id = decisionRequestId;
+    if (options?.clientMessageId) body.client_message_id = options.clientMessageId;
+    if (options?.askIds && options.askIds.length > 0) body.ask_ids = options.askIds;
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
     }
@@ -4586,6 +4702,53 @@ export class ApiClient {
 
   async markChatSessionRead(sessionId: string): Promise<void> {
     await this.fetch(`/api/chat/sessions/${sessionId}/read`, { method: "POST" });
+  }
+
+  // DM attention actions (plan r4 T3-T5). Every call carries the exact subject keys the UI
+  // displayed; the server acts on those keys only.
+  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/xong",
+    }).attention;
+  }
+
+  async chatAttentionLater(
+    sessionId: string,
+    subjectKeys: string[],
+    options: { durationSeconds?: number; requestId: string },
+  ): Promise<ChatAttentionView> {
+    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject_keys: subjectKeys,
+        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
+        request_id: options.requestId,
+      }),
+    });
+    return parseWithFallback(raw, ChatAttentionEnvelopeSchema, { attention: EMPTY_CHAT_ATTENTION_VIEW }, {
+      endpoint: "POST /api/chat/sessions/:id/attention/later",
+    }).attention;
+  }
+
+  async chatAttentionXongAll(subjectKeys: string[]): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>("/api/chat/attention/xong-all", {
+      method: "POST",
+      body: JSON.stringify({ subject_keys: subjectKeys }),
+    });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all",
+    });
+  }
+
+  async chatAttentionUndoXongAll(batchId: string): Promise<ChatAttentionBatch> {
+    const raw = await this.fetch<unknown>(`/api/chat/attention/xong-all/${batchId}/undo`, { method: "POST" });
+    return parseWithFallback(raw, ChatAttentionBatchSchema, EMPTY_CHAT_ATTENTION_BATCH, {
+      endpoint: "POST /api/chat/attention/xong-all/:id/undo",
+    });
   }
 
   async markChatSessionUnread(sessionId: string): Promise<void> {
@@ -5110,8 +5273,9 @@ export class ApiClient {
   }
 
   /**
-   * What a quick action WOULD post, without posting it. Backs the composer
-   * hand-off (⌥-click and the `/` menu) so the user can edit before sending.
+   * What a quick action WOULD post, with server-side validation but no send.
+   * Retained for callers that resolve drafts over HTTP; the comment composer
+   * builds its draft synchronously from the quick-action catalog.
    * Returns "" when the response cannot be read — callers must treat an empty
    * string as "insert nothing" rather than clearing the composer.
    */

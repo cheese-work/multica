@@ -70,9 +70,9 @@ test.describe("D8b: DM workflow instructions proposal on a phone viewport", () =
     expect(instructionsOf(await readWorkflow(api, seed), STATUS_KEY)).toBe(BEFORE_TEXT);
 
     await openDm(page);
-    // The viewer is collapsed until a tab opens; the Changes tab shows the diff the server stored.
-    await page.getByTestId("config-change-tab-changes").click({ timeout: 30_000 });
-    const diff = page.getByTestId("config-change-panel");
+    // The viewer sits behind Details and shows the changed rows the server stored.
+    await page.getByRole("button", { name: /Details/ }).click({ timeout: 30_000 });
+    const diff = page.getByRole("list", { name: /^Changes to / });
     await expect(diff).toBeVisible();
     await expect(diff).toContainText("Run the tests.");
 

@@ -41,6 +41,8 @@ export type {
   AgentInvocationTargetInput,
   AgentTask,
   AgentPreset,
+  TaskInitContext,
+  TaskInitContextPart,
   TaskPresetRun,
   TaskPresetSettings,
   TaskPresetSkip,
@@ -81,6 +83,9 @@ export type {
   DisabledRuntimeSkill,
   SetAgentRuntimeSkillEnabledRequest,
   SkillFile,
+  SkillVersion,
+  SkillVersionSource,
+  SkillVersionSummary,
   CreateSkillRequest,
   SkillImportResult,
   UpdateSkillRequest,
@@ -187,11 +192,14 @@ export type { Attachment, AttachmentRevisionDiff } from "./attachment";
 export {
   attachmentDownloadPath,
   attachmentIdFromDownloadURL,
+  attachmentIdFromStorageURL,
   contentReferencesAttachment,
   stripChannelMediaMarkers,
 } from "./attachment-url";
 export type {
   ChatSession,
+  ChatAttentionView,
+  ChatAttentionBatch,
   ChatStaleLevel,
   ChatAttentionSource,
   ChatContinueResponse,

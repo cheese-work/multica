@@ -21,6 +21,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/attachmentpreview"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
@@ -462,6 +463,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		CloudTimeout:                   35 * time.Second,
 		AttachmentDownloadMode:         os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		AttachmentDownloadURLTTL:       envDuration("ATTACHMENT_DOWNLOAD_URL_TTL", 30*time.Minute),
+		MaxPreviewSizeBytes:            attachmentpreview.ConfiguredMaxSizeBytes(os.Getenv("MULTICA_MAX_PREVIEW_SIZE")),
 		AttachmentFrameAncestors:       origins,
 		PluginSurfaceOrigin:            strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PLUGIN_SURFACE_ORIGIN")), "/"),
 		LLMAPIKey:                      strings.TrimSpace(os.Getenv("MULTICA_LLM_API_KEY")),
@@ -756,7 +758,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				}
 				regClient := lark.NewRegistrationClient(regCfg)
 				regSvc, rerr := lark.NewRegistrationService(
-					lark.RegistrationServiceConfig{Logger: slog.Default()},
+					lark.RegistrationServiceConfig{Logger: slog.Default(), AuditInstall: h.LarkInstallAuditHook()},
 					regClient,
 					larkClient,
 					queries,
@@ -1789,6 +1791,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// server/internal/handler/onboarding_shim.go.
 		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
 		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
+		r.Post("/api/me/whats-new/seen", h.MarkWhatsNewSeen)
+		// Credential minting is human-only (MUL-8154): an agent task token
+		// (mat_) or cloud-node PAT (mcn_) authenticates as its owner, so
+		// without this guard a prompt-injected agent could trade its scoped,
+		// short-lived credential for a 30-day session JWT.
 		r.With(handler.RequireHumanActor).Post("/api/cli-token", h.IssueCliToken)
 		r.With(handler.RequireHumanActor).Post("/api/auth/desktop-token", h.IssueDesktopToken)
 		// Sliding session renewal for clients that hold the session as a
@@ -1854,6 +1861,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/vcs/connections", h.ListVCSConnections)
 					r.Get("/background-agents", h.GetBackgroundAgents)
 					r.Get("/me/background-agents", h.GetMyBackgroundAgents)
+					// CHE-4113: a member writes only their own row, so these are member
+					// routes. The handler refuses a machine actor itself (stable code;
+					// unchanged writes stay accepted) and, until CHE-4114, every
+					// effective human write (409).
+					r.Put("/me/background-agents", h.UpdateMyBackgroundAgents)
+					r.Delete("/me/background-agents/{job}", h.ResetMyBackgroundAgent)
 					r.Get("/qoder", h.GetQoderConnection)
 					r.Get("/qoder/agents", h.ListQoderAgents)
 					// Custom runtime profiles — listing/reading is member-visible
@@ -1903,6 +1916,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// or raise export privilege; the handlers re-check as a backstop.
 					r.With(handler.RequireHumanActor).Get("/export-privacy", h.GetWorkspaceExportPrivacy)
 					r.With(handler.RequireHumanActor).Patch("/export-privacy", h.UpdateWorkspaceExportPrivacy)
+					// CHE-5644: admin audit trail, read side. Human owner/admin only; the
+					// handler re-checks role and refuses machine credentials as a backstop.
+					r.With(handler.RequireHumanActor).Get("/audit-events", h.ListWorkspaceAuditEvents)
 					// CHE-2454: delegated governed writes. Human owner/admin only.
 					r.With(handler.RequireHumanActor).Get("/delegated-writes", h.GetDelegatedWrites)
 					r.With(handler.RequireHumanActor).Put("/delegated-writes", h.UpdateDelegatedWrites)
@@ -2216,6 +2232,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// task token; the owner assigns the labeller and a task token must not.
 			r.Route("/api/system1", func(r chi.Router) {
 				r.Post("/labels", h.WriteSystem1Label)
+				r.Get("/label-queue", h.GetSystem1LabelQueue)
+				r.Get("/report", h.GetSystem1QualificationReport)
 				r.With(handler.RequireHumanActor).Put("/labellers", h.SetSystem1Labeller)
 			})
 
@@ -2234,6 +2252,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// The caller's issues with an agent result they have not seen
 				// yet; backs the sidebar's unread dot.
 				r.Get("/unread", h.ListIssueUnread)
+				// The caller's subscribed issue ids; backs the "subscribed"
+				// relation filter on client-filtered surfaces.
+				r.Get("/subscribed", h.ListSubscribedIssueIDs)
 				r.Get("/", h.ListIssues)
 				// POST twin of GET /api/issues for oversized filter sets
 				// (agents-working ids facet) — see QueryIssues.
@@ -2423,6 +2444,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(denyRunToken).Put("/", h.UpdateProject)
 					r.With(denyRunToken).Delete("/", h.DeleteProject)
 					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
+					r.With(denyRunToken).Put("/workflow-split", h.SetProjectWorkflowSplit)
+					r.With(denyRunToken).Delete("/workflow-split", h.ClearProjectWorkflowSplit)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
 					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
@@ -2505,6 +2528,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateIssueView)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetIssueViewByID)
+					r.Get("/issues", h.ListIssueViewIssues)
 					r.Patch("/", h.UpdateIssueView)
 					r.Delete("/", h.DeleteIssueView)
 				})
@@ -2631,6 +2655,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/files", h.ListSkillFiles)
 					r.Put("/files", h.UpsertSkillFile)
 					r.Delete("/files/{fileId}", h.DeleteSkillFile)
+					r.Get("/versions", h.ListSkillVersions)
+					r.Get("/versions/{version}", h.GetSkillVersion)
+					r.Post("/versions/{version}/restore", h.RestoreSkillVersion)
 				})
 			})
 
@@ -2824,6 +2851,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/archive-all", h.ArchiveAllInbox)
 				r.Post("/archive-all-read", h.ArchiveAllReadInbox)
 				r.Post("/archive-completed", h.ArchiveCompletedInbox)
+				// Every unread notification on one issue, for reading the issue
+				// outside the inbox (MUL-8588).
+				r.Post("/issues/{issueId}/read", h.MarkIssueInboxRead)
 				r.Post("/{id}/read", h.MarkInboxRead)
 				r.Post("/{id}/unread", h.MarkInboxUnread)
 				r.Post("/{id}/archive", h.ArchiveInboxItem)
@@ -2848,8 +2878,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Post("/api/decision-answers/{id}/disclaim", h.DisclaimDecisionAnswer)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/class", h.RaiseDecisionClass)
 			r.Post("/api/decision-actions/proposals", h.ProposeDecisionAction)
+			r.Post("/api/decision-actions/proposals/batch", h.ProposeDecisionActionBatch)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/reject", h.RejectDecisionAction)
 			r.With(handler.RequireHumanActor).Post("/api/decision-actions/{id}/challenge", h.ChallengeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/batches/{id}/challenge", h.ChallengeDecisionActionBatch)
+			r.With(handler.RequireHumanActor).Post("/api/decision-actions/batches/{id}/approve", h.ApproveDecisionActionBatch)
 			r.With(handler.RequireHumanActor).Get("/api/passkeys", h.ListPasskeys)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/start", h.StartPasskeyEnrollment)
 			r.With(handler.RequireHumanActor).Post("/api/passkeys/enroll/finish", h.FinishPasskeyEnrollment)
@@ -2861,6 +2894,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}", h.GetDecisionAction)
 			r.With(handler.RequireHumanActor).Get("/api/decision-actions/{id}/outcome", h.GetDecisionActionOutcome)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer", h.AnswerDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/discuss", h.DiscussDecisionRequest)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke", h.RevokeDecisionAction)
+			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/revoke/challenge", h.ChallengeDecisionRevoke)
 			r.With(handler.RequireHumanActor).Post("/api/decision-requests/{id}/answer/challenge", h.ChallengeDecisionAnswer)
 
 			// Notification preferences

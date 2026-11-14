@@ -24,10 +24,14 @@
     "supplement_failure_provider_rejected": "AI 代理拒絕了該訊息",
     "supplement_failure_timeout": "送達超時",
     "supplement_failure_unknown": "原因未知",
+    "supplement_failure_replay_exhausted": "重試次數已用完",
+    "supplement_failure_run_budget_exhausted": "執行預算已用完",
+    "supplement_failure_agent_paused": "AI 代理已暫停",
     "supplement_retry": "重試",
     "supplement_retry_failed": "無法重試送達。",
     "steer_badge": "插話給 {{names}}",
     "steer_waiting": "等待 {{name}} 讀取",
+    "steer_replay_queued": "{{name}} 將在下一次執行中讀取",
     "steer_read": "{{name}} 已讀取",
     "steer_not_received": "{{name}} 未收到 · {{reason}}",
     "steer_resend": "作為新一輪傳送",
@@ -38,10 +42,17 @@
   "working_filter_error": {
     "title": "無法載入 AI 代理正在處理的任務"
   },
+  "unread_filter_error": {
+    "title": "無法載入未讀任務"
+  },
   "status_catalog_error": {
     "title": "狀態列表載入失敗",
     "hint": "載入狀態後才能顯示任務。",
     "retry": "重試"
+  },
+  "relation_filter_error": {
+    "title": "「與我的關係」篩選載入失敗",
+    "hint": "載入訂閱和 AI 代理後才能顯示按「我訂閱的」或「分配給我的 AI 代理的」篩選的任務。"
   },
   "source_context": {
     "create_action": "從這條評論建立子任務",
@@ -117,6 +128,9 @@
     "breadcrumb_title": "任務",
     "breadcrumb_workspace_fallback": "工作區",
     "empty_title": "還沒有任務",
+    "empty_description": "任務是交給成員或 AI 代理的一件具體工作。指派給 AI 代理後，它會在你的執行時上自己開始。",
+    "break_down_with_chat": "用聊天拆解需求",
+    "break_down_prompt": "我想完成下面這件事。先問清楚你需要了解的，然後在這個工作區裡把它拆成任務：\n\n",
     "move_failed": "移動任務失敗"
   },
   "status": {
@@ -177,8 +191,11 @@
     "relation_assigned": "分配給我的",
     "relation_created": "我建立的",
     "relation_my_agents": "分配給我的 AI 代理的",
+    "relation_subscribed": "我訂閱的",
     "section_agent_status": "AI 代理狀態",
     "agent_status_running": "執行中",
+    "section_read_state": "閱讀狀態",
+    "read_state_unread": "未讀",
     "operator_label": "關係",
     "operator_is": "是",
     "operator_is_not": "不是",
@@ -310,7 +327,8 @@
     "list": "列表",
     "table": "表格",
     "gantt": "甘特圖",
-    "swimlane": "泳道"
+    "swimlane": "泳道",
+    "swimlane2": "泳道 2.0"
   },
   "table": {
     "select_all": "選擇所有可見任務",
@@ -387,6 +405,33 @@
     "empty": "暫無已排期的任務 — 給任意任務設定開始或截止日期，即可顯示在時間軸上。",
     "inverted_dates_warning": "開始日期晚於截止日期——已按區間最小/最大端繪製。"
   },
+  "swimlane2": {
+    "edge_wakeup": "喚醒",
+    "edge_dependency": "相依",
+    "edge_parent": "父 / 子",
+    "edge_mention": "提及",
+    "edge_types": "連線類型",
+    "relations_incomplete": "關係不完整：部分連線未能載入。",
+    "more_issues": "還有未載入的議題。",
+    "retry": "重試",
+    "load_more": "載入更多",
+    "no_lane": "無值",
+    "timeline_failed": "無法載入時間軸。",
+    "loading": "正在載入時間軸…"
+  },
+  "gantt2": {
+    "clipped_start": "在此時間視窗之前開始",
+    "now": "現在",
+    "start_marker": "開始日期",
+    "due_marker": "截止日期",
+    "no_history": "無歷史記錄",
+    "before_records": "記錄之前",
+    "collapse": "摺疊",
+    "expand": "展開",
+    "wakeup_cross": "喚醒",
+    "wakeup_children_done": "子項已完成",
+    "target_inside": "目標在內部（已摺疊隱藏）"
+  },
   "actor_issues": {
     "scope": {
       "assigned": {
@@ -407,7 +452,7 @@
       }
     },
     "search_placeholder": "搜尋任務...",
-    "search_empty": "沒有匹配的任務。"
+    "search_empty": "沒有匹配的任務"
   },
   "list": {
     "empty_status": "無任務",
@@ -452,6 +497,7 @@
     "card_load_failed": "無法載入這個任務。",
     "data_error": "這個任務包含應用程式無法讀取的資料。",
     "retry": "重試",
+    "not_found_title": "未找到該任務",
     "breadcrumb_project_unknown": "未知專案",
     "back": "返回",
     "title_placeholder": "任務標題",
@@ -529,7 +575,6 @@
     "agents_group": "AI 代理",
     "mark_done_tooltip": "標記為已完成",
     "archive_tooltip": "歸檔",
-    "restore_to_inbox_tooltip": "恢復到收件箱",
     "pin_tooltip": "固定到側邊欄",
     "unpin_tooltip": "從側邊欄取消固定",
     "quick_jump_label": "快捷跳轉",
@@ -789,6 +834,7 @@
   },
   "filtered_empty": {
     "title": "沒有符合篩選條件的任務",
+    "unread_title": "沒有未讀任務",
     "clear_button": "清除篩選"
   },
   "agent_live": {
@@ -903,6 +949,7 @@
     "col_tokens": "Token",
     "col_cost": "費用",
     "tokens_count": "{{tokens}} Token",
+    "credits_count": "{{credits}} {{provider}} 點數",
     "details_toggle": "執行詳情",
     "detail_breakdown": "費用明細",
     "detail_total": "合計",
@@ -921,6 +968,7 @@
     "confirm": "停止執行"
   },
   "batch": {
+    "delete_restricted": "你可以刪除本人或本人擁有的智慧體建立的任務。工作區 owner 和 admin 可以刪除任意任務。",
     "selected": "已選擇 {{count}} 個",
     "status": "狀態",
     "priority": "優先順序",
@@ -936,7 +984,6 @@
     "delete_failed": "刪除任務失敗",
     "delete_dialog_title_other": "刪除 {{count}} 個任務？",
     "delete_dialog_desc_other": "此操作無法撤銷，所選任務及其全部關聯資料都會被永久刪除。",
-    "delete_dialog_warning": "任何工作區成員都可以刪除任務。",
     "cancel": "取消",
     "update_partial_named_other": "已更新 {{updated}}/{{count}} 個任務。未更新：{{issues}}",
     "retry_not_updated": "重試"
@@ -964,6 +1011,7 @@
     "open_in_new_tab": "在新標籤頁開啟",
     "pin_to_sidebar": "固定到側邊欄",
     "unpin_from_sidebar": "從側邊欄取消固定",
+    "restore_to_inbox": "恢復到收件箱",
     "mark_read": "標為已讀",
     "mark_unread": "標為未讀",
     "copy_link": "複製連結",
@@ -1502,7 +1550,6 @@
     "not_merged": "{{prs}} 已關閉，未合併",
     "not_merged_action": "移除",
     "all_merged_to": "PR 均已合併。之後有新 PR 合併時會改為 {{status}}。",
-    "workflow_owned": "PR 合併後由工作流程移動此任務",
     "issue_disabled": "此任務合併後不改狀態",
     "issue_disabled_action": "恢復"
   },
@@ -1936,7 +1983,8 @@
     "builtin": {
       "my_issues": "我的任務",
       "my_agents": "我的 AI 代理在做",
-      "all_issues": "全部任務"
+      "all_issues": "全部任務",
+      "unread": "未讀"
     },
     "untitled": "未命名檢視",
     "copy_name": "{{name}}（副本）",
@@ -1968,6 +2016,9 @@
     "save_as_new": "另存為新檢視",
     "save_as_new_hint": "「{{name}}」保持不變",
     "save_as_view": "儲存為檢視",
+    "save_view": "儲存檢視",
+    "add_filter": "新增篩選",
+    "setup_hint": "這個檢視還沒有條件，目前顯示全部任務",
     "set_by_view": "由此檢視設定",
     "new_issue": "新增任務",
     "unavailable": "此檢視已無法使用",
@@ -1991,7 +2042,8 @@
       "star": "將{{name}}新增到側欄",
       "unstar": "將{{name}}從側欄移除",
       "row_actions": "{{name}} 的操作",
-      "no_matches": "沒有符合的檢視"
+      "empty_title": "還沒有儲存的檢視",
+      "empty_description": "在任務列表裡調好篩選和顯示方式，然後另存為檢視。"
     }
   },
   "status_history": {

@@ -6,8 +6,9 @@
 -- cost_usd_ticks is the provider's own price for this usage (1e-10 USD), NULL
 -- when it reports none. It is overwritten like the token counters so a
 -- corrected report replaces the previous figure rather than accumulating.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), now())
+-- credits_micros follows the same rule for providers that bill in credits.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('credits_micros'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -15,6 +16,7 @@ DO UPDATE SET
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
+    credits_micros = EXCLUDED.credits_micros,
     updated_at = now();
 
 -- name: GetTaskUsage :many
@@ -43,7 +45,8 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    tu.cost_usd_ticks
+    tu.cost_usd_ticks,
+    tu.credits_micros
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -62,7 +65,8 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    tu.cost_usd_ticks
+    tu.cost_usd_ticks,
+    tu.credits_micros
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.agent_id = sqlc.arg('agent_id')
@@ -335,17 +339,8 @@ WHERE a.workspace_id = $1
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
 
--- name: SumTaskWeightedTokens :one
--- A run's tokens as the run budget counts them: input + output + cache write
--- + 0.1 x cache read, over every provider and model row, and how many rows
--- there are: a run with none reported no usage.
-SELECT (COALESCE(SUM(input_tokens + output_tokens + cache_write_tokens), 0)
-      + COALESCE(SUM(cache_read_tokens), 0) / 10)::bigint AS weighted,
-      COUNT(*)::bigint AS model_rows
-FROM task_usage WHERE task_id = $1;
-
 -- name: LockTaskUsageReport :exec
--- Serializes usage reports for one task that has no issue to lock: held to the
--- end of the caller's transaction, taken before any usage row is written, so
+-- Serializes usage reports for one task: held to the end of the caller's
+-- transaction, taken before any usage row is written, so
 -- two reports that order their models differently cannot wait on each other.
 SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('task_id')::uuid::text, 0));

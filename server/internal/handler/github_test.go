@@ -1406,6 +1406,14 @@ func TestWebhook_TitleBranchAndKeywordLinksAllMove(t *testing.T) {
 // merge / edited after merge).
 func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) {
 	t.Helper()
+	if code, resp := postPRWebhook(t, testHandler, secret, installationID, prNumber, title, body, branch, lifecycle); code != http.StatusAccepted {
+		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, code, resp)
+	}
+}
+
+// postPRWebhook delivers one PR webhook to h and returns the status and body.
+func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) (int, string) {
+	t.Helper()
 	var action, state string
 	var merged bool
 	var mergedAt, closedAt any
@@ -1428,22 +1436,28 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	default:
 		t.Fatalf("firePRWebhook: unknown lifecycle %q", lifecycle)
 	}
+	// GitHub sends the merge commit only for a merged PR.
+	var mergeSHA any
+	if merged {
+		mergeSHA = fmt.Sprintf("merge%d", prNumber)
+	}
 	payload := map[string]any{
 		"action": action,
 		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
-			"title":      title,
-			"body":       body,
-			"state":      state,
-			"draft":      false,
-			"merged":     merged,
-			"merged_at":  mergedAt,
-			"closed_at":  closedAt,
-			"created_at": "2026-04-28T00:00:00Z",
-			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
-			"user":       map[string]any{"login": "octocat"},
+			"number":           prNumber,
+			"html_url":         fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
+			"title":            title,
+			"body":             body,
+			"state":            state,
+			"draft":            false,
+			"merged":           merged,
+			"merged_at":        mergedAt,
+			"closed_at":        closedAt,
+			"merge_commit_sha": mergeSHA,
+			"created_at":       "2026-04-28T00:00:00Z",
+			"updated_at":       "2026-04-29T00:00:00Z",
+			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
@@ -1456,10 +1470,8 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	req := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req.Header.Set("X-GitHub-Event", "pull_request")
 	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := testutil.Call(t, testHandler.HandleGitHubWebhook, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, h.HandleGitHubWebhook, req)
+	return rec.Code, rec.Body.String()
 }
 
 // TestWebhook_IdentifierRemovedBeforeMergeUnlinks: automatic links follow the

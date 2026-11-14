@@ -34,7 +34,7 @@ export {
   type NegatableFilterDimension,
 };
 
-export type ViewMode = "board" | "list" | "table" | "gantt" | "swimlane";
+export type ViewMode = "board" | "list" | "table" | "gantt" | "swimlane" | "swimlane2";
 export type GanttZoom = "day" | "week" | "month";
 /**
  * Board grouping. Besides the three built-ins, a select-type custom property
@@ -48,6 +48,9 @@ export type IssueGrouping =
   | "project"
   | `property:${string}`;
 export type SwimlaneGrouping = "parent" | "project" | "assignee";
+/** Surfaces that collapse issue rows on the shared graph core (`buildGraph`). One key shape serves all of them. */
+export const GRAPH_SURFACES = ["gantt", "swimlane2", "hierarchy"] as const;
+export type GraphSurface = (typeof GRAPH_SURFACES)[number];
 /**
  * Sort key. `property:<definitionId>` is resolved server-side against the
  * active property catalog; stale or unsupported definitions degrade to
@@ -162,6 +165,8 @@ export interface FilterSnapshot {
   advancedFilter: AdvancedFilterGroup | null;
   /** Only issues an agent is running on right now. */
   agentRunningFilter: boolean;
+  /** Only issues with an agent result the viewer has not seen yet. */
+  unreadFilter: boolean;
 }
 
 /** Filter-bar chip dimensions. Date is excluded: `dateFilter` lives outside
@@ -268,7 +273,7 @@ export function defaultSortDirection(field: SortField): SortDirection {
 
 /** Only expose card controls that the active renderer can honor. */
 export function cardPropertyOptionsForView(viewMode: ViewMode) {
-  if (viewMode === "table" || viewMode === "gantt") return [];
+  if (viewMode === "table" || viewMode === "gantt" || viewMode === "swimlane2") return [];
   if (viewMode === "list") {
     return CARD_PROPERTY_OPTIONS.filter((option) => option.key !== "description");
   }
@@ -352,6 +357,9 @@ export interface IssueViewState {
   // reloads: running state changes second-to-second, a persisted toggle would
   // let users return to an empty list with no obvious cause.
   agentRunningFilter: boolean;
+  // When true, the list only shows the viewer's unread issues (the sidebar's
+  // unread dot). Saved into views; resolved per viewer.
+  unreadFilter: boolean;
   sortBy: SortField;
   sortDirection: SortDirection;
   /** Last explicit direction per field, so switching fields is reversible. */
@@ -386,6 +394,10 @@ export interface IssueViewState {
    *  `swimlaneOrders`, plus the sentinel `"none"` for the pinned
    *  no-X lane and `"__orphans__"` for the parent-grouping fallback. */
   collapsedSwimlanes: Record<SwimlaneGrouping, string[]>;
+  /** Collapsed issue ids per graph surface (Gantt v2 rows; hierarchy and Swimlane 2.0 reuse the shape). */
+  collapsedIssues: Record<GraphSurface, string[]>;
+  /** Sidebar card and dialog mode: a registry id (hierarchy, swimlane2, …). Stored raw; the views registry resolves an unknown id to hierarchy. */
+  sidebarMode: string;
   /** Ordered table columns. Title is mandatory and normalized to the front. */
   tableColumns: TableColumnConfig[];
   tableGrouping: TableGrouping;
@@ -424,6 +436,7 @@ export interface IssueViewState {
    *  something simple mode cannot say (`simpleFromAdvancedFilter`). */
   exitAdvancedFilter: () => void;
   toggleAgentRunningFilter: () => void;
+  toggleUnreadFilter: () => void;
   hideStatus: (status: IssueStatus) => void;
   showStatus: (status: IssueStatus) => void;
   clearFilters: () => void;
@@ -445,6 +458,8 @@ export interface IssueViewState {
   setSwimlaneOrder: (order: string[]) => void;
   /** Toggle a lane key in the currently active swimlane grouping. */
   toggleSwimlaneCollapsed: (key: string) => void;
+  toggleIssueCollapsed: (surface: GraphSurface, issueId: string) => void;
+  setSidebarMode: (mode: string) => void;
   toggleTableColumn: (key: TableColumnKey) => void;
   reorderTableColumn: (active: TableColumnKey, over: TableColumnKey) => void;
   setTableColumnWidth: (key: TableColumnKey, width?: number) => void;
@@ -475,6 +490,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   advancedFilter: null,
   dateFilter: null,
   agentRunningFilter: false,
+  unreadFilter: false,
   sortBy: "created_at",
   sortDirection: "desc",
   sortDirections: { created_at: "desc" },
@@ -488,6 +504,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
   swimlaneGrouping: "assignee",
   swimlaneOrders: { parent: [], project: [], assignee: [] },
   collapsedSwimlanes: { parent: [], project: [], assignee: [] },
+  collapsedIssues: { gantt: [], swimlane2: [], hierarchy: [] },
+  sidebarMode: "hierarchy",
   tableColumns: DEFAULT_TABLE_COLUMNS.map((column) => ({ ...column })),
   tableGrouping: "none",
   tableCollapsedGroups: [],
@@ -640,6 +658,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
     }),
   toggleAgentRunningFilter: () =>
     set((state) => ({ agentRunningFilter: !state.agentRunningFilter })),
+  toggleUnreadFilter: () =>
+    set((state) => ({ unreadFilter: !state.unreadFilter })),
   hideStatus: (status) =>
     set((state) =>
       state.hiddenStatuses.includes(status)
@@ -669,6 +689,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
       advancedFilter: null,
       dateFilter: null,
       agentRunningFilter: false,
+      unreadFilter: false,
     }),
   resetFiltersTo: (snapshot) => set({ ...snapshot }),
   clearFilterDimension: (dimension) =>
@@ -761,6 +782,13 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         collapsedSwimlanes: { ...state.collapsedSwimlanes, [grouping]: next },
       };
     }),
+  setSidebarMode: (sidebarMode) => set({ sidebarMode }),
+  toggleIssueCollapsed: (surface, issueId) =>
+    set((state) => {
+      const current = state.collapsedIssues[surface];
+      const next = current.includes(issueId) ? current.filter((id) => id !== issueId) : [...current, issueId];
+      return { collapsedIssues: { ...state.collapsedIssues, [surface]: next } };
+    }),
   toggleTableColumn: (key) =>
     set((state) => {
       if (key === "title") return state;
@@ -836,6 +864,7 @@ export const viewStorePersistOptions = (name: string) => ({
     negatedFilters: state.negatedFilters,
     propertyFilters: state.propertyFilters,
     advancedFilter: state.advancedFilter,
+    unreadFilter: state.unreadFilter,
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     sortDirections: state.sortDirections,
@@ -849,6 +878,8 @@ export const viewStorePersistOptions = (name: string) => ({
     swimlaneGrouping: state.swimlaneGrouping,
     swimlaneOrders: state.swimlaneOrders,
     collapsedSwimlanes: state.collapsedSwimlanes,
+    collapsedIssues: state.collapsedIssues,
+    sidebarMode: state.sidebarMode,
     tableColumns: state.tableColumns,
     tableGrouping: state.tableGrouping,
     tableCollapsedGroups: state.tableCollapsedGroups,
@@ -937,6 +968,18 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
     collapsedSwimlanes: isRecord(p.collapsedSwimlanes)
       ? { ...current.collapsedSwimlanes, ...p.collapsedSwimlanes }
       : current.collapsedSwimlanes,
+    collapsedIssues: {
+      ...current.collapsedIssues,
+      ...(isRecord(p.collapsedIssues)
+        ? Object.fromEntries(
+            GRAPH_SURFACES.filter((surface) => Array.isArray(p.collapsedIssues?.[surface])).map((surface) => [
+              surface,
+              (p.collapsedIssues as Record<string, unknown[]>)[surface]!.filter((id): id is string => typeof id === "string"),
+            ]),
+          )
+        : {}),
+    },
+    sidebarMode: typeof p.sidebarMode === "string" ? p.sidebarMode : current.sidebarMode,
     tableColumns: [
       persistedTitle ?? current.tableColumns[0] ?? { key: "title" },
       ...dedupedTableColumns,
@@ -980,6 +1023,9 @@ export function mergeViewStatePersisted<T extends IssueViewState>(
     agentRunningFilter: p.agentRunningFilter === undefined
       ? current.agentRunningFilter
       : p.agentRunningFilter === true,
+    unreadFilter: p.unreadFilter === undefined
+      ? current.unreadFilter
+      : p.unreadFilter === true,
     negatedFilters: Array.isArray(p.negatedFilters)
       ? [...new Set(p.negatedFilters.filter((dimension): dimension is NegatableFilterDimension =>
           (NEGATABLE_FILTER_DIMENSIONS as readonly unknown[]).includes(dimension),
