@@ -2410,7 +2410,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // enclosing root.
   const targetIdx = useMemo(() => {
     if (!highlightCommentId) return -1;
-    const rootId = replyToRoot.get(highlightCommentId) ?? targetRootId ?? highlightCommentId;
+    const rootId = replyToRoot.get(highlightCommentId) ?? highlightCommentId;
     const landingId = commentLandingTarget(highlightCommentId, rootId, timelineView.threadReplies.get(rootId) ?? EMPTY_REPLIES);
     const direct = items.findIndex((it) => it.id === landingId);
     if (direct >= 0) return direct;
