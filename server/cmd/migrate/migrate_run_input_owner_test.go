@@ -19,8 +19,6 @@ import (
 // Tests 7, 7b and 14 of the CHE-5266 slice 2 design: the real 999e migration
 // against a scratch schema holding the slice 1 shape of run_input.
 
-const zeroUUID = "00000000-0000-0000-0000-000000000000"
-
 const slice1Schema = `
 CREATE TABLE agent (id uuid PRIMARY KEY, workspace_id uuid NOT NULL);
 CREATE TABLE comment (id uuid PRIMARY KEY, issue_id uuid NOT NULL, parent_id uuid, content text);
@@ -47,13 +45,12 @@ CREATE TABLE run_input (
 `
 
 type ownerFixture struct {
-	t                    *testing.T
-	ctx                  context.Context
-	schema               string
-	pool                 *pgxpool.Pool
-	ws, issue, agent     string
-	c1, c2, c3           string // comment roots of threads T1, T2, T3
-	migrationLockKeyBase int64
+	t                *testing.T
+	ctx              context.Context
+	schema           string
+	pool             *pgxpool.Pool
+	ws, issue, agent string
+	c1, c2, c3       string // comment roots of threads T1, T2, T3
 }
 
 func newOwnerFixture(t *testing.T) *ownerFixture {
@@ -186,7 +183,6 @@ func (f *ownerFixture) checksum() string {
 
 func jsonTask(id string) string    { return `{"task_id":"` + id + `"}` }
 func jsonComment(id string) string { return `{"comment_id":"` + id + `"}` }
-func str(s string) *string         { return &s }
 
 // seedLegacyHeld is the seed of test 7. T1 = c1, T2 = c2, T3 = c3.
 func (f *ownerFixture) seedLegacyHeld() (x, y, z string) {
@@ -263,7 +259,6 @@ func TestRunInputOwnerMigrationSafety(t *testing.T) {
 	}
 	body := string(file)
 	backfill := body[strings.Index(body, "-- Statement 2"):strings.Index(body, "-- I1:")]
-	backfill = strings.ReplaceAll(backfill, "RAISE NOTICE", "RAISE NOTICE") // runs as written
 	f.exec(backfill)
 	if got := f.checksum(); got != after {
 		t.Fatalf("a second run of the backfill changed rows: %s != %s", got, after)
