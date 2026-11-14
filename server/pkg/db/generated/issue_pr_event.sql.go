@@ -257,6 +257,10 @@ JOIN github_pull_request pr ON pr.id = e.pull_request_id
 WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
+       -- A member was told once (notified); an agent or squad holding the issue
+       -- takes the event now (CHE-5901).
+       OR (e.status = 'notified'
+           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t
@@ -427,12 +431,26 @@ func (q *Queries) MarkPREventNextTurn(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const markPREventsNotified = `-- name: MarkPREventsNotified :execrows
+UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY($1::uuid[]) AND status = 'next_turn'
+`
+
+// A member was told about these events once: the bridge selects them again only
+// when an agent or squad holds the issue (CHE-5901).
+func (q *Queries) MarkPREventsNotified(ctx context.Context, ids []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPREventsNotified, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markStartedPREventsDelivered = `-- name: MarkStartedPREventsDelivered :execrows
 UPDATE issue_pr_event e
 SET status = 'delivered'
 FROM github_pull_request pr
 WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn')
+  AND e.status IN ('accepted', 'next_turn', 'notified')
   AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
   AND (EXISTS (
       SELECT 1

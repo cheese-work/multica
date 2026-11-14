@@ -6,6 +6,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -96,4 +98,42 @@ func prResolverReceipts(ctx context.Context, queries *db.Queries, issue db.Issue
 		}
 	}
 	return matched, nil
+}
+
+// prNoticeScope is what one member notice settles (CHE-5901): the stored events
+// its receipts carry, which then stop being offered to the bridge, and the key
+// of the one unread row per issue and pull request, taken from the newest
+// receipt like the notice facts. A receipt that names no pull request in the
+// workspace gives no key.
+func prNoticeScope(ctx context.Context, queries *db.Queries, issue db.Issue, receipts []db.IssueWakeupReceipt) (pgtype.Text, []pgtype.UUID, error) {
+	var events []pgtype.UUID
+	var key pgtype.Text
+	for i, receipt := range receipts {
+		var payload struct {
+			EventID   pgtype.UUID `json:"event_id"`
+			RepoOwner string      `json:"repo_owner"`
+			RepoName  string      `json:"repo_name"`
+			Number    int32       `json:"pr_number"`
+		}
+		if json.Unmarshal(receipt.Payload, &payload) != nil {
+			continue
+		}
+		if payload.EventID.Valid {
+			events = append(events, payload.EventID)
+		}
+		if i != len(receipts)-1 {
+			continue
+		}
+		pull, err := queries.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{
+			WorkspaceID: issue.WorkspaceID, RepoOwner: payload.RepoOwner, RepoName: payload.RepoName, PrNumber: payload.Number,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return key, nil, err
+		}
+		key = pgtype.Text{String: "pr_fyi:" + util.UUIDToString(issue.ID) + ":" + util.UUIDToString(pull.ID), Valid: true}
+	}
+	return key, events, nil
 }

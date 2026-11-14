@@ -1516,12 +1516,22 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 				facts["note"] = body.String
 			}
 			details, _ := json.Marshal(facts)
+			var dedupe pgtype.Text
+			var noticed []pgtype.UUID
+			if isPRWakeup {
+				if dedupe, noticed, err = prNoticeScope(ctx, q, issue, receipts); err != nil {
+					return err
+				}
+			}
 			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
 				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
 				Type: kind, Severity: "info", IssueID: issue.ID, Title: issue.Title, Body: body,
-				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
+				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details, DedupeKey: dedupe,
 			})
 			if err != nil {
+				return err
+			}
+			if _, err := q.MarkPREventsNotified(ctx, noticed); err != nil {
 				return err
 			}
 			if inserted {
