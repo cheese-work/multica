@@ -25,6 +25,13 @@ const (
 	// from immutable historical source context.
 	DaemonCapabilitySourceContextQuickCreateV1 = "source_context_quick_create_v1"
 
+	// DaemonCapabilityBackgroundOutputOnlyV1 advertises that the daemon can run an
+	// output_only background task (CHE-4100): a prompt built from the task's
+	// bounded context input, returning text in the task output. The server hands
+	// such a task only to a runtime that lists this; a daemon without it never
+	// sees one (chat_compaction tasks are unaffected).
+	DaemonCapabilityBackgroundOutputOnlyV1 = "background_output_only_v1"
+
 	// DaemonCapabilityRPCV1 advertises that the daemon can carry
 	// request/response RPCs over the WebSocket control connection (MUL-4257).
 	// Gated so only daemons+servers that both support it route claim over WS;
@@ -105,6 +112,11 @@ const (
 	// launch selection it passed to the CLI (model, thinking level, service
 	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
 	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
+	// DaemonCapabilityRuntimeProfileV1 advertises that the daemon honors the
+	// claim's harness_profile (personal | managed). A daemon without it would
+	// drop the field and launch the user's personal config, so the server never
+	// hands a managed task to a claimer that lacks it.
+	DaemonCapabilityRuntimeProfileV1 = "runtime-profile-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -222,6 +234,12 @@ type TaskProgressPayload struct {
 	Total   int    `json:"total,omitempty"`
 }
 
+// TaskUsageUpdatedPayload invalidates cached usage after a successful report.
+// It carries no usage values; clients refetch through their authorized APIs.
+type TaskUsageUpdatedPayload struct {
+	TaskID string `json:"task_id"`
+}
+
 // TaskCompletedPayload is sent from daemon to server when a task finishes.
 type TaskCompletedPayload struct {
 	TaskID string `json:"task_id"`
@@ -319,6 +337,9 @@ const (
 	ChatMessageKindDecisionReference    = "decision_reference"
 	ChatMessageKindDecisionRequest      = "decision_request"
 	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
+	// ChatMessageKindAskRecovery is the automatic notice that an ask never
+	// reached this person. It is not a decision request and carries no action.
+	ChatMessageKindAskRecovery = "ask_recovery"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
@@ -456,6 +477,17 @@ type DaemonHeartbeatRequestPayload struct {
 	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
 	// not report it; zero is a real "idle".
 	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
+	// LiveTaskIDs is the ids of every task the daemon still holds: claimed and
+	// not yet finished, cancel-ack and process cleanup included (CHE-3114 part
+	// 2). A cancelled run absent from it is proven stopped. Nil from a daemon
+	// that does not report it, which proves nothing; an empty non-nil set is a
+	// real "holds none".
+	LiveTaskIDs *[]string `json:"live_task_ids,omitempty"`
+	// DaemonUptimeMs is how long this daemon process has been up, sent with
+	// LiveTaskIDs. A restarted daemon starts with an empty set while the runner
+	// of a run it did not start can still be alive, so the server attests only
+	// runs dispatched since the process booted. Nil attests nothing.
+	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
 	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
 	// not per runtime), repeated on every runtime heartbeat until the next
 	// sample. Nil from a daemon that does not sample (older, macOS, Windows).

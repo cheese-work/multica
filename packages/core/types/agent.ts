@@ -105,6 +105,12 @@ export interface RuntimeDevice {
    * Null/absent when the runtime has no daemon or the server predates pause.
    */
   daemon_running_tasks?: number | null;
+  /**
+   * Runtime-wide cap on tasks running at once across every agent bound to
+   * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
+   * own limit still applies. Older backends omit the field.
+   */
+  max_concurrent_tasks?: number | null;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -175,6 +181,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "muse",
   "devin",
   "zeroclaw",
+  "zcode",
 ] as const;
 
 export type RuntimeProtocolFamily =
@@ -381,6 +388,21 @@ export interface TaskPresetRun {
   applied: (TaskPresetSettings & { reported_at: string }) | null;
 }
 
+/** One part of a run's first prompt, as the daemon accounted it (est. tokens = (bytes+3)/4). */
+export interface TaskInitContextPart {
+  part: "instructions" | "tools" | "skills" | "memory" | "project" | "task" | "seed";
+  bytes: number;
+  tokens: number;
+  /** Est. tokens allowed for the part; 0 when no budget is set. */
+  budget: number;
+  notes?: string[];
+}
+
+/** Stored under `AgentTask.result.init_context`; absent on runs from older daemons. */
+export interface TaskInitContext {
+  parts: TaskInitContextPart[];
+}
+
 export interface AgentTask {
   wakeup_id?: string;
   id: string;
@@ -551,6 +573,10 @@ export interface AgentTask {
  * instead. Unlike the aggregate rows there is no `uncosted_*` split here: a
  * `task_usage` row is priced or it isn't, so "uncosted" is just "all of them
  * when cost_usd_ticks is absent", which is what the estimator already assumes.
+ *
+ * `credits_micros` is the charge of a provider that bills in its own credits
+ * instead of exposing tokens (Qoder Cloud Agents), in millionths of a credit.
+ * It has no USD rate and is shown beside the cost, never folded into it.
  */
 export interface TaskUsage {
   provider?: string;
@@ -560,6 +586,7 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+  credits_micros?: number;
 }
 
 /**
@@ -576,6 +603,10 @@ export interface MikaBootstrapResponse extends Agent {
 export interface Agent {
   id: string;
   workspace_id: string;
+  /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
+  scheduling_paused_at?: string | null;
+  scheduling_paused_by?: string | null;
+  scheduling_paused_reason?: string | null;
   /**
    * Empty string when the agent is unbound: it kept its configuration, chats and
    * task history when its runtime was deleted, and needs a new runtime before it
@@ -976,6 +1007,32 @@ export interface SkillFile {
   updated_at: string;
 }
 
+/** How a skill reached a version. Unknown server values fall back to "update". */
+export type SkillVersionSource =
+  | "baseline"
+  | "create"
+  | "update"
+  | "import"
+  | "refresh"
+  | "restore";
+
+export interface SkillVersionSummary {
+  id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  source: SkillVersionSource;
+  restored_from_version: number | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface SkillVersion extends SkillVersionSummary {
+  description: string;
+  content: string;
+  files: { path: string; content: string }[];
+}
+
 export interface CreateSkillRequest {
   name: string;
   description?: string;
@@ -1207,6 +1264,12 @@ export type RuntimeUpdateStatus =
   | "failed"
   | "timeout";
 
+export interface RuntimeUpdateProgress {
+  phase: string;
+  bytes_done: number;
+  bytes_total: number;
+}
+
 export interface RuntimeUpdate {
   id: string;
   runtime_id: string;
@@ -1214,6 +1277,8 @@ export interface RuntimeUpdate {
   target_version: string;
   output?: string;
   error?: string;
+  /** Latest download progress the daemon reported; absent before the first report or from an older server. */
+  progress?: RuntimeUpdateProgress;
   created_at: string;
   updated_at: string;
 }
@@ -1433,4 +1498,12 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
+}
+
+/** What pausing an agent leaves waiting; read before the pause dialog asks. */
+export interface AgentSchedulingImpact {
+  running_tasks: number;
+  queued_tasks: number;
+  open_issues: number;
+  enabled_wakeups: number;
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -34,6 +35,25 @@ type DecisionRequestCard struct {
 	RecordCommentID *string `json:"record_comment_id,omitempty"`
 	// Answer is the latest answer to the request, kept after a disclaim so the card can say so.
 	Answer *DecisionRequestAnswer `json:"answer,omitempty"`
+	// Action is the pending action an open request asks to approve, with the server's preview of it.
+	Action *DecisionRequestCardAction `json:"action,omitempty"`
+	// CoversRequestIDs are the per-issue cards a batch card answers for; the DM folds them under it.
+	CoversRequestIDs []string `json:"covers_request_ids,omitempty"`
+	// CoveredCards lists what a batch card's answer also decides, so the human sees every covered decision.
+	CoveredCards []DecisionRequestCoveredCard `json:"covered_cards,omitempty"`
+	// AnsweredByBatchRequestID is the batch card whose answer closed this card.
+	AnsweredByBatchRequestID *string `json:"answered_by_batch_request_id,omitempty"`
+}
+
+// DecisionRequestCoveredCard names one per-issue card a batch card covers.
+type DecisionRequestCoveredCard struct {
+	ID              string `json:"id"`
+	IssueID         string `json:"issue_id"`
+	IssueIdentifier string `json:"issue_identifier"`
+	IssueTitle      string `json:"issue_title,omitempty"`
+	Decision        string `json:"decision"`
+	// Options are the covered card's own options with their meanings, so the human sees what each answer does there.
+	Options []decisiontx.AskOption `json:"options"`
 }
 
 // DecisionRequestAnswer is the receipt half of a request card.
@@ -110,9 +130,27 @@ func (handler *Handler) decisionRequestsForMessages(ctx context.Context, workspa
 			sourceID := uuidToString(row.SourceCommentID)
 			card.SourceCommentID = &sourceID
 		}
+		for _, covered := range row.CoversRequestIds {
+			card.CoversRequestIDs = append(card.CoversRequestIDs, uuidToString(covered))
+		}
+		// On a read failure the card keeps its covers_request_ids but lists no covered
+		// cards; the client then refuses to offer the answer form (fail closed).
+		covered, err := handler.coveredCardSummaries(ctx, workspaceUUID, row.CoversRequestIds)
+		if err != nil {
+			slog.ErrorContext(ctx, "list covered decision cards", "request_id", card.ID, "error", err)
+		}
+		card.CoveredCards = covered
+		if row.AnsweredByBatchRequestID.Valid {
+			batchID := uuidToString(row.AnsweredByBatchRequestID)
+			card.AnsweredByBatchRequestID = &batchID
+		}
 		if row.RecordCommentID.Valid {
 			recordID := uuidToString(row.RecordCommentID)
 			card.RecordCommentID = &recordID
+		}
+		// An answered request keeps its action so the card can show the outcome after approval.
+		if row.Status == "open" || row.Status == "answered" {
+			card.Action = handler.decisionCardAction(ctx, workspaceUUID, row.RequestID)
 		}
 		if row.Status == "cancelled" {
 			card.State = "withdrawn"
@@ -158,4 +196,63 @@ func recommendedOptionIndex(options []decisiontx.AskOption, recommendation strin
 		return nil
 	}
 	return &match
+}
+
+// coveredCardSummaries reads the decisions a batch card covers from the
+// covered cards themselves, never from the batch card's own text, so the
+// human sees what the one answer decides. A read failure is returned, never
+// turned into an empty list.
+func (handler *Handler) coveredCardSummaries(ctx context.Context, workspaceUUID pgtype.UUID, ids []pgtype.UUID) ([]DecisionRequestCoveredCard, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := handler.Queries.ListCoveredCardSummaries(ctx, db.ListCoveredCardSummariesParams{WorkspaceID: workspaceUUID, Ids: ids})
+	if err != nil {
+		return nil, err
+	}
+	covered := make([]DecisionRequestCoveredCard, 0, len(rows))
+	for _, row := range rows {
+		summary := DecisionRequestCoveredCard{ID: uuidToString(row.ID), IssueID: uuidToString(row.IssueID), IssueIdentifier: fmt.Sprintf("%s-%d", row.IssuePrefix, row.IssueNumber), IssueTitle: row.IssueTitle, Decision: row.Decision}
+		if err := json.Unmarshal(row.Options, &summary.Options); err != nil {
+			return nil, fmt.Errorf("covered card %s options: %w", summary.ID, err)
+		}
+		covered = append(covered, summary)
+	}
+	return covered, nil
+}
+
+// ListIssueDecisionCards returns the viewer's used (answered or withdrawn)
+// request cards on one issue, oldest first. The issue page folds them; the open
+// ones come from ListOpenDecisions. Only the viewer's own requests are listed,
+// as in the DM.
+func (handler *Handler) ListIssueDecisionCards(writer http.ResponseWriter, request *http.Request) {
+	issue, ok := handler.loadIssueForUser(writer, request, request.URL.Query().Get("issue"))
+	if !ok {
+		return
+	}
+	member, ok := handler.requireWorkspaceMember(writer, request, uuidToString(issue.WorkspaceID), "workspace not found")
+	if !ok {
+		return
+	}
+	requests, err := handler.Queries.ListDecisionRequestsByIssue(request.Context(), db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		writeError(writer, http.StatusInternalServerError, "failed to list decision requests")
+		return
+	}
+	var messages []db.ChatMessage
+	for _, stored := range requests {
+		if stored.Status != "open" && stored.HumanUserID == member.UserID && stored.PingMessageID.Valid {
+			messages = append(messages, db.ChatMessage{ID: stored.PingMessageID})
+		}
+	}
+	cards := []DecisionRequestCard{}
+	byMessage := handler.decisionRequestsForMessages(request.Context(), uuidToString(issue.WorkspaceID), messages)
+	for _, stored := range requests {
+		for _, card := range byMessage[uuidToString(stored.PingMessageID)] {
+			if card.ID == uuidToString(stored.ID) && stored.Status != "open" && stored.HumanUserID == member.UserID {
+				cards = append(cards, card)
+			}
+		}
+	}
+	writeJSON(writer, http.StatusOK, cards)
 }

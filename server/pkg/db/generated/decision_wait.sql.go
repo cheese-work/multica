@@ -265,7 +265,13 @@ WHERE wait.closed_at IS NULL
              EXISTS (
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
-                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND (moved.actor_type = 'member' OR (moved.action = 'run_budget_top_up' AND moved.actor_type = 'system')) AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
+                   AND (
+                       moved.action = 'run_budget_top_up'
+                       OR moved.created_at < (SELECT cutover_at FROM run_budget_window_cutover)
+                       OR (moved.details->'trigger'->>'auth_source' = 'interactive_jwt' AND moved.details->'trigger'->'cause'->>'kind' = 'ui_or_api')
+                   )
              ) OR EXISTS (
                  SELECT 1 FROM issue_workflow flow
                  WHERE flow.workspace_id = issue.workspace_id AND flow.run_budget_since > wait.suspended_at
@@ -282,7 +288,8 @@ WHERE wait.closed_at IS NULL
              ) OR EXISTS (
                  SELECT 1 FROM activity_log moved
                  WHERE moved.issue_id = issue.id AND moved.action IN ('status_changed', 'run_budget_top_up')
-                   AND moved.actor_type = 'member' AND moved.created_at > wait.suspended_at
+                   AND (moved.actor_type = 'member' OR (moved.action = 'run_budget_top_up' AND moved.actor_type = 'system')) AND moved.created_at > wait.suspended_at
+                   AND moved.details->'trigger'->'cause'->>'kind' IS DISTINCT FROM 'workflow_remap'
              )
          )))
   )
@@ -321,6 +328,72 @@ type ListDecisionEpisodeCandidatesParams struct {
 // start; the delivery transaction re-checks it exactly.
 func (q *Queries) ListDecisionEpisodeCandidates(ctx context.Context, arg ListDecisionEpisodeCandidatesParams) ([]DecisionWait, error) {
 	rows, err := q.db.Query(ctx, listDecisionEpisodeCandidates, arg.Rotation, arg.BatchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DecisionWait{}
+	for rows.Next() {
+		var i DecisionWait
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.AskingAgentID,
+			&i.AskingTaskID,
+			&i.ResumeSquadID,
+			&i.HumanUserID,
+			&i.RequestIds,
+			&i.IntentIds,
+			&i.GroupAckIntentIds,
+			&i.RestoreStatus,
+			&i.RestoreAssigneeType,
+			&i.RestoreAssigneeID,
+			&i.RestoreOnResume,
+			&i.Phase,
+			&i.SuspendReason,
+			&i.SuspendedAt,
+			&i.RefusedTaskID,
+			&i.EnteredAt,
+			&i.ReminderDueAt,
+			&i.ReminderDeliveredAt,
+			&i.DispatchRefusedSince,
+			&i.ClosedAt,
+			&i.CloseReason,
+			&i.ResumeTaskID,
+			&i.ResumeOutcome,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionReminderCandidates = `-- name: ListDecisionReminderCandidates :many
+SELECT wait.id, wait.workspace_id, wait.issue_id, wait.asking_agent_id, wait.asking_task_id, wait.resume_squad_id, wait.human_user_id, wait.request_ids, wait.intent_ids, wait.group_ack_intent_ids, wait.restore_status, wait.restore_assignee_type, wait.restore_assignee_id, wait.restore_on_resume, wait.phase, wait.suspend_reason, wait.suspended_at, wait.refused_task_id, wait.entered_at, wait.reminder_due_at, wait.reminder_delivered_at, wait.dispatch_refused_since, wait.closed_at, wait.close_reason, wait.resume_task_id, wait.resume_outcome FROM decision_wait wait
+WHERE wait.closed_at IS NULL AND wait.phase = 'waiting'
+  AND wait.reminder_delivered_at IS NULL AND wait.reminder_due_at <= now()
+  AND EXISTS (
+      SELECT 1 FROM decision_request bound
+      WHERE bound.authority = 'human' AND bound.id = ANY(wait.request_ids) AND bound.status = 'open'
+        AND bound.human_user_id = wait.human_user_id
+  )
+  AND EXISTS (
+      SELECT 1 FROM member WHERE member.workspace_id = wait.workspace_id AND member.user_id = wait.human_user_id
+  )
+ORDER BY wait.reminder_due_at, wait.id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+// Waiting episodes whose one reminder is due (design §4.6). The filters match
+// what the delivery transaction re-checks, so an episode that cannot be
+// reminded never takes a batch slot.
+func (q *Queries) ListDecisionReminderCandidates(ctx context.Context, batchSize int32) ([]DecisionWait, error) {
+	rows, err := q.db.Query(ctx, listDecisionReminderCandidates, batchSize)
 	if err != nil {
 		return nil, err
 	}
@@ -433,7 +506,7 @@ func (q *Queries) ListDecisionWaitAnswers(ctx context.Context, arg ListDecisionW
 }
 
 const listDecisionWaitBoundRequests = `-- name: ListDecisionWaitBoundRequests :many
-SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq FROM decision_request request
+SELECT request.id, request.workspace_id, request.issue_id, request.asking_agent_id, request.human_user_id, request.chat_session_id, request.ping_message_id, request.issue_comment_id, request.ask, request.escalation_class, request.status, request.origin, request.decision_intent_id, request.cancel_reason, request.cancel_notice_posted_at, request.ping_notified_at, request.reask_delivered_at, request.reask_outcome, request.created_at, request.source_comment_id, request.source_content_snapshot, request.request_fingerprint, request.withdraw_reason, request.withdrawn_at, request.withdrawn_by_task_id, request.withdrawn_by_user_id, request.options, request.ask_identity, request.ask_json, request.authority, request.project_id, request.kind, request.expires_at, request.proposal_fingerprint, request.answer_revision, request.wake_seq, request.batch_id, request.covers_request_ids, request.answered_by_batch_request_id FROM decision_request request
 WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.issue_id = $2
   AND (
     (request.status = 'open' AND request.origin = 'asked' AND request.asking_agent_id = $3)
@@ -502,10 +575,46 @@ func (q *Queries) ListDecisionWaitBoundRequests(ctx context.Context, arg ListDec
 			&i.ProposalFingerprint,
 			&i.AnswerRevision,
 			&i.WakeSeq,
+			&i.BatchID,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDecisionWaitExpiredActionRequests = `-- name: ListDecisionWaitExpiredActionRequests :many
+SELECT action.decision_request_id FROM decision_action action
+WHERE action.workspace_id = $1 AND action.state = 'expired'
+  AND action.decision_request_id = ANY($2::uuid[])
+`
+
+type ListDecisionWaitExpiredActionRequestsParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	RequestIds  []pgtype.UUID `json:"request_ids"`
+}
+
+// Bound requests whose prepared action expired: the episode closes
+// action_expired, not expired (design §6.1 priority 3).
+func (q *Queries) ListDecisionWaitExpiredActionRequests(ctx context.Context, arg ListDecisionWaitExpiredActionRequestsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDecisionWaitExpiredActionRequests, arg.WorkspaceID, arg.RequestIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var decision_request_id pgtype.UUID
+		if err := rows.Scan(&decision_request_id); err != nil {
+			return nil, err
+		}
+		items = append(items, decision_request_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -659,7 +768,7 @@ func (q *Queries) ListDecisionWaitPendingRetractions(ctx context.Context, reques
 }
 
 const listDecisionWaitRequests = `-- name: ListDecisionWaitRequests :many
-SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq FROM decision_request
+SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, covers_request_ids, answered_by_batch_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND id = ANY($2::uuid[])
 ORDER BY id
 `
@@ -715,6 +824,9 @@ func (q *Queries) ListDecisionWaitRequests(ctx context.Context, arg ListDecision
 			&i.ProposalFingerprint,
 			&i.AnswerRevision,
 			&i.WakeSeq,
+			&i.BatchID,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
 		); err != nil {
 			return nil, err
 		}
@@ -767,6 +879,25 @@ func (q *Queries) LockDecisionWait(ctx context.Context, arg LockDecisionWaitPara
 		&i.ResumeOutcome,
 	)
 	return i, err
+}
+
+const markDecisionReminderDelivered = `-- name: MarkDecisionReminderDelivered :execrows
+UPDATE decision_wait SET reminder_delivered_at = now()
+WHERE workspace_id = $1 AND id = $2
+  AND closed_at IS NULL AND reminder_delivered_at IS NULL
+`
+
+type MarkDecisionReminderDeliveredParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) MarkDecisionReminderDelivered(ctx context.Context, arg MarkDecisionReminderDeliveredParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markDecisionReminderDelivered, arg.WorkspaceID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markDecisionWaitCloseRefused = `-- name: MarkDecisionWaitCloseRefused :exec

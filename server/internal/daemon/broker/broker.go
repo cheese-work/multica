@@ -94,10 +94,19 @@ type Broker struct {
 	rmu      sync.Mutex
 	receipts []Receipt
 
+	pinMu    sync.RWMutex // guards Base, Synthetic and baseRepo against a base refresh
+	baseRepo string       // bare repo holding refreshed default-branch tips; "" until the first refresh
+
 	fmu     sync.Mutex // guards fenced, open, changed and the elevOp fields
 	fenced  bool
 	open    map[*elevOp]struct{} // authorized, not yet acknowledged by the server
 	changed chan struct{}        // closed and replaced when open or its state changes
+
+	refmu     sync.Mutex            // one read-token refresh at a time
+	rdmu      sync.Mutex            // guards reads
+	reads     []grant               // read tokens handed to the run, revoked by Close
+	pending   int                   // mints in flight that hold a slot under maxReadTokens
+	unrevoked map[string]*staleRead // replaced read tokens whose revoke has not succeeded yet, by token id
 
 	beforeWrite, afterWrite func() // test hooks around the remote write
 }
@@ -125,6 +134,10 @@ func New(p Pin, socket string, log *slog.Logger) (*Broker, error) {
 	mux.HandleFunc("GET /pin", b.handlePin)
 	mux.HandleFunc("POST /push", b.track(b.handlePush))
 	mux.HandleFunc("POST /pr", b.track(b.handlePR))
+	mux.HandleFunc("POST /readtoken", b.track(b.handleReadToken))
+	mux.HandleFunc("POST /readtoken/refresh", b.track(b.handleReadRefresh))
+	mux.HandleFunc("POST /readtoken/current", b.track(b.handleReadCurrent))
+	mux.HandleFunc("POST /base-refresh", b.track(b.handleRefresh))
 	b.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := b.srv.Serve(ln); !errors.Is(err, http.ErrServerClosed) {
@@ -160,8 +173,13 @@ func (b *Broker) Close() error {
 	err := b.srv.Close()
 	_ = os.Remove(b.socket)
 	b.ops.Wait()
+	b.revokeReads()
 	b.stop()
 	b.wg.Wait()
+	b.revokeLeftovers()
+	if b.baseRepo != "" {
+		_ = os.RemoveAll(b.baseRepo)
+	}
 	return err
 }
 
@@ -206,6 +224,8 @@ func validRef(ref string) bool {
 
 // handlePin tells the in-sandbox client what to bundle.
 func (b *Broker) handlePin(w http.ResponseWriter, _ *http.Request) {
+	b.pinMu.RLock()
+	defer b.pinMu.RUnlock()
 	_ = json.NewEncoder(w).Encode(b.pin)
 }
 
@@ -287,7 +307,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if err := os.MkdirAll(filepath.Join(work, "objects", "info"), 0o755); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
-	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), []byte(b.pin.Objects+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(work, "objects", "info", "alternates"), b.alternates(), 0o644); err != nil {
 		return "", http.StatusInternalServerError, err
 	}
 	heads, err := bundleHeads(bundle)
@@ -306,8 +326,9 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 	if out, err := b.git(ctx, work, nil, "-c", "transfer.fsckObjects=true", "bundle", "unbundle", bundle); err != nil {
 		return "", http.StatusBadRequest, fmt.Errorf("unbundle: %s", b.scrub(firstLine(out)))
 	}
+	var runSHA map[string]string
 	if b.pin.Synthetic != nil {
-		if sha, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
+		if sha, runSHA, status, err = b.translate(ctx, work, sha, filepath.Join(scratch, "msg")); err != nil {
 			return "", status, err
 		}
 	}
@@ -317,7 +338,7 @@ func (b *Broker) push(r *http.Request) (sha string, status int, err error) {
 		}
 		return sha, status, err
 	}
-	commits, err := b.commitReceipts(ctx, work, sha)
+	commits, err := b.commitReceipts(ctx, work, sha, runSHA)
 	if errors.Is(err, errTooManyCommits) {
 		return sha, http.StatusRequestEntityTooLarge, err
 	}
@@ -365,14 +386,22 @@ func basicAuthEnv(token string) []string {
 // status to answer with if that fails. The operation deadline starts once the
 // token exists, because that is when the credential is live.
 func (b *Broker) mint(ctx context.Context, pr bool) (grant, int, error) {
+	perms := map[string]string{"contents": "write"}
+	if pr {
+		perms["pull_requests"] = "write"
+	}
+	return b.mintWith(ctx, perms)
+}
+
+func (b *Broker) mintWith(ctx context.Context, perms map[string]string) (grant, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	id, _ := b.pin.repoID() // checked in New
-	g, err := b.pin.Tokens.mint(ctx, id, pr)
+	g, err := b.pin.Tokens.mint(ctx, id, perms)
 	if err != nil {
 		return grant{}, http.StatusBadGateway, err
 	}
-	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "pr", pr)
+	b.log.Info("broker token minted", "repo", b.pin.Repo, "token", g.id(), "expires_at", g.expires, "perms", perms)
 	return g, 0, nil
 }
 

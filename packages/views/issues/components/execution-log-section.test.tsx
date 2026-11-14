@@ -293,6 +293,25 @@ function usageSlice(overrides: Partial<TaskUsage> = {}): TaskUsage {
 }
 
 describe("per-run token usage", () => {
+  it.each([
+    ["en", "1.25 Qoder Cloud Agents credits"],
+    ["zh-Hans", "1.25 Qoder Cloud Agents 积分"],
+  ] as const)("names the provider's credits in %s", (locale, expected) => {
+    renderWithI18n(
+      <IssueRunsTotal alone onOpen={() => {}} tasks={[makeTask({
+        status: "completed",
+        usage: [usageSlice({
+          provider: "qoder_cloud", model: "",
+          input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0,
+          credits_micros: 1_250_000,
+        })],
+      })]} />,
+      { locale },
+    );
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(screen.queryByText("1.25 credits")).not.toBeInTheDocument();
+  });
+
   // An active row shows only its timer. The daemon reports usage once, after
   // the run returns, and that write publishes no realtime event — so no
   // running task carries usage in production. Asserting a token figure here
@@ -565,6 +584,21 @@ describe("execution log past runs", () => {
     expect(chart.querySelector('[data-run="past-2"]')).toHaveClass("bg-faint-foreground");
     expect(chart.querySelector('[data-run="past-3"]')).toHaveClass("border-dashed");
     expect(chart.querySelector('[data-run="active"]')).toHaveClass("bg-info");
+  });
+
+  it("keeps a skipped review run visible without task-only actions", () => {
+    // A skipped entry is an activity, not a task row: its id is no task id, so
+    // Retry would 400 and the transcript has nothing to fetch.
+    renderSection([
+      past(1, { id: "skip-1", status: "cancelled", failure_reason: "review_head_answered", usage: [] }),
+      past(2, { id: "real-cancel", status: "cancelled", usage: [] }),
+    ]);
+    const skipped = screen.getByText("Past run 1").closest("[title]") as HTMLElement;
+    const cancelled = screen.getByText("Past run 2").closest("[title]") as HTMLElement;
+    expect(within(skipped).queryByRole("button", { name: "Retry run" })).not.toBeInTheDocument();
+    expect(within(skipped).queryByRole("button", { name: "View transcript" })).not.toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
+    expect(within(cancelled).getByRole("button", { name: "View transcript" })).toBeInTheDocument();
   });
 
   it("makes full details reachable from the first priced run", () => {

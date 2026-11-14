@@ -1,4 +1,6 @@
 import LinkifyIt from 'linkify-it'
+import { fromMarkdown } from 'mdast-util-from-markdown'
+import type { Nodes } from 'mdast'
 
 /**
  * Linkify - URL and file path detection for markdown preprocessing
@@ -31,14 +33,37 @@ const FILE_PATH_REGEX = new RegExp(
 const CJK_URL_TERMINATOR_REGEX =
   /[！-／：-＠［-｀｛-～、。「-】]/
 
-// Markdown inline-formatting delimiters that linkify-it counts as URL characters
-// but which, at the very end of a bare URL, are almost always the author closing
-// an emphasis / strikethrough span (`**url**`, `*url*`, `~~url~~`) rather than
-// part of the URL. We drop a trailing run of them so the surrounding markdown
-// still parses — mirroring GFM's own autolink trailing-punctuation trim. A URL
-// that genuinely ends in `*` / `~` loses that character from the link, exactly
-// as it does on GitHub (MUL-4242).
-const TRAILING_MD_DELIMITER = /[*~]+$/
+// GFM extended-autolink trailing trim. Trailing `? ! . , : ; * _ ~` are sentence
+// punctuation or the author closing an emphasis / strikethrough span
+// (`**url**`, `~~url~~`), not part of the URL; a trailing `)` is dropped only
+// when unbalanced, so `https://x/a_(b)` keeps its `)` but `(see https://x/a)`
+// does not (MUL-4242, CHE-4660). linkify-it keeps some of these (`:`, `_`, `*`,
+// `~`) in the match, so we trim here. Interior punctuation is untouched.
+const TRAILING_PUNCT = /[?!.,:;*_~]$/
+
+export function trimTrailingPunctuation(url: string): string {
+  // Count parentheses once and update the counts as `)` / `(` leave the tail,
+  // so the trim is O(n) even for a long run of `)` mixed with punctuation (CWE-407).
+  let open = 0
+  let close = 0
+  for (let i = 0; i < url.length; i++) {
+    if (url[i] === '(') open++
+    else if (url[i] === ')') close++
+  }
+  let end = url.length
+  while (end > 0) {
+    const last = url[end - 1]!
+    if (TRAILING_PUNCT.test(last)) {
+      end--
+    } else if (last === ')' && close > open) {
+      close--
+      end--
+    } else {
+      break
+    }
+  }
+  return url.slice(0, end)
+}
 
 interface DetectedLink {
   type: 'url' | 'email' | 'file'
@@ -74,18 +99,44 @@ export function shouldAutoLink(value: string): boolean {
 }
 
 /**
+ * Find block-code ranges using the same CommonMark parser as the read-only
+ * renderer. Container membership depends on preceding lines and tab columns,
+ * not just the prefix on a fence's opening line. Include indented code too:
+ * its literal backticks must not be mistaken for standalone fences.
+ */
+export function findBlockCodeRanges(text: string): CodeRange[] {
+  // Plain paragraphs and inline code need no block parse.
+  if (!/`{3}|~{3}| {4}|\t/.test(text)) return []
+
+  const ranges: CodeRange[] = []
+  const pending: Nodes[] = [fromMarkdown(text)]
+  while (pending.length > 0) {
+    const node = pending.pop()!
+    if (node.type === 'code') {
+      const start = node.position?.start.offset
+      const end = node.position?.end.offset
+      if (start !== undefined && end !== undefined) {
+        // Include list/quote prefixes so chunking keeps the opening line.
+        ranges.push({ start: text.lastIndexOf('\n', start - 1) + 1, end })
+      }
+    } else if ('children' in node) {
+      // Reverse push preserves source order without recursion on nested lists.
+      for (let i = node.children.length - 1; i >= 0; i--) {
+        pending.push(node.children[i]!)
+      }
+    }
+  }
+  return ranges
+}
+
+/**
  * Find all code block and inline code ranges in text
  * These ranges should be excluded from link detection
  */
 export function findCodeRanges(text: string): CodeRange[] {
-  const ranges: CodeRange[] = []
-
-  // Find fenced code blocks (```...```)
-  const fencedRegex = /```[\s\S]*?```/g
+  const blockRanges = findBlockCodeRanges(text)
+  const ranges = [...blockRanges]
   let match
-  while ((match = fencedRegex.exec(text)) !== null) {
-    ranges.push({ start: match.index, end: match.index + match[0].length })
-  }
 
   // Find display math blocks ($$...$$)
   const displayMathRegex = /\$\$[\s\S]*?\$\$/g
@@ -107,16 +158,26 @@ export function findCodeRanges(text: string): CodeRange[] {
     }
   }
 
-  // Find inline code (`...`)
-  // But skip escaped backticks and code inside fenced blocks
-  const inlineRegex = /(?<!`)`(?!`)([^`\n]+)`(?!`)/g
+  // Find inline code spans with matching backtick runs.
+  // Ignore spans inside fenced code or math blocks.
+  // Inline code can span soft line breaks, but not a blank paragraph boundary
+  // (LF or CRLF).
+  const inlineRegex = /(?<!`)(`+)(?!`)((?:[^\n]|\n(?![ \t]*\r?\n))*?)(?<!`)\1(?!`)/g
   while ((match = inlineRegex.exec(text)) !== null) {
     const pos = match.index
-    // Check if this is inside a fenced block or math block
-    const insideOther = ranges.some((r) => pos >= r.start && pos < r.end)
-    if (!insideOther) {
-      ranges.push({ start: pos, end: pos + match[0].length })
+    const end = pos + match[0].length
+    // An inline span cannot cross a block-code boundary.
+    const crossedBlock = blockRanges.find((r) => pos < r.end && end > r.start)
+    if (crossedBlock) {
+      inlineRegex.lastIndex = crossedBlock.end
+      continue
     }
+    const insideOther = ranges.find((r) => pos >= r.start && pos < r.end)
+    if (insideOther) {
+      inlineRegex.lastIndex = insideOther.end
+      continue
+    }
+    ranges.push({ start: pos, end })
   }
 
   return ranges
@@ -248,8 +309,8 @@ export function rangesOverlap(
  * shifted by `offset`. Two boundary corrections linkify-it doesn't make itself:
  * - CJK punctuation ends a URL (linkify-it only breaks on ASCII); when it merged
  *   several URLs across CJK punctuation we truncate and re-scan the tail; and
- * - a trailing run of markdown delimiters (`*`, `~`) is dropped from the URL so
- *   `**url**` keeps its closing emphasis marker outside the link.
+ * - GFM trailing punctuation (`? ! . , : ; * _ ~`, unbalanced `)`) is dropped
+ *   from the URL, so `**url**` keeps its closing marker and `url:` its colon.
  */
 function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]): void {
   const matches = linkify.match(text)
@@ -260,12 +321,11 @@ function collectLinkifyMatches(text: string, offset: number, out: DetectedLink[]
     if (cjkIdx === 0) continue // match starts with CJK punct — skip
 
     const truncate = cjkIdx > 0
-    // URL text up to the first CJK terminator, then minus a trailing markdown
-    // delimiter run (e.g. the closing `**` of `**url**`). matchText stays a
+    // URL text up to the first CJK terminator, then minus GFM trailing punctuation
+    // (e.g. the closing `**` of `**url**`, a sentence-final `:`). matchText stays a
     // prefix of match.text, so the link end is just its length past match.index.
-    const matchText = (truncate ? match.text.slice(0, cjkIdx) : match.text).replace(
-      TRAILING_MD_DELIMITER,
-      ''
+    const matchText = trimTrailingPunctuation(
+      truncate ? match.text.slice(0, cjkIdx) : match.text
     )
 
     if (matchText.length > 0 && shouldAutoLink(matchText)) {

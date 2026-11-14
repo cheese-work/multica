@@ -79,7 +79,7 @@ func (h *Handler) GetCommentPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := h.getIssuePrefix(r.Context(), wsUUID)
 	preview := commentFirstLine(comment.Content)
-	if h.newReadFilter(r).withholds(commentWithheld(comment)) {
+	if h.newReadFilter(r).withholdsComment(comment) {
 		preview = ""
 	}
 	writeJSON(w, http.StatusOK, CommentPreviewResponse{

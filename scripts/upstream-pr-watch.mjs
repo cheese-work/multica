@@ -15,6 +15,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { weekly } from './fork-ledger-stale.mjs';
 
 const API = 'https://api.github.com/repos';
 const OVERLAP_MS = 10 * 60_000;
@@ -302,6 +303,15 @@ async function main() {
   });
   if (!result.ok) {
     console.error(`upstream-pr-watch: monitoring stale: ${result.state.stale?.error ?? `backing off until ${result.state.backoffUntil}`}`);
+    process.exitCode = 1;
+  }
+  // CHE-3960: weekly docs/fork ledger stale check. It runs here because X99's installed run.sh only starts this file from a fresh
+  // checkout of main; a stale result files one refresh issue. A failure marks the poll failed but never hides the watcher result above.
+  try {
+    const { outcome } = weekly();
+    if (outcome === 'filed') console.log('upstream-pr-watch: ledger stale, refresh issue filed');
+  } catch (error) {
+    console.error(`upstream-pr-watch: ledger stale check failed: ${error.message}`);
     process.exitCode = 1;
   }
 }

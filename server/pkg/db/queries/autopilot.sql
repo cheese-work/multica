@@ -56,11 +56,11 @@ FOR UPDATE;
 INSERT INTO autopilot (
     workspace_id, title, description, assignee_type, assignee_id,
     status, execution_mode, issue_title_template, project_id,
-    created_by_type, created_by_id
+    created_by_type, created_by_id, script_config
 ) VALUES (
     $1, $2, sqlc.narg('description'), $3, $4,
     $5, $6, sqlc.narg('issue_title_template'), sqlc.narg('project_id'),
-    $7, $8
+    $7, $8, sqlc.narg('script_config')
 ) RETURNING *;
 
 -- name: UpdateAutopilot :one
@@ -75,6 +75,7 @@ UPDATE autopilot SET
       ELSE pause_reason
     END,
     execution_mode = COALESCE(sqlc.narg('execution_mode'), execution_mode),
+    script_config = sqlc.narg('script_config'),
     issue_title_template = sqlc.narg('issue_title_template'),
     project_id = sqlc.narg('project_id'),
     updated_at = now()
@@ -441,6 +442,14 @@ SET status = 'running', task_id = $2
 WHERE id = $1
 RETURNING *;
 
+-- name: MergeAutopilotRunResult :exec
+-- Adds top-level keys to a run's result without touching its status or any
+-- key already there. A result that is not a JSON object is replaced, so the
+-- audit record is never lost to a malformed task result. (CHE-5094)
+UPDATE autopilot_run
+SET result = CASE WHEN jsonb_typeof(result) = 'object' THEN result ELSE '{}'::jsonb END || @patch::jsonb
+WHERE id = @id;
+
 -- name: UpdateAutopilotRunSkipped :one
 -- Quota safety: this is only for pre-admission skipped rows, which never have
 -- reservations. Post-admission skips use UpdateAutopilotRunTerminalWithQuota.
@@ -537,10 +546,13 @@ SELECT * FROM updated_run;
 -- recent already-fired occurrence — exactly the post-deploy
 -- spurious-fire reported on MUL-3551 dev.
 --
+-- next_run_at is read so the scope provider can repair a display value left
+-- in the past (CHE-5500).
+--
 -- Filters out webhook / api triggers, disabled triggers, paused/archived
 -- autopilots, and any trigger missing its cron expression. ORDER BY id
 -- keeps the per-tick scope list stable across replicas.
-SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at
+SELECT t.id, t.autopilot_id, t.cron_expression, t.timezone, t.created_at, t.last_fired_at, t.next_run_at
 FROM autopilot_trigger t
 JOIN autopilot a ON a.id = t.autopilot_id
 WHERE t.kind = 'schedule'

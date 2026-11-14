@@ -22,6 +22,8 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		mergeState string
 		binding    bool
 		archived   bool
+		own        bool
+		notOwner   bool
 		target     bool
 		wantRun    bool
 		wantFYI    bool
@@ -32,7 +34,11 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 		{name: "member conflict without author gets FYI", rule: SystemRulePRAttention, assignee: "member", wantFYI: true},
 		{name: "member failed checks without author get FYI", rule: SystemRulePRChecksFailed, assignee: "member", wantFYI: true},
 		{name: "member merged notification unchanged", rule: SystemRulePRMerged, assignee: "member", author: true},
-		{name: "member passed checks unchanged", rule: SystemRulePRChecksPassed, assignee: "member", author: true},
+		{name: "member passed checks drop for non-owner author", rule: SystemRulePRChecksPassed, assignee: "member", author: true, notOwner: true},
+		{name: "agent passed checks drop for non-owner author", rule: SystemRulePRChecksPassed, assignee: "agent", author: true, notOwner: true},
+		{name: "assignee author passed checks wake", rule: SystemRulePRChecksPassed, assignee: "agent", author: true, own: true, wantRun: true},
+		{name: "non-owner author failed checks still wake", rule: SystemRulePRChecksFailed, assignee: "agent", author: true, wantRun: true},
+		{name: "member passed checks without author get FYI", rule: SystemRulePRChecksPassed, assignee: "member", wantFYI: true},
 		{name: "configured default still wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, configured: true, wantRun: true},
 		{name: "behind wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, mergeState: "BEHIND", wantRun: true},
 		{name: "returned to draft wakes author", rule: SystemRulePRAttention, assignee: "member", author: true, reason: PRAttentionDraft, wantRun: true},
@@ -48,7 +54,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 			assigneeID := fixture.UserID
 			if scenario.assignee == "agent" {
 				assigneeID = env.agent
-				if scenario.author {
+				if scenario.author && !scenario.own {
 					assigneeID = fixture.privateAgentOwnedBy(t, fixture.UserID, "other-assignee")
 				}
 			} else if scenario.assignee == "squad" {
@@ -92,6 +98,7 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				Reason: PRAttentionMergeability, MergeState: "DIRTY", MergeCommit: "merge-head", Conclusion: "FAILURE",
 			}
 			if scenario.rule == SystemRulePRChecksPassed {
+				fixture.Exec(t, `UPDATE workspace SET settings=settings || '{"github_wake_on_ci_success":true}'::jsonb WHERE id=$1`, fixture.WorkspaceID)
 				input.Conclusion = "SUCCESS"
 			}
 			if scenario.mergeState != "" {
@@ -119,6 +126,9 @@ func TestPRResolverAuthorRouting(t *testing.T) {
 				if count := fixture.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_triggered' AND details->>'target_type'=$2 AND details->>'target_id'=$3 AND details->>'outcome'='woke'`, env.issue, activityType, activityID); count != 1 {
 					t.Errorf("timeline entries naming woken agent = %d, want 1", count)
 				}
+			}
+			if count := fixture.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id=$1 AND action='wakeup_triggered' AND details->>'outcome'='not_owner'`, env.issue); count != map[bool]int{true: 1, false: 0}[scenario.notOwner] {
+				t.Errorf("not_owner timeline entries = %d, want drop = %t", count, scenario.notOwner)
 			}
 			notifications := fixture.Count(t, "SELECT count(*) FROM inbox_item WHERE issue_id=$1", env.issue)
 			if notifications != map[bool]int{true: 1, false: 0}[scenario.wantFYI] {

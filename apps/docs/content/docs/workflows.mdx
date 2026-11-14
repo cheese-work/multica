@@ -56,6 +56,8 @@ If you added a new status, save the workflow before setting up that status's han
 
 **No handoff** keeps the current assignee. Handing to a member assigns the work without starting an agent. Handing to an agent asks it to start this step; it still needs to be available to you, and its computer needs to be online to run.
 
+A step with `keep_other_assignee: true` skips the handoff when the issue's current assignee was chosen on purpose: it is neither this step's handler nor the handler of the step the issue is leaving. That assignee keeps the issue, and an agent assignee starts a run for this step. The flag is off by default and is set through the API or CLI. It is temporary: per-issue workflows (CHE-5024) will replace it.
+
 ## Use it in a project
 
 Open a project and choose its **Workflow**. Workspace owners, admins, and the project's lead, when that lead is a member, can change this choice.
@@ -64,19 +66,33 @@ The confirmation shows which issues keep their status. If the new workflow does 
 
 The project's board now follows the workflow's columns. Each issue's status picker offers the steps in that workflow and shows who takes over. Projects that have not chosen a workflow use **Default**; you can switch back to it later.
 
+## Pick a workflow from the title type
+
+A workspace owner or admin can set `workflow_by_type` in the workspace settings, for example `{"design": "<workflow id>", "plan": "<workflow id>"}`. A new issue whose title starts with a mapped type, such as `design(x): …`, follows that workflow instead of its project's. `--workflow` (CLI) or an explicit workflow choice always wins. A type with no entry, or an entry whose workflow no longer exists, keeps the project's workflow. `multica issue create` prints the chosen workflow. The create dialog shows the chosen workflow's statuses and handoff once the title has a mapped type. The mapping is workspace policy: it applies to every creator, agents included, without the run-budget check an explicit `--workflow` gets from non-interactive callers. If two keys differ only by case, the first in alphabetical order wins. Editing a title later does not change the workflow; the update response carries a one-line `workflow_hint` (printed by `multica issue update`) with the command that moves it.
+
 ## Move work to the next step
 
 Change an issue's status or drag its card to another column. If that step has a handoff, check who will receive it and, for an agent, the instructions it will receive.
 
 <WorkflowDemo />
 
-When you create an issue in a project without picking an assignee, and its status has a handoff, the issue goes straight to that step's handler; an agent starts right away. The create dialog shows who it will be handed to. To create it without starting anything yet, put it in Backlog.
+When you create an issue in a project and its status has a handoff, the issue goes straight to that step's handler, even if you picked an assignee; an agent starts right away. The create dialog shows who it will be handed to. To create it without starting anything yet, put it in Backlog.
 
 When the previous assignee is an agent with a run underway or waiting to start, the confirmation adds an option to stop or cancel it, selected by default. Leave it selected unless you want both agents working at once; the comments and work it already saved are kept.
 
 **When done, move to** and **If rejected, send back to** tell the agent where to move the issue next. A run finishing does not move the issue by itself: the member or agent handling the step updates its status. When an agent moves the issue into the next step, that step's handoff runs just as it would for a member.
 
 You can see the handoff and its instructions in the issue's timeline. Open the workflow menu on the project board to view the full flow.
+
+## When a PR merges [#pr-merged]
+
+A merge changes a status through one workspace setting: **Settings → Code → After PRs merge, move the issue to**. See [GitHub integration](/github-integration). The workflow board draws that rule. A dashed arrow labelled **PR merged** runs from an **Any step** marker into the step the setting names, and that step's card says **Set in Settings → Code**. The arrow is read-only: you can't select, move or delete it in the editor, and it is never saved in the workflow. With **Don't change**, no arrow is drawn. If the setting names a status the workflow doesn't list, the editor shows one line saying that PR merges change no status in this workflow, and which status Settings → Code names.
+
+When that step has a handler, the merge hands the issue to it and starts its run, like any other move.
+
+### The `pr.merged` transition is deprecated
+
+An older workflow can store a transition guarded by `pr.merged`. While the setting is not **Don't change**, a stored `pr.merged` transition no longer moves issues itself: it runs the same check as the setting. The editor's guard list no longer offers `pr.merged`, a save that adds one is refused with a message that points to Settings → Code, and a stored one is marked as deprecated. With **Don't change**, stored transitions work as before. They will be removed in a later release.
 
 ## Adjust a workflow
 
@@ -85,6 +101,10 @@ A workflow can be shared by several projects. Changes saved in **Settings → Wo
 Admins can also set a handoff from the project board: hover a column header and click **Hand to…**, or click the handler already shown. If other projects share the workflow, you are asked **Where should this change apply?** Choosing only the current project makes a copy of the workflow for it and leaves the other projects unchanged.
 
 Removing a column may ask you to choose a new status for issues already in it. Other issues stay where they are, and this move does not start agents. The status library below the workflows is where you rename or recolor statuses; those changes are shared wherever the status is used.
+
+Set **Max runs per issue** in the workflow editor to limit how many runs one issue may start before the workflow blocks it (1 to 1000; leave it empty for the default of 15). Changing it needs a signed-in web or desktop session; a save that leaves the field alone works from any client. The **Include child PRs** switch next to it controls whether PR guards also read the PRs of sub-issues (on by default) and follows the same rule. An agent or token cannot change either field directly: it gets `budget_requires_decision` and proposes the change with `multica config propose workflow.budget`, and an owner approves it with a passkey. The same limit applies when an agent or token creates an issue on, or re-binds an issue to, a workflow with a wider budget (`budget_rebinding_requires_interactive`). It takes the same decision: `multica issue create` and `multica issue update` accept `--workflow <id> --decision-id <id>`. From an agent run, `multica issue update <id> --workflow <workflow-id>` with a wider budget needs no decision: it opens an approval card for the workspace owners, prints its action id and URL, and leaves the issue unchanged until an owner approves it with a passkey. The approval fails with `stale_base` if the issue's workflow, its project's workflow or its budget changed after the card opened.
+
+On an issue with a run budget, the sidebar shows a meter with the runs used, the runs left, a warning at 80 % and a **Run budget used up** state. **Raise** and **Top up** ask a workspace owner to approve more runs. If you are an owner, you approve with your passkey right there; otherwise the owner gets the request. In the list and on the board, an issue the budget stopped shows a **Budget used** chip next to its status.
 
 To delete a workflow, first switch the projects using it to another workflow. Issues keep their current status.
 

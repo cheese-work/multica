@@ -315,7 +315,7 @@ func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []Ti
 	out := make([]TimelineEntry, len(comments))
 	for i, c := range comments {
 		content := c.Content
-		withheld := readFilter.withholds(commentWithheld(c))
+		withheld := readFilter.withholdsComment(c)
 		if withheld {
 			content = h.commentStub(r.Context(), c)
 		}

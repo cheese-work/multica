@@ -1,12 +1,15 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { forwardRef } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { chatKeys } from "@multica/core/chat/queries";
+import { applyDecisionAnswerUpdated } from "@multica/core/realtime";
 import { renderWithI18n } from "../../test/i18n";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
+import { useDecisionAnswerDraftStore } from "@multica/core/issues/stores/decision-answer-draft-store";
 import { DecisionRequestCard } from "./decision-request-card";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 
@@ -36,9 +39,23 @@ vi.mock("../../issues/components/comment-mention-card", () => ({
 const answerDecisionRequest = vi.hoisted(() => vi.fn());
 const listDecisionArtifacts = vi.hoisted(() => vi.fn());
 const uploadFile = vi.hoisted(() => vi.fn());
+const getDecisionActionOutcome = vi.hoisted(() => vi.fn());
+const challengeDecisionAction = vi.hoisted(() => vi.fn());
+const approveDecisionAction = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", async (importActual) => ({
   ...(await importActual<typeof import("@multica/core/api")>()),
-  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile },
+  api: { answerDecisionRequest, challengeDecisionAnswer, listDecisionArtifacts, uploadFile, getDecisionActionOutcome, challengeDecisionAction, approveDecisionAction },
+}));
+
+// Config-change approval is owner-only: the role comes from the member list of the current workspace.
+const member = vi.hoisted(() => ({ role: "owner" as string | null, workspace: { id: "ws-1" } as { id: string } | null }));
+vi.mock("@multica/core/permissions", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/permissions")>()),
+  useCurrentMember: () => ({ userId: "u1", role: member.role, member: null, isLoading: member.role === null }),
+}));
+vi.mock("@multica/core/paths", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => member.workspace,
 }));
 
 // The real editor is Tiptap; its own suites cover typing and paste. Here it is
@@ -126,7 +143,7 @@ describe("DecisionRequestCard accessibility", () => {
     for (const state of ["answered", "withdrawn"] as const) {
       rerender(view(state));
       expect(container.querySelector("[data-comment-content]")).toBeNull();
-      expect(screen.getByText(/original ask/)).toBeInTheDocument();
+      expect(within(container.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     }
   });
 
@@ -233,7 +250,8 @@ describe("DecisionRequestCard accessibility", () => {
   it("keeps a localized status label and tolerates missing legacy source and invalid time", () => {
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={{ ...card, state: "withdrawn", source_comment_id: undefined, created_at: "invalid", reason: "Scope changed." }} /></WorkspaceSlugProvider></QueryClientProvider>, { locale: "zh-Hans" });
     expect(screen.getByRole("region", { name: "决策请求：已撤回" })).toHaveTextContent("Scope changed.");
-    expect(screen.getByText(/original ask/)).toBeInTheDocument();
+    // A withdrawn card is folded: its question shows in the row and the full ask in the body.
+    expect(within(document.querySelector<HTMLElement>("[data-fold-body]")!).getByText(/original ask/)).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(1);
     expect(document.querySelector("time")).toBeNull();
   });
@@ -292,6 +310,7 @@ describe("DecisionRequestCard answering", () => {
   const renderCard = (value: RequestCard = withOptions) =>
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={value} /></WorkspaceSlugProvider></QueryClientProvider>);
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockResolvedValue(undefined);
     uploadFile.mockReset();
     editor.hasActiveUploads = false;
@@ -316,23 +335,104 @@ describe("DecisionRequestCard answering", () => {
     await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "Write an answer" })).toHaveValue(""));
   });
 
-  it("submits an option with one click and no text", async () => {
+  it("selects an option on tap without sending, and Send posts the chosen option", async () => {
     renderCard();
     const user = userEvent.setup();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /Option B/ }));
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    await user.click(optionB);
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    expect(optionB).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledTimes(1);
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option B", text: undefined });
   });
 
+  it("acknowledges the covered cards when a batch card's option is chosen", async () => {
+    const batchId = "00000000-0000-4000-8000-0000000000b1";
+    renderCard({ ...withOptions, id: batchId, covers_request_ids: ["00000000-0000-4000-8000-0000000000c2", "00000000-0000-4000-8000-0000000000c1"],
+      covered_cards: ["c2", "c1"].map((tail) => ({ id: `00000000-0000-4000-8000-0000000000${tail}`, issue_id: `issue-${tail}`, issue_identifier: `CHE-${tail}`, decision: "Same ask?", options: withOptions.options })),
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    // Same vector as the server test: the digest of the batch id, the sorted covered ids and the option.
+    expect(answerDecisionRequest).toHaveBeenCalledWith(batchId, {
+      option: "Option B", text: undefined,
+      covers_ack: "012ee7331cfe77d20ca96126e0cae16df3acabee3149e329bb3054f42d0211e1",
+    });
+  });
+
+  it("sends no acknowledgment for a direct answer", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option B/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledTimes(1));
+    expect(answerDecisionRequest.mock.calls[0]?.[1]).not.toHaveProperty("covers_ack");
+  });
+
+  it("does not style an unselected recommended option as selected; the badge is its only cue", async () => {
+    renderCard();
+    const optionB = screen.getByRole("radio", { name: /Option B/ });
+    expect(optionB).toHaveTextContent("Recommended");
+    expect(optionB).toHaveAttribute("aria-checked", "false");
+    expect(optionB.className).not.toMatch(/border-primary|bg-primary|ring-primary/);
+    await userEvent.setup().click(optionB);
+    expect(optionB.className).toMatch(/border-primary/);
+    expect(optionB.className).toMatch(/ring-primary/);
+  });
+
+  it("gives Send and Clear selection a 44px touch height on a phone", async () => {
+    renderCard();
+    await userEvent.setup().click(screen.getByRole("radio", { name: /Option A/ }));
+    for (const name of ["Send", "Clear selection"]) {
+      expect(screen.getByRole("button", { name }).className).toContain("max-sm:h-11");
+    }
+  });
+
+  it("deselects on a second tap or on Clear, and Send is disabled again", async () => {
+    renderCard();
+    const user = userEvent.setup();
+    const optionA = screen.getByRole("radio", { name: /Option A/ });
+    await user.click(optionA);
+    await user.click(optionA);
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Clear selection" })).not.toBeInTheDocument();
+    await user.click(optionA);
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(optionA).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selection and the note across an unmount until it is sent", async () => {
+    const first = renderCard();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "later");
+    first.unmount();
+    renderCard();
+    expect(screen.getByRole("radio", { name: /Option A/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("textbox", { name: "Add a note (optional)" })).toHaveValue("later");
+    editor.live = "later";
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "later" }));
+    await vi.waitFor(() => expect(useDecisionAnswerDraftStore.getState().getDraft("request")).toBeUndefined());
+  });
+
   it("shows each option's pros, cons and cost, and marks the recommendation", () => {
     renderCard();
-    const second = screen.getByRole("button", { name: /Option B/ });
+    const second = screen.getByRole("radio", { name: /Option B/ });
     expect(second).toHaveTextContent("safe");
     expect(second).toHaveTextContent("slow");
     expect(second).toHaveTextContent("2 days");
     expect(second).toHaveTextContent("Recommended");
-    const first = screen.getByRole("button", { name: /Option A/ });
+    const first = screen.getByRole("radio", { name: /Option A/ });
     expect(first).toHaveTextContent("fast");
     expect(first).not.toHaveTextContent("Recommended");
   });
@@ -362,7 +462,9 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "but wait a day");
     editor.live = "but wait a day";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    expect(answerDecisionRequest).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(answerDecisionRequest).toHaveBeenCalledWith("request", { option: "Option A", text: "but wait a day" });
   });
 
@@ -372,7 +474,7 @@ describe("DecisionRequestCard answering", () => {
       renderCard();
       const file = new File(["png"], "x.png", { type: "image/png" });
       const result = await editorProps().onUploadFile?.(file, "upload-1");
-      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined });
+      expect(uploadFile).toHaveBeenCalledWith(file, { issueId: "issue", commentId: undefined, chatSessionId: undefined }, expect.any(AbortSignal));
       expect(result).toMatchObject({ markdownLink: "https://app/att-1" });
     });
 
@@ -462,7 +564,7 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.getByText("Send posts your answer to CHE-2088. Questions for the DM agent go in the message box below.")).toBeVisible();
     // The editor sends on the configured shortcut (Ctrl/Cmd+Enter by default), so the hint names that key.
     expect(screen.getByText(/^(Ctrl\+Enter|⌘↵) sends$/)).toBeVisible();
-    expect(screen.getByRole("group", { name: "Options" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Options" })).toBeInTheDocument();
     expect(screen.getByLabelText("Add a note (optional)")).toHaveAccessibleDescription(/^(Ctrl\+Enter|⌘↵) sends$/);
   });
 
@@ -569,7 +671,8 @@ describe("DecisionRequestCard answering", () => {
     const user = userEvent.setup();
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "with a note");
     editor.live = "with a note";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
     const kept = await screen.findByTestId("decision-request-kept-draft");
     expect(kept).toHaveTextContent("Nothing from your draft was posted.");
     expect(kept).toHaveTextContent("Option A");
@@ -578,6 +681,244 @@ describe("DecisionRequestCard answering", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Discard draft" }));
     expect(screen.queryByTestId("decision-request-kept-draft")).toBeNull();
+  });
+
+  describe("action preview", () => {
+    const preview = {
+      fields: [
+        { label: "Run cap", current: "10", proposed: "30" },
+        { label: "Runs left", current: "0", proposed: "20" },
+      ],
+      sha256: "d".repeat(64),
+    };
+    const action = { id: "action", action_type: "issue.run_budget.raise", payload_sha256: "payload", preview };
+    const show = (value: RequestCard["action"]) => renderCard({ ...card, action: value });
+    beforeEach(() => getDecisionActionOutcome.mockReset().mockResolvedValue({ id: "action", state: "pending" }));
+
+    it("shows the current and proposed values and enables Approve", async () => {
+      show(action);
+      const region = await screen.findByTestId("decision-request-action-preview");
+      expect(region).toHaveTextContent("Run cap");
+      expect(region).toHaveTextContent("10");
+      expect(region).toHaveTextContent("30");
+      expect(region).toHaveTextContent("Runs left");
+      expect(await screen.findByRole("radio", { name: "Approve" })).toBeEnabled();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+    });
+
+    it.each([
+      ["missing", undefined],
+      ["empty", { fields: [], sha256: "d".repeat(64) }],
+      ["digestless", { ...preview, sha256: "" }],
+      ["not a sha-256 digest", { ...preview, sha256: "digest" }],
+      ["partly malformed", { ...preview, fields: [{ label: "Run cap" }] } as unknown as typeof preview],
+    ])("says details are unavailable, keeps Approve disabled and keeps Reject when the preview is %s", async (_name, bad) => {
+      show({ ...action, preview: bad });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+    });
+
+    it("keeps Approve disabled and Reject for an action type this client does not know, even with fields", async () => {
+      show({ ...action, action_type: "future.thing" });
+      expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+      expect(screen.queryByTestId("decision-request-action-preview")).toBeNull();
+      expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+      expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+    });
+
+    describe("config change", () => {
+      const change = {
+        field: "workspace.context",
+        target_id: "ws-1",
+        keys: [] as string[],
+        diff_kind: "text" as const,
+        diff: [{ old_start: 1, new_start: 1, lines: ["-old rule", "+new rule"] }],
+        after: "new rule",
+        before_sha256: "b".repeat(64),
+        after_sha256: "c".repeat(64),
+        sha256: "e".repeat(64),
+      };
+      const configAction = { id: "action", action_type: "workspace.context.set", payload_sha256: "payload", config_change: change, owner_only: true };
+      const approve = () => screen.findByRole("radio", { name: "Approve" });
+      // An approve that left this tab is remembered per action id for the session; every test starts clean.
+      beforeEach(() => {
+        sessionStorage.clear();
+        member.role = "owner";
+        member.workspace = { id: "ws-1" };
+        challengeDecisionAction.mockReset().mockResolvedValue({ challenge_id: "ch" });
+        signPasskeyChallenge.mockReset().mockResolvedValue({ id: "cred" });
+        approveDecisionAction.mockReset().mockResolvedValue({ id: "action", state: "executed" });
+      });
+
+      afterEach(() => sessionStorage.clear());
+
+      it("shows the server preview in the viewer and enables Approve for the owner", async () => {
+        show(configAction);
+        // The raw change sits behind the Details control (direction B v9).
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: /Details/ }));
+        const viewer = await screen.findByTestId("config-change-viewer");
+        expect(viewer).toHaveTextContent("Workspace context");
+        expect(screen.getByRole("list", { name: "Changes to Workspace context" })).toHaveTextContent("new rule");
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+      });
+
+      it("approves with the digest of the preview that was shown", async () => {
+        show(configAction);
+        const user = userEvent.setup();
+        await user.click(await approve());
+        await user.click(screen.getByRole("button", { name: /^Approve with passkey/ }));
+        await waitFor(() => expect(approveDecisionAction).toHaveBeenCalledOnce());
+        expect(approveDecisionAction).toHaveBeenCalledWith("action", { payload_sha256: "payload", assertion: { id: "cred" }, preview_sha256: change.sha256 });
+      });
+
+      it.each([
+        ["a member", "member"],
+        ["an admin", "admin"],
+        ["a person whose role is not known yet", null],
+      ])("hides Approve for %s and keeps Reject", async (_name, role) => {
+        member.role = role;
+        show(configAction);
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        await userEvent.setup().click(screen.getByRole("button", { name: /Details/ }));
+        expect(screen.getByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("hides Approve when there is no current workspace to read the role from", async () => {
+        member.workspace = null;
+        show(configAction);
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("treats a config-change action as owner-only even when the server flag is missing", async () => {
+        member.role = "member";
+        show({ ...configAction, owner_only: undefined });
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("says details are unavailable and keeps Approve disabled for the owner, with Reject, when the change is %s", async (_name, bad) => {
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.getByRole("radio", { name: "Approve" })).toBeDisabled();
+      });
+
+      it.each([
+        ["missing", undefined],
+        ["not a Scope A field", { ...change, field: "members.roles" }],
+        ["digestless", { ...change, sha256: "" }],
+        ["a malformed diff line", { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["?x"] }] }],
+      ])("shows a non-owner no Approve and keeps Reject when the change is %s", async (_name, bad) => {
+        member.role = "member";
+        show({ ...configAction, config_change: bad });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("shows no Approve and keeps Reject when there is no current workspace and the change is missing", async () => {
+        member.workspace = null;
+        show({ ...configAction, config_change: undefined });
+        expect(screen.getByText("Details unavailable")).toBeInTheDocument();
+        expect(await screen.findByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("shows the viewer for a settings change with its keys", async () => {
+        show({ ...configAction, action_type: "workspace.settings.patch", config_change: { ...change, field: "workspace.settings", keys: ["compact_prompt"] } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
+        expect(await screen.findByTestId("config-change-keys")).toHaveTextContent("compact_prompt");
+      });
+
+      it.each([
+        ["workspace.routing_agent.set", "workspace.routing_agent", "json"],
+        ["workspace.delegated_writes.set", "workspace.delegated_writes", "json"],
+        ["agent.skills.set", "agent.skills", "lines"],
+      ] as const)("shows the %s preview and enables Approve for the owner (CHE-4490)", async (action_type, field, diff_kind) => {
+        show({ ...configAction, action_type, config_change: { ...change, field, diff_kind } });
+        await userEvent.setup().click(await screen.findByRole("button", { name: /Details/ }));
+        expect(await screen.findByTestId("config-change-viewer")).toBeInTheDocument();
+        expect(screen.queryByText("Details unavailable")).toBeNull();
+        expect(await approve()).toBeEnabled();
+      });
+
+      it("keeps the run-budget preview and Approve for a person who is not the owner", async () => {
+        member.role = "member";
+        show(action);
+        expect(await screen.findByTestId("decision-request-action-preview")).toBeInTheDocument();
+        expect(await approve()).toBeEnabled();
+        expect(screen.queryByTestId("config-change-viewer")).toBeNull();
+      });
+    });
+
+    describe("agent note and outcome in the DM", () => {
+      const note = "**Agent's note (not verified)**\n> Need more runs\n> [click](https://evil.test)\n> " + "x".repeat(300);
+      const proposal = { ...card, ask: `Raise the cap.\n\n${note}`, action };
+
+      it("shows the agent's note apart from the ask, as plain unverified text", async () => {
+        renderCard(proposal);
+        const box = await screen.findByTestId("decision-request-agent-note");
+        expect(box).toHaveAccessibleName("Agent's note (not verified)");
+        expect(box).toHaveTextContent("Need more runs");
+        expect(box).toHaveTextContent("[click](https://evil.test)");
+        expect(box.querySelector("a")).toBeNull();
+        expect(box.querySelector("p")).toHaveClass("break-words", "whitespace-pre-wrap");
+        const ask = screen.getByTestId("decision-request-ask");
+        expect(ask).toHaveTextContent("Raise the cap.");
+        expect(ask).not.toHaveTextContent("Need more runs");
+        expect(ask).not.toHaveTextContent("not verified");
+      });
+
+      it("shows no note box for an ask without a note", () => {
+        renderCard({ ...proposal, ask: "Raise the cap." });
+        expect(screen.queryByTestId("decision-request-agent-note")).toBeNull();
+      });
+
+      it("keeps the outcome on the same card after the request turns answered", async () => {
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "executed", result: { outcome: "cap_applied", from: 10, to: 30 } });
+        renderCard({ ...proposal, state: "answered", action: { ...action, state: "executed", preview: undefined } });
+        expect(await screen.findByText("Cap applied")).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+      });
+
+      it("goes from Approve to the outcome when the server announces the change", async () => {
+        // The real handler for decision_answer:updated invalidates the DM message
+        // query; the refetch carries the action's new state into the card.
+        const qc = new QueryClient();
+        let served: RequestCard = proposal;
+        const Dm = () => {
+          const { data } = useQuery({ queryKey: chatKeys.messages("s1"), queryFn: async () => served });
+          return data ? <DecisionRequestCard card={data} /> : null;
+        };
+        renderWithI18n(<QueryClientProvider client={qc}><WorkspaceSlugProvider slug="acme"><Dm /></WorkspaceSlugProvider></QueryClientProvider>);
+        await screen.findByRole("radio", { name: "Approve" });
+        expect(screen.getByRole("radio", { name: "Reject" })).toBeInTheDocument();
+        served = { ...proposal, state: "answered", action: { ...action, state: "failed", preview: undefined } };
+        getDecisionActionOutcome.mockResolvedValue({ id: "action", state: "failed", error_code: "stale_base" });
+        act(() => applyDecisionAnswerUpdated(qc, { answer_id: "a", issue_id: proposal.issue_id, state: "effective" }));
+        expect(await screen.findByText("The target changed after the request. Ask again.")).toBeInTheDocument();
+        expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+        expect(screen.queryByRole("radio", { name: "Reject" })).toBeNull();
+      });
+    });
+
+    it("shows nothing when the card has no action", () => {
+      renderCard();
+      expect(screen.queryByText("Details unavailable")).toBeNull();
+      expect(screen.queryByRole("radio", { name: "Approve" })).toBeNull();
+    });
   });
 });
 
@@ -590,9 +931,11 @@ describe("DecisionRequestCard passkey-gated answering", () => {
   const pickAndSend = async (user: ReturnType<typeof userEvent.setup>) => {
     await user.type(screen.getByRole("textbox", { name: "Add a note (optional)" }), "why");
     editor.live = "why";
-    await user.click(screen.getByRole("button", { name: /Option A/ }));
+    await user.click(screen.getByRole("radio", { name: /Option A/ }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
   };
   beforeEach(() => {
+    useDecisionAnswerDraftStore.setState({ drafts: {} });
     answerDecisionRequest.mockReset().mockRejectedValueOnce(gated()).mockResolvedValue(undefined);
     challengeDecisionAnswer.mockReset().mockResolvedValue(challenge);
     signPasskeyChallenge.mockReset().mockResolvedValue({ challenge_id: "ch-1", credential: { id: "cred" } });

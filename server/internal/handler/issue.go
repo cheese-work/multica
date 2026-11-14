@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -66,12 +67,16 @@ type IssueResponse struct {
 	// field at all: with omitempty a built-in fixture hides it from BOTH
 	// renderings, and the drift guard goes green on a payload that has drifted.
 	// (MUL-6749)
-	StatusName   string  `json:"status_name"`
-	Priority     string  `json:"priority"`
-	AssigneeType *string `json:"assignee_type"`
-	AssigneeID   *string `json:"assignee_id"`
-	CreatorType  string  `json:"creator_type"`
-	CreatorID    string  `json:"creator_id"`
+	StatusName string `json:"status_name"`
+	// RunBudgetBlocked is true while the run budget, not a person, holds the
+	// issue in blocked (CHE-5285). Omitted when false, so a client treats
+	// absence as "not budget-stopped".
+	RunBudgetBlocked bool    `json:"run_budget_blocked,omitempty"`
+	Priority         string  `json:"priority"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	CreatorType      string  `json:"creator_type"`
+	CreatorID        string  `json:"creator_id"`
 	// RequestedByID is the member the issue was made on behalf of: set when an
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
@@ -85,7 +90,11 @@ type IssueResponse struct {
 	ProjectID   *string           `json:"project_id"`
 	// WorkflowID is the issue's own workflow override; null follows the project.
 	WorkflowID *string `json:"workflow_id"`
-	Position   float64 `json:"position"`
+	// WorkflowHint is set on an update that changed the title to a type the
+	// workspace maps to a different workflow than the issue's. The issue keeps
+	// its workflow; the hint tells the caller how to move it. (CHE-5271)
+	WorkflowHint string  `json:"workflow_hint,omitempty"`
+	Position     float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -297,7 +306,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || routeCaptureFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -329,6 +338,12 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 		if err := moveGuard(ctx, q, &params); err != nil {
 			return db.Issue{}, nil, err
 		}
+	}
+	if err := markMemberRouteOverride(ctx, q, workspaceID, params); err != nil {
+		return db.Issue{}, nil, err
+	}
+	if err := captureRouteLabel(ctx, q, params); err != nil {
+		return db.Issue{}, nil, err
 	}
 	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, nil, err
@@ -379,17 +394,33 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChange(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue))
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
+		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
 	if taint := issueWriteTaint(ctx); len(taint) > 0 {
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
+		// A run created after this commit (a budget recovery run whose refusal
+		// callback has not run yet) has no pending run to inherit from; the
+		// issue's own taint stops it authorizing an elevated operation.
+		if err := q.NoteIssueTaint(ctx, db.NoteIssueTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
+		}
+		// A member's clear keeps the ID off the issue, not off the writer's
+		// task: a recovery run created later reads it from issue_run_taint, and
+		// one already running takes it now.
+		if err := q.NoteIssueRunTaint(ctx, db.NoteIssueRunTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue run taint: %w", err)
+		}
+		if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint recovery runs: %w", err)
 		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
@@ -487,9 +518,18 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 	resolver := issuestatus.NewResolver(wsID)
 	refs := duplicateOriginals{}
 	h.loadDuplicateOriginals(ctx, wsID, refs, originals)
+	// The budget-blocked set is read once, on the first blocked row, so a page
+	// without blocked issues pays nothing. (CHE-5285)
+	var budgetBlocked map[string]bool
 	return func(resp *IssueResponse) {
 		if resp == nil {
 			return
+		}
+		if resp.Status == issuestatus.Blocked {
+			if budgetBlocked == nil {
+				budgetBlocked = h.runBudgetBlockedIssueIDs(ctx, wsID)
+			}
+			resp.RunBudgetBlocked = budgetBlocked[resp.ID]
 		}
 		// Every response that resolves its status also resolves its duplicate
 		// mark, so the two never disagree about which endpoints carry them.
@@ -502,6 +542,22 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 		// free. Built-ins return "" and stay omitted. (MUL-6749)
 		resp.StatusName = resolver.Name(ctx, h.Queries, resp.Status)
 	}
+}
+
+// runBudgetBlockedIssueIDs returns the workspace issues the run budget holds
+// in blocked. A failed read yields an empty set: the chip is a hint, and a
+// list must not fail over it.
+func (h *Handler) runBudgetBlockedIssueIDs(ctx context.Context, wsID pgtype.UUID) map[string]bool {
+	set := map[string]bool{}
+	ids, err := h.Queries.ListRunBudgetBlockedIssueIDs(ctx, wsID)
+	if err != nil {
+		slog.Warn("list run-budget blocked issues failed", "error", err)
+		return set
+	}
+	for _, id := range ids {
+		set[uuidToString(id)] = true
+	}
+	return set
 }
 
 // fillStatusCategory is the single-response form. Only for endpoints that build
@@ -3251,6 +3307,10 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
+	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, len(req.AttachmentIDs) > 0); status != 0 {
+		writeJSON(w, status, payload)
+		return
+	}
 	if priority != "" || dueDate != "" {
 		if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
 			r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
@@ -3365,6 +3425,22 @@ func (h *Handler) checkQuickCreateDaemonVersion(ctx context.Context, source stri
 	return h.checkQuickCreateDaemonVersionAtLeast(ctx, source, runtimeID, agentpkg.MinQuickCreateCLIVersion)
 }
 
+// checkQuickCreateQoderLimits keeps attachment-backed quick-create blocked:
+// the bridge can run squad leaders, but cannot draft from these attachments.
+func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, attachments bool) (int, map[string]any) {
+	if !attachments {
+		return 0, nil
+	}
+	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
+	if err != nil || rt.Provider != qoderruntime.Provider {
+		return 0, nil
+	}
+	return http.StatusUnprocessableEntity, map[string]any{
+		"code":   "agent_unavailable",
+		"reason": "Qoder Cloud Agents cannot read attachments; remove them or pick another agent",
+	}
+}
+
 func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, source string, runtimeID pgtype.UUID, minimum string) (int, map[string]any) {
 	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
 	if err != nil {
@@ -3375,11 +3451,9 @@ func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, sour
 			"reason": "agent's runtime is no longer registered",
 		}
 	}
+	// The Qoder bridge creates the issue itself instead of running the CLI.
 	if rt.Provider == qoderruntime.Provider {
-		return http.StatusUnprocessableEntity, map[string]any{
-			"code":   "agent_unavailable",
-			"reason": "Qoder Cloud Agents supports existing issue runs only; create the issue manually and assign it to this agent",
-		}
+		return 0, nil
 	}
 	current := readRuntimeCLIVersion(rt.Metadata)
 	switch err := agentpkg.CheckMinCLIVersionFor(current, minimum); {
@@ -3423,6 +3497,9 @@ func readRuntimeCLIVersion(metadata []byte) string {
 }
 
 type CreateIssueRequest struct {
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's create that names a wider workflow (CHE-5228).
+	DecisionBindingFields
 	Title         string  `json:"title"`
 	Description   *string `json:"description"`
 	Status        string  `json:"status"`
@@ -3587,7 +3664,12 @@ func duplicateIssueMessage(issue IssueResponse) string {
 // (feature flag and workflow-manager permission required), otherwise the
 // project's. It writes the error response and returns false on any failure.
 // Shared by the ordinary create and the captured-comment create.
-func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+//
+// With no override named, the workspace's workflow_by_type setting may pick one
+// from the title type (CHE-5271). That choice is workspace policy, so it skips
+// the manager and budget checks an explicit override needs; a mapped workflow
+// that no longer exists falls back to the project's.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID, binding DecisionBindingFields, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
 	var overrideID pgtype.UUID
 	if rawWorkflowID != nil && *rawWorkflowID != "" {
 		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
@@ -3595,6 +3677,12 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 			return overrideID, nil, db.Project{}, false
 		}
 		overrideID = id
+	}
+	explicit := overrideID.Valid
+	if !explicit {
+		if id, def, project, ok := h.workflowFromTitleType(r, wsUUID, workflowProjectID, title); ok {
+			return id, def, project, true
+		}
 	}
 	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
 	if overrideID.Valid {
@@ -3613,7 +3701,77 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return overrideID, nil, project, false
 	}
+	// One widening rule for create, update and set (CHE-5228): a non-interactive
+	// credential cannot name a workflow whose budget is wider than the one the
+	// issue would follow without the override.
+	if overrideID.Valid && !isInteractiveRequest(r) {
+		before, berr := issueBinding(r.Context(), h.Queries, wsUUID, pgtype.UUID{}, workflowProjectID, pgtype.Int4{})
+		if berr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return overrideID, nil, project, false
+		}
+		if budgetWidens(before, workflowBinding(def, pgtype.Int4{})) && !h.approveCreateWidening(w, r, wsUUID, binding, workflowProjectID, overrideID) {
+			return overrideID, nil, project, false
+		}
+	}
 	return overrideID, def, project, true
+}
+
+// workflowFromTitleType loads the workflow the workspace's workflow_by_type
+// setting maps the title's type to. ok is false when project workflows are off,
+// no entry matches, or the mapped workflow is gone.
+func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProjectID pgtype.UUID, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	if !featureflags.ProjectWorkflowsV1Enabled(r.Context(), h.FeatureFlags) {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	id, ok := issueworkflow.WorkflowForTitle(ws.Settings, title)
+	if !ok {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, id, workflowProjectID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	return id, def, project, true
+}
+
+// titleTypeWorkflowHint is the one-line note for a title edit whose type maps
+// to a workflow other than the issue's own. The edit never moves the workflow.
+func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
+	id, def, _, ok := h.workflowFromTitleType(r, issue.WorkspaceID, issue.ProjectID, issue.Title)
+	if !ok || (issue.WorkflowID.Valid && issue.WorkflowID == id) {
+		return ""
+	}
+	return fmt.Sprintf("Title type maps to workflow %q (%s); this issue keeps its workflow. Move it with: multica issue update %s --workflow %s",
+		def.Name, uuidToString(id), uuidToString(issue.ID), uuidToString(id))
+}
+
+// approveCreateWidening checks an agent's owner-approved issue.workflow
+// decision for a create that names a wider workflow and consumes it in its own
+// transaction. The decision is spent before the issue exists: a later failure
+// of the create leaves it used, so the agent asks again rather than the
+// approval staying open. It writes the refusal and reports false on any failure.
+func (h *Handler) approveCreateWidening(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, binding DecisionBindingFields, projectID, workflowID pgtype.UUID) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if err := h.verifyBoundRebinding(ctx, h.Queries.WithTx(tx), r, wsUUID, binding, pgtype.UUID{}, projectID, pgtype.UUID{}, workflowID); err != nil {
+		writeBoundRebindingError(w, err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -3734,31 +3892,50 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID, req.DecisionBindingFields, req.Title)
 	if !ok {
 		return
 	}
+	// Outside any project, with no override, the issue takes the Default's
+	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
+	if !workflowProjectID.Valid && createWorkflow == nil {
+		outside, err := issueworkflow.OutsideProject(r.Context(), h.Queries, wsUUID)
+		if err != nil {
+			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return
+		}
+		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
+			writeIssueWorkflowError(w, err)
+			return
+		}
+	}
 	if createWorkflow != nil {
+		// A creator who picked no status gets the workflow's start status.
+		if req.Status == "" {
+			status = createWorkflow.Start()
+		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
 			return
 		}
-		if req.AssigneeType == nil && req.AssigneeID == nil {
-			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
-				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
-				if err != nil {
-					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
-					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+		// A named assignee is left alone here: the service swaps in the handler
+		// under the locks, so a workflow switch cannot leave the former handler
+		// in place of it.
+		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
+			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
+			if err != nil {
+				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+				return
+			}
+			if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
+				assigneeType = pgtype.Text{String: t, Valid: true}
+				assigneeID = id
+				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
+					writeError(w, status, msg)
 					return
-				}
-				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
-					assigneeType = pgtype.Text{String: t, Valid: true}
-					assigneeID = id
-					if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
-						writeError(w, status, msg)
-						return
-					}
 				}
 			}
 		}
@@ -3926,11 +4103,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var handoffResolver service.CreateHandoffResolver
-	if req.AssigneeType == nil && req.AssigneeID == nil {
-		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
-	}
+	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -3944,11 +4118,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		PropertyGate:    h.createPropertyGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
+		StatusOmitted:   req.Status == "",
 		Priority:        priority,
 		AssigneeType:    assigneeType,
 		AssigneeID:      assigneeID,
@@ -4310,6 +4487,12 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := markMemberRouteOverride(ctx, qtx, workspaceID, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
+	if err := captureRouteLabel(ctx, qtx, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 	if err := h.applyDecisionEpisode(ctx, qtx, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, current, false, err
 	}
@@ -4642,7 +4825,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
+	suppressRun := req.SuppressRun
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withBudgetActor(writeCtx, r)
 	if assigneeSupplied || handoff != nil {
@@ -4681,6 +4864,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
+		// Status-only fallback label (CHE-4439 decision 14): an agent run
+		// leaving the step it works on. The capture decides under the issue
+		// lock whether that step is a routing step.
+		if params.Status.Valid && actorType == "agent" && callerRun != nil && callerRun.WorkflowStep.String != "" {
+			writeCtx = withRouteCapture(writeCtx, &routeCapture{
+				Via: "status", DecisionSource: "agent", Fallback: true,
+				Caller: workflowCaller{run: callerRun, agent: true}, RunStep: callerRun.WorkflowStep.String,
+			})
+		}
+	}
+	if actorType == "member" {
+		writeCtx = withMemberRouteOverride(writeCtx)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4726,6 +4921,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
+	if req.Title != nil && prevIssue.Title != issue.Title {
+		resp.WorkflowHint = h.titleTypeWorkflowHint(r, issue)
+	}
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
@@ -4800,7 +4998,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 		updatedPayload["workflow_handoff"] = handoffPayload
 		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
@@ -4830,6 +5029,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
+	}
+	if (statusChanged || assigneeChanged) && actorType == "member" && !isMachineCredentialActor(r) {
+		h.ciWatchHumanOverride(r.Context(), issue.WorkspaceID, issue.ID)
 	}
 	releaseMove()
 	if attachmentsChanged {
@@ -4908,6 +5110,11 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 	})
 }
 
+// errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
+// after the invoke gate, so a caller who may not use the agent never learns its
+// pause state.
+const errAgentPaused = "agent_paused: this agent is paused; pick another agent by role"
+
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
 // sub-workflow child) judges the human it acts for. Every other check, and the
@@ -4956,6 +5163,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// mode (MUL-6380 / GH #7180).
 			return http.StatusForbidden, "you do not have permission to assign work to this agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
+		}
 		return 0, ""
 	case "squad":
 		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -4976,6 +5186,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
 		}
 		return 0, ""
 	default:
@@ -5105,6 +5318,9 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireIssueDeletion(w, r, issue.WorkspaceID, []db.Issue{issue}) {
+		return
+	}
 
 	h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 	// Fail any linked autopilot runs before delete (ON DELETE SET NULL clears issue_id).
@@ -5164,6 +5380,16 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+
+	// The comment cascade of the delete nulls trigger_comment_id on runs that
+	// can belong to other issues. Lock all of those issues first.
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := service.LockIssuesBeforeIssueDelete(ctx, qtx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
+	}
 
 	result := issueDeleteResult{}
 	for _, issue := range issues {
@@ -5599,7 +5825,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
+		suppressRun := req.Updates.SuppressRun
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
@@ -5727,7 +5953,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 			batchPayload["workflow_handoff"] = handoffPayload
 			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 		}
@@ -5854,6 +6081,9 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		seenIssueIDs[issueUUID] = struct{}{}
 		issues = append(issues, issue)
 		excludedIDs = append(excludedIDs, issue.ID)
+	}
+	if !h.requireIssueDeletion(w, r, wsUUID, issues) {
+		return
 	}
 	for _, issue := range issues {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)

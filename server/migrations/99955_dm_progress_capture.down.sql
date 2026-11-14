@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS dm_progress_capture_issue ON issue;
+DROP TRIGGER IF EXISTS dm_progress_capture_pr_link ON issue_pull_request;
+DROP TRIGGER IF EXISTS dm_progress_capture_pr_relink ON issue_pull_request;
+DROP TRIGGER IF EXISTS dm_progress_capture_pr_link ON issue_vcs_pull_request;
+DROP TRIGGER IF EXISTS dm_progress_capture_pr_state ON github_pull_request;
+DROP TRIGGER IF EXISTS dm_progress_capture_pr_state ON vcs_pull_request;
+DROP FUNCTION IF EXISTS dm_progress_capture_pr_state();
+DROP FUNCTION IF EXISTS dm_progress_capture_pr_link();
+DROP FUNCTION IF EXISTS dm_progress_capture_issue();
+DROP FUNCTION IF EXISTS dm_progress_capture(uuid, text, text);

@@ -2,15 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 )
 
@@ -125,8 +130,9 @@ func workflowBindingRequested(cmd *cobra.Command) bool {
 }
 
 // checkWorkflowBindingFlags rejects a malformed decision-bound workflow
-// request before any HTTP call. The server accepts steps and expected_version
-// only, so rule and rename flags are refused here instead of as a 400.
+// request before any HTTP call. The server accepts steps (with
+// expected_version) or the run budget only, so rename and start-status flags
+// are refused here instead of as a 400.
 func checkWorkflowBindingFlags(cmd *cobra.Command) error {
 	if !workflowBindingRequested(cmd) {
 		return nil
@@ -136,14 +142,9 @@ func checkWorkflowBindingFlags(cmd *cobra.Command) error {
 			return err
 		}
 	}
-	for _, rule := range []string{"max-runs-per-issue", "include-child-prs"} {
-		if cmd.Flags().Changed(rule) {
-			return fmt.Errorf("a decision-bound write carries --steps-file only; --%s changes a run rule, which needs the owner/admin path", rule)
-		}
-	}
-	for _, other := range []string{"name", "description", "map", "dry-run", "copy-for-project"} {
+	for _, other := range []string{"name", "description", "map", "dry-run", "copy-for-project", "start-status"} {
 		if cmd.Flags().Changed(other) {
-			return fmt.Errorf("a decision-bound write edits steps only; --%s needs the owner/admin path", other)
+			return fmt.Errorf("a decision-bound write edits steps or the run budget only; --%s needs the owner/admin path", other)
 		}
 	}
 	return nil
@@ -157,4 +158,135 @@ func (b workflowBinding) apply(cmd *cobra.Command, body map[string]any) (bool, e
 	}
 	body["decision_id"], body["before_sha256"], body["after_sha256"] = b.decisionID, b.before, b.after
 	return false, nil
+}
+
+// bindBudgetWrite binds a budget-only workflow write (CHE-5228) to the owner's
+// workflow.budget decision, or prints its hashes for --print-hash. The digests
+// come from workflowBudgetProposal, the same read and recipe as
+// "config propose workflow.budget", so the card and the write agree.
+func bindBudgetWrite(cmd *cobra.Command, ctx context.Context, client *cli.APIClient, workflowID string, body map[string]any) error {
+	var maxRuns *int
+	var includeChildPRs *bool
+	if v, ok := body["max_runs_per_issue"].(int); ok {
+		maxRuns = &v
+	}
+	if v, ok := body["include_child_prs"].(bool); ok {
+		includeChildPRs = &v
+	}
+	p, err := workflowBudgetProposal(ctx, client, workflowID, maxRuns, includeChildPRs)
+	if err != nil {
+		return err
+	}
+	_, err = workflowBinding{mustGetString(cmd, "decision-id"), p.BaseSHA256, p.AfterSHA256}.apply(cmd, body)
+	return err
+}
+
+// proposesWorkflowBudget is true for a task token that names a budget flag
+// without a decision to bind: the call opens the card (CHE-5504).
+func proposesWorkflowBudget(cmd *cobra.Command) bool {
+	return strings.HasPrefix(resolveToken(cmd), cli.TaskTokenPrefix) && !workflowBindingRequested(cmd) &&
+		(cmd.Flags().Changed("max-runs-per-issue") || cmd.Flags().Changed("include-child-prs"))
+}
+
+// proposeWorkflowBudget opens one workflow.budget.set card and writes nothing.
+// workflowBudgetProposal is the read and recipe "config propose workflow.budget"
+// uses; an equal call replays the open card on the server.
+func proposeWorkflowBudget(cmd *cobra.Command, workflow string) error {
+	for _, flag := range []string{"name", "description", "steps-file", "start-status", "map", "dry-run"} {
+		if cmd.Flags().Changed(flag) {
+			return fmt.Errorf("--%s cannot go with the budget flags: a budget change is approved on its own card. Run two commands: "+
+				"`multica workflow update <workflow> --%s ...` and `multica workflow update <workflow> --max-runs-per-issue N --include-child-prs=BOOL --issue <issue>`", flag, flag)
+		}
+	}
+	issueArg, _ := cmd.Flags().GetString("issue")
+	if strings.TrimSpace(issueArg) == "" {
+		return errors.New("--issue is required: the approval card sits on that issue")
+	}
+	var maxRuns *int
+	var includeChildPRs *bool
+	if cmd.Flags().Changed("max-runs-per-issue") {
+		n, _ := cmd.Flags().GetInt("max-runs-per-issue")
+		maxRuns = &n
+	}
+	if cmd.Flags().Changed("include-child-prs") {
+		b, _ := cmd.Flags().GetBool("include-child-prs")
+		includeChildPRs = &b
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	id, err := workflowRefID(ctx, client, workflow)
+	if err != nil {
+		return fmt.Errorf("resolve workflow: %w", err)
+	}
+	issue, err := resolveIssueRef(ctx, client, issueArg)
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+	p, err := workflowBudgetProposal(ctx, client, id, maxRuns, includeChildPRs)
+	if err != nil {
+		return err
+	}
+	params := make(map[string]json.RawMessage, len(p.Params))
+	for key, value := range p.Params {
+		params[key], _ = json.Marshal(value)
+	}
+	forUser, _ := cmd.Flags().GetString("for")
+	raw, err := postActionProposal(ctx, client, p.Type, 1, issue.ID, forUser, "", params)
+	if err != nil {
+		return err
+	}
+	// The URL is the point of this call; keep the update default of json only
+	// when the caller asks for it.
+	if !cmd.Flags().Changed("output") {
+		_ = cmd.Flags().Set("output", "table")
+	}
+	return printActionProposal(ctx, cmd, client, p.Type, issue, raw)
+}
+
+// CHE-5228: an agent widens an issue's run budget (a workflow override on an
+// update, a wider workflow on a create) with an owner-approved issue.workflow
+// decision. The digests bind the issue, its project and the workflow it
+// follows; decisionaction.IssueWorkflowDigest is the server's recipe.
+
+// checkIssueWorkflowBindingFlags rejects --decision-id and --print-hash without
+// --workflow, or a malformed decision id, before any HTTP call.
+func checkIssueWorkflowBindingFlags(cmd *cobra.Command) error {
+	if !workflowBindingRequested(cmd) {
+		return nil
+	}
+	if cmd.Flags().Changed("decision-id") {
+		if err := checkDecisionID(cmd); err != nil {
+			return err
+		}
+	}
+	if v, _ := cmd.Flags().GetString("workflow"); v == "" {
+		return fmt.Errorf("--decision-id and --print-hash bind a --workflow change; pass --workflow <workflow-id>")
+	}
+	return nil
+}
+
+// liveIssueWorkflow reads an issue's project and its workflow override ("" when
+// it has none).
+func liveIssueWorkflow(ctx context.Context, client *cli.APIClient, issueID string) (projectID, override string, err error) {
+	var issue map[string]any
+	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueID), &issue); err != nil {
+		return "", "", fmt.Errorf("read issue: %w", err)
+	}
+	return strVal(issue, "project_id"), strVal(issue, "workflow_id"), nil
+}
+
+// bindIssueWorkflow adds the decision binding for moving an issue ("" while it
+// is being created) from its live workflow override to body["workflow_id"], or
+// prints the hashes and reports true for --print-hash.
+func bindIssueWorkflow(cmd *cobra.Command, body map[string]any, issueID, projectID, liveOverride string) (bool, error) {
+	target, _ := body["workflow_id"].(string)
+	return workflowBinding{
+		decisionID: mustGetString(cmd, "decision-id"),
+		before:     decisionaction.IssueWorkflowDigest(issueID, projectID, liveOverride),
+		after:      decisionaction.IssueWorkflowDigest(issueID, projectID, target),
+	}.apply(cmd, body)
 }

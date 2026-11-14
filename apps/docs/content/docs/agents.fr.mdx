@@ -19,6 +19,7 @@ Un agent ne tourne pas en permanence en arrière-plan. Il conserve une identité
 | **Amorces de conversation** | Proposent jusqu'à trois exemples propres à l'agent, affichés lorsqu'une personne ouvre une nouvelle discussion avec lui. En sélectionner une remplit le champ de saisie sans envoyer le message. |
 | **Skills** | Fournissent des méthodes réutilisables, des documents de référence et des fichiers d'appui. |
 | **Runtime, modèle et niveau de réflexion** | Déterminent le runtime, l'outil de codage IA et le modèle utilisés ; certains outils (comme Codex) proposent aussi un niveau de service (**Vitesse**). |
+| **Profil d'exécution** | `Personnel` (par défaut) lance l'outil de codage IA avec la configuration de l'utilisateur de la machine. `Géré` fait créer au daemon un dossier de configuration minimal par tâche : identifiants, configuration du fournisseur, et seulement les skills et serveurs MCP attribués à l'agent. Définissez une valeur par défaut dans **Paramètres**, puis surchargez-la par agent. Pris en charge pour Claude et Codex. Les autres outils échouent sous `Géré`, y compris par défaut de l'espace de travail : donnez à ces agents une surcharge explicite `Personnel`. Revenez à `Personnel` pour annuler. |
 | **Accès** | Détermine quels membres peuvent l'exécuter. |
 | **Paramètres d'exécution** | Comprennent la limite de parallélisme, les variables d'environnement, les arguments CLI, MCP et les intégrations externes. |
 

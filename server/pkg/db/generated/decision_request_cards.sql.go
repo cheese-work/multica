@@ -12,7 +12,7 @@ import (
 )
 
 const getDecisionCancelMessageForRequest = `-- name: GetDecisionCancelMessageForRequest :one
-SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id FROM chat_message
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at FROM chat_message
 WHERE chat_session_id = $1
     AND $2::uuid = ANY(decision_request_ids)
     AND message_kind = 'decision_cancel_notice'
@@ -51,8 +51,63 @@ func (q *Queries) GetDecisionCancelMessageForRequest(ctx context.Context, arg Ge
 		&i.LineageMessageIds,
 		&i.DecisionRequestIds,
 		&i.ClientMessageID,
+		&i.ReanchoredAt,
 	)
 	return i, err
+}
+
+const listCoveredCardSummaries = `-- name: ListCoveredCardSummaries :many
+SELECT request.id, request.issue_id, COALESCE(workspace.issue_prefix, 'MUL')::text AS issue_prefix, issue.number AS issue_number,
+    issue.title AS issue_title, COALESCE(request.ask_json->>'decision', request.ask)::text AS decision, request.options
+FROM decision_request request
+JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
+JOIN workspace ON workspace.id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.id = ANY($2::uuid[])
+ORDER BY array_position($2::uuid[], request.id)
+`
+
+type ListCoveredCardSummariesParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+type ListCoveredCardSummariesRow struct {
+	ID          pgtype.UUID `json:"id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	IssuePrefix string      `json:"issue_prefix"`
+	IssueNumber int32       `json:"issue_number"`
+	IssueTitle  string      `json:"issue_title"`
+	Decision    string      `json:"decision"`
+	Options     []byte      `json:"options"`
+}
+
+// What a batch card's answer also decides, in the order the batch card lists it.
+func (q *Queries) ListCoveredCardSummaries(ctx context.Context, arg ListCoveredCardSummariesParams) ([]ListCoveredCardSummariesRow, error) {
+	rows, err := q.db.Query(ctx, listCoveredCardSummaries, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCoveredCardSummariesRow{}
+	for rows.Next() {
+		var i ListCoveredCardSummariesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.IssuePrefix,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.Decision,
+			&i.Options,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listDecisionRequestCards = `-- name: ListDecisionRequestCards :many
@@ -63,6 +118,7 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
+    request.covers_request_ids, request.answered_by_batch_request_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
     last_answer.chosen_option_index AS answer_chosen_option_index,
@@ -106,32 +162,34 @@ type ListDecisionRequestCardsParams struct {
 }
 
 type ListDecisionRequestCardsRow struct {
-	RequestID               pgtype.UUID        `json:"request_id"`
-	MessageID               pgtype.UUID        `json:"message_id"`
-	IssueID                 pgtype.UUID        `json:"issue_id"`
-	IssuePrefix             string             `json:"issue_prefix"`
-	IssueNumber             int32              `json:"issue_number"`
-	IssueTitle              string             `json:"issue_title"`
-	SourceCommentID         pgtype.UUID        `json:"source_comment_id"`
-	Ask                     string             `json:"ask"`
-	Status                  string             `json:"status"`
-	CreatedAt               pgtype.Timestamptz `json:"created_at"`
-	WithdrawReason          string             `json:"withdraw_reason"`
-	CancelReason            pgtype.Text        `json:"cancel_reason"`
-	Options                 []byte             `json:"options"`
-	HasAskJson              bool               `json:"has_ask_json"`
-	Recommendation          string             `json:"recommendation"`
-	WithdrawnAt             pgtype.Timestamptz `json:"withdrawn_at"`
-	RecordCommentID         pgtype.UUID        `json:"record_comment_id"`
-	AnswerID                pgtype.UUID        `json:"answer_id"`
-	AnswerCreatedAt         pgtype.Timestamptz `json:"answer_created_at"`
-	AnswerWokenAt           pgtype.Timestamptz `json:"answer_woken_at"`
-	AnswerWakeOutcome       pgtype.Text        `json:"answer_wake_outcome"`
-	AnswerDisclaimedAt      pgtype.Timestamptz `json:"answer_disclaimed_at"`
-	AnswerChosenOptionIndex pgtype.Int4        `json:"answer_chosen_option_index"`
-	AskingAgentName         string             `json:"asking_agent_name"`
-	PickupTaskID            pgtype.UUID        `json:"pickup_task_id"`
-	PickupAgentName         string             `json:"pickup_agent_name"`
+	RequestID                pgtype.UUID        `json:"request_id"`
+	MessageID                pgtype.UUID        `json:"message_id"`
+	IssueID                  pgtype.UUID        `json:"issue_id"`
+	IssuePrefix              string             `json:"issue_prefix"`
+	IssueNumber              int32              `json:"issue_number"`
+	IssueTitle               string             `json:"issue_title"`
+	SourceCommentID          pgtype.UUID        `json:"source_comment_id"`
+	Ask                      string             `json:"ask"`
+	Status                   string             `json:"status"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	WithdrawReason           string             `json:"withdraw_reason"`
+	CancelReason             pgtype.Text        `json:"cancel_reason"`
+	Options                  []byte             `json:"options"`
+	HasAskJson               bool               `json:"has_ask_json"`
+	Recommendation           string             `json:"recommendation"`
+	WithdrawnAt              pgtype.Timestamptz `json:"withdrawn_at"`
+	RecordCommentID          pgtype.UUID        `json:"record_comment_id"`
+	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
+	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	AnswerID                 pgtype.UUID        `json:"answer_id"`
+	AnswerCreatedAt          pgtype.Timestamptz `json:"answer_created_at"`
+	AnswerWokenAt            pgtype.Timestamptz `json:"answer_woken_at"`
+	AnswerWakeOutcome        pgtype.Text        `json:"answer_wake_outcome"`
+	AnswerDisclaimedAt       pgtype.Timestamptz `json:"answer_disclaimed_at"`
+	AnswerChosenOptionIndex  pgtype.Int4        `json:"answer_chosen_option_index"`
+	AskingAgentName          string             `json:"asking_agent_name"`
+	PickupTaskID             pgtype.UUID        `json:"pickup_task_id"`
+	PickupAgentName          string             `json:"pickup_agent_name"`
 }
 
 // The run that resumed the issue: one that started and carries the record, else the first started run on the issue after it.
@@ -162,6 +220,8 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.Recommendation,
 			&i.WithdrawnAt,
 			&i.RecordCommentID,
+			&i.CoversRequestIds,
+			&i.AnsweredByBatchRequestID,
 			&i.AnswerID,
 			&i.AnswerCreatedAt,
 			&i.AnswerWokenAt,
@@ -255,7 +315,7 @@ SELECT request.id, request.issue_id,
     request.asking_agent_id, COALESCE(agent.name, '')::text AS asking_agent_name,
     request.ask, request.escalation_class, request.created_at,
     request.chat_session_id, request.ping_message_id AS message_id,
-    request.options, request.source_comment_id
+    request.options, request.source_comment_id, request.covers_request_ids
 FROM decision_request request
 JOIN issue ON issue.id = request.issue_id AND issue.workspace_id = request.workspace_id
 JOIN workspace ON workspace.id = request.workspace_id
@@ -272,18 +332,19 @@ type ListOpenDecisionRequestsForHumanParams struct {
 }
 
 type ListOpenDecisionRequestsForHumanRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	IssueIdentifier string             `json:"issue_identifier"`
-	AskingAgentID   pgtype.UUID        `json:"asking_agent_id"`
-	AskingAgentName string             `json:"asking_agent_name"`
-	Ask             string             `json:"ask"`
-	EscalationClass string             `json:"escalation_class"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
-	MessageID       pgtype.UUID        `json:"message_id"`
-	Options         []byte             `json:"options"`
-	SourceCommentID pgtype.UUID        `json:"source_comment_id"`
+	ID               pgtype.UUID        `json:"id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	IssueIdentifier  string             `json:"issue_identifier"`
+	AskingAgentID    pgtype.UUID        `json:"asking_agent_id"`
+	AskingAgentName  string             `json:"asking_agent_name"`
+	Ask              string             `json:"ask"`
+	EscalationClass  string             `json:"escalation_class"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	ChatSessionID    pgtype.UUID        `json:"chat_session_id"`
+	MessageID        pgtype.UUID        `json:"message_id"`
+	Options          []byte             `json:"options"`
+	SourceCommentID  pgtype.UUID        `json:"source_comment_id"`
+	CoversRequestIds []pgtype.UUID      `json:"covers_request_ids"`
 }
 
 func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg ListOpenDecisionRequestsForHumanParams) ([]ListOpenDecisionRequestsForHumanRow, error) {
@@ -308,6 +369,7 @@ func (q *Queries) ListOpenDecisionRequestsForHuman(ctx context.Context, arg List
 			&i.MessageID,
 			&i.Options,
 			&i.SourceCommentID,
+			&i.CoversRequestIds,
 		); err != nil {
 			return nil, err
 		}

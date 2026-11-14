@@ -122,7 +122,9 @@ vi.mock("@multica/core/chat", async (importOriginal) => {
 vi.mock("@multica/core/chat/mutations", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/chat/mutations")>()),
   useSetChatSessionArchived: () => ({ mutateAsync: archiveAsync, mutate: vi.fn() }),
+  useBatchChatSessions: () => ({ mutateAsync: vi.fn().mockResolvedValue({ failed: [] }), isPending: false }),
   useSetChatSessionPinned: () => ({ mutateAsync: pinAsync, mutate: vi.fn() }),
+  useMarkChatSessionUnread: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
 }));
 vi.mock("./components/use-chat-controller", async () => {
   const { useChatStore: store } = await import("@multica/core/chat");

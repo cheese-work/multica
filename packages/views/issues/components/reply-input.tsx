@@ -21,6 +21,7 @@ import { useRecipientActions } from "../hooks/use-recipient-actions";
 import { SteerAttachmentNotice } from "./steer-attachment-notice";
 import { useStopRunsBeforeSend } from "./use-stop-runs-before-send";
 import { useCommentUploads } from "./use-comment-uploads";
+import { useClearOnDraftConsumed } from "./use-clear-on-draft-consumed";
 import { useQuickActionMenu } from "../hooks/use-quick-action-menu";
 import type { InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 
@@ -78,7 +79,7 @@ function ReplyInput({
   // Quick actions in the `/` menu — same catalog and same insert-don't-run
   // behavior as the top-level composer. A reply posts to the same issue, so
   // `/` has to offer the same thing here (MUL-5588).
-  const quickActionMenu = useQuickActionMenu(issueId);
+  const quickActionMenu = useQuickActionMenu();
   // If a draft key is provided, hydrate from store on mount (defaultValue is
   // the only injection point on ContentEditorRef) and flush on every onUpdate.
   const [initialDraft] = useState(() =>
@@ -128,12 +129,19 @@ function ReplyInput({
     onDrop: lazy.uploadOrQueue,
   });
 
+  useClearOnDraftConsumed(draftKey, editorRef, () => {
+    setContent("");
+    setIsEmpty(true);
+  });
+
   // Flush on tab close / mobile background — same rationale as CommentInput.
   useEffect(() => {
     if (!draftKey) return;
     const flush = () => {
-      const md = editorRef.current?.getMarkdown();
-      if (md && md.trim().length > 0) setDraft(draftKey, md);
+      // Trimmed like the editor's onUpdate: a raw value with trailing blank
+      // lines would differ from the send snapshot and defeat the stale-submit guard.
+      const md = editorRef.current?.getMarkdown()?.trim();
+      if (md) setDraft(draftKey, md);
     };
     const onVis = () => { if (document.visibilityState === "hidden") flush(); };
     document.addEventListener("visibilitychange", onVis);
@@ -163,17 +171,15 @@ function ReplyInput({
   const { submitting, submit } = useComposerSubmit({
     editorRef,
     uploadGate: gate,
-    containerRef: composerRef,
     normalize: (raw) => {
       const current = draftKey ? useCommentDraftStore.getState().getAnnotations(draftKey) : EMPTY_REPLY_ANNOTATIONS;
       return !targetMissing && hasReplyIntent(raw, current) ? composeAnnotatedReply(raw, current) : "";
     },
-    // A thread reply is rarely the last thing the user has to say, so the caret
-    // stays in the box for the next one. Unlike a top-level comment, the posted
-    // reply lands directly above the box that is still focused — nothing needs
-    // to pull the eye elsewhere. `containerRef` keeps this from stealing focus
-    // if the user moved to another composer while the reply was in flight.
-    afterAccepted: () => (editorScrubbedRef.current ? "refocus" : "none"),
+    // Drop the caret once the reply is posted, same as a top-level comment: a
+    // focused editor swallows the page's keyboard shortcuts, so keeping it here
+    // would trap the user until they click away. Bound to `editorScrubbedRef`
+    // so a draft the stale-submit guard kept stays focused.
+    afterAccepted: () => (editorScrubbedRef.current ? "blur" : "none"),
     onSubmit: async (content) => {
       editorScrubbedRef.current = false;
       const { suppressAgentIds, steerTaskIds } = routing;

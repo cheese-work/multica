@@ -170,7 +170,8 @@ func (h *Handler) RefreshSkill(w http.ResponseWriter, r *http.Request) {
 			"skill_id", uuidToString(skill.ID), "old_name", skill.Name, "new_name", newName)
 	}
 
-	resp, err := h.overwriteSkillWithFiles(r.Context(), skillOverwriteInput{
+	resp, err := h.overwriteSkillWithFiles(r.Context(), r, skillOverwriteInput{
+		VersionSource: skillVersionSourceRefresh,
 		WorkspaceID:   skill.WorkspaceID,
 		TargetSkillID: skill.ID,
 		UserID:        userID,
@@ -184,6 +185,9 @@ func (h *Handler) RefreshSkill(w http.ResponseWriter, r *http.Request) {
 		Files:       importedSkillFileRequests(imported),
 	})
 	if err != nil {
+		if failedAudit(w, r, err, "skill.update") {
+			return
+		}
 		switch {
 		case errors.Is(err, errSkillOverwriteNotFound):
 			writeError(w, http.StatusNotFound, "skill not found")

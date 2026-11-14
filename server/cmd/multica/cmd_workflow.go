@@ -92,6 +92,19 @@ Run rules change with their own flags, with or without --steps-file; a rule
 flag left out keeps its value. --max-runs-per-issue N (1 to 1000) caps the runs
 one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
+--start-status KEY sets the status where new issues of the workflow start (an
+unstarted or started step of the workflow; "" restores todo).
+A task token changes --max-runs-per-issue or --include-child-prs only through
+an owner's approval: with --issue <issue> (and --for <user-id>) the command reads
+the live workflow, opens one workflow.budget.set card with only the budget flags
+you named, prints the card URL and writes nothing until the owner approves with a
+passkey. Repeating the same call returns the same card. A budget call carries no
+--name, --description, --steps-file, --start-status, --map or --dry-run: run two
+commands instead. --print-hash prints before_sha256 and after_sha256 of the
+budget change; "multica decision request" with the workflow.budget field and
+--decision-id is the manual path. "multica config propose workflow.budget"
+names the same budget as --max-runs N (0 restores the default) and
+--include-child-prs.
 Prints the server's readback.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
@@ -190,7 +203,10 @@ func init() {
 	workflowUpdateCmd.Flags().Bool("dry-run", false, "Print the migration plan without writing")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
+	workflowUpdateCmd.Flags().String("start-status", "", "Status where new issues of the workflow start; an unstarted or started step (\"\" restores todo)")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowUpdateCmd.Flags().String("issue", "", "Task token budget change: issue UUID or identifier the card is about (required)")
+	workflowUpdateCmd.Flags().String("for", "", forFlagHelp)
 
 	workflowSetInstructionsCmd.Flags().String("status", "", "status_key of the step to change (required)")
 	workflowSetInstructionsCmd.Flags().String("file", "", "File holding the new instructions text (required)")
@@ -368,7 +384,11 @@ func printWorkflowRules(wf map[string]any) {
 	if b, ok := wf["include_child_prs"].(bool); ok {
 		include = b
 	}
-	fmt.Printf("max runs per issue: %s, include child PRs: %t\n", maxRuns, include)
+	start := issueworkflow.StartStatus
+	if key := strVal(wf, "start_status_key"); key != "" {
+		start = key
+	}
+	fmt.Printf("max runs per issue: %s, include child PRs: %t, start status: %s\n", maxRuns, include, start)
 }
 
 func printMappingPlan(plan map[string]any) {
@@ -634,6 +654,9 @@ func runWorkflowCreate(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
+	if proposesWorkflowBudget(cmd) {
+		return proposeWorkflowBudget(cmd, args[0])
+	}
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
@@ -658,15 +681,22 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 		include, _ := cmd.Flags().GetBool("include-child-prs")
 		body["include_child_prs"] = include
 	}
+	if cmd.Flags().Changed("start-status") {
+		key, _ := cmd.Flags().GetString("start-status")
+		body["start_status_key"] = key
+	}
 	if len(body) == 0 {
-		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue and/or --include-child-prs")
+		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue, --include-child-prs and/or --start-status")
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
 	}
 	newSteps, hasSteps := body["steps"].([]any)
-	if workflowBindingRequested(cmd) && !hasSteps {
-		return errors.New("a decision-bound write carries --steps-file only")
+	_, hasCap := body["max_runs_per_issue"]
+	_, hasChildren := body["include_child_prs"]
+	budgetWrite := hasCap || hasChildren
+	if workflowBindingRequested(cmd) && hasSteps == budgetWrite {
+		return errors.New("a decision-bound write carries either --steps-file or the run budget flags, not both")
 	}
 	pairs, _ := cmd.Flags().GetStringArray("map")
 	mapping, err := parseStatusMapping(pairs)
@@ -692,7 +722,14 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workflow: %w", err)
 	}
-	if workflowBindingRequested(cmd) {
+	if workflowBindingRequested(cmd) && budgetWrite {
+		if err := bindBudgetWrite(cmd, ctx, client, id, body); err != nil {
+			return err
+		}
+		if printHashRequested(cmd) {
+			return nil
+		}
+	} else if workflowBindingRequested(cmd) {
 		live, err := getWorkflow(ctx, client, id)
 		if err != nil {
 			return err
