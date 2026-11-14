@@ -2137,6 +2137,26 @@
       "empty_description": "Set up filters and display options in an issue list, then save them as a view."
     }
   },
+  "app_calls": {
+    "section_title": "Apps",
+    "chips_label": "Apps used in this run",
+    "calls_count_one": "{{count}} call",
+    "calls_count_other": "{{count}} calls",
+    "more": "+{{count}} more",
+    "scope": {
+      "team": "Team account",
+      "personal": "Personal account"
+    },
+    "outcome": {
+      "ok": "Ran",
+      "error": "Failed",
+      "blocked": "Blocked",
+      "pending": "Waiting",
+      "approved": "Approved",
+      "rejected": "Declined",
+      "rate_limited": "Rate limited"
+    }
+  },
   "status_history": {
     "title": "Status history",
     "description": "Every status change on this issue, oldest first.",

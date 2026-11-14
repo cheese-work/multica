@@ -144,6 +144,17 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"9999933_app_action_request_chat_idx":                       "idx_app_action_request_chat",
+	"9999932_app_tool_call_issue_idx":                           "idx_app_tool_call_issue",
+	"9999931_app_action_request_task_idx":                       "idx_app_action_request_task",
+	"9999930_app_tool_call_workspace_idx":                       "idx_app_tool_call_workspace",
+	"9999929_app_action_request_pending_idx":                    "idx_app_action_request_pending",
+	"9999928_app_action_request_issue_idx":                      "idx_app_action_request_issue",
+	"9999927_app_action_rule_scope_idx":                         "idx_app_action_rule_scope",
+	"9999926_agent_app_workspace_toolkit_idx":                   "idx_agent_app_workspace_toolkit",
+	"9999925_agent_app_agent_toolkit_idx":                       "idx_agent_app_agent_toolkit",
+	"9999924_workspace_composio_connection_status_idx":          "idx_workspace_composio_connection_status",
+	"9999923_workspace_composio_connection_account_idx":         "idx_workspace_composio_connection_account",
 	"9999918_skill_version_index":                               "idx_skill_version_skill_version",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
