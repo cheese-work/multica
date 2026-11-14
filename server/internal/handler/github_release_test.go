@@ -22,7 +22,14 @@ func authorizeReleaseRun(t *testing.T, ws pgtype.UUID, repoURL string, runID int
 		if _, err := testPool.Exec(ctx, `UPDATE workspace SET repos = $1 WHERE id = $2`, []byte(`[{"url":"`+repoURL+`"}]`), ws); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `UPDATE workspace SET repos = '[]' WHERE id = $1`, ws) })
+		// The release repository is configured explicitly, apart from the repo list.
+		if _, err := testPool.Exec(ctx, `UPDATE workspace SET settings = settings || jsonb_build_object('release_deploy_repo', $1::text) WHERE id = $2`,
+			strings.TrimSuffix(strings.TrimPrefix(repoURL, "https://github.com/"), ".git"), ws); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `UPDATE workspace SET repos = '[]', settings = settings - 'release_deploy_repo' WHERE id = $1`, ws)
+		})
 	}
 	if path == "" {
 		return
@@ -81,8 +88,10 @@ func releaseIntakeFixture(t *testing.T, installationID int64) pgtype.UUID {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM issue WHERE id IN (SELECT issue_id FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2)`, ws, relNew)
 		testPool.Exec(ctx, `DELETE FROM github_release_deploy WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
+		testPool.Exec(ctx, `DELETE FROM github_release_pending WHERE workspace_id = $1 AND source_sha = $2`, ws, relNew)
 		for _, table := range []string{"github_workflow_run", "github_workflow_job"} {
-			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001, 880002)`, cdDeployRunID)
+			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'cheese-work' AND repo_name = 'multica' AND run_id IN ($1, 880001, 880002, 880004, 880010)`, cdDeployRunID)
+			testPool.Exec(ctx, `DELETE FROM `+table+` WHERE repo_owner = 'evil' AND repo_name = 'multica'`)
 		}
 		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
 	})
@@ -223,4 +232,87 @@ func TestReleaseIntakeRefusesAnImpostorJob(t *testing.T) {
 		t.Fatalf("undeclared repository: status = %d", code)
 	}
 	wantReleaseIssues(t, ws, before, 0)
+}
+
+// The release repository is an explicit workspace setting. Two declared
+// repositories can both carry a workflow file at the deploy path; only the
+// configured one may open a release issue.
+func TestReleaseIntakeBindsToTheConfiguredDeployRepository(t *testing.T) {
+	const inst = 880106
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET repos = $1 WHERE id = $2`,
+		[]byte(`[{"url":"https://github.com/cheese-work/multica.git"},{"url":"https://github.com/evil/multica.git"}]`), ws); err != nil {
+		t.Fatal(err)
+	}
+	if err := ghrun.ApplyRunEvent(context.Background(), testPool, ws, ghrun.RunEvent{
+		InstallationID: 1, RepoOwner: "evil", RepoName: "multica", RunID: 880004, RunAttempt: 1,
+		StatusRank: ghrun.RankStub + 1, Status: "in_progress", GhUpdatedAt: time.Now(),
+		WorkflowPath: deployWorkflowPath, WorkflowName: "CD deploy to C00", HeadSHA: relNew, HeadBranch: "main", Event: "push",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	body := releaseDeliveryBody(inst, 9, 1, func(j map[string]any) { j["run_id"] = 880004 })
+	body["repository"] = map[string]any{"name": "multica", "owner": map[string]any{"login": "evil"}}
+	if code := postWorkflowEvent(t, "workflow_job", body); code != http.StatusAccepted {
+		t.Fatalf("declared but unconfigured repository: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 10, 1, nil)); code != http.StatusAccepted {
+		t.Fatalf("configured repository: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 1)
+}
+
+// GitHub does not order deliveries: the receipt job can complete before the
+// workflow_run delivery that names its workflow file. The receipt is kept and
+// opens the issue when the verified run arrives; a run from another workflow
+// file discards it.
+func TestReleaseIntakeKeepsAReceiptUntilItsRunArrives(t *testing.T) {
+	const inst = 880107
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	early := func(j map[string]any) { j["run_id"] = 880010 }
+	if code := postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 11, 1, early)); code != http.StatusAccepted {
+		t.Fatalf("early receipt: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 0)
+
+	run := workflowRunEnvelope(t, inst, "requested", "queued")
+	run["workflow_run"].(map[string]any)["id"] = 880010
+	run["workflow_run"].(map[string]any)["path"] = deployWorkflowPath
+	if code := postWorkflowEvent(t, "workflow_run", run); code != http.StatusAccepted {
+		t.Fatalf("run delivery: status = %d", code)
+	}
+	wantReleaseIssues(t, ws, before, 1)
+	// Redelivery of the run and of the receipt creates nothing more.
+	postWorkflowEvent(t, "workflow_run", run)
+	postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 11, 1, early))
+	wantReleaseIssues(t, ws, before, 1)
+}
+
+func TestReleaseIntakeDiscardsAReceiptWhoseRunIsAnotherWorkflow(t *testing.T) {
+	const inst = 880108
+	ws := releaseIntakeFixture(t, inst)
+	before := len(releaseIssues(t, ws))
+	early := func(j map[string]any) { j["run_id"] = 880010 }
+	postWorkflowEvent(t, "workflow_job", releaseDeliveryBody(inst, 12, 1, early))
+	run := workflowRunEnvelope(t, inst, "requested", "queued")
+	run["workflow_run"].(map[string]any)["id"] = 880010
+	run["workflow_run"].(map[string]any)["path"] = ".github/workflows/impostor.yml"
+	postWorkflowEvent(t, "workflow_run", run)
+	wantReleaseIssues(t, ws, before, 0)
+}
+
+// A lookup that fails is not a refusal: the delivery must fail so it can be
+// redelivered, instead of dropping a valid receipt.
+func TestReleaseAuthorizationTransientErrorIsNotARefusal(t *testing.T) {
+	const inst = 880109
+	ws := releaseIntakeFixture(t, inst)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := testHandler.checkRelease(ctx, ws, ghrun.ReleaseReceipt{RepoOwner: "cheese-work", RepoName: "multica", RunID: 880001})
+	if err == nil {
+		t.Fatal("a failed lookup was reported as a verdict")
+	}
 }

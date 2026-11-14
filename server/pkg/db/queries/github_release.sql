@@ -37,3 +37,17 @@ WHERE pr.workspace_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
   ), now() - interval '7 days')
 ORDER BY pr.merged_at ASC
 LIMIT 100;
+
+-- name: PutGitHubReleasePending :exec
+-- Keeps a receipt whose run is not verified yet. A redelivery rewrites nothing.
+INSERT INTO github_release_pending (workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (workspace_id, repo_owner, repo_name, run_id) DO NOTHING;
+
+-- name: ListGitHubReleasePendingForRun :many
+SELECT * FROM github_release_pending
+WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;
+
+-- name: DeleteGitHubReleasePending :exec
+DELETE FROM github_release_pending
+WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4;

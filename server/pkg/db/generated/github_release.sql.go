@@ -11,6 +11,28 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteGitHubReleasePending = `-- name: DeleteGitHubReleasePending :exec
+DELETE FROM github_release_pending
+WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4
+`
+
+type DeleteGitHubReleasePendingParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+	RunID       int64       `json:"run_id"`
+}
+
+func (q *Queries) DeleteGitHubReleasePending(ctx context.Context, arg DeleteGitHubReleasePendingParams) error {
+	_, err := q.db.Exec(ctx, deleteGitHubReleasePending,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+	)
+	return err
+}
+
 const ensureIssueLabelByName = `-- name: EnsureIssueLabelByName :one
 INSERT INTO issue_label (workspace_id, resource_type, name, description, color)
 VALUES ($1, 'issue', $2, $3, $4)
@@ -122,6 +144,52 @@ func (q *Queries) LinkGitHubReleaseDeploy(ctx context.Context, arg LinkGitHubRel
 	return err
 }
 
+const listGitHubReleasePendingForRun = `-- name: ListGitHubReleasePendingForRun :many
+SELECT workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest, created_at FROM github_release_pending
+WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND run_id = $4
+`
+
+type ListGitHubReleasePendingForRunParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+	RunID       int64       `json:"run_id"`
+}
+
+func (q *Queries) ListGitHubReleasePendingForRun(ctx context.Context, arg ListGitHubReleasePendingForRunParams) ([]GithubReleasePending, error) {
+	rows, err := q.db.Query(ctx, listGitHubReleasePendingForRun,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GithubReleasePending{}
+	for rows.Next() {
+		var i GithubReleasePending
+		if err := rows.Scan(
+			&i.WorkspaceID,
+			&i.RepoOwner,
+			&i.RepoName,
+			&i.RunID,
+			&i.OldSha,
+			&i.SourceSha,
+			&i.ImageDigest,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listReleaseMergedPullRequests = `-- name: ListReleaseMergedPullRequests :many
 SELECT pr_number, title, html_url FROM github_pull_request pr
 WHERE pr.workspace_id = $1 AND pr.repo_owner = $2 AND pr.repo_name = $3
@@ -172,6 +240,36 @@ func (q *Queries) ListReleaseMergedPullRequests(ctx context.Context, arg ListRel
 		return nil, err
 	}
 	return items, nil
+}
+
+const putGitHubReleasePending = `-- name: PutGitHubReleasePending :exec
+INSERT INTO github_release_pending (workspace_id, repo_owner, repo_name, run_id, old_sha, source_sha, image_digest)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (workspace_id, repo_owner, repo_name, run_id) DO NOTHING
+`
+
+type PutGitHubReleasePendingParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RepoOwner   string      `json:"repo_owner"`
+	RepoName    string      `json:"repo_name"`
+	RunID       int64       `json:"run_id"`
+	OldSha      string      `json:"old_sha"`
+	SourceSha   string      `json:"source_sha"`
+	ImageDigest string      `json:"image_digest"`
+}
+
+// Keeps a receipt whose run is not verified yet. A redelivery rewrites nothing.
+func (q *Queries) PutGitHubReleasePending(ctx context.Context, arg PutGitHubReleasePendingParams) error {
+	_, err := q.db.Exec(ctx, putGitHubReleasePending,
+		arg.WorkspaceID,
+		arg.RepoOwner,
+		arg.RepoName,
+		arg.RunID,
+		arg.OldSha,
+		arg.SourceSha,
+		arg.ImageDigest,
+	)
+	return err
 }
 
 const setGitHubReleaseDeployLabeled = `-- name: SetGitHubReleaseDeployLabeled :exec
