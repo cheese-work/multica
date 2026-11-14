@@ -388,6 +388,8 @@ func actionPreconditions(ctx context.Context, queries *db.Queries, issue db.Issu
 			return nil, err
 		}
 		return map[string]any{"workspace_id": uuidToString(workspace.ID)}, nil
+	case decisionaction.TargetNone:
+		return map[string]any{}, nil
 	}
 	return snapshotDecisionAction(ctx, queries, issue.WorkspaceID, draft)
 }

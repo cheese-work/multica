@@ -277,4 +277,25 @@ cap config-change-viewer \
   --component packages/views/chat/components/config-change-viewer.tsx \
   --token text-caption --token text-muted-foreground
 
+# SS3 (CHE-5536)
+cap decision-artifacts \
+  --component packages/views/chat/components/decision-artifacts.tsx \
+  --token text-micro --token text-caption --token bg-muted/40
+
+cap decision-request-card \
+  --component packages/views/chat/components/decision-request-card.tsx \
+  --token text-body --token text-label --token text-micro
+
+cap needs-you-list \
+  --component packages/views/chat/components/needs-you-list.tsx \
+  --token text-caption --token text-warning --token text-destructive
+
+cap quick-agent-bar \
+  --component packages/views/chat/components/quick-agent-bar.tsx \
+  --token AVATAR_RING --token MAX_PINNED
+
+cap delegated-writes-section --height 1200 \
+  --component packages/views/settings/components/delegated-writes-section.tsx \
+  --token GOVERNED_FIELDS --token text-caption --token text-muted-foreground
+
 rm -rf "$build"
