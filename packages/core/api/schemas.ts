@@ -1937,6 +1937,7 @@ export const ProjectSchema = z.lazy(() => z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string(),
+  visibility: z.enum(["workspace", "private"]).default("workspace").catch("private"),
   description: z.string().nullable(),
   icon: z.string().nullable(),
   status: z.string(),
@@ -1972,6 +1973,19 @@ export const ListProjectsResponseSchema = z.lazy(() => z.object({
 }).loose());
 
 export const EMPTY_LIST_PROJECTS_RESPONSE: ListProjectsResponse = { projects: [], total: 0 };
+
+export const ProjectMemberSchema = z.lazy(() => z.object({
+  project_id: z.string(),
+  user_id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  avatar_url: z.string().nullable().default(null),
+}).loose());
+
+export const ListProjectMembersResponseSchema = z.lazy(() => z.object({
+  members: z.array(ProjectMemberSchema),
+  total: z.number(),
+}).loose());
 
 const SearchProjectResultSchema = z.lazy(() => ProjectSchema.unwrap().extend({
   match_source: z.string(),

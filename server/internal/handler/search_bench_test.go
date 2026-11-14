@@ -247,7 +247,7 @@ func runBenchSearch(ctx context.Context, wsUUID pgtype.UUID, q string) ([]string
 		return nil, err
 	}
 	if shouldRunFuzzyFallback(q, hasNum, 0, len(ids)) {
-		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(q), false, terminal)
+		fsql, fargs := buildFuzzySearchQuery(foldDiacritics(q), false, terminal, pgtype.UUID{})
 		fargs[1] = wsUUID
 		fargs[len(fargs)-2], fargs[len(fargs)-1] = 20, 0
 		if err := run(fsql, fargs); err != nil {

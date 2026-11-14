@@ -130,7 +130,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/notification-preferences": {2, byOwnRow},
 	"api/passkeys":                 {6, byHuman},
 	"api/pins":                     {3, byOwnRow},
-	"api/projects":                 {10, byWorkspace},
+	"api/projects":                 {12, byWorkspace},
 	"api/properties":               {2, byWorkspace},
 	"api/provenance":               {1, byHuman},
 	"api/push":                     {2, byHuman},

@@ -14,8 +14,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -54,30 +56,42 @@ type ProjectResponse struct {
 	DecisionDelegates []string `json:"decision_delegates"`
 	// WorkflowSplit is the CHE-5238 A/B split; null means none.
 	WorkflowSplit *ProjectWorkflowSplit `json:"workflow_split"`
+	// Visibility is "workspace" (every member) or "private" (project members
+	// plus workspace owners/admins). (MUL-8472)
+	Visibility string `json:"visibility"`
 }
 
 func projectToResponse(p db.Project) ProjectResponse {
 	return ProjectResponse{
-		ID:          uuidToString(p.ID),
-		WorkspaceID: uuidToString(p.WorkspaceID),
-		Title:       p.Title,
-		Description: textToPtr(p.Description),
-		Icon:        textToPtr(p.Icon),
-		Status:      p.Status,
-		Priority:    p.Priority,
-		LeadType:    textToPtr(p.LeadType),
-		LeadID:      uuidToPtr(p.LeadID),
-		CreatorType: textToPtr(p.CreatorType),
-		CreatorID:   uuidToPtr(p.CreatorID),
-		StartDate:   dateToPtr(p.StartDate),
-		DueDate:     dateToPtr(p.DueDate),
-		CreatedAt:   timestampToString(p.CreatedAt),
-		UpdatedAt:   timestampToString(p.UpdatedAt),
-		WorkflowID:  uuidToPtr(p.WorkflowID),
-
+		ID:                uuidToString(p.ID),
+		WorkspaceID:       uuidToString(p.WorkspaceID),
+		Title:             p.Title,
+		Description:       textToPtr(p.Description),
+		Icon:              textToPtr(p.Icon),
+		Status:            p.Status,
+		Priority:          p.Priority,
+		LeadType:          textToPtr(p.LeadType),
+		LeadID:            uuidToPtr(p.LeadID),
+		CreatorType:       textToPtr(p.CreatorType),
+		CreatorID:         uuidToPtr(p.CreatorID),
+		StartDate:         dateToPtr(p.StartDate),
+		DueDate:           dateToPtr(p.DueDate),
+		CreatedAt:         timestampToString(p.CreatedAt),
+		UpdatedAt:         timestampToString(p.UpdatedAt),
+		WorkflowID:        uuidToPtr(p.WorkflowID),
 		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
 		WorkflowSplit:     decodeWorkflowSplit(p.WorkflowSplit),
+		Visibility:        projectVisibilityOrDefault(p.Visibility),
 	}
+}
+
+// projectVisibilityOrDefault keeps responses on the documented enum for a
+// db.Project built outside sqlc that left Visibility empty.
+func projectVisibilityOrDefault(v string) string {
+	if v == "" {
+		return projectaccess.VisibilityWorkspace
+	}
+	return v
 }
 
 func (h *Handler) loadProjectIssueStats(ctx context.Context, workspaceID, projectID pgtype.UUID) (int64, int64) {
@@ -125,6 +139,11 @@ type CreateProjectRequest struct {
 	StartDate   *string                               `json:"start_date"`
 	DueDate     *string                               `json:"due_date"`
 	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	// Visibility "private" creates a private project (MUL-8472, behind
+	// private_projects_v1). MemberIDs seeds its member list; the creator is
+	// always added.
+	Visibility *string  `json:"visibility,omitempty"`
+	MemberIDs  []string `json:"member_ids,omitempty"`
 	// WorkflowID picks the project's workflow at creation; omitted or null
 	// uses the workspace Default workflow. A new project has no issues, so no
 	// status mapping is involved. (MUL-7420)
@@ -153,6 +172,10 @@ type UpdateProjectRequest struct {
 	DueDate     *string `json:"due_date"`
 	// DecisionDelegates replaces the whole list; null or [] clears it.
 	DecisionDelegates *[]string `json:"decision_delegates"`
+	// Visibility switches between "workspace" and "private" (MUL-8472).
+	// MemberIDs is only read together with a switch to "private".
+	Visibility *string  `json:"visibility"`
+	MemberIDs  []string `json:"member_ids,omitempty"`
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +200,19 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list projects")
 		return
+	}
+	hidden, ok := h.requestHiddenProjects(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	if !hidden.Empty() {
+		visible := projects[:0:0]
+		for _, p := range projects {
+			if hidden.CanSeeProject(p.ID) {
+				visible = append(visible, p)
+			}
+		}
+		projects = visible
 	}
 
 	// Batch-fetch issue stats and resource counts for all projects
@@ -234,6 +270,9 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if !h.requireProjectVisible(w, r, workspaceID, project.ID, http.StatusNotFound, "project not found") {
 		return
 	}
 	resp := projectToResponse(project)
@@ -424,6 +463,38 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// MUL-8472: a private project is created with its member list in the same
+	// transaction, so it is never briefly visible to the whole workspace.
+	private := false
+	var privateMemberIDs []pgtype.UUID
+	if req.Visibility != nil && *req.Visibility != "" && *req.Visibility != projectaccess.VisibilityWorkspace {
+		if *req.Visibility != projectaccess.VisibilityPrivate {
+			writeError(w, http.StatusBadRequest, "invalid visibility: must be one of workspace, private")
+			return
+		}
+		if !h.requireHumanProjectAccessActor(w, r, workspaceID) {
+			return
+		}
+		if !featureflags.PrivateProjectsV1Enabled(r.Context(), h.FeatureFlags) {
+			writeFeatureDisabled(w, "private_projects_disabled", "private projects are not enabled")
+			return
+		}
+		ids, ok := parseProjectMemberIDs(w, req.MemberIDs, "member_ids")
+		if !ok {
+			return
+		}
+		creator, ok := parseUUIDOrBadRequest(w, userID, "user id")
+		if !ok {
+			return
+		}
+		ids = append(ids, creator)
+		if leadType.Valid && leadType.String == "member" && leadID.Valid {
+			ids = append(ids, leadID)
+		}
+		private = true
+		privateMemberIDs = ids
+	}
+
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	creatorID, ok := parseUUIDOrBadRequest(w, actorID, "creator_id")
 	if !ok {
@@ -458,6 +529,30 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.writeProjectWriteError(w, r, err, "create")
 		return
+	}
+	if private {
+		inserted, err := qtx.AddProjectMembers(r.Context(), db.AddProjectMembersParams{
+			ProjectID:   project.ID,
+			WorkspaceID: project.WorkspaceID,
+			UserIds:     privateMemberIDs,
+			AddedBy:     parseUUIDOrInvalid(userID),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to add project members")
+			return
+		}
+		if !h.allProjectMembersExist(w, r, qtx, project, privateMemberIDs, inserted) {
+			return
+		}
+		project, err = qtx.UpdateProjectVisibility(r.Context(), db.UpdateProjectVisibilityParams{
+			ID:          project.ID,
+			WorkspaceID: project.WorkspaceID,
+			Visibility:  projectaccess.VisibilityPrivate,
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set project visibility")
+			return
+		}
 	}
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind:        "project.create",
@@ -561,6 +656,9 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+	if !h.requireProjectVisible(w, r, workspaceID, prevProject.ID, http.StatusNotFound, "project not found") {
 		return
 	}
 	userID, ok := requireUserID(w, r)
@@ -696,17 +794,43 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
 	}
+	newLeadType, newLeadID := prevProject.LeadType, prevProject.LeadID
+	if params.LeadTypeSet {
+		newLeadType = params.LeadType
+	}
+	if params.LeadIDSet {
+		newLeadID = params.LeadID
+	}
+	leadChanged := newLeadType != prevProject.LeadType || newLeadID != prevProject.LeadID
+	access, ok := h.prepareProjectAccessUpdate(w, r, prevProject, req.Visibility, req.MemberIDs, newLeadType, newLeadID, leadChanged)
+	if !ok {
+		return
+	}
+	var storedProject db.Project
 	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
 		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
+			// The access write shares the update's transaction, so a rejected
+			// member list rolls back the whole update.
+			if !access.empty() {
+				stored, ok := h.applyProjectAccessUpdate(w, r, q, updated, access, userID)
+				if !ok {
+					return errProjectAccessResponseWritten
+				}
+				updated = stored
+			}
 			if err := h.writeAudit(ctx, q, r, auditInput{
 				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
 				Before: projectAuditFields(previous), After: projectAuditFields(updated),
 			}); err != nil {
 				return auditWriteError{err}
 			}
+			storedProject = updated
 			return nil
 		})
 	if err != nil {
+		if errors.Is(err, errProjectAccessResponseWritten) {
+			return
+		}
 		var auditErr auditWriteError
 		if errors.As(err, &auditErr) {
 			writeAuditFailure(w, r, auditErr.err, "project.update")
@@ -717,6 +841,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		h.writeProjectWriteError(w, r, err, "update")
 		return
+	}
+	if !access.empty() {
+		project = storedProject
+		h.announceProjectAccessUpdate(r, project, access, userID)
 	}
 	resp := projectToResponse(project)
 	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
@@ -778,6 +906,9 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "project not found")
 		return
 	}
+	if !h.requireProjectVisible(w, r, workspaceID, project.ID, http.StatusNotFound, "project not found") {
+		return
+	}
 	if !h.requireProjectDeletion(w, r, project) {
 		return
 	}
@@ -821,6 +952,13 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete project route grants")
 		return
 	}
+	if err := qtx.DeleteProjectMembersByProject(r.Context(), db.DeleteProjectMembersByProjectParams{
+		ProjectID:   project.ID,
+		WorkspaceID: project.WorkspaceID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete project members")
+		return
+	}
 	if err := qtx.DeleteProject(r.Context(), db.DeleteProjectParams{
 		ID:          project.ID,
 		WorkspaceID: project.WorkspaceID,
@@ -853,7 +991,7 @@ type SearchProjectResponse struct {
 }
 
 // buildProjectSearchQuery builds a dynamic SQL query for project search.
-func buildProjectSearchQuery(phrase string, terms []string, includeClosed bool) (string, []any) {
+func buildProjectSearchQuery(phrase string, terms []string, includeClosed bool, hiddenProjectIDs ...pgtype.UUID) (string, []any) {
 	phrase = strings.ToLower(phrase)
 	for i, t := range terms {
 		terms[i] = strings.ToLower(t)
@@ -969,13 +1107,17 @@ func buildProjectSearchQuery(phrase string, terms []string, includeClosed bool) 
 		)
 	}
 
+	if len(hiddenProjectIDs) > 0 {
+		whereClause += fmt.Sprintf(" AND NOT (p.id = ANY(%s::uuid[]))", nextArg(hiddenProjectIDs))
+	}
+
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)
 
 	query := fmt.Sprintf(`SELECT p.id, p.workspace_id, p.title, p.description, p.icon,
 		p.status, p.priority, p.lead_type, p.lead_id,
 		p.start_date, p.due_date,
-		p.created_at, p.updated_at, p.creator_type, p.creator_id,
+		p.created_at, p.updated_at, p.visibility, p.creator_type, p.creator_id,
 		%s AS match_source
 	FROM project p
 	WHERE p.workspace_id = %s AND %s
@@ -1027,7 +1169,11 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	terms := splitSearchTerms(q)
 
-	sqlQuery, args := buildProjectSearchQuery(q, terms, includeClosed)
+	hidden, ok := h.requestHiddenProjectsForSearch(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	sqlQuery, args := buildProjectSearchQuery(q, terms, includeClosed, hidden.Param()...)
 	args[1] = wsUUID
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset

@@ -3,6 +3,8 @@ package handler
 import (
 	"fmt"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Typo-tolerant fallback for issue search (CHE-2944). It runs only when the
@@ -38,8 +40,8 @@ func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int
 // query with word_similarity and returns the same columns as buildSearchQuery,
 // so the caller scans both with scanSearchIssue. Args: $1 folded query,
 // $2 workspace_id (filled by the caller), $3 threshold, [$4 terminal status
-// keys], then limit and offset (the last two, filled by the caller).
-func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+// keys], [project id], [hidden project ids], then limit and offset (the last two, filled by the caller).
+func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string, projectID pgtype.UUID, hiddenProjectIDs ...pgtype.UUID) (string, []any) {
 	args := []any{foldedQuery, nil, fuzzySearchThreshold}
 	nextArg := func(value any) string {
 		args = append(args, value)
@@ -49,6 +51,13 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	where := "i.workspace_id = $2"
 	if !includeClosed {
 		where += fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", nextArg(terminalStatusKeys))
+	}
+	if projectID.Valid {
+		where += " AND i.project_id = " + nextArg(projectID)
+	}
+	// A fuzzy hit on a private project's issue would leak its title.
+	if len(hiddenProjectIDs) > 0 {
+		where += " AND " + hiddenProjectPredicate("i.project_id", nextArg(hiddenProjectIDs))
 	}
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)

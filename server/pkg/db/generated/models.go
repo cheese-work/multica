@@ -3032,6 +3032,15 @@ type Project struct {
 	WorkflowSplit     []byte             `json:"workflow_split"`
 	CreatorType       pgtype.Text        `json:"creator_type"`
 	CreatorID         pgtype.UUID        `json:"creator_id"`
+	Visibility        string             `json:"visibility"`
+}
+
+type ProjectMember struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	AddedBy     pgtype.UUID        `json:"added_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type ProjectResource struct {

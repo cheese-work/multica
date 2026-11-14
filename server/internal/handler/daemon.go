@@ -7103,6 +7103,13 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 		resp = h.withSkippedRuns(r.Context(), issue, tasks, resp)
 	}
 
+	if scope == "subtree" {
+		if err := h.redactHiddenProjectTasks(r, workspaceID, tasks, resp); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check project access")
+			return
+		}
+	}
+
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -7308,6 +7315,12 @@ func (h *Handler) ListTaskMessagesByUser(w http.ResponseWriter, r *http.Request)
 	// to anyone else it does not exist either.
 	if task.ChatSessionID.Valid && (scope.ChatSessionOwnerID == "" || scope.ChatSessionOwnerID != requestUserID(r)) {
 		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	// An issue run's transcript is visible exactly where its issue is
+	// (MUL-8472). Task ids reach every member through task lifecycle events,
+	// so this cannot rely on the issue page being unreachable.
+	if !h.requireIssueIDVisible(w, r, wsID, task.IssueID, http.StatusNotFound, "task not found") {
 		return
 	}
 

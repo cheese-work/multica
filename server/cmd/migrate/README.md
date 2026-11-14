@@ -349,3 +349,17 @@ after `main` already held `678_issue_workflow_owner` and
 
 The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
 so a database that already applied the old names re-runs them safely.
+
+## Upstream private-project migration renumbering
+
+Upstream's private projects ship three migrations whose prefixes (630, 631, 632) collide with
+fork migrations. They are new to this fork, so no database has recorded them. They take
+the next free numbers in the sync range (CHE-5611):
+
+- `630_project_visibility` is now `9999935_project_visibility`
+- `631_project_member` is now `9999936_project_member`
+- `632_project_member_user_idx` is now `9999937_project_member_user_idx`
+
+The up and down SQL bytes are unchanged. The runner's concurrent-index name map
+uses the new prefix for `idx_project_member_workspace_user`. A later sync must not
+reintroduce the upstream filenames under their original prefixes.

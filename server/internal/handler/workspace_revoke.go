@@ -282,6 +282,13 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 		result.ReadyChats = append(result.ReadyChats, readyChats...)
 	}
 
+	// No FK cascade (repo rule): a departing member leaves every private
+	// project in the workspace.
+	if err := qtx.DeleteProjectMembersByUser(ctx, db.DeleteProjectMembersByUserParams{
+		WorkspaceID: workspaceID, UserID: userID,
+	}); err != nil {
+		return empty, err
+	}
 	if auditKind != "" {
 		member, err := qtx.GetMember(ctx, memberID)
 		switch {

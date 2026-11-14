@@ -256,6 +256,9 @@ func init() {
 		"PUT /api/workspaces/{id}/me/background-agents",
 		"DELETE /api/workspaces/{id}/me/background-agents/{job}",
 		"POST /api/workspaces/{id}/provider-breakers/{provider}/reset",
+		// Upstream private-project membership routes (CHE-5611); wired in L5b.
+		"POST /api/projects/{id}/members",
+		"DELETE /api/projects/{id}/members/{userId}",
 	} {
 		auditPendingL5b[route] = true
 	}
