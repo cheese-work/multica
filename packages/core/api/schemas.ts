@@ -3460,6 +3460,11 @@ export const InboxItemListSchema = z.lazy(() => z.array(
       body: z.string().nullish(),
       issue_status: z.string().nullish(),
       issue_priority: z.string().nullish(),
+      issue_project_id: z.string().nullish(),
+      issue_assignee_type: z.string().nullish(),
+      issue_assignee_id: z.string().nullish(),
+      issue_due_date: z.string().nullish(),
+      issue_label_ids: z.array(z.string()).nullish(),
       read: z.boolean(),
       archived: z.boolean(),
       created_at: z.string(),
@@ -3479,15 +3484,28 @@ export const ArchivedInboxPageSchema = z.lazy(() => z.object({
   (!page.has_more || page.items.length > 0))
   .transform((page) => ({ items: page.items, nextCursor: page.next_cursor, hasMore: page.has_more })));
 
-export const ArchivedInboxFacetsSchema = z.lazy(() => z.object({
-  statuses: z.record(z.string(), z.number().int().nonnegative()),
-  priorities: z.record(z.string(), z.number().int().nonnegative()),
-  actors: z.record(z.string(), z.number().int().nonnegative()),
-  unread_count: z.number().int().nonnegative(),
-}).transform((facets) => ({
-  statuses: facets.statuses, priorities: facets.priorities,
-  actors: facets.actors, unreadCount: facets.unread_count,
-})));
+// The type / project / assignee / label counts arrived later; an older server
+// omits them, so they default to empty rather than failing the whole menu.
+// Built on first parse (fork: schemas are lazy, 7bebf22779), so the shared
+// count-map schema lives inside the factory.
+export const ArchivedInboxFacetsSchema = z.lazy(() => {
+  const FacetCountsSchema = z.record(z.string(), z.number().int().nonnegative());
+  return z.object({
+    statuses: FacetCountsSchema,
+    priorities: FacetCountsSchema,
+    actors: FacetCountsSchema,
+    types: FacetCountsSchema.optional(),
+    projects: FacetCountsSchema.optional(),
+    assignees: FacetCountsSchema.optional(),
+    labels: FacetCountsSchema.optional(),
+    unread_count: z.number().int().nonnegative(),
+  }).transform((facets) => ({
+    statuses: facets.statuses, priorities: facets.priorities,
+    actors: facets.actors, types: facets.types ?? {},
+    projects: facets.projects ?? {}, assignees: facets.assignees ?? {},
+    labels: facets.labels ?? {}, unreadCount: facets.unread_count,
+  }));
+});
 
 export const EMPTY_INBOX_ITEMS: InboxItem[] = [];
 

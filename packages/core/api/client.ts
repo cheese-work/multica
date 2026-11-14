@@ -5,7 +5,7 @@ import type { ProviderBreaker } from "../types/provider-breaker";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
 import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
-import type { ArchivedInboxFilters } from "../inbox/filter-store";
+import { archivedInboxQuery, type ArchivedInboxFilters } from "../inbox/filters";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
 import { parseQoderConnection, parseQoderCatalog, type QoderInput } from "../runtimes/qoder-schema";
@@ -3293,12 +3293,7 @@ export class ApiClient {
   }
 
   private archivedInboxParams(filters: ArchivedInboxFilters): URLSearchParams {
-    const params = new URLSearchParams();
-    if (filters.statuses.length) params.set("statuses", [...filters.statuses].sort().join(","));
-    if (filters.priorities.length) params.set("priorities", [...filters.priorities].sort().join(","));
-    if (filters.actors.length) params.set("actors", [...filters.actors].sort().join(","));
-    if (filters.unreadOnly) params.set("unread_only", "true");
-    return params;
+    return new URLSearchParams(archivedInboxQuery(filters));
   }
 
   async listArchivedInboxPage(filters: ArchivedInboxFilters, options: {
