@@ -151,9 +151,35 @@ func runSearchQuery(
 	return runSearchQueryWithTimeout(ctx, txStarter, sql, args, rowsFn, effectiveSearchStatementTimeout())
 }
 
+// runSearchQueryWithSetup is runSearchQuery plus constant SET LOCAL statements
+// that run in the same transaction before the query (the fuzzy fallback's
+// pg_trgm threshold). Setup must never carry user input.
+func runSearchQueryWithSetup(
+	ctx context.Context,
+	txStarter txStarter,
+	setup []string,
+	sql string,
+	args []any,
+	rowsFn func(pgx.Rows) error,
+) error {
+	return runSearchTx(ctx, txStarter, setup, sql, args, rowsFn, effectiveSearchStatementTimeout())
+}
+
 func runSearchQueryWithTimeout(
 	ctx context.Context,
 	txStarter txStarter,
+	sql string,
+	args []any,
+	rowsFn func(pgx.Rows) error,
+	timeout time.Duration,
+) error {
+	return runSearchTx(ctx, txStarter, nil, sql, args, rowsFn, timeout)
+}
+
+func runSearchTx(
+	ctx context.Context,
+	txStarter txStarter,
+	setup []string,
 	sql string,
 	args []any,
 	rowsFn func(pgx.Rows) error,
@@ -191,6 +217,12 @@ func runSearchQueryWithTimeout(
 	// belt-and-suspenders — the search queries only SELECT anyway.
 	if _, err := tx.Exec(ctx, "SET LOCAL transaction_read_only = on"); err != nil {
 		return fmt.Errorf("set search transaction_read_only: %w", err)
+	}
+
+	for _, stmt := range setup {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("search setup %q: %w", stmt, err)
+		}
 	}
 
 	rows, err := tx.Query(ctx, sql, args...)
