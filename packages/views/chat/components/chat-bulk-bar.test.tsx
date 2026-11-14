@@ -33,6 +33,11 @@ describe("ChatBulkBar", () => {
     expect(screen.getByRole("button", { name: "Archive" })).toBeInTheDocument();
   });
 
+  it("uses the singular for one selected chat", () => {
+    setup(false, [s("1")]);
+    expect(screen.getByRole("toolbar", { name: "Actions for 1 selected chat" })).toBeInTheDocument();
+  });
+
   it("the arrow shows the opposite action with its count and runs it", async () => {
     const { onAction } = setup();
     fireEvent.click(screen.getByRole("button", { name: "More: Mark unseen (1)" }));

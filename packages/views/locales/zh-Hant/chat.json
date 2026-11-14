@@ -397,15 +397,15 @@
     "unseen_dot": "未查看",
     "tag_decision": "決定",
     "bulk": {
-      "toolbar_aria": "已選 {{count}} 個對話的操作",
+      "toolbar_aria_other": "已選 {{count}} 個對話的操作",
       "selected": "已選 {{count}} 個",
       "select_all": "全選",
       "cancel": "取消選擇",
       "more_aria": "更多：{{action}}",
       "group_aria": "選擇群組 {{label}}",
       "row_aria": "選擇 {{title}}",
-      "failed": "無法更新 {{count}} 個對話",
-      "archived_toast": "已封存 {{count}} 個對話",
+      "failed_other": "無法更新 {{count}} 個對話",
+      "archived_toast_other": "已封存 {{count}} 個對話",
       "action": {
         "seen": "標記為已讀",
         "unseen": "標記為未讀",

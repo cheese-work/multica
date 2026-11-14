@@ -184,7 +184,7 @@ describe("ChatThreadList select mode", () => {
     expect(screen.getByRole("checkbox", { name: "Select Chat s1" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("checkbox", { name: "Select Chat s2" })).toHaveAttribute("aria-checked", "false");
     expect(screen.getByText("1 selected")).toBeInTheDocument();
-    expect(screen.getByRole("toolbar", { name: "Actions for 1 selected chats" })).toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "Actions for 1 selected chat" })).toBeInTheDocument();
   });
 
   it("a row click toggles instead of opening the chat", () => {

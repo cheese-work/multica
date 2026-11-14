@@ -786,6 +786,7 @@ function SelectCheckbox({
   className?: string;
 }) {
   return (
+    // ui-pattern-ref: allow tri-state role="checkbox" control with mixed state; Button has no checkbox semantics
     <button
       type="button"
       role="checkbox"
